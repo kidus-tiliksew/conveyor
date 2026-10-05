@@ -881,117 +881,71 @@ function Fact({ label, value, startRow }: { label: React.ReactNode; value: React
   )
 }
 
-type CheckoutTab = 'terminal' | 'agent'
+// The excerpt is the body's first paragraph, a block separated by a blank line
+// with any leading heading lines dropped. A paragraph longer than the limit is
+// cut after its last complete sentence within the limit, or else at its last
+// word boundary, and marked with an ellipsis. A sentence ends at `.`, `!`, or
+// `?` plus any closing quotes, brackets, or inline Markdown delimiters, which
+// the excerpt keeps.
+const promptExcerptLimit = 280
 
-// The task-run command and an agent prompt for the conveyor-work skill
-// (req-agent-skills REQ-3) share one tab group: Terminal is selected on every
-// mount, and the panel shows the selected text on one truncated line with the
-// full text in its title and a single copy button. The group is content-sized:
-// its width follows the longest tab text, capped at 32rem and the parent. The prompt carries only what
-// an agent cannot infer: the task, the selected workspace, and this dashboard's
-// origin as the server. Until the workspace selection resolves, only the
-// Terminal tab renders.
+function promptExcerpt(body: string): string {
+  const paragraph = body
+    .split(/\n\s*\n/)
+    .map((block) => {
+      const lines = block
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line !== '')
+      while (lines.length > 0 && /^#{1,6}(\s|$)/.test(lines[0])) lines.shift()
+      return lines.join(' ')
+    })
+    .find((text) => text !== '')
+  if (!paragraph || paragraph.length <= promptExcerptLimit) return paragraph ?? ''
+  let cut = 0
+  for (const match of paragraph.matchAll(/[.!?]["'’”»)\]*_~`]*(?=\s)/g)) {
+    const end = match.index + match[0].length
+    if (end > promptExcerptLimit) break
+    cut = end
+  }
+  if (cut === 0) {
+    cut = paragraph.lastIndexOf(' ', promptExcerptLimit)
+    if (cut <= 0) cut = promptExcerptLimit
+  }
+  return `${paragraph.slice(0, cut).trimEnd()}…`
+}
+
+// The agent prompt for the conveyor-work skill (req-agent-skills REQ-3) is the
+// task title, a short body excerpt, and the instruction, one blank line apart.
+// The instruction carries only what an agent cannot infer: the task, the
+// selected workspace, and this dashboard's origin as the server.
+function agentPrompt(item: ActivityItem, workspace: string): string {
+  return [
+    item.task.title,
+    promptExcerpt(item.task.body ?? ''),
+    `Use the conveyor-work skill to work Conveyor task ${item.task.id} in workspace \`${workspace}\` on ${window.location.origin}.`,
+  ]
+    .filter((part) => part !== '')
+    .join('\n\n')
+}
+
+// One content-sized group, capped at 32rem and the parent, shows the prompt's
+// title line truncated, with the full prompt in its title and copy button. It
+// renders nothing until the workspace selection resolves.
 function Checkout({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
-  const [tab, setTab] = useState<CheckoutTab>('terminal')
-  const id = useId()
-  const tabRefs = useRef<Partial<Record<CheckoutTab, HTMLButtonElement | null>>>({})
-  if (item.checkout_available && item.checkout_command) {
-    const agentPrompt = `Use the conveyor-work skill to work Conveyor task ${item.task.id} in workspace \`${workspace}\` on ${window.location.origin}.`
-    const tabs: { key: CheckoutTab; label: string; icon: typeof Terminal; text: string; copyLabel: string }[] = [
-      {
-        key: 'terminal',
-        label: 'Terminal',
-        icon: Terminal,
-        text: item.checkout_command,
-        copyLabel: 'Copy task run command',
-      },
-    ]
-    if (workspace) {
-      tabs.push({ key: 'agent', label: 'Your agent', icon: Bot, text: agentPrompt, copyLabel: 'Copy agent prompt' })
-    }
-    // A selection that no longer has a tab (the workspace became unresolved)
-    // falls back to Terminal rather than showing a stale prompt.
-    const selected = tabs.find((candidate) => candidate.key === tab) ?? tabs[0]
-    const tabID = (key: CheckoutTab) => `${id}-tab-${key}`
-    const panelID = `${id}-panel`
-    const select = (key: CheckoutTab, focus: boolean) => {
-      setTab(key)
-      if (focus) tabRefs.current[key]?.focus()
-    }
+  if (item.checkout_available) {
+    if (!workspace) return null
+    const prompt = agentPrompt(item, workspace)
     return (
       <div className="inline-flex w-fit max-w-[min(100%,32rem)] min-w-0 flex-col rounded-md border border-border bg-surface">
-        <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-1 pt-1">
-          <div
-            role="tablist"
-            aria-label="Work on this locally"
-            className="flex shrink-0 items-center gap-0.5 text-[11px]"
-          >
-            {tabs.map((candidate, index) => {
-              const Icon = candidate.icon
-              const active = candidate.key === selected.key
-              return (
-                <button
-                  key={candidate.key}
-                  ref={(element) => {
-                    tabRefs.current[candidate.key] = element
-                  }}
-                  id={tabID(candidate.key)}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  aria-controls={panelID}
-                  tabIndex={active ? 0 : -1}
-                  onClick={() => select(candidate.key, false)}
-                  onKeyDown={(event) => {
-                    let next = index
-                    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
-                    else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
-                    else return
-                    event.preventDefault()
-                    select(tabs[next].key, true)
-                  }}
-                  className={cn(
-                    '-mb-px inline-flex items-center gap-1.5 border-b-2 px-2 pt-1 pb-1.5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-primary',
-                    active ? 'border-primary text-foreground' : 'border-transparent text-faint hover:text-foreground',
-                  )}
-                >
-                  <Icon className="size-3.5 shrink-0" aria-hidden="true" />
-                  {candidate.label}
-                </button>
-              )
-            })}
-          </div>
-          <span className="ml-auto min-w-0 truncate pr-1.5 pl-2 text-[11px] text-faint">Work on this locally</span>
-        </div>
-        <div
-          id={panelID}
-          role="tabpanel"
-          aria-labelledby={tabID(selected.key)}
-          className="flex min-w-0 items-center gap-2 py-0.5 pl-2.5 pr-0.5"
-        >
-          {/* Every tab's text shares one grid cell, so the group is sized by the
-              longest text (up to the cap) and switching tabs never resizes it.
-              Only the selected text is visible and exposed. */}
-          <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,auto)]">
-            {tabs.map((candidate) => {
-              const active = candidate.key === selected.key
-              return (
-                <code
-                  key={candidate.key}
-                  title={active ? candidate.text : undefined}
-                  aria-hidden={active ? undefined : true}
-                  className={cn(
-                    'col-start-1 row-start-1 min-w-0 truncate font-mono text-[11px] text-muted',
-                    !active && 'invisible',
-                  )}
-                >
-                  {candidate.text}
-                </code>
-              )
-            })}
-          </div>
-          <CopyButton key={selected.key} value={selected.text} label={selected.copyLabel} />
+        <p className="truncate border-b border-border px-2.5 py-1 text-[11px] text-faint">Work on this locally</p>
+        <div className="flex min-w-0 items-center gap-2 py-0.5 pl-2.5 pr-0.5">
+          <Bot className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          <code title={prompt} className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
+            {item.task.title}
+          </code>
+          <CopyButton value={prompt} label="Copy agent prompt" />
         </div>
       </div>
     )
