@@ -89,7 +89,9 @@ before any step expected to outlast one third of the remaining lease
 (req-agent-skills AC-2.2). Every reviewer, in either mode, ends by submitting
 its own verdict through the factory, observing success, reporting, and
 exiting. A reviewer never polls `await_review`, claims another order, or
-continues the task's delivery loop (req-agent-skills AC-3.2; DEC-11).
+continues the task's delivery loop (req-agent-skills AC-3.2; DEC-11). A
+delegated reviewer never records gate or proposal decisions
+(req-agent-skills AC-3.10; DEC-45).
 
 Do not edit files or commit. Keep verdict summaries brief. Apply the corpus
 sentence rules (ref-260823-f4729f v2, informative): name the actor, mechanism,
