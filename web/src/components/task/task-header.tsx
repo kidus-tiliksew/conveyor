@@ -886,7 +886,8 @@ type CheckoutTab = 'terminal' | 'agent'
 // The task-run command and an agent prompt for the conveyor-work skill
 // (req-agent-skills REQ-3) share one tab group: Terminal is selected on every
 // mount, and the panel shows the selected text on one truncated line with the
-// full text in its title and a single copy button. The prompt carries only what
+// full text in its title and a single copy button. The group is content-sized:
+// its width follows the longest tab text, capped at 32rem and the parent. The prompt carries only what
 // an agent cannot infer: the task, the selected workspace, and this dashboard's
 // origin as the server. Until the workspace selection resolves, only the
 // Terminal tab renders.
@@ -919,7 +920,7 @@ function Checkout({ item }: { item: ActivityItem }) {
       if (focus) tabRefs.current[key]?.focus()
     }
     return (
-      <div className="flex w-full max-w-lg min-w-0 flex-col rounded-md border border-border bg-surface">
+      <div className="inline-flex w-fit max-w-[min(100%,32rem)] min-w-0 flex-col rounded-md border border-border bg-surface">
         <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-1 pt-1">
           <div
             role="tablist"
@@ -969,9 +970,27 @@ function Checkout({ item }: { item: ActivityItem }) {
           aria-labelledby={tabID(selected.key)}
           className="flex min-w-0 items-center gap-2 py-0.5 pl-2.5 pr-0.5"
         >
-          <code title={selected.text} className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
-            {selected.text}
-          </code>
+          {/* Every tab's text shares one grid cell, so the group is sized by the
+              longest text (up to the cap) and switching tabs never resizes it.
+              Only the selected text is visible and exposed. */}
+          <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,auto)]">
+            {tabs.map((candidate) => {
+              const active = candidate.key === selected.key
+              return (
+                <code
+                  key={candidate.key}
+                  title={active ? candidate.text : undefined}
+                  aria-hidden={active ? undefined : true}
+                  className={cn(
+                    'col-start-1 row-start-1 min-w-0 truncate font-mono text-[11px] text-muted',
+                    !active && 'invisible',
+                  )}
+                >
+                  {candidate.text}
+                </code>
+              )
+            })}
+          </div>
           <CopyButton key={selected.key} value={selected.text} label={selected.copyLabel} />
         </div>
       </div>
