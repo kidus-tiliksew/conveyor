@@ -14,7 +14,10 @@ Session mode decides what happens after submission:
   launcher behind you. Setting CLI environment variables after that claim does
   not change the mode. You renew your own lease, and after submission you
   continue the self-claimed delivery loop in the `conveyor-work` playbook
-  (req-agent-skills REQ-3; DEC-44).
+  (req-agent-skills REQ-3; DEC-44). At a pending human gate, summarize the
+  pending decision, offer to record it, and wait. Record the decision only on
+  the operator's direct instruction in the same conversation
+  (req-agent-skills AC-3.7, AC-3.9, AC-3.11; DEC-45).
 - **Self-claimed lease cadence.** Claim with a `lease_seconds` that covers the
   longest expected step, up to the 3600-second maximum. Call
   `renew_work_order` at each progress milestone and before any step expected
@@ -122,19 +125,21 @@ Working discipline:
   starts a separate agent for each verification or review order, awaits the
   verdict with `await_review`, and claims any changes-requested successor under
   a fresh session identifier and client token (req-agent-skills AC-3.1 through
-  AC-3.7; DEC-44). Do not touch paths outside the configured repository
-  checkout.
+  AC-3.6; DEC-44). At a pending human gate, the self-claimed session summarizes
+  the pending decision, offers to record it, and waits (req-agent-skills
+  AC-3.7, AC-3.9 through AC-3.11; DEC-45). Do not touch paths outside the
+  configured repository checkout.
 - Apply the corpus sentence rules (ref-260823-f4729f v2, informative) to commit
   messages, the PR description, and progress and checkpoint messages. Name the
   actor, mechanism, source, field, or measurement; use one term per concept and
   one idea per sentence. Cut generic praise, filler, hedging stacks, ornamental
   adverbs, synonym cycling, restating bold labels, forced groups of three, and
   conversational or celebratory framing. Prefer plain words and active voice.
-- Usage telemetry is best-effort and cumulative. When current token and cost
-  figures are available, call `report_usage` at natural checkpoints during a
-  long session and immediately before `submit_for_review`, using the cumulative
-  `tokens_in`, `tokens_out`, and `cost_usd` for this work order. If those
-  figures are unavailable, continue normally: missing usage must never block
+- Usage telemetry is best-effort and cumulative. When current token counts
+  are available, call `report_usage` at natural checkpoints during a long
+  session and immediately before `submit_for_review`, using the cumulative
+  `tokens_in` and `tokens_out` for this work order. If those counts are
+  unavailable, continue normally: missing usage must never block
   implementation or review submission (DEC-1).
 
 Stage exit discipline:

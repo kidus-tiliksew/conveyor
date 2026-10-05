@@ -210,6 +210,32 @@ func TestMCPRolePromptsRequireBestEffortCumulativeUsage(t *testing.T) {
 	}
 }
 
+// Usage telemetry is tokens only; no role prompt asks an agent for cost
+// (req-usage-telemetry REQ-2; DEC-1).
+func TestRolePromptsRequestTokensWithoutCost(t *testing.T) {
+	t.Parallel()
+	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
+	prompts := map[string]string{"review": MCPReviewRole("")}
+	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement, core.StageReview} {
+		role, err := loader.Role(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompts[string(stage)+" role"] = role
+	}
+	for name, prompt := range prompts {
+		if strings.Contains(prompt, "cost_usd") || strings.Contains(prompt, "token and cost") {
+			t.Errorf("%s prompt still requests cost", name)
+		}
+		if strings.Contains(prompt, "report_usage") && (!strings.Contains(prompt, "`tokens_in`") || !strings.Contains(prompt, "`tokens_out`")) {
+			t.Errorf("%s prompt names report_usage without token fields", name)
+		}
+	}
+	if !strings.Contains(prompts["review"], "missing usage must never") {
+		t.Error("review prompt lost best-effort usage language")
+	}
+}
+
 func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	t.Parallel()
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
@@ -513,8 +539,10 @@ func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
 			"do not run `conveyor checkout` for a spec order",
 			"Report the result and exit the session; the launcher renews the lease every ten seconds and owns all later gates and stages",
 			"You called `claim_work_order` yourself",
-			"When the plan approval gate is pending, report the pending gate and stop without approving it",
-			"Otherwise continue with the task's next claimable implementation order through the `conveyor-work` playbook",
+			"When the plan approval gate is pending, summarize the pending decision, offer to record it, and wait",
+			"Record the decision only on the operator's direct instruction in the same conversation",
+			"Once the gate resolves, continue with the task's next claimable implementation order through the `conveyor-work` playbook",
+			"A delegated planner never records gate or proposal decisions",
 		},
 		core.StageImplement: {
 			"A launched session reports the handoff and exits; it never polls `await_review`",
@@ -523,20 +551,37 @@ func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
 			"awaits the verdict with `await_review`",
 			"claims any changes-requested successor under a fresh session identifier and client token",
 			"Setting CLI environment variables after that claim does not change the mode",
+			"At a pending human gate, summarize the pending decision, offer to record it, and wait",
+			"Record the decision only on the operator's direct instruction in the same conversation",
+			"At a pending human gate, the self-claimed session summarizes the pending decision, offers to record it, and waits",
 		},
 		core.StageReview: {
 			"including as a reviewer that a self-claimed implementer started",
 			"Every reviewer, in either mode, ends by submitting its own verdict through the factory, observing success, reporting, and exiting",
 			"never polls `await_review`, claims another order, or continues the task's delivery loop",
+			"A delegated reviewer never records gate or proposal decisions",
 		},
 		core.StageVerify: {
 			"including as a verifier that a self-claimed implementer started",
 			"report the handoff and exit without polling await_review or claiming another order",
+			"A delegated verifier never records gate or proposal decisions",
 		},
 	}
 	for stage, required := range stages {
 		normalized := normalizedRole(stage)
 		requireAll(stage, normalized, append(append([]string{}, required...), cadence...))
+	}
+
+	for stage := range stages {
+		normalized := normalizedRole(stage)
+		for _, forbidden := range []string{
+			"report the pending gate and stop",
+			"stop at the gate",
+		} {
+			if strings.Contains(normalized, forbidden) {
+				t.Errorf("%s role keeps the stop-at-gate rule %q", stage, forbidden)
+			}
+		}
 	}
 
 	implement := normalizedRole(core.StageImplement)

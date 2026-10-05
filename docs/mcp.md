@@ -222,7 +222,7 @@ operator alone confirms, and confirmation never blocks implementation.
 
 | Tool | What it does |
 |---|---|
-| `report_usage` | Cumulative self-reported tokens, cost, and optional provider rate-limit status. Observational only; missing usage never blocks lifecycle progress. |
+| `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status. Observational only; missing usage never blocks lifecycle progress. |
 | `upload_transcript` | Optional self-reported session transcript, capped at 4 MiB, passed through redaction, and stored as an audit artifact. |
 | `report_continuation` | Advisory harness-native continuation metadata for the active attempt, enabling resume after checkpoint or plan-revision releases. Human credentials only. |
 

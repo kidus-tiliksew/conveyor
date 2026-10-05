@@ -6,19 +6,16 @@ spec §21.4.
 
 ## External work-order usage is self-reported
 
-Operator-owned MCP agents report token and USD usage through `report_usage`.
-Conveyor persists it with `self_reported: true` as observational audit data;
-it does not allocate spending or gate claims, progress updates, or submissions
-from those values. Wall-clock timeouts remain enforced independently. Conveyor
-cannot independently verify an external provider's bill.
+Operator-owned MCP agents report cumulative token usage through
+`report_usage`. Conveyor persists it with `self_reported: true` as
+observational audit data; it does not gate claims, progress updates, or
+submissions from those values. Wall-clock timeouts remain enforced
+independently. Conveyor collects no cost and cannot independently verify an
+external provider's token counts.
 
 In-process stages record exact input/output/cached token counts returned by the
-Responses API. Their transcripts pass through the normal redaction path and
-USD usage is calculated from Conveyor's explicit standard-rate catalog, which
-currently covers GPT-5.6 Luna and the GPT-5.4 family, including GPT-5.4's
-documented long-context multiplier. Unknown models fail closed until their
-rates are added; non-standard service tiers or regional uplifts are not
-represented.
+Responses API. Their transcripts pass through the normal redaction path.
+Conveyor calculates no USD cost for them.
 
 ## Work-order clocks are independent
 

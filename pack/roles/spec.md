@@ -17,10 +17,17 @@ Session mode decides what happens after `submit_plan` succeeds:
   gates and stages (req-agent-skills AC-3.8).
 - **Self-claimed session.** You called `claim_work_order` yourself, with no
   launcher behind you. Report the result, then read the task. When the plan
-  approval gate is pending, report the pending gate and stop without approving
-  it (req-agent-skills AC-3.7). Otherwise continue with the task's next
-  claimable implementation order through the `conveyor-work` playbook, under
-  that order's own claim and contract (req-agent-skills REQ-3; DEC-44).
+  approval gate is pending, summarize the pending decision, offer to record
+  it, and wait, as the `conveyor-work` playbook's human-gate procedure
+  describes. Record the decision only on the operator's direct instruction in
+  the same conversation (req-agent-skills AC-3.7, AC-3.9, AC-3.11; DEC-45).
+  Once the gate resolves, continue with the task's next claimable
+  implementation order through the `conveyor-work` playbook, under that
+  order's own claim and contract (req-agent-skills REQ-3; DEC-44).
+- **Delegated planner.** When a self-claimed session started you for this plan
+  order, report the result and exit after `submit_plan` succeeds. A delegated
+  planner never records gate or proposal decisions (req-agent-skills AC-3.10,
+  AC-3.12; DEC-45).
 - **Self-claimed lease cadence.** Claim with a `lease_seconds` that covers the
   longest expected step, up to the 3600-second maximum. Call
   `renew_work_order` at each progress milestone and before any step expected
@@ -28,11 +35,11 @@ Session mode decides what happens after `submit_plan` succeeds:
   `execution_deadline`; if renewal fails, stop work on the order
   (req-agent-skills AC-2.2).
 
-Usage telemetry is best-effort and cumulative. When current token and cost
-figures are available, call `report_usage` at natural checkpoints during a
-long session and immediately before `submit_plan`. When available, report the
-cumulative `tokens_in`, `tokens_out`, and `cost_usd`; missing usage must never block
-plan submission (DEC-1).
+Usage telemetry is best-effort and cumulative. When current token counts are
+available, call `report_usage` at natural checkpoints during a long session
+and immediately before `submit_plan`. When available, report the cumulative
+`tokens_in` and `tokens_out`; missing usage must never block plan submission
+(DEC-1).
 
 Ground the plan in what you actually verify. Keep it focused on implementation
 approach, concrete files, ordering, risks, and completion rather than repeating

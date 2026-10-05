@@ -486,6 +486,111 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 			t.Fatalf("saturated=%d drift_count=%d err=%v", saturated, status.DriftCount, err)
 		}
 	})
+
+	runSubmissionGovernanceArchiveEligibility(t, factory)
+}
+
+// runSubmissionGovernanceArchiveEligibility proves submission-diff governance
+// resolution skips archived System Designs while preserving pins attached
+// before archive (req-document-operating-surfaces AC-5.2, AC-5.4).
+func runSubmissionGovernanceArchiveEligibility(t *testing.T, factory SystemDesignDriftFactory) {
+	t.Helper()
+	paths := []string{"internal/dispatch/dispatch.go"}
+	designAdded := func(t *testing.T, st store.Store, ctx context.Context, taskID, documentID string) []core.Event {
+		t.Helper()
+		events, err := st.ListEvents(ctx, taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var matched []core.Event
+		for _, event := range events {
+			var payload struct {
+				ID string `json:"id"`
+			}
+			if event.Kind == store.TaskContextDesignAdded && json.Unmarshal(event.Payload, &payload) == nil && payload.ID == documentID {
+				matched = append(matched, event)
+			}
+		}
+		return matched
+	}
+
+	t.Run("submission attachment excludes archived designs", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		delivery := createDriftTask(t, st, ctx, workspace, "submission-archive-exclusion")
+		live := createConfirmedDesign(t, st, ctx, "DESIGN-submission-live", "internal/dispatch/**")
+		archived := createConfirmedDesign(t, st, ctx, "DESIGN-submission-archived", "internal/dispatch/**")
+		if err := st.ArchiveSystemDesign(ctx, archived.ID, "operator", []string{live.ID}); err != nil {
+			t.Fatal(err)
+		}
+		attribution := store.SubmissionGovernanceAttribution{WorkOrderID: delivery.ID + "-implement", SessionID: "worker-session"}
+		attached, err := st.AttachSubmissionGovernance(ctx, delivery.ID, "conveyor", paths, attribution)
+		if err != nil || len(attached) != 1 || attached[0].ID != live.ID || attached[0].Version != 1 {
+			t.Fatalf("submission attachment=%+v err=%v", attached, err)
+		}
+		if events := designAdded(t, st, ctx, delivery.ID, archived.ID); len(events) != 0 {
+			t.Fatalf("archived design attached: %+v", events)
+		}
+		liveEvents := designAdded(t, st, ctx, delivery.ID, live.ID)
+		if len(liveEvents) != 1 {
+			t.Fatalf("live design events=%+v", liveEvents)
+		}
+		var payload struct {
+			Version       int      `json:"version"`
+			Source        string   `json:"source"`
+			WorkOrderID   string   `json:"work_order_id"`
+			SessionID     string   `json:"session_id"`
+			MatchingPaths []string `json:"matching_paths"`
+		}
+		if err = json.Unmarshal(liveEvents[0].Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Version != 1 || payload.Source != "submission_diff" || payload.WorkOrderID != attribution.WorkOrderID || payload.SessionID != attribution.SessionID || !slices.Equal(payload.MatchingPaths, paths) {
+			t.Fatalf("live attachment payload=%+v", payload)
+		}
+
+		// A repeated submission neither duplicates the live pin nor admits the
+		// archived design.
+		again, err := st.AttachSubmissionGovernance(ctx, delivery.ID, "conveyor", paths, attribution)
+		if err != nil || len(again) != 0 {
+			t.Fatalf("repeat submission attachment=%+v err=%v", again, err)
+		}
+		if live, archivedEvents := designAdded(t, st, ctx, delivery.ID, live.ID), designAdded(t, st, ctx, delivery.ID, archived.ID); len(live) != 1 || len(archivedEvents) != 0 {
+			t.Fatalf("after repeat live=%+v archived=%+v", live, archivedEvents)
+		}
+	})
+
+	t.Run("submission attachment keeps pins attached before archive", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		delivery := createDriftTask(t, st, ctx, workspace, "submission-archive-history")
+		document := createConfirmedDesign(t, st, ctx, "DESIGN-submission-historical", "internal/dispatch/**")
+		attribution := store.SubmissionGovernanceAttribution{WorkOrderID: delivery.ID + "-implement", SessionID: "worker-session"}
+		attached, err := st.AttachSubmissionGovernance(ctx, delivery.ID, "conveyor", paths, attribution)
+		if err != nil || len(attached) != 1 || attached[0].ID != document.ID {
+			t.Fatalf("submission attachment=%+v err=%v", attached, err)
+		}
+		before := designAdded(t, st, ctx, delivery.ID, document.ID)
+		if len(before) != 1 {
+			t.Fatalf("attachment events=%+v", before)
+		}
+		if err = st.ArchiveSystemDesign(ctx, document.ID, "operator", nil); err != nil {
+			t.Fatal(err)
+		}
+		again, err := st.AttachSubmissionGovernance(ctx, delivery.ID, "conveyor", paths, attribution)
+		if err != nil || len(again) != 0 {
+			t.Fatalf("post-archive submission attachment=%+v err=%v", again, err)
+		}
+		after := designAdded(t, st, ctx, delivery.ID, document.ID)
+		if len(after) != 1 || after[0].ID != before[0].ID || !slices.Equal(after[0].Payload, before[0].Payload) {
+			t.Fatalf("historical attachment rewritten: before=%+v after=%+v", before, after)
+		}
+		taskContext, err := store.TaskContextForTask(ctx, st, delivery.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(taskContext.Designs) != 1 || taskContext.Designs[0].ID != document.ID || taskContext.Designs[0].Version != 1 || !taskContext.Designs[0].Archived {
+			t.Fatalf("historical pin context=%+v", taskContext.Designs)
+		}
+	})
 }
 
 func driftService(t *testing.T, st store.Store, ctx context.Context, workspace string, now time.Time) *monitor.Service {

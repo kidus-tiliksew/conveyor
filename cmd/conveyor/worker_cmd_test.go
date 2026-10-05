@@ -779,6 +779,9 @@ func TestReportWorkerUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
 	if arguments["source"] != "worker_fallback" || arguments["workspace_id"] != "demo" || arguments["tokens_in"] != float64(21) || arguments["tokens_out"] != float64(3) {
 		t.Fatalf("fallback arguments=%v", arguments)
 	}
+	if _, ok := arguments["cost_usd"]; ok {
+		t.Fatalf("fallback sent cost_usd; usage is token telemetry only: %v", arguments)
+	}
 }
 
 func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *testing.T) {
@@ -3539,8 +3542,8 @@ func TestOpenCodeStreamReportsOneSessionFallback(t *testing.T) {
 				if request.Params.Name != "report_usage" || a["source"] != "worker_fallback" || a["session_id"] != "session-open" || a["work_order_id"] != "order-open" || a["workspace_id"] != "demo" || a["tokens_in"] != float64(7453) || a["tokens_out"] != float64(21) {
 					t.Errorf("unexpected report: %+v", request)
 				}
-				if a["cost_usd"] != float64(0) {
-					t.Error("fallback invented cost instead of the existing unknown-cost sentinel")
+				if _, ok := a["cost_usd"]; ok {
+					t.Errorf("fallback sent cost_usd; usage is token telemetry only: %+v", a)
 				}
 				_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
 			}))

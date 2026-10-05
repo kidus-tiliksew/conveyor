@@ -6115,7 +6115,10 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 			return err
 		}
 		job.State, job.EndedAt = core.JobDone, now
-		job.CostUSD, job.TokensIn, job.TokensOut = &order.CostUSD, order.TokensIn, order.TokensOut
+		job.TokensIn, job.TokensOut = order.TokensIn, order.TokensOut
+		if cost := order.HistoricalCostUSD(); cost != nil {
+			job.CostUSD = cost
+		}
 		if _, err := q.UpdateJob(ctx, jobUpdateParams(job, workspace(ctx))); err != nil {
 			return err
 		}

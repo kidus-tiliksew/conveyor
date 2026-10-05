@@ -147,8 +147,19 @@ func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
 			jobs, orders := reviewRound(id, 1)
 			requireOK(t, CreateReviewRound(ctx, st, id, jobs[:1], orders[:1]))
 			session := "review-" + id
-			_, err = ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			reviewClaim, err := ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
 			requireOK(t, err)
+			// The changes-requested seat carries a historical reported cost; the
+			// approving seat has none. Settlement keeps the first and never
+			// invents a zero for the second (req-usage-telemetry AC-2.1).
+			var historicalCost float64
+			if verdict == "changes_requested" {
+				historicalCost = 0.75
+				reviewClaim, err = st.GetWorkOrder(ctx, reviewClaim.ID)
+				requireOK(t, err)
+				reviewClaim.CostUSD = historicalCost
+				requireOK(t, UpdateWorkOrder(ctx, st, reviewClaim, taskops.WorkOrderMetadataCommand))
+			}
 			decision := core.ReviewDecision{TaskID: id, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 1, ReviewSeat: 1, ClaimSession: session, Verdict: verdict, ReasonCode: "verified", Summary: "continuation fixture", PolicyVersion: 1, MaxBounces: 3}
 			if verdict == "changes_requested" {
 				decision.ReasonCode, decision.Feedback = "defect", "Fix the defect"
@@ -168,6 +179,22 @@ func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
 			requireOK(t, err)
 			if review.State != core.WorkOrderCompleted {
 				t.Fatalf("review did not complete: %+v", review)
+			}
+			settled, err := st.ListJobs(ctx, id)
+			requireOK(t, err)
+			for _, reviewJob := range settled {
+				if reviewJob.ID != jobs[0].ID {
+					continue
+				}
+				if reviewJob.State != core.JobDone {
+					t.Fatalf("review job did not settle: %+v", reviewJob)
+				}
+				if historicalCost == 0 && reviewJob.CostUSD != nil {
+					t.Fatalf("settled review job gained invented cost %v", *reviewJob.CostUSD)
+				}
+				if historicalCost != 0 && (reviewJob.CostUSD == nil || *reviewJob.CostUSD != historicalCost) {
+					t.Fatalf("settled review job lost historical cost: %v", reviewJob.CostUSD)
+				}
 			}
 		})
 	}

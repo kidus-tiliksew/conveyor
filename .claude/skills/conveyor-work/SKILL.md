@@ -18,7 +18,9 @@ keep spec work read-only in its launched checkout. Keep the lease alive for
 the life of each claim and finish through the registered stage lifecycle tool
 or an explicit truthful release. Executor claims confer proposal capability
 only; operator confirmations, gates, holds, drift resolution, and merge remain
-outside the executor's authority.
+outside the executor's authority. A self-claimed session records an operator's
+gate or proposal decision only on the operator's direct instruction in the same
+conversation, for its own task, with the operator's own credential (DEC-45).
 
 Session mode decides what follows a stage submission. A session that
 `conveyor run` or a worker launched reports and exits, and never polls
@@ -26,9 +28,15 @@ Session mode decides what follows a stage submission. A session that
 and reviewer reports and exits after submitting its own result. A session that
 called `claim_work_order` itself continues the playbook's self-claimed
 delivery loop after implementation submission: it starts a separate verifier or
-reviewer agent per order, awaits the verdict with `await_review`, claims each
-changes-requested successor under a fresh session ID and client token, and
-stops at approval or a pending human gate.
+reviewer agent per order, awaits the verdict with `await_review`, and claims
+each changes-requested successor under a fresh session ID and client token. At
+a pending human gate it summarizes the decision with a dashboard link, offers
+to record it, and otherwise waits with `conveyor task wait`. When its task
+merges or closes, it tells the operator to run `conveyor done <task-id>` from
+the primary checkout and never runs that command itself. It plans
+in-session unless the operator's planning preference names another agent.
+Delegated planners, verifiers, and reviewers never record gate or proposal
+decisions.
 
 For implementation delivery, commit after validation and run
 `conveyor submit <task-id>` in the dedicated worktree with

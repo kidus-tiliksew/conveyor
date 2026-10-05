@@ -2728,7 +2728,10 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 			return err
 		}
 		job.State, job.EndedAt = core.JobDone, now
-		job.CostUSD, job.TokensIn, job.TokensOut = &order.CostUSD, order.TokensIn, order.TokensOut
+		job.TokensIn, job.TokensOut = order.TokensIn, order.TokensOut
+		if cost := order.HistoricalCostUSD(); cost != nil {
+			job.CostUSD = cost
+		}
 		_, index, _ := m.findJobLocked(job.ID)
 		m.jobs[job.TaskID][index] = job
 		m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now})
@@ -5386,7 +5389,7 @@ func (m *memory) AttachSubmissionGovernance(ctx context.Context, taskID, reposit
 	}
 	designs := make([]core.GovernanceDesignContext, 0)
 	for key, document := range m.systemDesigns {
-		if key.workspace != workspace || document.CurrentVersion < 1 {
+		if key.workspace != workspace || document.CurrentVersion < 1 || document.Archived {
 			continue
 		}
 		versions := m.systemDesignVersions[key]

@@ -169,7 +169,7 @@ func (c *client) reportWorkerFallbackUsageContext(ctx context.Context, credentia
 			"name": "report_usage",
 			"arguments": map[string]any{
 				"workspace_id": c.workspace, "work_order_id": id, "session_id": sessionID,
-				"tokens_in": tokensIn, "tokens_out": tokensOut, "cost_usd": 0, "source": "worker_fallback",
+				"tokens_in": tokensIn, "tokens_out": tokensOut, "source": "worker_fallback",
 			},
 		},
 	})

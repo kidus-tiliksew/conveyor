@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -598,7 +599,7 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	reset := "2026-07-28T13:00:00Z"
 	result, err := server.callMCPTool(request, "report_usage", map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
-		"tokens_in": 100.0, "tokens_out": 25.0, "cost_usd": 0.5,
+		"tokens_in": 100.0, "tokens_out": 25.0,
 		"rate_limit": map[string]any{"status": "limited", "limit": 1000.0, "remaining": 125.0, "reset_at": reset},
 	})
 	if err != nil {
@@ -610,7 +611,7 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	}
 	result, err = server.callMCPTool(request, "report_usage", map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
-		"tokens_in": 150.0, "tokens_out": 30.0, "cost_usd": 0.75,
+		"tokens_in": 150.0, "tokens_out": 30.0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -621,7 +622,7 @@ func TestMCPReportUsagePersistsOptionalRateLimitWithoutGatingOrClearing(t *testi
 	}
 	if _, err = server.callMCPTool(request, "report_usage", map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
-		"tokens_in": 150.0, "tokens_out": 30.0, "cost_usd": 0.75,
+		"tokens_in": 150.0, "tokens_out": 30.0,
 		"rate_limit": map[string]any{"status": "limited", "reset_at": "not-rfc3339"},
 	}); err == nil || !strings.Contains(err.Error(), "rate_limit") {
 		t.Fatalf("invalid reset_at error=%v", err)
@@ -746,12 +747,13 @@ func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	args := map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
-		"tokens_in": 100.0, "tokens_out": 25.0, "cost_usd": 0.5,
+		"tokens_in": 100.0, "tokens_out": 25.0,
 	}
 	workerRequest := request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
 	fallback := maps.Clone(args)
 	fallback["tokens_in"] = 500.0
 	fallback["tokens_out"] = 125.0
+	// Workers released before cost deprecation still send a zero cost.
 	fallback["cost_usd"] = 0.0
 	fallback["source"] = "worker_fallback"
 	result, err := server.callMCPTool(workerRequest, "report_usage", fallback)
@@ -767,7 +769,7 @@ func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported = result.(core.WorkOrder)
-	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.UsageReported || !reported.SelfReported {
+	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0 || !reported.UsageReported || !reported.SelfReported {
 		t.Fatalf("self-reported usage was not claimant-bound agent usage: %+v", reported)
 	}
 	fallback["tokens_in"] = 700.0
@@ -777,7 +779,7 @@ func TestMCPWorkerFallbackDoesNotReplaceAgentUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported = result.(core.WorkOrder)
-	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0.5 || !reported.UsageReported || !reported.SelfReported {
+	if reported.TokensIn != 100 || reported.TokensOut != 25 || reported.CostUSD != 0 || !reported.UsageReported || !reported.SelfReported {
 		t.Fatalf("fallback replaced agent usage: %+v", reported)
 	}
 }
@@ -811,14 +813,102 @@ func TestMCPUsageSurfacesForImplementationAndReviewOrders(t *testing.T) {
 			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "owner-token", OwnerUserID: "owner", Kind: core.CredentialUser}))
 			result, err := server.callMCPTool(request, "report_usage", map[string]any{
 				"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
-				"tokens_in": 1200.0, "tokens_out": 300.0, "cost_usd": 1.25,
+				"tokens_in": 1200.0, "tokens_out": 300.0,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			reported := result.(core.WorkOrder)
-			if reported.TokensIn != 1200 || reported.TokensOut != 300 || reported.CostUSD != 1.25 || !reported.UsageReported || !reported.SelfReported {
+			if reported.TokensIn != 1200 || reported.TokensOut != 300 || reported.CostUSD != 0 || !reported.UsageReported || !reported.SelfReported {
 				t.Fatalf("reported %s usage=%+v", stage, reported)
+			}
+		})
+	}
+}
+
+// report_usage is token telemetry only: the schema neither lists nor requires
+// cost, and a legacy cost_usd argument is accepted and ignored, including a
+// negative or malformed value (req-usage-telemetry REQ-2, AC-2.1; DEC-1).
+func TestMCPUsageSchemaOmitsCost(t *testing.T) {
+	t.Parallel()
+	for _, tool := range mcpTools() {
+		if tool["name"] != "report_usage" {
+			continue
+		}
+		schema := tool["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		if _, ok := properties["cost_usd"]; ok {
+			t.Fatalf("report_usage still lists cost_usd: %+v", properties)
+		}
+		if required := schema["required"]; !slices.Equal(required.([]string), []string{"work_order_id", "session_id", "tokens_in", "tokens_out"}) {
+			t.Fatalf("report_usage required = %v", required)
+		}
+		if description, _ := tool["description"].(string); strings.Contains(strings.ToLower(description), "cost") {
+			t.Fatalf("report_usage description still asks for cost: %s", description)
+		}
+		return
+	}
+	t.Fatal("report_usage tool not found")
+}
+
+func TestMCPUsageAcceptsAndIgnoresLegacyCost(t *testing.T) {
+	t.Parallel()
+	for name, cost := range map[string]any{"positive": 1.5, "negative": -2.0, "malformed": "free"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := store.WithWorkspace(t.Context(), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "legacy-cost-" + name, Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+			job := core.Job{ID: task.ID + "-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("owner"), Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer(st)
+			server.Workspace = "demo"
+			server.WorkOrders = &workorder.Service{Store: st}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "owner-token", OwnerUserID: "owner", Kind: core.CredentialUser}))
+			result, err := server.callMCPTool(request, "report_usage", map[string]any{
+				"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+				"tokens_in": 70.0, "tokens_out": 11.0, "cost_usd": cost,
+			})
+			if err != nil {
+				t.Fatalf("legacy cost_usd rejected: %v", err)
+			}
+			if reported := result.(core.WorkOrder); reported.CostUSD != 0 || reported.TokensIn != 70 || reported.TokensOut != 11 || !reported.UsageReported {
+				t.Fatalf("reported=%+v", reported)
+			}
+			stored, err := st.GetWorkOrder(ctx, job.ID)
+			if err != nil || stored.CostUSD != 0 {
+				t.Fatalf("stored order cost=%v err=%v", stored.CostUSD, err)
+			}
+			storedJob, ok, err := st.GetLatestJob(ctx, task.ID)
+			if err != nil || !ok || storedJob.CostUSD != nil || storedJob.TokensIn != 70 {
+				t.Fatalf("stored job=%+v ok=%v err=%v", storedJob, ok, err)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range events {
+				if event.Kind == "work_order.usage_reported" && strings.Contains(string(event.Payload), "cost_usd") {
+					t.Fatalf("usage event carries cost: %s", event.Payload)
+				}
+			}
+			if _, err = server.callMCPTool(request, "report_usage", map[string]any{
+				"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session",
+				"tokens_in": -1.0, "tokens_out": 11.0, "cost_usd": cost,
+			}); err == nil || !strings.Contains(err.Error(), "negative") {
+				t.Fatalf("negative tokens error=%v", err)
 			}
 		})
 	}

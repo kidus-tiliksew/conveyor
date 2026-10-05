@@ -158,7 +158,9 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 		}
 		j.State = core.JobDone
 		j.EndedAt = now
-		j.CostUSD = &o.CostUSD
+		if cost := o.HistoricalCostUSD(); cost != nil {
+			j.CostUSD = cost
+		}
 		j.TokensIn = o.TokensIn
 		j.TokensOut = o.TokensOut
 		values := jobValues(j)
