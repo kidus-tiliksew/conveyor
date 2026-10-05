@@ -2143,63 +2143,151 @@ test('task metadata presents stored spec versions as plan versions', async ({ pa
   await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
 
-test('Work on this shows, copies, and responsively wraps the task run command', async ({ page, context }) => {
+test('Work on this selects the Terminal tab and copies the task run command', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   const expectedCommand = `conveyor run ${taskID}`
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
   await page.goto(`/tasks/${taskID}/full`)
-  const command = page.getByText(expectedCommand, { exact: true })
-  const panel = command.locator('..')
+  const tablist = page.getByRole('tablist', { name: 'Work on this locally' })
+  const terminal = tablist.getByRole('tab', { name: 'Terminal' })
+  const panel = page.getByRole('tabpanel')
+  const group = tablist.locator('../..')
+  await expect(terminal).toHaveAttribute('aria-selected', 'true')
+  await expect(terminal).toHaveAttribute('tabindex', '0')
+  await expect(panel).toHaveAttribute('aria-labelledby', (await terminal.getAttribute('id'))!)
+  await expect(terminal).toHaveAttribute('aria-controls', (await panel.getAttribute('id'))!)
+  const command = panel.getByText(expectedCommand, { exact: true })
   await expect(command).toBeVisible()
+  await expect(command).toHaveAttribute('title', expectedCommand)
 
-  const roomyPanel = await panel.boundingBox()
-  const roomyParent = await panel.locator('..').boundingBox()
-  expect(roomyPanel!.width).toBeLessThan(roomyParent!.width)
+  // The group is content-sized: its width is its own max-content width under
+  // the 32rem cap, it stays narrower than the parent, and a wider parent does
+  // not widen it.
+  const roomy = await checkoutSizing(group)
+  expect(roomy.width).toBeCloseTo(Math.min(roomy.contentWidth, roomy.cap), 0)
+  expect(roomy.width).toBeLessThan(roomy.parentWidth)
+  await page.setViewportSize({ width: 1920, height: 720 })
+  const wider = await checkoutSizing(group)
+  expect(wider.parentWidth).toBeGreaterThan(roomy.parentWidth)
+  expect(wider.width).toBe(roomy.width)
+  await page.setViewportSize({ width: 1280, height: 720 })
 
   await page.getByRole('button', { name: 'Copy task run command' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedCommand)
 
+  // At phone width the selected text truncates on one line instead of overflowing.
   await page.setViewportSize({ width: 390, height: 720 })
   await expect(page.getByRole('button', { name: 'Copied' })).toBeVisible()
-  const narrowPanel = await panel.boundingBox()
-  expect(narrowPanel!.height).toBeGreaterThan(roomyPanel!.height)
-  await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  for (const element of [group, panel, tablist.locator('..')]) {
+    await expect.poll(() => element.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+  }
+  await expect(command).toHaveAttribute('title', expectedCommand)
 })
 
-test('Work on this offers a copyable conveyor-work agent prompt beside the run command', async ({ page, context }) => {
+test('Work on this switches to the agent prompt tab by click and arrow key', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
   await page.goto(`/tasks/${taskID}/full`)
   const origin = await page.evaluate(() => window.location.origin)
   const expectedPrompt = `Use the conveyor-work skill to work Conveyor task ${taskID} in workspace \`demo\` on ${origin}.`
-  const command = page.getByText(`conveyor run ${taskID}`, { exact: true })
-  const prompt = page.getByText(expectedPrompt, { exact: true })
-  await expect(command).toBeVisible()
-  await expect(page.getByText('Or ask your agent', { exact: true })).toBeVisible()
+  const tablist = page.getByRole('tablist', { name: 'Work on this locally' })
+  const terminal = tablist.getByRole('tab', { name: 'Terminal' })
+  const agent = tablist.getByRole('tab', { name: 'Your agent' })
+  const panel = page.getByRole('tabpanel')
+  await expect(agent).toHaveAttribute('aria-selected', 'false')
+  await expect(agent).toHaveAttribute('tabindex', '-1')
+  await expect(panel.getByText(expectedPrompt, { exact: true })).toBeHidden()
+  const groupBefore = await tablist.locator('../..').boundingBox()
+
+  await agent.click()
+  await expect(agent).toHaveAttribute('aria-selected', 'true')
+  await expect(terminal).toHaveAttribute('aria-selected', 'false')
+  await expect(panel).toHaveAttribute('aria-labelledby', (await agent.getAttribute('id'))!)
+  const prompt = panel.getByText(expectedPrompt, { exact: true })
   await expect(prompt).toBeVisible()
-
-  // Both rows share one bordered group, the prompt row below the command row.
-  const group = command.locator('../..')
-  await expect(group.getByText(expectedPrompt, { exact: true })).toBeVisible()
-  const commandBox = await command.boundingBox()
-  const promptBox = await prompt.boundingBox()
-  expect(promptBox!.y).toBeGreaterThan(commandBox!.y)
-
+  await expect(prompt).toHaveAttribute('title', expectedPrompt)
+  await expect(page.getByRole('button', { name: 'Copy task run command' })).toHaveCount(0)
+  // Switching tabs never resizes the group: both texts share one grid cell.
+  expect((await tablist.locator('../..').boundingBox())!.width).toBe(groupBefore!.width)
   await page.getByRole('button', { name: 'Copy agent prompt' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
 
+  // Arrow keys move selection and focus between the two tabs.
+  await agent.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(terminal).toBeFocused()
+  await expect(terminal).toHaveAttribute('aria-selected', 'true')
+  await expect(panel.getByText(`conveyor run ${taskID}`, { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Copy task run command' })).toBeVisible()
+  await page.keyboard.press('ArrowRight')
+  await expect(agent).toBeFocused()
+  await expect(agent).toHaveAttribute('aria-selected', 'true')
+  await expect(prompt).toBeVisible()
+
   await page.setViewportSize({ width: 390, height: 720 })
-  for (const element of [group, prompt.locator('..')]) {
+  for (const element of [tablist.locator('../..'), panel]) {
     await expect.poll(() => element.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
   }
 })
 
-test('Work on this guidance omits the agent prompt row', async ({ page }) => {
+test('Work on this without a resolved workspace shows only a content-sized Terminal tab', async ({ page }) => {
+  const taskID = 'work-on-this-x'
+  // Two workspaces and no stored selection leave the shell's workspace unresolved.
+  await page.addInitScript(() => localStorage.removeItem('conveyor-workspace'))
+  await page.route('**/v1/workspaces', (route) =>
+    route.fulfill({
+      json: [
+        { id: 'demo', name: 'Demo' },
+        { id: 'other', name: 'Other' },
+      ],
+    }),
+  )
+
+  await page.goto(`/tasks/${taskID}/full`)
+  const tablist = page.getByRole('tablist', { name: 'Work on this locally' })
+  await expect(tablist.getByRole('tab')).toHaveCount(1)
+  await expect(tablist.getByRole('tab', { name: 'Terminal' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tabpanel').getByText(`conveyor run ${taskID}`, { exact: true })).toBeVisible()
+  await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
+
+  // A short command keeps the group well under the cap, and a wider parent does
+  // not widen it.
+  const group = tablist.locator('../..')
+  const roomy = await checkoutSizing(group)
+  expect(roomy.width).toBeCloseTo(roomy.contentWidth, 0)
+  expect(roomy.width).toBeLessThan(roomy.cap)
+  await page.setViewportSize({ width: 1920, height: 720 })
+  const wider = await checkoutSizing(group)
+  expect(wider.parentWidth).toBeGreaterThan(roomy.parentWidth)
+  expect(wider.width).toBe(roomy.width)
+})
+
+// Measures the checkout group against its own max-content width, the 32rem cap,
+// and its parent, so specs can tell content sizing from parent-driven width.
+async function checkoutSizing(group: Locator) {
+  return group.evaluate((node) => {
+    const element = node as HTMLElement
+    const probe = element.cloneNode(true) as HTMLElement
+    probe.style.cssText = 'position:absolute;visibility:hidden;width:max-content;max-width:none'
+    element.parentElement!.appendChild(probe)
+    const contentWidth = probe.getBoundingClientRect().width
+    probe.remove()
+    return {
+      width: element.getBoundingClientRect().width,
+      contentWidth,
+      cap: 32 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      parentWidth: element.parentElement!.getBoundingClientRect().width,
+    }
+  })
+}
+
+test('Work on this guidance omits the tab group and agent prompt', async ({ page }) => {
   await page.goto('/tasks/guidance-only/full')
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
-  await expect(page.getByText('Or ask your agent', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('tablist', { name: 'Work on this locally' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
 })
 
