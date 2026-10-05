@@ -1032,12 +1032,23 @@ class CacheCleanupFilterTests(unittest.TestCase):
     def test_owner_only_ancestor_disregards_foreign_uninspectable_process(self):
         # TemporaryDirectory creates an owner-only (0700) directory.
         self.assertEqual(evidence.owner_only_ancestor(self.child), self.base)
+        unknown = self.task_cache / "unknown-child"
+        unknown.mkdir()
+        sibling = self.task_cache.parent / "sibling-task" / "go-build"
+        sibling.mkdir(parents=True)
+        durable = self.base / "state" / "conveyor" / "fixture-task" / "command.log"
+        durable.parent.mkdir(parents=True)
+        durable.write_text("evidence")
         foreign = self.process(4242)
         with self.foreign(foreign):
             self.assertIn("4242:ambiguous:cwd", evidence.active_cache_users(self.child, self.proc))
-            self.assertEqual(self.cleanup(), ["go-build"])
+            self.assertEqual(evidence.cleanup_cache("fixture-task", self.task_cache, [durable], self.proc),
+                             ["go-build"])
         self.assertFalse(self.child.exists())
         self.assertTrue(self.task_cache.is_dir())
+        self.assertTrue(unknown.is_dir())
+        self.assertTrue(sibling.is_dir())
+        self.assertEqual(durable.read_text(), "evidence")
 
     def test_traversable_chain_inspects_foreign_uninspectable_process(self):
         foreign = self.process(4242, start=1)
@@ -1049,10 +1060,13 @@ class CacheCleanupFilterTests(unittest.TestCase):
 
     def test_own_uninspectable_process_refuses_under_owner_isolation(self):
         # A non-dumpable process of the invoking user (for example sshd-session)
-        # can enter an owner-only cache, so it stays a possible user.
-        self.process(4242, start=1)
-        with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
-            self.cleanup()
+        # can enter an owner-only cache, so it stays a possible user whatever
+        # its start time: old, recent, far later, or unknown (no stat entry).
+        for pid, start in ((4242, 1), (4343, 100_000), (4444, 10**12), (4545, None)):
+            entry = self.process(pid, start=start)
+            with self.assertRaisesRegex(evidence.Refused, f"{pid}:ambiguous"):
+                self.cleanup()
+            shutil.rmtree(entry)
         self.assertTrue(self.child.is_dir())
 
     def test_clock_changes_and_birth_times_never_disregard_an_uninspectable_process(self):
@@ -1071,7 +1085,8 @@ class CacheCleanupFilterTests(unittest.TestCase):
                     info = real_stat(path, *args, **kwargs)
                     if Path(path) != self.child or birth is None:
                         return info
-                    return SimpleNamespace(st_uid=info.st_uid, st_mode=info.st_mode, st_birthtime=birth)
+                    return SimpleNamespace(st_uid=info.st_uid, st_mode=info.st_mode, st_birthtime=birth,
+                                           st_ctime=birth, st_mtime=birth)
                 with patch.object(evidence.time, "time", return_value=wall), \
                         patch.object(Path, "stat", child_stat):
                     with self.foreign(foreign), self.traversable(), \
@@ -1097,6 +1112,26 @@ class CacheCleanupFilterTests(unittest.TestCase):
             evidence.cleanup_cache("fixture-task", self.task_cache, [], self.base / "absent-proc")
         self.assertTrue(self.child.is_dir())
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode 000 directory")
+    def test_uninspectable_proc_refuses_with_owner_isolation(self):
+        self.proc.chmod(0)
+        self.addCleanup(self.proc.chmod, 0o700)
+        with self.assertRaisesRegex(evidence.Refused, "ambiguous: /proc"):
+            self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_later_child_refusal_preserves_earlier_candidates(self):
+        # go-build precedes tmp in DISPOSABLE_CACHE_CHILDREN; every child is
+        # preflighted before any deletion.
+        later = self.task_cache / "tmp"
+        later.mkdir()
+        (later / "object").write_text("cached")
+        self.process(4242, start=1, descriptor=later / "object")
+        with self.assertRaisesRegex(evidence.Refused, "active: tmp"):
+            self.cleanup()
+        self.assertTrue(self.child.is_dir())
+        self.assertTrue((later / "object").is_file())
+
     def test_owner_only_ancestor_requires_an_owned_untraversable_directory(self):
         uid = os.getuid()
         path = Path("/fixture/private/cache/child")
@@ -1114,7 +1149,8 @@ class CacheCleanupFilterTests(unittest.TestCase):
             private = {"/fixture/private": (stat.S_IFDIR | 0o700, uid)}
             self.assertEqual(evidence.owner_only_ancestor(path, metadata(private)), Path("/fixture/private"))
             for mode, owner in ((stat.S_IFDIR | 0o700, uid + 1), (stat.S_IFDIR | 0o710, uid),
-                                (stat.S_IFDIR | 0o701, uid), (stat.S_IFLNK | 0o700, uid), (None, uid)):
+                                (stat.S_IFDIR | 0o701, uid), (stat.S_IFLNK | 0o700, uid),
+                                (stat.S_IFREG | 0o700, uid), (None, uid)):
                 rejected = {"/fixture/private": (mode, owner)}
                 self.assertIsNone(evidence.owner_only_ancestor(path, metadata(rejected)), (mode, owner))
 
