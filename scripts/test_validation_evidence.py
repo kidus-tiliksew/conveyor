@@ -8,10 +8,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -964,6 +966,193 @@ while True:
                 self.policy["backend"]["probe"][-1] = 'print("{}")'
                 with self.assertRaises(evidence.Refused):
                     evidence.snapshot(self.root, self.policy, b"key")
+
+
+class CacheCleanupFilterTests(unittest.TestCase):
+    """Cleanup reuses the shared inspector's owner filter over fixture /proc trees.
+
+    Only filesystem metadata is injected: process-entry owners, directory
+    modes, birth times, and clocks. The real inspector runs every case.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.base / "cache-home")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        self.child = self.task_cache / "go-build"
+        self.child.mkdir(parents=True)
+        self.proc = self.base / "proc"
+        self.proc.mkdir()
+        (self.proc / "uptime").write_text("1000.00 0\n")
+
+    def process(self, pid, start=None, descriptor=None):
+        """Model a process entry: uninspectable unless descriptor names a readable target."""
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        if start is not None:
+            (entry / "stat").write_text(f"{pid} (fixture) S 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start}\n")
+        if descriptor is not None:
+            (entry / "fd").mkdir()
+            (entry / "fd" / "3").symlink_to(descriptor)
+            (entry / "cwd").symlink_to(self.base, target_is_directory=True)
+            (entry / "root").symlink_to(Path("/"), target_is_directory=True)
+            (entry / "environ").write_bytes(b"")
+        return entry
+
+    def foreign(self, *entries):
+        """Report the given process entries as owned by another user."""
+        real = Path.stat
+        foreign = set(entries)
+
+        def owner(path, *args, **kwargs):
+            info = real(path, *args, **kwargs)
+            if Path(path) in foreign:
+                values = list(info)
+                values[stat.ST_UID] = os.getuid() + 1
+                return os.stat_result(values)
+            return info
+        return patch.object(Path, "stat", owner)
+
+    def traversable(self):
+        """Give every directory group and other execute, so no ancestor isolates the cache."""
+        def lstat(directory):
+            values = list(os.lstat(directory))
+            values[stat.ST_MODE] |= stat.S_IXGRP | stat.S_IXOTH
+            return os.stat_result(values)
+        return patch.object(evidence, "owner_only_ancestor",
+                            functools.partial(evidence.owner_only_ancestor, lstat=lstat))
+
+    def cleanup(self):
+        return evidence.cleanup_cache("fixture-task", self.task_cache, [], self.proc)
+
+    def test_owner_only_ancestor_disregards_foreign_uninspectable_process(self):
+        # TemporaryDirectory creates an owner-only (0700) directory.
+        self.assertEqual(evidence.owner_only_ancestor(self.child), self.base)
+        unknown = self.task_cache / "unknown-child"
+        unknown.mkdir()
+        sibling = self.task_cache.parent / "sibling-task" / "go-build"
+        sibling.mkdir(parents=True)
+        durable = self.base / "state" / "conveyor" / "fixture-task" / "command.log"
+        durable.parent.mkdir(parents=True)
+        durable.write_text("evidence")
+        foreign = self.process(4242)
+        with self.foreign(foreign):
+            self.assertIn("4242:ambiguous:cwd", evidence.active_cache_users(self.child, self.proc))
+            self.assertEqual(evidence.cleanup_cache("fixture-task", self.task_cache, [durable], self.proc),
+                             ["go-build"])
+        self.assertFalse(self.child.exists())
+        self.assertTrue(self.task_cache.is_dir())
+        self.assertTrue(unknown.is_dir())
+        self.assertTrue(sibling.is_dir())
+        self.assertEqual(durable.read_text(), "evidence")
+
+    def test_traversable_chain_inspects_foreign_uninspectable_process(self):
+        foreign = self.process(4242, start=1)
+        with self.foreign(foreign), self.traversable():
+            self.assertIsNone(evidence.owner_only_ancestor(self.child))
+            with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+                self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_own_uninspectable_process_refuses_under_owner_isolation(self):
+        # A non-dumpable process of the invoking user (for example sshd-session)
+        # can enter an owner-only cache, so it stays a possible user whatever
+        # its start time: old, recent, far later, or unknown (no stat entry).
+        for pid, start in ((4242, 1), (4343, 100_000), (4444, 10**12), (4545, None)):
+            entry = self.process(pid, start=start)
+            with self.assertRaisesRegex(evidence.Refused, f"{pid}:ambiguous"):
+                self.cleanup()
+            shutil.rmtree(entry)
+        self.assertTrue(self.child.is_dir())
+
+    def test_clock_changes_and_birth_times_never_disregard_an_uninspectable_process(self):
+        """No creation-time filter: wall-clock steps cannot map a birth time onto start ticks.
+
+        A process that started long before the child (start tick 1) still
+        blocks cleanup whatever the clocks or the child's birth time report.
+        """
+        foreign = self.process(4242, start=1)
+        own = self.process(4343, start=1)
+        real_stat = Path.stat
+        now = time.time()
+        for wall in (now, now - 300, now + 300, now - 86_400):
+            for birth in (None, now - 600, now + 600, float("nan"), float("inf"), -1.0, "malformed"):
+                def child_stat(path, *args, birth=birth, **kwargs):
+                    info = real_stat(path, *args, **kwargs)
+                    if Path(path) != self.child or birth is None:
+                        return info
+                    return SimpleNamespace(st_uid=info.st_uid, st_mode=info.st_mode, st_birthtime=birth,
+                                           st_ctime=birth, st_mtime=birth)
+                with patch.object(evidence.time, "time", return_value=wall), \
+                        patch.object(Path, "stat", child_stat):
+                    with self.foreign(foreign), self.traversable(), \
+                            self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+                        self.cleanup()
+                    with self.assertRaisesRegex(evidence.Refused, "4343:ambiguous"):
+                        self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_readable_reference_refuses_under_owner_isolation(self):
+        (self.child / "object").write_text("cached")
+        self.process(4242, start=1, descriptor=self.child / "object")
+        with self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
+            self.cleanup()
+        with self.traversable(), self.assertRaisesRegex(evidence.Refused, "4242:fd:3"):
+            self.cleanup()
+        self.assertTrue((self.child / "object").is_file())
+
+    def test_missing_proc_refuses_with_owner_isolation(self):
+        with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
+            evidence.active_cache_users(self.child, self.base / "absent-proc", uid=os.getuid())
+        with self.assertRaisesRegex(evidence.Refused, "requires /proc"):
+            evidence.cleanup_cache("fixture-task", self.task_cache, [], self.base / "absent-proc")
+        self.assertTrue(self.child.is_dir())
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode 000 directory")
+    def test_uninspectable_proc_refuses_with_owner_isolation(self):
+        self.proc.chmod(0)
+        self.addCleanup(self.proc.chmod, 0o700)
+        with self.assertRaisesRegex(evidence.Refused, "ambiguous: /proc"):
+            self.cleanup()
+        self.assertTrue(self.child.is_dir())
+
+    def test_later_child_refusal_preserves_earlier_candidates(self):
+        # go-build precedes tmp in DISPOSABLE_CACHE_CHILDREN; every child is
+        # preflighted before any deletion.
+        later = self.task_cache / "tmp"
+        later.mkdir()
+        (later / "object").write_text("cached")
+        self.process(4242, start=1, descriptor=later / "object")
+        with self.assertRaisesRegex(evidence.Refused, "active: tmp"):
+            self.cleanup()
+        self.assertTrue(self.child.is_dir())
+        self.assertTrue((later / "object").is_file())
+
+    def test_owner_only_ancestor_requires_an_owned_untraversable_directory(self):
+        uid = os.getuid()
+        path = Path("/fixture/private/cache/child")
+
+        def metadata(modes):
+            def lstat(directory):
+                mode, owner = modes.get(str(directory), (stat.S_IFDIR | 0o755, uid))
+                if mode is None:
+                    raise PermissionError(directory)
+                return os.stat_result((mode, 0, 0, 0, owner, 0, 0, 0, 0, 0))
+            return lstat
+
+        with patch.object(Path, "resolve", lambda self, strict=False: self):
+            self.assertIsNone(evidence.owner_only_ancestor(path, metadata({})))
+            private = {"/fixture/private": (stat.S_IFDIR | 0o700, uid)}
+            self.assertEqual(evidence.owner_only_ancestor(path, metadata(private)), Path("/fixture/private"))
+            for mode, owner in ((stat.S_IFDIR | 0o700, uid + 1), (stat.S_IFDIR | 0o710, uid),
+                                (stat.S_IFDIR | 0o701, uid), (stat.S_IFLNK | 0o700, uid),
+                                (stat.S_IFREG | 0o700, uid), (None, uid)):
+                rejected = {"/fixture/private": (mode, owner)}
+                self.assertIsNone(evidence.owner_only_ancestor(path, metadata(rejected)), (mode, owner))
 
 
 class MakeGraphTests(unittest.TestCase):

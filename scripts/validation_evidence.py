@@ -768,15 +768,39 @@ def bind(root, p, output, remote, branch):
 DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
 
 
-def active_cache_users(path, proc=validation_resources.PROC, backend=None):
+def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=None):
     """Return live or ambiguously inspected processes that may use path."""
     try:
-        return validation_resources.active_cache_users(path, proc, backend=backend)
+        return validation_resources.active_cache_users(path, proc, uid=uid, backend=backend)
     except validation_resources.Refusal as exc:
         raise Refused(str(exc)) from exc
 
 
-def cleanup_cache(task, task_cache, references):
+def owner_only_ancestor(path, lstat=os.lstat):
+    """Return the nearest canonical directory at or above path that isolates it, or None.
+
+    A directory owned by the invoking user with neither group nor other
+    execute permission cannot be traversed by another unprivileged user, so
+    only the invoking user's processes can reach anything below it. Under
+    POSIX ACLs the group bits carry the ACL mask, so a named-user grant also
+    shows as group execute. Privileged processes are outside this
+    owner-isolation assumption (component-verification-strategy). Metadata
+    that cannot be read, a symlink, or a foreign owner never qualifies.
+    """
+    uid = os.getuid()
+    resolved = Path(path).resolve()
+    for directory in (resolved, *resolved.parents):
+        try:
+            info = lstat(directory)
+        except OSError:
+            continue
+        if (stat.S_ISDIR(info.st_mode) and info.st_uid == uid
+                and not info.st_mode & (stat.S_IXGRP | stat.S_IXOTH)):
+            return directory
+    return None
+
+
+def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
     require(Path(task).name == task and task not in ("", ".", ".."), "invalid task identity")
     cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     require(cache_home.is_absolute(), "XDG_CACHE_HOME must be absolute")
@@ -797,7 +821,13 @@ def cleanup_cache(task, task_cache, references):
                 "disposable cache child ownership is missing or ambiguous: " + name)
         require(not any(ref == resolved or ref.is_relative_to(resolved) for ref in refs),
                 "referenced evidence is inside disposable cache child: " + name)
-        users = active_cache_users(resolved)
+        # Owner isolation limits inspection to the invoking user's processes.
+        # No creation-time filter applies: a filesystem birth time is a
+        # wall-clock reading, and mapping it onto process start ticks would
+        # need the clock-step history no host records, so an uninspectable
+        # process that remains after owner isolation always blocks cleanup.
+        uid = os.getuid() if owner_only_ancestor(resolved) is not None else None
+        users = active_cache_users(resolved, proc, uid=uid)
         detail = users[:20]
         if len(users) > len(detail):
             detail.append("... " + str(len(users) - len(detail)) + " more")

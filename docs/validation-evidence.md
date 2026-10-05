@@ -67,8 +67,27 @@ known disposable children. It never removes the task root, a sibling task
 cache, an unknown child, or durable state. Live use is read from `/proc` on
 Linux and from libproc and `sysctl` on macOS, where only the invoking user's
 processes are inspected. On other systems active ownership cannot be
-established and cleanup refuses. A process killed before cleanup leaves scratch
-for the next claim to inspect with the same command.
+established and cleanup refuses.
+
+A process whose working directory, root, open files, or cache variables can be
+read and point into a child always blocks cleanup. A process that cannot be
+inspected blocks it too, unless owner isolation rules it out. When the child
+or one of its canonical ancestors is a directory owned by the invoking user
+with neither group nor other execute permission, such as a mode 0700
+`$XDG_CACHE_HOME`, other unprivileged users cannot reach the child, so only the
+invoking user's processes are inspected. Privileged processes are outside this
+assumption. When no such directory exists, every process is inspected.
+
+Cleanup applies no creation-time filter. A filesystem birth time is a
+wall-clock reading, and process start times are boot-relative on Linux and
+separate wall-clock readings on macOS. Ordering them would need the history of
+clock steps between the two events, which no host records. An uninspectable
+process that remains after owner isolation therefore keeps cleanup refusing,
+including the invoking user's own non-dumpable processes such as
+`sshd-session` or the `systemd --user` manager.
+
+A process killed before cleanup leaves scratch for the next claim to inspect
+with the same command.
 
 If a confined sandbox denies the sanctioned external path, first request
 write permission scoped only to that exact task cache directory. Only when
