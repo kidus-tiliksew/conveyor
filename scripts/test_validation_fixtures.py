@@ -280,7 +280,7 @@ class FixtureTests(unittest.TestCase):
 
         with patch.dict(os.environ, self.env), \
              patch.object(fixtures, "_run", side_effect=client), \
-             patch("subprocess.Popen") as gate:
+             patch.object(resources, "start_process") as gate:
             self.assertEqual(fixtures.run_lifecycle(self.config, state, ["make", "gate"]), 2)
             gate.assert_not_called()
         phases = [json.loads(line) for line in (state / "phases.jsonl").read_text().splitlines()]

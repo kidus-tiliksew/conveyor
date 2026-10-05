@@ -19,8 +19,12 @@ paths before use; stop and report the problem if the candidate is inside a
 checkout or its backing filesystem cannot be established as disk-backed.
 
 On Linux, `findmnt -T "$CONVEYOR_TASK_CACHE" -o TARGET,SOURCE,FSTYPE,OPTIONS`
-provides the required mount check. Use the platform's equivalent mount or
-filesystem inspection on other hosts. Do not silently fall back to `/tmp`.
+provides the required mount check. On macOS, `df "$CONVEYOR_TASK_CACHE"` names
+the device and mount point, the matching `mount` line gives the filesystem type
+(`apfs` or `hfs` is disk-backed), `diskutil info` names the device's whole disk
+and, for APFS, its physical store, and `hdiutil info` lists attached `ram://`
+images, which are RAM disks. Use the platform's equivalent mount or filesystem
+inspection on other hosts. Do not silently fall back to `/tmp`.
 
 Create separate children and export every cache variable before any build or
 test command. Preserve the operator's `XDG_CACHE_HOME`; derive the task root
@@ -60,9 +64,11 @@ The command canonicalizes the cache root, requires the exact current task child
 of the selected `conveyor` cache base, checks local ownership, refuses symlinks,
 referenced files, and children used by live processes, and removes only the
 known disposable children. It never removes the task root, a sibling task
-cache, an unknown child, or durable state. On systems without `/proc`, active
-ownership cannot be established and cleanup refuses. A process killed before
-cleanup leaves scratch for the next claim to inspect with the same command.
+cache, an unknown child, or durable state. Live use is read from `/proc` on
+Linux and from libproc and `sysctl` on macOS, where only the invoking user's
+processes are inspected. On other systems active ownership cannot be
+established and cleanup refuses. A process killed before cleanup leaves scratch
+for the next claim to inspect with the same command.
 
 If a confined sandbox denies the sanctioned external path, first request
 write permission scoped only to that exact task cache directory. Only when
@@ -164,7 +170,11 @@ Makefile, and the Playwright web server.
   external databases, temporary paths. Process groups receive bounded `TERM`
   then `KILL`, including descendants that outlive the direct child. Each
   signal follows a check of every remaining member's birth identity or
-  invocation binding. Containers and networks are removed by ID only after
+  invocation binding. macOS withholds the environment of platform binaries
+  such as `/bin/sh`, so there the supervisor keeps the exited leader unreaped
+  until teardown ends. The held leader PID keeps the group ID from reuse, and
+  each same-user member of that session's group is verified without a
+  readable binding. Containers and networks are removed by ID only after
   their labels and project match. Nothing runs `docker compose down`,
   `--remove-orphans`, prune, or name-pattern deletion. External PostgreSQL and
   SingleStore servers and external networks are configuration and are never
