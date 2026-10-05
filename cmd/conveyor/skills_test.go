@@ -316,6 +316,12 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"**Exit 1.** The wait failed. Report the failure to the operator instead of waiting again",
 		"Stop waiting only when the operator says so or the task merges, closes, or parks",
 		"Handle a reply the operator types between waits before the next wait",
+		// Terminal worktree cleanup (component-git-delivery).
+		"its final report tells the operator to run `conveyor done <task-id>` from the repository's primary checkout",
+		"That command removes the task worktree and keeps the branch",
+		"The session never runs `conveyor done` itself",
+		"cleanup becomes available once the task merges or closes",
+		"A launched session gives no reminder; its launcher removes the worktree after the task ends",
 		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.12) under DEC-44 and DEC-45",
 	}
 	playbookForbidden := []string{
@@ -332,6 +338,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"At a pending human gate it summarizes the decision with a dashboard link, offers to record it, and otherwise waits with `conveyor task wait`",
 		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-45)",
 		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
+		"When its task merges or closes, it tells the operator to run `conveyor done <task-id>` from the primary checkout and never runs that command itself",
 	}
 	for _, destination := range destinations {
 		playbook, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
