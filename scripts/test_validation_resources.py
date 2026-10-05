@@ -729,23 +729,79 @@ class DarwinParserTests(unittest.TestCase):
         self.assertEqual(resources.classify_backing(root, "tmpfs", True), "ram")
         self.assertEqual(resources.classify_backing(root, "ext4", False), "disk")
         self.assertEqual(resources.classify_backing(root, "smbfs", True), "unknown")
-        cases = {
-            "ram image": (statfs_bytes(b"apfs", b"/Volumes/ram", b"/dev/disk7s1"), (0, info), "ram"),
-            "disk image": (statfs_bytes(b"hfs", b"/Volumes/Tool", b"/dev/disk4"), (0, info), "disk"),
-            "internal": (statfs_bytes(b"apfs", b"/System/Volumes/Data", b"/dev/disk3s5"), (0, info), "disk"),
-            "hdiutil failed": (statfs_bytes(b"apfs", b"/System/Volumes/Data", b"/dev/disk3s5"), (1, b""), "unknown"),
-            "statfs failed": (None, (0, info), "unknown"),
-        }
-        for name, (raw, (status, output), expected) in cases.items():
+
+    def test_disk_topology_resolves_whole_disks_and_apfs_physical_stores(self):
+        hfs = plistlib.dumps({"DeviceIdentifier": "disk6s1", "ParentWholeDisk": "disk6", "FilesystemType": "hfs"})
+        self.assertEqual(resources.disk_topology(hfs), {"/dev/disk6s1", "/dev/disk6"})
+        apfs = plistlib.dumps({"DeviceIdentifier": "disk3s5", "ParentWholeDisk": "disk3", "FilesystemType": "apfs",
+                               "APFSContainerReference": "disk3",
+                               "APFSPhysicalStores": [{"APFSPhysicalStore": "disk0s2"}]})
+        self.assertEqual(resources.disk_topology(apfs), {"/dev/disk3s5", "/dev/disk3", "/dev/disk0s2", "/dev/disk0"})
+        for name, value in {
+            "apfs without stores": {"DeviceIdentifier": "disk7s1", "ParentWholeDisk": "disk7",
+                                    "FilesystemType": "apfs", "APFSContainerReference": "disk7"},
+            "malformed store": {"DeviceIdentifier": "disk7s1", "ParentWholeDisk": "disk7", "FilesystemType": "apfs",
+                                "APFSPhysicalStores": [{"APFSPhysicalStore": "ram"}]},
+            "no parent": {"DeviceIdentifier": "disk6s1", "FilesystemType": "hfs"},
+            "not a disk": {"DeviceIdentifier": "map auto_home", "ParentWholeDisk": "disk6"},
+        }.items():
             with self.subTest(case=name):
-                fake = FakeDarwin({}, statfs=None if raw is None else resources.parse_statfs(raw))
-                completed = subprocess.CompletedProcess([resources.HDIUTIL], status, output, b"")
-                with patch.object(resources, "darwin", return_value=fake), \
-                     patch.object(resources.subprocess, "run", return_value=completed):
-                    self.assertEqual(resources.classify_backing(root, "apfs", True), expected)
-        fake = FakeDarwin({}, statfs=resources.parse_statfs(statfs_bytes(b"apfs", b"/", b"/dev/disk3s1")))
-        with patch.object(resources, "darwin", return_value=fake), \
-             patch.object(resources.subprocess, "run", side_effect=FileNotFoundError(resources.HDIUTIL)):
+                self.assertIsNone(resources.disk_topology(plistlib.dumps(value)))
+        self.assertIsNone(resources.disk_topology(b"not a property list"))
+
+    def test_ram_image_backing_matches_whole_disks_physical_stores_and_fails_closed(self):
+        images = plistlib.dumps({"images": [
+            {"image-path": "ram://20480", "system-entities": [{"dev-entry": "/dev/disk6"}]},
+            {"image-path": "ram://40960", "system-entities": [{"dev-entry": "/dev/disk9s1", "mount-point": "/Volumes/r9"}]},
+            {"image-path": "/Users/u/tool.dmg", "system-entities": [{"dev-entry": "/dev/disk4"},
+                                                                     {"dev-entry": "/dev/disk4s1",
+                                                                      "mount-point": "/Volumes/Tool"}]},
+        ]})
+
+        def topology(identifier, parent, fstype="hfs", stores=None):
+            value = {"DeviceIdentifier": identifier, "ParentWholeDisk": parent, "FilesystemType": fstype}
+            if stores is not None:
+                value.update(APFSContainerReference=parent,
+                             APFSPhysicalStores=[{"APFSPhysicalStore": store} for store in stores])
+            return plistlib.dumps(value)
+
+        cases = {
+            # The ram:// image lists only its whole disk; the root is on a partition of it.
+            "partition of a ram whole disk": ("hfs", "/Volumes/ram", "/dev/disk6s1", topology("disk6s1", "disk6"), images, "ram"),
+            "exact ram entity": ("hfs", "/Volumes/r9", "/dev/disk9s1", topology("disk9s1", "disk9"), images, "ram"),
+            # An APFS volume on a synthesized container whose physical store is the ram disk.
+            "apfs physical store on ram": ("apfs", "/Volumes/ram", "/dev/disk7s1",
+                                           topology("disk7s1", "disk7", "apfs", ["disk6"]), images, "ram"),
+            "internal apfs": ("apfs", "/System/Volumes/Data", "/dev/disk3s5",
+                              topology("disk3s5", "disk3", "apfs", ["disk0s2"]), images, "disk"),
+            "file-backed disk image": ("hfs", "/Volumes/Tool", "/dev/disk4s1", topology("disk4s1", "disk4"), images, "disk"),
+            "apfs topology unresolved": ("apfs", "/Volumes/ram", "/dev/disk7s1", topology("disk7s1", "disk7", "apfs"),
+                                         images, "unknown"),
+            "diskutil failed": ("hfs", "/Volumes/ram", "/dev/disk6s1", None, images, "unknown"),
+            "topology names another device": ("hfs", "/Volumes/ram", "/dev/disk6s1", topology("disk5s1", "disk5"),
+                                              images, "unknown"),
+            "hdiutil failed": ("apfs", "/System/Volumes/Data", "/dev/disk3s5",
+                               topology("disk3s5", "disk3", "apfs", ["disk0s2"]), None, "unknown"),
+            "not a device": ("apfs", "/System/Volumes/Data", "map auto_home", topology("disk3s5", "disk3"), images,
+                             "unknown"),
+        }
+        root = Path("/Volumes/ram/cache")
+        for name, (fstype, mounted_on, mounted_from, disk_info, image_info, expected) in cases.items():
+            with self.subTest(case=name):
+                statfs = resources.parse_statfs(statfs_bytes(fstype.encode(), mounted_on.encode(), mounted_from.encode()))
+                outputs = {resources.DISKUTIL: disk_info, resources.HDIUTIL: image_info}
+
+                def run(argv, **_kwargs):
+                    output = outputs[argv[0]]
+                    return subprocess.CompletedProcess(argv, 1 if output is None else 0, output or b"", b"")
+                with patch.object(resources, "darwin", return_value=FakeDarwin({}, statfs=statfs)), \
+                     patch.object(resources.subprocess, "run", side_effect=run):
+                    self.assertEqual(resources.classify_backing(root, fstype, True), expected)
+        with patch.object(resources, "darwin", return_value=FakeDarwin({}, statfs=None)):
+            self.assertEqual(resources.classify_backing(root, "apfs", True), "unknown")
+        statfs = resources.parse_statfs(statfs_bytes(b"apfs", b"/", b"/dev/disk3s1"))
+        with patch.object(resources, "darwin", return_value=FakeDarwin({}, statfs=statfs)), \
+             patch.object(resources.subprocess, "run", side_effect=FileNotFoundError(resources.DISKUTIL)):
             self.assertEqual(resources.classify_backing(root, "apfs", True), "unknown")
 
 

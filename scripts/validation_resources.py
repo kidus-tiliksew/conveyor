@@ -195,6 +195,8 @@ CTL_KERN, KERN_PROC, KERN_PROCARGS2 = 1, 14, 49
 KERN_PROC_PID, KERN_PROC_PGRP, KERN_PROC_UID = 1, 2, 5
 DARWIN_DISK_FILESYSTEMS = {"apfs", "hfs"}
 HDIUTIL = "/usr/bin/hdiutil"
+DISKUTIL = "/usr/sbin/diskutil"
+WHOLE_DISK = re.compile(r"(disk[0-9]+)(?:s[0-9]+)*")
 
 
 def _cstring(raw: bytes) -> str:
@@ -291,6 +293,36 @@ def ram_disk_entities(raw: bytes) -> set[str] | None:
             if isinstance(entity, dict):
                 entities.update(str(entity[key]) for key in ("dev-entry", "mount-point") if entity.get(key))
     return entities
+
+
+def disk_topology(raw: bytes) -> set[str] | None:
+    """Devices backing one volume from `diskutil info -plist`: the volume, its whole disk, and APFS physical stores.
+
+    An APFS volume lives in a synthesized container whose physical store is
+    the real device, so the store and its whole disk are part of the backing.
+    Missing topology is None, never an empty backing.
+    """
+    try:
+        info = plistlib.loads(raw)
+    except Exception:  # plistlib raises several parser types; any of them means unknown.
+        return None
+    if not isinstance(info, dict):
+        return None
+    identifier, parent = info.get("DeviceIdentifier"), info.get("ParentWholeDisk")
+    if not all(isinstance(value, str) and WHOLE_DISK.fullmatch(value) for value in (identifier, parent)):
+        return None
+    devices = {identifier, parent}
+    if info.get("FilesystemType") == "apfs" or info.get("APFSContainerReference"):
+        stores = info.get("APFSPhysicalStores")
+        if not isinstance(stores, list) or not stores:
+            return None
+        for store in stores:
+            name = store.get("APFSPhysicalStore") if isinstance(store, dict) else None
+            match = WHOLE_DISK.fullmatch(name) if isinstance(name, str) else None
+            if match is None:
+                return None
+            devices.update({name, match.group(1)})
+    return {"/dev/" + device for device in devices}
 
 
 class Darwin:
@@ -578,19 +610,30 @@ def backing_filesystem(path: Path, mountinfo: Path = MOUNTINFO) -> str | None:
     return best[1] if best else None
 
 
-def _darwin_image_backing(root: Path) -> str:
-    """An apfs or hfs root on an attached ram:// image is RAM-backed; anything unestablished is unknown."""
-    info = darwin().statfs(root)
-    if info is None:
-        return "unknown"
+def _plist_output(argv) -> bytes | None:
     try:
-        result = subprocess.run([HDIUTIL, "info", "-plist"], capture_output=True, check=False, timeout=30)
+        result = subprocess.run(argv, capture_output=True, check=False, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _darwin_image_backing(root: Path) -> str:
+    """Classify an apfs or hfs root as RAM- or disk-backed; anything unestablished is unknown.
+
+    The root is RAM-backed when its mount point, device, whole disk, or APFS
+    physical store appears among the entities of an attached ram:// image.
+    """
+    info = darwin().statfs(root)
+    if info is None or not info["mounted_from"].startswith("/dev/"):
         return "unknown"
-    entities = ram_disk_entities(result.stdout) if result.returncode == 0 else None
-    if entities is None:
+    topology = _plist_output([DISKUTIL, "info", "-plist", info["mounted_from"]])
+    devices = None if topology is None else disk_topology(topology)
+    images = _plist_output([HDIUTIL, "info", "-plist"])
+    entities = None if images is None else ram_disk_entities(images)
+    if devices is None or info["mounted_from"] not in devices or entities is None:
         return "unknown"
-    return "ram" if {info["mounted_on"], info["mounted_from"]} & entities else "disk"
+    return "ram" if ({info["mounted_on"]} | devices) & entities else "disk"
 
 
 def classify_backing(root: Path, filesystem: str | None, darwin_host: bool) -> str:

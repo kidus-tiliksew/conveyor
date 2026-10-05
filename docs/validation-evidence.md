@@ -21,7 +21,8 @@ checkout or its backing filesystem cannot be established as disk-backed.
 On Linux, `findmnt -T "$CONVEYOR_TASK_CACHE" -o TARGET,SOURCE,FSTYPE,OPTIONS`
 provides the required mount check. On macOS, `df "$CONVEYOR_TASK_CACHE"` names
 the device and mount point, the matching `mount` line gives the filesystem type
-(`apfs` or `hfs` is disk-backed), and `hdiutil info` lists attached `ram://`
+(`apfs` or `hfs` is disk-backed), `diskutil info` names the device's whole disk
+and, for APFS, its physical store, and `hdiutil info` lists attached `ram://`
 images, which are RAM disks. Use the platform's equivalent mount or filesystem
 inspection on other hosts. Do not silently fall back to `/tmp`.
 
