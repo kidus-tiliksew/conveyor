@@ -1328,6 +1328,14 @@ def _stop_darwin_group(identity: dict, reference: str, pgid: int, process, grace
         pinned = _leader_pinned(identity, process)
         unverified = [pid for pid in members if not _darwin_member_verified(pid, identity, reference, pinned)]
         if unverified:
+            # A member that exits between listing and verification fails the
+            # check without being a member any longer; re-list before refusing.
+            current = _darwin_group_members(pgid)
+            if current is None:
+                return False, f"refused to signal process group {pgid}: its members cannot be listed"
+            unverified = [pid for pid in unverified
+                          if pid in current and not _darwin_member_verified(pid, identity, reference, pinned)]
+        if unverified:
             return False, (f"refused to signal process group {pgid}: members {unverified} "
                            "do not match the sealed birth identity, invocation binding, or pinned group")
         try:

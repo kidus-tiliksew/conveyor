@@ -896,6 +896,45 @@ class DarwinLogicTests(unittest.TestCase):
             self.assertIn("cannot be listed", detail)
             killpg.assert_not_called()
 
+    def test_stop_relists_before_refusing_a_member_that_exited_during_verification(self):
+        identity = {"pgid": 800, "leader": 800, "birth": {"start_ticks": 1, "boot_id": "boot"}, "uid": 501}
+        table = {801: {"pgid": 800, "environment": []}, 802: {"pgid": 800, "environment": []}}
+
+        class Exiting(FakeDarwin):
+            def bsdinfo(self, pid):
+                if pid == 802:
+                    table[802]["gone"] = True  # 802 exits while it is being verified.
+                    return None
+                return super().bsdinfo(pid)
+
+        fake = Exiting(table)
+        signaled = []
+
+        def killpg(pgid, sig):
+            signaled.append(sig)
+            table[801]["gone"] = True
+        with patch.object(resources, "darwin", return_value=fake), \
+             patch.object(resources, "process_birth", side_effect=fake.birth), \
+             patch.object(resources, "_leader_pinned", return_value=True), \
+             patch.object(resources.os, "getsid", return_value=800), \
+             patch.object(resources.os, "killpg", side_effect=killpg):
+            ok, detail = resources.stop_group(identity, "/ref", grace=0.5, kill_wait=0.5,
+                                              backend=resources.DARWIN_BACKEND)
+        self.assertTrue(ok, detail)
+        self.assertEqual(signaled, [signal.SIGTERM])
+        # A member still present after the re-list stays a refusal.
+        table = {803: {"pgid": 800, "uid": 0, "environment": []}}
+        fake = FakeDarwin(table)
+        with patch.object(resources, "darwin", return_value=fake), \
+             patch.object(resources, "process_birth", side_effect=fake.birth), \
+             patch.object(resources, "_leader_pinned", return_value=True), \
+             patch.object(resources.os, "getsid", return_value=800), \
+             patch.object(resources.os, "killpg") as killpg_mock:
+            ok, detail = resources.stop_group(identity, "/ref", backend=resources.DARWIN_BACKEND)
+        self.assertFalse(ok)
+        self.assertIn("members [803]", detail)
+        killpg_mock.assert_not_called()
+
     def test_unavailable_backend_keeps_the_refusals(self):
         with self.assertRaisesRegex(resources.Refusal, "requires /proc or macOS libproc"):
             resources.active_cache_users(self.cache, backend=resources.UNAVAILABLE)
