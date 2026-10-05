@@ -135,11 +135,11 @@ Working discipline:
   one idea per sentence. Cut generic praise, filler, hedging stacks, ornamental
   adverbs, synonym cycling, restating bold labels, forced groups of three, and
   conversational or celebratory framing. Prefer plain words and active voice.
-- Usage telemetry is best-effort and cumulative. When current token and cost
-  figures are available, call `report_usage` at natural checkpoints during a
-  long session and immediately before `submit_for_review`, using the cumulative
-  `tokens_in`, `tokens_out`, and `cost_usd` for this work order. If those
-  figures are unavailable, continue normally: missing usage must never block
+- Usage telemetry is best-effort and cumulative. When current token counts
+  are available, call `report_usage` at natural checkpoints during a long
+  session and immediately before `submit_for_review`, using the cumulative
+  `tokens_in` and `tokens_out` for this work order. If those counts are
+  unavailable, continue normally: missing usage must never block
   implementation or review submission (DEC-1).
 
 Stage exit discipline:

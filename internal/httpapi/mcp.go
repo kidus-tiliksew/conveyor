@@ -385,7 +385,8 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	case "report_usage":
 		in, _ := numberArg(args["tokens_in"])
 		out, _ := numberArg(args["tokens_out"])
-		cost, _ := floatArg(args["cost_usd"])
+		// A legacy cost_usd argument from older clients is accepted and ignored:
+		// usage is token telemetry only (req-usage-telemetry REQ-2; DEC-1).
 		var rateLimit *core.RateLimitStatus
 		if raw, ok := args["rate_limit"]; ok && raw != nil {
 			data, marshalErr := json.Marshal(raw)
@@ -410,9 +411,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			if err := s.authorizeWorkerOrder(ctx, true, worker, stringArg("work_order_id")); err != nil {
 				return nil, err
 			}
-			return s.WorkOrders.UsageFromWorkerFallback(ctx, stringArg("work_order_id"), session, in, out, cost)
+			return s.WorkOrders.UsageFromWorkerFallback(ctx, stringArg("work_order_id"), session, in, out)
 		}
-		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, cost, rateLimit)
+		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, rateLimit)
 	case "report_continuation":
 		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
 		if err != nil {
@@ -880,7 +881,7 @@ func mcpTools() []map[string]any {
 		{"name": "refresh_work_order_context", "description": "Refresh bounded artifact context for the exact live claim. Returns nonblocking delivery diagnostics; does not acknowledge understanding or change authority pins.", "inputSchema": object(map[string]any{"workspace_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "work_order_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "session_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "prior_revision": map[string]any{"type": "string", "pattern": "^([0-9a-f]{64})?$"}}, "workspace_id", "work_order_id", "session_id")},
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
-		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token, cost, and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "cost_usd": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out", "cost_usd")},
+		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out")},
 		{"name": "report_continuation", "description": "Record best-effort advisory harness-native continuation metadata for the exact active attempt. Only the launching worker or conveyor run client may report it; failure or absence never changes lifecycle outcome.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "continuation_session_id": str, "attempt_id": str, "harness": str, "launch_environment": str}, "work_order_id", "session_id", "continuation_session_id", "attempt_id", "harness", "launch_environment")},
 		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
 		{"name": "propose_requirement_revision", "description": "Propose a complete immutable requirement revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},

@@ -306,12 +306,12 @@ not completion and is never a substitute for the tool call. A missing or failed
 tool response is not terminal success: keep the review active and retry or
 report the tool failure instead of claiming that the verdict was submitted.
 
-Usage telemetry is best-effort and cumulative. When current token and cost
-figures are available, call ` + "`report_usage`" + ` at natural checkpoints
-during a long review and immediately before ` + "`submit_review_verdict`" + `,
-using the cumulative ` + "`tokens_in`" + `, ` + "`tokens_out`" + `, and
-` + "`cost_usd`" + ` for this work order. If those figures are unavailable,
-continue normally: missing usage must never block a review verdict (DEC-1).`
+Usage telemetry is best-effort and cumulative. When current token counts are
+available, call ` + "`report_usage`" + ` at natural checkpoints during a long
+review and immediately before ` + "`submit_review_verdict`" + `, using the
+cumulative ` + "`tokens_in`" + ` and ` + "`tokens_out`" + ` for this work order.
+If those counts are unavailable, continue normally: missing usage must never
+block a review verdict (DEC-1).`
 }
 
 // DoneCriteriaContract renders the task's statement of done for implement and

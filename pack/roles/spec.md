@@ -35,11 +35,11 @@ Session mode decides what happens after `submit_plan` succeeds:
   `execution_deadline`; if renewal fails, stop work on the order
   (req-agent-skills AC-2.2).
 
-Usage telemetry is best-effort and cumulative. When current token and cost
-figures are available, call `report_usage` at natural checkpoints during a
-long session and immediately before `submit_plan`. When available, report the
-cumulative `tokens_in`, `tokens_out`, and `cost_usd`; missing usage must never block
-plan submission (DEC-1).
+Usage telemetry is best-effort and cumulative. When current token counts are
+available, call `report_usage` at natural checkpoints during a long session
+and immediately before `submit_plan`. When available, report the cumulative
+`tokens_in` and `tokens_out`; missing usage must never block plan submission
+(DEC-1).
 
 Ground the plan in what you actually verify. Keep it focused on implementation
 approach, concrete files, ordering, risks, and completion rather than repeating

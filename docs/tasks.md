@@ -306,10 +306,11 @@ launchers capture a bounded termination transcript at attempt death; and
 in-process stages persist their full model transcript content-addressed.
 Redaction counts are recorded alongside.
 
-Agents self-report token and cost usage through `report_usage`. Usage is
+Agents self-report cumulative token usage through `report_usage`. Usage is
 observational telemetry only: it never gates claims, progress, or
 submissions, and a reported zero is distinguishable from a session that
-never reported. In-process stages record exact token counts and priced cost.
+never reported. Conveyor collects no cost; a legacy `cost_usd` argument is
+accepted and ignored. In-process stages record exact token counts.
 The task timeline rolls all of it up per attempt and per task.
 
 The substrate under all of this is the append-only event ledger, on the

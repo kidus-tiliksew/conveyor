@@ -51,6 +51,35 @@ func TestJobJSONKeepsMissingCostDistinctFromReportedZero(t *testing.T) {
 	}
 }
 
+// A work order exposes cost only when it retains a historical reported value
+// (req-usage-telemetry AC-2.1).
+func TestWorkOrderJSONExposesOnlyHistoricalCost(t *testing.T) {
+	fresh, err := json.Marshal(WorkOrder{ID: "fresh", TokensIn: 5, UsageReported: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(fresh), "cost_usd") || !strings.Contains(string(fresh), `"tokens_in":5`) {
+		t.Fatalf("fresh work-order wire contract = %s", fresh)
+	}
+	if (WorkOrder{}).HistoricalCostUSD() != nil {
+		t.Fatal("zero order cost produced a job cost")
+	}
+	historical, err := json.Marshal(WorkOrder{ID: "historical", CostUSD: 1.25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(historical), `"cost_usd":1.25`) {
+		t.Fatalf("historical work order omitted cost: %s", historical)
+	}
+	var decoded WorkOrder
+	if err = json.Unmarshal(historical, &decoded); err != nil || decoded.CostUSD != 1.25 {
+		t.Fatalf("historical decode cost=%v err=%v", decoded.CostUSD, err)
+	}
+	if cost := decoded.HistoricalCostUSD(); cost == nil || *cost != 1.25 {
+		t.Fatalf("historical job cost = %v", cost)
+	}
+}
+
 func TestQueuedWorkOrderJSONOmitsExecutionAndLeaseClocks(t *testing.T) {
 	now := time.Now().UTC()
 	data, err := json.Marshal(WorkOrder{ID: "queued", State: WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)})
