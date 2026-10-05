@@ -39,6 +39,29 @@ The runner needs launcher-provided `CONVEYOR_WORK_ORDER_ID`,
 Keep the token out of argv, logs and children. Use the configured server; a
 connection failure does not authorize guessing another endpoint.
 
+## Claim identity and usage
+
+A verifier that claims its own order, including one a self-claimed
+implementation session starts, names itself in `claim_work_order`
+(req-agent-skills AC-3.2):
+
+- `agent` always names the harness running the session: `claude-code`,
+  `codex`, `opencode`, `cursor`, or the harness's own name for itself.
+- `model` is the concrete model ID when the session knows it from its own
+  runtime, for example `claude-opus-5-5`.
+- When the harness selects the model and does not expose it, as Cursor Auto
+  does, `model` carries the harness's reported value verbatim, for example
+  `auto`. The session never guesses a model ID and never derives one from a
+  configured tier, a dashboard logo, or another session's claim.
+
+When the harness exposes token counts, call `report_usage` with the cumulative
+`tokens_in` and `tokens_out` for the verify order at natural checkpoints and
+immediately before `submit_verification` or `release_work_order`. Each report
+replaces the order's previous figures. Omit `cost_usd`: the server ignores it,
+and an unknown cost is never recorded as zero (req-usage-telemetry AC-2.1). A
+session without figures skips the call and invents none. Missing usage never
+delays or blocks a verification submission (DEC-1).
+
 ## Manifest and selection checks
 
 The schema-1 manifest lives at `.conveyor/kits/manifest.yaml`. A kit declares
@@ -389,8 +412,9 @@ identity; a visual click alone proves neither operator approval nor API success.
 ## Seal, report and exit
 
 `conveyor kit verify` records exercises; it does not seal the stage. Inspect
-the latest attempts, assertions, outputs, operations and coverage. Call
-`submit_verification` with `context_id`, `outcome`, the completed `coverage`
+the latest attempts, assertions, outputs, operations and coverage. Report
+available usage as [Claim identity and usage](#claim-identity-and-usage)
+describes, then call `submit_verification` with `context_id`, `outcome`, the completed `coverage`
 and truthful `feedback` where needed. Complete success requires every selected
 subject and ordinary obligation to satisfy its contract. No-kit discovery
 still needs valid ordinary coverage. Sealing binds the result to the submitted

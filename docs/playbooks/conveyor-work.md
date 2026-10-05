@@ -38,7 +38,8 @@ after a self-claim does not make the session launched.
    pending order whose `task_id` matches the requested task. Do not infer the
    current stage from a branch or an old order.
 2. Create a fresh session ID and secret client token, then call
-   `claim_work_order` for that exact order. A self-claimed session sets
+   `claim_work_order` for that exact order. Set `agent` and `model` as
+   [Claim identity](#claim-identity) describes. A self-claimed session sets
    `lease_seconds` as described in [Keep the lease alive](#keep-the-lease-alive).
    Keep the client token out of chat, logs, transcripts, command lines, files,
    source, commits, and child-agent prompts. A failed or declined claim is a
@@ -69,8 +70,48 @@ For implementation orders, call `report_progress` at these milestones:
   completed item or step and the files changed.
 - Before `submit_for_review`, list the validation commands run.
 
-Keep each progress message under a few sentences. Usage reporting is
-observational and best-effort; it does not replace lifecycle completion.
+Keep each progress message under a few sentences.
+
+### Claim identity
+
+Every `claim_work_order` call names the harness and the model that run the
+order. This applies to spec, implement, verify, and review orders, and to
+each child planner, verifier, or reviewer that a self-claimed session starts
+(req-agent-skills AC-3.2):
+
+- `agent` always names the harness running the session: `claude-code`,
+  `codex`, `opencode`, `cursor`, or the harness's own name for itself.
+- `model` is the concrete model ID when the session knows it from its own
+  runtime, for example `claude-opus-5-5`.
+- When the harness selects the model and does not expose it, as Cursor Auto
+  does, `model` carries the harness's reported value verbatim, for example
+  `auto`. The session never guesses a model ID and never derives one from a
+  configured tier, a dashboard logo, or another session's claim.
+
+The dashboard labels the order with the model's provider logo. When the model
+names no known provider, it falls back to the logo of the harness that `agent`
+names, so a truthful `agent` keeps the stage attributed to its harness.
+
+### Report usage
+
+When the harness exposes token counts, call `report_usage` with the order,
+its session, and the cumulative `tokens_in` and `tokens_out` for this work
+order. Report at each progress milestone and immediately before the stage's
+terminal lifecycle tool: `submit_plan`, `conveyor submit` or
+`submit_for_review`, `submit_verification`, `submit_review_verdict`, or
+`release_work_order`.
+
+- Each report replaces the order's previous figures, so send running totals,
+  not increments.
+- Report tokens only. Omit `cost_usd`: the server ignores it, and an unknown
+  cost is never recorded as zero (req-usage-telemetry AC-2.1).
+- Leave `source` unset or `self_reported`; `worker_fallback` belongs to
+  workers.
+- A session without figures skips the call and invents none.
+
+Usage is telemetry. Missing usage never delays or blocks a lifecycle
+submission, and nothing reads it to gate, pause, or reroute work (DEC-1;
+req-usage-telemetry REQ-1, REQ-2).
 
 ## Coordinate a bounded queue without changing its policy
 
@@ -243,10 +284,12 @@ holds its own. Planning before the first implementation order follows
 2. Start one separate agent for each such order, including one per review
    seat. A verification agent follows the `conveyor-kit-verify` skill. A
    review agent follows this playbook and the delivered review role.
-3. Each agent creates its own session ID and client token, claims its order,
-   calls `get_work_order`, performs its stage independently, ends by submitting
-   its result through the stage's registered tool, observes success, reports,
-   and exits (req-agent-skills AC-3.2; req-delegated-execution AC-2.1).
+3. Each agent creates its own session ID and client token, claims its order
+   with its own `agent` and `model` as [Claim identity](#claim-identity)
+   describes, calls `get_work_order`, performs its stage independently, ends
+   by submitting its result through the stage's registered tool, observes
+   success, reports, and exits (req-agent-skills AC-3.2;
+   req-delegated-execution AC-2.1).
 4. Give each agent only the launch prompt below. Do not fork the implementer's
    conversation, summarize its reasoning, or pass its session ID, client
    token, or plan notes. The agent reads everything else from its own
@@ -257,10 +300,11 @@ Conveyor server <server-url>, workspace <workspace>, task <task-id>,
 work order <order-id>. Use the Conveyor MCP registration for that server.
 Follow the conveyor-kit-verify skill for a verification order, or the
 conveyor-work skill for a review order. Create your own session ID and client
-token, claim exactly this work order, call get_work_order, and judge the work
-independently from the delivered contract. Submit your result through the
-stage's registered tool, observe success, report, and exit. Do not claim any
-other order.
+token, claim exactly this work order with agent set to your harness name and
+model set to your runtime's model ID or its reported value such as auto, call
+get_work_order, and judge the work independently from the delivered contract.
+Submit your result through the stage's registered tool, observe success,
+report, and exit. Do not claim any other order.
 ```
 
 Repeat step 1 after each stage result: a verification success creates the
@@ -301,10 +345,11 @@ local execution setup, or in a Conveyor-owned file (DEC-44).
 Conveyor server <server-url>, workspace <workspace>, task <task-id>,
 work order <order-id>. Use the Conveyor MCP registration for that server.
 Follow the conveyor-work skill for this plan order. Create your own session ID
-and client token, claim exactly this work order, call get_work_order, and plan
-from the delivered contract. Submit the plan through submit_plan, observe
-success, report, and exit. Do not claim any other order, and never record a
-gate or proposal decision.
+and client token, claim exactly this work order with agent set to your harness
+name and model set to your runtime's model ID or its reported value such as
+auto, call get_work_order, and plan from the delivered contract. Submit the
+plan through submit_plan, observe success, report, and exit. Do not claim any
+other order, and never record a gate or proposal decision.
 ```
 
 A subagent of the same harness is an operator-accepted independence level.

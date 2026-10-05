@@ -537,10 +537,11 @@ def _record_owned(root, p, output, invocation, timeout):
             # that closed its output is still awaited under the deadline.
             while output_open or (status is None and drain_until is None):
                 if status is None and drain_until is None:
-                    status = process.poll()
+                    status = supervised.exit_status()
                     if status is not None:
-                        # The direct command exited. Stop the verified
-                        # survivors of its sealed group, keeping its status.
+                        # The direct command exited. Its unreaped leader pins
+                        # the group while stop() verifies and signals the
+                        # survivors, and the status is kept.
                         stopped, detail = supervised.stop()
                         if not stopped:
                             phase("gate-processes", "cleanup-failure", detail)
@@ -767,10 +768,10 @@ def bind(root, p, output, remote, branch):
 DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
 
 
-def active_cache_users(path, proc=Path("/proc")):
+def active_cache_users(path, proc=validation_resources.PROC, backend=None):
     """Return live or ambiguously inspected processes that may use path."""
     try:
-        return validation_resources.active_cache_users(path, proc)
+        return validation_resources.active_cache_users(path, proc, backend=backend)
     except validation_resources.Refusal as exc:
         raise Refused(str(exc)) from exc
 

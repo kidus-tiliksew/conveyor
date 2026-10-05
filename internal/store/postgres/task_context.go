@@ -233,7 +233,7 @@ func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, reposito
 		designRows, err := tx.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
 			FROM system_designs d JOIN system_design_versions v
 			  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-			WHERE d.workspace_id=$1 AND v.governs @> $2::jsonb ORDER BY d.id
+			WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.governs @> $2::jsonb ORDER BY d.id
 			FOR SHARE OF d,v`, workspace(ctx), scope)
 		if err != nil {
 			return err
