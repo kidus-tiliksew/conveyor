@@ -1782,7 +1782,7 @@ type dispatchedRefresh struct {
 // head, and scope. A matching task field or stale approval alone proves
 // nothing.
 func (s *Service) dispatchedConflictRefresh(ctx context.Context, task core.Task, order core.WorkOrder, head string) (dispatchedRefresh, bool, error) {
-	if order.ReasonCode != "merge-conflict" || order.State != core.WorkOrderClaimed || order.TaskID != task.ID {
+	if order.ReasonCode != "merge-conflict" || (order.State != core.WorkOrderClaimed && order.State != core.WorkOrderSubmitted) || order.TaskID != task.ID {
 		return dispatchedRefresh{}, false, nil
 	}
 	baseline := order.BaselineSHA
@@ -1866,8 +1866,14 @@ func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Con
 
 // submissionReplayResult answers a same-session, same-head replay of an
 // already submitted order from durable state alone: no PR, context, order,
-// job, approval, stage, or queue write. The order's own job must already be
-// complete; an unproven completion is refused.
+// job, approval, stage, or queue write. Success requires proof that the whole
+// handoff was accepted, not only the atomic order/job completion: either the
+// first task transition after this order's submission record is its own
+// stage.advance from running, or, for a conflict fix completed against an
+// existing refresh, that head-bound refresh is still the current one. A
+// partial submission, such as one whose stale-approval mark or stage advance
+// failed after completion, is refused explicitly and never reported as a
+// handoff.
 func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrder) (map[string]any, error) {
 	jobs, err := s.Store.ListJobs(ctx, order.TaskID)
 	if err != nil {
@@ -1886,6 +1892,19 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 	if err != nil {
 		return nil, err
 	}
+	advanced, err := s.submissionStageAdvanced(ctx, order)
+	if err != nil {
+		return nil, err
+	}
+	refresh, refreshed := dispatchedRefresh{}, false
+	if !advanced {
+		if refresh, refreshed, err = s.dispatchedConflictRefresh(ctx, task, order, order.HeadSHA); err != nil {
+			return nil, err
+		}
+	}
+	if !advanced && !refreshed {
+		return nil, fmt.Errorf("work order %s was submitted at head %s but its review handoff was not recorded (no stage advance or head-bound refresh); the submission is partial and recovery is an operator action", order.ID, order.HeadSHA)
+	}
 	cfg, err := s.config(ctx)
 	if err != nil {
 		return nil, err
@@ -1894,10 +1913,60 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 		cfg = cfg.WithPolicy(task.SetupContract)
 	}
 	result := map[string]any{"pr_url": s.recordedPRURL(ctx, task.ID, order.ID), "review_execution": cfg.Routing.Stages["review"].Execution, "await_review": true, "replayed": true}
+	if refreshed {
+		result["pr_url"] = s.recordedPRURL(ctx, task.ID)
+		result["refresh_already_dispatched"] = true
+		if refresh.Stage == core.StageReview {
+			result["review_round"] = refresh.Round
+		}
+	}
 	if task.SetupContract.VerifyStage {
 		result["next_stage"] = core.StageVerify
 	}
 	return result, nil
+}
+
+// submissionStageAdvanced reports whether the first task transition recorded
+// after this order's submission is the submission's own stage.advance from
+// running. Stale marking and refresh-head advancement precede that advance in
+// the same locked handoff, so the advance proves them too.
+func (s *Service) submissionStageAdvanced(ctx context.Context, order core.WorkOrder) (bool, error) {
+	events, err := s.Store.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		return false, err
+	}
+	submitted := -1
+	for i, event := range events {
+		if event.Kind != "work_order.updated" || event.JobID != order.JobID {
+			continue
+		}
+		var recorded struct {
+			ID      string              `json:"id"`
+			State   core.WorkOrderState `json:"state"`
+			HeadSHA string              `json:"head_sha"`
+		}
+		if json.Unmarshal(event.Payload, &recorded) == nil && recorded.ID == order.ID && recorded.State == core.WorkOrderSubmitted && recorded.HeadSHA == order.HeadSHA {
+			submitted = i
+			break
+		}
+	}
+	if submitted < 0 {
+		return false, nil
+	}
+	for _, event := range events[submitted+1:] {
+		if event.Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			From    core.TaskState   `json:"from"`
+			Command core.TaskCommand `json:"command"`
+		}
+		if json.Unmarshal(event.Payload, &transition) != nil {
+			return false, nil
+		}
+		return transition.Command == core.TaskStageAdvance && transition.From == core.TaskRunning, nil
+	}
+	return false, nil
 }
 
 // recordedPRURL reads the newest recorded pull_request.opened URL, optionally

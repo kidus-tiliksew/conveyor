@@ -4170,3 +4170,208 @@ func TestConflictFixSubmissionAndReadinessSweepRaceCreateOneRefreshRound(t *test
 		})
 	}
 }
+
+// handoffFaultStore fails one post-completion handoff step, after the atomic
+// order/job completion has committed.
+type handoffFaultStore struct {
+	store.Store
+	failStale, failAdvanceHead, failStageAdvance bool
+}
+
+var errInjectedHandoff = errors.New("injected handoff failure")
+
+func (s *handoffFaultStore) MarkTaskApprovalStale(ctx context.Context, id, approved, head, scope, reason string) (bool, error) {
+	if s.failStale {
+		return false, errInjectedHandoff
+	}
+	return s.Store.MarkTaskApprovalStale(ctx, id, approved, head, scope, reason)
+}
+
+func (s *handoffFaultStore) AdvanceTaskRefreshHead(ctx context.Context, id, head string) error {
+	if s.failAdvanceHead {
+		return errInjectedHandoff
+	}
+	return s.Store.AdvanceTaskRefreshHead(ctx, id, head)
+}
+
+func (s *handoffFaultStore) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if s.failStageAdvance && command.Kind == core.TaskStageAdvance {
+		return core.Task{}, errInjectedHandoff
+	}
+	return s.Store.ApplyTaskCommand(ctx, lease, id, command)
+}
+
+// assertPartialSubmissionRefused proves a retry of a partial submission never
+// claims the missing handoff and writes nothing.
+func assertPartialSubmissionRefused(t *testing.T, st store.Store, ctx context.Context, service *Service, orderID, jobID, session, head string) {
+	t.Helper()
+	order, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || order.State != core.WorkOrderSubmitted || order.HeadSHA != head {
+		t.Fatalf("order/job completion is not atomic with the submitted head: %+v err=%v", order, err)
+	}
+	jobs, err := st.ListJobs(ctx, order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.ID == jobID && job.State != core.JobDone {
+			t.Fatalf("submitted order beside job state %s", job.State)
+		}
+	}
+	task, err := st.GetTask(ctx, order.TaskID)
+	if err != nil || task.State != core.TaskRunning {
+		t.Fatalf("partial submission advanced the task: %+v err=%v", task, err)
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := service.SubmitForReview(ctx, orderID, session, head)
+		if err == nil || result != nil || !strings.Contains(err.Error(), "review handoff was not recorded") {
+			t.Fatalf("retry %d of a partial submission result=%v err=%v", attempt, result, err)
+		}
+	}
+	after, err := st.ListEvents(ctx, order.TaskID)
+	if err != nil || len(after) != len(events) {
+		t.Fatalf("refused replay wrote events %d→%d err=%v", len(events), len(after), err)
+	}
+}
+
+func TestConflictFixSubmissionReplayRefusesIncompleteHandoff(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		fault func(*handoffFaultStore)
+	}{
+		{name: "stale marking fails", fault: func(s *handoffFaultStore) { s.failStale = true }},
+		{name: "stage advance fails", fault: func(s *handoffFaultStore) { s.failStageAdvance = true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			faults := &handoffFaultStore{}
+			f := newConflictSubmission(t, config.ExecutionSetup{}, func(st store.Store) store.Store {
+				faults.Store = st
+				return faults
+			})
+			test.fault(faults)
+			if _, err := f.submit("fixer", "fix-head"); !errors.Is(err, errInjectedHandoff) {
+				t.Fatalf("injected failure err=%v", err)
+			}
+			reads := f.reads
+			assertPartialSubmissionRefused(t, f.st, f.ctx, f.service, f.order.ID, f.order.JobID, "fixer", "fix-head")
+			if f.reads != reads || f.reconciled != 1 {
+				t.Fatalf("refused replay read or wrote the PR: reads %d→%d reconciled=%d", reads, f.reads, f.reconciled)
+			}
+			if test.name == "stage advance fails" && f.countKind(t, "approval.stale") != 1 {
+				t.Fatalf("stale mark before the failed advance=%d", f.countKind(t, "approval.stale"))
+			}
+		})
+	}
+	t.Run("refresh head advance fails", func(t *testing.T) {
+		ctx := store.WithWorkspace(t.Context(), "test")
+		faults := &handoffFaultStore{Store: store.NewMemory(), failAdvanceHead: true}
+		task := core.Task{ID: "stale-advance", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/stale-advance", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+		if err := faults.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := faults.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "older-fix-head", config.RefreshReviewDelta, "head-changed"); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: task.ID + "-implement-3", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+		if err := faults.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(faults).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storetest.For(faults).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "fixer", ClientToken: "token", ClaimantID: core.TaskRunClaimantID("usr-fixer"), OwnerUserID: "usr-fixer", Lease: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+		d := dispatch.New(faults, cfg, nil)
+		d.DisableMemoryQueueForTest()
+		service := &Service{Store: faults, Dispatcher: d, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+		prepareSubmissionTest(service)
+		if _, err := service.SubmitForReview(ctx, job.ID, "fixer", "abc123"); !errors.Is(err, errInjectedHandoff) {
+			t.Fatalf("injected failure err=%v", err)
+		}
+		assertPartialSubmissionRefused(t, faults, ctx, service, job.ID, job.ID, "fixer", "abc123")
+	})
+}
+
+func TestConflictFixSubmissionReplayAfterCompleteHandoffWritesNothing(t *testing.T) {
+	f := newConflictSubmission(t, config.ExecutionSetup{})
+	first, err := f.submit("fixer", "fix-head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, reads := f.eventCount(t), f.reads
+	replay, err := f.submit("fixer", "fix-head")
+	if err != nil || replay["replayed"] != true || replay["pr_url"] != first["pr_url"] || replay["refresh_already_dispatched"] != nil {
+		t.Fatalf("replay=%v first=%v err=%v", replay, first, err)
+	}
+	if f.eventCount(t) != events || f.reads != reads || f.reconciled != 1 {
+		t.Fatalf("replay wrote state: events %d→%d reads %d→%d reconciled=%d", events, f.eventCount(t), reads, f.reads, f.reconciled)
+	}
+}
+
+// supersedeRound records the durable setup-change lineage that
+// store.CurrentReviewOrders consumes to retire review orders.
+func (f *conflictSubmission) supersedeRound(t *testing.T, round int) {
+	t.Helper()
+	orders, err := f.st.ListTaskWorkOrders(f.ctx, f.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	superseded := []string{}
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.ReviewRound == round {
+			superseded = append(superseded, order.ID)
+		}
+	}
+	if len(superseded) == 0 {
+		t.Fatalf("round %d has no review orders", round)
+	}
+	if err = f.st.AppendEvent(f.ctx, core.Event{TaskID: f.task.ID, Kind: "task.setup.changed", Payload: core.JSONPayload(map[string]any{"request_id": "supersede-round", "review_transition": map[string]any{"superseded_work_order_ids": superseded}})}); err != nil {
+		t.Fatal(err)
+	}
+	current := store.CurrentReviewOrders(orders, func() []core.Event { events, _ := f.st.ListEvents(f.ctx, f.task.ID); return events }())
+	for _, order := range current {
+		if order.Stage == core.StageReview && order.ReviewRound == round {
+			t.Fatalf("round %d order %s still current after supersession", round, order.ID)
+		}
+	}
+}
+
+func TestConflictFixSubmissionRefusesSupersededRefreshRound(t *testing.T) {
+	t.Run("submission", func(t *testing.T) {
+		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f.dispatchExistingRefresh(t, "fix-head", config.RefreshReviewDelta)
+		f.supersedeRound(t, 2)
+		events := f.eventCount(t)
+		if _, err := f.submit("fixer", "fix-head"); err == nil || !strings.Contains(err.Error(), "submission refused before side effects") {
+			t.Fatalf("err=%v", err)
+		}
+		if f.reads != 0 {
+			t.Fatalf("superseded refresh read the PR: %d", f.reads)
+		}
+		f.assertUntouched(t, events, core.TaskQueued)
+	})
+	t.Run("replay", func(t *testing.T) {
+		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f.dispatchExistingRefresh(t, "fix-head", config.RefreshReviewDelta)
+		if result, err := f.submit("fixer", "fix-head"); err != nil || result["refresh_already_dispatched"] != true {
+			t.Fatalf("result=%v err=%v", result, err)
+		}
+		if replay, err := f.submit("fixer", "fix-head"); err != nil || replay["replayed"] != true || replay["refresh_already_dispatched"] != true {
+			t.Fatalf("current refresh replay=%v err=%v", replay, err)
+		}
+		f.supersedeRound(t, 2)
+		events := f.eventCount(t)
+		if replay, err := f.submit("fixer", "fix-head"); err == nil || replay != nil || !strings.Contains(err.Error(), "review handoff was not recorded") {
+			t.Fatalf("superseded refresh replay=%v err=%v", replay, err)
+		}
+		if f.eventCount(t) != events || f.reads != 0 || f.reconciled != 0 {
+			t.Fatalf("refused replay wrote state: events %d→%d reads=%d reconciled=%d", events, f.eventCount(t), f.reads, f.reconciled)
+		}
+	})
+}
