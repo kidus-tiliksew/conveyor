@@ -1,7 +1,7 @@
 // Narrow viewports: the shell folds its two navigation columns into a drawer
 // behind a top bar, the document pages fold their tree into a drawer above the
 // canvas, and no surface scrolls sideways at phone width.
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }
@@ -127,6 +127,214 @@ async function mockShell(page: Page) {
   })
 }
 
+// Task detail at narrow widths: the header title gives way to fixed-size
+// controls, each attached document keeps its ID under its title, and the plan
+// header wraps whole groups. The long title is what made the header overlap.
+const layoutTitle =
+  'Filter ambiguous processes during validation cache cleanup without widening the disposable deletion boundary'
+const layoutTask = {
+  task: {
+    id: 'task-layout',
+    workspace: 'demo',
+    source: 'operator',
+    title: layoutTitle,
+    repo: 'conveyor',
+    branch: 'conveyor/task-layout',
+    state: 'running',
+    created_at: '2026-10-05T08:00:00Z',
+    context: {
+      requirements: [
+        { id: 'req-review-gates-evidence', title: 'Review, gates, and evidence', version: 4, archived: false },
+        { id: 'req-retired-review', title: 'Retired review outcome', version: 2, archived: true },
+      ],
+      designs: [
+        { id: 'component-verification-strategy', title: 'Verification strategy', version: 22, archived: false },
+      ],
+    },
+  },
+  jobs: [],
+  events: [],
+  interventions: [],
+  checkout_available: false,
+  checkout_guidance: '',
+  needs_attention: false,
+  at_merge_gate: false,
+  work_orders: [],
+  spec: {
+    task_id: 'task-layout',
+    version: 2,
+    content: '## Approach\n\nKeep cache cleanup within the existing shared process inspector.',
+    acceptance_count: 0,
+    acceptance: [],
+    decomposition: [],
+    approved: true,
+    created_at: '2026-10-05T12:00:00Z',
+    approved_at: '2026-10-05T13:36:00Z',
+  },
+}
+const draftLayoutTask = {
+  ...layoutTask,
+  task: { ...layoutTask.task, id: 'task-layout-draft', state: 'awaiting_human' },
+  spec: { ...layoutTask.spec, task_id: 'task-layout-draft', approved: false, approved_at: undefined },
+}
+const layoutRequirementVersion = {
+  requirement_id: 'req-layout',
+  version: 1,
+  content:
+    '# Narrow layouts\n\nKeep record headers usable on phones.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Record headers keep their controls usable at phone width.\n```',
+  statements: [{ id: 'REQ-1', statement: 'Record headers keep their controls usable at phone width.' }],
+  origin: 'operator',
+  confirmed: true,
+  workspace: 'demo',
+  created_at: '2026-10-05T08:00:00Z',
+}
+const layoutRequirement = {
+  requirement: {
+    id: 'req-layout',
+    slug: 'narrow-layouts',
+    title: 'Narrow layouts keep every record header usable on a phone',
+    statement_high_water_mark: 1,
+    workspace: 'demo',
+    created_at: '2026-10-05T08:00:00Z',
+    updated_at: '2026-10-05T08:00:00Z',
+  },
+  current_version: layoutRequirementVersion,
+  pending_versions: [],
+  serving_blueprints: [],
+  serving_tasks: [],
+  planning_sessions: [],
+  artifacts: [],
+  lineage: [],
+  lineage_total: 0,
+  lineage_snapshot_id: 1,
+  staleness: { delivery_after_intent: false, partial_evaluation: false, deliveries: [], active_drift: [] },
+  migrated_seed: false,
+  confirmation_eligible: true,
+}
+const {
+  content: _requirementContent,
+  statements: _statements,
+  ...layoutRequirementVersionSummary
+} = layoutRequirementVersion
+const layoutRequirementSummary = {
+  requirement: layoutRequirement.requirement,
+  current_version: layoutRequirementVersionSummary,
+  pending_version_count: 0,
+  serving_tasks: [],
+  staleness: layoutRequirement.staleness,
+  confirmation_eligible: true,
+}
+
+// Registered after mockShell so these paths win; every other read falls back
+// to the shell's fixtures. Lineage reads are recorded so a spec can prove the
+// explorer still reads only once its trigger is pressed.
+async function mockRecordDetail(page: Page) {
+  const lineageReads: string[] = []
+  await page.route('**/v1/**', (route) => {
+    const path = new URL(route.request().url()).pathname
+    const detail = path.match(/^\/v1\/tasks\/(task-layout(?:-draft)?)\/(activity|events\/stream|verification)$/)
+    if (detail) {
+      const [, taskId, resource] = detail
+      if (resource === 'activity')
+        return route.fulfill({ json: taskId === 'task-layout' ? layoutTask : draftLayoutTask })
+      if (resource === 'events/stream') return route.fulfill({ contentType: 'text/event-stream', body: '' })
+      return route.fulfill({ json: { head_sha: '', current_context_id: '', contexts: { items: [] }, overview: {} } })
+    }
+    if (path.startsWith('/v1/lineage/')) {
+      lineageReads.push(path)
+      const [, , , type, id] = path.split('/')
+      const root = { type, id: decodeURIComponent(id) }
+      return route.fulfill({ json: { roots: [root], nodes: [root], links: [], truncated: false } })
+    }
+    if (path === '/v1/requirements') return route.fulfill({ json: [layoutRequirementSummary] })
+    if (path === '/v1/requirements/req-layout') return route.fulfill({ json: layoutRequirement })
+    return route.fallback()
+  })
+  return lineageReads
+}
+
+type Box = { x: number; y: number; width: number; height: number }
+
+function overlaps(a: Box, b: Box) {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+}
+
+// The title and every header control occupy disjoint boxes, the title keeps a
+// usable width, and nothing in the header paints past its right edge.
+async function expectHeaderControlsClear(header: Locator, title: Locator) {
+  const titleBox = await title.boundingBox()
+  const headerBox = await header.boundingBox()
+  if (!titleBox || !headerBox) throw new Error('the header title is not rendered')
+  expect(titleBox.width).toBeGreaterThan(48)
+  const controls = await header.locator(':scope > a, :scope > button, :scope > span:has(> button)').all()
+  expect(controls.length).toBeGreaterThan(3)
+  const boxes: Box[] = []
+  for (const control of controls) {
+    const box = await control.boundingBox()
+    if (!box) throw new Error('a header control is not rendered')
+    expect(overlaps(titleBox, box)).toBe(false)
+    expect(box.x + box.width).toBeLessThanOrEqual(headerBox.x + headerBox.width)
+    for (const other of boxes) expect(overlaps(other, box)).toBe(false)
+    boxes.push(box)
+  }
+  // A clipped label still overflows its button; content width must fit.
+  const spills = await header
+    .locator('button')
+    .evaluateAll((buttons) =>
+      buttons
+        .filter((button) => button.scrollWidth > button.clientWidth + 1)
+        .map((button) => button.ariaLabel ?? button.textContent),
+    )
+  expect(spills).toEqual([])
+}
+
+// Below sm each row's ID and version sit under its title and start at the same
+// column; from sm up they share the title's line.
+async function expectContextRows(page: Page, stacked: boolean) {
+  const card = page.getByRole('region', { name: 'Attached context' })
+  for (const [title, meta] of [
+    ['Review, gates, and evidence', 'req-review-gates-evidence · v4'],
+    ['Retired review outcome', 'req-retired-review · v2'],
+    ['Verification strategy', 'component-verification-strategy · v22'],
+  ]) {
+    const titleBox = await card.getByRole('link', { name: title }).boundingBox()
+    const metaBox = await card.getByText(meta, { exact: true }).boundingBox()
+    if (!titleBox || !metaBox) throw new Error(`context row ${title} is not rendered`)
+    if (stacked) {
+      expect(metaBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height - 1)
+      expect(Math.abs(metaBox.x - titleBox.x)).toBeLessThanOrEqual(1)
+    } else {
+      expect(Math.abs(metaBox.y + metaBox.height / 2 - (titleBox.y + titleBox.height / 2))).toBeLessThanOrEqual(4)
+      expect(metaBox.x).toBeGreaterThan(titleBox.x + titleBox.width)
+    }
+  }
+  await expect(card.getByRole('button', { name: 'Remove context Review, gates, and evidence' })).toBeVisible()
+  await expect(card.getByText('Archived', { exact: true })).toBeVisible()
+}
+
+// Below sm the trigger renders only its icon; the label stays in the
+// accessibility tree as a 1px screen-reader span, which Playwright still counts
+// as visible, so the rendered width is what proves it is icon-only.
+async function expectIconOnlyExplorer(explorer: Locator) {
+  await expect(explorer).toBeVisible()
+  const label = await explorer.getByText('Knowledge explorer').boundingBox()
+  expect(label?.width ?? 0).toBeLessThanOrEqual(1)
+}
+
+// "Execution plan" and its timestamp each render on a single line.
+async function expectPlanHeaderUnbroken(page: Page) {
+  const title = page.getByRole('heading', { name: 'Execution plan', exact: true })
+  const lineHeight = await title.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
+  const titleBox = await title.boundingBox()
+  if (!titleBox) throw new Error('the plan title is not rendered')
+  expect(titleBox.height).toBeLessThan(lineHeight * 1.5)
+  const stamp = page.getByText(/^(approved|drafted) /)
+  const stampLine = await stamp.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
+  const stampBox = await stamp.boundingBox()
+  if (!stampBox) throw new Error('the plan timestamp is not rendered')
+  expect(stampBox.height).toBeLessThan(stampLine * 1.5)
+}
+
 // The page body must never scroll sideways: a lane row or a wide table may
 // scroll inside its own container, but the viewport stays put.
 async function expectNoHorizontalOverflow(page: Page) {
@@ -198,6 +406,86 @@ test.describe('phone', () => {
     await expect(drawer).toBeHidden()
     await expect(page.getByRole('heading', { name: 'Dispatch ownership' }).first()).toBeVisible()
   })
+  test('the task panel header keeps its title clear of the explorer and navigation', async ({ page }) => {
+    await mockShell(page)
+    const lineageReads = await mockRecordDetail(page)
+
+    // The Tasks list panel carries the most controls, including copy-link.
+    await page.goto('/tasks?task=task-layout')
+    const panel = page.getByRole('dialog', { name: 'Task detail' })
+    const header = panel.locator('header').first()
+    const title = header.getByText(layoutTitle, { exact: true })
+    await expect(title).toBeVisible()
+    const explorer = header.getByRole('button', { name: 'Knowledge explorer' })
+    await expectIconOnlyExplorer(explorer)
+    await expect(header.getByRole('button', { name: 'Copy link to this task' })).toBeVisible()
+    await expectHeaderControlsClear(header, title)
+    await expectContextRows(page, true)
+    await expectPlanHeaderUnbroken(page)
+    await expectNoHorizontalOverflow(page)
+    await page.screenshot({ path: 'test-results/shots/responsive-phone-task-panel.png', animations: 'disabled' })
+
+    // Opening the detail read no lineage; pressing the trigger does.
+    expect(lineageReads).toEqual([])
+    await explorer.click()
+    await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
+    expect(lineageReads).toEqual(['/v1/lineage/task/task-layout'])
+  })
+
+  test('the board task sheet moves its window note under the controls', async ({ page }) => {
+    await mockShell(page)
+    await mockRecordDetail(page)
+
+    // The task is outside the shell's Board window, so the header carries the
+    // window-edge note as well as every control.
+    await page.goto('/tasks/task-layout')
+    const sheet = page.getByRole('dialog', { name: 'Task detail' })
+    const header = sheet.locator('header').first()
+    const title = header.getByText(layoutTitle, { exact: true })
+    await expect(title).toBeVisible()
+    const note = header.getByRole('note')
+    await expect(note).toHaveText('This task is outside the loaded Board window.')
+    await expectHeaderControlsClear(header, title)
+    const titleBox = await title.boundingBox()
+    const noteBox = await note.boundingBox()
+    if (!titleBox || !noteBox) throw new Error('the board sheet header is not rendered')
+    expect(noteBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height)
+    await expectNoHorizontalOverflow(page)
+    await page.screenshot({ path: 'test-results/shots/responsive-phone-task-sheet.png', animations: 'disabled' })
+  })
+
+  test('the full task page stacks context and keeps a draft plan header unbroken', async ({ page }) => {
+    await mockShell(page)
+    await mockRecordDetail(page)
+
+    await page.goto('/tasks/task-layout-draft/full')
+    const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+    const title = header.getByText(layoutTitle, { exact: true })
+    await expect(title).toBeVisible()
+    await expectIconOnlyExplorer(header.getByRole('button', { name: 'Knowledge explorer' }))
+    await expectHeaderControlsClear(header, title)
+    await expect(page.getByText('Awaiting approval', { exact: true })).toBeVisible()
+    await expectContextRows(page, true)
+    await expectPlanHeaderUnbroken(page)
+    await expectNoHorizontalOverflow(page)
+    await page.screenshot({ path: 'test-results/shots/responsive-phone-task-full.png', animations: 'disabled' })
+  })
+
+  test('document headers keep the explorer trigger icon-only and named', async ({ page }) => {
+    await mockShell(page)
+    await mockRecordDetail(page)
+
+    for (const [path, heading] of [
+      ['/requirements?requirement=req-layout', 'Narrow layouts keep every record header usable on a phone'],
+      ['/system-design?document=design-dispatch', 'Dispatch ownership'],
+    ]) {
+      await page.goto(path)
+      await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible()
+      const explorer = page.getByRole('button', { name: 'Knowledge explorer' })
+      await expectIconOnlyExplorer(explorer)
+      await expectNoHorizontalOverflow(page)
+    }
+  })
 })
 
 test.describe('tablet', () => {
@@ -220,5 +508,46 @@ test.describe('tablet', () => {
     await expectNoHorizontalOverflow(landscape)
     await landscape.screenshot({ path: 'test-results/shots/responsive-tablet-landscape.png', animations: 'disabled' })
     await landscape.close()
+  })
+})
+
+test.describe('desktop', () => {
+  test.use({ viewport: { width: 1440, height: 900 } })
+
+  test('task detail keeps labeled explorer triggers and single-line context rows', async ({ page }) => {
+    await mockShell(page)
+    const lineageReads = await mockRecordDetail(page)
+
+    await page.goto('/tasks?task=task-layout')
+    const panel = page.getByRole('dialog', { name: 'Task detail' })
+    const header = panel.locator('header').first()
+    const title = header.getByText(layoutTitle, { exact: true })
+    await expect(title).toBeVisible()
+    await expect(
+      header.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
+    ).toBeVisible()
+    await expectHeaderControlsClear(header, title)
+    await expectContextRows(page, false)
+    await expectPlanHeaderUnbroken(page)
+    await expectNoHorizontalOverflow(page)
+    await page.screenshot({ path: 'test-results/shots/responsive-desktop-task-panel.png', animations: 'disabled' })
+
+    await page.goto('/tasks/task-layout/full')
+    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+    await expect(
+      fullHeader.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
+    ).toBeVisible()
+    await expectHeaderControlsClear(fullHeader, fullHeader.getByText(layoutTitle, { exact: true }))
+    await expectContextRows(page, false)
+    await expectPlanHeaderUnbroken(page)
+    await page.screenshot({ path: 'test-results/shots/responsive-desktop-task-full.png', animations: 'disabled' })
+
+    for (const path of ['/requirements?requirement=req-layout', '/system-design?document=design-dispatch']) {
+      await page.goto(path)
+      await expect(
+        page.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
+      ).toBeVisible()
+    }
+    expect(lineageReads).toEqual([])
   })
 })

@@ -25,18 +25,23 @@ export function TaskFullPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
-        <Link to="/tasks/$taskId" params={{ taskId }} aria-label="Back to board">
+      <header className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
+        <Link to="/tasks/$taskId" params={{ taskId }} aria-label="Back to board" className="shrink-0">
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <ArrowLeft />
           </Button>
         </Link>
-        <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">{item?.task.title}</span>
         {/* The corner affordance REQ-3 asks for: what this task connects to is
             one read away, and it costs nothing until it is opened. */}
         <LineageExplorer type="task" id={taskId} />
         {windowEdge && (
-          <span className="max-w-56 text-right text-[10px] leading-4 text-faint" role="note">
+          // Below sm the note takes its own line under the controls so it
+          // never squeezes the title out of the header.
+          <span
+            className="max-w-56 text-right text-[10px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+            role="note"
+          >
             {windowEdge}
           </span>
         )}
@@ -58,13 +63,13 @@ export function TaskFullPage() {
 function FullNavButton({ targetId, label, icon }: { targetId?: string; label: string; icon: React.ReactNode }) {
   if (!targetId) {
     return (
-      <Button variant="ghost" size="icon" aria-label={label} disabled>
+      <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
         {icon}
       </Button>
     )
   }
   return (
-    <Link to="/tasks/$taskId/full" params={{ taskId: targetId }} aria-label={label}>
+    <Link to="/tasks/$taskId/full" params={{ taskId: targetId }} aria-label={label} className="shrink-0">
       <Button variant="ghost" size="icon" tabIndex={-1}>
         {icon}
       </Button>

@@ -61,7 +61,9 @@ export function TaskContextCard({
           setSelected({ ...item, kind })
         }}
       >
-        <X /> Remove
+        {/* Its aria-label names the document; below sm the icon alone leaves
+            the row's ID room on the line beside it. */}
+        <X /> <span className="max-sm:sr-only">Remove</span>
       </Button>
     )
   const requirements = context?.requirements ?? []
@@ -267,11 +269,20 @@ function ContextRow({
   children: React.ReactNode
 }) {
   return (
-    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5 py-1.5 text-sm">
+    // Below sm the kind label is its own column and the document's ID and
+    // version sit under its title rather than wrapping to a detached line.
+    // From sm up the groups dissolve back into the single inline row.
+    <li className="grid grid-cols-[4rem_minmax(0,1fr)] items-baseline gap-x-3 py-1.5 text-sm sm:flex sm:flex-wrap sm:gap-y-1.5">
       <span className="w-16 shrink-0 text-[10px] font-medium uppercase tracking-wider text-faint">{kind}</span>
-      {children}
-      <span className="ml-auto shrink-0 font-mono text-[11px] text-faint">{meta}</span>
-      {action}
+      <div className="flex min-w-0 flex-col gap-1 sm:contents">
+        <div className="flex min-w-0 items-baseline gap-x-3 sm:contents">{children}</div>
+        <div className="flex items-center gap-x-3 sm:contents">
+          <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere] sm:ml-auto sm:shrink-0">
+            {meta}
+          </span>
+          {action}
+        </div>
+      </div>
     </li>
   )
 }
