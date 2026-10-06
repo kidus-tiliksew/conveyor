@@ -275,7 +275,8 @@ conveyor done <task-id>
 
 Remove the task's worktree after the task is `merged` or `closed`. It must
 run in the repository's primary checkout, and it keeps the branch, so
-unmerged history is never deleted.
+unmerged history is never deleted. A self-claimed agent session runs `done`
+itself after its own task merges or closes, still from the primary checkout.
 
 ## worker
 
