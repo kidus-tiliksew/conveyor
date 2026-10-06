@@ -5698,6 +5698,13 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 	var lifecycleErr error
 	var completed core.Job
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var storedTask, storedJob, storedStage string
+		if err := tx.QueryRow(ctx, `SELECT task_id, job_id, stage FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.ID).Scan(&storedTask, &storedJob, &storedStage); err != nil {
+			return notFound(err, "work order %s", order.ID)
+		}
+		if storedTask != order.TaskID || storedJob != order.JobID || core.Stage(storedStage) != core.StageImplement {
+			return fmt.Errorf("work order %s does not match its submission", order.ID)
+		}
 		// The order update takes the task lock first, matching claim and
 		// release ordering; any later refusal rolls the update back.
 		var err error
