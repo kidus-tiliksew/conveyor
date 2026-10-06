@@ -35,8 +35,8 @@ reviewer agent per order, awaits the verdict with `await_review`, and claims
 each changes-requested successor under a fresh session ID and client token. At
 a pending human gate it summarizes the decision with a dashboard link, offers
 to record it, and otherwise waits with `conveyor task wait`. When its task
-merges or closes, it tells the operator to run `conveyor done <task-id>` from
-the primary checkout and never runs that command itself. It plans
+merges or closes, it runs `conveyor done <task-id>` from the primary checkout
+and reports the result. It plans
 in-session unless the operator's planning preference names another agent.
 Delegated planners, verifiers, and reviewers never record gate or proposal
 decisions.

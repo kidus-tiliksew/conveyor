@@ -425,15 +425,38 @@ session to merge.
 
 ### Worktree cleanup
 
-When the session observes its task `merged` or `closed`, its final report
-tells the operator to run `conveyor done <task-id>` from the repository's
-primary checkout. That command removes the task worktree and keeps the branch.
-The session never runs `conveyor done` itself: the command must run in the
-primary checkout, which an executor never uses, and the session's own working
-directory is the worktree it would remove. When the task parks or the operator
-stops the wait before the task merges or closes, the report says cleanup
-becomes available once the task merges or closes. A launched session gives no
-reminder; its launcher removes the worktree after the task ends.
+When the session observes its own task `merged` or `closed` through
+`conveyor task wait`, `get_task`, or `await_review`, it removes the task
+worktree itself, without waiting for an operator prompt. `conveyor done`
+removes the task worktree and keeps the branch, and it refuses unless its
+working directory is the repository's primary checkout
+(`component-git-delivery`):
+
+1. Resolve the primary checkout from the task worktree. It is the parent
+   directory of the path that
+   `git -C "<task-worktree>" rev-parse --path-format=absolute --git-common-dir`
+   prints.
+2. Change the session's shell working directory to that primary checkout, so
+   the shell does not stay in the directory being removed.
+3. Run `conveyor --server <server-url> --workspace <workspace> done <task-id>`
+   there.
+4. Quote the printed `worktree=<removed|pruned|skipped> branch=... path=...`
+   line and every `warning:` line in the final report.
+
+When `done` exits non-zero or reports `worktree=skipped`, the final report
+quotes its output verbatim and gives the operator the exact command to run from
+the primary checkout. The session does not retry with altered arguments and
+never falls back to `git worktree remove`, `--force`, `rm`, branch deletion, or
+any edit in the primary checkout.
+
+The session runs `done` only for its own task and only after it observes that
+task `merged` or `closed`. It never runs `done` for a parked task or for
+another task. A planner, verifier, or reviewer that the session started never
+runs `done`. Running `done` records no gate or proposal decision. When the task
+parks or the operator stops the wait before the task merges or closes, the
+session runs nothing and its report says cleanup becomes available once the
+task merges or closes. A launched session runs no cleanup; its launcher removes
+the worktree after the task ends.
 
 ### Human gates
 

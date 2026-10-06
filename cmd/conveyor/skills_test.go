@@ -317,11 +317,19 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"Stop waiting only when the operator says so or the task merges, closes, or parks",
 		"Handle a reply the operator types between waits before the next wait",
 		// Terminal worktree cleanup (component-git-delivery).
-		"its final report tells the operator to run `conveyor done <task-id>` from the repository's primary checkout",
-		"That command removes the task worktree and keeps the branch",
-		"The session never runs `conveyor done` itself",
+		"When the session observes its own task `merged` or `closed` through `conveyor task wait`, `get_task`, or `await_review`, it removes the task worktree itself, without waiting for an operator prompt",
+		"`conveyor done` removes the task worktree and keeps the branch",
+		"It is the parent directory of the path that `git -C \"<task-worktree>\" rev-parse --path-format=absolute --git-common-dir` prints",
+		"Change the session's shell working directory to that primary checkout, so the shell does not stay in the directory being removed",
+		"Run `conveyor --server <server-url> --workspace <workspace> done <task-id>` there",
+		"Quote the printed `worktree=<removed|pruned|skipped> branch=... path=...` line and every `warning:` line in the final report",
+		"When `done` exits non-zero or reports `worktree=skipped`, the final report quotes its output verbatim and gives the operator the exact command to run from the primary checkout",
+		"never falls back to `git worktree remove`, `--force`, `rm`, branch deletion, or any edit in the primary checkout",
+		"The session runs `done` only for its own task and only after it observes that task `merged` or `closed`",
+		"It never runs `done` for a parked task or for another task",
+		"A planner, verifier, or reviewer that the session started never runs `done`",
 		"cleanup becomes available once the task merges or closes",
-		"A launched session gives no reminder; its launcher removes the worktree after the task ends",
+		"A launched session runs no cleanup; its launcher removes the worktree after the task ends",
 		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.12) under DEC-44 and DEC-45",
 	}
 	playbookForbidden := []string{
@@ -330,6 +338,8 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"report the pending gate with `report_progress` and stop",
 		"it reports the gate and stops",
 		"Report the outcome of the task's frozen merge policy and stop",
+		"The session never runs `conveyor done` itself",
+		"tells the operator to run `conveyor done",
 	}
 	wrapperRequired := []string{
 		"A session that `conveyor run` or a worker launched reports and exits, and never polls `await_review`",
@@ -338,7 +348,12 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"At a pending human gate it summarizes the decision with a dashboard link, offers to record it, and otherwise waits with `conveyor task wait`",
 		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-45)",
 		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
-		"When its task merges or closes, it tells the operator to run `conveyor done <task-id>` from the primary checkout and never runs that command itself",
+		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
+	}
+	wrapperForbidden := []string{
+		"never runs `conveyor done` itself",
+		"never runs that command itself",
+		"tells the operator to run `conveyor done",
 	}
 	for _, destination := range destinations {
 		playbook, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
@@ -364,6 +379,11 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		for _, fragment := range wrapperRequired {
 			if !strings.Contains(normalized, fragment) {
 				t.Errorf("%s installed conveyor-work wrapper missing %q", destination.tool.name, fragment)
+			}
+		}
+		for _, fragment := range wrapperForbidden {
+			if strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work wrapper still contains %q", destination.tool.name, fragment)
 			}
 		}
 		if strings.Contains(normalized, "never poll `await_review` from a stage session") {
@@ -403,9 +423,9 @@ func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 			"Omit `cost_usd`",
 			"A session without figures skips the call and invents none",
 			"Missing usage never delays or blocks a lifecycle submission",
-			// Dependency 261005-5d2de8's cleanup wording stays intact.
+			// Session-run terminal cleanup stays intact.
 			"### Worktree cleanup",
-			"The session never runs `conveyor done` itself",
+			"The session runs `done` only for its own task and only after it observes that task `merged` or `closed`",
 		}, claimIdentity...),
 		"conveyor-work/SKILL.md": {
 			"Every claim names the harness in `agent` and the runtime's concrete model ID in `model`, or the harness's reported value such as `auto` verbatim when the harness does not expose one; never guess a model ID",
