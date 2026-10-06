@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { expect, type Locator, type Page, type Route, test } from '@playwright/test'
+import { waitForSheetSettled } from './helpers/sheet'
 
 const createdAt = '2026-07-15T12:00:00Z'
 
@@ -2282,16 +2283,20 @@ for (const route of ['full', 'sheet'] as const) {
     await page.goto(route === 'full' ? `/tasks/${taskID}/full` : `/tasks/${taskID}`)
     const origin = await page.evaluate(() => window.location.origin)
     const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle, `See ${longToken} for details.`)
-    const scope = route === 'full' ? page : page.getByRole('dialog', { name: 'Task detail' })
+    const sheet = page.getByRole('dialog', { name: 'Task detail' })
+    const scope = route === 'full' ? page : sheet
     const group = checkoutGroup(scope)
     await expect(group).toBeVisible()
     expect(await promptText(group)).toBe(expectedPrompt)
+    // The sheet's slide moves the group and its copy button between reads.
+    if (route === 'sheet') await waitForSheetSettled(sheet)
 
     const desktop = await expectCheckoutFits(group)
     expect(desktop.width).toBeLessThanOrEqual(desktop.cap + 0.5)
 
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 720 })
+      if (route === 'sheet') await waitForSheetSettled(sheet)
       const phone = await expectCheckoutFits(group)
       expect(phone.lines).toBeGreaterThan(desktop.lines)
       expect(await promptText(group)).toBe(expectedPrompt)
@@ -6908,6 +6913,7 @@ for (const surface of ['full', 'board sheet']) {
         }),
       )
       await page.goto(`/tasks/creator${surface === 'full' ? '/full' : ''}`)
+      const sheet = page.getByRole('dialog', { name: 'Task detail' })
       const label = page.locator('dt').filter({ hasText: /^Created By$/ })
       const value = label.locator('xpath=following-sibling::dd[1]')
       await expect(label).toHaveCount(1)
@@ -6920,6 +6926,7 @@ for (const surface of ['full', 'board sheet']) {
       await expect(repo.locator('xpath=following-sibling::dt[1]')).toHaveText('Created By')
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 850 })
+        if (surface === 'board sheet') await waitForSheetSettled(sheet)
         await expect
           .poll(() =>
             label.evaluate((element) => {

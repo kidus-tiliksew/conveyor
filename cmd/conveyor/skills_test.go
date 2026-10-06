@@ -324,12 +324,26 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"Run `conveyor --server <server-url> --workspace <workspace> done <task-id>` there",
 		"Quote the printed `worktree=<removed|pruned|skipped> branch=... path=...` line and every `warning:` line in the final report",
 		"When `done` exits non-zero or reports `worktree=skipped`, the final report quotes its output verbatim and gives the operator the exact command to run from the primary checkout",
-		"never falls back to `git worktree remove`, `--force`, `rm`, branch deletion, or any edit in the primary checkout",
+		"never falls back to `git worktree remove`, `--force`, `rm`, branch deletion, or any other edit in the primary checkout. The post-merge fast-forward below is a separate step, not a cleanup fallback",
 		"The session runs `done` only for its own task and only after it observes that task `merged` or `closed`",
 		"It never runs `done` for a parked task or for another task",
 		"A planner, verifier, or reviewer that the session started never runs `done`",
 		"cleanup becomes available once the task merges or closes",
 		"A launched session runs no cleanup; its launcher removes the worktree after the task ends",
+		// Post-merge fast-forward (req-delegated-execution AC-3.8, AC-3.9).
+		"#### Post-merge fast-forward",
+		"After the `done` attempt, whatever `done` reported, a self-claimed session that observed its own task `merged` brings the primary checkout's base branch up to date (req-delegated-execution AC-3.8)",
+		"It never does this for a `closed` or parked task",
+		"`git symbolic-ref --short HEAD` prints the task's base branch",
+		"`git status --porcelain` prints nothing. Untracked files count",
+		"No merge, rebase, cherry-pick, revert, or bisect is in progress: none of `MERGE_HEAD`, `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `sequencer`, or `BISECT_LOG` exists at the path that `git rev-parse --git-path <name>` prints for it",
+		"runs `git pull --ff-only origin <base>`, and records the short SHA again. The final report quotes both SHAs beside the `done` output",
+		"When any precondition fails or Git refuses the fast-forward, the session leaves the primary checkout as it is and reports the failed precondition or Git's refusal message",
+		"It does not retry with altered arguments and attempts no recovery",
+		"The fast-forward is the only change the session makes to the primary checkout",
+		"The session never merges, rebases, stashes, resets, or switches branches there, and never edits its files (req-delegated-execution AC-3.9)",
+		"A launched session, a worker, and a planner, verifier, or reviewer that the session started never run the fast-forward",
+		"with the post-merge fast-forward bounded by REQ-3 AC-3.8 and AC-3.9",
 		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.12) under DEC-44 and DEC-45",
 	}
 	playbookForbidden := []string{
@@ -340,6 +354,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"Report the outcome of the task's frozen merge policy and stop",
 		"The session never runs `conveyor done` itself",
 		"tells the operator to run `conveyor done",
+		"branch deletion, or any edit in the primary checkout",
 	}
 	wrapperRequired := []string{
 		"A session that `conveyor run` or a worker launched reports and exits, and never polls `await_review`",
@@ -349,6 +364,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-45)",
 		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
 		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
+		"After a merge it then fast-forwards a clean primary checkout that is on the base branch, and otherwise reports why it skipped (req-delegated-execution AC-3.8, AC-3.9)",
 	}
 	wrapperForbidden := []string{
 		"never runs `conveyor done` itself",

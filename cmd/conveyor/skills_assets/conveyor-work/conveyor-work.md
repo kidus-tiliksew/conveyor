@@ -447,7 +447,8 @@ When `done` exits non-zero or reports `worktree=skipped`, the final report
 quotes its output verbatim and gives the operator the exact command to run from
 the primary checkout. The session does not retry with altered arguments and
 never falls back to `git worktree remove`, `--force`, `rm`, branch deletion, or
-any edit in the primary checkout.
+any other edit in the primary checkout. The post-merge fast-forward below is a
+separate step, not a cleanup fallback.
 
 The session runs `done` only for its own task and only after it observes that
 task `merged` or `closed`. It never runs `done` for a parked task or for
@@ -457,6 +458,37 @@ parks or the operator stops the wait before the task merges or closes, the
 session runs nothing and its report says cleanup becomes available once the
 task merges or closes. A launched session runs no cleanup; its launcher removes
 the worktree after the task ends.
+
+#### Post-merge fast-forward
+
+After the `done` attempt, whatever `done` reported, a self-claimed session that
+observed its own task `merged` brings the primary checkout's base branch up to
+date (req-delegated-execution AC-3.8). It never does this for a `closed` or
+parked task.
+
+From the same primary checkout, the session first checks three preconditions:
+
+1. `git symbolic-ref --short HEAD` prints the task's base branch.
+2. `git status --porcelain` prints nothing. Untracked files count.
+3. No merge, rebase, cherry-pick, revert, or bisect is in progress: none of
+   `MERGE_HEAD`, `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD`,
+   `REVERT_HEAD`, `sequencer`, or `BISECT_LOG` exists at the path that
+   `git rev-parse --git-path <name>` prints for it.
+
+When all three hold, the session records `git rev-parse --short HEAD`, runs
+`git pull --ff-only origin <base>`, and records the short SHA again. The final
+report quotes both SHAs beside the `done` output.
+
+When any precondition fails or Git refuses the fast-forward, the session leaves
+the primary checkout as it is and reports the failed precondition or Git's
+refusal message. It does not retry with altered arguments and attempts no
+recovery.
+
+The fast-forward is the only change the session makes to the primary checkout.
+The session never merges, rebases, stashes, resets, or switches branches there,
+and never edits its files (req-delegated-execution AC-3.9). A launched session,
+a worker, and a planner, verifier, or reviewer that the session started never
+run the fast-forward.
 
 ### Human gates
 
@@ -537,5 +569,6 @@ completed.
 This loop implements req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3
 (AC-3.1 through AC-3.12) under DEC-44 and DEC-45. It preserves req-delegated-execution
 REQ-1 lease and deadline rules, REQ-2 review independence, and REQ-3 dedicated
-worktrees. The work-order mechanism remains governed by
+worktrees, with the post-merge fast-forward bounded by REQ-3 AC-3.8 and AC-3.9.
+The work-order mechanism remains governed by
 `component-work-orders`; this playbook changes no lifecycle semantics.

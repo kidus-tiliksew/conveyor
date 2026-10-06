@@ -2,6 +2,7 @@
 // behind a top bar, the document pages fold their tree into a drawer above the
 // canvas, and no surface scrolls sideways at phone width.
 import { expect, type Locator, type Page, test } from '@playwright/test'
+import { waitForSheetSettled } from './helpers/sheet'
 
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }
@@ -416,6 +417,7 @@ test.describe('phone', () => {
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
     await expect(title).toBeVisible()
+    await waitForSheetSettled(panel)
     const explorer = header.getByRole('button', { name: 'Knowledge explorer' })
     await expectIconOnlyExplorer(explorer)
     await expect(header.getByRole('button', { name: 'Copy link to this task' })).toBeVisible()
@@ -443,6 +445,7 @@ test.describe('phone', () => {
     const header = sheet.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
     await expect(title).toBeVisible()
+    await waitForSheetSettled(sheet)
     const note = header.getByRole('note')
     await expect(note).toHaveText('This task is outside the loaded Board window.')
     await expectHeaderControlsClear(header, title)
@@ -509,7 +512,133 @@ test.describe('tablet', () => {
     await landscape.screenshot({ path: 'test-results/shots/responsive-tablet-landscape.png', animations: 'disabled' })
     await landscape.close()
   })
+
+  // The board sheet takes half the portrait width, so its header is nearly as
+  // tight as a phone's.
+  test.describe('portrait sheet', () => {
+    test.use({ viewport: tabletPortrait, isMobile: true, hasTouch: true })
+
+    test('the board task sheet keeps its header controls clear', async ({ page }) => {
+      await mockShell(page)
+      await mockRecordDetail(page)
+
+      await page.goto('/tasks/task-layout')
+      const sheet = page.getByRole('dialog', { name: 'Task detail' })
+      const header = sheet.locator('header').first()
+      const title = header.getByText(layoutTitle, { exact: true })
+      await expect(title).toBeVisible()
+      await waitForSheetSettled(sheet)
+      await expect(header.getByRole('note')).toHaveText('This task is outside the loaded Board window.')
+      await expectHeaderControlsClear(header, title)
+      await expectPlanHeaderUnbroken(page)
+      await expectNoHorizontalOverflow(page)
+      await page.screenshot({ path: 'test-results/shots/responsive-tablet-task-sheet.png', animations: 'disabled' })
+    })
+  })
 })
+
+// The phone and tablet sheet tests measure only after waitForSheetSettled.
+// This proves the wait itself, independent of host load: the real slide is
+// lengthened and paused half-way, so a wait that returns before the slide
+// ends, or that never saw the slide, is caught while the dialog is still
+// translated. The helper's collection is recorded so the test knows it
+// started waiting on this slide before it checks that the wait is pending.
+const pausedSlide = `[role="dialog"].animate-sheet-in {
+  animation-duration: 2s !important;
+  animation-delay: -1s !important;
+  animation-timing-function: linear !important;
+  animation-play-state: paused !important;
+}`
+
+type SettleProbe = { collections: Animation[][]; collected: Promise<Animation[]> }
+
+for (const [name, viewport] of [
+  ['phone', phone],
+  ['tablet', tabletPortrait],
+] as const) {
+  test.describe(`${name} sheet settling`, () => {
+    test.use({ viewport, isMobile: true, hasTouch: true })
+
+    test('measurement waits until the paused slide finishes', async ({ page }) => {
+      await page.addInitScript((css) => {
+        const slide = new CSSStyleSheet()
+        slide.replaceSync(css)
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, slide]
+        let resolveCollected: (animations: Animation[]) => void = () => {}
+        const probe: SettleProbe = {
+          collections: [],
+          collected: new Promise((resolve) => {
+            resolveCollected = resolve
+          }),
+        }
+        Object.assign(window, { settleProbe: probe })
+        const getAnimations = Element.prototype.getAnimations
+        Element.prototype.getAnimations = function (this: Element, options?: GetAnimationsOptions) {
+          const animations = getAnimations.call(this, options)
+          if (this.getAttribute('role') === 'dialog') {
+            probe.collections.push(animations)
+            resolveCollected(animations)
+          }
+          return animations
+        }
+      }, pausedSlide)
+      await mockShell(page)
+      await mockRecordDetail(page)
+
+      await page.goto('/tasks/task-layout')
+      const sheet = page.getByRole('dialog', { name: 'Task detail' })
+      const header = sheet.locator('header').first()
+      const title = header.getByText(layoutTitle, { exact: true })
+      await expect(title).toBeVisible()
+      const offset = () => sheet.evaluate((node) => new DOMMatrixReadOnly(getComputedStyle(node).transform).m41)
+      const paused = await offset()
+      expect(paused).toBeGreaterThan(0)
+
+      let settled = false
+      const settling = waitForSheetSettled(sheet).then(() => {
+        settled = true
+      })
+      const collected = await page.evaluate(async () => {
+        const { collected } = (window as unknown as { settleProbe: SettleProbe }).settleProbe
+        return (await collected).map((animation) => ({
+          name: animation instanceof CSSAnimation ? animation.animationName : '',
+          playState: animation.playState,
+        }))
+      })
+      expect(collected).toContainEqual({ name: 'sheet-in', playState: 'paused' })
+      // Each round trip after the collection would deliver an early return.
+      expect(await offset()).toBe(paused)
+      expect(await offset()).toBe(paused)
+      expect(settled).toBe(false)
+
+      await page.evaluate(() => {
+        for (const animation of (window as unknown as { settleProbe: SettleProbe }).settleProbe.collections[0])
+          animation.play()
+      })
+      await settling
+      const rest = await sheet.evaluate((node) => {
+        const transform = new DOMMatrixReadOnly(getComputedStyle(node).transform)
+        const { collections } = (window as unknown as { settleProbe: SettleProbe }).settleProbe
+        return {
+          playStates: collections[0].map((animation) => animation.playState),
+          translation: [transform.m41, transform.m42],
+        }
+      })
+      expect(rest.playStates.length).toBeGreaterThan(0)
+      expect(rest.playStates.every((state) => state === 'finished')).toBe(true)
+      expect(rest.translation).toEqual([0, 0])
+      await expectHeaderControlsClear(header, title)
+      await expectNoHorizontalOverflow(page)
+
+      // A settled sheet has nothing left to wait for and returns at once.
+      await waitForSheetSettled(sheet)
+      const remaining = await page.evaluate(
+        () => (window as unknown as { settleProbe: SettleProbe }).settleProbe.collections.at(-1)?.length,
+      )
+      expect(remaining).toBe(0)
+    })
+  })
+}
 
 test.describe('desktop', () => {
   test.use({ viewport: { width: 1440, height: 900 } })
@@ -523,6 +652,7 @@ test.describe('desktop', () => {
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
     await expect(title).toBeVisible()
+    await waitForSheetSettled(panel)
     await expect(
       header.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
     ).toBeVisible()
