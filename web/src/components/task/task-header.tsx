@@ -929,21 +929,22 @@ function agentPrompt(item: ActivityItem, workspace: string): string {
     .join('\n\n')
 }
 
-// One content-sized group, capped at 32rem and the parent, shows the prompt's
-// title line truncated, with the full prompt in its title and copy button. It
-// renders nothing until the workspace selection resolves.
+// One group, as wide as its parent up to 32rem, shows the whole prompt the copy
+// button copies. The prompt wraps with its blank lines kept, and a long
+// unbroken token breaks anywhere rather than widening the group. It renders
+// nothing until the workspace selection resolves.
 function Checkout({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   if (item.checkout_available) {
     if (!workspace) return null
     const prompt = agentPrompt(item, workspace)
     return (
-      <div className="inline-flex w-fit max-w-[min(100%,32rem)] min-w-0 flex-col rounded-md border border-border bg-surface">
-        <p className="truncate border-b border-border px-2.5 py-1 text-[11px] text-faint">Work on this locally</p>
-        <div className="flex min-w-0 items-center gap-2 py-0.5 pl-2.5 pr-0.5">
-          <Bot className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <code title={prompt} className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
-            {item.task.title}
+      <div className="flex w-full max-w-lg min-w-0 flex-col rounded-md border border-border bg-surface">
+        <p className="border-b border-border px-2.5 py-1 text-[11px] text-faint">Prompt for AI Agents</p>
+        <div className="flex min-w-0 items-start gap-2 py-0.5 pl-2.5 pr-0.5">
+          <Bot className="mt-2 size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          <code className="min-w-0 flex-1 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted">
+            {prompt}
           </code>
           <CopyButton value={prompt} label="Copy agent prompt" />
         </div>
