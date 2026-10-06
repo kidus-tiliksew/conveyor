@@ -2172,12 +2172,59 @@ async function routeCheckoutTask(
   )
 }
 
-// The checkout group is the bordered box around its "Work on this locally" label.
-function checkoutGroup(page: Page) {
-  return page.getByText('Work on this locally', { exact: true }).locator('..')
+// The checkout group is the bordered box around its "Prompt for AI Agents" label.
+function checkoutGroup(scope: Page | Locator) {
+  return scope.getByText('Prompt for AI Agents', { exact: true }).locator('..')
 }
 
-test('Work on this shows the agent prompt title and copies the full prompt', async ({ page, context }) => {
+// The visible prompt is the group's code element; its raw text keeps the
+// prompt's newlines, which Playwright's text matchers would normalize.
+function promptText(group: Locator) {
+  return group.locator('code').evaluate((node) => node.textContent)
+}
+
+// Measures the checkout group, its prompt row, and the prompt against the
+// group's parent, the 32rem cap, and the viewport.
+async function checkoutBounds(group: Locator) {
+  return group.evaluate((node) => {
+    const element = node as HTMLElement
+    const code = element.querySelector('code')!
+    const row = code.parentElement!
+    const parent = element.parentElement!.getBoundingClientRect()
+    const box = element.getBoundingClientRect()
+    const style = getComputedStyle(code)
+    return {
+      width: box.width,
+      left: box.left,
+      right: box.right,
+      parentLeft: parent.left,
+      parentRight: parent.right,
+      parentWidth: parent.width,
+      cap: 32 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      viewportWidth: document.documentElement.clientWidth,
+      overflows: [element, row, code].some((part) => part.scrollWidth > part.clientWidth),
+      lines: Math.round(code.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)),
+      whiteSpace: style.whiteSpace,
+    }
+  })
+}
+
+// Asserts the group fits its parent and the viewport with no horizontal
+// overflow, and that the copy button stays inside the viewport.
+async function expectCheckoutFits(group: Locator) {
+  await expect.poll(async () => (await checkoutBounds(group)).overflows).toBe(false)
+  const bounds = await checkoutBounds(group)
+  expect(bounds.left).toBeGreaterThanOrEqual(bounds.parentLeft - 0.5)
+  expect(bounds.right).toBeLessThanOrEqual(bounds.parentRight + 0.5)
+  expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth + 0.5)
+  const copy = group.getByRole('button', { name: 'Copy agent prompt' })
+  await expect(copy).toBeVisible()
+  const copyBox = (await copy.boundingBox())!
+  expect(copyBox.x + copyBox.width).toBeLessThanOrEqual(bounds.right + 0.5)
+  return bounds
+}
+
+test('Prompt for AI Agents shows the full agent prompt and copies the same text', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
@@ -2185,9 +2232,15 @@ test('Work on this shows the agent prompt title and copies the full prompt', asy
   const origin = await page.evaluate(() => window.location.origin)
   const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', 'A short description.')
   const group = checkoutGroup(page)
-  const titleLine = group.locator('code')
-  await expect(titleLine).toHaveText('Short task')
-  await expect(titleLine).toHaveAttribute('title', expectedPrompt)
+  await expect(group).toBeVisible()
+  expect(await promptText(group)).toBe(expectedPrompt)
+  await expect(group.locator('code')).not.toHaveAttribute('title')
+
+  // The prompt keeps its blank lines: three paragraphs and two blank lines
+  // render as at least five lines.
+  const bounds = await checkoutBounds(group)
+  expect(bounds.whiteSpace).toBe('pre-wrap')
+  expect(bounds.lines).toBeGreaterThanOrEqual(5)
 
   // The Terminal tab and the tab structure are gone.
   await expect(page.getByRole('tablist')).toHaveCount(0)
@@ -2196,55 +2249,67 @@ test('Work on this shows the agent prompt title and copies the full prompt', asy
   await expect(page.getByText(`conveyor run ${taskID}`, { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy task run command' })).toHaveCount(0)
 
-  // The group is content-sized: its width is its own max-content width, under
-  // the 32rem cap and the parent, and a wider parent does not widen it.
-  const roomy = await checkoutSizing(group)
-  expect(roomy.width).toBeCloseTo(roomy.contentWidth, 0)
-  expect(roomy.width).toBeLessThan(roomy.cap)
-  expect(roomy.width).toBeLessThan(roomy.parentWidth)
+  // On desktop the group takes the 32rem cap, and a wider parent does not
+  // widen it.
+  const roomy = await expectCheckoutFits(group)
+  expect(roomy.parentWidth).toBeGreaterThan(roomy.cap)
+  expect(roomy.width).toBeCloseTo(roomy.cap, 0)
   await page.setViewportSize({ width: 1920, height: 720 })
-  const wider = await checkoutSizing(group)
+  const wider = await expectCheckoutFits(group)
   expect(wider.parentWidth).toBeGreaterThan(roomy.parentWidth)
-  expect(wider.width).toBe(roomy.width)
+  expect(wider.width).toBeCloseTo(roomy.cap, 0)
   await page.setViewportSize({ width: 1280, height: 720 })
 
-  await page.getByRole('button', { name: 'Copy agent prompt' }).click()
+  await group.getByRole('button', { name: 'Copy agent prompt' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
+  expect(await promptText(group)).toBe(expectedPrompt)
 })
 
-test('Work on this caps a long title line and truncates it at phone width', async ({ page }) => {
-  const taskID = 'work-on-this-long-title'
-  const title = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()}`
-  await routeCheckoutTask(page, taskID, { title })
+// A long title, a body with an unbroken token, and a long task ID must wrap at
+// phone widths on both the full page and the task sheet.
+const longToken = `https://example.test/${'unbroken-segment-'.repeat(8)}end`
+const longTitle = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()}`
 
-  await page.goto(`/tasks/${taskID}/full`)
-  const origin = await page.evaluate(() => window.location.origin)
-  const group = checkoutGroup(page)
-  const titleLine = group.locator('code')
-  await expect(titleLine).toHaveText(title)
-  await expect(titleLine).toHaveAttribute('title', expectedAgentPrompt(origin, taskID, title, 'A short description.'))
+for (const route of ['full', 'sheet'] as const) {
+  test(`Prompt for AI Agents wraps a long prompt without overflow on the ${route} task view`, async ({
+    page,
+    context,
+  }) => {
+    const taskID = `work-on-this-long-prompt-${route}-${'x'.repeat(48)}`
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await routeCheckoutTask(page, taskID, { title: longTitle, body: `See ${longToken} for details.` })
 
-  const capped = await checkoutSizing(group)
-  expect(capped.contentWidth).toBeGreaterThan(capped.cap)
-  expect(capped.width).toBeCloseTo(capped.cap, 0)
+    await page.goto(route === 'full' ? `/tasks/${taskID}/full` : `/tasks/${taskID}`)
+    const origin = await page.evaluate(() => window.location.origin)
+    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle, `See ${longToken} for details.`)
+    const scope = route === 'full' ? page : page.getByRole('dialog', { name: 'Task detail' })
+    const group = checkoutGroup(scope)
+    await expect(group).toBeVisible()
+    expect(await promptText(group)).toBe(expectedPrompt)
 
-  // At phone width the title truncates on one line instead of overflowing.
-  await page.setViewportSize({ width: 390, height: 720 })
-  for (const element of [group, titleLine.locator('..')]) {
-    await expect.poll(() => element.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
-  }
-  expect(await titleLine.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true)
-  await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toBeVisible()
-})
+    const desktop = await expectCheckoutFits(group)
+    expect(desktop.width).toBeLessThanOrEqual(desktop.cap + 0.5)
+
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 720 })
+      const phone = await expectCheckoutFits(group)
+      expect(phone.lines).toBeGreaterThan(desktop.lines)
+      expect(await promptText(group)).toBe(expectedPrompt)
+    }
+
+    await group.getByRole('button', { name: 'Copy agent prompt' }).click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
+  })
+}
 
 for (const theme of ['light', 'dark'] as const) {
-  test(`Work on this keeps the title line readable in the ${theme} theme`, async ({ page }) => {
+  test(`Prompt for AI Agents keeps the prompt readable in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript((choice) => localStorage.setItem('conveyor-theme', choice), theme)
     await page.goto('/tasks/work-on-this-theme/full')
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
-    const titleLine = checkoutGroup(page).locator('code')
-    await expect(titleLine).toHaveText('Short task')
-    const colors = await titleLine.evaluate((node) => ({
+    const prompt = checkoutGroup(page).locator('code')
+    await expect(prompt).toContainText('Short task')
+    const colors = await prompt.evaluate((node) => ({
       text: getComputedStyle(node).color,
       background: getComputedStyle(node.closest('.bg-surface')!).backgroundColor,
     }))
@@ -2278,15 +2343,14 @@ const promptExcerptCases: { name: string; body: string; excerpt?: string }[] = [
 ]
 
 for (const [index, { name, body, excerpt }] of promptExcerptCases.entries()) {
-  test(`Work on this prompt excerpt ${name}`, async ({ page }) => {
+  test(`Prompt for AI Agents excerpt ${name}`, async ({ page }) => {
     const taskID = `work-on-this-excerpt-${index}`
     await routeCheckoutTask(page, taskID, { body })
     await page.goto(`/tasks/${taskID}/full`)
     const origin = await page.evaluate(() => window.location.origin)
-    await expect(checkoutGroup(page).locator('code')).toHaveAttribute(
-      'title',
-      expectedAgentPrompt(origin, taskID, 'Short task', excerpt),
-    )
+    const group = checkoutGroup(page)
+    await expect(group).toBeVisible()
+    expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task', excerpt))
   })
 }
 
@@ -2300,28 +2364,31 @@ const closingSentenceCases = [
 ]
 
 for (const [index, { name, sentence }] of closingSentenceCases.entries()) {
-  test(`Work on this prompt excerpt ends a sentence after ${name}`, async ({ page, context }) => {
+  test(`Prompt for AI Agents excerpt ends a sentence after ${name}`, async ({ page, context }) => {
     const taskID = `work-on-this-closing-${index}`
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     await routeCheckoutTask(page, taskID, { body: `${sentence} ${continuation}` })
     await page.goto(`/tasks/${taskID}/full`)
     const origin = await page.evaluate(() => window.location.origin)
+    const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', `${sentence}…`)
     await page.getByRole('button', { name: 'Copy agent prompt' }).click()
-    await expect
-      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-      .toBe(expectedAgentPrompt(origin, taskID, 'Short task', `${sentence}…`))
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
+    expect(await promptText(checkoutGroup(page))).toBe(expectedPrompt)
   })
 }
 
-test('Work on this shows the agent prompt for an available checkout without a command', async ({ page }) => {
+test('Prompt for AI Agents shows the agent prompt for an available checkout without a command', async ({ page }) => {
   const taskID = 'work-on-this-no-command'
   await routeCheckoutTask(page, taskID, { checkout_command: undefined })
   await page.goto(`/tasks/${taskID}/full`)
-  await expect(checkoutGroup(page).locator('code')).toHaveText('Short task')
+  const origin = await page.evaluate(() => window.location.origin)
+  const group = checkoutGroup(page)
+  await expect(group).toBeVisible()
+  expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task', 'A short description.'))
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toBeVisible()
 })
 
-test('Work on this renders nothing until the workspace resolves', async ({ page }) => {
+test('Prompt for AI Agents renders nothing until the workspace resolves', async ({ page }) => {
   const taskID = 'work-on-this-x'
   // Two workspaces and no stored selection leave the shell's workspace unresolved.
   await page.addInitScript(() => localStorage.removeItem('conveyor-workspace'))
@@ -2336,34 +2403,18 @@ test('Work on this renders nothing until the workspace resolves', async ({ page 
 
   await page.goto(`/tasks/${taskID}/full`)
   await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
+  await expect(page.getByText('Prompt for AI Agents', { exact: false })).toHaveCount(0)
   await expect(page.getByText('Work on this locally', { exact: false })).toHaveCount(0)
   await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
   await expect(page.getByText(`conveyor run ${taskID}`, { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
 })
 
-// Measures the checkout group against its own max-content width, the 32rem cap,
-// and its parent, so specs can tell content sizing from parent-driven width.
-async function checkoutSizing(group: Locator) {
-  return group.evaluate((node) => {
-    const element = node as HTMLElement
-    const probe = element.cloneNode(true) as HTMLElement
-    probe.style.cssText = 'position:absolute;visibility:hidden;width:max-content;max-width:none'
-    element.parentElement!.appendChild(probe)
-    const contentWidth = probe.getBoundingClientRect().width
-    probe.remove()
-    return {
-      width: element.getBoundingClientRect().width,
-      contentWidth,
-      cap: 32 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-      parentWidth: element.parentElement!.getBoundingClientRect().width,
-    }
-  })
-}
-
 test('Work on this guidance shows the guidance without an agent prompt', async ({ page }) => {
   await page.goto('/tasks/guidance-only/full')
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
+  await expect(page.getByText('Work on this locally', { exact: true })).toBeVisible()
+  await expect(page.getByText('Prompt for AI Agents')).toHaveCount(0)
   await expect(page.getByRole('tablist')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
   await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
