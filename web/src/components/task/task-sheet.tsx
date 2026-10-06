@@ -48,13 +48,20 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
 
   return (
     <Sheet onClose={close} label="Task detail">
-      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
-        <span className="mr-auto truncate text-sm font-medium text-muted">{item?.task.title}</span>
+      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
+        {/* The title takes whatever width the fixed-size controls leave and
+            truncates; the controls never shrink under their own content. */}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">{item?.task.title}</span>
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}
         <LineageExplorer type="task" id={taskId} />
         {!panel && boardOrder.windowEdge && (
-          <span className="max-w-56 text-right text-[10px] leading-4 text-faint" role="note">
+          // Below sm the note takes its own line under the controls so it
+          // never squeezes the title out of the header.
+          <span
+            className="max-w-56 text-right text-[10px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+            role="note"
+          >
             {boardOrder.windowEdge}
           </span>
         )}
@@ -62,13 +69,17 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
         <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} panel={panel} />
         {/* The panel's own address is shareable, so it is offered as one
             (AC-2.2); the full route stays one click away for the deep link. */}
-        {panel && <CopyButton value={panel.permalink} label="Copy link to this task" />}
-        <Link to="/tasks/$taskId/full" params={{ taskId }} aria-label="Open full task page">
+        {panel && (
+          <span className="flex shrink-0">
+            <CopyButton value={panel.permalink} label="Copy link to this task" />
+          </span>
+        )}
+        <Link to="/tasks/$taskId/full" params={{ taskId }} aria-label="Open full task page" className="shrink-0">
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <Maximize2 />
           </Button>
         </Link>
-        <Button variant="ghost" size="icon" aria-label="Close panel" onClick={close}>
+        <Button variant="ghost" size="icon" className="shrink-0" aria-label="Close panel" onClick={close}>
           <X />
         </Button>
       </header>
@@ -100,7 +111,7 @@ function SheetNavButton({
 }) {
   if (!targetId) {
     return (
-      <Button variant="ghost" size="icon" aria-label={label} disabled>
+      <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
         {icon}
       </Button>
     )
@@ -109,13 +120,19 @@ function SheetNavButton({
   // than leaving for the board's own sheet route.
   if (panel) {
     return (
-      <Button variant="ghost" size="icon" aria-label={label} onClick={() => panel.select(targetId)}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="shrink-0"
+        aria-label={label}
+        onClick={() => panel.select(targetId)}
+      >
         {icon}
       </Button>
     )
   }
   return (
-    <Link to="/tasks/$taskId" params={{ taskId: targetId }} aria-label={label}>
+    <Link to="/tasks/$taskId" params={{ taskId: targetId }} aria-label={label} className="shrink-0">
       <Button variant="ghost" size="icon" tabIndex={-1}>
         {icon}
       </Button>
