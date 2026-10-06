@@ -24,8 +24,11 @@ export function LineageExplorer({ type, id }: { type: LineageNodeType; id: strin
   const [open, setOpen] = useState(false)
   return (
     <>
-      <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-        <BookOpenText /> Knowledge explorer
+      {/* Below sm the trigger keeps its name but shows only the icon, so a
+          long record title truncates beside it instead of being overdrawn by
+          label text that cannot wrap (component-web-dashboard). */}
+      <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setOpen(true)}>
+        <BookOpenText /> <span className="max-sm:sr-only">Knowledge explorer</span>
       </Button>
       {/* Mounted only once opened, so the walk is the on-demand read REQ-3
           asks for rather than a cost every detail view pays. */}

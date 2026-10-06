@@ -74,26 +74,28 @@ export function SpecCard({
 
   return (
     <Card>
-      <CardHeader className="items-center">
+      {/* At phone width the status group moves to its own line whole; neither
+          group breaks inside itself (component-web-dashboard). */}
+      <CardHeader className="flex-wrap items-center gap-y-2">
         {collapsible ? (
           <button
             type="button"
             onClick={toggleCollapsed}
             aria-expanded={expanded}
-            className="flex items-center gap-2 text-left"
+            className="flex shrink-0 items-center gap-2 whitespace-nowrap text-left"
           >
             <ChevronRight className={cn('size-3.5 text-faint transition-transform', expanded && 'rotate-90')} />
             <CardTitle>Execution plan</CardTitle>
             <Badge variant="mono">v{spec.version}</Badge>
           </button>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
             <CardTitle>Execution plan</CardTitle>
             <Badge variant="mono">v{spec.version}</Badge>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-faint">
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="whitespace-nowrap text-[11px] text-faint">
             {spec.approved && spec.approved_at
               ? `approved ${absoluteTime(spec.approved_at)}`
               : `drafted ${absoluteTime(spec.created_at)}`}
