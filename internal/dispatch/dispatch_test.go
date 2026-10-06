@@ -4233,3 +4233,140 @@ func TestTriagePromptOverageSuppressesAgent(t *testing.T) {
 		t.Fatalf("budget rejection missing; calls=%d err=%v", agent.calls, err)
 	}
 }
+
+// conflictFixDeferralFixture reproduces the incident shape: an accepted
+// round-1 approval, an unresolved conflict episode, and a merge-conflict
+// implement order while GitHub already reports the pushed fix as mergeable.
+func conflictFixDeferralFixture(t *testing.T, taskState core.TaskState, claim bool) (context.Context, store.Store, core.Task, *Dispatcher, *int) {
+	t.Helper()
+	ctx := store.WithWorkspace(context.Background(), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "conflict-deferral", Workspace: "test", Repo: "app", Branch: "conveyor/conflict-deferral", BaseBranch: "main", State: taskState, NextStage: core.StageImplement, PolicyVersion: 1, ApprovedHeadSHA: "approved-head", ReviewedHeadSHA: "approved-head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: task.ID, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 1, "verdict": "approve", "approved_head_sha": "approved-head"})},
+		{TaskID: task.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": "test", "task_id": task.ID, "reason_code": "merge-conflict", "approved_head": "approved-head", "new_head": "conflict-head"})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, ReasonCode: "merge-conflict", BaselineSHA: "approved-head"}); err != nil {
+		t.Fatal(err)
+	}
+	if claim {
+		if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "fixer", ClientToken: "token", Lease: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}, nil)
+	d.DisableMemoryQueueForTest()
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 1098, State: "open", Mergeable: "MERGEABLE", HeadSHA: "fix-head", URL: "https://github.com/acme/app/pull/1098"}, nil
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
+	return ctx, st, current, d, &merges
+}
+
+func eventKinds(t *testing.T, st store.Store, ctx context.Context, taskID string) []string {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := make([]string, 0, len(events))
+	for _, event := range events {
+		kinds = append(kinds, event.Kind)
+	}
+	return kinds
+}
+
+func TestReconcileMergeReadinessDefersWhileConflictFixOrderIsActive(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		claim bool
+	}{{name: "queued", claim: false}, {name: "claimed", claim: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, task, d, merges := conflictFixDeferralFixture(t, core.TaskRunning, test.claim)
+			before := eventKinds(t, st, ctx, task.ID)
+			ordersBefore, err := st.ListTaskWorkOrders(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for poll := 0; poll < 3; poll++ {
+				if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 0 {
+					t.Fatalf("poll %d reconciled=%d err=%v", poll, reconciled, err)
+				}
+			}
+			if after := eventKinds(t, st, ctx, task.ID); !reflect.DeepEqual(before, after) {
+				t.Fatalf("deferred sweep appended events: before=%v after=%v", before, after)
+			}
+			ordersAfter, err := st.ListTaskWorkOrders(ctx, task.ID)
+			if err != nil || len(ordersAfter) != len(ordersBefore) {
+				t.Fatalf("orders before=%d after=%d err=%v", len(ordersBefore), len(ordersAfter), err)
+			}
+			current, err := st.GetTask(ctx, task.ID)
+			if err != nil || current.State != task.State || current.ApprovalStale || current.ApprovedHeadSHA != "approved-head" || *merges != 0 {
+				t.Fatalf("task=%+v merges=%d err=%v", current, *merges, err)
+			}
+			if err = d.MergeApprovedTask(ctx, current); !errors.Is(err, ErrConflictFixPending) || *merges != 0 {
+				t.Fatalf("direct merge err=%v merges=%d", err, *merges)
+			}
+			if after := eventKinds(t, st, ctx, task.ID); !reflect.DeepEqual(before, after) {
+				t.Fatalf("deferred merge appended events: before=%v after=%v", before, after)
+			}
+		})
+	}
+}
+
+func TestMergeReadinessResumesWhenConflictFixOrderIsRetrySuppressed(t *testing.T) {
+	ctx, st, task, d, _ := conflictFixDeferralFixture(t, core.TaskRunning, false)
+	order, err := st.GetWorkOrder(ctx, task.ID+"-implement-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	order.RetrySuppressed = true
+	if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 1 {
+		t.Fatalf("reconciled=%d err=%v", reconciled, err)
+	}
+	kinds := strings.Join(eventKinds(t, st, ctx, task.ID), ",")
+	if !strings.Contains(kinds, "merge.conflict_cleared") || !strings.Contains(kinds, "approval.stale") {
+		t.Fatalf("suppressed order must not defer the existing readiness path: %s", kinds)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || !current.ApprovalStale || current.RefreshHeadSHA != "fix-head" {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+}
+
+func TestReadMergeReadinessReportsPendingWhileConflictFixOrderIsActive(t *testing.T) {
+	ctx, st, task, d, merges := conflictFixDeferralFixture(t, core.TaskApproved, true)
+	before := eventKinds(t, st, ctx, task.ID)
+	for poll := 0; poll < 2; poll++ {
+		readiness, err := d.ReadMergeReadiness(ctx, task)
+		if err != nil || readiness.State != "UNKNOWN" || readiness.HeadSHA != "fix-head" || readiness.Number != 1098 {
+			t.Fatalf("poll %d readiness=%+v err=%v", poll, readiness, err)
+		}
+	}
+	if after := eventKinds(t, st, ctx, task.ID); !reflect.DeepEqual(before, after) || *merges != 0 {
+		t.Fatalf("readiness mutated history: before=%v after=%v merges=%d", before, after, *merges)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskApproved || current.ApprovalStale {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+}

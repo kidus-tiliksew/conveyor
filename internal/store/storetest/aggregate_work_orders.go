@@ -36,6 +36,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("VerifyPolicy", func(t *testing.T) { runVerifyPolicy(t, x) })
 	t.Run("VerifyAdmission", func(t *testing.T) { runVerifyAdmission(t, x) })
 	t.Run("UsageTokenUpdates", func(t *testing.T) { runUsageTokenUpdates(t, x) })
+	t.Run("ImplementationSubmission", func(t *testing.T) { runImplementationSubmission(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
@@ -152,5 +153,107 @@ func runWorkOrderStageClocks(t *testing.T, x Fixture, stage core.Stage) {
 		if recovered.State != core.WorkOrderQueued || recovered.OperatorDirection != direction {
 			t.Fatal("recovery direction or state differs")
 		}
+	}
+}
+
+// submitImplementation admits SubmitImplementationCommand through the
+// submit_for_review command lease, exactly as the work-order service does.
+func submitImplementation(x Fixture, command core.WorkOrderCommand, order core.WorkOrder, head string) (core.Job, error) {
+	order.State, order.HeadSHA = core.WorkOrderSubmitted, head
+	return taskops.ExecuteWorkOrder(x.Context, x.Backend, order.TaskID, command, func(lease taskops.TaskLease) (core.Job, error) {
+		return x.Backend.SubmitImplementationCommand(x.Context, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC().Truncate(time.Microsecond)})
+	})
+}
+
+func submissionSnapshot(t *testing.T, x Fixture, order core.WorkOrder) (core.WorkOrder, map[string]core.JobState, int, core.Task) {
+	t.Helper()
+	current, err := x.Backend.GetWorkOrder(x.Context, order.ID)
+	requireOK(t, err)
+	jobs, err := x.Backend.ListJobs(x.Context, order.TaskID)
+	requireOK(t, err)
+	states := map[string]core.JobState{}
+	for _, job := range jobs {
+		states[job.ID] = job.State
+	}
+	events, err := x.Backend.ListEvents(x.Context, order.TaskID)
+	requireOK(t, err)
+	task, err := x.Backend.GetTask(x.Context, order.TaskID)
+	requireOK(t, err)
+	return current, states, len(events), task
+}
+
+// requireSubmissionRefusedWithoutWrites proves a refused submission rolled
+// back the order update as well as the job completion.
+func requireSubmissionRefusedWithoutWrites(t *testing.T, x Fixture, order core.WorkOrder, head string, command core.WorkOrderCommand, session string) {
+	t.Helper()
+	beforeOrder, beforeJobs, beforeEvents, beforeTask := submissionSnapshot(t, x, order)
+	attempt := beforeOrder
+	attempt.SessionID = session
+	if _, err := submitImplementation(x, command, attempt, head); err == nil {
+		t.Fatal("submission was not refused")
+	}
+	afterOrder, afterJobs, afterEvents, afterTask := submissionSnapshot(t, x, order)
+	if afterOrder.State != beforeOrder.State || afterOrder.HeadSHA != beforeOrder.HeadSHA || afterOrder.SessionID != beforeOrder.SessionID || afterEvents != beforeEvents || afterTask.ReviewedHeadSHA != beforeTask.ReviewedHeadSHA {
+		t.Fatalf("refused submission wrote state: order %s/%q→%s/%q events %d→%d reviewed %q→%q", beforeOrder.State, beforeOrder.HeadSHA, afterOrder.State, afterOrder.HeadSHA, beforeEvents, afterEvents, beforeTask.ReviewedHeadSHA, afterTask.ReviewedHeadSHA)
+	}
+	for id, state := range beforeJobs {
+		if afterJobs[id] != state {
+			t.Fatalf("refused submission changed job %s %s→%s", id, state, afterJobs[id])
+		}
+	}
+}
+
+func runImplementationSubmission(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("usr-submit"), OwnerUserID: "usr-submit", SessionID: "submitter", ClientToken: "fixture", Lease: time.Hour, ExecutionTimeout: time.Hour}
+
+	// The order's own job completes even when a newer job is the task's latest.
+	order := newAggregateOrder(t, x)
+	claimed, err := ClaimWorkOrder(ctx, st, order.ID, claim)
+	requireOK(t, err)
+	newer := core.Job{ID: order.TaskID + "-review-9-seat-1", TaskID: order.TaskID, Stage: core.StageReview, State: core.JobPending}
+	requireOK(t, st.CreateJob(ctx, newer))
+	_, _, before, _ := submissionSnapshot(t, x, order)
+	completed, err := submitImplementation(x, core.WorkOrderCmdSubmitForReview, claimed, "submitted-head")
+	requireOK(t, err)
+	if completed.ID != order.JobID || completed.State != core.JobDone || completed.EndedAt.IsZero() {
+		t.Fatalf("completed job=%+v", completed)
+	}
+	current, jobs, after, task := submissionSnapshot(t, x, order)
+	if current.State != core.WorkOrderSubmitted || current.HeadSHA != "submitted-head" || jobs[order.JobID] != core.JobDone || jobs[newer.ID] != core.JobPending || task.ReviewedHeadSHA != "submitted-head" {
+		t.Fatalf("order=%s/%s jobs=%v reviewed=%s", current.State, current.HeadSHA, jobs, task.ReviewedHeadSHA)
+	}
+	if after != before+2 {
+		t.Fatalf("submission events %d→%d, want work_order.updated and job.updated", before, after)
+	}
+	events, err := st.ListEvents(ctx, order.TaskID)
+	requireOK(t, err)
+	if events[len(events)-2].Kind != "work_order.updated" || events[len(events)-1].Kind != "job.updated" || events[len(events)-1].JobID != order.JobID {
+		t.Fatalf("submission events=%s,%s", events[len(events)-2].Kind, events[len(events)-1].Kind)
+	}
+	// A repeated completion is refused without a duplicate event.
+	requireSubmissionRefusedWithoutWrites(t, x, order, "submitted-head", core.WorkOrderCmdSubmitForReview, "submitter")
+
+	// A non-running job refuses and rolls back the already-applied order
+	// update in the same transaction.
+	failed := newAggregateOrder(t, x)
+	_, err = ClaimWorkOrder(ctx, st, failed.ID, claim)
+	requireOK(t, err)
+	requireOK(t, st.UpdateJob(ctx, core.Job{ID: failed.JobID, TaskID: failed.TaskID, Stage: core.StageImplement, State: core.JobFailed, EndedAt: time.Now().UTC()}))
+	requireSubmissionRefusedWithoutWrites(t, x, failed, "submitted-head", core.WorkOrderCmdSubmitForReview, "submitter")
+
+	// Foreign sessions and a lease admitted for another command are refused.
+	foreign := newAggregateOrder(t, x)
+	foreign, err = ClaimWorkOrder(ctx, st, foreign.ID, claim)
+	requireOK(t, err)
+	requireSubmissionRefusedWithoutWrites(t, x, foreign, "submitted-head", core.WorkOrderCmdSubmitForReview, "intruder")
+	requireSubmissionRefusedWithoutWrites(t, x, foreign, "submitted-head", core.WorkOrderCmdCreate, "submitter")
+	if _, err = submitImplementation(x, core.WorkOrderCmdSubmitForReview, foreign, ""); err == nil {
+		t.Fatal("submission without a head was accepted")
+	}
+	completed, err = submitImplementation(x, core.WorkOrderCmdSubmitForReview, foreign, "foreign-head")
+	requireOK(t, err)
+	if completed.ID != foreign.JobID {
+		t.Fatalf("completed job=%s", completed.ID)
 	}
 }

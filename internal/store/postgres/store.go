@@ -5676,6 +5676,91 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	var lifecycleErr error
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var err error
+		lifecycleErr, err = s.updateWorkOrderCommandTx(ctx, tx, q, lease, order, commands...)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return lifecycleErr
+}
+
+// SubmitImplementationCommand records the submitted implement order and
+// completes the job named by the order in one transaction. A refused order
+// update, missing job, or non-running job rolls back every write
+// (component-work-orders).
+func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
+	if err := store.ValidateImplementationSubmission(request); err != nil {
+		return core.Job{}, err
+	}
+	order := request.Order
+	var lifecycleErr error
+	var completed core.Job
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		var storedTask, storedJob, storedStage string
+		if err := tx.QueryRow(ctx, `SELECT task_id, job_id, stage FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.ID).Scan(&storedTask, &storedJob, &storedStage); err != nil {
+			return notFound(err, "work order %s", order.ID)
+		}
+		if storedTask != order.TaskID || storedJob != order.JobID || core.Stage(storedStage) != core.StageImplement {
+			return fmt.Errorf("work order %s does not match its submission", order.ID)
+		}
+		// The order update takes the task lock first, matching claim and
+		// release ordering; any later refusal rolls the update back.
+		var err error
+		lifecycleErr, err = s.updateWorkOrderCommandTx(ctx, tx, q, lease, order, core.WorkOrderCmdSubmitForReview)
+		if err != nil || lifecycleErr != nil {
+			return err
+		}
+		var current core.JobState
+		var jobTaskID string
+		found := true
+		if err = tx.QueryRow(ctx, `SELECT j.task_id, j.state
+			FROM jobs j
+			JOIN tasks t ON t.id=j.task_id
+			WHERE t.workspace_id=$1 AND j.id=$2
+			FOR UPDATE OF j`, workspace(ctx), order.JobID).Scan(&jobTaskID, &current); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			found = false
+		}
+		if err = store.ValidateSubmissionJob(order, core.Job{ID: order.JobID, TaskID: jobTaskID, State: current}, found); err != nil {
+			return err
+		}
+		jobs, err := q.ListJobs(ctx, db.ListJobsParams{TaskID: order.TaskID, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return err
+		}
+		for _, row := range jobs {
+			if row.ID == order.JobID {
+				completed = jobFromDB(row)
+			}
+		}
+		if completed.ID == "" {
+			return fmt.Errorf("work order %s job %s not found for task %s", order.ID, order.JobID, order.TaskID)
+		}
+		ended := request.EndedAt.UTC()
+		if ended.IsZero() {
+			ended = time.Now().UTC()
+		}
+		completed.State, completed.EndedAt = core.JobDone, ended
+		if _, err = q.UpdateJob(ctx, jobUpdateParams(completed, workspace(ctx))); err != nil {
+			return notFound(err, "job %s", completed.ID)
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: completed.TaskID, JobID: completed.ID, Kind: "job.updated", Payload: core.JSONPayload(completed)})
+	})
+	if err != nil {
+		return core.Job{}, err
+	}
+	if lifecycleErr != nil {
+		return core.Job{}, lifecycleErr
+	}
+	return completed, nil
+}
+
+func (s *Store) updateWorkOrderCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) (lifecycleErr error, err error) {
+	err = func() error {
 		taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), order.ID)
 		if err != nil {
 			return err
@@ -5796,11 +5881,8 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			return retireWorkOrderSiblingsTx(ctx, tx, q, workspace(ctx), order, "stage completed", now, false)
 		}
 		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return lifecycleErr
+	}()
+	return lifecycleErr, err
 }
 
 func updateRequiresClaim(next, current core.WorkOrderState) bool {
