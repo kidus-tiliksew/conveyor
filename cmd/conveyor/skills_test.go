@@ -351,6 +351,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
 	}
 	wrapperForbidden := []string{
+		"never runs `conveyor done` itself",
 		"never runs that command itself",
 		"tells the operator to run `conveyor done",
 	}
