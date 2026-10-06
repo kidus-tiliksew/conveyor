@@ -36,7 +36,9 @@ each changes-requested successor under a fresh session ID and client token. At
 a pending human gate it summarizes the decision with a dashboard link, offers
 to record it, and otherwise waits with `conveyor task wait`. When its task
 merges or closes, it runs `conveyor done <task-id>` from the primary checkout
-and reports the result. It plans
+and reports the result. After a merge it then fast-forwards a clean primary
+checkout that is on the base branch, and otherwise reports why it skipped
+(req-delegated-execution AC-3.8, AC-3.9). It plans
 in-session unless the operator's planning preference names another agent.
 Delegated planners, verifiers, and reviewers never record gate or proposal
 decisions.
