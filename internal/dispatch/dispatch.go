@@ -253,6 +253,11 @@ func RecordedReviewComparison(task core.Task, events []core.Event) (core.Task, e
 
 type queuedTask struct{ Workspace, TaskID string }
 
+// ErrConflictFixPending reports a merge or readiness action deferred because a
+// queued or claimed conflict-fix implement order owns the task's conflict
+// episode. The merge-readiness sweep treats it as ordinary pending work.
+var ErrConflictFixPending = errors.New("conflict fix pending")
+
 type MergeReadiness struct {
 	State   string `json:"state"`
 	HeadSHA string `json:"head_sha,omitempty"`
@@ -2063,6 +2068,15 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		}
 	}
 	result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
+	// A queued or claimed conflict-fix order owns the conflict episode and its
+	// refresh: readiness stays pending and mutates nothing until the order's
+	// own submission (component-work-orders).
+	if _, pending, pendingErr := d.activeImplementationWorkOrder(ctx, current.ID, "merge-conflict"); pendingErr != nil {
+		return result, pendingErr
+	} else if pending {
+		result.State = "UNKNOWN"
+		return result, nil
+	}
 	approved := current.ApprovedHeadSHA
 	if approved == "" {
 		approved = current.ReviewedHeadSHA
@@ -2439,6 +2453,14 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	if pr.Merged {
 		return d.reconcileObservedMergeLocked(ctx, current, repo.GitHub, pr)
 	}
+	// A queued or claimed conflict-fix order defers conflict clearing,
+	// refresh, and merge requests; its own submission drives the refresh
+	// round (req-review-gates-evidence AC-4.1, AC-4.2).
+	if active, pending, pendingErr := d.activeImplementationWorkOrder(ctx, current.ID, "merge-conflict"); pendingErr != nil {
+		return pendingErr
+	} else if pending {
+		return fmt.Errorf("%w: work order %s is %s", ErrConflictFixPending, active.ID, active.State)
+	}
 	author, mergeMessage, err := d.mergeAuthor(ctx, current)
 	if err != nil {
 		return d.recordMergeFailureWithAuthor(ctx, current, "merge_author_unavailable", err, author)
@@ -2684,6 +2706,9 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		}
 		before := task.State
 		if err = d.MergeApprovedTask(ctx, task); err != nil {
+			if errors.Is(err, ErrConflictFixPending) {
+				continue
+			}
 			after, getErr := d.Store.GetTask(ctx, task.ID)
 			if getErr != nil {
 				return reconciled, getErr

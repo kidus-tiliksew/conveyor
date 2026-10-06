@@ -587,6 +587,9 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 					},
 					ReviewDiffBetween:     func(context.Context, string, string, string) (string, error) { return "diff", nil },
 					ReconcileSubmissionPR: func(context.Context, string, githubtrigger.SubmissionPullRequest, string) error { writes++; return nil },
+					// A permanent head mismatch exhausts the bounded re-read
+					// schedule without wall-clock waits.
+					SubmissionPRWait: func(context.Context, time.Duration) error { return nil },
 				}
 				workers := &workerservice.Service{Store: st, WorkOrders: orders}
 				claim := core.WorkOrderClaim{SessionID: "session", ClientToken: "claim-token", ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner", Lease: time.Minute}
@@ -658,6 +661,39 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 					}
 					if !found {
 						t.Fatal("PR commit pair not recorded")
+					}
+					// The same session replays its accepted handoff through every
+					// channel: the template rereads and the identical head returns
+					// the recorded result with no PR, order, or event write.
+					eventsBefore := len(events)
+					replayTemplate := httptest.NewRecorder()
+					handler.ServeHTTP(replayTemplate, templateRequest.Clone(t.Context()))
+					if replayTemplate.Code != 200 {
+						t.Fatalf("replay template status=%d body=%s", replayTemplate.Code, replayTemplate.Body.String())
+					}
+					for _, replay := range []struct {
+						head string
+						ok   bool
+					}{{head: "named-head", ok: true}, {head: "later-head", ok: false}} {
+						args["head_sha"] = replay.head
+						payload = args
+						if channel == "mcp" {
+							payload = map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": "submit_for_review", "arguments": args}}
+						}
+						raw, _ = json.Marshal(payload)
+						request = httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
+						request.Header.Set("Authorization", "Bearer "+credential)
+						response = httptest.NewRecorder()
+						handler.ServeHTTP(response, request)
+						body := response.Body.String()
+						accepted := response.Code == 200 && strings.Contains(body, "replayed") && !strings.Contains(body, "already submitted")
+						if accepted != replay.ok || (!replay.ok && !strings.Contains(body, "already submitted")) {
+							t.Fatalf("replay head=%s status=%d body=%s", replay.head, response.Code, body)
+						}
+					}
+					events, _ = st.ListEvents(ctx, task.ID)
+					if len(events) != eventsBefore || reads != 1 || writes != 1 {
+						t.Fatalf("replay wrote state: events %d→%d reads=%d writes=%d", eventsBefore, len(events), reads, writes)
 					}
 				} else {
 					codes := map[string]string{"missing-sha": "head_sha is required", "missing-pr": "pull_request_missing", "head-mismatch": "pull_request_head_mismatch", "base-mismatch": "pull_request_base_mismatch"}

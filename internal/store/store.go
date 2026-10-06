@@ -301,6 +301,9 @@ type WorkOrderStore interface {
 	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
 	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
 	UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, command ...core.WorkOrderCommand) error
+	// SubmitImplementationCommand records an implementation submission and
+	// completes the order's own job in one atomic write (component-work-orders).
+	SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request ImplementationSubmission) (core.Job, error)
 	QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
@@ -1253,6 +1256,40 @@ type ConflictFixRequest struct {
 	Intervention core.Intervention
 	ApprovedHead string
 	NewHead      string
+}
+
+// ImplementationSubmission is the exact claimed implement order, carrying its
+// submitted state and head, whose job SubmitImplementationCommand completes.
+// The command rechecks the live claim and session and completes only the job
+// named by Order.JobID, never the task's latest job.
+type ImplementationSubmission struct {
+	Order   core.WorkOrder
+	EndedAt time.Time
+}
+
+// ValidateImplementationSubmission checks the request shape shared by every
+// backend before any write.
+func ValidateImplementationSubmission(request ImplementationSubmission) error {
+	order := request.Order
+	if order.ID == "" || order.TaskID == "" || order.JobID == "" {
+		return fmt.Errorf("implementation submission requires work order, task, and job identifiers")
+	}
+	if order.Stage != core.StageImplement || order.State != core.WorkOrderSubmitted || strings.TrimSpace(order.HeadSHA) == "" || order.SessionID == "" {
+		return fmt.Errorf("implementation submission for %s requires a submitted implement order with session and head", order.ID)
+	}
+	return nil
+}
+
+// ValidateSubmissionJob refuses completion of a missing, foreign, or
+// non-running job before any submission write.
+func ValidateSubmissionJob(order core.WorkOrder, job core.Job, found bool) error {
+	if !found || job.TaskID != order.TaskID {
+		return fmt.Errorf("work order %s job %s not found for task %s", order.ID, order.JobID, order.TaskID)
+	}
+	if job.State != core.JobRunning {
+		return fmt.Errorf("work order %s job %s is %s; submission requires a running job", order.ID, job.ID, job.State)
+	}
+	return ValidateJobTransition(job.State, core.JobDone)
 }
 
 type ConflictFixResult struct {
@@ -4191,6 +4228,40 @@ func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]b
 func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.updateWorkOrderCommandLocked(ctx, lease, order, commands...)
+}
+
+// SubmitImplementationCommand validates the exact job before any write, so
+// the memory backend's single mutation lock gives the same all-or-nothing
+// result as the SQL transactions.
+func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request ImplementationSubmission) (core.Job, error) {
+	if err := ValidateImplementationSubmission(request); err != nil {
+		return core.Job{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order := request.Order
+	job, index, found := m.findJobLocked(order.JobID)
+	if err := ValidateSubmissionJob(order, job, found); err != nil {
+		return core.Job{}, err
+	}
+	if current, ok := m.workOrders[order.ID]; !ok || current.TaskID != order.TaskID || current.JobID != order.JobID || current.Stage != core.StageImplement {
+		return core.Job{}, fmt.Errorf("work order %s does not match its submission", order.ID)
+	}
+	if err := m.updateWorkOrderCommandLocked(ctx, lease, order, core.WorkOrderCmdSubmitForReview); err != nil {
+		return core.Job{}, err
+	}
+	ended := request.EndedAt.UTC()
+	if ended.IsZero() {
+		ended = time.Now().UTC()
+	}
+	job.State, job.EndedAt = core.JobDone, ended
+	m.jobs[job.TaskID][index] = job
+	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job)})
+	return job, nil
+}
+
+func (m *memory) updateWorkOrderCommandLocked(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
 	current, ok := m.workOrders[order.ID]
 	if !ok {
 		return fmt.Errorf("work order %s not found", order.ID)

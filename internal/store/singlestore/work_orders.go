@@ -666,6 +666,66 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 	var lifecycleErr error
 	err := s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
 		var err error
+		lifecycleErr, err = s.updateWorkOrderCommandTx(ctx, tx, current, lease, order, commands...)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return lifecycleErr
+}
+
+// SubmitImplementationCommand records the submitted implement order and
+// completes the job named by the order in one task transaction. A refused
+// order update, missing job, or non-running job rolls back every write
+// (component-work-orders).
+func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
+	if err := store.ValidateImplementationSubmission(request); err != nil {
+		return core.Job{}, err
+	}
+	order := request.Order
+	var lifecycleErr error
+	var completed core.Job
+	err := s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
+		if current.TaskID != order.TaskID || current.JobID != order.JobID || current.Stage != core.StageImplement {
+			return fmt.Errorf("work order %s does not match its submission", order.ID)
+		}
+		var err error
+		lifecycleErr, err = s.updateWorkOrderCommandTx(ctx, tx, current, lease, order, core.WorkOrderCmdSubmitForReview)
+		if err != nil || lifecycleErr != nil {
+			return err
+		}
+		job, err := scanJob(documentRow(ctx, tx, `SELECT `+jobColumns+` FROM jobs WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), order.JobID))
+		found := err == nil
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err = store.ValidateSubmissionJob(order, job, found); err != nil {
+			return err
+		}
+		ended := request.EndedAt.UTC()
+		if ended.IsZero() {
+			ended = time.Now().UTC()
+		}
+		job.State, job.EndedAt = core.JobDone, ended
+		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='done',ended_at=?,updated_at=? WHERE workspace_id=? AND id=?`, ended, time.Now().UTC(), documentWorkspace(ctx), job.ID); err != nil {
+			return err
+		}
+		completed = job
+		return taskEvent(ctx, tx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job)})
+	})
+	if err != nil {
+		return core.Job{}, err
+	}
+	if lifecycleErr != nil {
+		return core.Job{}, lifecycleErr
+	}
+	return completed, nil
+}
+
+func (s *Store) updateWorkOrderCommandTx(ctx context.Context, tx *sql.Tx, current core.WorkOrder, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) (lifecycleErr error, err error) {
+	err = func() error {
+		var err error
 		now := time.Now().UTC()
 		if (current.State == core.WorkOrderQueued || current.State == core.WorkOrderClaimed) &&
 			!current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
@@ -760,11 +820,8 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			return s.retireOrderSiblingsTx(ctx, tx, order, "stage completed", now, false)
 		}
 		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return lifecycleErr
+	}()
+	return lifecycleErr, err
 }
 
 func updateRequiresClaim(next, current core.WorkOrderState) bool {

@@ -31,11 +31,13 @@ import (
 const MaxTranscriptBytes = 4 << 20
 
 type Service struct {
-	Store                  store.Store
-	Dispatcher             *dispatch.Dispatcher
-	Pack                   *pack.Bundle
-	ConfigProvider         func(context.Context) (*config.Config, error)
-	SubmissionPR           func(context.Context, string, string) (github.SubmissionPullRequest, error)
+	Store          store.Store
+	Dispatcher     *dispatch.Dispatcher
+	Pack           *pack.Bundle
+	ConfigProvider func(context.Context) (*config.Config, error)
+	SubmissionPR   func(context.Context, string, string) (github.SubmissionPullRequest, error)
+	// SubmissionPRWait replaces the bounded PR-head re-read delay in tests.
+	SubmissionPRWait       func(context.Context, time.Duration) error
 	ReconcileSubmissionPR  func(context.Context, string, github.SubmissionPullRequest, string) error
 	ReviewTarget           func(context.Context, string, string) (github.ReviewTarget, error)
 	ReviewDiffBetween      func(context.Context, string, string, string) (string, error)
@@ -1436,8 +1438,16 @@ func (s *Service) UploadVerificationEvidence(ctx context.Context, id, workerID, 
 	}, content)
 }
 
+// submissionPRHeadBackoff is the bounded re-read schedule for a pull request
+// whose observed head lags the pushed head: six reads and 3.1 seconds of delay
+// at most (component-work-orders).
+var submissionPRHeadBackoff = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond, 1600 * time.Millisecond}
+
+// SubmitForReview admits the exact claimed implement session, or a replay by
+// the same session of an order it already submitted at the identical head.
+// Every other lifecycle call keeps claimed-only admission.
 func (s *Service) SubmitForReview(ctx context.Context, id, session, headSHA string) (map[string]any, error) {
-	order, err := s.authorized(ctx, id, session)
+	order, _, err := s.admitSubmission(ctx, id, session, headSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -1450,15 +1460,42 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session, headSHA stri
 	return result, err
 }
 
-func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSHA string) (map[string]any, error) {
+// admitSubmission is the submit-specific admission path. A submitted order is
+// admitted only for its own session at its recorded head; changed heads and
+// foreign sessions are refused, and every non-submitted order goes through the
+// ordinary claimed-session check.
+func (s *Service) admitSubmission(ctx context.Context, id, session, headSHA string) (core.WorkOrder, bool, error) {
+	current, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, false, err
+	}
+	if current.State == core.WorkOrderSubmitted && current.Stage == core.StageImplement {
+		if session == "" || current.SessionID != session {
+			return core.WorkOrder{}, false, fmt.Errorf("work order %s belongs to another session", id)
+		}
+		head := strings.TrimSpace(headSHA)
+		if head == "" || current.HeadSHA == "" || head != current.HeadSHA {
+			return core.WorkOrder{}, false, fmt.Errorf("work order %s is not claimed: it was already submitted at head %q; only that head replays the handoff", id, current.HeadSHA)
+		}
+		return current, true, nil
+	}
 	order, err := s.authorized(ctx, id, session)
+	return order, false, err
+}
+
+func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSHA string) (map[string]any, error) {
+	order, replay, err := s.admitSubmission(ctx, id, session, headSHA)
 	if err != nil {
 		return nil, err
+	}
+	if replay {
+		return s.submissionReplayResult(ctx, order)
 	}
 	if order.Stage != core.StageImplement {
 		return nil, fmt.Errorf("work order %s is not implement", id)
 	}
-	if strings.TrimSpace(headSHA) == "" {
+	headSHA = strings.TrimSpace(headSHA)
+	if headSHA == "" {
 		return nil, fmt.Errorf("head_sha is required")
 	}
 	if err = s.enforce(ctx, order); err != nil {
@@ -1474,6 +1511,22 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	}
 	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(task.SetupContract)
+	}
+	// A refresh already dispatched for this exact conflict-fix head owns the
+	// review; the order and its own job complete once without repeating any
+	// PR, context, stale-approval, stage, or dispatch effect.
+	if refresh, ok, refreshErr := s.dispatchedConflictRefresh(ctx, task, order, headSHA); refreshErr != nil {
+		return nil, refreshErr
+	} else if ok {
+		return s.completeDispatchedRefresh(ctx, cfg, task, order, headSHA, refresh)
+	}
+	// Read-only admission: the task must accept stage.advance and the order's
+	// own job must be completable before any submission side effect.
+	if _, err = core.TransitionTask(task.State, core.TaskStageAdvance); err != nil {
+		return nil, fmt.Errorf("submission refused before side effects: %w", err)
+	}
+	if err = s.submissionJobReady(ctx, order); err != nil {
+		return nil, err
 	}
 	evidence, err := s.taskVerificationEvidence(ctx, task.ID)
 	if err != nil {
@@ -1511,11 +1564,8 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 			}
 			lookup = github.SubmissionPRForBranch
 		}
-		target, err = lookup(forgeCtx, repo.GitHub, task.Branch)
+		target, err = s.observeSubmissionPR(ctx, forgeCtx, lookup, repo.GitHub, task.Branch, task.BaseBranch, headSHA)
 		if err != nil {
-			return nil, fmt.Errorf("read pull request for branch %s expected head %s: %w", task.Branch, headSHA, err)
-		}
-		if err = github.ValidateSubmissionPR(target, task.Branch, task.BaseBranch, headSHA); err != nil {
 			return nil, err
 		}
 		authorID, err = store.WorkOrderOwnerUserID(ctx, s.Store, order)
@@ -1590,27 +1640,15 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		}
 	}
 	freshness := s.refreshContext(ctx, order, "", "context.verdict_refresh_observed")
-	order.State = core.WorkOrderSubmitted
-	order.HeadSHA = headSHA
-	if err = guardedUpdateWorkOrder(ctx, s.Store, order, core.WorkOrderCmdSubmitForReview); err != nil {
+	if err = s.completeImplementationSubmission(ctx, order, headSHA); err != nil {
 		return nil, err
-	}
-	job, ok, _ := s.Store.GetLatestJob(ctx, task.ID)
-	if ok && job.ID == order.JobID {
-		job.State = core.JobDone
-		job.EndedAt = time.Now().UTC()
-		_ = s.Store.UpdateJob(ctx, job)
 	}
 	if order.ReasonCode == "merge-conflict" {
 		baseline := order.BaselineSHA
 		if baseline == "" {
 			baseline = task.ApprovedHeadSHA
 		}
-		scope := task.SetupContract.RefreshReview
-		if scope == "" || scope == config.RefreshReviewNone {
-			scope = config.RefreshReviewDelta
-		}
-		if _, err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, scope, "merge-conflict"); err != nil {
+		if _, err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, conflictRefreshScope(task), "merge-conflict"); err != nil {
 			return nil, err
 		}
 	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {
@@ -1653,6 +1691,241 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	return result, nil
 }
 
+// observeSubmissionPR reads the branch PR immediately and re-reads a valid PR
+// on the task branch and base whose head still differs from the pushed head,
+// because GitHub updates a PR head asynchronously after a push. Only exact
+// equality is accepted; exhaustion keeps the pull_request_head_mismatch
+// refusal for the final observed head. Missing, mis-based, malformed, and
+// forge-failed reads keep their existing refusal without mismatch retries.
+func (s *Service) observeSubmissionPR(ctx, forgeCtx context.Context, lookup func(context.Context, string, string) (github.SubmissionPullRequest, error), repo, branch, base, head string) (github.SubmissionPullRequest, error) {
+	for attempt := 0; ; attempt++ {
+		target, err := lookup(forgeCtx, repo, branch)
+		if err != nil {
+			return github.SubmissionPullRequest{}, fmt.Errorf("read pull request for branch %s expected head %s: %w", branch, head, err)
+		}
+		lagging := target.Number > 0 && target.Head.Ref == branch && target.Base.Ref == base && target.Head.SHA != head
+		if !lagging || attempt >= len(submissionPRHeadBackoff) {
+			if err = github.ValidateSubmissionPR(target, branch, base, head); err != nil {
+				return github.SubmissionPullRequest{}, err
+			}
+			return target, nil
+		}
+		if err = s.waitSubmissionPR(ctx, submissionPRHeadBackoff[attempt]); err != nil {
+			return github.SubmissionPullRequest{}, fmt.Errorf("read pull request for branch %s expected head %s observed head %s: %w", branch, head, target.Head.SHA, err)
+		}
+	}
+}
+
+func (s *Service) waitSubmissionPR(ctx context.Context, delay time.Duration) error {
+	if s.SubmissionPRWait != nil {
+		return s.SubmissionPRWait(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// submissionJobReady validates the job selected by the order itself, never
+// the task's latest job.
+func (s *Service) submissionJobReady(ctx context.Context, order core.WorkOrder) error {
+	jobs, err := s.Store.ListJobs(ctx, order.TaskID)
+	if err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if job.ID == order.JobID {
+			return store.ValidateSubmissionJob(order, job, true)
+		}
+	}
+	return store.ValidateSubmissionJob(order, core.Job{}, false)
+}
+
+// completeImplementationSubmission records the submitted order and completes
+// its own job atomically; a completion failure leaves neither written.
+func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string) error {
+	order.State = core.WorkOrderSubmitted
+	order.HeadSHA = headSHA
+	_, err := taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdSubmitForReview, func(lease taskops.TaskLease) (core.Job, error) {
+		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC()})
+	})
+	return err
+}
+
+// conflictRefreshScope is the minimum refresh scope for an authored conflict
+// resolution: the frozen policy, with none raised to delta.
+func conflictRefreshScope(task core.Task) string {
+	scope := task.SetupContract.RefreshReview
+	if scope == "" || scope == config.RefreshReviewNone {
+		scope = config.RefreshReviewDelta
+	}
+	return scope
+}
+
+// dispatchedRefresh is the proven refresh already engaged for a conflict-fix
+// head: its current unsuperseded stage orders and the round they form.
+type dispatchedRefresh struct {
+	Stage  core.Stage
+	Round  int
+	Orders []string
+}
+
+// dispatchedConflictRefresh proves that a refresh for exactly this claimed
+// conflict-fix order's head already exists. The task must be in the same
+// workspace with a stale approval bound to the order's baseline and head at
+// no less than the conflict refresh scope, and the newest unsuperseded refresh
+// orders of the task's frozen next stage must contract that same baseline,
+// head, and scope. A matching task field or stale approval alone proves
+// nothing.
+func (s *Service) dispatchedConflictRefresh(ctx context.Context, task core.Task, order core.WorkOrder, head string) (dispatchedRefresh, bool, error) {
+	if order.ReasonCode != "merge-conflict" || order.State != core.WorkOrderClaimed || order.TaskID != task.ID {
+		return dispatchedRefresh{}, false, nil
+	}
+	baseline := order.BaselineSHA
+	if baseline == "" {
+		baseline = task.ApprovedHeadSHA
+	}
+	minimum := conflictRefreshScope(task)
+	if !task.ApprovalStale || baseline == "" || task.RefreshBaselineSHA != baseline || task.RefreshHeadSHA != head || !refreshScopeCovers(task.RefreshReviewScope, minimum) {
+		return dispatchedRefresh{}, false, nil
+	}
+	stage := core.StageReview
+	if task.SetupContract.VerifyStage {
+		stage = core.StageVerify
+	}
+	orders, err := s.Store.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		return dispatchedRefresh{}, false, err
+	}
+	events, err := s.Store.ListEvents(ctx, task.ID)
+	if err != nil {
+		return dispatchedRefresh{}, false, err
+	}
+	// Only stage orders created after this conflict-fix order can belong to
+	// a refresh for its head; older rounds are unrelated history.
+	current := make([]core.WorkOrder, 0)
+	for _, candidate := range store.CurrentReviewOrders(orders, events) {
+		if candidate.Stage == stage && !candidate.CreatedAt.Before(order.CreatedAt) {
+			current = append(current, candidate)
+		}
+	}
+	refresh := dispatchedRefresh{Stage: stage}
+	if stage == core.StageReview {
+		for _, candidate := range current {
+			if candidate.ReviewRound > refresh.Round {
+				refresh.Round = candidate.ReviewRound
+			}
+		}
+	}
+	for _, candidate := range current {
+		if stage == core.StageReview && candidate.ReviewRound != refresh.Round {
+			continue
+		}
+		if candidate.State == core.WorkOrderCancelled || candidate.State == core.WorkOrderStale || candidate.State == core.WorkOrderTimedOut {
+			return dispatchedRefresh{}, false, nil
+		}
+		if candidate.HeadSHA != head || candidate.BaselineSHA != baseline || !refreshScopeCovers(candidate.ReviewScope, minimum) {
+			return dispatchedRefresh{}, false, nil
+		}
+		if stage == core.StageReview && candidate.ReviewKind != "refresh" {
+			return dispatchedRefresh{}, false, nil
+		}
+		refresh.Orders = append(refresh.Orders, candidate.ID)
+	}
+	if len(refresh.Orders) == 0 {
+		return dispatchedRefresh{}, false, nil
+	}
+	return refresh, true, nil
+}
+
+func refreshScopeCovers(scope, minimum string) bool {
+	return scope == minimum || scope == config.RefreshReviewFull
+}
+
+// completeDispatchedRefresh completes the claimed conflict-fix order and its
+// own job once. The existing refresh keeps its round, seats, and dispatch.
+func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Config, task core.Task, order core.WorkOrder, head string, refresh dispatchedRefresh) (map[string]any, error) {
+	if err := s.submissionJobReady(ctx, order); err != nil {
+		return nil, err
+	}
+	if err := s.completeImplementationSubmission(ctx, order, head); err != nil {
+		return nil, err
+	}
+	result := map[string]any{"pr_url": s.recordedPRURL(ctx, task.ID), "review_execution": cfg.Routing.Stages["review"].Execution, "await_review": true, "refresh_already_dispatched": true}
+	if refresh.Stage == core.StageVerify {
+		result["next_stage"] = refresh.Stage
+	} else {
+		result["review_round"] = refresh.Round
+	}
+	return result, nil
+}
+
+// submissionReplayResult answers a same-session, same-head replay of an
+// already submitted order from durable state alone: no PR, context, order,
+// job, approval, stage, or queue write. The order's own job must already be
+// complete; an unproven completion is refused.
+func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrder) (map[string]any, error) {
+	jobs, err := s.Store.ListJobs(ctx, order.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	completed := false
+	for _, job := range jobs {
+		if job.ID == order.JobID {
+			completed = job.State == core.JobDone
+		}
+	}
+	if !completed {
+		return nil, fmt.Errorf("work order %s was submitted at head %s but its job %s is not complete; recovery is an operator action", order.ID, order.HeadSHA, order.JobID)
+	}
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if task.SetupContract.HasFrozenPolicy() {
+		cfg = cfg.WithPolicy(task.SetupContract)
+	}
+	result := map[string]any{"pr_url": s.recordedPRURL(ctx, task.ID, order.ID), "review_execution": cfg.Routing.Stages["review"].Execution, "await_review": true, "replayed": true}
+	if task.SetupContract.VerifyStage {
+		result["next_stage"] = core.StageVerify
+	}
+	return result, nil
+}
+
+// recordedPRURL reads the newest recorded pull_request.opened URL, optionally
+// for one work order.
+func (s *Service) recordedPRURL(ctx context.Context, taskID string, workOrderID ...string) string {
+	events, err := s.Store.ListEvents(ctx, taskID)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pull_request.opened" {
+			continue
+		}
+		var payload struct {
+			URL         string `json:"url"`
+			WorkOrderID string `json:"work_order_id"`
+		}
+		if json.Unmarshal(events[i].Payload, &payload) != nil {
+			continue
+		}
+		if len(workOrderID) > 0 && payload.WorkOrderID != workOrderID[0] {
+			continue
+		}
+		return payload.URL
+	}
+	return ""
+}
+
 // PullRequestTemplate is the server-composed delivery contract; it contains no
 // forge credential (req-260821-830dbf AC-3.4 and AC-6.1).
 type PullRequestTemplate struct {
@@ -1665,9 +1938,12 @@ type PullRequestTemplate struct {
 	Body          string `json:"body"`
 }
 
+// PullRequestTemplate is a read. Its own submitted session may reread it so a
+// conveyor submit retry can replay an already accepted handoff at the same
+// head; submit_for_review still decides admission.
 func (s *Service) PullRequestTemplate(ctx context.Context, id, session string) (PullRequestTemplate, error) {
 	var result PullRequestTemplate
-	order, err := s.authorized(ctx, id, session)
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return result, err
 	}

@@ -140,6 +140,13 @@ func TestSubmitTaskPushCreateReuseAndRedaction(t *testing.T) {
 	if git(taskdir, "config", "branch.conveyor/task-one.remote") != "origin" || git(taskdir, "config", "branch.conveyor/task-one.merge") != "refs/heads/conveyor/task-one" {
 		t.Fatal("task branch has no upstream tracking")
 	}
+	// A repeated handoff after an accepted submission rereads the template,
+	// pushes the unchanged head, reuses the open PR, and resubmits that exact
+	// head so the server can replay its recorded result.
+	replayed, err := c.submitTask(t.Context(), "one", "order", "session", taskdir)
+	if err != nil || replayed["pr_url"] == nil || creates != 1 || submits != 3 || git(origin, "rev-parse", "refs/heads/conveyor/task-one") != head {
+		t.Fatalf("repeated handoff result=%v err=%v creates=%d submits=%d", replayed, err, creates, submits)
+	}
 	failPR = true
 	_, err = c.submitTask(t.Context(), "one", "order", "session", taskdir)
 	jsonSecret, _ := json.Marshal(secret)
