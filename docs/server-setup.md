@@ -67,7 +67,7 @@ umask 077
 cat > .env <<EOF
 CONVEYOR_DATABASE_URL=postgres://conveyor:conveyor@127.0.0.1:5432/conveyor?sslmode=disable
 CONVEYOR_API_TOKEN=$(openssl rand -hex 32)
-CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY=$(openssl rand -base64 32)
+CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY=$(openssl rand -base64 32)
 CONVEYOR_LLM_API_KEY=<provider API key>
 CONVEYOR_PUBLIC_URL=http://127.0.0.1:8080
 EOF
@@ -77,8 +77,10 @@ Then edit `.env` and replace `<provider API key>`. Use `KEY=value` lines
 without shell `export` prefixes; `.env` is loaded by both binaries from their
 working directory, and existing process environment values take precedence.
 
-- Keep `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` stable. Changing it invalidates
-  the stored GitHub App private keys.
+- Keep `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` stable. Changing it invalidates
+  the stored GitHub App private keys. An existing server that still uses the
+  deprecated name keeps working; when you rename it, move the existing value
+  instead of generating a new one ([configuration](configuration.md)).
 - `CONVEYOR_API_TOKEN` is the server bootstrap token. It is separate from the
   personal tokens users mint later and from agent CLI logins on executor
   machines.
@@ -169,7 +171,7 @@ coverage on the card. Use **Install on GitHub** beside a repository marked
 contents, pull requests, issues, and commit statuses write access.
 
 The server encrypts the app private key with
-`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`. It mints installation tokens on demand
+`CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY`. It mints installation tokens on demand
 and keeps them only in process memory until five minutes before expiry. Set
 the public server URL before connecting so GitHub can return your browser to
 Conveyor. Use **Disconnect** on the card and confirm to remove the stored app; manage
@@ -213,13 +215,13 @@ docker run --rm \
   -e CONVEYOR_API_TOKEN \
   -e CONVEYOR_DATABASE_URL \
   -e CONVEYOR_LLM_API_KEY \
-  -e CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY \
+  -e CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY \
   ghcr.io/kidus-tiliksew/conveyor:v1.2.3 \
   -config /etc/conveyor/conveyor.yaml -addr 0.0.0.0:8080
 ```
 
 `CONVEYOR_API_TOKEN`, `CONVEYOR_DATABASE_URL`, `CONVEYOR_LLM_API_KEY`, and
-`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` are required process environment. The
+`CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` are required process environment. The
 GitHub monitor uses the workspace app installation. Secret values should come from
 your container platform's secret facility; do not add them to the image or
 `conveyor.yaml`. The selected PostgreSQL or SingleStore database must be
@@ -254,7 +256,7 @@ chmod 600 .env
 
 Before starting, set `CONVEYOR_LLM_API_KEY` in `.env`, replace the operator
 token with `openssl rand -hex 32` output, and enable
-`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` with `openssl rand -base64 32` output.
+`CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` with `openssl rand -base64 32` output.
 Review the provider endpoint, model IDs, and repository in the example config.
 
 ```sh

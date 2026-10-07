@@ -66,6 +66,23 @@ func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 		t.Fatal("cross-workspace ciphertext replay accepted")
 	}
 }
+
+// DEC-59 clause 2; req-delivery-and-forge AC-1.11: an App key sealed before
+// the encryption identifiers were renamed decrypts unchanged.
+func TestWorkspaceGitHubAppLegacyCiphertextIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := t.Context()
+	storetest.RunLegacyGitHubAppKeyRecovery(t, st, ctx, func(t *testing.T, workspace string, nonce, ciphertext []byte) {
+		t.Helper()
+		result, err := st.db.ExecContext(ctx, `UPDATE workspace_github_apps SET private_key_nonce=?,private_key_ciphertext=? WHERE workspace_id=?`, nonce, ciphertext, workspace)
+		if err != nil {
+			t.Fatalf("seed legacy App key row: %v", err)
+		}
+		if rows, rowsErr := result.RowsAffected(); rowsErr != nil || rows != 1 {
+			t.Fatalf("seed legacy App key row: rows=%d err=%v", rows, rowsErr)
+		}
+	})
+}
 func TestWorkspaceGitHubAppMigrationGuard(t *testing.T) {
 	content, err := migrationFiles.ReadFile("migrations/0003_workspace_github_apps.sql")
 	if err != nil {

@@ -30,7 +30,7 @@ type Backend interface {
 	AgentCredentialStore
 	WorkspaceControlStore
 	Close()
-	ConfigureForgeTokenEncryptionKey([]byte)
+	ConfigureGitHubAppKeyEncryptionKey([]byte)
 	BootstrapIdentity(context.Context, config.FirstOperatorIdentity, string) (bool, error)
 	BootstrapWorkspaceConfig(context.Context, *config.Config) (bool, error)
 	RuntimeConfig(context.Context, *config.Config) (*config.Config, error)

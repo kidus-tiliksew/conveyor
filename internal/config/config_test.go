@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,10 +17,108 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestForgeTokenEncryptionKeyFromEnvironment(t *testing.T) {
+// DEC-59 clause 2; req-delivery-and-forge AC-1.11: the App key encryption key
+// resolves from the canonical name or its deprecated alias, refuses
+// conflicting values, and never echoes a value.
+func TestGitHubAppKeyEncryptionKeyResolution(t *testing.T) {
+	first := bytes.Repeat([]byte{7}, 32)
+	second := bytes.Repeat([]byte{9}, 32)
+	encodedFirst := base64.StdEncoding.EncodeToString(first)
+	encodedSecond := base64.StdEncoding.EncodeToString(second)
+	tests := []struct {
+		name        string
+		environment map[string]string
+		want        []byte
+		wantErr     []string
+		conflict    bool
+		wantWarning bool
+	}{
+		{name: "new only", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: encodedFirst}, want: first},
+		{name: "new only with surrounding whitespace", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: " \t" + encodedFirst + "\n"}, want: first},
+		{name: "old only", environment: map[string]string{DeprecatedGitHubAppKeyEncryptionKeyEnv: encodedFirst}, want: first, wantWarning: true},
+		{name: "old only with whitespace-only new", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: "  ", DeprecatedGitHubAppKeyEncryptionKeyEnv: encodedFirst}, want: first, wantWarning: true},
+		{name: "both equal", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: encodedFirst, DeprecatedGitHubAppKeyEncryptionKeyEnv: encodedFirst}, want: first},
+		{name: "both equal after trimming", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: encodedFirst + " ", DeprecatedGitHubAppKeyEncryptionKeyEnv: "\t" + encodedFirst}, want: first},
+		{name: "new with whitespace-only old", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: encodedFirst, DeprecatedGitHubAppKeyEncryptionKeyEnv: " "}, want: first},
+		{name: "both different", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: encodedFirst, DeprecatedGitHubAppKeyEncryptionKeyEnv: encodedSecond}, conflict: true, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, DeprecatedGitHubAppKeyEncryptionKeyEnv}},
+		{name: "both different and undecodable", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: "not-base64", DeprecatedGitHubAppKeyEncryptionKeyEnv: "also-not-base64"}, conflict: true, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, DeprecatedGitHubAppKeyEncryptionKeyEnv}},
+		{name: "unset", environment: map[string]string{}, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, "required"}},
+		{name: "whitespace only", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: " ", DeprecatedGitHubAppKeyEncryptionKeyEnv: "\t"}, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, "required"}},
+		{name: "new malformed base64", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: "not-base64"}, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, "exactly 32 bytes"}},
+		{name: "new raw URL base64 is not standard", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xfb}, 32))}, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, "exactly 32 bytes"}},
+		{name: "new decodes to 31 bytes", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: base64.StdEncoding.EncodeToString(make([]byte, 31))}, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, "exactly 32 bytes"}},
+		{name: "new decodes to 33 bytes", environment: map[string]string{GitHubAppKeyEncryptionKeyEnv: base64.StdEncoding.EncodeToString(make([]byte, 33))}, wantErr: []string{GitHubAppKeyEncryptionKeyEnv, "exactly 32 bytes"}},
+		{name: "old malformed names the old variable", environment: map[string]string{DeprecatedGitHubAppKeyEncryptionKeyEnv: base64.StdEncoding.EncodeToString(make([]byte, 16))}, wantErr: []string{DeprecatedGitHubAppKeyEncryptionKeyEnv, "exactly 32 bytes"}, wantWarning: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resolver gitHubAppKeyEncryptionKeyResolver
+			var warnings []string
+			warnf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+			key, err := resolver.resolve(func(name string) string { return tt.environment[name] }, warnf)
+			if tt.wantErr == nil {
+				if err != nil || !bytes.Equal(key, tt.want) {
+					t.Fatalf("key=%x err=%v, want %x", key, err, tt.want)
+				}
+			} else {
+				if err == nil || key != nil {
+					t.Fatalf("key=%x err=%v, want error", key, err)
+				}
+				for _, want := range tt.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error %q lacks %q", err, want)
+					}
+				}
+				if errors.Is(err, ErrGitHubAppKeyEncryptionKeyConflict) != tt.conflict {
+					t.Fatalf("conflict classification=%v, want %v: %v", !tt.conflict, tt.conflict, err)
+				}
+			}
+			if tt.wantWarning {
+				if len(warnings) != 1 || !strings.Contains(warnings[0], DeprecatedGitHubAppKeyEncryptionKeyEnv) || !strings.Contains(warnings[0], GitHubAppKeyEncryptionKeyEnv) {
+					t.Fatalf("warnings=%q, want one naming both variables", warnings)
+				}
+			} else if len(warnings) != 0 {
+				t.Fatalf("unexpected warnings=%q", warnings)
+			}
+			diagnostics := strings.Join(warnings, "\n")
+			if err != nil {
+				diagnostics += "\n" + err.Error()
+			}
+			for _, value := range tt.environment {
+				if trimmed := strings.TrimSpace(value); trimmed != "" && strings.Contains(diagnostics, trimmed) {
+					t.Fatalf("diagnostics echo a configured value: %q", diagnostics)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubAppKeyEncryptionKeyDeprecatedWarningOncePerProcess(t *testing.T) {
+	var resolver gitHubAppKeyEncryptionKeyResolver
 	encoded := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	t.Setenv(ForgeTokenEncryptionKeyEnv, encoded)
-	key, err := ForgeTokenEncryptionKeyFromEnvironment()
+	var warnings []string
+	warnf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	getenv := func(name string) string {
+		if name == DeprecatedGitHubAppKeyEncryptionKeyEnv {
+			return encoded
+		}
+		return ""
+	}
+	for range 3 {
+		if _, err := resolver.resolve(getenv, warnf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings=%q, want exactly one", warnings)
+	}
+}
+
+func TestGitHubAppKeyEncryptionKeyStaysOutOfConfig(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
+	t.Setenv(GitHubAppKeyEncryptionKeyEnv, encoded)
+	t.Setenv(DeprecatedGitHubAppKeyEncryptionKeyEnv, encoded)
+	key, err := GitHubAppKeyEncryptionKeyFromEnvironment(os.Getenv, nil)
 	if err != nil || len(key) != 32 {
 		t.Fatalf("key length=%d err=%v", len(key), err)
 	}
@@ -31,12 +130,10 @@ func TestForgeTokenEncryptionKeyFromEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(jsonConfig, []byte(encoded)) || bytes.Contains(yamlConfig, []byte(encoded)) || bytes.Contains(jsonConfig, []byte(ForgeTokenEncryptionKeyEnv)) || bytes.Contains(yamlConfig, []byte(ForgeTokenEncryptionKeyEnv)) {
-		t.Fatal("process-only forge token key entered persisted configuration")
-	}
-	t.Setenv(ForgeTokenEncryptionKeyEnv, "not-base64")
-	if _, err = ForgeTokenEncryptionKeyFromEnvironment(); err == nil {
-		t.Fatal("malformed forge token key was accepted")
+	for _, needle := range []string{encoded, GitHubAppKeyEncryptionKeyEnv, DeprecatedGitHubAppKeyEncryptionKeyEnv} {
+		if bytes.Contains(jsonConfig, []byte(needle)) || bytes.Contains(yamlConfig, []byte(needle)) {
+			t.Fatalf("process-only App key configuration entered persisted configuration: %s", needle)
+		}
 	}
 }
 

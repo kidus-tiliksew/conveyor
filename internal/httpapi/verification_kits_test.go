@@ -366,7 +366,7 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		}
 	})
 
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{41}, 32))
+	st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{41}, 32))
 	if _, err := st.StoreWorkspaceGitHubApp(ctx, "alpha", core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{AppID: 41, AppSlug: "conveyor-alpha", ClientID: "client"}, PrivateKey: private}); err != nil {
 		t.Fatal(err)
 	}

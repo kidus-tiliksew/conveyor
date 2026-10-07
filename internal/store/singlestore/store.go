@@ -18,7 +18,7 @@ import (
 )
 
 type Store struct {
-	forgeEncryptionState
+	gitHubAppKeyEncryptionState
 	db  *sql.DB
 	log *s2log.Store
 }

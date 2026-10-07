@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -88,6 +89,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	gitHubAppKey, err := resolveConveyordGitHubAppKey(os.Getenv, log.Printf)
+	if err != nil {
+		log.Fatal(err)
+	}
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
 	ctx, cancelService := context.WithCancel(context.Background())
@@ -104,10 +109,8 @@ func main() {
 	} else {
 		log.Printf("using durable PostgreSQL store with the event log")
 	}
-	if forgeKey, keyErr := config.ForgeTokenEncryptionKeyFromEnvironment(); keyErr != nil {
-		log.Printf("forge token encryption unavailable until configured: %v", keyErr)
-	} else {
-		st.ConfigureForgeTokenEncryptionKey(forgeKey)
+	if gitHubAppKey != nil {
+		st.ConfigureGitHubAppKeyEncryptionKey(gitHubAppKey)
 	}
 	if _, bootstrapErr := st.BootstrapIdentity(ctx, config.FirstOperatorIdentityFromEnvironment(), apiToken); bootstrapErr != nil {
 		st.Close()
@@ -533,6 +536,24 @@ func resolveConveyordLLMEnvironment(getenv func(string) string, warnf func(strin
 		return config.LLMEnvironment{}, fmt.Errorf("CONVEYOR_LLM_API_KEY is required for in-process triage and spec stages (CONVEYOR_API_KEY is a deprecated fallback)")
 	}
 	return environment, nil
+}
+
+// resolveConveyordGitHubAppKey resolves the GitHub App key encryption key
+// before the store opens (DEC-59 clause 2; req-delivery-and-forge AC-1.11).
+// Conflicting canonical and deprecated values are fatal. A missing or
+// malformed key stays nonfatal: the daemon logs that App key encryption is
+// unavailable and returns no key, so App connection and use refuse until an
+// operator configures it.
+func resolveConveyordGitHubAppKey(getenv func(string) string, logf func(string, ...any)) ([]byte, error) {
+	key, err := config.GitHubAppKeyEncryptionKeyFromEnvironment(getenv, logf)
+	if errors.Is(err, config.ErrGitHubAppKeyEncryptionKeyConflict) {
+		return nil, err
+	}
+	if err != nil {
+		logf("GitHub App key encryption unavailable until configured: %v", err)
+		return nil, nil
+	}
+	return key, nil
 }
 
 // DEC-41: production monitor polling resolves the same workspace app identity

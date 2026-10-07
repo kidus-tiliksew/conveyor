@@ -18,30 +18,32 @@ import (
 
 // DEC-38, component-identity-membership: each Store owns a defensive key copy.
 // The mutex protects configuration and cipher construction, including runtime rotation.
-type forgeEncryptionState struct {
+type gitHubAppKeyEncryptionState struct {
 	mu  sync.RWMutex
 	key []byte
 }
 
-func (s *Store) ConfigureForgeTokenEncryptionKey(key []byte) {
+// ConfigureGitHubAppKeyEncryptionKey installs the process-only AES-256 key
+// that seals workspace GitHub App private keys (DEC-59 clause 2).
+func (s *Store) ConfigureGitHubAppKeyEncryptionKey(key []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.key = append([]byte(nil), key...)
 }
-func (s *Store) forgeTokenAEAD() (cipher.AEAD, error) {
+func (s *Store) gitHubAppKeyAEAD() (cipher.AEAD, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.key) != 32 {
-		return nil, store.ErrForgeTokenKey
+		return nil, store.ErrGitHubAppKey
 	}
 	block, err := aes.NewCipher(s.key)
 	if err != nil {
-		return nil, store.ErrForgeTokenKey
+		return nil, store.ErrGitHubAppKey
 	}
 	return cipher.NewGCM(block)
 }
-func (s *Store) encryptForgeToken(owner, token string) ([]byte, []byte, error) {
-	a, err := s.forgeTokenAEAD()
+func (s *Store) encryptGitHubAppKey(owner, privateKey string) ([]byte, []byte, error) {
+	a, err := s.gitHubAppKeyAEAD()
 	if err != nil {
 		return nil, nil, translateBackendConflict(err)
 	}
@@ -49,19 +51,19 @@ func (s *Store) encryptForgeToken(owner, token string) ([]byte, []byte, error) {
 	if _, err = rand.Read(nonce); err != nil {
 		return nil, nil, translateBackendConflict(err)
 	}
-	return nonce, a.Seal(nil, nonce, []byte(token), []byte(owner)), nil
+	return nonce, a.Seal(nil, nonce, []byte(privateKey), []byte(owner)), nil
 }
-func (s *Store) decryptForgeToken(owner string, nonce, ciphertext []byte) (string, error) {
-	a, err := s.forgeTokenAEAD()
+func (s *Store) decryptGitHubAppKey(owner string, nonce, ciphertext []byte) (string, error) {
+	a, err := s.gitHubAppKeyAEAD()
 	if err != nil {
 		return "", translateBackendConflict(err)
 	}
 	if len(nonce) != a.NonceSize() {
-		return "", store.ErrForgeTokenDecrypt
+		return "", store.ErrGitHubAppKeyDecrypt
 	}
 	b, err := a.Open(nil, nonce, ciphertext, []byte(owner))
 	if err != nil {
-		return "", store.ErrForgeTokenDecrypt
+		return "", store.ErrGitHubAppKeyDecrypt
 	}
 	return string(b), nil
 }
@@ -90,7 +92,7 @@ func (s *Store) ListGitHubAppKeysForRedaction(ctx context.Context) ([]string, er
 				rows.Close()
 				return nil, translateBackendConflict(err)
 			}
-			v, e := s.decryptForgeToken(owner, nonce, ciphertext)
+			v, e := s.decryptGitHubAppKey(owner, nonce, ciphertext)
 			if e != nil {
 				rows.Close()
 				return nil, translateBackendConflict(e)

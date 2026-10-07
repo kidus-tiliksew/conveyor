@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"net"
@@ -65,7 +67,10 @@ repos:
 					cmd.Env = append(cmd.Env, e)
 				}
 			}
-			cmd.Env = append(cmd.Env, "CONVEYOR_DURABLE_STARTUP_CONFIG="+cfgPath, "CONVEYOR_DURABLE_STARTUP_ADDR="+addr, "CONVEYOR_ENV_FILE="+envPath, "CONVEYOR_DATABASE_URL="+raw, "CONVEYOR_API_TOKEN=startup-fixture-token", "CONVEYOR_LLM_API_KEY=unused-fixture-key")
+			cmd.Env = append(cmd.Env, "CONVEYOR_DURABLE_STARTUP_CONFIG="+cfgPath, "CONVEYOR_DURABLE_STARTUP_ADDR="+addr, "CONVEYOR_ENV_FILE="+envPath, "CONVEYOR_DATABASE_URL="+raw, "CONVEYOR_API_TOKEN=startup-fixture-token", "CONVEYOR_LLM_API_KEY=unused-fixture-key",
+				// The deprecated alias alone supplies the App key encryption key and
+				// warns once (DEC-59 clause 2; req-delivery-and-forge AC-1.11).
+				config.DeprecatedGitHubAppKeyEncryptionKeyEnv+"="+base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)))
 			logPath := filepath.Join(dir, "daemon.log")
 			output, err := os.Create(logPath)
 			if err != nil {
@@ -141,6 +146,10 @@ repos:
 			}
 			if !strings.Contains(string(b), "using durable "+label+" store with the event log") {
 				t.Fatalf("startup log missing backend: %s", b)
+			}
+			deprecationWarning := config.DeprecatedGitHubAppKeyEncryptionKeyEnv + " is deprecated; rename it to " + config.GitHubAppKeyEncryptionKeyEnv
+			if strings.Count(string(b), deprecationWarning) != 1 || strings.Contains(string(b), "GitHub App key encryption unavailable") {
+				t.Fatalf("startup log must warn once about the deprecated App key variable and install the key: %s", b)
 			}
 			st, err := backend.Open(t.Context(), config.Database{Backend: name, URL: raw})
 			if err != nil {
