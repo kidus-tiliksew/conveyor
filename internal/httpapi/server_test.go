@@ -2471,6 +2471,7 @@ type observedStore struct {
 	listActivityMarkersCalls int
 	getLatestJobCalls        int
 	listEventsAfterCalls     int
+	readTaskEventStreamCalls int
 	afterHook                func()
 }
 
@@ -2539,6 +2540,15 @@ func (s *observedStore) ListEventsAfter(ctx context.Context, taskID string, afte
 		s.afterHook()
 	}
 	return events, err
+}
+
+func (s *observedStore) ReadTaskEventStream(ctx context.Context, query store.TaskEventStreamQuery) (store.TaskEventStreamPage, error) {
+	s.readTaskEventStreamCalls++
+	page, err := s.Store.ReadTaskEventStream(ctx, query)
+	if s.afterHook != nil {
+		s.afterHook()
+	}
+	return page, err
 }
 
 func TestPendingProposalsEndpointUsesOnlyBoundedStoreProjection(t *testing.T) {
@@ -2861,7 +2871,7 @@ func TestReviewUsesLatestJobWithoutLoadingHistory(t *testing.T) {
 	}
 }
 
-func TestEventStreamUsesIncrementalReads(t *testing.T) {
+func TestEventStreamUsesBoundedWindowReads(t *testing.T) {
 	base := store.NewMemory()
 	if err := base.CreateTask(context.Background(), core.Task{ID: "stream-task", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
@@ -2871,8 +2881,8 @@ func TestEventStreamUsesIncrementalReads(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/stream-task/events/stream", nil).WithContext(ctx)
 	response := httptest.NewRecorder()
 	authenticatedMemoryHandler(NewServer(observed)).ServeHTTP(response, request)
-	if observed.listEventsAfterCalls != 1 || observed.listEventsCalls != 0 {
-		t.Fatalf("stream query calls = incremental:%d full:%d", observed.listEventsAfterCalls, observed.listEventsCalls)
+	if observed.readTaskEventStreamCalls != 1 || observed.listEventsAfterCalls != 0 || observed.listEventsCalls != 0 {
+		t.Fatalf("stream query calls = bounded:%d cursor:%d full:%d", observed.readTaskEventStreamCalls, observed.listEventsAfterCalls, observed.listEventsCalls)
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte("event: activity")) {
 		t.Fatalf("stream body = %s", response.Body.String())

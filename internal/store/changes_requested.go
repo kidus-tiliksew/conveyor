@@ -7,20 +7,21 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
+// AtMergeGate reports whether the task's chronologically newest
+// task.state_changed event, the maximum (at, id) tuple, is the merge gate. The
+// task detail projection and every backend's RequestChangesCommand share this
+// selection, so slice order and numeric ID order never decide recency
+// (component-persistence; DEC-39).
 func AtMergeGate(task core.Task, events []core.Event) bool {
 	if task.State != core.TaskAwaiting || task.RecoveryStage != core.StageImplement {
 		return false
 	}
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].Kind != "task.state_changed" {
-			continue
-		}
-		var payload struct {
-			Command core.TaskCommand `json:"command"`
-		}
-		return json.Unmarshal(events[index].Payload, &payload) == nil && payload.Command == core.TaskGateMerge
+	latest, ok := LatestTaskEvent(events, "task.state_changed")
+	if !ok {
+		return false
 	}
-	return false
+	command, ok := TaskStateChangedCommand(latest)
+	return ok && command == core.TaskGateMerge
 }
 
 func UserRequestChangesPending(events []core.Event) bool {

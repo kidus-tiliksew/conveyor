@@ -313,29 +313,51 @@ func runTaskEventOrdering(t *testing.T, x Fixture) {
 	}
 	assertOrdered("ListEvents", orderedFixture, []string{"merge.confirmed", "pull_request.opened", "merge.confirmed", "pull_request.opened", "merge.confirmed", "pull_request.opened"})
 
+	// ListEventsAfter follows the same chronological (at,id) order as the
+	// ledger; a nonzero cursor is an owned anchor, never a numeric-ID bound
+	// (component-persistence: event ordering, recency and live streams).
 	cursorEvents, err := st.ListEventsAfter(ctx, task.ID, 0)
 	requireOK(t, err)
+	if len(cursorEvents) != len(ledger) {
+		t.Fatalf("ListEventsAfter(0) returned %d events, ledger has %d", len(cursorEvents), len(ledger))
+	}
 	cursorMarkers := make([]string, 0, 6)
-	var previousID int64
-	for _, event := range cursorEvents {
+	for i, event := range cursorEvents {
+		if event.ID != ledger[i].ID {
+			t.Fatalf("ListEventsAfter(0) differs from the (at,id) ledger at %d: %v", i, cursorEvents)
+		}
+		if i > 0 && !store.TaskEventBefore(cursorEvents[i-1], event) {
+			t.Fatalf("ListEventsAfter is not ordered by at,id: %v", cursorEvents)
+		}
 		var payload struct {
 			Marker string `json:"marker"`
 		}
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatalf("ListEventsAfter payload: %v", err)
 		}
-		if payload.Marker == "" {
-			continue
+		if payload.Marker != "" {
+			cursorMarkers = append(cursorMarkers, payload.Marker)
 		}
-		if event.ID <= previousID {
-			t.Fatalf("ListEventsAfter is not ordered by id: %v", cursorEvents)
+		// Every event anchors the exact chronological suffix after it.
+		tail, err := st.ListEventsAfter(ctx, task.ID, event.ID)
+		requireOK(t, err)
+		if len(tail) != len(cursorEvents)-i-1 {
+			t.Fatalf("anchor %d returned %d events, want %d", event.ID, len(tail), len(cursorEvents)-i-1)
 		}
-		previousID = event.ID
-		cursorMarkers = append(cursorMarkers, payload.Marker)
+		for j := range tail {
+			if tail[j].ID != cursorEvents[i+1+j].ID {
+				t.Fatalf("anchor %d tail differs: %v", event.ID, tail)
+			}
+		}
 	}
-	wantCursorMarkers := []string{"delivery-late", "monitor-late", "delivery-first", "monitor-first", "delivery-second", "monitor-second"}
+	wantCursorMarkers := []string{"delivery-first", "monitor-first", "delivery-second", "monitor-second", "delivery-late", "monitor-late"}
 	if !reflect.DeepEqual(cursorMarkers, wantCursorMarkers) {
 		t.Fatalf("ListEventsAfter markers=%v want=%v", cursorMarkers, wantCursorMarkers)
+	}
+	excludedEvents, err := st.ListEvents(ctx, excluded.ID)
+	requireOK(t, err)
+	if _, err := st.ListEventsAfter(ctx, task.ID, excludedEvents[len(excludedEvents)-1].ID); !errors.Is(err, store.ErrEventAnchorNotFound) {
+		t.Fatalf("another task's event was accepted as an anchor: %v", err)
 	}
 
 	ids := []string{task.ID, task.ID, "absent"}

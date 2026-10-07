@@ -88,9 +88,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 			JOIN system_design_versions version ON version.workspace_id=proposal.workspace_id
 			 AND version.document_id=proposal.payload_json->>'document_id'
 			 AND version.version=(proposal.payload_json->>'version')::integer
-			WHERE proposal.workspace_id=$1 AND proposal.id<$2 AND proposal.kind='system_design.version_proposed'
+			WHERE proposal.workspace_id=$1 AND (proposal.at, proposal.id) < ($5::timestamptz, $2::bigint) AND proposal.kind='system_design.version_proposed'
 			 AND proposal.payload_json->>'document_id'=$3 AND proposal.payload_json->>'origin_task_id'=$4
-			ORDER BY proposal.id DESC LIMIT 1`, workspace(ctx), causalEventID, documentID, causalTaskID).Scan(&eventID, &version, &confirmed)
+			ORDER BY proposal.at DESC, proposal.id DESC LIMIT 1`, workspace(ctx), causalEventID, documentID, causalTaskID, causalAt).Scan(&eventID, &version, &confirmed)
 		if proposalErr != nil && !errors.Is(proposalErr, pgx.ErrNoRows) {
 			return proposalErr
 		}
@@ -126,9 +126,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 		var contextKind string
 		var attachedVersion int
 		contextErr := tx.QueryRow(ctx, `SELECT kind,COALESCE((payload_json->>'version')::integer,0)
-			FROM events WHERE workspace_id=$1 AND task_id=$2 AND id<$3
+			FROM events WHERE workspace_id=$1 AND task_id=$2 AND (at, id) < ($5::timestamptz, $3::bigint)
 				AND kind IN ('task.context_design_added','task.context_design_removed')
-				AND payload_json->>'id'=$4 ORDER BY id DESC LIMIT 1`, workspace(ctx), causalTaskID, causalEventID, documentID).Scan(&contextKind, &attachedVersion)
+				AND payload_json->>'id'=$4 ORDER BY at DESC, id DESC LIMIT 1`, workspace(ctx), causalTaskID, causalEventID, documentID, causalAt).Scan(&contextKind, &attachedVersion)
 		if contextErr != nil && !errors.Is(contextErr, pgx.ErrNoRows) {
 			return contextErr
 		}

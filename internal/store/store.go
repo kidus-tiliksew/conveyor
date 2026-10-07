@@ -483,10 +483,18 @@ type LineageStore interface {
 // ActivityStore owns the event and activity projection contract.
 type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
-	// ListEvents returns the per-task ledger ordered by event time, then ID;
-	// ID-cursor readers retain ID order for pagination.
+	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListEventsAfter treats a nonzero afterID as an anchor event owned by the
+	// requested task and workspace and returns the events strictly after its
+	// (at, id) tuple in ascending (at, id) order. Zero starts at the beginning.
+	// A missing or foreign anchor returns ErrEventAnchorNotFound; readers never
+	// compare numeric IDs alone (component-persistence; DEC-39).
 	ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error)
+	// ReadTaskEventStream returns one bounded (at, id)-ordered page whose
+	// events are recorded at or after Since and sort strictly after After.
+	// Live streams use overlapping pages to reconcile delayed visibility.
+	ReadTaskEventStream(ctx context.Context, query TaskEventStreamQuery) (TaskEventStreamPage, error)
 	// ReadTaskEventWindow returns one bounded window of a task-event traversal
 	// from a single consistent read view (component-mcp-protocol v14 MCP-READ-9).
 	ReadTaskEventWindow(ctx context.Context, query TaskEventWindowQuery) (TaskEventWindow, error)
@@ -3498,7 +3506,7 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 		if task.Workspace != workspace || core.TaskTerminal(task.State) {
 			continue
 		}
-		attached, _ := ActiveTaskContextReferences(m.events[task.ID])
+		attached, _ := ActiveTaskContextReferences(ChronologicalTaskEvents(m.events[task.ID]))
 		if attached[requirementID] {
 			continue
 		}
@@ -5700,7 +5708,7 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 		}
 	}
 	if len(filter.ServesRequirementIDs) > 0 || len(filter.GoverningDesignIDs) > 0 {
-		requirements, designs := ActiveTaskContextReferences(m.events[task.ID])
+		requirements, designs := ActiveTaskContextReferences(ChronologicalTaskEvents(m.events[task.ID]))
 		if len(filter.ServesRequirementIDs) > 0 {
 			matched := false
 			for _, id := range filter.ServesRequirementIDs {
@@ -6490,14 +6498,6 @@ func (m *memory) ListRequirementEventsByRequirement(ctx context.Context) (map[st
 	return out, nil
 }
 
-func (m *memory) ListEventsAfter(_ context.Context, taskID string, afterID int64) ([]core.Event, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	events := m.events[taskID]
-	first := sort.Search(len(events), func(i int) bool { return events[i].ID > afterID })
-	return append([]core.Event(nil), events[first:]...), nil
-}
-
 func (m *memory) CountEvents(_ context.Context, taskID, kind string) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -6575,9 +6575,8 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 			sortJobs(jobs)
 			marker.LatestStage = jobs[len(jobs)-1].Stage
 		}
-		if events := m.events[id]; len(events) != 0 {
-			marker.LastEventAt = events[len(events)-1].At
-			marker.LastEventID = events[len(events)-1].ID
+		if latest, ok := LatestTaskEvent(m.events[id], ""); ok {
+			marker.LastEventAt, marker.LastEventID = latest.At, latest.ID
 		}
 		marker.ForgeFailure = LatestForgeFailure(m.events[id])
 		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())

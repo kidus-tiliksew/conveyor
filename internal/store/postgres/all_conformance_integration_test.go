@@ -202,6 +202,8 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
+				return postgresSeedEvents(t, st, ctx, base, events)
 			}}
 		},
 	})

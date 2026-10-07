@@ -46,9 +46,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 			JOIN system_design_versions version ON version.workspace_id=proposal.workspace_id
 			 AND version.document_id=JSON_EXTRACT_STRING(proposal.payload_json,'document_id')
 			 AND version.version=CAST(JSON_EXTRACT_STRING(proposal.payload_json,'version') AS SIGNED)
-			WHERE proposal.workspace_id=? AND proposal.id<? AND proposal.kind='system_design.version_proposed'
+			WHERE proposal.workspace_id=? AND (proposal.at<? OR proposal.at=? AND proposal.id<?) AND proposal.kind='system_design.version_proposed'
 			 AND JSON_EXTRACT_STRING(proposal.payload_json,'document_id')=? AND JSON_EXTRACT_STRING(proposal.payload_json,'origin_task_id')=?
-			ORDER BY proposal.id DESC LIMIT 1`, documentWorkspace(ctx), causalEventID, documentID, causalTaskID).Scan(&eventID, &version, &confirmed)
+			ORDER BY proposal.at DESC,proposal.id DESC LIMIT 1`, documentWorkspace(ctx), causalAt, causalAt, causalEventID, documentID, causalTaskID).Scan(&eventID, &version, &confirmed)
 		if proposalErr != nil && !errors.Is(proposalErr, sql.ErrNoRows) {
 			return proposalErr
 		}
@@ -84,9 +84,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 		var contextKind string
 		var attachedVersion int
 		contextErr := documentRow(ctx, tx, `SELECT kind,COALESCE(CAST(JSON_EXTRACT_STRING(payload_json,'version') AS SIGNED),0)
-			FROM events WHERE workspace_id=? AND task_id=? AND id<?
+			FROM events WHERE workspace_id=? AND task_id=? AND (at<? OR at=? AND id<?)
 				AND kind IN ('task.context_design_added','task.context_design_removed')
-				AND JSON_EXTRACT_STRING(payload_json,'id')=? ORDER BY id DESC LIMIT 1`, documentWorkspace(ctx), causalTaskID, causalEventID, documentID).Scan(&contextKind, &attachedVersion)
+				AND JSON_EXTRACT_STRING(payload_json,'id')=? ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), causalTaskID, causalAt, causalAt, causalEventID, documentID).Scan(&contextKind, &attachedVersion)
 		if contextErr != nil && !errors.Is(contextErr, sql.ErrNoRows) {
 			return contextErr
 		}

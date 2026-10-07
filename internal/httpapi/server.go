@@ -1228,28 +1228,16 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	lastID := int64(0)
+	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"))
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		events, err := s.Store.ListEventsAfter(r.Context(), chi.URLParam(r, "id"), lastID)
-		if err != nil {
-			_, _ = w.Write([]byte("event: error\ndata: {}\n\n"))
-			flusher.Flush()
+		if err := stream.poll(r.Context(), w); err != nil {
+			if errors.Is(err, errTaskEventStreamRead) {
+				_, _ = w.Write([]byte("event: error\ndata: {}\n\n"))
+				flusher.Flush()
+			}
 			return
-		}
-		for _, event := range events {
-			if event.ID <= lastID {
-				continue
-			}
-			data, err := json.Marshal(event)
-			if err != nil {
-				continue
-			}
-			_, _ = w.Write([]byte("event: activity\ndata: "))
-			_, _ = w.Write(data)
-			_, _ = w.Write([]byte("\n\n"))
-			lastID = event.ID
 		}
 		flusher.Flush()
 		select {

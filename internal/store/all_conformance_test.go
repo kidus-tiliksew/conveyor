@@ -28,6 +28,8 @@ func TestMemoryConformance(t *testing.T) {
 			}
 			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) { return st.ListEvents(ctx, "") }, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
 				store.SeedArtifactMetadataForTest(t, st, ctx, a, b)
+			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
+				return store.SeedEventsForTest(t, st, ctx, base, events)
 			}}
 		},
 	})
