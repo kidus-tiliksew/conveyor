@@ -94,7 +94,13 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if retirement {
 		nextState, outcome, retrySuppressed, suppressionReason = core.WorkOrderCancelled, core.WorkOrderOutcomeCancelled, true, "operator retirement"
 	}
-	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET
+	// Only a requeued attempt clears its execution pins; a retired order keeps
+	// its terminal row unchanged (req-worker AC-2.2).
+	pins := ""
+	if !retirement {
+		pins = clearExecutionPinsSQL + ","
+	}
+	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET `+pins+`
 		state=$1,claimant_id='',session_id='',attempt_id='',last_attempt_id=$2,
 		client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',
 		execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$3,

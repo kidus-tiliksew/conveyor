@@ -530,27 +530,6 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 	return jobs, orders, nil
 }
 
-func reviewHarnessSnapshot(cfg *config.Config, name string) (*core.HarnessSnapshot, bool) {
-	for _, harness := range cfg.Harnesses {
-		if harness.Name != name {
-			continue
-		}
-		return &core.HarnessSnapshot{
-			Name:                  harness.Name,
-			MCPTransport:          harness.MCPTransport,
-			MCPAttachment:         harness.MCPAttachment,
-			Command:               append([]string(nil), harness.Command...),
-			ModelArgs:             append([]string(nil), harness.ModelArgs...),
-			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...),
-			EffortArgs:            cloneEffortArgs(harness.EffortArgs),
-			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
-			ProbeTimeoutText:      harness.ProbeTimeoutText,
-			StallTimeoutText:      harness.StallTimeoutText,
-		}, true
-	}
-	return nil, false
-}
-
 // BuildFutureWorkOrderRouting resolves one queued non-review order from the
 // task's frozen setup contract. Setup reassignment uses the same constructor
 // inputs as ordinary dispatch without creating a second routing shape
@@ -573,17 +552,6 @@ func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.
 	now := time.Now().UTC()
 	return core.WorkOrder{Stage: stage, ExecutionTimeoutText: route.TimeoutText,
 		QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout)}, nil
-}
-
-func cloneEffortArgs(source map[string][]string) map[string][]string {
-	if len(source) == 0 {
-		return nil
-	}
-	result := make(map[string][]string, len(source))
-	for effort, args := range source {
-		result[effort] = append([]string(nil), args...)
-	}
-	return result
 }
 
 func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute, reasonCode string) error {

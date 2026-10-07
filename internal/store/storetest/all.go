@@ -169,6 +169,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
+		{"QueueReentryPins", true, runQueueReentryPins},
 		{"ReviewRounds", true, runReviewRounds},
 		{"ReviewAcceptance", true, runReviewAcceptance},
 		{"Decisions", true, runDecisions},

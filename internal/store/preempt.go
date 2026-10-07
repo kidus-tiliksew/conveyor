@@ -90,6 +90,7 @@ func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.Task
 		result.GraceBound = "one renewal interval"
 		order.LastAttemptID = order.AttemptID
 		clearActiveAttempt(&order)
+		order.ClearExecutionPins()
 		order.LastAttemptOutcome = core.WorkOrderOutcomePreempted
 	} else {
 		clearActiveAttempt(&order)

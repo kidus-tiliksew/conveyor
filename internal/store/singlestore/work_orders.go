@@ -536,6 +536,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx *sql.Tx, o core.W
 	attempt := o.AttemptID
 	run := core.IsTaskRunClaimantID(o.ClaimantID)
 	clearOrderClaim(&o)
+	o.ClearExecutionPins()
 	o.State = state
 	o.LastAttemptID = attempt
 	o.ExecutionStartedAt = time.Time{}
@@ -1172,6 +1173,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 			return err
 		}
 		clearOrderClaim(&o)
+		o.ClearExecutionPins()
 		o.State = state
 		o.QueueEnteredAt = now
 		o.QueueDeadline = now.Add(timeout)
@@ -1306,10 +1308,6 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			if err = taskWrite(ctx, tx, o.TaskID, map[string]any{"setup_contract": setup}); err != nil {
 				return err
 			}
-			o.RequiredModel = change.RequiredModel
-			o.RequiredHarness = change.RequiredHarness
-			o.RequiredEffort = change.RequiredEffort
-			o.RequiredHarnessConfig = change.RequiredHarnessConfig
 			o.ExecutionTimeoutText = change.ExecutionTimeoutText
 			if !reflect.DeepEqual(task.SetupContract, change.Setup) {
 				actor := store.ActorFromContext(ctx)
@@ -1319,6 +1317,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			}
 		}
 		clearOrderClaim(&o)
+		o.ClearExecutionPins()
 		o.State = core.WorkOrderQueued
 		o.ExecutionStartedAt = time.Time{}
 		o.ExecutionDeadline = time.Time{}
@@ -1355,38 +1354,6 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	return result, err
 }
 
-func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
-	var result core.WorkOrder
-	if snapshot == nil || snapshot.Name == "" {
-		return result, fmt.Errorf("harness snapshot requires a name")
-	}
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
-		if o.Stage == core.StageReview {
-			accepted, err := reviewSeatAcceptedTx(ctx, tx, documentWorkspace(ctx), o.TaskID, o.ID)
-			if err != nil {
-				return err
-			}
-			if accepted {
-				return fmt.Errorf("review work order already accepted")
-			}
-		}
-		if (o.State != core.WorkOrderQueued && o.State != core.WorkOrderStale) || o.SessionID != "" || o.WorkerID != "" {
-			return fmt.Errorf("work order %s is not an unclaimed queued or stale order", id)
-		}
-		if o.RequiredHarnessConfig == nil || o.RequiredHarnessConfig.Name != snapshot.Name {
-			return fmt.Errorf("harness snapshot does not match frozen harness")
-		}
-		previous := o.RequiredHarnessConfig.Command
-		o.RequiredHarnessConfig = snapshot
-		o.UpdatedAt = time.Now().UTC()
-		if err := orderWrite(ctx, tx, o); err != nil {
-			return err
-		}
-		result = o
-		return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.harness_refreshed", Payload: core.JSONPayload(map[string]any{"work_order_id": o.ID, "previous_command": previous, "command": snapshot.Command})})
-	})
-	return result, err
-}
 func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaimIdentity, rationale string) (store.PlanRevisionRequestResult, error) {
 	var result store.PlanRevisionRequestResult
 	rationale = strings.TrimSpace(rationale)
@@ -1436,6 +1403,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 		}
 		attempt := o.AttemptID
 		clearOrderClaim(&o)
+		o.ClearExecutionPins()
 		o.State = nextOrder
 		o.LastAttemptID = attempt
 		o.ExecutionStartedAt = time.Time{}
@@ -1582,6 +1550,9 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			result.GraceBound = "one renewal interval"
 		}
 		clearOrderClaim(&o)
+		if !retired {
+			o.ClearExecutionPins()
+		}
 		o.State = core.WorkOrderQueued
 		o.LastAttemptID = last
 		o.LastAttemptOutcome = core.WorkOrderOutcomePreempted
