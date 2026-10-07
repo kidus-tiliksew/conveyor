@@ -521,12 +521,30 @@ func TestExecutionBlockStillRejectsUnrelatedUnknownKeys(t *testing.T) {
 	if _, err = ParseWorkspaceDocument(policy, deployment, "no retired key"); err != nil {
 		t.Fatal(err)
 	}
+	type aliased struct {
+		Shared    map[string]any  `yaml:"shared"`
+		Execution ExecutionPolicy `yaml:"execution"`
+	}
+	for _, document := range []string{
+		"shared: &policy {spec_approval: true, require_review_evidence: true}\nexecution: *policy\n",
+		"shared: &policy {spec_approval: true, " + RetiredEvidenceToggleKey + ": true}\nexecution: *policy\n",
+	} {
+		var decoded aliased
+		err = decodeKnown([]byte(document), &decoded)
+		if strings.Contains(document, "require_review_evidence") {
+			if err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
+				t.Fatalf("aliased unknown execution key error=%v", err)
+			}
+		} else if err != nil || !decoded.Execution.SpecApproval {
+			t.Fatalf("aliased retired key decode=%+v err=%v", decoded.Execution, err)
+		}
+	}
 	var invalid WorkspaceDocument
 	if err = decodeKnown(withExecutionKey(t, policy, "verify_concurrency", "many"), &invalid); err == nil || !strings.Contains(err.Error(), "cannot unmarshal") {
 		t.Fatalf("invalid execution value error=%v", err)
 	}
 	if len(*warnings) != 1 {
-		t.Fatalf("warnings=%q, want only the one document that carried the retired key", *warnings)
+		t.Fatalf("warnings=%q, want one process-scoped warning", *warnings)
 	}
 }
 
