@@ -10,7 +10,7 @@ import (
 )
 
 // blueprintView is the dashboard read model for one blueprint anchor
-// (design-web-dashboard). The anchor is presentation, not a persisted entity: every
+// (component-http-api). The anchor is presentation, not a persisted entity: every
 // field below is derived from the parent task, its approved spec, and the
 // children that spec's decomposition materialized. Delivery is reported in
 // blueprint vocabulary so the surface never leaks a raw pipeline state.

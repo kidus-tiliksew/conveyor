@@ -16,7 +16,7 @@ import (
 
 // SystemDesign is the stable identity for one factory-resident mechanism
 // document. Content and governed scope live on immutable versions
-// (design-document-corpus).
+// (component-document-corpus).
 type SystemDesign struct {
 	ID             string    `json:"id"`
 	Slug           string    `json:"slug"`

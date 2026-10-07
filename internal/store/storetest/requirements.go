@@ -19,7 +19,7 @@ import (
 )
 
 // Cross-implementation conformance for requirement documents and planning
-// sessions (design-document-corpus). Requirements are versioned
+// sessions (component-document-corpus). Requirements are versioned
 // and confirmed, never gated: this suite is what proves the in-memory store and
 // Postgres agree on that, so a behaviour an operator relies on cannot hold in
 // one deployment and quietly fail in the other.

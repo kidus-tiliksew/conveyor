@@ -129,7 +129,7 @@ func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registratio
 			Kind:   queue.DispatchTaskArgs{}.Kind(),
 			Handle: (&dispatchTaskWorker{dispatcher: d, shutdown: shutdown}).Work,
 			// Bounded T12/T13 backoff between failed dispatch attempts
-			// (design-task-lifecycle).
+			// (component-durable-queue).
 			RetryDelay: queue.DispatchTaskRetryDelay,
 		},
 		{Kind: queue.ReviewPublicationArgs{}.Kind(), Handle: (&reviewPublicationWorker{dispatcher: d}).Work},

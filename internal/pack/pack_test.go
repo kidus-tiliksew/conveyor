@@ -357,7 +357,7 @@ func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	review := WithRequirementCitationContract("review", core.StageReview, requirements)
 	unlinked := WithRequirementCitationContract("review", core.StageReview, nil)
 	unlinkedImplement := WithRequirementCitationContract("implement", core.StageImplement, nil)
-	for _, required := range []string{"REQ-3: Retries stop.", "AC-3.1: Retry state is durable.", "cite the applicable stable REQ-n IDs or AC-n.m IDs", "confirmed DEC-n decisions", "governing System Design document ID", "(design-task-lifecycle)", "Do not add ornamental citations"} {
+	for _, required := range []string{"REQ-3: Retries stop.", "AC-3.1: Retry state is durable.", "cite the applicable stable REQ-n IDs or AC-n.m IDs", "confirmed DEC-n decisions", "governing System Design document ID", "(component-task-lifecycle)", "Do not add ornamental citations"} {
 		if !strings.Contains(implement, required) {
 			t.Fatalf("implement contract missing %q: %s", required, implement)
 		}
@@ -370,7 +370,7 @@ func TestRequirementCitationContractsAreAuthorityAware(t *testing.T) {
 	if !strings.Contains(unlinked, "applicable=false") || !strings.Contains(unlinked, "unlinked task remains legal") {
 		t.Fatalf("unlinked contract=%s", unlinked)
 	}
-	for _, required := range []string{"confirmed DEC-n authority", "governing System Design document ID", "(design-task-lifecycle)", "Do not add ornamental citations"} {
+	for _, required := range []string{"confirmed DEC-n authority", "governing System Design document ID", "(component-task-lifecycle)", "Do not add ornamental citations"} {
 		if !strings.Contains(unlinkedImplement, required) {
 			t.Fatalf("unlinked implement contract missing %q: %s", required, unlinkedImplement)
 		}

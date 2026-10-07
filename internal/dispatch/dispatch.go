@@ -1,6 +1,6 @@
 // Package dispatch advances the durable pipeline. Triage/spec execute inside
 // conveyord; implementation and MCP-first review pause at leased work orders
-// claimed by operator-owned agents (design-system-architecture; DEC-3).
+// claimed by operator-owned agents (component-work-orders; DEC-3).
 package dispatch
 
 import (
@@ -32,7 +32,7 @@ import (
 )
 
 // ErrReviewedHeadUnavailable marks an approval conflict that the operator can
-// resolve by publishing and reviewing a concrete task head (design-git-delivery).
+// resolve by publishing and reviewing a concrete task head (component-work-orders).
 var ErrReviewedHeadUnavailable = errors.New("reviewed head SHA is unavailable")
 
 type Dispatcher struct {
@@ -57,7 +57,7 @@ type Dispatcher struct {
 	ObserveDesignMerge         func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
-	// (design-system-architecture). Injectable for tests.
+	// (component-work-orders). Injectable for tests.
 	ReviewDiff         func(context.Context, *config.Config, core.Task) (string, error)
 	ReviewChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
 	Now                func() time.Time
@@ -271,7 +271,7 @@ const (
 	maxModelFileBytes       = 50 << 20
 	// maxModelDiffBytes caps the branch diff embedded inline in the
 	// in-process review prompt at the same per-input ceiling as a single
-	// model attachment (design-system-architecture).
+	// model attachment (component-work-orders).
 	maxModelDiffBytes          = maxModelAttachmentBytes
 	maxTriageIterations        = 5
 	maxTriageToolCalls         = 8
@@ -303,7 +303,7 @@ func (d *Dispatcher) DisableMemoryQueueForTest() { d.durableQueue = true }
 
 // DispatchNow advances one task synchronously. The MCP submit_for_review tool
 // uses this when review is configured in-process so its result includes the
-// completed review instead of a polling instruction (design-260805-973cd4).
+// completed review instead of a polling instruction (component-work-orders).
 func (d *Dispatcher) DispatchNow(ctx context.Context, taskID string) error {
 	return d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), taskID)
 }
@@ -384,7 +384,7 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 	// Newly dispatched specs are always MCP work orders, even when a stale
 	// pre-§21.33 route snapshot still says in_process. The remaining StageSpec
 	// handling in runInProcess is only for completion of calls that were already
-	// in flight when the execution contract changed (design-harness-execution).
+	// in flight when the execution contract changed (component-work-orders).
 	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec || task.NextStage == core.StageVerify {
 		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
@@ -447,7 +447,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		}
 	}
 	// Durable queue redelivery must reuse any active snapshotted round. The task
-	// remains queued until the first seat claim issues order.claim (design-260805-973cd4).
+	// remains queued until the first seat claim issues order.claim (component-work-orders).
 	for _, order := range prior {
 		if order.Stage == core.StageReview && order.ReviewRound == latestRound &&
 			(order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
@@ -533,7 +533,7 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 // BuildFutureWorkOrderRouting resolves one queued non-review order from the
 // task's frozen setup contract. Setup reassignment uses the same constructor
 // inputs as ordinary dispatch without creating a second routing shape
-// (design-harness-execution; DEC-7).
+// (component-work-orders; DEC-7).
 func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.Stage) (core.WorkOrder, error) {
 	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement && stage != core.StageVerify) {
 		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
@@ -943,7 +943,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		// The in-process reviewer has no checkout, so the change under review
 		// must travel in the prompt itself; a missing or oversized diff fails
 		// before model execution instead of degrading to a diff-less review
-		// (design-system-architecture).
+		// (component-work-orders).
 		if d.ReviewDiff == nil {
 			return input, fmt.Errorf("in-process review for task %s requires a branch diff resolver", task.ID)
 		}
@@ -1851,7 +1851,7 @@ func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string)
 // pendingSpecGate recognizes the exact lifecycle command that parked the task.
 // Spec, merge, and failure-recovery gates share the same awaiting/recovery
 // projection, while the audited task.state_changed event preserves their
-// distinct commands (design-task-lifecycle).
+// distinct commands (component-work-orders).
 func (d *Dispatcher) pendingSpecGate(
 	ctx context.Context,
 	taskID string,
@@ -2374,7 +2374,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 // MergeApprovedTask performs the final human-gate transition. A durable-store
 // task lock serializes browser retries across control-plane instances; the
 // authoritative pre-merge read makes retries after a process restart safe by
-// reconciling a PR that GitHub already merged (design-git-delivery).
+// reconciling a PR that GitHub already merged (component-work-orders).
 func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task) error {
 	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		return d.mergeApprovedTaskLocked(lockedCtx, task)

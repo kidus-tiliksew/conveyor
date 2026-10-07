@@ -1,5 +1,5 @@
 // Package httpapi is the Phase 2 control-plane REST + SSE surface and embedded
-// activity/review SPA (design-http-api; design-web-dashboard). Mutations are authenticated and
+// activity/review SPA (component-http-api). Mutations are authenticated and
 // recorded with actor identity in the append-only event stream.
 package httpapi
 
@@ -68,7 +68,7 @@ type Server struct {
 	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
 	Workspace string
-	// BearerToken authenticates mutating requests (design-http-api). An empty
+	// BearerToken authenticates mutating requests (component-http-api). An empty
 	// token denies all mutations rather than silently disabling auth.
 	BearerToken string
 	// WorkspaceInfo is the static fallback for the display snapshot; production
@@ -202,7 +202,7 @@ func (s *Server) Handler() http.Handler {
 		// run-order lifecycle routes a session-bound run child credential may
 		// reach; every other run-order control route stays on the user-only
 		// requireTaskRunAuth boundary (req-security-boundaries REQ-1/AC-1.1;
-		// req-260818-24dd3a; design-http-api).
+		// req-260818-24dd3a; component-http-api).
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireTaskRunChildAuth, s.resolveWorkspaceContext, s.requireTaskRunChildCapability(core.CapabilityViewWorkspace), s.requireTaskRunChildCapability(core.CapabilityClaimWork))
 			r.Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
@@ -399,7 +399,7 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		if t.State == core.TaskParked {
 			// A triage park records the stage in RecoveryStage and clears
 			// NextStage. Recovery restores that stage as the next dispatch
-			// target (design-task-lifecycle).
+			// target (component-http-api).
 			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command, NextStage: nextStage, ProjectStages: true})
 		} else {
 			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command})
@@ -543,7 +543,7 @@ func (s *Server) requireWorkspaceAuth(next http.Handler) http.Handler {
 
 // withHumanCredential keeps the workspace-read protocol boundary authenticated
 // even when an explicit memory deployment has no workspace registry
-// (req-security-boundaries REQ-1; design-http-api).
+// (req-security-boundaries REQ-1; component-http-api).
 func (s *Server) withHumanCredential(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
 	credential, ok := store.CredentialFromContext(r.Context())
 	if !ok {
@@ -1324,7 +1324,7 @@ type activityItem struct {
 
 // activityTask is the bounded board/navigation projection. Task bodies,
 // execution policy, forge state, and other detail-only fields stay on the
-// per-task activity endpoint (design-web-dashboard).
+// per-task activity endpoint (component-http-api).
 type activityTask struct {
 	Supersedes      string              `json:"supersedes,omitempty"`
 	SupersededBy    string              `json:"superseded_by,omitempty"`
@@ -1494,7 +1494,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	for _, task := range tasks {
 		// Blueprint anchors are intent artifacts, not claimable work, so they
 		// leave the stage-grouped board and its counts for the Blueprints
-		// surface (design-web-dashboard). The review inbox projection keeps them: an
+		// surface (component-http-api). The review inbox projection keeps them: an
 		// anchor at its spec gate has not materialized children yet, so it is
 		// not classified here and its approval card is untouched.
 		if !reviewsOnly && core.BlueprintAnchor(task) {
@@ -1508,7 +1508,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 			continue
 		}
 		// Project the existing presentation-only authority signal without
-		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; design-web-dashboard).
+		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; component-http-api).
 		item := activityItem{
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
 			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
@@ -1582,7 +1582,7 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 
 // needsAttention is the one derivation the stage-grouped board and the
 // list-first Tasks view share, so the two surfaces cannot disagree about which
-// work is waiting on a human (design-web-dashboard).
+// work is waiting on a human (component-http-api).
 func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority, pendingContext bool) bool {
 	return store.TaskNeedsAttention(task, marker, pendingAuthority, pendingContext)
 }
@@ -1619,7 +1619,7 @@ type taskChildRollup struct {
 	Open   int `json:"open"`
 }
 
-// taskOperationsItem is the list-first Tasks view's row (design-web-dashboard).
+// taskOperationsItem is the list-first Tasks view's row (component-http-api).
 // Every field projects durable task, relationship, context, or plan authority;
 // the view stores nothing and re-derives nothing of its own. No priority or
 // declared-phase field appears here; assignee is durable task authority.
@@ -1656,7 +1656,7 @@ func taskStalledSummaryFor(stalled *store.StalledState) *taskStalledSummary {
 	return &taskStalledSummary{Needed: stalled.Needed, Reason: stalled.Reason, LastFailure: stalled.LastFailure}
 }
 
-// listTaskOperations serves the list-first Tasks view (design-web-dashboard).
+// listTaskOperations serves the list-first Tasks view (component-http-api).
 // Dependencies, blocking edges, and children come from a bounded store page;
 // attached context and plan status fold only the event kinds and latest plan
 // records the projection batches for those returned tasks. The historical
@@ -1707,7 +1707,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	pendingContext := pendingTaskContextByTask(proposals)
 	// Blocked stays a derived predicate owned by the dependency substrate
-	// (design-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
+	// (component-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
 	if err != nil {
@@ -1911,7 +1911,7 @@ func taskChildRollupFor(children []core.TaskRelation) *taskChildRollup {
 // still inside the gate loop; the audited task.state_changed command then
 // separates a plan waiting at its gate from one the operator redirected, the
 // same recognition the dispatcher's own spec-gate check performs
-// (design-task-lifecycle).
+// (component-http-api).
 func taskPlanStatusFor(latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
 	if !hasPlan {
 		return taskPlanStatus{State: taskPlanNone}
@@ -2059,7 +2059,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
 		if readinessErr != nil {
 			// The merge action must never render without a successful gate-facing
-			// readiness read (design-git-delivery).
+			// readiness read (component-http-api).
 			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
 			return
 		}
@@ -2223,7 +2223,7 @@ func (s *Server) checkoutState(taskID string) (string, bool, string) {
 
 func checkoutStateFromHistory(taskID string, _ []core.Event) (string, bool, string) {
 	// An explicit run enters the governed work-order lifecycle and resolves its
-	// own dedicated checkout when implementation begins (design-git-delivery).
+	// own dedicated checkout when implementation begins (component-http-api).
 	return "conveyor run " + taskID, true, "Runs the task through its governed work-order lifecycle."
 }
 

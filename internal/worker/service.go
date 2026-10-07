@@ -1,6 +1,7 @@
 // Package worker implements the enrolled Phase 5.1 dispatch supervisor
 // control surface. It selects orders the worker can serve — skipping held
-// tasks (DEC-5) — and reuses the existing MCP work-order lifecycle
+// tasks, whose hold changes nothing else (DEC-55(3)) — and reuses the existing
+// MCP work-order lifecycle
 // rather than creating a parallel task protocol.
 package worker
 
@@ -100,8 +101,10 @@ type DispatchOrder struct {
 	GitAuthor        core.GitAuthorIdentity `json:"git_author,omitempty"`
 }
 
-// ClaimDelivery carries no stored credential. Git credentials resolve on the
-// worker host (req-260821-830dbf REQ-6/AC-6.1, DEC-33; component-work-orders).
+// ClaimDelivery carries no stored credential and no control-plane installation
+// token. Git credentials for committing, pushing, and opening the pull request
+// resolve on the worker host (req-260821-830dbf REQ-6/AC-6.1, DEC-59(3)-(4);
+// component-work-orders).
 type ClaimDelivery struct {
 	WorkOrder core.WorkOrder `json:"work_order"`
 	Task      core.Task      `json:"task"`
@@ -157,7 +160,7 @@ type TaskRunGate struct {
 
 // HarnessProbeTarget is one exact harness definition the worker must probe.
 // Fingerprint distinguishes an active round's immutable snapshot from a newer
-// same-name workspace definition (design-harness-execution).
+// same-name workspace definition (component-work-orders).
 type HarnessProbeTarget struct {
 	Harness     config.Harness `json:"harness"`
 	Fingerprint string         `json:"fingerprint"`
@@ -318,7 +321,7 @@ func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []co
 	// An active worker-dispatched order owns its snapshotted harness definition
 	// even after the workspace registry hot reloads. Keep accepting health probes
 	// for durable implementation and review snapshots until they leave the active
-	// queue (design-harness-execution).
+	// queue (component-work-orders).
 	active, err := s.ActiveHarnesses(ctx)
 	if err != nil {
 		return core.Worker{}, err
@@ -597,7 +600,7 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		result = append(result, item)
 	}
 	// The reserved review slot precedes workspace FIFO; ID breaks equal
-	// queue-entry clocks deterministically (design-260805-973cd4).
+	// queue-entry clocks deterministically (component-work-orders).
 	sort.Slice(result, func(i, j int) bool {
 		iReview := result[i].Order.Stage == core.StageReview
 		jReview := result[j].Order.Stage == core.StageReview
@@ -614,7 +617,7 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 
 // ListVisibleOrders combines compatible claimable work with the authenticated
 // worker's own active claims and durable review waits. It intentionally does
-// not expose another worker's orders or any terminal state (design-260805-973cd4).
+// not expose another worker's orders or any terminal state (component-work-orders).
 func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error) {
 	claimable, err := s.ListClaimable(ctx, worker)
 	if err != nil {
@@ -749,7 +752,7 @@ func (s *Service) Renew(ctx context.Context, worker core.Worker, id, sessionID s
 
 // RenewClaim renews or classifies the exact authenticated child claim. The
 // explicit identity remains available after a deliberate release clears the
-// active ownership columns (design-260805-973cd4). Worker and run renewals keep
+// active ownership columns (component-work-orders). Worker and run renewals keep
 // the default lease through this entry point.
 func (s *Service) RenewClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string, snapshots ...*core.WorkOrderActivitySnapshotInput) (core.WorkOrder, error) {
 	return s.RenewClaimWithLease(ctx, claim, id, DefaultClaimLease, snapshots...)
@@ -826,7 +829,7 @@ func (s *Service) Release(ctx context.Context, worker core.Worker, id string, re
 
 // ReleaseClaim releases the exact authenticated claim. Worker-facing callers
 // use worker identity; MCP agent children carry the live claim identity that
-// their session authorization resolved (design-260805-973cd4).
+// their session authorization resolved (component-work-orders).
 func (s *Service) ReleaseClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id string, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	if strings.TrimSpace(release.SessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
@@ -1023,7 +1026,7 @@ func (s *Service) RequestPlanRevision(ctx context.Context, worker core.Worker, i
 
 // RequestPlanRevisionClaim raises the operator-gated revision request for the
 // exact authenticated claim owner without assuming every caller is a worker
-// credential (REQ-1, AC-1.1-AC-1.3; design-260805-973cd4).
+// credential (REQ-1, AC-1.1-AC-1.3; component-work-orders).
 func (s *Service) RequestPlanRevisionClaim(ctx context.Context, claim core.WorkOrderClaimIdentity, id, rationale string) (store.PlanRevisionRequestResult, error) {
 	sessionID := claim.SessionID
 	sessionID, rationale = strings.TrimSpace(sessionID), strings.TrimSpace(rationale)

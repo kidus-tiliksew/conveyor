@@ -1,6 +1,6 @@
 // Package store holds event-sourced control-plane state behind an interface.
 // The memory implementation is for unit tests and explicit local development;
-// Postgres is the durable implementation (design-database).
+// Postgres is the durable implementation (component-persistence).
 package store
 
 import (
@@ -1312,7 +1312,7 @@ type memoryInterruptedReviewRecovery struct {
 func InterruptedReviewRecoveryNeeded(task core.Task, orders []core.WorkOrder, events []core.Event) *InterruptedReviewRecoveryState {
 	// Recovery is an operator action for live work only. Historical review
 	// evidence remains visible after terminal delivery, but cannot mint more
-	// agent work (REQ-1/AC-1.3, REQ-6/AC-6.2; design-task-lifecycle).
+	// agent work (REQ-1/AC-1.3, REQ-6/AC-6.2; component-persistence).
 	if core.TaskTerminal(task.State) {
 		return nil
 	}
@@ -3938,7 +3938,7 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 	pastStage := func(stage core.Stage) bool {
 		// A bounce makes the target stage current again. Historical orders from
 		// later stages cannot contradict the task-stage projection
-		// (design-task-lifecycle).
+		// (component-persistence).
 		if task.NextStage == stage {
 			return false
 		}
@@ -4317,7 +4317,7 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 
 // InferWorkOrderUpdateCommand preserves the legacy whole-record update API
 // while routing every actual state change through a named lifecycle command
-// (design-task-lifecycle).
+// (component-persistence).
 func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCommand, bool) {
 	switch {
 	case current.State == core.WorkOrderQueued && next.State == core.WorkOrderClaimed:

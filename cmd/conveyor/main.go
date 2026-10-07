@@ -1,5 +1,5 @@
 // conveyor is the CLI — the primary human surface alongside the review UI
-// (design-system-architecture). It manages tasks, config, and safe local task worktrees.
+// (component-runtime). It manages tasks, config, and safe local task worktrees.
 package main
 
 import (
@@ -342,7 +342,7 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&repo, "repo", "", "repository the task targets")
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
-	newCmd.Flags().BoolVar(&hold, "hold", false, "reserve the task from the worker daemon; claim it yourself (DEC-5)")
+	newCmd.Flags().BoolVar(&hold, "hold", false, "hold the task so workers cannot claim its orders; claim them yourself (DEC-55(3))")
 	newCmd.Flags().StringVar(&setup, "setup", "", "named execution setup (defaults to workspace default)")
 	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
@@ -576,7 +576,7 @@ func checkoutCmd() *cobra.Command {
 	configPath := defaultLocalExecutionConfigPath()
 	cmd := &cobra.Command{
 		Use:   "checkout <task-id>",
-		Short: "Create or reuse the task's dedicated local worktree (design-git-delivery)",
+		Short: "Create or reuse the task's dedicated local worktree (component-runtime)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			worktreeRoot, err := checkoutWorktreeRoot(cmd, configPath)
@@ -694,7 +694,7 @@ func assignedPredecessorCheckpointFromEnvironment(taskID string) *attemptCheckpo
 }
 
 // assignedCheckoutFromEnvironment resolves the branch assignment a worker
-// dispatch injects as CONVEYOR_TASK_* (design-git-delivery). Worker credentials never
+// dispatch injects as CONVEYOR_TASK_* (component-runtime). Worker credentials never
 // authorize workspace REST reads, so a worker-spawned agent cannot call
 // getTask; the assignment is only honored for the exact task it was issued
 // for, and every other invocation falls back to the authenticated lookup.
@@ -715,7 +715,7 @@ func assignedCheckoutFromEnvironment(taskID string) (branch, base, repo, repoURL
 func doneCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "done <task-id>",
-		Short: "Remove a clean task worktree after merge or close (design-git-delivery)",
+		Short: "Remove a clean task worktree after merge or close (component-runtime)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := newClient()
