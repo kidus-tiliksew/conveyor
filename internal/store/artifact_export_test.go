@@ -26,8 +26,8 @@ func SeedEventsForTest(t *testing.T, st Backend, ctx context.Context, base int64
 	}
 	out := make([]core.Event, 0, len(events))
 	for _, e := range events {
-		if _, ok := m.tasks[e.TaskID]; !ok || e.ID <= 0 || e.At.IsZero() {
-			t.Fatalf("seed event needs an existing task, a positive rank and a time: %+v", e)
+		if _, ok := m.tasks[e.TaskID]; (!ok && e.TaskID != "") || e.ID <= 0 || e.At.IsZero() {
+			t.Fatalf("seed event needs an existing or empty task, a positive rank and a time: %+v", e)
 		}
 		e.ID = base + e.ID
 		if e.Payload == nil {

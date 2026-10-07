@@ -96,10 +96,13 @@ func (m *memory) ResolveCausalSystemDesignMerge(ctx context.Context, documentID,
 		return result, nil
 	}
 	result.CausalEventValid = true
+	// Causal windows compare chronological (at, id) tuples, never numeric IDs
+	// alone, matching the durable backends (component-persistence; DEC-39).
 	var latest int64
+	var latestEvent core.Event
 	var proposalVersion int
 	for _, event := range m.events[""] {
-		if event.ID >= causalEventID || event.Kind != "system_design.version_proposed" {
+		if !TaskEventBefore(event, causal) || event.Kind != "system_design.version_proposed" {
 			continue
 		}
 		var proposal struct {
@@ -108,8 +111,8 @@ func (m *memory) ResolveCausalSystemDesignMerge(ctx context.Context, documentID,
 			OriginTaskID string `json:"origin_task_id"`
 			Version      int    `json:"version"`
 		}
-		if json.Unmarshal(event.Payload, &proposal) == nil && proposal.WorkspaceID == workspace && proposal.DocumentID == documentID && proposal.OriginTaskID == causal.TaskID && event.ID > latest {
-			latest = event.ID
+		if json.Unmarshal(event.Payload, &proposal) == nil && proposal.WorkspaceID == workspace && proposal.DocumentID == documentID && proposal.OriginTaskID == causal.TaskID && (latest == 0 || TaskEventBefore(latestEvent, event)) {
+			latest, latestEvent = event.ID, event
 			proposalVersion = proposal.Version
 		}
 	}
@@ -144,11 +147,11 @@ func (m *memory) ResolveCausalSystemDesignMerge(ctx context.Context, documentID,
 
 	causalEvents := make([]core.Event, 0, len(m.events[causal.TaskID]))
 	for _, event := range m.events[causal.TaskID] {
-		if event.ID < causalEventID {
+		if TaskEventBefore(event, causal) {
 			causalEvents = append(causalEvents, event)
 		}
 	}
-	_, designs := ActiveTaskContextReferences(causalEvents)
+	_, designs := ActiveTaskContextReferences(ChronologicalTaskEvents(causalEvents))
 	result.AttachedVersion = designs[documentID]
 	if !recordConsulted || result.AttachedVersion == 0 {
 		return result, nil

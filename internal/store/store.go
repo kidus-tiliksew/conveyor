@@ -2128,8 +2128,9 @@ func (m *memory) approvedExecutionDocumentLocked(task core.Task) (core.SpecVersi
 }
 
 func (m *memory) attemptReportedProgressLocked(order core.WorkOrder) bool {
-	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
-		event := m.events[order.TaskID][i]
+	events := ChronologicalTaskEvents(m.events[order.TaskID])
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
 		if event.JobID != order.JobID {
 			continue
 		}
@@ -2147,8 +2148,9 @@ func (m *memory) previousTransientFailuresLocked(order core.WorkOrder) int {
 	if order.LastFailureCategory != core.WorkOrderFailureTransientConnectivity {
 		return 0
 	}
-	for i := len(m.events[order.TaskID]) - 1; i >= 0; i-- {
-		event := m.events[order.TaskID][i]
+	events := ChronologicalTaskEvents(m.events[order.TaskID])
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
 		if event.JobID != order.JobID || (event.Kind != "work_order.child_failed" && event.Kind != "work_order.stalled") {
 			continue
 		}

@@ -32,7 +32,7 @@ func postgresSeedEvents(t *testing.T, st *Store, ctx context.Context, base int64
 		if e.ActorRole == "" {
 			e.ActorID, e.ActorRole = "system", core.ActorSystem
 		}
-		if _, err := st.pool.Exec(ctx, `INSERT INTO events (id, task_id, job_id, kind, actor_id, actor_role, payload_json, at, workspace_id) OVERRIDING SYSTEM VALUE VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7::jsonb, $8, $9)`, e.ID, e.TaskID, e.JobID, e.Kind, e.ActorID, string(e.ActorRole), string(e.Payload), e.At, ws); err != nil {
+		if _, err := st.pool.Exec(ctx, `INSERT INTO events (id, task_id, job_id, kind, actor_id, actor_role, payload_json, at, workspace_id) OVERRIDING SYSTEM VALUE VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7::jsonb, $8, $9)`, e.ID, e.TaskID, e.JobID, e.Kind, e.ActorID, string(e.ActorRole), string(e.Payload), e.At, ws); err != nil {
 			t.Fatal(err)
 		}
 		e.At = e.At.UTC().Truncate(time.Microsecond)

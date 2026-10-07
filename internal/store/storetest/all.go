@@ -30,7 +30,8 @@ type Fixture struct {
 	// and recorded times, modelling SingleStore's per-aggregator
 	// AUTO_INCREMENT ranges. Each event's ID is a positive relative rank added
 	// to base; a zero base selects a fresh one far above every existing event
-	// ID. The stored events are returned. Committed rows are never rewritten.
+	// ID. An empty TaskID seeds a workspace-level event such as a proposal.
+	// The stored events are returned. Committed rows are never rewritten.
 	SeedEvents func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event
 }
 

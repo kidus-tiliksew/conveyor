@@ -33,7 +33,7 @@ func singlestoreSeedEvents(t *testing.T, st *Store, ctx context.Context, base in
 			e.ActorID, e.ActorRole = "system", core.ActorSystem
 		}
 		e.At = e.At.UTC().Truncate(time.Microsecond)
-		if _, err := st.db.ExecContext(ctx, `INSERT INTO events (id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id) VALUES (?,?,NULLIF(?,''),?,?,?,?,?,?)`, e.ID, e.TaskID, e.JobID, e.Kind, e.ActorID, string(e.ActorRole), string(e.Payload), e.At, ws); err != nil {
+		if _, err := st.db.ExecContext(ctx, `INSERT INTO events (id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id) VALUES (?,NULLIF(?,''),NULLIF(?,''),?,?,?,?,?,?)`, e.ID, e.TaskID, e.JobID, e.Kind, e.ActorID, string(e.ActorRole), string(e.Payload), e.At, ws); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, e)

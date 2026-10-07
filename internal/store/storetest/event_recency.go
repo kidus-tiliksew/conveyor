@@ -2,12 +2,14 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -26,6 +28,9 @@ func runEventRecency(t *testing.T, x Fixture) {
 	t.Run("activity markers and context filters use chronological recency", func(t *testing.T) { runChronologicalProjections(t, x) })
 	t.Run("intervention windows compare time, not ID", func(t *testing.T) { runInterventionWindowRecency(t, x) })
 	t.Run("numeric snapshot ceilings expose late lower-ID commits", func(t *testing.T) { runSnapshotCeilingResiduals(t, x) })
+	t.Run("causal merge windows compare (at,id) tuples", func(t *testing.T) { runCausalMergeRecency(t, x) })
+	t.Run("checkpoint candidates fold requirement context chronologically", func(t *testing.T) { runCheckpointCandidateRecency(t, x) })
+	t.Run("recovery reads the newest transient failure by (at,id)", func(t *testing.T) { runRecoveryTransientRecency(t, x) })
 }
 
 // seedTime is a microsecond-precise time after every ordinary fixture event,
@@ -387,4 +392,192 @@ func runSnapshotCeilingResiduals(t *testing.T, x Fixture) {
 	if next.Total != 3 || next.SnapshotID != page.SnapshotID {
 		t.Fatalf("document snapshot residual changed: total=%d snapshot=%d, want the lower-ID late commit visible as Total 3", next.Total, next.SnapshotID)
 	}
+}
+
+// runCausalMergeRecency pins ResolveCausalSystemDesignMerge's proposal
+// suppression and design-context windows: "before the causal merge" and "the
+// newest earlier proposal" are (at,id) comparisons, with decreasing IDs,
+// timestamp ties and backdated inserts.
+func runCausalMergeRecency(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	resolver, ok := st.(monitor.Store)
+	if !ok {
+		t.Fatal("backend does not implement monitor.Store")
+	}
+	at := seedTime()
+	type scenario struct {
+		delivery core.Task
+		document string
+		merge    core.Event
+		seeded   []core.Event
+	}
+	// Each scenario owns its delivery task and confirmed design so windows
+	// cannot observe another scenario's events.
+	setup := func(t *testing.T, name string, mergeRank int64, mergeAt time.Time, events func(task core.Task, document string) []core.Event) scenario {
+		t.Helper()
+		delivery := newAggregateTask(t, x)
+		document := createConfirmedDesign(t, st, ctx, "recency-"+name+"-"+strings.ToLower(core.NewTaskID()), "internal/recency/**").ID
+		head := "head-" + name
+		merge := core.Event{ID: mergeRank, TaskID: delivery.ID, Kind: "merge.confirmed", At: mergeAt, Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": head})}
+		seeded := x.SeedEvents(t, ctx, 0, append([]core.Event{merge}, events(delivery, document)...))
+		return scenario{delivery: delivery, document: document, merge: seeded[0], seeded: seeded[1:]}
+	}
+	resolve := func(t *testing.T, ctx context.Context, sc scenario, drift string) monitor.SystemDesignMergeJudgment {
+		t.Helper()
+		var payload struct {
+			HeadSHA string `json:"head_sha"`
+		}
+		requireOK(t, json.Unmarshal(sc.merge.Payload, &payload))
+		judgment, err := resolver.ResolveCausalSystemDesignMerge(ctx, sc.document, "conveyor", payload.HeadSHA, sc.merge.ID, drift, []string{"internal/recency/a.go"}, false)
+		requireOK(t, err)
+		return judgment
+	}
+	attach := func(task core.Task, document string, rank int64, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: task.ID, Kind: store.TaskContextDesignAdded, At: at, Payload: core.JSONPayload(map[string]any{"id": document, "version": 1})}
+	}
+	proposal := func(task core.Task, document string, rank int64, at time.Time) core.Event {
+		return core.Event{ID: rank, Kind: "system_design.version_proposed", At: at, Payload: core.JSONPayload(map[string]any{"workspace_id": x.Workspace, "document_id": document, "origin_task_id": task.ID, "version": 1})}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		mergeRank int64
+		mergeAt   time.Time
+		context   func(task core.Task, document string) []core.Event
+		attached  int
+	}{
+		// An earlier attachment holds a higher ID than the merge.
+		{"earlier-higher-id", 100, at.Add(time.Second), func(task core.Task, d string) []core.Event { return []core.Event{attach(task, d, 200, at)} }, 1},
+		// A backdated-looking lower ID appended after the merge is later.
+		{"later-lower-id", 100, at, func(task core.Task, d string) []core.Event {
+			return []core.Event{attach(task, d, 50, at.Add(time.Second))}
+		}, 0},
+		// Equal timestamps break ties by ID.
+		{"tie-lower-id", 100, at, func(task core.Task, d string) []core.Event { return []core.Event{attach(task, d, 90, at)} }, 1},
+		{"tie-higher-id", 100, at, func(task core.Task, d string) []core.Event { return []core.Event{attach(task, d, 110, at)} }, 0},
+		// An earlier removal with a higher ID precedes a later lower-ID
+		// attachment, so the chronological fold keeps the attachment.
+		{"fold-chronologically", 100, at.Add(2 * time.Second), func(task core.Task, d string) []core.Event {
+			removed := core.Event{ID: 300, TaskID: task.ID, Kind: store.TaskContextDesignRemoved, At: at, Payload: core.JSONPayload(map[string]any{"id": d})}
+			return []core.Event{removed, attach(task, d, 250, at.Add(time.Second))}
+		}, 1},
+	} {
+		t.Run("context "+tc.name, func(t *testing.T) {
+			sc := setup(t, tc.name, tc.mergeRank, tc.mergeAt, tc.context)
+			judgment := resolve(t, ctx, sc, "drift-"+tc.name)
+			if !judgment.CausalEventValid || judgment.Proposal.EventID != 0 || judgment.AttachedVersion != tc.attached {
+				t.Fatalf("judgment=%+v, want attached version %d", judgment, tc.attached)
+			}
+		})
+	}
+
+	t.Run("proposal earlier with a higher ID suppresses idempotently", func(t *testing.T) {
+		sc := setup(t, "proposal-earlier", 100, at.Add(time.Second), func(task core.Task, d string) []core.Event { return []core.Event{proposal(task, d, 300, at)} })
+		judgment := resolve(t, ctx, sc, "drift-proposal-earlier")
+		if !judgment.CausalEventValid || judgment.Proposal.EventID != sc.seeded[0].ID || judgment.Proposal.Status != "confirmed" {
+			t.Fatalf("judgment=%+v, want suppression by proposal %d", judgment, sc.seeded[0].ID)
+		}
+		again := resolve(t, ctx, sc, "drift-proposal-earlier")
+		if again.Proposal != judgment.Proposal {
+			t.Fatalf("repeated judgment=%+v, want %+v", again.Proposal, judgment.Proposal)
+		}
+		foreign, err := resolver.ResolveCausalSystemDesignMerge(store.WithWorkspace(ctx, "other-"+core.NewTaskID()), sc.document, "conveyor", "head-proposal-earlier", sc.merge.ID, "drift-proposal-earlier", nil, false)
+		requireOK(t, err)
+		if foreign.CausalEventValid || foreign.Proposal.EventID != 0 {
+			t.Fatalf("foreign workspace judgment=%+v", foreign)
+		}
+	})
+	t.Run("proposal selection takes the newest earlier tuple", func(t *testing.T) {
+		sc := setup(t, "proposal-newest", 100, at, func(task core.Task, d string) []core.Event {
+			return []core.Event{proposal(task, d, 400, at.Add(-2*time.Second)), proposal(task, d, 350, at.Add(-time.Second))}
+		})
+		judgment := resolve(t, ctx, sc, "drift-proposal-newest")
+		if judgment.Proposal.EventID != sc.seeded[1].ID {
+			t.Fatalf("judgment=%+v, want the chronologically newest earlier proposal %d", judgment, sc.seeded[1].ID)
+		}
+	})
+	t.Run("proposal recorded after the merge is excluded", func(t *testing.T) {
+		sc := setup(t, "proposal-later", 100, at, func(task core.Task, d string) []core.Event {
+			return []core.Event{proposal(task, d, 50, at.Add(time.Second))}
+		})
+		judgment := resolve(t, ctx, sc, "drift-proposal-later")
+		if !judgment.CausalEventValid || judgment.Proposal.EventID != 0 {
+			t.Fatalf("judgment=%+v, want no suppression by a later lower-ID proposal", judgment)
+		}
+	})
+}
+
+// runCheckpointCandidateRecency folds requirement attach/remove events in
+// (at,id) order when selecting checkpoint context candidates.
+func runCheckpointCandidateRecency(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	order := newAggregateOrder(t, x)
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	_, err = ReleaseWorkerClaim(ctx, st, order.ID, "worker", core.WorkOrderRelease{SessionID: "session", Reason: "operator checkpoint reached", Outcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the recency proposal"}})
+	requireOK(t, err)
+	attached, removed := "req-attached-"+core.NewTaskID(), "req-removed-"+core.NewTaskID()
+	at := seedTime()
+	requirement := func(kind, id string, rank int64, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: order.TaskID, Kind: kind, At: at, Payload: core.JSONPayload(map[string]any{"id": id})}
+	}
+	x.SeedEvents(t, ctx, 0, []core.Event{
+		// Older higher-ID removal, newer lower-ID attachment: attached.
+		requirement(store.TaskContextRequirementRemoved, attached, 20, at),
+		requirement(store.TaskContextRequirementAdded, attached, 10, at.Add(time.Second)),
+		// Older higher-ID attachment, newer lower-ID removal: removed.
+		requirement(store.TaskContextRequirementAdded, removed, 40, at),
+		requirement(store.TaskContextRequirementRemoved, removed, 30, at.Add(time.Second)),
+	})
+	contains := func(candidates []store.CheckpointContextCandidate) bool {
+		for _, candidate := range candidates {
+			if candidate.ID == order.TaskID {
+				return true
+			}
+		}
+		return false
+	}
+	candidates, err := st.ListCheckpointContextCandidates(ctx, attached)
+	requireOK(t, err)
+	if contains(candidates) {
+		t.Fatalf("task with a chronologically attached requirement is a candidate: %+v", candidates)
+	}
+	candidates, err = st.ListCheckpointContextCandidates(ctx, removed)
+	requireOK(t, err)
+	if !contains(candidates) {
+		t.Fatalf("task whose requirement was chronologically removed is not a candidate: %+v", candidates)
+	}
+}
+
+// runRecoveryTransientRecency checks that operator recovery records the
+// consecutive transient-failure count of the chronologically newest failure,
+// not of a stale failure event holding a higher ID.
+func runRecoveryTransientRecency(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	order := newAggregateOrder(t, x)
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	released, err := ReleaseWorkerClaim(ctx, st, order.ID, "worker", core.WorkOrderRelease{SessionID: "session", Reason: "connection reset", Outcome: core.WorkOrderOutcomeChildFailure, FailureCategory: core.WorkOrderFailureTransientConnectivity, FailureDetail: "dial tcp: connection reset"})
+	requireOK(t, err)
+	if released.LastFailureCategory != core.WorkOrderFailureTransientConnectivity {
+		t.Fatalf("release did not record a transient failure: %+v", released)
+	}
+	x.SeedEvents(t, ctx, 0, []core.Event{{ID: 1, TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.child_failed", At: time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond), Payload: core.JSONPayload(map[string]any{"consecutive_transient_failures": 7})}})
+	requestID := "recover-recency-" + core.NewTaskID()
+	_, err = RecoverWorkOrder(ctx, st, order.ID, requestID, time.Hour)
+	requireOK(t, err)
+	for _, event := range mustEvents(t, ctx, st, order.TaskID) {
+		var payload struct {
+			RequestID   string `json:"request_id"`
+			Consecutive int    `json:"consecutive_transient_failures"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || payload.RequestID != requestID {
+			continue
+		}
+		if payload.Consecutive != 1 {
+			t.Fatalf("recovery recorded %d consecutive transient failures, want 1 from the newest failure", payload.Consecutive)
+		}
+		return
+	}
+	t.Fatal("recovery event missing")
 }
