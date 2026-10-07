@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Requirements are living intent documents (design-document-corpus).
+// Requirements are living intent documents (component-document-corpus).
 // A requirement is versioned and confirmed, never gated: every revision — chat
 // edit or drift amendment — creates a version an operator confirms, and the
 // approval gate stays on legacy blueprints. The corpus is flat; there is no
@@ -87,7 +87,7 @@ type ServedRequirementContext struct {
 
 // RequirementCitationAssessment is the reviewer's structured assessment of
 // implementation citations. Findings are observational review evidence; they
-// never create lineage or alter confirmed requirement authority (design-document-corpus).
+// never create lineage or alter confirmed requirement authority (component-document-corpus).
 type RequirementCitationAssessment struct {
 	Applicable  bool     `json:"applicable"`
 	CitedIDs    []string `json:"cited_ids"`

@@ -15,7 +15,7 @@ and historical phase status lives in the "Roadmap" reference document.
   `internal/queue/logqueue`. Do not introduce another persistence or queue
   dependency.
 - The whole `internal/store/postgres/db/` package is maintained by hand
-  (`design-database`). `sqlc generate` cannot parse migration 035's
+  (`component-persistence`). `sqlc generate` cannot parse migration 035's
   `{{task_states}}` template before rendering, so PostgreSQL integration tests
   are the validation boundary for column and query changes.
 - `cmd/conveyor-shim` and the sandbox execution plane are retired and deleted.

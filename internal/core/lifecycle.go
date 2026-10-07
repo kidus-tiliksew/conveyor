@@ -7,7 +7,7 @@ import (
 )
 
 // LifecycleSpace identifies one closed state space governed by this module
-// (design-task-lifecycle).
+// (component-task-lifecycle).
 type LifecycleSpace string
 
 const (
@@ -25,7 +25,7 @@ type TransitionAlternative struct {
 }
 
 // ErrInvalidTransition is returned for every edge absent from a canonical
-// lifecycle table (design-task-lifecycle). Allowed is stable-sorted for useful logs and
+// lifecycle table (component-task-lifecycle). Allowed is stable-sorted for useful logs and
 // deterministic tests.
 type ErrInvalidTransition struct {
 	Space   LifecycleSpace          `json:"space"`
@@ -114,7 +114,7 @@ var workOrderLifecycleTable = lifecycleTable{
 	string(WorkOrderSubmitted): {string(WorkOrderCmdReviewTerminal): string(WorkOrderCompleted), string(WorkOrderCmdReviewRevise): string(WorkOrderClaimed), string(WorkOrderCmdMarkStale): string(WorkOrderStale), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	string(WorkOrderTimedOut):  {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 	// W14 is intentionally narrower than W13: its handler additionally guards
-	// this stale edge to never-claimed orders (design-task-lifecycle).
+	// this stale edge to never-claimed orders (component-task-lifecycle).
 	string(WorkOrderStale): {string(WorkOrderCmdRecover): string(WorkOrderQueued), string(WorkOrderCmdRedispatch): string(WorkOrderQueued), string(WorkOrderCmdPreempt): string(WorkOrderCancelled), string(WorkOrderCmdCancel): string(WorkOrderCancelled)},
 }
 
@@ -213,7 +213,7 @@ func WorkOrderStates() []WorkOrderState {
 
 // LifecycleStateDiagram generates the requirements UI diagram directly from
 // the canonical transition tables, so documentation cannot drift from the
-// machine that admits lifecycle commands (design-task-lifecycle).
+// machine that admits lifecycle commands (component-task-lifecycle).
 func LifecycleStateDiagram() string {
 	var out strings.Builder
 	out.WriteString("stateDiagram-v2\n")

@@ -84,7 +84,7 @@ func Assemble(ctx context.Context, st store.Store, cfg *config.Config, roots []c
 
 // AssembleWithBudget assembles lineage against an already allocated context
 // budget. Planning uses this after higher-priority reference documents have
-// consumed their share of the same configured allowance (design-lineage-graph).
+// consumed their share of the same configured allowance (component-lineage).
 func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, roots []core.LineageNode, localTaskID string, includeLocalEvidence bool) (Result, error) {
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	graphBudget := core.LineageTraversalBudget{MaxDepth: budget.Depth, MaxNodes: budget.Nodes, MaxLinks: budget.Links, Workspace: workspace}

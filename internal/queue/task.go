@@ -1,7 +1,7 @@
 // Package queue defines the durable job contracts without importing the
 // dispatcher. Keeping args in a neutral package lets the store enqueue jobs
 // transactionally while handlers remain in internal/dispatch
-// (design-task-lifecycle).
+// (component-durable-queue).
 package queue
 
 import (
@@ -13,7 +13,7 @@ import (
 
 const (
 	// The initial execution counts toward MaxAttempts, so five scheduled
-	// retries require six total executions (design-task-lifecycle).
+	// retries require six total executions (component-durable-queue).
 	DispatchTaskRetryLimit    = 5
 	DispatchTaskMaxAttempts   = DispatchTaskRetryLimit + 1
 	DispatchRetryInitialDelay = 10 * time.Second
@@ -21,7 +21,7 @@ const (
 )
 
 // DispatchTaskRetryDelay returns the bounded T12/T13 backoff for the attempt
-// that just failed (design-task-lifecycle).
+// that just failed (component-durable-queue).
 func DispatchTaskRetryDelay(attempt int) time.Duration {
 	delay := DispatchRetryInitialDelay
 	for step := 1; step < attempt && delay < DispatchRetryMaximumDelay; step++ {

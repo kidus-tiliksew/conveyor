@@ -1,6 +1,9 @@
 // Package github implements GitHub intake and delivery over the REST API.
-// Every forge request uses an explicit stored token supplied by its caller
-// (DEC-8; DEC-31; design-git-delivery).
+// Control-plane forge requests authenticate with the workspace GitHub App's
+// installation token, held only in memory and reused until five minutes before
+// expiry. The submission helpers that `conveyor submit` calls run on the
+// executing machine with a credential resolved there (DEC-8; DEC-59(2)-(4);
+// component-git-delivery).
 package github
 
 import (
@@ -51,7 +54,7 @@ var (
 )
 
 // ForgeErrorCategory is the stable GitHub failure taxonomy recorded in
-// operator evidence (design-git-delivery). It deliberately remains local to
+// operator evidence (component-git-delivery). It deliberately remains local to
 // the one supported forge instead of introducing a provider abstraction.
 type ForgeErrorCategory string
 
@@ -853,7 +856,7 @@ func OpenPR(ctx context.Context, worktreeDir, repo, branch, base, title, body st
 
 // OpenPRForBranch trusts the operator-owned agent to have pushed branch. It
 // creates or reuses the PR without requiring Conveyor to own a worktree
-// (design-git-delivery).
+// (component-git-delivery).
 func OpenPRForBranch(ctx context.Context, repo, branch, base, title, body string) (string, error) {
 	return openPRForBranch(ctx, repo, branch, base, title, body, gh)
 }
@@ -1020,7 +1023,7 @@ func ReconcileSubmissionPR(ctx context.Context, repo string, pr SubmissionPullRe
 
 // DiffBetween returns only the commits introduced after an approved review
 // baseline. GitHub's compare endpoint is the authoritative delta source for
-// refresh reviews (design-git-delivery).
+// refresh reviews (component-git-delivery).
 func DiffBetween(ctx context.Context, repo, baseline, head string) (string, error) {
 	if strings.TrimSpace(head) == "" || strings.TrimSpace(baseline) == "" {
 		return "", fmt.Errorf("compare diff head %q: base and head SHA are required", head)
@@ -1087,7 +1090,7 @@ func reconcilePullRequestBody(existing, lifecycle string) string {
 
 	// The explicit end marker makes future resyncs unambiguous: only this
 	// generated region is replaced, while agent-authored Markdown on either
-	// side remains untouched (design-git-delivery).
+	// side remains untouched (component-git-delivery).
 	lifecycle = strings.TrimSpace(strings.ReplaceAll(lifecycle, pullRequestLifecycleEndMarker, "")) + "\n" + pullRequestLifecycleEndMarker
 	parts := make([]string, 0, 3)
 	for _, part := range []string{before, lifecycle, after} {

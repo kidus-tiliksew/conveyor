@@ -9,7 +9,7 @@ import (
 )
 
 // LifecycleAuditViolation is an observed event edge absent from the canonical
-// lifecycle transition tables (design-task-lifecycle). Auditing is read-only:
+// lifecycle transition tables (component-task-lifecycle). Auditing is read-only:
 // callers decide whether a discrepancy is historical corruption or requires a
 // governing-authority amendment.
 type LifecycleAuditViolation struct {
@@ -23,7 +23,7 @@ type LifecycleAuditViolation struct {
 }
 
 // AuditLifecycleHistory folds task and work-order lifecycle events without
-// mutating projections or history (design-task-lifecycle). Pre-command task events are
+// mutating projections or history (component-task-lifecycle). Pre-command task events are
 // accepted only when their recorded edge exists in the canonical table.
 func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 	ordered := append([]core.Event(nil), events...)
@@ -139,7 +139,7 @@ func workOrderEventCommand(event core.Event, from core.WorkOrderState) (core.Wor
 	case "work_order.redispatched":
 		// W14 is stale -> queued for never-claimed queue timeouts. Historical
 		// queued recovery events were state-preserving metadata resets, so they
-		// carry no lifecycle command (design-task-lifecycle).
+		// carry no lifecycle command (component-task-lifecycle).
 		if from == core.WorkOrderQueued {
 			return "", true
 		}

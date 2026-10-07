@@ -18,7 +18,7 @@ func HarnessTemplates() []HarnessTemplate {
 			ID:          "codex",
 			Label:       "Codex CLI",
 			Description: "OpenAI's coding agent",
-			// Codex uses the whole-argument TOML override transport (design-harness-execution).
+			// Codex uses the whole-argument TOML override transport (component-harness-execution).
 			Harness: Harness{
 				Name:         "codex",
 				MCPTransport: MCPTransportTOMLOverride,
@@ -66,7 +66,7 @@ func HarnessTemplates() []HarnessTemplate {
 			Label:       "Grok CLI",
 			Description: "xAI's coding agent",
 			// Grok receives Conveyor through its child-scoped environment attachment;
-			// this argv is pinned by design-harness-execution.
+			// this argv is pinned by component-harness-execution.
 			Harness: Harness{
 				Name:          "grok",
 				MCPTransport:  MCPTransportEnvironment,
