@@ -7393,3 +7393,361 @@ test('failed triage predicate orders fractional-second execution timestamps chro
   await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
 })
+
+// Stream reconnection (component-web-dashboard Server-state discipline). The
+// page's own `fetch` is replaced for the task stream only, so each connection
+// stays pending until the test opens, fails, or answers it, and an opened body
+// stays open until the test closes or errors it. Playwright's clock holds the
+// retry waits and the 250 ms frame debounce, so no assertion races wall time.
+type TaskStreamControl = {
+  urls(): string[]
+  aborted(): boolean[]
+  open(): void
+  respond(status: number, body: string | null): void
+  fail(): void
+  send(text: string): void
+  close(): void
+  error(): void
+}
+
+async function controlTaskStreams(page: Page) {
+  await page.addInitScript(() => {
+    type Connection = {
+      url: string
+      aborted: boolean
+      settled: boolean
+      resolve: (response: Response) => void
+      reject: (reason: unknown) => void
+      body?: ReadableStreamDefaultController<Uint8Array>
+    }
+    const connections: Connection[] = []
+    const nativeFetch = window.fetch.bind(window)
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (!url.includes('/events/stream')) return nativeFetch(input, init)
+      return new Promise<Response>((resolve, reject) => {
+        const connection: Connection = { url, aborted: false, settled: false, resolve, reject }
+        connections.push(connection)
+        init?.signal?.addEventListener('abort', () => {
+          connection.aborted = true
+          const reason = new DOMException('The operation was aborted.', 'AbortError')
+          reject(reason)
+          try {
+            connection.body?.error(reason)
+          } catch {
+            // The body already ended.
+          }
+        })
+      })
+    }
+    // The newest connection the page has not aborted; StrictMode's discarded
+    // first effect leaves an aborted connection behind it.
+    const live = () => {
+      const connection = connections.findLast((candidate) => !candidate.aborted)
+      if (!connection) throw new Error('no live task stream connection')
+      return connection
+    }
+    const settle = (response: Response | Error) => {
+      const connection = live()
+      if (connection.settled) throw new Error('the live task stream connection was already answered')
+      connection.settled = true
+      if (response instanceof Error) connection.reject(response)
+      else connection.resolve(response)
+      return connection
+    }
+    const control: TaskStreamControl = {
+      urls: () => connections.map((connection) => connection.url),
+      aborted: () => connections.map((connection) => connection.aborted),
+      open: () => {
+        let body: ReadableStreamDefaultController<Uint8Array> | undefined
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            body = controller
+          },
+        })
+        settle(new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })).body = body
+      },
+      respond: (status, body) => {
+        settle(new Response(body, { status }))
+      },
+      fail: () => {
+        settle(new TypeError('Failed to fetch'))
+      },
+      send: (text) => live().body?.enqueue(new TextEncoder().encode(text)),
+      close: () => live().body?.close(),
+      error: () => live().body?.error(new TypeError('network error')),
+    }
+    ;(window as unknown as { __taskStreams: TaskStreamControl }).__taskStreams = control
+  })
+  const call = <K extends keyof TaskStreamControl>(name: K, ...args: Parameters<TaskStreamControl[K]>) =>
+    page.evaluate(
+      ([method, values]) =>
+        // biome-ignore lint/suspicious/noExplicitAny: forwards a typed call into the page.
+        (window as unknown as { __taskStreams: Record<string, (...input: any[]) => unknown> }).__taskStreams[method](
+          ...values,
+        ) as ReturnType<TaskStreamControl[K]>,
+      [name, args] as const,
+    )
+  return {
+    urls: () => call('urls'),
+    count: async () => (await call('urls')).length,
+    countFor: async (taskId: string) =>
+      (await call('urls')).filter((url) => url.includes(`/v1/tasks/${taskId}/events/stream`)).length,
+    aborted: () => call('aborted'),
+    open: () => call('open'),
+    respond: (status: number, body: string | null) => call('respond', status, body),
+    fail: () => call('fail'),
+    send: (text: string) => call('send', text),
+    close: () => call('close'),
+    error: () => call('error'),
+  }
+}
+
+const activityFrame = 'event: activity\ndata: {"id":1}\n\n'
+
+// Freeze the installed clock at a moment with no stream timer pending.
+async function pauseClock(page: Page) {
+  const now = await page.evaluate(() => Date.now())
+  await page.clock.pauseAt(now + 1_000)
+}
+
+function fullTaskHeader(page: Page) {
+  return page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+}
+
+test('a closed task stream reconnects and refreshes task detail without an activity frame', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  let detailRequests = 0
+  let activityRequests = 0
+  await page.route('**/v1/tasks/stream-gap/activity*', async (route) => {
+    detailRequests++
+    const item = activity('stream-gap', false)
+    // Server-shaped lightweight detail that changed while the stream was down.
+    item.task.title = detailRequests === 1 ? 'Before the stream gap' : 'After the stream gap'
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/activity*', async (route) => {
+    activityRequests++
+    await route.fallback()
+  })
+  await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
+  await page.goto('/tasks/stream-gap/full')
+  await expect(fullTaskHeader(page)).toContainText('Before the stream gap')
+  await expect.poll(() => streams.countFor('stream-gap')).toBeGreaterThan(0)
+
+  // The first successful connection is not a reconnect and adds no refresh.
+  await streams.open()
+  await pauseClock(page)
+  const connections = await streams.count()
+  const feedRequests = activityRequests
+  expect(detailRequests).toBe(1)
+
+  // A proxy idle timeout or restart ends the response cleanly.
+  await streams.close()
+  await page.clock.runFor(999)
+  expect(await streams.count()).toBe(connections)
+  await page.clock.runFor(1)
+  await expect.poll(() => streams.count()).toBe(connections + 1)
+  expect((await streams.urls()).at(-1)).toContain('/v1/tasks/stream-gap/events/stream?workspace_id=demo')
+  expect(detailRequests).toBe(1)
+
+  // The reopened stream sends no activity frame; the reconnect alone refetches.
+  await streams.open()
+  await expect.poll(() => detailRequests).toBe(2)
+  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
+  await page.clock.resume()
+  await expect(fullTaskHeader(page)).toContainText('After the stream gap')
+  expect(detailRequests).toBe(2)
+})
+
+test('task stream retries errors, non-OK and bodyless responses with bounded backoff', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  let detailRequests = 0
+  await page.route('**/v1/tasks/stream-retry/activity*', async (route) => {
+    detailRequests++
+    await route.fulfill({ json: activity('stream-retry', false) })
+  })
+  await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
+  await page.goto('/tasks/stream-retry/full')
+  await expect(fullTaskHeader(page)).toContainText('Short task')
+  await expect.poll(() => streams.countFor('stream-retry')).toBeGreaterThan(0)
+  await pauseClock(page)
+
+  // Each ending is followed by exactly one new connection after its delay.
+  const expectRetryAfter = async (delay: number) => {
+    const before = await streams.count()
+    await page.clock.runFor(delay - 1)
+    expect(await streams.count()).toBe(before)
+    await page.clock.runFor(1)
+    await expect.poll(() => streams.count()).toBe(before + 1)
+  }
+
+  await streams.fail() // rejected fetch
+  await expectRetryAfter(1_000)
+  await streams.respond(503, 'stream unavailable') // non-OK
+  await expectRetryAfter(2_000)
+  await streams.respond(204, null) // no body
+  await expectRetryAfter(4_000)
+  const beforeUsable = detailRequests
+  await streams.open() // usable, then a read error
+  await expect.poll(() => detailRequests).toBe(beforeUsable + 1)
+  await streams.error()
+  await expectRetryAfter(8_000)
+  await streams.open() // usable, then a clean close without a frame
+  await streams.close()
+  await expectRetryAfter(16_000)
+  await streams.fail()
+  await expectRetryAfter(30_000)
+  await streams.fail()
+  await expectRetryAfter(30_000) // the delay is capped
+
+  // A frame proves the stream worked, so the next wait starts over.
+  await streams.open()
+  await streams.send(activityFrame)
+  await streams.close()
+  await expectRetryAfter(1_000)
+  expect(new Set(await streams.urls())).toEqual(new Set(['/v1/tasks/stream-retry/events/stream?workspace_id=demo']))
+})
+
+test('activity frames keep the 250 ms debounce on the initial connection', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  let detailRequests = 0
+  await page.route('**/v1/tasks/stream-debounce/activity*', async (route) => {
+    detailRequests++
+    await route.fulfill({ json: activity('stream-debounce', false) })
+  })
+  await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
+  await page.goto('/tasks/stream-debounce/full')
+  await expect(fullTaskHeader(page)).toContainText('Short task')
+  await expect.poll(() => streams.countFor('stream-debounce')).toBeGreaterThan(0)
+  await streams.open()
+  await pauseClock(page)
+  expect(detailRequests).toBe(1)
+
+  // Frames split across chunks still parse; three frames coalesce into one refresh.
+  await streams.send('event: activity\ndata: {"id":1}\n\nevent: act')
+  await streams.send('ivity\ndata: {"id":2}\n\n')
+  await page.clock.runFor(100)
+  await streams.send(activityFrame)
+  await page.clock.runFor(249)
+  expect(detailRequests).toBe(1)
+  await page.clock.runFor(1)
+  await expect.poll(() => detailRequests).toBe(2)
+  await page.clock.runFor(5_000)
+  expect(detailRequests).toBe(2)
+})
+
+test('changing tasks stops the old stream, its retry wait, and its pending refresh', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  const detailRequests = new Map<string, number>()
+  await page.route(/\/v1\/tasks\/stream-owner-[ab]\/activity/, async (route) => {
+    const taskId = new URL(route.request().url()).pathname.split('/')[3]
+    detailRequests.set(taskId, (detailRequests.get(taskId) ?? 0) + 1)
+    const item = activity(taskId, false)
+    item.task.title = taskId === 'stream-owner-a' ? 'First stream owner' : 'Second stream owner'
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/activity*', (route) => {
+    const first = activity('stream-owner-a', false)
+    const second = activity('stream-owner-b', false)
+    return route.fulfill({
+      json: [
+        { task: first.task, latest_stage: 'implement', last_event_at: '2026-07-15T12:02:00Z', needs_attention: false },
+        { task: second.task, latest_stage: 'implement', last_event_at: '2026-07-15T12:01:00Z', needs_attention: false },
+      ],
+    })
+  })
+  await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
+  await page.goto('/tasks/stream-owner-a/full')
+  await expect(fullTaskHeader(page)).toContainText('First stream owner')
+  const next = page.getByRole('link', { name: 'Next task' })
+  await expect(next).toBeVisible()
+  await expect.poll(() => streams.countFor('stream-owner-a')).toBeGreaterThan(0)
+  await streams.open()
+  await pauseClock(page)
+
+  // Leave a debounced refresh and a retry wait pending for the first task.
+  await streams.send(activityFrame)
+  await streams.close()
+  const firstConnections = await streams.countFor('stream-owner-a')
+  const firstDetail = detailRequests.get('stream-owner-a')
+  await next.click()
+  await expect.poll(() => streams.countFor('stream-owner-b')).toBeGreaterThan(0)
+
+  await page.clock.runFor(60_000)
+  expect(await streams.countFor('stream-owner-a')).toBe(firstConnections)
+  expect(detailRequests.get('stream-owner-a')).toBe(firstDetail)
+  const urls = await streams.urls()
+  const aborted = await streams.aborted()
+  // The second task's live connection is the only one still owned.
+  expect(urls.filter((url, index) => !aborted[index] && url.includes('stream-owner-a'))).toHaveLength(0)
+  await page.clock.resume()
+  await expect(fullTaskHeader(page)).toContainText('Second stream owner')
+})
+
+test('a request-changes conflict refetches task detail and renders the current gate', async ({ page }) => {
+  // Held stream connections never open, so only the 409 path can refresh.
+  await controlTaskStreams(page)
+  let conflicted = false
+  let detailRequests = 0
+  let activityRequests = 0
+  let changeRequests = 0
+  await page.route('**/v1/tasks/merge-request-changes/activity*', async (route) => {
+    detailRequests++
+    const item = activity('merge-request-changes', false)
+    if (conflicted) {
+      // Another operator already approved; the task left the merge gate.
+      item.task.state = 'approved'
+      item.at_merge_gate = false
+      item.merge_readiness = { state: 'MERGEABLE', head_sha: 'head-1', number: 12 }
+    }
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/activity*', async (route) => {
+    activityRequests++
+    await route.fallback()
+  })
+  await page.route('**/v1/tasks/merge-request-changes/request-changes*', async (route) => {
+    changeRequests++
+    conflicted = true
+    await route.fulfill({ status: 409, json: { detail: 'task is not at the merge gate' } })
+  })
+
+  await page.goto('/tasks/merge-request-changes/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await gate.getByRole('button', { name: 'Request changes' }).click()
+  await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
+  await expect.poll(() => detailRequests).toBe(1)
+  const feedRequests = activityRequests
+  await gate.getByRole('button', { name: 'Send feedback' }).click()
+
+  await expect.poll(() => detailRequests).toBe(2)
+  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
+  // The panel renders the server's current gate while the refusal stays visible.
+  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toBeEnabled()
+  await expect(gate.getByRole('region', { name: 'What you are approving' })).toHaveCount(0)
+  await expect(gate.getByText('Error: task is not at the merge gate')).toBeVisible()
+  // No retry, no success effects: the operator's feedback is kept.
+  await expect(gate.getByLabel('Redirect feedback')).toHaveValue('Keep this exact feedback.')
+  expect(changeRequests).toBe(1)
+})
+
+test('non-conflict gate failures keep their existing behavior without a refetch', async ({ page }) => {
+  await controlTaskStreams(page)
+  let detailRequests = 0
+  await page.route('**/v1/tasks/merge-failure/activity*', async (route) => {
+    detailRequests++
+    await route.fulfill({ json: activity('merge-failure', false) })
+  })
+  await page.route('**/v1/tasks/merge-failure/merge*', (route) =>
+    route.fulfill({ status: 502, body: 'GitHub merge failed' }),
+  )
+
+  await page.goto('/tasks/merge-failure/full')
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect.poll(() => detailRequests).toBe(1)
+  await gate.getByRole('button', { name: 'Merge pull request' }).click()
+  await expect(gate.getByText('Error: GitHub merge failed')).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toBeEnabled()
+  expect(detailRequests).toBe(1)
+})

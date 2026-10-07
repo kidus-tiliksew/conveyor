@@ -2,7 +2,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, GitMerge, type LucideIcon, ThumbsUp, TriangleAlert, Undo2, UserRound } from 'lucide-react'
 import { useState } from 'react'
 import { failedTriage, mergeGateReview, pendingPlanRevisionRequest } from '../../lib/activity'
-import { fetchCallerIdentity, fixMergeConflict, mergeTask, requestTaskChanges, reviewTask } from '../../lib/api'
+import {
+  fetchCallerIdentity,
+  fixMergeConflict,
+  GateMutationError,
+  mergeTask,
+  requestTaskChanges,
+  reviewTask,
+} from '../../lib/api'
 import { defaultReasonCode, interventionActions } from '../../lib/contracts'
 import type { ActivityItem, InterventionAction, Task, TaskEvent } from '../../lib/types'
 import { cn } from '../../lib/utils'
@@ -337,6 +344,18 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       if (input.kind === 'review' && (input.action === 'approve' || input.action === 'redirect')) {
         onDecisionRecorded?.()
       }
+    },
+    // A 409 means the gate this panel rendered is no longer the server's gate,
+    // typically because the page missed events. Refetch both families and keep
+    // the mutation pending until they land, so the panel re-renders from current
+    // state with the refusal still shown. Nothing here retries, clears the
+    // composer, or reports a decision; other failures keep their behavior.
+    onError: async (error) => {
+      if (!(error instanceof GateMutationError) || error.status !== 409) return
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['task', workspace, item.task.id] }),
+        queryClient.invalidateQueries({ queryKey: ['activity'] }),
+      ])
     },
   })
 
