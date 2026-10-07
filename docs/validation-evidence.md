@@ -90,9 +90,12 @@ permissions of an existing directory. On Linux it writes an owner-only marker,
 for each child the command created, the child's device, inode, and a
 boot-relative tick sampled from `/proc/uptime` before the child's `mkdir`. The
 tick is therefore a lower bound on the child's creation. No wall-clock time or
-filesystem timestamp is involved. A child that already existed keeps its
-existing entry or receives none, so repeated preparation never rewrites or
-back-dates an entry. A marker that is invalid or belongs to another boot is
+filesystem timestamp is involved. When the command's own `mkdir` creates a
+child, the new entry replaces any earlier entry for that name. A child the
+command did not create, because it already existed or another actor created it
+after the preflight, keeps its existing entry or receives none, so repeated
+preparation never rewrites or back-dates the entry of a child it did not
+create. A marker that is invalid or belongs to another boot is
 preserved and receives no new entries; the command reports this. On macOS, and
 when the boot ID or tick is unavailable, the command creates the directories
 without recording entries.
@@ -118,10 +121,11 @@ bound: it is a wall-clock reading, and ordering it against boot-relative process
 start ticks would need the history of clock steps between the two events,
 which no host records.
 
-A child that cleanup removed and a later `prepare-cache` re-created keeps its
-earlier entry. That entry's inode normally no longer matches, so the child
-regains no bound. When the filesystem reuses the inode, the earlier tick still
-precedes the new creation and remains a lower bound.
+A child that cleanup removed and a later `prepare-cache` re-created gets a
+fresh entry: its new device and inode, and the tick sampled before that
+`mkdir`. A multi-round task therefore regains a bound on every claim. The fresh
+tick replaces the earlier one even when the filesystem reuses the inode. A
+child that `prepare-cache` did not create never gets a fresh bound.
 
 A process killed before cleanup leaves scratch for the next claim to inspect
 with the same command.

@@ -1269,7 +1269,7 @@ class CacheCreationMarkerTests(unittest.TestCase):
         recorded = {name: entry["created_ticks"] for name, entry in self.marker()["children"].items()}
         self.assertEqual(recorded, {name: 500 + offset for offset, name in enumerate(evidence.DISPOSABLE_CACHE_CHILDREN)})
 
-    def test_repeated_preparation_never_rewrites_or_back_dates_entries(self):
+    def test_repeated_preparation_keeps_existing_entries_and_replaces_recreated_ones(self):
         (self.task_cache / "go-build").mkdir(parents=True)
         first = self.prepare()
         self.assertEqual(first["existing"], ["go-build"])
@@ -1277,23 +1277,30 @@ class CacheCreationMarkerTests(unittest.TestCase):
         before = self.marker_path().read_bytes()
         self.assertNotIn("go-build", self.marker()["children"])
 
+        # Children that still exist keep their entries byte-for-byte.
         self.set_uptime("2000.00")
         again = self.prepare()
         self.assertEqual((again["created"], again["recorded"]), ([], []))
         self.assertEqual(again["existing"], list(evidence.DISPOSABLE_CACHE_CHILDREN))
         self.assertEqual(self.marker_path().read_bytes(), before)
 
-        # A replaced child keeps its old entry exactly; an unrecorded child
-        # created now gets the tick sampled before its own mkdir.
+        # A child this call re-creates replaces its earlier entry; an
+        # unrecorded child created now gets the tick sampled before its mkdir.
         old_npm = self.marker()["children"]["npm"]
+        old_tmp = self.marker()["children"]["tmp"]
         shutil.rmtree(self.task_cache / "npm")
         shutil.rmtree(self.task_cache / "go-build")
         replaced = self.prepare()
         self.assertEqual(replaced["created"], ["go-build", "npm"])
-        self.assertEqual(replaced["recorded"], ["go-build"])
+        self.assertEqual(replaced["recorded"], ["go-build", "npm"])
         marker = self.marker()
-        self.assertEqual(marker["children"]["npm"], old_npm)
-        self.assertEqual(marker["children"]["go-build"]["created_ticks"], 2000 * os.sysconf("SC_CLK_TCK"))
+        later = 2000 * os.sysconf("SC_CLK_TCK")
+        for name in ("go-build", "npm"):
+            info = (self.task_cache / name).lstat()
+            self.assertEqual(marker["children"][name],
+                             {"device": info.st_dev, "inode": info.st_ino, "created_ticks": later})
+        self.assertGreater(marker["children"]["npm"]["created_ticks"], old_npm["created_ticks"])
+        self.assertEqual(marker["children"]["tmp"], old_tmp)
 
     def test_prepare_refuses_sibling_symlink_and_unsafe_targets_before_creating(self):
         for task in ("", ".", "..", "nested/task"):
@@ -1432,6 +1439,77 @@ class CacheCreationMarkerTests(unittest.TestCase):
         with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
             self.cleanup()
 
+    def test_recreation_replaces_the_tick_when_the_inode_is_reused(self):
+        self.prepare()
+        # Stage a directory and point the stale go-build entry at its exact
+        # device and inode with the old tick. The patched mkdir moves it into
+        # place, so the re-created child deterministically reuses that inode.
+        staged = self.base / "staged-go-build"
+        staged.mkdir(mode=0o700)
+        reused = staged.lstat()
+        shutil.rmtree(self.task_cache / "go-build")
+        marker = self.marker()
+        marker["children"]["go-build"] = {"device": reused.st_dev, "inode": reused.st_ino,
+                                          "created_ticks": self.tick}
+        self.write_marker(marker)
+        real_mkdir = os.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if Path(path) == self.task_cache / "go-build":
+                os.rename(staged, path)
+                return None
+            return real_mkdir(path, *args, **kwargs)
+        self.set_uptime("2000.00")
+        with patch.object(evidence.os, "mkdir", mkdir):
+            result = self.prepare()
+        self.assertEqual((result["created"], result["recorded"]), (["go-build"], ["go-build"]))
+        info = (self.task_cache / "go-build").lstat()
+        self.assertEqual((info.st_dev, info.st_ino), (reused.st_dev, reused.st_ino))
+        self.assertEqual(self.marker()["children"]["go-build"],
+                         {"device": reused.st_dev, "inode": reused.st_ino,
+                          "created_ticks": 2000 * os.sysconf("SC_CLK_TCK")})
+
+    def test_child_created_by_another_actor_after_the_preflight_is_never_dated(self):
+        real_mkdir = os.mkdir
+
+        def raced(path, *args, **kwargs):
+            # Another actor wins the race: the directory appears, then this
+            # call's mkdir fails with FileExistsError.
+            if Path(path) == self.task_cache / "npm":
+                real_mkdir(path, *args, **kwargs)
+                raise FileExistsError(17, "File exists", str(path))
+            return real_mkdir(path, *args, **kwargs)
+
+        # No earlier entry: the raced child stays unrecorded.
+        with patch.object(evidence.os, "mkdir", raced):
+            first = self.prepare()
+        children = list(evidence.DISPOSABLE_CACHE_CHILDREN)
+        self.assertEqual(first["created"], children[:-1])
+        self.assertEqual(first["existing"], ["npm"])
+        self.assertEqual(first["recorded"], children[:-1])
+        self.assertNotIn("npm", self.marker()["children"])
+
+        # A stale earlier entry: the raced child leaves the marker byte-for-byte.
+        shutil.rmtree(self.task_cache)
+        self.prepare()
+        shutil.rmtree(self.task_cache / "npm")
+        before = self.marker_path().read_bytes()
+        self.set_uptime("2000.00")
+        with patch.object(evidence.os, "mkdir", raced):
+            again = self.prepare()
+        self.assertEqual((again["created"], again["recorded"]), ([], []))
+        self.assertEqual(again["existing"], children[:-1] + ["npm"])
+        self.assertEqual(self.marker_path().read_bytes(), before)
+
+    def test_recreation_without_timing_facts_keeps_the_marker_unchanged(self):
+        self.prepare()
+        shutil.rmtree(self.task_cache / "npm")
+        before = self.marker_path().read_bytes()
+        (self.proc / "uptime").unlink()
+        result = self.prepare()
+        self.assertEqual((result["created"], result["recorded"]), (["npm"], []))
+        self.assertEqual(self.marker_path().read_bytes(), before)
+
     def test_prepare_cache_command(self):
         env = dict(os.environ, XDG_CACHE_HOME=str(self.base / "cache-home"), PYTHONDONTWRITEBYTECODE="1")
         script = str(REPO / "scripts" / "validation_evidence.py")
@@ -1480,6 +1558,69 @@ class CacheCreationMarkerTests(unittest.TestCase):
             self.assertFalse((self.task_cache / name).exists())
         self.assertTrue(self.task_cache.is_dir())
         self.assertEqual(self.marker_path().read_bytes(), marker)
+        self.assertTrue(unknown.is_dir())
+        self.assertTrue(sibling.is_dir())
+        self.assertEqual(durable.read_text(), "evidence")
+
+    def test_second_round_preparation_bounds_cleanup_from_the_new_tick(self):
+        """The multi-round task: prepare, clean up, prepare again, clean up again."""
+        children = list(evidence.DISPOSABLE_CACHE_CHILDREN)
+        self.prepare()
+        first = self.marker()["children"]
+        self.assertEqual(self.cleanup(), children)
+
+        self.set_uptime("2000.00")
+        second_tick = 2000 * os.sysconf("SC_CLK_TCK")
+        again = self.prepare()
+        self.assertEqual((again["created"], again["recorded"]), (children, children))
+        marker = self.marker()
+        for name in children:
+            info = (self.task_cache / name).lstat()
+            self.assertEqual(marker["children"][name],
+                             {"device": info.st_dev, "inode": info.st_ino, "created_ticks": second_tick})
+            self.assertGreaterEqual(marker["children"][name]["created_ticks"], first[name]["created_ticks"])
+
+        unknown = self.task_cache / "retained-unknown-child"
+        unknown.mkdir()
+        sibling = self.task_cache.parent / "sibling-task" / "go-build"
+        sibling.mkdir(parents=True)
+        durable = self.base / "state" / "conveyor" / "fixture-task" / "command.log"
+        durable.parent.mkdir(parents=True)
+        durable.write_text("evidence")
+        marker_bytes = self.marker_path().read_bytes()
+
+        # Equal, later, and unknown starts, and readable references, refuse.
+        refusals = {
+            "equal": (dict(start=second_tick), "4242:ambiguous"),
+            "later": (dict(start=second_tick + 1), "4242:ambiguous"),
+            "unknown": (dict(), "4242:ambiguous"),
+            "readable cwd": (dict(start=1, cwd=self.task_cache / "go-build"), "4242:cwd"),
+        }
+        for label, (process, reason) in refusals.items():
+            with self.subTest(label):
+                entry = self.process(4242, **process)
+                with self.assertRaisesRegex(evidence.Refused, "active: go-build .*" + reason):
+                    self.cleanup()
+                shutil.rmtree(entry)
+        for name in children:
+            self.assertTrue((self.task_cache / name).is_dir())
+
+        # The invoking user's sshd-session started between the two bounds:
+        # round 1's stale tick would not cover it, the fresh tick does.
+        self.process(4242, start=self.tick + 1)
+        self.process(4343, start=1)
+        self.assertIn("4242:ambiguous:cwd", evidence.active_cache_users(self.task_cache / "go-build", self.proc))
+        stdout = StringIO()
+        with patch.object(sys, "argv", ["validation_evidence.py", "cleanup", "--task", "fixture-task",
+                                        "--task-cache", str(self.task_cache), "--reference", str(durable)]), \
+                patch.object(evidence, "cleanup_cache", functools.partial(evidence.cleanup_cache, proc=self.proc)), \
+                patch("sys.stdout", stdout):
+            self.assertEqual(evidence.main(), 0)
+        self.assertEqual(stdout.getvalue().strip(), "Removed disposable cache children: " + ", ".join(children))
+        for name in children:
+            self.assertFalse((self.task_cache / name).exists())
+        self.assertTrue(self.task_cache.is_dir())
+        self.assertEqual(self.marker_path().read_bytes(), marker_bytes)
         self.assertTrue(unknown.is_dir())
         self.assertTrue(sibling.is_dir())
         self.assertEqual(durable.read_text(), "evidence")
@@ -1682,6 +1823,57 @@ class CacheCreationMarkerTests(unittest.TestCase):
         self.assertFalse([user for user in bounded if user.startswith(f"{before.pid}:")], bounded)
         self.assertIn(f"{after.pid}:ambiguous:cwd", bounded)
 
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and Path("/proc/self/stat").is_file(),
+                         "real non-dumpable processes need Linux /proc")
+    @unittest.skipIf(os.geteuid() == 0, "root reads a non-dumpable process's proc entries")
+    def test_real_non_dumpable_process_between_preparations_is_disregarded(self):
+        """The multi-round SSH-host case with real processes.
+
+        The children are removed directly between rounds, because real
+        cleanup would also inspect unrelated processes on the host.
+        Assertions name only this test's processes.
+        """
+        program = ("import ctypes, sys, time\n"
+                   "libc = ctypes.CDLL(None, use_errno=True)\n"
+                   "if libc.prctl(4, 0, 0, 0, 0) != 0: sys.exit(3)\n"  # PR_SET_DUMPABLE
+                   "print('ready', flush=True)\n"
+                   "time.sleep(60)\n")
+
+        def start():
+            process = subprocess.Popen([sys.executable, "-c", program], cwd=self.base,
+                                       stdout=subprocess.PIPE, text=True)
+            self.addCleanup(process.stdout.close)
+            self.addCleanup(process.wait, 5)
+            self.addCleanup(process.kill)
+            self.assertEqual(process.stdout.readline().strip(), "ready")
+            return process
+
+        children = list(evidence.DISPOSABLE_CACHE_CHILDREN)
+        self.assertEqual(evidence.prepare_cache("fixture-task", self.task_cache)["recorded"], children)
+        first = evidence.creation_bounds(self.task_cache)["go-build"]["created_ticks"]
+        for name in children:
+            shutil.rmtree(self.task_cache / name)
+        time.sleep(0.1)  # Several clock ticks separate the first bound from the next start.
+        between = start()
+        try:
+            os.readlink(f"/proc/{between.pid}/cwd")
+            self.skipTest("this kernel lets the owner read a non-dumpable process's cwd")
+        except PermissionError:
+            pass
+        time.sleep(0.1)
+        self.assertEqual(evidence.prepare_cache("fixture-task", self.task_cache)["recorded"], children)
+        after = start()
+        child = self.task_cache / "go-build"
+        entry = evidence.creation_bounds(self.task_cache)["go-build"]
+        info = child.lstat()
+        self.assertEqual((entry["device"], entry["inode"]), (info.st_dev, info.st_ino))
+        self.assertGreater(entry["created_ticks"], first)
+        stale = evidence.active_cache_users(child, uid=os.getuid(), created_after=first)
+        fresh = evidence.active_cache_users(child, uid=os.getuid(), created_after=entry["created_ticks"])
+        self.assertIn(f"{between.pid}:ambiguous:cwd", stale)
+        self.assertFalse([user for user in fresh if user.startswith(f"{between.pid}:")], fresh)
+        self.assertIn(f"{after.pid}:ambiguous:cwd", fresh)
 
 class MakeGraphTests(unittest.TestCase):
     # Exercise both the local default and .github/workflows/ci.yml explicitly,
