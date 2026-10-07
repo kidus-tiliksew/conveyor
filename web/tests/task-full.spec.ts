@@ -2535,6 +2535,7 @@ test('suppressed worker order exposes failure state and audited recovery action'
   await expect(page.getByRole('button', { name: 'Attach context' })).toBeVisible()
   await page.getByLabel('Operator direction').fill('  Retry with the approved dashboard approach.  ')
   await page.getByRole('button', { name: 'Recover work order' }).click()
+  await expect.poll(() => recoveryRequest).not.toBe('')
   await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Retry with the approved dashboard approach.')
 })
 
@@ -2591,6 +2592,7 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
   await page.getByLabel('Operator direction').fill('Proceed with the accepted amendment.')
   await expect(action).toBeEnabled()
   await action.click()
+  await expect.poll(() => recoveryRequest).not.toBe('')
   await expect.poll(() => JSON.parse(recoveryRequest).direction).toBe('Proceed with the accepted amendment.')
 })
 
