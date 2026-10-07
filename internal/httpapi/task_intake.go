@@ -113,8 +113,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if current != nil {
 		selectedSetup = current.FreezePolicy()
 	}
-	// §21.31: no mode axis, no intake-time health gating — serviceability is
-	// advisory and orders queue openly. Hold is the only reservation input.
+	// No mode axis and no intake-time health gating: serviceability is
+	// advisory and orders queue openly. Hold is the only reservation input
+	// (DEC-55(2)-(3); component-task-lifecycle).
 	hold, specApproval, mergeApproval := resolvedIntakePolicy(req, current)
 	if repos != nil && !contains(repos, req.Repo) {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown repo " + req.Repo}
@@ -212,8 +213,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	return taskCreateResult{Task: task, Created: true}, nil
 }
 
-// resolvedIntakePolicy maps the request onto the three §21.31 policy
-// decisions: hold, spec approval, merge approval. A legacy escalation level
+// resolvedIntakePolicy maps the request onto the three intake policy
+// decisions: hold, spec approval, merge approval (DEC-55(1), DEC-55(3);
+// component-task-lifecycle). A legacy escalation level
 // contributes through its accepted mapping; explicit gate overrides win last.
 func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool, bool) {
 	hold := req.Hold

@@ -661,11 +661,9 @@ func invalidToolCallResult(call toolCall, validationErr error) map[string]any {
 }
 
 // goalMismatchToolCallResult is the stable payload a non-open session returns
-// when the model reaches for the wrong finalizer. §21.57 change 3 requires the
-// goal to be enforced at finalize time; delivering that as an ordinary
-// recoverable tool result — creating no artifact and leaving the session
-// active — follows this package's existing in-band correction discipline
-// rather than the spec, which does not prescribe the mechanism.
+// when the model reaches for the wrong finalizer. A non-open goal accepts only
+// its own finalizer; any other finalizer receives this recoverable tool result,
+// which creates no artifact and leaves the session active (component-planning).
 func goalMismatchToolCallResult(call toolCall, goal core.PlanningSessionGoal, expected string) map[string]any {
 	return map[string]any{
 		"type": "tool-output-error", "toolCallId": call.ID, "toolName": call.Name,

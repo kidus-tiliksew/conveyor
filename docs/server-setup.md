@@ -200,8 +200,10 @@ image for hosted deployments, and a source build for developing Conveyor.
 Release tags are also published as
 `ghcr.io/kidus-tiliksew/conveyor:<version>`. Stable releases additionally
 publish `ghcr.io/kidus-tiliksew/conveyor:latest`; prereleases do not move that
-tag. The image contains both Conveyor binaries plus the `git` and `gh` runtime
-tools, but it contains no credentials or configuration.
+tag. The image contains both Conveyor binaries plus the `git` runtime tool,
+but it contains no credentials or configuration. It does not ship the GitHub
+CLI: the control plane reaches GitHub through the workspace GitHub App over
+REST (DEC-59).
 
 Provide a `conveyor.yaml` and pass a
 container-reachable listen address:

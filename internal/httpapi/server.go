@@ -426,9 +426,10 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, t)
 }
 
-// setTaskHold toggles the §21.31 per-task reservation: while held, workers
-// never claim the task's work orders. Hold is deliberately mutable after
-// intake (§21.31 change 5) and every toggle is audited by the store.
+// setTaskHold toggles the per-task hold: while held, workers never claim the
+// task's work orders, and the hold changes nothing else (DEC-55(3)). Hold is
+// deliberately mutable after intake and every toggle is audited by the store
+// (component-task-lifecycle).
 func (s *Server) setTaskHold(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req struct {
@@ -1629,9 +1630,9 @@ type taskOperationsItem struct {
 	LatestStage core.Stage `json:"latest_stage,omitempty"`
 	LastEventAt time.Time  `json:"last_event_at"`
 	// Stalled says why a row cannot move on its own, so staleness is legible
-	// from the task-level surface. The authority is the
-	// same derived §21.34 state the board and task detail read; only the fields
-	// a list row states travel with it.
+	// from the task-level surface. The authority is the same derived stalled
+	// state the board and task detail read (component-http-api); only the
+	// fields a list row states travel with it.
 	Stalled              *taskStalledSummary `json:"stalled,omitempty"`
 	NeedsAttention       bool                `json:"needs_attention"`
 	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids,omitempty"`
@@ -2069,8 +2070,9 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 			task = refreshed
 		}
 	}
-	// Worker status is advisory serviceability (§21.31); held tasks are the
-	// operator's to claim, so no worker availability is reported for them.
+	// Worker status is advisory serviceability (component-work-orders); held
+	// tasks are the operator's to claim, so no worker availability is reported
+	// for them (DEC-55(3)).
 	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && !core.TaskTerminal(task.State) {
 		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
 			workerStatus = s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)

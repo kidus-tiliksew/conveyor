@@ -30,9 +30,9 @@ const ReadyLabel = "conveyor:ready"
 const DispatchedLabel = "conveyor:dispatched"
 
 // ReviewStatusContext is the portable commit-status context used for the
-// aggregate review result. Unlike Check Runs, commit statuses can be written
-// by the user-owned credentials already required for GitHub coordination
-// (design-git-delivery).
+// aggregate review result. Commit statuses were chosen over Check Runs when
+// publication used user-owned credentials; the workspace GitHub App now writes
+// them like every other review publication (DEC-59(3); component-git-delivery).
 const ReviewStatusContext = "Conveyor / Code review"
 
 const reviewPublicationMarkerPrefix = "<!-- conveyor:review-publication "
@@ -47,25 +47,8 @@ var legacyPullRequestLifecyclePattern = regexp.MustCompile(`^<!-- conveyor:task-
 var (
 	ErrPullRequestNotFound        = errors.New("pull request not found")
 	ErrIssueReconciliationPending = errors.New("GitHub issue reconciliation pending")
-	ErrAuthenticatedIdentityRead  = errors.New("authenticated forge identity read failed")
 	ErrMutationUncertain          = errors.New("forge mutation outcome is uncertain")
 )
-
-// ValidateTokenIdentity validates a candidate with an authenticated REST read.
-// Child detail is intentionally collapsed to a stable secret-free error.
-func ValidateTokenIdentity(ctx context.Context, token string) (string, error) {
-	if strings.TrimSpace(token) == "" {
-		return "", ErrAuthenticatedIdentityRead
-	}
-	out, err := ghWithTokenAndIdentity(token, "stored forge token")(ctx, "api", "user")
-	var response struct {
-		Login string `json:"login"`
-	}
-	if err != nil || json.Unmarshal(out, &response) != nil || strings.TrimSpace(response.Login) == "" {
-		return "", ErrAuthenticatedIdentityRead
-	}
-	return strings.TrimSpace(response.Login), nil
-}
 
 // ForgeErrorCategory is the stable GitHub failure taxonomy recorded in
 // operator evidence (design-git-delivery). It deliberately remains local to

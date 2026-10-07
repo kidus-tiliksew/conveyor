@@ -68,8 +68,9 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, e
 		return fmt.Errorf("dispatch failed: %v; decode job: %w", err, decodeErr)
 	}
 	// A duplicate jobs key can be a lost acknowledgement from a dispatch that
-	// already materialized the §21.30 conflict-fix order. Treat that durable
-	// active order as success before emitting failure or requeue activity.
+	// already materialized the conflict-fix order. Treat that durable active
+	// order as success before emitting failure or requeue activity
+	// (component-submission-merge).
 	if errors.Is(err, store.ErrDispatchJobConflict) {
 		if _, active, lookupErr := w.dispatcher.activeImplementationWorkOrder(ctx, args.TaskID, "merge-conflict"); lookupErr != nil {
 			return fmt.Errorf("dispatch duplicate recovery: %w", lookupErr)
