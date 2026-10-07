@@ -17,7 +17,7 @@ proposal path is not a limitation to work around.
   validated server-side. On a 400, fix the document and re-propose — the
   error names the specific rule violated.
 - The factory's confirmed document corpus is the authority. Tier semantics
-  live in the `design-document-corpus` System Design document and the
+  live in the `component-document-corpus` System Design document and the
   confirmed requirement documents.
 
 ## House style

@@ -12,7 +12,7 @@ import (
 )
 
 // ReferenceDocument is informative workspace context. It intentionally has no
-// requirement identity or citation surface (design-document-corpus).
+// requirement identity or citation surface (component-document-corpus).
 type ReferenceDocument struct {
 	ID             string    `json:"id"`
 	Workspace      string    `json:"workspace"`

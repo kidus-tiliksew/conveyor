@@ -56,7 +56,7 @@ func worktreeRootFromContext(ctx context.Context) string {
 }
 
 // checkoutTask resolves one safe, task-dedicated checkout without switching or
-// rewriting the operator's primary checkout (design-git-delivery; DEC-10).
+// rewriting the operator's primary checkout (component-git-delivery; DEC-10).
 func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, destination string) (string, error) {
 	path, _, err := checkoutTaskWithCheckpoint(ctx, branch, base, repo, repoURL, taskID, destination, nil)
 	return path, err
@@ -82,7 +82,7 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 	}
 	// Identity precedes fetches, ref inspection, worktree reuse, and creation.
 	// A directory label is never accepted as proof of repository ownership
-	// (design-git-delivery).
+	// (component-git-delivery).
 	if err := localgit.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
 		return "", nil, err
 	}
@@ -375,7 +375,7 @@ func skippedOccupiedWorktreeCleanup() worktreeCleanupResult {
 // checkpointTaskWorktreeAtPath preserves dirty state with a normal additive
 // commit and a non-force push. The caller has already resolved this path from
 // Git's registered worktree inventory, rather than trusting a directory name
-// (design-git-delivery).
+// (component-git-delivery).
 func checkpointTaskWorktreeAtPath(ctx context.Context, path, branch, primary string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
 	canonicalPath, err := canonicalWorktreePath(path)
 	if err != nil {
@@ -606,7 +606,7 @@ func oneLine(value string) string {
 }
 
 // removeTaskWorktree performs post-merge/close cleanup only. It intentionally
-// retains the task branch so unmerged history is never deleted (design-git-delivery; DEC-10).
+// retains the task branch so unmerged history is never deleted (component-git-delivery; DEC-10).
 func removeTaskWorktree(ctx context.Context, branch string, state core.TaskState) (worktreeCleanupResult, error) {
 	result := worktreeCleanupResult{Worktree: "skipped", Branch: "absent", Path: "-"}
 	if state != core.TaskMerged && state != core.TaskClosed {
@@ -680,7 +680,7 @@ func defaultImplicitWorktreeRoot() (string, error) {
 
 // implicitCheckoutDestination keeps the deterministic worktree name beneath
 // one fixed canonical client-local root, independently of the primary
-// checkout location (design-git-delivery). Default conveyor/task-<id>
+// checkout location (component-git-delivery). Default conveyor/task-<id>
 // assignments keep <root>/<repo>-task-<task-id>; a custom assignment appends
 // a sanitized branch component so a leftover previous-name tree is not reused.
 func implicitCheckoutDestination(worktreeRoot, repo, taskID, branch string) (string, error) {

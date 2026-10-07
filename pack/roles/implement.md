@@ -43,7 +43,7 @@ Working discipline:
   from origin, and safely create or adopt the exact assigned task branch.
   Preserve any existing branch commits; never reset, force-recreate, rebase,
   delete, or overwrite the branch. Treat dirty, divergent, or ambiguous states
-  as blockers rather than rewriting history (design-git-delivery).
+  as blockers rather than rewriting history (component-work-orders).
 - Make the change, then run the project's practical checks — build, tests,
   vet, whatever the repository's Makefile or docs indicate — and fix what
   they surface.

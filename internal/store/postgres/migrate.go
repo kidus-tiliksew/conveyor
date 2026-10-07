@@ -26,7 +26,7 @@ var migrationFiles embed.FS
 
 // Migrate applies Conveyor's versioned schema. A database-wide session lock
 // serializes concurrent process starts so each applies the sequence once
-// (design-database).
+// (component-persistence).
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	pooled, err := pool.Acquire(ctx)
 	if err != nil {
@@ -324,7 +324,7 @@ WHERE NOT EXISTS (
 
 // recordRequirementVersionRetirementAudit appends one lifecycle event for
 // each migration-094 repair. The schema migration owns the projection update;
-// application code owns append-only ledger writes (design-database).
+// application code owns append-only ledger writes (component-persistence).
 func recordRequirementVersionRetirementAudit(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `
 INSERT INTO events (workspace_id,kind,actor_id,actor_role,payload_json,at)

@@ -21,7 +21,7 @@ func GitHubSlug(repositoryURL string) string {
 // NormalizeRepositoryIdentity canonicalizes the configured and local origin
 // forms used by checkout safety checks. Transport and Git user names are not
 // repository identity; GitHub owner/repository case and a trailing .git are
-// likewise normalized (design-git-delivery).
+// likewise normalized (component-git-delivery).
 func NormalizeRepositoryIdentity(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {

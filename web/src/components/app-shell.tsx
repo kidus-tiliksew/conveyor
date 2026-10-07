@@ -62,7 +62,7 @@ type ActivityFilter = Record<string, string | string[] | undefined>
 // TanStack keeps each server representation independently addressable, while
 // this queue keeps simultaneous consumers from issuing overlapping activity
 // reads. WorkspaceProvider owns the only refresh clock below; queries merely
-// describe the page they need (design-web-dashboard).
+// describe the page they need (component-web-dashboard).
 const activityRequestTails = new WeakMap<QueryClient, Promise<void>>()
 
 function enqueueActivityRequest<T>(queryClient: QueryClient, request: () => Promise<T>): Promise<T> {
@@ -263,7 +263,7 @@ function WorkspaceProvider({
     // One workspace clock refreshes all active activity representations in
     // sequence. Calls that arrive while a pass is running coalesce into one
     // follow-up pass, so focus/reconnect/visibility cannot create competing
-    // request loops (design-web-dashboard).
+    // request loops (component-web-dashboard).
     const refreshActivity = async (cold: boolean) => {
       if (refreshRunning) {
         // An ordinary tick cannot improve on a pass already in flight. A
