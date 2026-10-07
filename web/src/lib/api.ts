@@ -458,6 +458,26 @@ export async function resendWorkspaceInvitation(workspace: string, email: string
   return response.json() as Promise<import('./types').MembershipGrant>
 }
 
+/**
+ * A gate mutation refusal that keeps the response's HTTP status, so a caller
+ * branches on the status (a 409 conflict means the gate changed underneath the
+ * page) instead of on message text. The message is the same decoded text the
+ * plain errors carry, and the name stays `Error` so rendered refusals read the
+ * same (req-review-gates-evidence REQ-1, component-web-dashboard).
+ */
+export class GateMutationError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+async function gateMutationError(response: Response) {
+  return new GateMutationError(apiErrorMessage(await response.text(), response.statusText), response.status)
+}
+
 // API failures arrive either as a JSON envelope or as plain text. Keeping the
 // decoder here prevents mutation surfaces from rendering raw JSON to people.
 function apiErrorMessage(body: string, fallback: string) {
@@ -1415,7 +1435,7 @@ export async function reviewTask(taskId: string, input: ReviewInput) {
     headers: mutationHeaders(),
     body: JSON.stringify({ action: input.action, reason_code: input.reasonCode, comment: input.comment }),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw await gateMutationError(response)
   return response.json() as Promise<{
     task: Task
     checkout_command?: string
@@ -1430,7 +1450,7 @@ export async function requestTaskChanges(taskId: string, feedback: string) {
     headers: mutationHeaders(),
     body: JSON.stringify({ feedback }),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw await gateMutationError(response)
   return response.json() as Promise<{ task: Task; feedback: string }>
 }
 
@@ -1439,7 +1459,7 @@ export async function mergeTask(taskId: string) {
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw await gateMutationError(response)
   return response.json() as Promise<Task>
 }
 
@@ -1448,7 +1468,7 @@ export async function fixMergeConflict(taskId: string) {
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) throw await gateMutationError(response)
   return response.json() as Promise<import('./types').WorkOrder>
 }
 
