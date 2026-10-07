@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -336,13 +338,74 @@ type ExecutionPolicy struct {
 	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
-	// RequireVerificationEvidence fails review submission closed until the
-	// task owns an eligible screenshot or short recording.
-	RequireVerificationEvidence bool `yaml:"require_verification_evidence" json:"require_verification_evidence"`
 	// FirstActivityTimeout is worker child-output liveness, independent of
 	// the claim lease and fixed execution deadline (component-harness-execution).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
 	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
+}
+
+// RetiredEvidenceToggleKey is the execution key of the retired
+// workspace evidence toggle. No workspace setting refuses a submission for
+// review because no verification-evidence artifact is attached
+// (req-review-gates-evidence REQ-8/AC-8.3; DEC-53). Legacy deployment files,
+// workspace documents, and stored rows that still carry the key keep loading:
+// decoding drops it, so it is never consulted or re-emitted, and the first
+// occurrence in a process is logged once.
+const RetiredEvidenceToggleKey = "require_verification_evidence"
+
+var (
+	// retiredExecutionKeyWarning and retiredExecutionKeyLogf are the
+	// process-scoped warning seam for the retired key; tests replace both.
+	retiredExecutionKeyWarning = &sync.Once{}
+	retiredExecutionKeyLogf    = log.Printf
+	executionPolicyYAMLFields  = yamlFieldNames(reflect.TypeOf(ExecutionPolicy{}))
+)
+
+func warnRetiredExecutionKey() {
+	retiredExecutionKeyWarning.Do(func() {
+		retiredExecutionKeyLogf("config: ignoring retired execution.%s; verification evidence never gates review submission (DEC-53)", RetiredEvidenceToggleKey)
+	})
+}
+
+// UnmarshalYAML drops the retired evidence key before decoding the execution
+// block. Every other key must name an ExecutionPolicy field, so an unrelated
+// unknown key still fails with the decoder's own unknown-field error and line
+// on every load path, including strict KnownFields decoders (DEC-53).
+func (p *ExecutionPolicy) UnmarshalYAML(node *yaml.Node) error {
+	if removeDirectMappingKey(node, RetiredEvidenceToggleKey) {
+		warnRetiredExecutionKey()
+	}
+	if node.Kind == yaml.MappingNode {
+		var unknown []string
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if !executionPolicyYAMLFields[key.Value] {
+				unknown = append(unknown, fmt.Sprintf("line %d: field %s not found in type config.ExecutionPolicy", key.Line, key.Value))
+			}
+		}
+		if len(unknown) != 0 {
+			return &yaml.TypeError{Errors: unknown}
+		}
+	}
+	type plain ExecutionPolicy
+	return node.Decode((*plain)(p))
+}
+
+// yamlFieldNames lists the YAML keys a struct type decodes.
+func yamlFieldNames(value reflect.Type) map[string]bool {
+	names := make(map[string]bool, value.NumField())
+	for i := 0; i < value.NumField(); i++ {
+		field := value.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+		if name == "-" || !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(field.Name)
+		}
+		names[name] = true
+	}
+	return names
 }
 
 const (
@@ -1273,10 +1336,10 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
 	// An absent execution block means the shipped default: both gates on
-	// (§21.12 change 2; the mode axis itself is removed by §21.31).
-	executionDefaultsProbe := c.Execution
-	executionDefaultsProbe.RequireVerificationEvidence = false
-	if executionDefaultsProbe == (ExecutionPolicy{}) {
+	// (§21.12 change 2; the mode axis itself is removed by §21.31). A block
+	// that carried only the retired evidence key decodes empty and keeps
+	// these defaults (DEC-53).
+	if c.Execution == (ExecutionPolicy{}) {
 		c.Execution.SpecApproval = true
 		c.Execution.MergeApproval = true
 	}

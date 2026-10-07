@@ -1528,12 +1528,12 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if err = s.submissionJobReady(ctx, order); err != nil {
 		return nil, err
 	}
+	// Eligible task-owned evidence reaches the review seats and the pull
+	// request; its absence never refuses the submission
+	// (req-review-gates-evidence REQ-8/AC-8.2, AC-8.3; DEC-53).
 	evidence, err := s.taskVerificationEvidence(ctx, task.ID)
 	if err != nil {
 		return nil, err
-	}
-	if cfg.Execution.RequireVerificationEvidence && len(evidence) == 0 {
-		return nil, fmt.Errorf("verification evidence is required before review; attach a screenshot (PNG, JPEG, or WebP, up to 10 MiB) or short recording (MP4 or WebM, up to 25 MiB) through POST /v1/worker/work-orders/%s/verification-evidence with multipart field file, X-Conveyor-Work-Order-Token, and X-Conveyor-Work-Order-Session, then retry submit_for_review", order.ID)
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {

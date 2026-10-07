@@ -13,7 +13,6 @@ const config = {
     spec_approval: true,
     merge_approval: false,
     verify_stage: false,
-    require_verification_evidence: false,
     implement_concurrency: 1,
     review_concurrency: 1,
     first_activity_timeout: '2m',
@@ -176,15 +175,20 @@ async function openVerification(page: Page) {
   await expect(page.getByRole('heading', { name: 'reporting' })).toBeVisible()
 }
 
-test('manager tab orders tabs, moves the evidence switch and saves both switches', async ({ page }) => {
+// The retired evidence switch is gone (req-review-gates-evidence AC-8.3;
+// DEC-53): only verify_stage is edited, and the saved execution policy carries
+// exactly the fields the server returned.
+test('manager tab orders tabs, has no evidence switch and saves verify_stage', async ({ page }) => {
   const api = await mockAPIs(page)
   await page.goto('/workspace')
   await expect(page.getByRole('tab')).toHaveText([/^General/, /^Policy/, /^Verification/, /^Workers/, /^Members/])
   await expect(page.getByLabel('Require verification evidence')).toHaveCount(0)
 
   await page.getByRole('tab', { name: 'Verification' }).click()
+  await expect(page.getByLabel('Verify before review')).toBeVisible()
+  await expect(page.getByLabel('Require verification evidence')).toHaveCount(0)
+  await expect(page.getByText('Require verification evidence')).toHaveCount(0)
   await page.getByLabel('Verify before review').click()
-  await page.getByLabel('Require verification evidence').click()
   await expect(page.getByRole('tab', { name: 'Verification' }).getByTitle('Unsaved changes')).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Policy' }).getByTitle('Unsaved changes')).toHaveCount(0)
   const registryCalls = api.calls.registry
@@ -194,7 +198,7 @@ test('manager tab orders tabs, moves the evidence switch and saves both switches
   expect(submitted).toBeDefined()
   const execution = (submitted!.document as typeof config).execution
   expect(execution.verify_stage).toBe(true)
-  expect(execution.require_verification_evidence).toBe(true)
+  expect(Object.keys(execution).sort()).toEqual(Object.keys(config.execution).sort())
   expect(api.calls.registry).toBe(registryCalls)
 })
 

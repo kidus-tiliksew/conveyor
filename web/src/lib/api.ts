@@ -1191,10 +1191,6 @@ export function fetchWorkspaceConfig() {
       ...result,
       document: {
         ...result.document,
-        execution: {
-          ...result.document.execution,
-          require_verification_evidence: result.document.execution?.require_verification_evidence ?? false,
-        },
         repos: result.document.repos ?? [],
         monitor: result.document.monitor ?? {
           enabled: false,

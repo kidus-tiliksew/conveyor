@@ -332,32 +332,240 @@ func TestMonitorConfigurationIsExplicitAndRepositoryScoped(t *testing.T) {
 	}
 }
 
-func TestWorkspaceVerificationEvidenceToggleRoundTripsAndDefaultsOff(t *testing.T) {
-	deployment := validConfig()
-	document := deployment.WorkspaceDocument()
-	if document.Execution.RequireVerificationEvidence {
-		t.Fatal("verification evidence unexpectedly required by default")
+// captureRetiredExecutionKeyWarnings replaces the process-scoped warning seam
+// for one test and returns the recorded warnings.
+func captureRetiredExecutionKeyWarnings(t *testing.T) *[]string {
+	t.Helper()
+	previousOnce, previousLogf := retiredExecutionKeyWarning, retiredExecutionKeyLogf
+	warnings := []string{}
+	retiredExecutionKeyWarning = &sync.Once{}
+	retiredExecutionKeyLogf = func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
 	}
-	document.Execution.RequireVerificationEvidence = true
+	t.Cleanup(func() { retiredExecutionKeyWarning, retiredExecutionKeyLogf = previousOnce, previousLogf })
+	return &warnings
+}
+
+// withExecutionKey adds one scalar key to the document's execution block,
+// creating the block when it is absent.
+func withExecutionKey(t *testing.T, data []byte, key, value string) []byte {
+	t.Helper()
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	document := root.Content[0]
+	execution := mappingValue(document, "execution")
+	if execution == nil || execution.Kind != yaml.MappingNode {
+		execution = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		removeDirectMappingKey(document, "execution")
+		document.Content = append(document.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "execution"}, execution)
+	}
+	execution.Content = append(execution.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: value})
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The retired evidence toggle loads ignored on the deployment, workspace, and
+// stored-workspace paths, warns once per process, is never re-emitted, and
+// sets no stored-row rewrite flag (req-review-gates-evidence AC-8.3; DEC-53).
+func TestRetiredVerificationEvidenceKeyLoadsIgnoredAndWarnsOnce(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Load("../../conveyor.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"true", "false"} {
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err = os.WriteFile(path, withExecutionKey(t, example, RetiredEvidenceToggleKey, value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, loadErr := Load(path)
+		if loadErr != nil {
+			t.Fatalf("deployment file with retired key %s: %v", value, loadErr)
+		}
+		if loaded.Execution != baseline.Execution {
+			t.Fatalf("deployment execution=%+v, want %+v", loaded.Execution, baseline.Execution)
+		}
+	}
+
+	deployment, err := normalize(validConfig(), "retired key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := MarshalWorkspaceDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, document := range []struct {
+		name string
+		data []byte
+	}{{"workspace", full}, {"policy", policy}} {
+		want, parseErr := ParseWorkspaceDocument(document.data, deployment, "retired key baseline")
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		_, wantLegacy, parseErr := ParseStoredWorkspaceDocument(document.data, deployment, "retired key baseline")
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		for _, value := range []string{"true", "false"} {
+			legacyData := withExecutionKey(t, document.data, RetiredEvidenceToggleKey, value)
+			parsed, parseErr := ParseWorkspaceDocument(legacyData, deployment, "retired key workspace")
+			if parseErr != nil {
+				t.Fatalf("%s document with retired key %s: %v", document.name, value, parseErr)
+			}
+			if parsed.Execution != want.Execution {
+				t.Fatalf("%s execution=%+v, want %+v", document.name, parsed.Execution, want.Execution)
+			}
+			stored, legacy, parseErr := ParseStoredWorkspaceDocument(legacyData, deployment, "retired key stored")
+			if parseErr != nil {
+				t.Fatalf("stored %s document with retired key %s: %v", document.name, value, parseErr)
+			}
+			if legacy != wantLegacy || stored.Execution != want.Execution {
+				t.Fatalf("stored %s legacy=%t (want %t) execution=%+v", document.name, legacy, wantLegacy, stored.Execution)
+			}
+			var decoded WorkspaceDocument
+			if decodeErr := decodeKnown(legacyData, &decoded); decodeErr != nil {
+				t.Fatalf("strict stored-row decode of %s document: %v", document.name, decodeErr)
+			}
+			for _, written := range [][]byte{mustMarshalWorkspaceDocument(t, parsed), mustMarshalPolicyDocument(t, stored), mustJSON(t, parsed.WorkspaceDocument()), mustJSON(t, decoded)} {
+				if bytes.Contains(written, []byte(RetiredEvidenceToggleKey)) {
+					t.Fatalf("configuration write re-emitted the retired key: %s", written)
+				}
+			}
+		}
+	}
+	if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "execution."+RetiredEvidenceToggleKey) || !strings.Contains((*warnings)[0], "DEC-53") {
+		t.Fatalf("retired key warnings=%q, want exactly one naming the key and DEC-53", *warnings)
+	}
+}
+
+func mustMarshalWorkspaceDocument(t *testing.T, cfg *Config) []byte {
+	t.Helper()
+	data, err := MarshalWorkspaceDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mustMarshalPolicyDocument(t *testing.T, cfg *Config) []byte {
+	t.Helper()
+	data, err := MarshalPolicyDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// Dropping the retired key does not relax strict decoding: an unrelated
+// unknown execution key still fails with its own line on every load path, and
+// documents without the key never warn.
+func TestExecutionBlockStillRejectsUnrelatedUnknownKeys(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	deployment, err := normalize(validConfig(), "unknown key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{
+		withExecutionKey(t, policy, "require_review_evidence", "true"),
+		withExecutionKey(t, withExecutionKey(t, policy, RetiredEvidenceToggleKey, "true"), "require_review_evidence", "true"),
+	} {
+		if _, err = ParseWorkspaceDocument(data, deployment, "unknown key"); err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found in type config.ExecutionPolicy") || !strings.Contains(err.Error(), "line ") {
+			t.Fatalf("workspace unknown execution key error=%v", err)
+		}
+		if _, _, err = ParseStoredWorkspaceDocument(data, deployment, "unknown key"); err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
+			t.Fatalf("stored unknown execution key error=%v", err)
+		}
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		example, readErr := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if err = os.WriteFile(path, withExecutionKey(t, example, "require_review_evidence", "true"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = Load(path); err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
+			t.Fatalf("deployment unknown execution key error=%v", err)
+		}
+	}
+	if _, err = ParseWorkspaceDocument(policy, deployment, "no retired key"); err != nil {
+		t.Fatal(err)
+	}
+	var invalid WorkspaceDocument
+	if err = decodeKnown(withExecutionKey(t, policy, "verify_concurrency", "many"), &invalid); err == nil || !strings.Contains(err.Error(), "cannot unmarshal") {
+		t.Fatalf("invalid execution value error=%v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("warnings=%q, want only the one document that carried the retired key", *warnings)
+	}
+}
+
+// An execution block holding only the retired key still means the shipped
+// default: both approval gates on.
+func TestRetiredKeyOnlyExecutionBlockKeepsShippedGateDefaults(t *testing.T) {
+	captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	deployment, err := normalize(validConfig(), "gate defaults deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := deployment.WorkspaceDocument()
+	document.Execution = ExecutionPolicy{}
 	data, err := yaml.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := ParseWorkspaceDocument(data, deployment, "verification evidence test")
+	var root yaml.Node
+	if err = yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	removeDirectMappingKey(root.Content[0], "execution")
+	absent, err := yaml.Marshal(&root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !parsed.Execution.RequireVerificationEvidence || !parsed.WorkspaceDocument().Execution.RequireVerificationEvidence {
-		t.Fatalf("toggle did not round trip: %+v", parsed.Execution)
-	}
-
-	deployment.Execution = ExecutionPolicy{RequireVerificationEvidence: true}
-	normalized, err := normalize(deployment, "verification evidence defaults test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !normalized.Execution.SpecApproval || !normalized.Execution.MergeApproval {
-		t.Fatalf("new toggle suppressed shipped gate defaults: %+v", normalized.Execution)
+	for name, candidate := range map[string][]byte{
+		"absent block":      absent,
+		"retired key only":  withExecutionKey(t, absent, RetiredEvidenceToggleKey, "true"),
+		"retired key false": withExecutionKey(t, absent, RetiredEvidenceToggleKey, "false"),
+	} {
+		parsed, parseErr := ParseWorkspaceDocument(candidate, deployment, name)
+		if parseErr != nil {
+			t.Fatalf("%s: %v", name, parseErr)
+		}
+		if !parsed.Execution.SpecApproval || !parsed.Execution.MergeApproval {
+			t.Fatalf("%s suppressed shipped gate defaults: %+v", name, parsed.Execution)
+		}
 	}
 }
 

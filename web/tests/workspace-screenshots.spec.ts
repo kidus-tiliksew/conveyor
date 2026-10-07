@@ -10,7 +10,6 @@ const document = {
   execution: {
     spec_approval: true,
     merge_approval: true,
-    require_verification_evidence: true,
     implement_concurrency: 5,
     review_concurrency: 2,
     first_activity_timeout: '2m',

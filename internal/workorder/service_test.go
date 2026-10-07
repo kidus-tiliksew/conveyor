@@ -2666,7 +2666,21 @@ func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) 
 	}
 }
 
-func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSeat(t *testing.T) {
+// evidenceSubmissionFixture is one valid claimed implementation submission
+// with a two-seat review panel and recorded PR body.
+type evidenceSubmissionFixture struct {
+	ctx       context.Context
+	st        store.Store
+	task      core.Task
+	otherTask core.Task
+	job       core.Job
+	service   *Service
+	openCalls *int
+	prBody    *string
+}
+
+func newEvidenceSubmissionFixture(t *testing.T) evidenceSubmissionFixture {
+	t.Helper()
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	task := core.Task{
@@ -2692,8 +2706,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	}
 	cfg := &config.Config{
 		Workspace: "demo", MaxBounces: 2,
-		Execution: config.ExecutionPolicy{RequireVerificationEvidence: true},
-		Repos:     []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
+		Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{
 			{Model: "reviewer-a"}, {Model: "reviewer-b"},
 		}},
@@ -2708,7 +2721,7 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		t.Fatal(err)
 	}
 	openCalls := 0
-	var prBody string
+	prBody := ""
 	service := &Service{
 		Store: st, Dispatcher: dispatcher, Pack: bundle,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
@@ -2721,68 +2734,25 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 			return githubtrigger.ReviewTarget{Number: 54, BaseSHA: "base123", HeadSHA: "abc123"}, nil
 		},
 	}
+	return evidenceSubmissionFixture{ctx: ctx, st: st, task: task, otherTask: otherTask, job: job, service: service, openCalls: &openCalls, prBody: &prBody}
+}
 
-	assertRejectedWithoutSideEffects := func() {
-		t.Helper()
-		prepareSubmissionTest(service)
-		if _, submitErr := service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); submitErr == nil ||
-			!strings.Contains(submitErr.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
-			!strings.Contains(submitErr.Error(), "X-Conveyor-Work-Order-Token") ||
-			!strings.Contains(submitErr.Error(), "X-Conveyor-Work-Order-Session") ||
-			!strings.Contains(submitErr.Error(), "screenshot") {
-			t.Fatalf("evidence rejection=%v", submitErr)
-		}
-		order, getErr := st.GetWorkOrder(ctx, job.ID)
-		if getErr != nil || order.State != core.WorkOrderClaimed {
-			t.Fatalf("implementation order=%+v err=%v", order, getErr)
-		}
-		current, getErr := st.GetTask(ctx, task.ID)
-		if getErr != nil || current.NextStage != core.StageImplement || current.State != core.TaskRunning {
-			t.Fatalf("task advanced on rejection: %+v err=%v", current, getErr)
-		}
-		orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
-		if listErr != nil || len(orders) != 1 || openCalls != 0 {
-			t.Fatalf("side effects orders=%+v open_calls=%d err=%v", orders, openCalls, listErr)
-		}
-		if count, countErr := st.CountEvents(ctx, task.ID, "pull_request.opened"); countErr != nil || count != 0 {
-			t.Fatalf("pull_request.opened=%d err=%v", count, countErr)
-		}
+// submitAndClaimSeats submits the implementation, dispatches the review panel,
+// and returns each seat's served verification-evidence references.
+func (f evidenceSubmissionFixture) submitAndClaimSeats(t *testing.T) [][]ArtifactReference {
+	t.Helper()
+	prepareSubmissionTest(f.service)
+	result, err := f.service.SubmitForReview(f.ctx, f.job.ID, "implementer", submissionTestHead(f.service))
+	if err != nil || result["await_review"] != true || *f.openCalls != 1 {
+		t.Fatalf("submit=%+v open_calls=%d err=%v", result, *f.openCalls, err)
 	}
-	assertRejectedWithoutSideEffects()
-
-	if _, err = st.CreateArtifact(ctx, core.Artifact{
-		Name: "wrong-role.png", ContentType: "image/png", Role: core.ArtifactRoleTaskContext, TaskID: task.ID,
-	}, testimage.PNG("wrong role")); err != nil {
-		t.Fatal(err)
+	order, err := f.st.GetWorkOrder(f.ctx, f.job.ID)
+	if err != nil || order.State != core.WorkOrderSubmitted {
+		t.Fatalf("implementation order=%+v err=%v", order, err)
 	}
-	if _, err = st.CreateArtifact(ctx, core.Artifact{
-		Name: "other.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: otherTask.ID,
-	}, testimage.PNG("cross task")); err != nil {
-		t.Fatal(err)
-	}
-	assertRejectedWithoutSideEffects()
-
-	evidence, err := st.CreateArtifact(ctx, core.Artifact{
-		Name: "exercised UI `proof`.png", ContentType: "image/png; charset=binary",
-		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
-		DownloadURL: "https://control-plane.invalid/private?token=secret",
-	}, testimage.PNG("valid evidence"))
+	links, err := f.st.ListLineageLinks(f.ctx)
 	if err != nil {
 		t.Fatal(err)
-	}
-	prepareSubmissionTest(service)
-	result, err := service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service))
-	if err != nil || result["await_review"] != true || openCalls != 1 {
-		t.Fatalf("submit=%+v open_calls=%d err=%v", result, openCalls, err)
-	}
-	if strings.Count(prBody, "<!-- conveyor:verification-evidence -->") != 1 ||
-		!strings.Contains(prBody, evidence.ID) || !strings.Contains(prBody, "image/png") ||
-		strings.Contains(prBody, "control-plane.invalid") || strings.Contains(prBody, "token=secret") {
-		t.Fatalf("unsafe or incomplete PR evidence body: %s", prBody)
-	}
-	links, listErr := st.ListLineageLinks(ctx)
-	if listErr != nil {
-		t.Fatal(listErr)
 	}
 	wantRange := core.CommitRangeLineageID("acme/app", "base123", "abc123")
 	foundPR, foundRange := false, false
@@ -2793,22 +2763,20 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 	if !foundPR || !foundRange {
 		t.Fatalf("submission lineage=%+v", links)
 	}
-
-	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+	if err = f.service.Dispatcher.DispatchNow(f.ctx, f.task.ID); err != nil {
 		t.Fatal(err)
 	}
-	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	orders, err := f.st.ListTaskWorkOrders(f.ctx, f.task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewSeats := 0
+	var seats [][]ArtifactReference
 	for _, order := range orders {
 		if order.Stage != core.StageReview {
 			continue
 		}
-		reviewSeats++
 		session := "review-session-" + order.ID
-		claimed, claimErr := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, ClaimantID: "reviewer", OwnerUserID: "usr-reviewer", Lease: time.Minute})
+		claimed, claimErr := f.service.Claim(f.ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "review-secret-" + order.ID, ClaimantID: "reviewer", OwnerUserID: "usr-reviewer", Lease: time.Minute})
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
@@ -2818,28 +2786,95 @@ func TestSubmitForReviewEvidenceGateIsSideEffectFreeAndPropagatesToEveryReviewSe
 		if len(claimed.ServedRequirementSnapshot) != 0 {
 			t.Fatalf("seat %s snapshot=%+v, want empty", order.ID, claimed.ServedRequirementSnapshot)
 		}
-		reloaded, reloadErr := st.GetWorkOrder(ctx, order.ID)
+		reloaded, reloadErr := f.st.GetWorkOrder(f.ctx, order.ID)
 		if reloadErr != nil {
 			t.Fatal(reloadErr)
 		}
 		if reloaded.ServedRequirementSnapshot == nil || len(reloaded.ServedRequirementSnapshot) != 0 {
 			t.Fatalf("seat %s reloaded snapshot=%+v, want non-nil empty", order.ID, reloaded.ServedRequirementSnapshot)
 		}
-		context, getErr := service.Get(ctx, order.ID, session)
+		served, getErr := f.service.Get(f.ctx, order.ID, session)
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if len(context.VerificationEvidence) != 1 {
-			t.Fatalf("seat %s evidence=%+v", order.ID, context.VerificationEvidence)
+		for _, reference := range served.VerificationEvidence {
+			if reference.WorkOrderID != order.ID || reference.ReadTool != "read_artifact" || reference.DownloadURL != "" {
+				t.Fatalf("seat %s reference=%+v", order.ID, reference)
+			}
 		}
-		reference := context.VerificationEvidence[0]
-		if reference.ID != evidence.ID || reference.WorkOrderID != order.ID || reference.ReadTool != "read_artifact" || reference.DownloadURL != "" {
-			t.Fatalf("seat %s reference=%+v", order.ID, reference)
+		seats = append(seats, served.VerificationEvidence)
+	}
+	if len(seats) != 2 {
+		t.Fatalf("review seats=%d orders=%+v", len(seats), orders)
+	}
+	return seats
+}
+
+// No workspace setting refuses a submission for missing verification
+// evidence, and only eligible task-owned evidence reaches every review seat
+// and the pull request (req-review-gates-evidence AC-8.1, AC-8.2, AC-8.3;
+// DEC-53).
+func TestSubmitForReviewAdmitsWithoutEvidenceAndPropagatesOnlyEligibleEvidence(t *testing.T) {
+	addIneligible := func(t *testing.T, f evidenceSubmissionFixture) {
+		t.Helper()
+		if _, err := f.st.CreateArtifact(f.ctx, core.Artifact{
+			Name: "wrong-role.png", ContentType: "image/png", Role: core.ArtifactRoleTaskContext, TaskID: f.task.ID,
+		}, testimage.PNG("wrong role")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.st.CreateArtifact(f.ctx, core.Artifact{
+			Name: "other.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: f.otherTask.ID,
+		}, testimage.PNG("cross task")); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if reviewSeats != 2 {
-		t.Fatalf("review seats=%d orders=%+v", reviewSeats, orders)
+	assertNoEvidenceServed := func(t *testing.T, f evidenceSubmissionFixture, seats [][]ArtifactReference) {
+		t.Helper()
+		if strings.Contains(*f.prBody, "<!-- conveyor:verification-evidence -->") {
+			t.Fatalf("PR body lists evidence the task does not own: %s", *f.prBody)
+		}
+		for i, seat := range seats {
+			if len(seat) != 0 {
+				t.Fatalf("seat %d evidence=%+v, want none", i+1, seat)
+			}
+		}
 	}
+
+	t.Run("no evidence", func(t *testing.T) {
+		f := newEvidenceSubmissionFixture(t)
+		assertNoEvidenceServed(t, f, f.submitAndClaimSeats(t))
+	})
+
+	t.Run("only ineligible evidence", func(t *testing.T) {
+		f := newEvidenceSubmissionFixture(t)
+		addIneligible(t, f)
+		assertNoEvidenceServed(t, f, f.submitAndClaimSeats(t))
+	})
+
+	t.Run("eligible owned evidence", func(t *testing.T) {
+		f := newEvidenceSubmissionFixture(t)
+		addIneligible(t, f)
+		evidence, err := f.st.CreateArtifact(f.ctx, core.Artifact{
+			Name: "exercised UI `proof`.png", ContentType: "image/png; charset=binary",
+			Role: core.ArtifactRoleVerificationEvidence, TaskID: f.task.ID,
+			DownloadURL: "https://control-plane.invalid/private?token=secret",
+		}, testimage.PNG("valid evidence"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seats := f.submitAndClaimSeats(t)
+		prBody := *f.prBody
+		if strings.Count(prBody, "<!-- conveyor:verification-evidence -->") != 1 ||
+			!strings.Contains(prBody, evidence.ID) || !strings.Contains(prBody, "image/png") ||
+			strings.Contains(prBody, "control-plane.invalid") || strings.Contains(prBody, "token=secret") {
+			t.Fatalf("unsafe or incomplete PR evidence body: %s", prBody)
+		}
+		for i, seat := range seats {
+			if len(seat) != 1 || seat[0].ID != evidence.ID {
+				t.Fatalf("seat %d evidence=%+v, want only %s", i+1, seat, evidence.ID)
+			}
+		}
+	})
 }
 
 func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {

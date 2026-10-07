@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -534,10 +535,13 @@ func TestMCPClaimUsesCredentialOwnerForAssigneeEligibility(t *testing.T) {
 	}
 }
 
-func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
+// A valid MCP submission with no verification-evidence artifact is admitted
+// and advances to review; no workspace setting refuses it for missing evidence
+// (req-review-gates-evidence AC-8.3; DEC-53).
+func TestMCPSubmitForReviewAdmitsSubmissionWithoutVerificationEvidence(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "mcp-evidence-gate", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	task := core.Task{ID: "mcp-no-evidence", Workspace: "demo", Repo: "api", Title: "Deliver", Branch: "conveyor/task-mcp-no-evidence", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -548,28 +552,57 @@ func TestMCPSubmitForReviewReturnsActionableEvidenceGateError(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: core.TaskRunClaimantID("owner"), Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Workspace: "demo", Execution: config.ExecutionPolicy{RequireVerificationEvidence: true},
-		Repos: []config.Repo{{Name: "api", Base: "main"}},
+		Workspace: "demo",
+		Repos:     []config.Repo{{Name: "api", URL: "https://github.com/acme/api.git", GitHub: "acme/api", Base: "main"}},
+		Routing:   config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}},
 	}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	prWrites := 0
+	prBody := ""
 	server := NewServer(st)
 	server.Workspace = "demo"
-	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	server.WorkOrders = &workorder.Service{
+		Store: st, Dispatcher: dispatcher,
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		SubmissionPR: func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
+			pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/api/pull/7"}
+			pr.Head.SHA, pr.Head.Ref = "abc123", task.Branch
+			pr.Base.SHA, pr.Base.Ref = "base-sha", "main"
+			return pr, nil
+		},
+		SubmissionChangedPaths: func(context.Context, *config.Config, core.Task) ([]string, error) {
+			return []string{"internal/change.go"}, nil
+		},
+		ReviewDiffBetween: func(context.Context, string, string, string) (string, error) { return "diff", nil },
+		ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, body string) error {
+			prWrites++
+			prBody = body
+			return nil
+		},
+		SubmissionPRWait: func(context.Context, time.Duration) error { return nil },
+	}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "owner-token", OwnerUserID: "owner", Kind: core.CredentialUser}))
-	_, err := server.callMCPTool(request, "submit_for_review", map[string]any{
+	if _, err := server.callMCPTool(request, "submit_for_review", map[string]any{
 		"workspace_id": "demo", "head_sha": "abc123", "work_order_id": job.ID, "session_id": "session",
-	})
-	if err == nil || !strings.Contains(err.Error(), "/v1/worker/work-orders/"+job.ID+"/verification-evidence") ||
-		!strings.Contains(err.Error(), "X-Conveyor-Work-Order-Token") || !strings.Contains(err.Error(), "X-Conveyor-Work-Order-Session") {
-		t.Fatalf("MCP evidence gate error=%v", err)
+	}); err != nil {
+		t.Fatalf("MCP submission without verification evidence refused: %v", err)
 	}
-	order, getErr := st.GetWorkOrder(ctx, job.ID)
-	if getErr != nil || order.State != core.WorkOrderClaimed {
-		t.Fatalf("order advanced after MCP rejection: %+v err=%v", order, getErr)
+	order, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || order.State != core.WorkOrderSubmitted {
+		t.Fatalf("order after MCP submission: %+v err=%v", order, err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.NextStage != core.StageReview || prWrites != 1 {
+		t.Fatalf("task after MCP submission: %+v pr_writes=%d err=%v", current, prWrites, err)
+	}
+	if strings.Contains(prBody, "<!-- conveyor:verification-evidence -->") {
+		t.Fatalf("PR body lists verification evidence the task does not own: %s", prBody)
 	}
 }
 
