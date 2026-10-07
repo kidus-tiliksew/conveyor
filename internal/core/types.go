@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
-	"reflect"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -563,11 +562,10 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 	return order.State == WorkOrderQueued && !order.RetrySuppressed
 }
 
-// HarnessSnapshot is the immutable worker execution contract captured for a
-// spec, implementation, or review order when it is created. Workspace hot reloads
-// must not alter an in-flight command, model arguments, effort arguments, or
-// health probe; on queue re-entry the server re-resolves the
-// snapshot from the current registry.
+// HarnessSnapshot is the legacy worker execution contract that pre-DEC-23
+// orders persisted. The control plane no longer creates, resolves, or refreshes
+// one: queue re-entry clears it, and the claiming machine's local execution
+// setup supplies harness, model, and effort (req-worker AC-2.2; DEC-56).
 type HarnessSnapshot struct {
 	Name                  string              `json:"name"`
 	MCPTransport          string              `json:"mcp_transport"`
@@ -581,58 +579,6 @@ type HarnessSnapshot struct {
 	ProbeCommand          []string            `json:"probe_command"`
 	ProbeTimeoutText      string              `json:"probe_timeout"`
 	StallTimeoutText      string              `json:"stall_timeout"`
-}
-
-// RefreshedHarnessSnapshot re-resolves a pinned harness snapshot against the
-// current registry for an order re-entering the queue. The
-// pinned effort is preserved; the refresh is refused — retaining the prior
-// snapshot — when the name is gone, the pinned effort is no longer declared,
-// or the current definition is already identical.
-func RefreshedHarnessSnapshot(harnesses []config.Harness, prior *HarnessSnapshot) (*HarnessSnapshot, bool) {
-	if prior == nil || prior.Name == "" {
-		return nil, false
-	}
-	for _, harness := range harnesses {
-		if harness.Name != prior.Name {
-			continue
-		}
-		next := &HarnessSnapshot{
-			Name:                  harness.Name,
-			MCPTransport:          harness.MCPTransport,
-			MCPAttachment:         harness.MCPAttachment,
-			Command:               append([]string(nil), harness.Command...),
-			ModelArgs:             append([]string(nil), harness.ModelArgs...),
-			DefaultModelSentinels: append([]string(nil), harness.DefaultModelSentinels...),
-			EffortArgs:            cloneEffortArgs(harness.EffortArgs),
-			Effort:                prior.Effort,
-			ProbeCommand:          append([]string(nil), harness.ProbeCommand...),
-			ProbeTimeoutText:      harness.ProbeTimeoutText,
-			StallTimeoutText:      harness.StallTimeoutText,
-		}
-		if prior.Effort != "" {
-			argv := harness.EffortArgs[prior.Effort]
-			if len(argv) == 0 {
-				return nil, false
-			}
-			next.EffortArgv = append([]string(nil), argv...)
-		}
-		if reflect.DeepEqual(next, prior) {
-			return nil, false
-		}
-		return next, true
-	}
-	return nil, false
-}
-
-func cloneEffortArgs(source map[string][]string) map[string][]string {
-	if len(source) == 0 {
-		return nil
-	}
-	result := make(map[string][]string, len(source))
-	for effort, args := range source {
-		result[effort] = append([]string(nil), args...)
-	}
-	return result
 }
 
 // DefaultWorkOrderClaimLease is the renewable lease used whenever a claim
@@ -741,6 +687,16 @@ type WorkOrder struct {
 	// context or lifecycle input.
 	ActivitySnapshot   *WorkOrderActivitySnapshot   `json:"activity_snapshot,omitempty"`
 	TranscriptCaptures []WorkOrderTranscriptCapture `json:"transcript_captures,omitempty"`
+}
+
+// ClearExecutionPins removes every harness, model, and effort pin, including a
+// legacy pre-DEC-23 harness snapshot, from an order re-entering the queue. The
+// local execution setup of the machine that claims it supplies them for the
+// next attempt. Review round and seat are not execution pins and stay
+// unchanged (req-worker AC-2.2, AC-2.3; DEC-56).
+func (w *WorkOrder) ClearExecutionPins() {
+	w.RequiredModel, w.RequiredHarness, w.RequiredEffort = "", "", ""
+	w.RequiredHarnessConfig = nil
 }
 
 // MarshalJSON keeps the three work-order clocks distinct on the wire and

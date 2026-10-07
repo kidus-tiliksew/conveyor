@@ -891,7 +891,7 @@ func (s *Service) ReleaseClaim(ctx context.Context, claim core.WorkOrderClaimIde
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	return s.refreshReleasedHarnessSnapshot(ctx, order), nil
+	return order, nil
 }
 
 func (s *Service) normalizeCheckpoint(ctx context.Context, reason string, checkpoint *core.WorkOrderCheckpoint) (*core.WorkOrderCheckpoint, error) {
@@ -1176,30 +1176,6 @@ func providerUsageLimit(detail string) bool {
 		}
 	}
 	return false
-}
-
-// refreshReleasedHarnessSnapshot re-resolves a released order's pinned harness
-// snapshot from the current registry so the next attempt launches the
-// operator's current definition (component-work-orders). Best-effort: the release above
-// already committed, and retaining the prior snapshot is the explicit
-// fallback.
-func (s *Service) refreshReleasedHarnessSnapshot(ctx context.Context, order core.WorkOrder) core.WorkOrder {
-	if order.RequiredHarnessConfig == nil || s.ConfigProvider == nil {
-		return order
-	}
-	cfg, err := s.ConfigProvider(ctx)
-	if err != nil {
-		return order
-	}
-	snapshot, changed := core.RefreshedHarnessSnapshot(cfg.Harnesses, order.RequiredHarnessConfig)
-	if !changed {
-		return order
-	}
-	refreshed, err := s.Store.RefreshWorkOrderHarnessSnapshot(ctx, order.ID, snapshot)
-	if err != nil {
-		return order
-	}
-	return refreshed
 }
 
 // RefreshContext retains worker ownership while using the same claim-scoped

@@ -36,6 +36,13 @@ func (s *Store) completeVerificationTx(ctx context.Context, tx pgx.Tx, q *db.Que
 	if err != nil {
 		return err
 	}
+	if o.State == core.WorkOrderQueued {
+		// A checkpoint release re-enters the queue without execution pins
+		// (req-worker AC-2.2).
+		if _, err = tx.Exec(ctx, `UPDATE work_orders SET `+clearExecutionPinsSQL+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), o.ID); err != nil {
+			return err
+		}
+	}
 	if _, err = q.UpdateJob(ctx, jobUpdateParams(v.Job, workspace(ctx))); err != nil {
 		return err
 	}

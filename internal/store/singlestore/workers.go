@@ -486,6 +486,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		attemptID := current.AttemptID
 		order := current
 		clearOrderClaim(&order)
+		order.ClearExecutionPins()
 		order.State = core.WorkOrderQueued
 		order.LastAttemptID = attemptID
 		order.ExecutionStartedAt = time.Time{}

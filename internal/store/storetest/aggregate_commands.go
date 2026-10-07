@@ -35,11 +35,6 @@ func runCommandRefusals(t *testing.T, x Fixture) {
 	if _, err := st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: order.TaskID, DependsOnTaskID: "absent", RequestID: "remove", Reason: "fixture"}); err == nil {
 		t.Fatal("missing dependency removal accepted")
 	}
-	_, err = st.RefreshWorkOrderHarnessSnapshot(ctx, order.ID, &core.HarnessSnapshot{Name: "codex", Command: []string{"fixture"}})
-	if err == nil {
-		t.Fatal("unpinned harness accepted a snapshot refresh")
-	}
-	// Harness metadata does not append a lifecycle transition.
 	after, err := st.ListEvents(ctx, order.TaskID)
 	requireOK(t, err)
 	if len(after) != len(before) {

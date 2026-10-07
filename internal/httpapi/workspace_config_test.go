@@ -20,29 +20,6 @@ type fakeWorkspaceConfigStore struct {
 	updateErr error
 }
 
-func TestHarnessTemplatesAPIRequiresAuthAndIsRetired(t *testing.T) {
-	s := NewServer(store.NewMemory())
-	s.BearerToken = "token"
-	h := s.Handler()
-
-	unauthorized := httptest.NewRecorder()
-	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/v1/harness-templates", nil))
-	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthorized status = %d", unauthorized.Code)
-	}
-
-	request := httptest.NewRequest(http.MethodGet, "/v1/harness-templates", nil)
-	request.Header.Set("Authorization", "Bearer token")
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	if response.Code != http.StatusGone {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body)
-	}
-	if !strings.Contains(response.Body.String(), "execution_configuration_retired") {
-		t.Fatalf("unexpected retirement response: %s", response.Body)
-	}
-}
-
 func contextualWorkspaceDocument() config.WorkspaceDocument {
 	return config.WorkspaceDocument{
 		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h",

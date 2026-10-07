@@ -752,11 +752,8 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 			o.RedispatchCount++
 			o.UpdatedAt = now
 			o.Claimable = true
+			o.ClearExecutionPins()
 			if c := r.Refreezes[o.ID]; c != nil {
-				o.RequiredModel = c.RequiredModel
-				o.RequiredHarness = c.RequiredHarness
-				o.RequiredEffort = c.RequiredEffort
-				o.RequiredHarnessConfig = c.RequiredHarnessConfig
 				o.ExecutionTimeoutText = c.ExecutionTimeoutText
 			}
 			if err = orderWrite(ctx, tx, o); err != nil {

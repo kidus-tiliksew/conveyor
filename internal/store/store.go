@@ -299,7 +299,6 @@ type WorkOrderStore interface {
 	RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, request WorkOrderPreemptRequest) (WorkOrderPreemptResult, error)
 	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
-	RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error)
 	UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, command ...core.WorkOrderCommand) error
 	// SubmitImplementationCommand records an implementation submission and
 	// completes the order's own job in one atomic write (component-work-orders).
@@ -1144,13 +1143,12 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 	return latest
 }
 
+// RecoveryRefreeze re-freezes a recovered order's pipeline policy and stage
+// timeout. It carries no harness, model, or effort: queue re-entry clears every
+// execution pin (req-worker AC-2.2; DEC-56).
 type RecoveryRefreeze struct {
-	Setup                 config.ExecutionSetup
-	RequiredModel         string
-	RequiredHarness       string
-	RequiredEffort        string
-	RequiredHarnessConfig *core.HarnessSnapshot
-	ExecutionTimeoutText  string
+	Setup                config.ExecutionSetup
+	ExecutionTimeoutText string
 }
 
 type DependencyBlockers struct {
@@ -1960,6 +1958,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 		order.LastFailureAt = now
 		order.RetrySuppressed = true
 	}
+	order.ClearExecutionPins()
 	order.UpdatedAt = now
 	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 	order.Claimable = order.ClaimableAt(now)
@@ -2034,6 +2033,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	attemptID := order.AttemptID
 	order.LastAttemptID = attemptID
 	clearActiveAttempt(&order)
+	order.ClearExecutionPins()
 	order.OperatorDirection = ""
 	order.State = nextOrder
 	order.LastAttemptOutcome = core.WorkOrderOutcomeReleased
@@ -3441,9 +3441,9 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 		order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 		order.RedispatchCount++
 		order.UpdatedAt, order.Claimable = now, true
+		order.ClearExecutionPins()
 		if change := request.Refreezes[order.ID]; change != nil {
-			order.RequiredModel, order.RequiredHarness, order.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
-			order.RequiredHarnessConfig, order.ExecutionTimeoutText = change.RequiredHarnessConfig, change.ExecutionTimeoutText
+			order.ExecutionTimeoutText = change.ExecutionTimeoutText
 		}
 		m.workOrders[order.ID] = order
 		result.RecoveredOrders = append(result.RecoveredOrders, order)
@@ -3551,6 +3551,7 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 		taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
 		order.LastAttemptID = order.AttemptID
 		clearActiveAttempt(&order)
+		order.ClearExecutionPins()
 		order.State = core.WorkOrderQueued
 		order.Claimable = taskRunClaim
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
@@ -3885,6 +3886,7 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	order.Agent, order.Model, order.WorkerID, order.Progress = "", "", "", ""
 	order.ModelEnforcement = ""
 	order.LeaseExpiresAt = time.Time{}
+	order.ClearExecutionPins()
 	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
 	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
 	order.RedispatchCount++
@@ -3899,38 +3901,6 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now})
 	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stale redispatch", now, false)
-	return order, nil
-}
-
-// RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
-// of an unclaimed queued or stale order on queue re-entry. The
-// active-attempt snapshot stays immutable: claimed orders are rejected.
-func (m *memory) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
-	if snapshot == nil || snapshot.Name == "" {
-		return core.WorkOrder{}, fmt.Errorf("harness snapshot is required")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	order, ok := m.workOrders[id]
-	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
-	}
-	now := time.Now().UTC()
-	order = m.refreshWorkOrderLocked(ctx, order, now)
-	if order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
-		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot refresh its harness", id)
-	}
-	if (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || order.SessionID != "" || order.WorkerID != "" {
-		return core.WorkOrder{}, fmt.Errorf("work order %s does not hold an unclaimed queue entry", id)
-	}
-	if order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != snapshot.Name {
-		return core.WorkOrder{}, fmt.Errorf("work order %s does not pin harness %s", id, snapshot.Name)
-	}
-	previous := order.RequiredHarnessConfig
-	order.RequiredHarnessConfig = snapshot
-	order.UpdatedAt = now
-	m.workOrders[id] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.harness_refreshed", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "harness": snapshot.Name, "previous_command": previous.Command, "command": snapshot.Command}), At: now})
 	return order, nil
 }
 
@@ -4120,6 +4090,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	order.OperatorDirection = direction
 	order.UpdatedAt = now
 	order.Claimable = true
+	order.ClearExecutionPins()
 	if order.Stage == core.StageImplement {
 		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
 	}
@@ -4129,8 +4100,6 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		priorContract := task.SetupContract
 		task.SetupContract = change.Setup
 		m.tasks[task.ID] = task
-		order.RequiredModel, order.RequiredHarness, order.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
-		order.RequiredHarnessConfig = change.RequiredHarnessConfig
 		order.ExecutionTimeoutText = change.ExecutionTimeoutText
 		if !reflect.DeepEqual(priorContract, change.Setup) {
 			actor := ActorFromContext(ctx)
@@ -4206,6 +4175,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
 		order.LastAttemptID = attemptID
 		clearActiveAttempt(&order)
+		order.ClearExecutionPins()
 		order.State, order.Claimable = next, taskRunClaim
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
 		order.NextRetryAt = time.Time{}

@@ -22,10 +22,6 @@ type WorkspaceConfigStore interface {
 	UpdateWorkspaceConfig(context.Context, int64, *config.Config) (config.UpdateReceipt, error)
 }
 
-func (s *Server) getHarnessTemplates(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusGone, map[string]string{"error": "execution_configuration_retired", "message": "server harness templates are retired; execution setups are client-local"})
-}
-
 func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 	if s.ConfigStore == nil {
 		http.Error(w, "workspace config unavailable", http.StatusNotFound)

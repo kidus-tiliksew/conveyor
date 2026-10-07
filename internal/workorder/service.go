@@ -289,7 +289,6 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
-	s.refreshQueuedHarnessSnapshot(ctx, cfg, id)
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -373,17 +372,6 @@ func recoveryRefreeze(cfg *config.Config, task core.Task, order core.WorkOrder) 
 		change.ExecutionTimeoutText = order.ExecutionTimeoutText
 	}
 	return change
-}
-
-// refreshQueuedHarnessSnapshot re-resolves an automatically redispatched
-// order's pinned harness definition before it re-enters the queue
-// (component-work-orders). Best-effort: retaining the prior snapshot is the explicit
-// fallback, and the recovery transition that follows reports the authoritative
-// state errors.
-func (s *Service) refreshQueuedHarnessSnapshot(ctx context.Context, cfg *config.Config, id string) {
-	// Server-side harness snapshots are retired. Client-local execution setup
-	// resolves every newly claimed or redispatched order (DEC-23).
-	_, _, _ = ctx, cfg, id
 }
 
 func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {
