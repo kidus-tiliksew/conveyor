@@ -1292,22 +1292,12 @@ func TestRunWorkerShutdownWaitsForActiveChildCleanup(t *testing.T) {
 		done <- runWorkerWithPolicy(ctx, &client{base: server.URL, workspace: "demo"}, "", "test", false, defaultWorkerReconnectPolicy)
 	}()
 	<-claimed
-	var pid int
-	deadline := time.Now().Add(2 * time.Second)
-	for pid == 0 && time.Now().Before(deadline) {
-		data, err := os.ReadFile(pidFile)
-		if err == nil {
-			pid, err = strconv.Atoi(strings.TrimSpace(string(data)))
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		if pid == 0 {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	if pid == 0 {
+	pid, err := waitForPublishedPID(func() ([]byte, error) { return os.ReadFile(pidFile) }, harnessPIDWaitTimeout, harnessPIDPollInterval)
+	if errors.Is(err, errHarnessPIDNotPublished) {
 		t.Fatal("harness child did not start")
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 	cancel()
 	select {
@@ -3112,6 +3102,231 @@ func TestWorkerExecuteReleasesClaimOnTaskIDMismatch(t *testing.T) {
 	}
 }
 
+// harnessPIDWaitTimeout and harnessPIDPollInterval bound how long a test waits
+// for a fake harness child to publish its PID file.
+const (
+	harnessPIDWaitTimeout  = 2 * time.Second
+	harnessPIDPollInterval = 10 * time.Millisecond
+)
+
+// errHarnessPIDNotPublished reports that no complete PID arrived before the
+// wait deadline.
+var errHarnessPIDNotPublished = errors.New("harness pid was not published before the deadline")
+
+// publishTestPID publishes pid at path atomically. It writes the complete
+// decimal value to an owner-only temporary file in the destination directory
+// and renames that file over path, so a concurrent reader observes either no
+// file or the complete PID, never a created-but-unwritten file. The temporary
+// file is removed when any step fails.
+func publishTestPID(path string, pid int) (err error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if _, err = temporary.WriteString(strconv.Itoa(pid)); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err = temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+// waitForPublishedPID polls read every interval until it yields a complete
+// PID or timeout elapses. An absent file and empty or whitespace-only content
+// mean the PID is not published yet. Malformed nonempty content and other read
+// errors fail immediately; reaching the deadline returns
+// errHarnessPIDNotPublished.
+func waitForPublishedPID(read func() ([]byte, error), timeout, interval time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := read()
+		switch {
+		case err == nil:
+			if value := strings.TrimSpace(string(data)); value != "" {
+				pid, parseErr := strconv.Atoi(value)
+				if parseErr != nil {
+					return 0, fmt.Errorf("parse published harness pid %q: %w", value, parseErr)
+				}
+				if pid <= 0 {
+					return 0, fmt.Errorf("published harness pid %d is not positive", pid)
+				}
+				return pid, nil
+			}
+		case !errors.Is(err, os.ErrNotExist):
+			return 0, err
+		}
+		if !time.Now().Before(deadline) {
+			return 0, errHarnessPIDNotPublished
+		}
+		time.Sleep(interval)
+	}
+}
+
+func TestPublishTestPIDWritesCompleteOwnerOnlyFileWithoutResidue(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "harness.pid")
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishTestPID(path, 4242); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "4242" {
+		t.Fatalf("published pid=%q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("published pid mode=%v", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "harness.pid" {
+		t.Fatalf("directory entries after publication=%v", entries)
+	}
+}
+
+func TestPublishTestPIDRemovesTemporaryFileWhenRenameFails(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "harness.pid")
+	// A nonempty directory at the destination makes the final rename fail
+	// after the temporary file was written and closed.
+	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := publishTestPID(path, 4242); err == nil {
+		t.Fatal("publication over a nonempty directory succeeded")
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "harness.pid" || !entries[0].IsDir() {
+		t.Fatalf("directory entries after failed publication=%v", entries)
+	}
+}
+
+func TestWaitForPublishedPIDRetriesObservedEmptyOrWhitespaceFile(t *testing.T) {
+	for name, initial := range map[string]string{"empty": "", "whitespace": " \n\t "} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "harness.pid")
+			if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			reads := 0
+			read := func() ([]byte, error) {
+				reads++
+				data, err := os.ReadFile(path)
+				if reads == 1 {
+					// The first read must observe the real unfilled file. Fill
+					// it before the waiter's next read.
+					if err != nil || string(data) != initial {
+						t.Fatalf("first read data=%q err=%v, want unfilled %q", data, err, initial)
+					}
+					if err := os.WriteFile(path, []byte("4242\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return data, err
+			}
+			pid, err := waitForPublishedPID(read, harnessPIDWaitTimeout, harnessPIDPollInterval)
+			if err != nil {
+				t.Fatalf("wait after %d reads: %v", reads, err)
+			}
+			if pid != 4242 || reads != 2 {
+				t.Fatalf("pid=%d reads=%d, want 4242 after 2 reads", pid, reads)
+			}
+		})
+	}
+}
+
+func TestWaitForPublishedPIDRetriesAbsentFileUntilPublished(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "harness.pid")
+	reads := 0
+	read := func() ([]byte, error) {
+		reads++
+		data, err := os.ReadFile(path)
+		if reads == 1 {
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("first read data=%q err=%v, want absent file", data, err)
+			}
+			if err := publishTestPID(path, 4242); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return data, err
+	}
+	pid, err := waitForPublishedPID(read, harnessPIDWaitTimeout, harnessPIDPollInterval)
+	if err != nil {
+		t.Fatalf("wait after %d reads: %v", reads, err)
+	}
+	if pid != 4242 || reads != 2 {
+		t.Fatalf("pid=%d reads=%d, want 4242 after 2 reads", pid, reads)
+	}
+}
+
+func TestWaitForPublishedPIDRejectsMalformedContentWithoutRetry(t *testing.T) {
+	for name, content := range map[string]string{"text": "12abc", "zero": "0", "negative": "-7"} {
+		t.Run(name, func(t *testing.T) {
+			reads := 0
+			read := func() ([]byte, error) {
+				reads++
+				return []byte(content), nil
+			}
+			pid, err := waitForPublishedPID(read, harnessPIDWaitTimeout, harnessPIDPollInterval)
+			if err == nil || errors.Is(err, errHarnessPIDNotPublished) {
+				t.Fatalf("pid=%d err=%v, want malformed-content failure", pid, err)
+			}
+			if reads != 1 {
+				t.Fatalf("malformed content was read %d times, want 1", reads)
+			}
+		})
+	}
+}
+
+func TestWaitForPublishedPIDFailsAtDeadlineWithoutPID(t *testing.T) {
+	reads := 0
+	read := func() ([]byte, error) {
+		reads++
+		return []byte(" \n"), nil
+	}
+	pid, err := waitForPublishedPID(read, 0, harnessPIDPollInterval)
+	if !errors.Is(err, errHarnessPIDNotPublished) || pid != 0 {
+		t.Fatalf("pid=%d err=%v, want deadline failure", pid, err)
+	}
+	if reads != 1 {
+		t.Fatalf("reads=%d, want 1 before an elapsed deadline", reads)
+	}
+}
+
+func TestWaitForPublishedPIDFailsOnUnexpectedReadError(t *testing.T) {
+	readErr := errors.New("permission denied")
+	reads := 0
+	read := func() ([]byte, error) {
+		reads++
+		return nil, readErr
+	}
+	if _, err := waitForPublishedPID(read, harnessPIDWaitTimeout, harnessPIDPollInterval); !errors.Is(err, readErr) || reads != 1 {
+		t.Fatalf("err=%v reads=%d, want immediate read failure", err, reads)
+	}
+}
+
 func TestWorkerLifecycleHelper(t *testing.T) {
 	if len(os.Args) < 2 {
 		return
@@ -3127,7 +3342,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		return
 	}
 	if pidFile := os.Getenv("CONVEYOR_FAKE_HARNESS_PID_FILE"); pidFile != "" {
-		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		if err := publishTestPID(pidFile, os.Getpid()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3150,7 +3365,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		if err := grandchild.Start(); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(os.Getenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE"), []byte(strconv.Itoa(grandchild.Process.Pid)), 0o600); err != nil {
+		if err := publishTestPID(os.Getenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE"), grandchild.Process.Pid); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(30 * time.Second)
