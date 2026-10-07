@@ -932,10 +932,13 @@ def prepare_cache(task, task_cache, proc=validation_resources.PROC, backend=None
 
     On the Linux /proc backend each child this call creates receives an entry
     with its device, inode, and a boot-relative tick sampled before its mkdir,
-    so the tick is a lower bound on creation. A child that already exists
-    keeps its existing entry or receives none. An unusable or cross-boot
-    marker is preserved and gains no entries. macOS start times are
-    wall-clock readings, so no entry is recorded there.
+    so the tick is a lower bound on creation. That entry replaces any earlier
+    entry for the same name, even when the filesystem reused the inode. A
+    child this call did not create, because it already existed or another
+    actor created it after the preflight, keeps its existing entry or
+    receives none. An unusable or cross-boot marker is preserved and gains no
+    entries. macOS start times are wall-clock readings, so no entry is
+    recorded there.
     """
     root = task_cache_root(task, task_cache, allow_missing=True)
     require(root.name == task and root.parent == cache_base().resolve(), "task cache root cannot be a symlink")
@@ -985,7 +988,9 @@ def prepare_cache(task, task_cache, proc=validation_resources.PROC, backend=None
                 continue
             created.append(name)
             child_info = _owned_directory(child, name)
-            if _strict_int(ticks, 0) and name not in entries:
+            if _strict_int(ticks, 0):
+                # This call's own mkdir created the child, so the tick sampled
+                # before it bounds the new directory and replaces a stale entry.
                 entries[name] = {"device": child_info.st_dev, "inode": child_info.st_ino, "created_ticks": ticks}
                 recorded.append(name)
     finally:
