@@ -72,12 +72,16 @@ func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 func TestWorkspaceGitHubAppLegacyCiphertextIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	ctx := t.Context()
-	storetest.RunLegacyGitHubAppKeyRecovery(t, st, ctx, func(t *testing.T, workspace string, nonce, ciphertext []byte) {
+	storetest.RunLegacyGitHubAppKeyRecovery(t, st, ctx, func(t *testing.T, workspace string, nonce, ciphertext []byte) error {
 		t.Helper()
 		tag, err := st.pool.Exec(ctx, `UPDATE workspace_github_apps SET private_key_nonce=$2,private_key_ciphertext=$3 WHERE workspace_id=$1`, workspace, nonce, ciphertext)
-		if err != nil || tag.RowsAffected() != 1 {
-			t.Fatalf("seed legacy App key row: rows=%d err=%v", tag.RowsAffected(), err)
+		if err != nil {
+			return err
 		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("seed legacy App key row: rows=%d", tag.RowsAffected())
+		}
+		return nil
 	})
 }
 func TestWorkspaceGitHubAppMigrationGuard(t *testing.T) {

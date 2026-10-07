@@ -178,8 +178,10 @@ func mustHex(value string) []byte {
 // ListGitHubAppKeysForRedaction, and that wrong keys, another workspace's
 // additional data, a short nonce, and tampered ciphertext still refuse. seed
 // overwrites the stored nonce and ciphertext of an existing App row through
-// backend-specific SQL.
-func RunLegacyGitHubAppKeyRecovery(t *testing.T, st store.Backend, ctx context.Context, seed func(t *testing.T, workspace string, nonce, ciphertext []byte)) {
+// backend-specific SQL and returns the database error, if any. A schema that
+// refuses to store a short nonce (PostgreSQL migration 123 checks for 12
+// bytes) satisfies the short-nonce refusal at the storage boundary.
+func RunLegacyGitHubAppKeyRecovery(t *testing.T, st store.Backend, ctx context.Context, seed func(t *testing.T, workspace string, nonce, ciphertext []byte) error) {
 	t.Helper()
 	fixture := LegacyGitHubAppKeyFixture
 	app := core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{AppID: 41, AppSlug: "legacy-app", ClientID: "legacy-client"}, PrivateKey: "placeholder-app-private-key-material"}
@@ -192,7 +194,7 @@ func RunLegacyGitHubAppKeyRecovery(t *testing.T, st store.Backend, ctx context.C
 	st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{99}, 32))
 	_, err := st.StoreWorkspaceGitHubApp(ctx, fixture.Workspace, app)
 	requireOK(t, err)
-	seed(t, fixture.Workspace, fixture.Nonce, fixture.Ciphertext)
+	requireOK(t, seed(t, fixture.Workspace, fixture.Nonce, fixture.Ciphertext))
 
 	st.ConfigureGitHubAppKeyEncryptionKey(fixture.Key)
 	credential, err := st.GetWorkspaceGitHubAppForUse(ctx, fixture.Workspace)
@@ -214,22 +216,23 @@ func RunLegacyGitHubAppKeyRecovery(t *testing.T, st store.Backend, ctx context.C
 		t.Fatalf("redaction with wrong key must fail closed: %v", err)
 	}
 	st.ConfigureGitHubAppKeyEncryptionKey(fixture.Key)
-	seed(t, fixture.Workspace, fixture.Nonce[:11], fixture.Ciphertext)
-	if _, err = st.GetWorkspaceGitHubAppForUse(ctx, fixture.Workspace); !errors.Is(err, store.ErrGitHubAppKeyDecrypt) {
+	if seedErr := seed(t, fixture.Workspace, fixture.Nonce[:11], fixture.Ciphertext); seedErr != nil {
+		t.Logf("schema refuses a short nonce: %v", seedErr)
+	} else if _, err = st.GetWorkspaceGitHubAppForUse(ctx, fixture.Workspace); !errors.Is(err, store.ErrGitHubAppKeyDecrypt) {
 		t.Fatalf("short nonce: %v", err)
 	}
 	tampered := bytes.Clone(fixture.Ciphertext)
 	tampered[0] ^= 1
-	seed(t, fixture.Workspace, fixture.Nonce, tampered)
+	requireOK(t, seed(t, fixture.Workspace, fixture.Nonce, tampered))
 	if _, err = st.GetWorkspaceGitHubAppForUse(ctx, fixture.Workspace); !errors.Is(err, store.ErrGitHubAppKeyDecrypt) {
 		t.Fatalf("tampered ciphertext: %v", err)
 	}
-	seed(t, fixture.Workspace, fixture.Nonce, fixture.Ciphertext)
+	requireOK(t, seed(t, fixture.Workspace, fixture.Nonce, fixture.Ciphertext))
 
 	// The same bytes under another workspace fail the additional-data check.
 	_, err = st.StoreWorkspaceGitHubApp(ctx, other, app)
 	requireOK(t, err)
-	seed(t, other, fixture.Nonce, fixture.Ciphertext)
+	requireOK(t, seed(t, other, fixture.Nonce, fixture.Ciphertext))
 	if _, err = st.GetWorkspaceGitHubAppForUse(ctx, other); !errors.Is(err, store.ErrGitHubAppKeyDecrypt) {
 		t.Fatalf("cross-workspace legacy replay: %v", err)
 	}
