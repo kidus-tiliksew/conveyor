@@ -143,7 +143,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
         AND e.task_id = t.id
         AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
         AND e.payload_json ->> 'id' = sqlc.arg(requirement_id)::text
-      ORDER BY e.id DESC
+      ORDER BY e.at DESC, e.id DESC
       LIMIT 1
   ), '') <> 'task.context_requirement_added'
 ORDER BY t.id;
@@ -204,7 +204,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_requirement_added'
        ))
   AND (cardinality(sqlc.arg(governing_designs)::text[]) = 0 OR EXISTS (
@@ -214,7 +214,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
   AND (sqlc.arg(assignee)::text = '' OR
@@ -244,7 +244,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_requirement_added'
        ))
   AND (cardinality(sqlc.arg(governing_designs)::text[]) = 0 OR EXISTS (
@@ -254,7 +254,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
   AND (sqlc.arg(assignee)::text = '' OR
@@ -488,8 +488,9 @@ ORDER BY e.at, e.id;
 -- name: ListEventsAfter :many
 SELECT e.* FROM events e
 JOIN tasks t ON t.id = e.task_id
-WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id > $3
-ORDER BY e.id;
+WHERE e.task_id = $1 AND t.workspace_id = $2
+  AND ($3::bigint = 0 OR (e.at, e.id) > (SELECT a.at, a.id FROM events a WHERE a.task_id = $1 AND a.id = $3))
+ORDER BY e.at, e.id;
 
 -- name: CountEvents :one
 SELECT count(*)::bigint FROM events e
@@ -526,7 +527,7 @@ SELECT
     COALESCE((
         SELECT e.at FROM events e
         WHERE e.task_id = t.id
-        ORDER BY e.id DESC
+        ORDER BY e.at DESC, e.id DESC
         LIMIT 1
     ), t.created_at)::timestamptz AS last_event_at
 FROM tasks t

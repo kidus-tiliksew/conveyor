@@ -402,12 +402,12 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 	lastFailureCategory := current.LastFailureCategory
 	suppressionReason := ""
 	progressed := false
-	if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT kind='work_order.progress_reported' FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.claimed','work_order.progress_reported') ORDER BY id DESC LIMIT 1), false)`, workspace(ctx), current.TaskID, current.JobID).Scan(&progressed); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT kind='work_order.progress_reported' FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.claimed','work_order.progress_reported') ORDER BY at DESC, id DESC LIMIT 1), false)`, workspace(ctx), current.TaskID, current.JobID).Scan(&progressed); err != nil {
 		return core.WorkOrder{}, err
 	}
 	previousTransientFailures := 0
 	if current.LastFailureCategory == core.WorkOrderFailureTransientConnectivity {
-		if err = tx.QueryRow(ctx, `SELECT COALESCE((payload_json->>'consecutive_transient_failures')::integer, 0) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY id DESC LIMIT 1`, workspace(ctx), current.TaskID, current.JobID).Scan(&previousTransientFailures); errors.Is(err, pgx.ErrNoRows) {
+		if err = tx.QueryRow(ctx, `SELECT COALESCE((payload_json->>'consecutive_transient_failures')::integer, 0) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY at DESC, id DESC LIMIT 1`, workspace(ctx), current.TaskID, current.JobID).Scan(&previousTransientFailures); errors.Is(err, pgx.ErrNoRows) {
 			previousTransientFailures = 0
 		} else if err != nil {
 			return core.WorkOrder{}, err

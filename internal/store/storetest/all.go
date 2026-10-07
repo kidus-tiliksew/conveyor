@@ -26,6 +26,13 @@ type Fixture struct {
 	SeedLegacy           func(*testing.T, string) (int, func(*testing.T))
 	SeedArtifact         func(*testing.T, context.Context, core.Artifact, []byte)
 	ArtifactRepairEvents func(context.Context) ([]core.Event, error)
+	// SeedEvents inserts test-only task events with controlled immutable IDs
+	// and recorded times, modelling SingleStore's per-aggregator
+	// AUTO_INCREMENT ranges. Each event's ID is a positive relative rank added
+	// to base; a zero base selects a fresh one far above every existing event
+	// ID. An empty TaskID seeds a workspace-level event such as a proposal.
+	// The stored events are returned. Committed rows are never rewritten.
+	SeedEvents func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event
 }
 
 // Factory creates an isolated backend and workspace on every call. Cleanup
@@ -172,6 +179,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"MonitorPullRequestEvents", true, runMonitorPullRequestEvents},
 		{"TaskEventOrdering", true, runTaskEventOrdering},
 		{"TaskEventWindows", true, runTaskEventWindows},
+		{"EventRecency", true, runEventRecency},
 		{"PopulatedProjections", factory.Capabilities.Membership, runPopulatedProjections},
 		{"WorkspaceControl", true, runWorkspaceControl},
 		{"RepositoryInstall", true, runRepositoryInstall},

@@ -1068,7 +1068,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 					AND t.state IN ('merged','closed')
 					AND e.kind IN ('review.completed','review.round_completed')
 					AND (jsonb_typeof(e.payload_json)='object' OR e.payload_json='null'::jsonb)
-				ORDER BY e.id DESC LIMIT 1
+				ORDER BY e.at DESC, e.id DESC LIMIT 1
 			) review ON TRUE
 			WHERE t.workspace_id=$1 AND t.id=ANY($2)`, workspace(ctx), ids)
 		if err != nil {
@@ -1783,7 +1783,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 		before := taskFromDB(row)
 		var latestPayload []byte
 		events := []core.Event{}
-		if err = tx.QueryRow(ctx, `SELECT e.payload_json FROM events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='task.state_changed' ORDER BY e.id DESC LIMIT 1`, workspace(ctx), request.TaskID).Scan(&latestPayload); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT e.payload_json FROM events e JOIN tasks t ON t.id=e.task_id WHERE t.workspace_id=$1 AND e.task_id=$2 AND e.kind='task.state_changed' ORDER BY e.at DESC, e.id DESC LIMIT 1`, workspace(ctx), request.TaskID).Scan(&latestPayload); err != nil {
 			return err
 		}
 		events = append(events, core.Event{Kind: "task.state_changed", Payload: latestPayload})
@@ -3343,7 +3343,20 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 	return result, err
 }
 
+// ListEventsAfter resolves a nonzero afterID as an anchor event owned by the
+// task in this workspace and returns the events strictly after its (at, id)
+// tuple in ascending (at, id) order (component-persistence; DEC-39).
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
+	if afterID != 0 {
+		var exists int
+		err := s.pool.QueryRow(ctx, `SELECT 1 FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id = $3`, taskID, workspace(ctx), afterID).Scan(&exists)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, store.ErrEventAnchorNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 	rows, err := s.queries.ListEventsAfter(ctx, db.ListEventsAfterParams{
 		TaskID: nullableText(taskID), WorkspaceID: workspace(ctx), ID: afterID,
 	})
@@ -3355,6 +3368,48 @@ func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int6
 		result[i] = eventFromDB(rows[i])
 	}
 	return result, nil
+}
+
+// ReadTaskEventStream selects one bounded (at, id) page on the task timeline
+// index with one lookahead row.
+func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStreamQuery) (store.TaskEventStreamPage, error) {
+	if err := store.ValidateTaskEventStreamQuery(q); err != nil {
+		return store.TaskEventStreamPage{}, err
+	}
+	var exists int
+	if err := s.pool.QueryRow(ctx, `SELECT 1 FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), q.TaskID).Scan(&exists); err != nil {
+		return store.TaskEventStreamPage{}, notFound(err, "task %s", q.TaskID)
+	}
+	since := pgtype.Timestamptz{}
+	if !q.Since.IsZero() {
+		since = timestamp(q.Since)
+	}
+	seek, afterAt, afterID := false, pgtype.Timestamptz{}, int64(0)
+	if q.After != nil {
+		seek, afterAt, afterID = true, timestamp(q.After.At), q.After.ID
+	}
+	rows, err := s.pool.Query(ctx, `SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
+WHERE e.task_id = $1 AND ($2::timestamptz IS NULL OR e.at >= $2::timestamptz)
+	AND (NOT $3::boolean OR (e.at, e.id) > ($4::timestamptz, $5::bigint))
+ORDER BY e.at, e.id
+LIMIT $6`, q.TaskID, since, seek, afterAt, afterID, q.Limit+1)
+	if err != nil {
+		return store.TaskEventStreamPage{}, err
+	}
+	defer rows.Close()
+	page := store.TaskEventStreamPage{Events: []core.Event{}}
+	for rows.Next() {
+		var row db.Event
+		if err := rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
+			return store.TaskEventStreamPage{}, err
+		}
+		if len(page.Events) == q.Limit {
+			page.More = true
+			break
+		}
+		page.Events = append(page.Events, eventFromDB(row))
+	}
+	return page, rows.Err()
 }
 
 func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error) {
@@ -3407,8 +3462,8 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 				(SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),
 				''
 			)::text,
-			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.id DESC LIMIT 1),t.created_at)::timestamptz,
-			COALESCE((SELECT e.id FROM events e WHERE e.task_id=t.id ORDER BY e.id DESC LIMIT 1),0)::bigint
+			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),t.created_at)::timestamptz,
+			COALESCE((SELECT e.id FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),0)::bigint
 			FROM tasks t
 			WHERE t.workspace_id=$1
 			ORDER BY t.created_at,t.id`, workspace(ctx))
@@ -3421,8 +3476,8 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 				(SELECT j.stage FROM jobs j WHERE j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),
 				''
 			)::text,
-			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.id DESC LIMIT 1),t.created_at)::timestamptz,
-			COALESCE((SELECT e.id FROM events e WHERE e.task_id=t.id ORDER BY e.id DESC LIMIT 1),0)::bigint
+			COALESCE((SELECT e.at FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),t.created_at)::timestamptz,
+			COALESCE((SELECT e.id FROM events e WHERE e.task_id=t.id ORDER BY e.at DESC, e.id DESC LIMIT 1),0)::bigint
 			FROM tasks t
 			WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])
 			ORDER BY t.created_at,t.id`, workspace(ctx), taskIDs)
@@ -5434,7 +5489,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	priorNextRetryAt := order.NextRetryAt
 	priorTransientFailures := 0
 	if priorFailureCategory == core.WorkOrderFailureTransientConnectivity {
-		if err = tx.QueryRow(ctx, `SELECT COALESCE((payload_json->>'consecutive_transient_failures')::integer, 0) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY id DESC LIMIT 1`, workspace(ctx), order.TaskID, order.JobID).Scan(&priorTransientFailures); errors.Is(err, pgx.ErrNoRows) {
+		if err = tx.QueryRow(ctx, `SELECT COALESCE((payload_json->>'consecutive_transient_failures')::integer, 0) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY at DESC, id DESC LIMIT 1`, workspace(ctx), order.TaskID, order.JobID).Scan(&priorTransientFailures); errors.Is(err, pgx.ErrNoRows) {
 			priorTransientFailures = 0
 		} else if err != nil {
 			return core.WorkOrder{}, err

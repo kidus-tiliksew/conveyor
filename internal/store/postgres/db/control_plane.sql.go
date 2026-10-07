@@ -92,7 +92,7 @@ WHERE t.workspace_id = $1
         AND e.task_id = t.id
         AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
         AND e.payload_json ->> 'id' = $2::text
-      ORDER BY e.id DESC
+      ORDER BY e.at DESC, e.id DESC
       LIMIT 1
   ), '') <> 'task.context_requirement_added'
 ORDER BY t.id
@@ -968,7 +968,7 @@ SELECT
     COALESCE((
         SELECT e.at FROM events e
         WHERE e.task_id = t.id
-        ORDER BY e.id DESC
+        ORDER BY e.at DESC, e.id DESC
         LIMIT 1
     ), t.created_at)::timestamptz AS last_event_at
 FROM tasks t
@@ -1090,8 +1090,9 @@ func (q *Queries) ListRequirementEvents(ctx context.Context, arg ListRequirement
 const listEventsAfter = `-- name: ListEventsAfter :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 JOIN tasks t ON t.id = e.task_id
-WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id > $3
-ORDER BY e.id
+WHERE e.task_id = $1 AND t.workspace_id = $2
+  AND ($3::bigint = 0 OR (e.at, e.id) > (SELECT a.at, a.id FROM events a WHERE a.task_id = $1 AND a.id = $3))
+ORDER BY e.at, e.id
 `
 
 type ListEventsAfterParams struct {
@@ -1242,7 +1243,7 @@ WHERE t.workspace_id = $1
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_requirement_added'
        ))
   AND (cardinality($8::text[]) = 0 OR EXISTS (
@@ -1252,7 +1253,7 @@ WHERE t.workspace_id = $1
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
   AND ($9::text = '' OR
@@ -1412,7 +1413,7 @@ WHERE t.workspace_id = $1
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_requirement_added'
        ))
   AND (cardinality($8::text[]) = 0 OR EXISTS (
@@ -1422,7 +1423,7 @@ WHERE t.workspace_id = $1
                WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
                  AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
                  AND e.payload_json ->> 'id' = wanted.document_id
-               ORDER BY e.id DESC LIMIT 1
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
            ) = 'task.context_design_added'
        ))
   AND ($9::text = '' OR

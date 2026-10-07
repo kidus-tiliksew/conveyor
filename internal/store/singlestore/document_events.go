@@ -223,7 +223,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	var rows []markerRow
 	var selected *documentResultSet
 	var err error
-	query := `SELECT t.id,COALESCE((SELECT w.stage FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=t.id AND w.state='claimed' ORDER BY w.execution_started_at DESC,w.created_at DESC,w.id DESC LIMIT 1),(SELECT j.stage FROM jobs j WHERE j.workspace_id=t.workspace_id AND j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),''),COALESCE((SELECT e.at FROM events e WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id ORDER BY e.id DESC LIMIT 1),t.created_at),COALESCE((SELECT e.id FROM events e WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id ORDER BY e.id DESC LIMIT 1),0) FROM tasks t WHERE t.workspace_id=?`
+	query := `SELECT t.id,COALESCE((SELECT w.stage FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=t.id AND w.state='claimed' ORDER BY w.execution_started_at DESC,w.created_at DESC,w.id DESC LIMIT 1),(SELECT j.stage FROM jobs j WHERE j.workspace_id=t.workspace_id AND j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),''),COALESCE((SELECT e.at FROM events e WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id ORDER BY e.at DESC,e.id DESC LIMIT 1),t.created_at),COALESCE((SELECT e.id FROM events e WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id ORDER BY e.at DESC,e.id DESC LIMIT 1),0) FROM tasks t WHERE t.workspace_id=?`
 	if len(taskIDs) == 0 {
 		selected, err = documentRows(ctx, s.db, query+` ORDER BY t.created_at,t.id`, documentWorkspace(ctx))
 	} else {
@@ -390,12 +390,68 @@ func (s *Store) AppendEvent(ctx context.Context, e core.Event) error {
 func (s *Store) ListEvents(ctx context.Context, id string) ([]core.Event, error) {
 	return documentTaskEvents(ctx, s.db, id)
 }
+
+// ListEventsAfter resolves a nonzero anchor owned by the task in this
+// workspace and returns events strictly after its (at, id) tuple. IDs come
+// from per-aggregator AUTO_INCREMENT ranges, so numeric order is not insertion
+// order and never selects the tail (component-persistence; DEC-39).
 func (s *Store) ListEventsAfter(ctx context.Context, id string, after int64) ([]core.Event, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? AND id>? ORDER BY id`, documentWorkspace(ctx), id, after)
+	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`
+	args := []any{documentWorkspace(ctx), id}
+	if after != 0 {
+		var anchorAt time.Time
+		err := documentRow(ctx, s.db, `SELECT at FROM events WHERE workspace_id=? AND task_id=? AND id=?`, documentWorkspace(ctx), id, after).Scan(&anchorAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrEventAnchorNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		query = `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? AND (at>? OR at=? AND id>?) ORDER BY at,id`
+		args = append(args, anchorAt, anchorAt, after)
+	}
+	rows, err := documentRows(ctx, s.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	return scanDocumentEvents(rows)
+}
+
+// ReadTaskEventStream selects one bounded (at, id) page on the task timeline
+// index with one lookahead row.
+func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStreamQuery) (store.TaskEventStreamPage, error) {
+	if err := store.ValidateTaskEventStreamQuery(q); err != nil {
+		return store.TaskEventStreamPage{}, err
+	}
+	var exists int
+	if err := documentRow(ctx, s.db, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), q.TaskID).Scan(&exists); err != nil {
+		return store.TaskEventStreamPage{}, notFound(err, "task %s", q.TaskID)
+	}
+	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=?`
+	args := []any{documentWorkspace(ctx), q.TaskID}
+	if !q.Since.IsZero() {
+		query += ` AND at>=?`
+		args = append(args, q.Since.UTC())
+	}
+	if q.After != nil {
+		query += ` AND (at>? OR at=? AND id>?)`
+		args = append(args, q.After.At.UTC(), q.After.At.UTC(), q.After.ID)
+	}
+	query += ` ORDER BY at,id LIMIT ?`
+	args = append(args, q.Limit+1)
+	rows, err := documentRows(ctx, s.db, query, args...)
+	if err != nil {
+		return store.TaskEventStreamPage{}, err
+	}
+	events, err := scanDocumentEvents(rows)
+	if err != nil {
+		return store.TaskEventStreamPage{}, err
+	}
+	page := store.TaskEventStreamPage{Events: events}
+	if len(events) > q.Limit {
+		page.Events, page.More = events[:q.Limit], true
+	}
+	return page, nil
 }
 func (s *Store) CountEvents(ctx context.Context, id, kind string) (int, error) {
 	var n int
