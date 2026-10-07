@@ -1155,6 +1155,534 @@ class CacheCleanupFilterTests(unittest.TestCase):
                 self.assertIsNone(evidence.owner_only_ancestor(path, metadata(rejected)), (mode, owner))
 
 
+class CacheCreationMarkerTests(unittest.TestCase):
+    """prepare-cache records boot-relative creation ticks; cleanup uses them only when every fact matches.
+
+    The fixture /proc tree supplies uptime, the boot ID, and process entries.
+    The real shared inspector runs every cleanup case.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        # TemporaryDirectory creates an owner-only (0700) directory, so owner
+        # isolation limits inspection to the invoking user's processes.
+        self.base = Path(self.tmp.name).resolve()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.base / "cache-home")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        self.proc = self.base / "proc"
+        (self.proc / "sys" / "kernel" / "random").mkdir(parents=True)
+        self.set_uptime("1000.00")
+        self.set_boot("boot-a")
+        self.tick = 1000 * os.sysconf("SC_CLK_TCK")
+
+    def set_uptime(self, value):
+        (self.proc / "uptime").write_text(value + " 0\n")
+
+    def set_boot(self, value):
+        (self.proc / "sys" / "kernel" / "random" / "boot_id").write_text(value + "\n")
+
+    def prepare(self, task_cache=None, **kwargs):
+        return evidence.prepare_cache("fixture-task", task_cache or self.task_cache, self.proc, **kwargs)
+
+    def cleanup(self, references=()):
+        return evidence.cleanup_cache("fixture-task", self.task_cache, list(references), self.proc)
+
+    def marker_path(self):
+        return self.task_cache / evidence.CACHE_MARKER
+
+    def marker(self):
+        return json.loads(self.marker_path().read_text())
+
+    def write_marker(self, value, mode=0o600):
+        path = self.marker_path()
+        path.unlink(missing_ok=True)
+        path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+        path.chmod(mode)
+
+    def process(self, pid, start=None, cwd=None, root=None, descriptor=None, environ=None):
+        """Model a process entry: uninspectable unless a readable reference is given."""
+        entry = self.proc / str(pid)
+        entry.mkdir()
+        if start is not None:
+            (entry / "stat").write_text(f"{pid} (fixture) S 1 {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start}\n")
+        if cwd is None and root is None and descriptor is None and environ is None:
+            return entry
+        (entry / "cwd").symlink_to(cwd or self.base, target_is_directory=True)
+        (entry / "root").symlink_to(root or Path("/"), target_is_directory=True)
+        (entry / "fd").mkdir()
+        if descriptor is not None:
+            (entry / "fd" / "3").symlink_to(descriptor)
+        (entry / "environ").write_bytes(environ or b"")
+        return entry
+
+    # -- prepare-cache -------------------------------------------------------
+
+    def test_prepare_creates_owned_root_children_and_owner_only_marker(self):
+        result = self.prepare()
+        children = list(evidence.DISPOSABLE_CACHE_CHILDREN)
+        self.assertEqual(result["created"], children)
+        self.assertEqual(result["existing"], [])
+        self.assertEqual(result["recorded"], children)
+        root = self.task_cache.lstat()
+        self.assertTrue(stat.S_ISDIR(root.st_mode))
+        self.assertEqual(stat.S_IMODE(root.st_mode), 0o700)
+        self.assertEqual(root.st_uid, os.getuid())
+        self.assertEqual(sorted(path.name for path in self.task_cache.iterdir()),
+                         sorted(children + [evidence.CACHE_MARKER]))
+        info = self.marker_path().lstat()
+        self.assertTrue(stat.S_ISREG(info.st_mode))
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+        marker = self.marker()
+        self.assertEqual(set(marker), {"schema", "boot_id", "children"})
+        self.assertEqual(marker["schema"], evidence.CACHE_MARKER_SCHEMA)
+        self.assertEqual(marker["boot_id"], "boot-a")
+        for name in children:
+            child = (self.task_cache / name).lstat()
+            self.assertTrue(stat.S_ISDIR(child.st_mode))
+            self.assertEqual(marker["children"][name],
+                             {"device": child.st_dev, "inode": child.st_ino, "created_ticks": self.tick})
+        self.assertEqual(evidence.read_cache_marker(self.task_cache), (marker, None))
+
+    def test_tick_is_sampled_before_each_child_mkdir(self):
+        events = []
+        ticks = itertools.count(500)
+        real_mkdir = os.mkdir
+
+        def sample(proc):
+            value = next(ticks)
+            events.append(("tick", value))
+            return value
+
+        def mkdir(path, *args, **kwargs):
+            if Path(path).parent == self.task_cache:
+                events.append(("mkdir", Path(path).name))
+            return real_mkdir(path, *args, **kwargs)
+        with patch.object(validation_resources, "current_ticks", sample), patch.object(evidence.os, "mkdir", mkdir):
+            self.prepare()
+        expected = []
+        for offset, name in enumerate(evidence.DISPOSABLE_CACHE_CHILDREN):
+            expected += [("tick", 500 + offset), ("mkdir", name)]
+        self.assertEqual(events, expected)
+        recorded = {name: entry["created_ticks"] for name, entry in self.marker()["children"].items()}
+        self.assertEqual(recorded, {name: 500 + offset for offset, name in enumerate(evidence.DISPOSABLE_CACHE_CHILDREN)})
+
+    def test_repeated_preparation_never_rewrites_or_back_dates_entries(self):
+        (self.task_cache / "go-build").mkdir(parents=True)
+        first = self.prepare()
+        self.assertEqual(first["existing"], ["go-build"])
+        self.assertNotIn("go-build", first["recorded"])
+        before = self.marker_path().read_bytes()
+        self.assertNotIn("go-build", self.marker()["children"])
+
+        self.set_uptime("2000.00")
+        again = self.prepare()
+        self.assertEqual((again["created"], again["recorded"]), ([], []))
+        self.assertEqual(again["existing"], list(evidence.DISPOSABLE_CACHE_CHILDREN))
+        self.assertEqual(self.marker_path().read_bytes(), before)
+
+        # A replaced child keeps its old entry exactly; an unrecorded child
+        # created now gets the tick sampled before its own mkdir.
+        old_npm = self.marker()["children"]["npm"]
+        shutil.rmtree(self.task_cache / "npm")
+        shutil.rmtree(self.task_cache / "go-build")
+        replaced = self.prepare()
+        self.assertEqual(replaced["created"], ["go-build", "npm"])
+        self.assertEqual(replaced["recorded"], ["go-build"])
+        marker = self.marker()
+        self.assertEqual(marker["children"]["npm"], old_npm)
+        self.assertEqual(marker["children"]["go-build"]["created_ticks"], 2000 * os.sysconf("SC_CLK_TCK"))
+
+    def test_prepare_refuses_sibling_symlink_and_unsafe_targets_before_creating(self):
+        for task in ("", ".", "..", "nested/task"):
+            with self.assertRaisesRegex(evidence.Refused, "invalid task identity"):
+                evidence.prepare_cache(task, self.task_cache, self.proc)
+        sibling = self.task_cache.parent / "sibling-task"
+        with self.assertRaisesRegex(evidence.Refused, "current task child"):
+            self.prepare(sibling)
+        self.assertFalse(sibling.exists())
+
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        self.task_cache.parent.mkdir(parents=True)
+        self.task_cache.symlink_to(elsewhere, target_is_directory=True)
+        with self.assertRaisesRegex(evidence.Refused, "cannot be a symlink"):
+            self.prepare()
+        with self.assertRaisesRegex(evidence.Refused, "cannot be a symlink"):
+            self.prepare(elsewhere)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+        self.task_cache.unlink()
+
+        self.task_cache.mkdir()
+        target = self.base / "target"
+        target.mkdir()
+        (self.task_cache / "tmp").symlink_to(target, target_is_directory=True)
+        with self.assertRaisesRegex(evidence.Refused, "symlink: tmp"):
+            self.prepare()
+        (self.task_cache / "tmp").unlink()
+        (self.task_cache / "npm").write_text("not a directory")
+        with self.assertRaisesRegex(evidence.Refused, "ownership is missing or ambiguous: npm"):
+            self.prepare()
+        (self.task_cache / "npm").unlink()
+        (self.task_cache / "go-tmp").mkdir()
+        foreign = (self.task_cache / "go-tmp").lstat()
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if (info.st_dev, info.st_ino) != (foreign.st_dev, foreign.st_ino):
+                return info
+            values = list(info)
+            values[stat.ST_UID] = os.getuid() + 1
+            return os.stat_result(values)
+        with patch.object(evidence.os, "lstat", lstat), \
+                self.assertRaisesRegex(evidence.Refused, "ownership is missing or ambiguous: go-tmp"):
+            self.prepare()
+        self.assertEqual(sorted(path.name for path in self.task_cache.iterdir()), ["go-tmp"])
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_missing_timing_facts_create_the_cache_without_bounds(self):
+        cases = {
+            "boot": lambda: (self.proc / "sys" / "kernel" / "random" / "boot_id").unlink(),
+            "uptime": lambda: (self.proc / "uptime").unlink(),
+        }
+        for label, remove in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.task_cache, ignore_errors=True)
+                self.set_uptime("1000.00")
+                self.set_boot("boot-a")
+                remove()
+                result = self.prepare()
+                self.assertEqual(result["created"], list(evidence.DISPOSABLE_CACHE_CHILDREN))
+                self.assertEqual(result["recorded"], [])
+                self.assertFalse(os.path.lexists(self.marker_path()))
+        for backend in (validation_resources.DARWIN_BACKEND, validation_resources.UNAVAILABLE):
+            with self.subTest(backend):
+                shutil.rmtree(self.task_cache)
+                self.set_uptime("1000.00")
+                self.set_boot("boot-a")
+                with patch.object(validation_resources, "current_ticks", side_effect=AssertionError("sampled")), \
+                        patch.object(validation_resources, "boot_id", side_effect=AssertionError("read")):
+                    result = self.prepare(backend=backend)
+                self.assertEqual(result["created"], list(evidence.DISPOSABLE_CACHE_CHILDREN))
+                self.assertEqual(result["recorded"], [])
+                self.assertIn("not boot-relative", result["marker"])
+                self.assertFalse(os.path.lexists(self.marker_path()))
+
+    def test_unusable_or_cross_boot_marker_is_preserved_without_new_entries(self):
+        self.prepare()
+        valid = self.marker()
+        copy_path = self.base / "valid-marker.json"
+        copy_path.write_text(json.dumps(valid))
+        copy_path.chmod(0o600)
+        cases = {
+            "cross-boot": (dict(valid, boot_id="boot-b"), 0o600, "another boot"),
+            "malformed": (b"{not json", 0o600, "not valid JSON"),
+            "group-readable": (valid, 0o640, "not owner-only"),
+            "symlink": (None, None, "symlink"),
+        }
+        for label, (content, mode, reason) in cases.items():
+            with self.subTest(label):
+                for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+                    shutil.rmtree(self.task_cache / name, ignore_errors=True)
+                if content is None:
+                    self.marker_path().unlink()
+                    self.marker_path().symlink_to(copy_path)
+                else:
+                    self.write_marker(content, mode)
+                before = os.readlink(self.marker_path()) if content is None else self.marker_path().read_bytes()
+                result = self.prepare()
+                self.assertEqual(result["created"], list(evidence.DISPOSABLE_CACHE_CHILDREN))
+                self.assertEqual(result["recorded"], [])
+                self.assertIn(reason, result["marker"])
+                after = os.readlink(self.marker_path()) if content is None else self.marker_path().read_bytes()
+                self.assertEqual(after, before)
+                self.assertEqual(sorted(path.name for path in self.task_cache.iterdir()),
+                                 sorted(list(evidence.DISPOSABLE_CACHE_CHILDREN) + [evidence.CACHE_MARKER]))
+
+    def test_partial_preparation_records_only_children_it_created(self):
+        real_mkdir = os.mkdir
+
+        def mkdir(path, *args, **kwargs):
+            if Path(path) == self.task_cache / "playwright":
+                raise OSError(28, "No space left on device")
+            return real_mkdir(path, *args, **kwargs)
+        with patch.object(evidence.os, "mkdir", mkdir), self.assertRaisesRegex(OSError, "No space"):
+            self.prepare()
+        self.assertEqual(sorted(self.marker()["children"]), ["go-build", "go-tmp", "tmp"])
+        self.assertFalse((self.task_cache / "playwright").exists())
+        self.assertFalse((self.task_cache / "npm").exists())
+        # A later run creates the rest; the earlier entries stay exact.
+        earlier = self.marker()["children"]
+        self.set_uptime("1500.00")
+        self.assertEqual(self.prepare()["recorded"], ["playwright", "npm"])
+        marker = self.marker()["children"]
+        self.assertEqual({name: marker[name] for name in earlier}, earlier)
+        self.assertEqual(marker["npm"]["created_ticks"], 1500 * os.sysconf("SC_CLK_TCK"))
+
+    def test_failed_marker_publication_leaves_no_bound(self):
+        with patch.object(evidence.os, "replace", side_effect=OSError(5, "I/O error")), \
+                self.assertRaisesRegex(OSError, "I/O error"):
+            self.prepare()
+        self.assertEqual(sorted(path.name for path in self.task_cache.iterdir()),
+                         sorted(evidence.DISPOSABLE_CACHE_CHILDREN))
+        self.process(4242, start=1)
+        with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+            self.cleanup()
+
+    def test_prepare_cache_command(self):
+        env = dict(os.environ, XDG_CACHE_HOME=str(self.base / "cache-home"), PYTHONDONTWRITEBYTECODE="1")
+        script = str(REPO / "scripts" / "validation_evidence.py")
+        result = subprocess.run([sys.executable, script, "prepare-cache", "--task", "fixture-task",
+                                 "--task-cache", str(self.task_cache)], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Prepared task cache " + str(self.task_cache), result.stdout)
+        self.assertIn("created go-build, go-tmp, tmp, playwright, npm", result.stdout)
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertTrue((self.task_cache / name).is_dir())
+        if validation_resources.process_backend() == validation_resources.PROC_BACKEND \
+                and validation_resources.boot_id() and validation_resources.current_ticks() is not None:
+            self.assertIn("creation bounds recorded: go-build, go-tmp, tmp, playwright, npm", result.stdout)
+            self.assertEqual(sorted(self.marker()["children"]), sorted(evidence.DISPOSABLE_CACHE_CHILDREN))
+        else:
+            self.assertFalse(os.path.lexists(self.marker_path()))
+        refused = subprocess.run([sys.executable, script, "prepare-cache", "--task", "fixture-task",
+                                  "--task-cache", str(self.task_cache.parent / "sibling-task")],
+                                 env=env, capture_output=True, text=True)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("current task child", refused.stderr)
+        missing = subprocess.run([sys.executable, script, "prepare-cache", "--task", "fixture-task"],
+                                 env=env, capture_output=True, text=True)
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("prepare-cache requires --task and --task-cache", missing.stderr)
+
+    # -- cleanup with the marker ---------------------------------------------
+
+    def test_marker_disregards_own_uninspectable_process_started_before_the_tick(self):
+        self.prepare()
+        unknown = self.task_cache / "retained-unknown-child"
+        unknown.mkdir()
+        sibling = self.task_cache.parent / "sibling-task" / "go-build"
+        sibling.mkdir(parents=True)
+        durable = self.base / "state" / "conveyor" / "fixture-task" / "command.log"
+        durable.parent.mkdir(parents=True)
+        durable.write_text("evidence")
+        marker = self.marker_path().read_bytes()
+        # An sshd-session or systemd --user manager of the invoking user:
+        # non-dumpable, so cwd, fd, and environ cannot be read.
+        self.process(4242, start=self.tick - 1)
+        self.process(4343, start=1)
+        self.assertIn("4242:ambiguous:cwd", evidence.active_cache_users(self.task_cache / "go-build", self.proc))
+        self.assertEqual(self.cleanup([durable]), list(evidence.DISPOSABLE_CACHE_CHILDREN))
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertFalse((self.task_cache / name).exists())
+        self.assertTrue(self.task_cache.is_dir())
+        self.assertEqual(self.marker_path().read_bytes(), marker)
+        self.assertTrue(unknown.is_dir())
+        self.assertTrue(sibling.is_dir())
+        self.assertEqual(durable.read_text(), "evidence")
+
+    def test_equal_later_or_unknown_start_refuses(self):
+        self.prepare()
+        for pid, start in ((4242, self.tick), (4343, self.tick + 1), (4444, 10**12), (4545, None)):
+            with self.subTest(start=start):
+                entry = self.process(pid, start=start)
+                with self.assertRaisesRegex(evidence.Refused, f"active: go-build .*{pid}:ambiguous"):
+                    self.cleanup()
+                shutil.rmtree(entry)
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertTrue((self.task_cache / name).is_dir())
+
+    def test_readable_references_refuse_even_when_the_process_predates_the_tick(self):
+        self.prepare()
+        child = self.task_cache / "tmp"
+        (child / "object").write_text("cached")
+        cases = {
+            "cwd": dict(cwd=child),
+            "root": dict(root=child),
+            "fd:3": dict(descriptor=child / "object"),
+            "env:TMPDIR": dict(environ=b"TMPDIR=" + os.fsencode(child) + b"\0"),
+        }
+        for label, reference in cases.items():
+            with self.subTest(label):
+                entry = self.process(4242, start=1, **reference)
+                with self.assertRaisesRegex(evidence.Refused, "active: tmp .*4242:" + label):
+                    self.cleanup()
+                shutil.rmtree(entry)
+        self.assertTrue((child / "object").is_file())
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertTrue((self.task_cache / name).is_dir())
+
+    def test_marker_facts_that_do_not_match_omit_the_bound(self):
+        self.process(4242, start=1)
+
+        def boot_mismatch():
+            self.set_boot("boot-b")
+
+        def recreated_child():
+            # Keep the old directory alive so the new child has a distinct inode.
+            (self.task_cache / "go-build").rename(self.task_cache / "retained-old-go-build")
+            (self.task_cache / "go-build").mkdir()
+            self.assertNotEqual((self.task_cache / "go-build").lstat().st_ino,
+                                (self.task_cache / "retained-old-go-build").lstat().st_ino)
+
+        def missing_entry():
+            marker = self.marker()
+            del marker["children"]["go-build"]
+            self.write_marker(marker)
+
+        def symlinked():
+            copy_path = self.base / "marker-copy.json"
+            copy_path.unlink(missing_ok=True)
+            copy_path.write_bytes(self.marker_path().read_bytes())
+            copy_path.chmod(0o600)
+            self.marker_path().unlink()
+            self.marker_path().symlink_to(copy_path)
+
+        def group_writable():
+            self.marker_path().chmod(0o620)
+
+        def rewrite(change):
+            def apply():
+                marker = self.marker()
+                change(marker)
+                self.write_marker(marker)
+            return apply
+
+        def raw(content):
+            return lambda: self.write_marker(content)
+
+        def directory():
+            self.marker_path().unlink()
+            self.marker_path().mkdir(mode=0o700)
+
+        cases = {
+            "boot mismatch": boot_mismatch,
+            "recreated child": recreated_child,
+            "missing entry": missing_entry,
+            "symlinked marker": symlinked,
+            "group-writable marker": group_writable,
+            "directory marker": directory,
+            "malformed JSON": raw(b"{\"schema\": 1,"),
+            "not an object": raw(b"[]"),
+            "empty boot ID": rewrite(lambda m: m.update(boot_id="")),
+            "unknown schema": rewrite(lambda m: m.update(schema=2)),
+            "boolean schema": rewrite(lambda m: m.update(schema=True)),
+            "extra field": rewrite(lambda m: m.update(note="x")),
+            "boolean tick": rewrite(lambda m: m["children"]["go-build"].update(created_ticks=True)),
+            "string tick": rewrite(lambda m: m["children"]["go-build"].update(created_ticks=str(self.tick))),
+            "negative tick": rewrite(lambda m: m["children"]["go-build"].update(created_ticks=-1)),
+            "float tick": rewrite(lambda m: m["children"]["go-build"].update(created_ticks=float(self.tick))),
+            "missing inode": rewrite(lambda m: m["children"]["go-build"].pop("inode")),
+            "unknown child": rewrite(lambda m: m["children"].update(other=m["children"]["go-build"])),
+            "oversized": raw(b" " * (evidence.CACHE_MARKER_LIMIT + 1)),
+        }
+        for label, damage in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.task_cache, ignore_errors=True)
+                self.set_boot("boot-a")
+                self.prepare()
+                for name in evidence.DISPOSABLE_CACHE_CHILDREN[1:]:
+                    shutil.rmtree(self.task_cache / name)
+                damage()
+                with self.assertRaisesRegex(evidence.Refused, "active: go-build .*4242:ambiguous"):
+                    self.cleanup()
+                self.assertTrue((self.task_cache / "go-build").is_dir())
+
+    def test_foreign_owned_marker_omits_the_bound(self):
+        self.prepare()
+        self.process(4242, start=1)
+        marker = self.marker_path().lstat()
+        real_fstat = os.fstat
+
+        def fstat(descriptor, *args, **kwargs):
+            info = real_fstat(descriptor, *args, **kwargs)
+            if (info.st_dev, info.st_ino) != (marker.st_dev, marker.st_ino):
+                return info
+            values = list(info)
+            values[stat.ST_UID] = os.getuid() + 1
+            return os.stat_result(values)
+        with patch.object(evidence.os, "fstat", fstat):
+            self.assertEqual(evidence.read_cache_marker(self.task_cache),
+                             (None, "marker is not owned by the invoking user"))
+            with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous"):
+                self.cleanup()
+        self.assertEqual(self.cleanup(), list(evidence.DISPOSABLE_CACHE_CHILDREN))
+
+    def test_non_proc_backends_never_use_the_marker(self):
+        self.prepare()
+        calls = []
+
+        def inspector(path, proc=None, backend=None, uid=None, created_after=None):
+            calls.append(created_after)
+            return []
+        for backend in (validation_resources.DARWIN_BACKEND, validation_resources.UNAVAILABLE):
+            with self.subTest(backend):
+                calls.clear()
+                with patch.object(validation_resources, "process_backend", return_value=backend), \
+                        patch.object(validation_resources, "boot_id", side_effect=AssertionError("read")):
+                    self.assertEqual(evidence.creation_bounds(self.task_cache, self.proc), {})
+                    with patch.object(evidence, "active_cache_users", inspector):
+                        evidence.cleanup_cache("fixture-task", self.task_cache, [], self.proc)
+                self.assertEqual(calls, [None] * len(evidence.DISPOSABLE_CACHE_CHILDREN))
+                self.prepare()
+
+    def test_proc_backend_forwards_the_recorded_tick(self):
+        self.prepare()
+        calls = {}
+
+        def inspector(path, proc=None, backend=None, uid=None, created_after=None):
+            calls[Path(path).name] = (created_after, uid)
+            return []
+        with patch.object(evidence, "active_cache_users", inspector):
+            evidence.cleanup_cache("fixture-task", self.task_cache, [], self.proc)
+        self.assertEqual(calls, {name: (self.tick, os.getuid()) for name in evidence.DISPOSABLE_CACHE_CHILDREN})
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and Path("/proc/self/stat").is_file(),
+                         "real non-dumpable processes need Linux /proc")
+    @unittest.skipIf(os.geteuid() == 0, "root reads a non-dumpable process's proc entries")
+    def test_real_non_dumpable_process_before_creation_is_disregarded(self):
+        """The SSH-host case with real processes: a non-dumpable process of the invoking user.
+
+        Assertions name only this test's processes, so unrelated processes on
+        the host cannot change the outcome.
+        """
+        program = ("import ctypes, sys, time\n"
+                   "libc = ctypes.CDLL(None, use_errno=True)\n"
+                   "if libc.prctl(4, 0, 0, 0, 0) != 0: sys.exit(3)\n"  # PR_SET_DUMPABLE
+                   "print('ready', flush=True)\n"
+                   "time.sleep(60)\n")
+
+        def start():
+            process = subprocess.Popen([sys.executable, "-c", program], cwd=self.base,
+                                       stdout=subprocess.PIPE, text=True)
+            self.addCleanup(process.stdout.close)
+            self.addCleanup(process.wait, 5)
+            self.addCleanup(process.kill)
+            self.assertEqual(process.stdout.readline().strip(), "ready")
+            return process
+
+        before = start()
+        try:
+            os.readlink(f"/proc/{before.pid}/cwd")
+            self.skipTest("this kernel lets the owner read a non-dumpable process's cwd")
+        except PermissionError:
+            pass
+        time.sleep(0.1)  # Several clock ticks separate the start from the creation sample.
+        result = evidence.prepare_cache("fixture-task", self.task_cache)
+        self.assertEqual(result["recorded"], list(evidence.DISPOSABLE_CACHE_CHILDREN))
+        after = start()
+        child = self.task_cache / "go-build"
+        bound = evidence.creation_bounds(self.task_cache)["go-build"]["created_ticks"]
+        unbounded = evidence.active_cache_users(child, uid=os.getuid())
+        bounded = evidence.active_cache_users(child, uid=os.getuid(), created_after=bound)
+        self.assertIn(f"{before.pid}:ambiguous:cwd", unbounded)
+        self.assertFalse([user for user in bounded if user.startswith(f"{before.pid}:")], bounded)
+        self.assertIn(f"{after.pid}:ambiguous:cwd", bounded)
+
+
 class MakeGraphTests(unittest.TestCase):
     # Exercise both the local default and .github/workflows/ci.yml explicitly,
     # regardless of the environment that launches this test suite.

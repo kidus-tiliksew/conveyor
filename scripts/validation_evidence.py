@@ -767,11 +767,20 @@ def bind(root, p, output, remote, branch):
 
 DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
 
+# The creation marker records, per disposable child, a boot-relative tick
+# sampled before the child's mkdir. It is the only source of a creation bound:
+# no wall-clock or filesystem timestamp is ever used (component-verification-strategy).
+CACHE_MARKER = ".conveyor-cache.json"
+CACHE_MARKER_SCHEMA = 1
+CACHE_MARKER_LIMIT = 64 * 1024
+CACHE_MARKER_ENTRY_FIELDS = frozenset(("device", "inode", "created_ticks"))
 
-def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=None):
+
+def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=None, created_after=None):
     """Return live or ambiguously inspected processes that may use path."""
     try:
-        return validation_resources.active_cache_users(path, proc, uid=uid, backend=backend)
+        return validation_resources.active_cache_users(path, proc, uid=uid, created_after=created_after,
+                                                       backend=backend)
     except validation_resources.Refusal as exc:
         raise Refused(str(exc)) from exc
 
@@ -800,16 +809,214 @@ def owner_only_ancestor(path, lstat=os.lstat):
     return None
 
 
-def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
-    require(Path(task).name == task and task not in ("", ".", ".."), "invalid task identity")
+def cache_base():
     cache_home = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
     require(cache_home.is_absolute(), "XDG_CACHE_HOME must be absolute")
-    expected = (cache_home / "conveyor" / task).resolve()
+    return cache_home / "conveyor"
+
+
+def task_cache_root(task, task_cache, allow_missing=False):
+    """Return the canonical task cache root after task-identity and containment checks.
+
+    Only preparation passes allow_missing, which accepts a root that does not
+    exist yet; every existing root must be an owned directory.
+    """
+    require(Path(task).name == task and task not in ("", ".", ".."), "invalid task identity")
+    expected = (cache_base() / task).resolve()
     supplied = Path(task_cache)
     require(not supplied.is_symlink(), "task cache cannot be a symlink")
     require(supplied.resolve() == expected, "task cache must be the current task child of the Conveyor cache base")
+    if allow_missing and not os.path.lexists(expected):
+        return expected
     require(expected.is_dir() and expected.stat().st_uid == os.getuid(), "task cache ownership is missing or ambiguous")
+    return expected
+
+
+def _strict_int(value, minimum):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def read_cache_marker(root):
+    """Return (marker, problem) for the creation marker in an existing task root.
+
+    An absent marker returns (None, None). A marker that is not a regular
+    owner-only file of the invoking user, is reached through a symlink, or
+    has invalid content returns (None, problem). Type, owner, and mode come
+    from the opened descriptor, so a path replaced after a check is never
+    trusted.
+    """
+    path = Path(root) / CACHE_MARKER
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, "marker cannot be opened without following a symlink (" + str(exc.strerror) + ")"
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return None, "marker is not a regular file"
+        if info.st_uid != os.getuid():
+            return None, "marker is not owned by the invoking user"
+        if info.st_mode & 0o077:
+            return None, "marker is not owner-only"
+        chunks = []
+        size = 0
+        while chunk := os.read(descriptor, 64 * 1024):
+            size += len(chunk)
+            if size > CACHE_MARKER_LIMIT:
+                return None, "marker is too large"
+            chunks.append(chunk)
+    except OSError as exc:
+        return None, "marker cannot be read (" + str(exc.strerror) + ")"
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(b"".join(chunks).decode())
+    except (UnicodeDecodeError, ValueError):
+        return None, "marker is not valid JSON"
+    if not (isinstance(value, dict) and set(value) == {"schema", "boot_id", "children"}
+            and _strict_int(value["schema"], 0) and value["schema"] == CACHE_MARKER_SCHEMA
+            and isinstance(value["boot_id"], str) and value["boot_id"]
+            and isinstance(value["children"], dict)):
+        return None, "marker schema is invalid"
+    for name, entry in value["children"].items():
+        if not (name in DISPOSABLE_CACHE_CHILDREN and isinstance(entry, dict)
+                and set(entry) == CACHE_MARKER_ENTRY_FIELDS
+                and _strict_int(entry["device"], 0) and _strict_int(entry["inode"], 1)
+                and _strict_int(entry["created_ticks"], 0)):
+            return None, "marker entry is invalid: " + str(name)
+    return value, None
+
+
+def _publish_cache_marker(root, value):
+    """Atomically publish an owner-only marker without following symlinks."""
+    data = json.dumps(value, sort_keys=True, indent=2).encode() + b"\n"
+    temporary = Path(root) / (CACHE_MARKER + "." + secrets.token_hex(8) + ".tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)
+            view = memoryview(data)
+            while view:
+                view = view[os.write(descriptor, view):]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, Path(root) / CACHE_MARKER)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    directory = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _owned_directory(path, name):
+    info = os.lstat(path)
+    require(not stat.S_ISLNK(info.st_mode), "disposable cache child cannot be a symlink: " + name)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid(),
+            "disposable cache child ownership is missing or ambiguous: " + name)
+    return info
+
+
+def prepare_cache(task, task_cache, proc=validation_resources.PROC, backend=None):
+    """Create the task cache root and its disposable children, recording creation ticks.
+
+    On the Linux /proc backend each child this call creates receives an entry
+    with its device, inode, and a boot-relative tick sampled before its mkdir,
+    so the tick is a lower bound on creation. A child that already exists
+    keeps its existing entry or receives none. An unusable or cross-boot
+    marker is preserved and gains no entries. macOS start times are
+    wall-clock readings, so no entry is recorded there.
+    """
+    root = task_cache_root(task, task_cache, allow_missing=True)
+    require(root.name == task and root.parent == cache_base().resolve(), "task cache root cannot be a symlink")
+    if not os.path.lexists(root):
+        root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.mkdir(root, 0o700)
+        except FileExistsError:
+            pass
+    info = os.lstat(root)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid(), "task cache ownership is missing or ambiguous")
+    existing, missing = [], []
+    for name in DISPOSABLE_CACHE_CHILDREN:
+        try:
+            _owned_directory(root / name, name)
+        except FileNotFoundError:
+            missing.append(name)
+            continue
+        existing.append(name)
+
+    linux = validation_resources.process_backend(proc, backend) == validation_resources.PROC_BACKEND
+    boot = validation_resources.boot_id(proc) if linux else None
+    marker, problem = read_cache_marker(root)
+    if not linux:
+        status = "no creation bounds: process start times on this host are not boot-relative ticks"
+    elif boot is None:
+        status = "no creation bounds: the boot ID is unavailable"
+    elif problem is not None:
+        status = "existing marker preserved without new entries: " + problem
+    elif marker is not None and marker["boot_id"] != boot:
+        status = "existing marker preserved without new entries: it belongs to another boot"
+    else:
+        status = None
+    trusted = status is None
+    entries = dict(marker["children"]) if trusted and marker is not None else {}
+    created, recorded = [], []
+    try:
+        for name in missing:
+            child = root / name
+            ticks = validation_resources.current_ticks(proc) if trusted else None
+            try:
+                os.mkdir(child, 0o700)
+            except FileExistsError:
+                # Created by someone else since the preflight: never dated here.
+                _owned_directory(child, name)
+                existing.append(name)
+                continue
+            created.append(name)
+            child_info = _owned_directory(child, name)
+            if _strict_int(ticks, 0) and name not in entries:
+                entries[name] = {"device": child_info.st_dev, "inode": child_info.st_ino, "created_ticks": ticks}
+                recorded.append(name)
+    finally:
+        if recorded:
+            _publish_cache_marker(root, {"schema": CACHE_MARKER_SCHEMA, "boot_id": boot, "children": entries})
+    if status is None:
+        status = "creation bounds recorded: " + (", ".join(recorded) if recorded else "none")
+    return {"root": str(root), "created": created, "existing": existing, "recorded": recorded, "marker": status}
+
+
+def creation_bounds(root, proc=validation_resources.PROC):
+    """Return recorded child entries usable as creation bounds, or {}.
+
+    Entries are usable only on the Linux /proc backend, from a valid marker
+    whose boot ID equals the current boot ID.
+    """
+    if validation_resources.process_backend(proc) != validation_resources.PROC_BACKEND:
+        return {}
+    marker, _ = read_cache_marker(root)
+    if marker is None:
+        return {}
+    current = validation_resources.boot_id(proc)
+    if not current or marker["boot_id"] != current:
+        return {}
+    return marker["children"]
+
+
+def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
+    expected = task_cache_root(task, task_cache)
     refs = [Path(value).resolve() for value in references]
+    bounds = creation_bounds(expected, proc)
     removable = []
     for name in DISPOSABLE_CACHE_CHILDREN:
         child = expected / name
@@ -822,12 +1029,19 @@ def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
         require(not any(ref == resolved or ref.is_relative_to(resolved) for ref in refs),
                 "referenced evidence is inside disposable cache child: " + name)
         # Owner isolation limits inspection to the invoking user's processes.
-        # No creation-time filter applies: a filesystem birth time is a
-        # wall-clock reading, and mapping it onto process start ticks would
-        # need the clock-step history no host records, so an uninspectable
-        # process that remains after owner isolation always blocks cleanup.
+        # A creation bound applies only from the marker's tick for this exact
+        # child (same boot, device, and inode). The shared inspector then
+        # disregards only an uninspectable process with a known start strictly
+        # before that tick; readable references always block. Without a bound
+        # an uninspectable process that remains after owner isolation blocks.
         uid = os.getuid() if owner_only_ancestor(resolved) is not None else None
-        users = active_cache_users(resolved, proc, uid=uid)
+        created_after = None
+        entry = bounds.get(name)
+        if entry is not None:
+            info = os.lstat(resolved)
+            if info.st_dev == entry["device"] and info.st_ino == entry["inode"]:
+                created_after = entry["created_ticks"]
+        users = active_cache_users(resolved, proc, uid=uid, created_after=created_after)
         detail = users[:20]
         if len(users) > len(detail):
             detail.append("... " + str(len(users) - len(detail)) + " more")
@@ -840,7 +1054,7 @@ def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run", "inspect", "check", "bind", "cleanup"))
+    parser.add_argument("action", choices=("run", "inspect", "check", "bind", "prepare-cache", "cleanup"))
     parser.add_argument("--policy")
     parser.add_argument("--output")
     parser.add_argument("--remote", default="origin")
@@ -852,6 +1066,13 @@ def main():
                         help="run only: stop the supervised gate after this many seconds")
     args = parser.parse_args()
     try:
+        if args.action == "prepare-cache":
+            require(args.task and args.task_cache, "prepare-cache requires --task and --task-cache")
+            result = prepare_cache(args.task, args.task_cache)
+            print("Prepared task cache " + result["root"] + ": created "
+                  + (", ".join(result["created"]) or "none") + "; existing "
+                  + (", ".join(result["existing"]) or "none") + "; " + result["marker"])
+            return 0
         if args.action == "cleanup":
             require(args.task and args.task_cache, "cleanup requires --task and --task-cache")
             removed = cleanup_cache(args.task, args.task_cache, args.reference)

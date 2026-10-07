@@ -26,15 +26,17 @@ and, for APFS, its physical store, and `hdiutil info` lists attached `ram://`
 images, which are RAM disks. Use the platform's equivalent mount or filesystem
 inspection on other hosts. Do not silently fall back to `/tmp`.
 
-Create separate children and export every cache variable before any build or
-test command. Preserve the operator's `XDG_CACHE_HOME`; derive the task root
-from it instead of replacing it:
+Create the task root and its separate children with the supported command,
+and export every cache variable before any build or test command. Preserve the
+operator's `XDG_CACHE_HOME`; derive the task root from it instead of replacing
+it:
 
 ```sh
 task_id='<task-id>'
 cache_base="${XDG_CACHE_HOME:-$HOME/.cache}/conveyor"
 export CONVEYOR_TASK_CACHE="$cache_base/$task_id"
-mkdir -p "$CONVEYOR_TASK_CACHE"/{go-build,go-tmp,tmp,playwright,npm}
+python3 scripts/validation_evidence.py prepare-cache --task "$task_id" \
+  --task-cache "$CONVEYOR_TASK_CACHE"
 
 export GOCACHE="$CONVEYOR_TASK_CACHE/go-build"
 export GOTMPDIR="$CONVEYOR_TASK_CACHE/go-tmp"
@@ -78,13 +80,48 @@ with neither group nor other execute permission, such as a mode 0700
 invoking user's processes are inspected. Privileged processes are outside this
 assumption. When no such directory exists, every process is inspected.
 
-Cleanup applies no creation-time filter. A filesystem birth time is a
-wall-clock reading, and process start times are boot-relative on Linux and
-separate wall-clock readings on macOS. Ordering them would need the history of
-clock steps between the two events, which no host records. An uninspectable
-process that remains after owner isolation therefore keeps cleanup refusing,
-including the invoking user's own non-dumpable processes such as
-`sshd-session` or the `systemd --user` manager.
+`prepare-cache` applies the same task-identity and canonical-containment
+checks as cleanup and also refuses a symlinked task root. It creates a missing
+task root with mode 0700 and the five disposable children `go-build`, `go-tmp`,
+`tmp`, `playwright`, and `npm`, and refuses a symlinked, foreign-owned, or
+non-directory child before creating anything. It never changes the
+permissions of an existing directory. On Linux it writes an owner-only marker,
+`.conveyor-cache.json`, in the task root. The marker records the boot ID and,
+for each child the command created, the child's device, inode, and a
+boot-relative tick sampled from `/proc/uptime` before the child's `mkdir`. The
+tick is therefore a lower bound on the child's creation. No wall-clock time or
+filesystem timestamp is involved. A child that already existed keeps its
+existing entry or receives none, so repeated preparation never rewrites or
+back-dates an entry. A marker that is invalid or belongs to another boot is
+preserved and receives no new entries; the command reports this. On macOS, and
+when the boot ID or tick is unavailable, the command creates the directories
+without recording entries.
+
+Cleanup uses a child's recorded tick as a creation bound only when all of these
+hold:
+
+- the process backend is Linux `/proc`;
+- the marker is a regular file owned by the invoking user, has neither group
+  nor other permissions, is not a symlink, and has valid content;
+- the marker's boot ID equals the current boot ID;
+- the child's current device and inode equal its recorded entry.
+
+With a bound, an uninspectable process with a known start tick strictly before
+the recorded tick is disregarded: it started before the child existed. This
+covers the invoking user's own non-dumpable processes on an SSH development
+host, such as `sshd-session` or the `systemd --user` manager. A process that
+started at or after the tick, or whose start is unknown, still blocks cleanup,
+and a readable reference always blocks it. In every other case no creation
+filter applies, and an uninspectable process that remains after owner
+isolation keeps cleanup refusing. A filesystem birth time is never used as a
+bound: it is a wall-clock reading, and ordering it against boot-relative process
+start ticks would need the history of clock steps between the two events,
+which no host records.
+
+A child that cleanup removed and a later `prepare-cache` re-created keeps its
+earlier entry. That entry's inode normally no longer matches, so the child
+regains no bound. When the filesystem reuses the inode, the earlier tick still
+precedes the new creation and remains a lower bound.
 
 A process killed before cleanup leaves scratch for the next claim to inspect
 with the same command.
