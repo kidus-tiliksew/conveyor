@@ -24,7 +24,7 @@ const (
 
 // continuationLaunchPlan is derived entirely by the launching client. The
 // control plane supplies advisory metadata and provenance, never resume argv
-// (req-260818-24dd3a AC-2.1, AC-2.3; DEC-24; design-260805-973cd4).
+// (req-260818-24dd3a AC-2.1, AC-2.3; DEC-24; component-local-launchers).
 type continuationLaunchPlan struct {
 	Resume bool
 	Reason string

@@ -14,7 +14,7 @@ import (
 )
 
 // Requirement and planning-session persistence for the in-memory store.
-// Requirements are versioned and confirmed, never gated (design-document-corpus);
+// Requirements are versioned and confirmed, never gated (component-document-corpus);
 // planning sessions are durable and produce at most one artifact.
 
 // PlanningFinalizeRequest finalizes a session against exactly one produced

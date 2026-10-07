@@ -24,7 +24,7 @@ import (
 // requirementView is the dashboard read model for one living requirement.
 // It deliberately exposes immutable versions and pipeline-owned lineage
 // together so the UI never has to reconstruct authority from feature-tree
-// assignments (design-document-corpus; design-web-dashboard).
+// assignments (component-document-corpus).
 type requirementView struct {
 	Requirement          core.Requirement             `json:"requirement"`
 	CurrentVersion       *core.RequirementVersion     `json:"current_version,omitempty"`
@@ -44,7 +44,7 @@ type requirementView struct {
 
 // requirementSummary is the compact read model used by the document tree.
 // Content, histories, graph data, and action payloads stay on the detail route
-// (design-http-api; design-web-dashboard).
+// (component-document-corpus).
 type requirementSummary struct {
 	Requirement          core.Requirement           `json:"requirement"`
 	CurrentVersion       *requirementVersionSummary `json:"current_version,omitempty"`
@@ -1041,7 +1041,7 @@ func taskRequirementVersionAt(events []core.Event, versions []core.RequirementVe
 	active, pinned := false, 0
 	for _, event := range events {
 		// Event ID is the append-only ordering tie-breaker when durable events
-		// share a stored timestamp (REQ-5; design-database).
+		// share a stored timestamp (REQ-5; component-document-corpus).
 		if event.At.After(delivery.At) || (event.At.Equal(delivery.At) && delivery.ID > 0 && event.ID > delivery.ID) {
 			continue
 		}

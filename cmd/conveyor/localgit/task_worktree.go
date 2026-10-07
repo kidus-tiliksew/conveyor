@@ -24,7 +24,7 @@ type linkedWorktree struct {
 
 // CleanupTaskWorktree removes one clean registered task worktree while
 // retaining its branch. Missing directories are pruned as stale registrations;
-// a missing registration is an idempotent no-op (design-git-delivery).
+// a missing registration is an idempotent no-op (component-git-delivery).
 func CleanupTaskWorktree(ctx context.Context, primary, branch string) (TaskWorktreeCleanupResult, error) {
 	result := TaskWorktreeCleanupResult{Worktree: "skipped", Branch: "absent", Path: "-"}
 	root, err := repositoryRootAt(ctx, primary)

@@ -1,6 +1,6 @@
 // Package taskops is Conveyor's serialized lifecycle command plane. Callers
 // issue a closed canonical command; only the plane can mint the capability
-// required by lifecycle store mutators (design-task-lifecycle).
+// required by lifecycle store mutators (component-task-lifecycle).
 package taskops
 
 import (
@@ -13,7 +13,7 @@ import (
 
 // TaskLease proves that a lifecycle write was admitted through Plane.Perform.
 // Its fields and constructor are intentionally private so code outside this
-// package cannot forge permission to mutate a task projection (design-task-lifecycle).
+// package cannot forge permission to mutate a task projection (component-task-lifecycle).
 type TaskLease struct {
 	taskID  string
 	command string
@@ -74,7 +74,7 @@ const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 // SetupChangeCommand identifies the atomic setup-change write span. The span
 // may contain canonical order.create and order.cancel transitions, but it is
 // admitted as one transaction so the frozen setup, replacement review seats,
-// projections, and events cannot commit independently (design-task-lifecycle).
+// projections, and events cannot commit independently (component-task-lifecycle).
 const SetupChangeCommand = "task.setup.change"
 
 // SetAssigneeCommand is the serialized, capability-protected task assignment
@@ -83,7 +83,7 @@ const SetAssigneeCommand = "task.assignee.set"
 
 // RequestChangesCommand is the serialized user-sourced changes-requested
 // bounce. It deliberately reuses the persisted redirect action and canonical
-// awaiting -> queued lifecycle edge (design-task-lifecycle).
+// awaiting -> queued lifecycle edge (component-task-lifecycle).
 const RequestChangesCommand = "task.request_changes"
 
 type RequestChanges struct {

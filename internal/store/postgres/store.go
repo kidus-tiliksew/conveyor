@@ -1,7 +1,7 @@
 // Package postgres implements the Phase 2 event-sourced store with pgx and
 // sqlc. Every projection mutation and its audit event commit in one
 // transaction; events and interventions are append-only at the database layer
-// (design-database).
+// (component-persistence).
 package postgres
 
 import (
@@ -3052,7 +3052,7 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 		-- Adjacency first: one index probe per reached node, emitting the far
 		-- endpoint so the parent match below is a plain equality hash join.
 		-- Pairing nearest×nearest before touching links is quadratic in the
-		-- neighborhood size (design-lineage-graph).
+		-- neighborhood size (component-persistence).
 		SELECT n.root_no,n.node_type,n.node_id,n.depth,
 			CASE WHEN l.src_type=n.node_type AND l.src_id=n.node_id THEN l.dst_type ELSE l.src_type END AS other_type,
 			CASE WHEN l.src_type=n.node_type AND l.src_id=n.node_id THEN l.dst_id ELSE l.src_id END AS other_id,

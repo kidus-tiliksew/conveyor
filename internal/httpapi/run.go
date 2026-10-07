@@ -55,7 +55,7 @@ func (s *Server) requireTaskRunAuth(next http.Handler) http.Handler {
 // requireTaskRunAuth does, and additionally a session-bound run child agent
 // credential carrying all three run bindings. Exact workspace, order, and
 // session confinement is enforced per handler against the presented request
-// (req-security-boundaries REQ-1/AC-1.1; req-260818-24dd3a; design-http-api).
+// (req-security-boundaries REQ-1/AC-1.1; req-260818-24dd3a; component-mcp-protocol).
 func (s *Server) requireTaskRunChildAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialUser && credential.Method == core.CredentialMethodBearer {
@@ -244,7 +244,7 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 // task. The store read is already workspace-scoped; the origin filter prevents
 // proposals from another task in that workspace reaching the run response.
 // Capability flags are server-derived and grant no new mutation surface
-// (req-260811-0ee057 AC-1.5, AC-2.2, AC-5.8; design-260805-973cd4).
+// (req-260811-0ee057 AC-1.5, AC-2.2, AC-5.8; component-mcp-protocol).
 func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([]workerservice.TaskRunProposal, error) {
 	items, err := s.Store.ListPendingAuthorityProposalsForTask(ctx, task.ID)
 	if err != nil {
@@ -596,7 +596,7 @@ type taskRunAgentCredentialRequest struct {
 
 // issueTaskRunAgentCredential splits the human control plane from the exact
 // child execution principal after claim (req-security-boundaries REQ-1/AC-1.1,
-// REQ-2/AC-2.2; design-harness-execution; design-http-api).
+// REQ-2/AC-2.2; component-mcp-protocol).
 func (s *Server) issueTaskRunAgentCredential(w http.ResponseWriter, r *http.Request) {
 	if s.AgentCredentials == nil {
 		http.Error(w, "agent credential service unavailable", http.StatusServiceUnavailable)

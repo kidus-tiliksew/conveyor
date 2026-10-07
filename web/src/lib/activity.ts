@@ -78,7 +78,7 @@ export function humanizeClaimRefusal(
 // Feed grouping: the pipeline stage a task currently occupies.
 // Human gates, approved tasks awaiting merge, parked tasks, and pending
 // authority signals collect under "Awaiting human" without changing pipeline
-// state (REQ-2 AC-2.2; REQ-3; design-web-dashboard); only terminal states
+// state (REQ-2 AC-2.2; REQ-3; component-web-dashboard); only terminal states
 // archive under "Completed".
 export function groupForSummary(item: ActivitySummary): GroupKey {
   const { state } = item.task

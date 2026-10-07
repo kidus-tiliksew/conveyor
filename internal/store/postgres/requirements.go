@@ -16,7 +16,7 @@ import (
 )
 
 // Requirement and planning-session persistence. Every mutation commits its projection update and audit
-// event in one transaction, exactly as lifecycle transitions do (design-database).
+// event in one transaction, exactly as lifecycle transitions do (component-document-corpus).
 
 func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error) {
 	if requirement.ID == "" {

@@ -19,7 +19,7 @@ import { Textarea } from '../ui/input'
 // decision point. While the request is pending it is the exclusive pause
 // surface: declining with direction already owns the implementation retry, so
 // generic recovery must not offer a route around the operator gate
-// (REQ-2, AC-2.1; design-260805-973cd4).
+// (REQ-2, AC-2.1; component-web-task-surfaces).
 
 type PlanRevisionDecision = 'approve' | 'decline' | 'reject'
 

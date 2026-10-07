@@ -154,7 +154,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	ctx := store.WithWorkspace(r.Context(), workspace)
 	// A conveyor-run child credential is narrower than the general agent class:
 	// it cannot escape the exact parent-claimed session that minted it
-	// (req-security-boundaries REQ-1/AC-1.1; design-http-api).
+	// (req-security-boundaries REQ-1/AC-1.1; component-mcp-protocol).
 	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
 		if credential.RunWorkspaceID != workspace {
 			return nil, fmt.Errorf("workspace_not_found: workspace not found")
@@ -591,7 +591,7 @@ var claimantBoundMCPTools = map[string]bool{
 
 // authorizeWorkerOrder scopes worker-credentialed MCP calls to orders the
 // worker currently holds. A mismatch is a lost or reassigned claim — e.g.
-// the lease expired and ownership returned to the queue (design-260805-973cd4) — not a
+// the lease expired and ownership returned to the queue (component-mcp-protocol) — not a
 // credential failure, which requireMCPAuth already rejected.
 func (s *Server) authorizeWorkerOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID string) error {
 	if !workerAuth {
@@ -867,7 +867,7 @@ func mcpTools() []map[string]any {
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return append(append(mcpReadTools(), verificationMCPTools()...), []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Reserve the task from the worker daemon; claim it yourself (DEC-5)."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Hold the task so workers cannot claim its orders; claim them yourself. A hold neither assigns the task nor changes queue order (DEC-55(3))."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},

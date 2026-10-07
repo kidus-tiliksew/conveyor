@@ -208,7 +208,7 @@ func (c *codexUsageCollector) Usage() (workerUsageTotals, bool) {
 
 // cursorUsageCollector accepts only Cursor's documented terminal result event.
 // It does not scrape ordinary stream-json events or fold cache tokens into the
-// provider-reported input and output totals (REQ-2, design-260805-973cd4).
+// provider-reported input and output totals (REQ-2, component-local-launchers).
 type cursorUsageCollector struct {
 	mu      sync.Mutex
 	pending []byte
@@ -436,7 +436,7 @@ func reportWorkerUsageFallback(c *client, credential, orderID, sessionID string,
 	// Terminal usage events can arrive after the agent's terminal MCP call, so
 	// this is intentionally best effort and bounded independently of the child
 	// lifecycle. The service suppresses this fallback after an agent report
-	// (AC-2.2, design-260805-973cd4).
+	// (AC-2.2, component-local-launchers).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = c.reportWorkerFallbackUsageContext(ctx, credential, orderID, sessionID, totals.TokensIn, totals.TokensOut)
@@ -1102,7 +1102,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	leaseExpiresAt := claimed.LeaseExpiresAt
 	// Pre-start setup (temp directory, MCP config, spec checkout clone) can
 	// outlast the claim lease, so renewal must begin at claim time rather than
-	// child launch (design-260805-973cd4: renewal keeps the claim alive but never
+	// child launch (component-local-launchers: renewal keeps the claim alive but never
 	// extends the fixed execution window). Authority loss cancels setupCtx so
 	// long-running setup steps abort instead of continuing unclaimed.
 	setupCtx, cancelSetup := context.WithCancel(ctx)
@@ -1339,7 +1339,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		// The branch assignment travels with the dispatch so `conveyor
 		// checkout` resolves it locally; worker credentials are valid on the
 		// worker and MCP planes only, never on workspace REST reads, so a
-		// child cannot look the task up itself (design-http-api).
+		// child cannot look the task up itself (component-local-launchers).
 		"CONVEYOR_TASK_ID":                 item.Task.ID,
 		"CONVEYOR_TASK_BRANCH":             item.Task.Branch,
 		"CONVEYOR_TASK_BASE_BRANCH":        item.Task.BaseBranch,
@@ -1462,7 +1462,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	redactedStdout = c.gitCredentials.outputWriter(stdoutFanout, outputRedactor)
 	redactedStderr = c.gitCredentials.outputWriter(io.MultiWriter(append([]io.Writer{stderr, failureTail, activityStderrRenderer}, observabilityDestinations...)...), outputRedactor)
 	// Both redacted streams share one first-write signal; either stream
-	// permanently disarms output-start liveness (design-260805-973cd4).
+	// permanently disarms output-start liveness (component-local-launchers).
 	firstActivity := newFirstActivitySignal()
 	defer flushOutput()
 	// Hand lease authority to the running-child loop: stop pre-start renewal
@@ -1648,7 +1648,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			// Renewal already proved that this exact child durably released for
 			// operator direction. The release is the successful stage handoff;
 			// child exit status cannot turn it into claim loss or a duplicate
-			// release (design-260805-973cd4).
+			// release (component-local-launchers).
 			return presentCheckpointRelease()
 		}
 		var exitStatus *int
@@ -2018,7 +2018,7 @@ type harnessProcessGroup struct {
 // leader of a dedicated process group, so TERM and the bounded KILL escalation
 // cover dev servers, watchers, and other descendants as well as the child.
 // A completed child may still have live descendants, so normal-exit cleanup
-// also routes through this method (design-harness-execution).
+// also routes through this method (component-local-launchers).
 func (g harnessProcessGroup) terminate(completed *error) error {
 	if g.pgid <= 0 || g.pgid == syscall.Getpgrp() {
 		if completed != nil {
@@ -2164,7 +2164,7 @@ type boundedTailWriter struct {
 const (
 	// These worker-local limits match the shared observability wire contract.
 	// The server independently bounds both inputs (req-260820-221be8 AC-1.2,
-	// AC-2.2; design-260805-973cd4).
+	// AC-2.2; component-local-launchers).
 	workerActivitySnapshotLimit  = 4 * 1024
 	workerAttemptTranscriptLimit = 4 * 1024 * 1024
 )
@@ -2332,7 +2332,7 @@ var workerStallDeadlineTestHook func()
 
 // preStartClaimRenewal keeps a claimed work order's lease renewed between a
 // successful claim and child launch, when pre-start setup can outlast the
-// lease window (design-260805-973cd4: renewal keeps the claim alive but never extends
+// lease window (component-local-launchers: renewal keeps the claim alive but never extends
 // the fixed execution window). On authority loss it cancels the setup
 // context so long-running setup steps abort instead of continuing unclaimed.
 type preStartClaimRenewal struct {
@@ -2403,7 +2403,7 @@ func (r *preStartClaimRenewal) Stop() (time.Time, error) {
 }
 
 // materializeSpecCheckout gives a spec agent repository-grounded, immutable
-// base-branch context without creating the task branch (design-git-delivery).
+// base-branch context without creating the task branch (component-local-launchers).
 func materializeSpecCheckout(ctx context.Context, root string, item workerservice.DispatchOrder) (string, error) {
 	repository := item.Repository
 	if strings.TrimSpace(repository.Name) == "" || repository.Name != item.Task.Repo {
@@ -2617,7 +2617,7 @@ func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, 
 }
 
 // prepareMCPConfig preserves the JSON-file transport for existing harnesses
-// while keeping scoped credentials out of TOML override argv (design-harness-execution).
+// while keeping scoped credentials out of TOML override argv (component-local-launchers).
 func prepareMCPConfig(directory, base, credential, transport string) (string, error) {
 	endpoint := strings.TrimRight(base, "/") + "/mcp"
 	switch transport {

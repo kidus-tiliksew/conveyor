@@ -11,7 +11,7 @@ import (
 // workOrderActivityView adds task-detail-only checkpoint presentation data to
 // the durable work-order shape. The embedded order remains the REST contract;
 // only its checkpoint field is replaced by the enriched read model below
-// (req-260820-394cac REQ-2/AC-2.2, AC-2.3; design-http-api).
+// (req-260820-394cac REQ-2/AC-2.2, AC-2.3; component-http-api).
 type workOrderActivityView struct {
 	core.WorkOrder
 	Checkpoint *checkpointActivityView `json:"checkpoint,omitempty"`

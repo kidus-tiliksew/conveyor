@@ -55,7 +55,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 	if w.shutdown.Stopping() && errors.Is(err, context.Canceled) {
 		// Shutdown interruption is not a dispatch failure. Snoozing hands the
 		// attempt back and keeps the same durable job available for another
-		// instance (REQ-6/AC-6.2; design-task-lifecycle).
+		// instance (REQ-6/AC-6.2; component-durable-queue).
 		log.Printf("[task %s] queue job %s interrupted by daemon shutdown; preserving attempt %d", args.TaskID, job.ID, job.Attempt)
 		return queue.Snooze(shutdownRetryDelay)
 	}
@@ -101,7 +101,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, e
 		if task.State == core.TaskRunning {
 			// Return the failed stage to queued before applying T13. This preserves
 			// the canonical queued -> parked edge and records dispatch.fail_final
-			// for operator visibility (design-task-lifecycle).
+			// for operator visibility (component-durable-queue).
 			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 				return fmt.Errorf("dispatch failed: %v; requeue before final dispatch failure: %w", err, stateErr)
 			}
@@ -114,7 +114,7 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, e
 		if task.State == core.TaskRunning {
 			// There is no running-state dispatch-failure retry edge. Preserve the
 			// existing requeue behavior as an explicit table-gap workaround until
-			// the lifecycle table is amended (design-task-lifecycle).
+			// the lifecycle table is amended (component-durable-queue).
 			command = core.TaskStageBounce
 		}
 		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: command, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
