@@ -98,6 +98,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		}
 		order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: c.SealedCheckpoint.Reason + "\nRequired operator action: " + c.SealedCheckpoint.RequiredAction, Verification: reference}
 		clearActiveAttempt(&order)
+		order.ClearExecutionPins()
 	case "succeeded":
 		order.VerificationContextID = c.ContextID
 	default:

@@ -957,3 +957,61 @@ func TestImplementationDispatchLeavesExecutionToClientLocalSetup(t *testing.T) {
 // Simulate a restart after hot reload removes one harness, changes the
 // other's command, and replaces the next round's panel. The existing round
 // must still accept its old probe and dispatch both original definitions.
+
+// Releasing a legacy pinned review seat re-queues it without reading a server
+// harness list: the release clears every execution pin, keeps the review round
+// and seat, and appends no harness refresh event. The next machine's local
+// model then satisfies the claim (req-worker AC-2.2, AC-2.3; DEC-56).
+func TestReleaseClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	cfg := workerTestConfig()
+	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }, RetryDelay: time.Nanosecond, RetryMaximum: time.Nanosecond}
+	worker := core.Worker{ID: "pinned-release-worker", Workspace: "demo", Probes: []core.HarnessProbe{{Harness: "claude", Healthy: true}}, LeaseExpiresAt: now.Add(time.Minute)}
+	if err := st.CreateTask(ctx, core.Task{ID: "pinned-release", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "pinned-release-review-1-seat-2", TaskID: "pinned-release", Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	legacy := core.WorkOrder{ID: job.ID, TaskID: job.TaskID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true,
+		ReviewRound: 1, ReviewSeat: 2, RequiredHarness: "claude", RequiredModel: "legacy-model", RequiredEffort: "high",
+		RequiredHarnessConfig: &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}"}, Effort: "high", EffortArgv: []string{"--effort", "high"}},
+		QueueEnteredAt:        now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+	if err := storetest.For(st).CreateWorkOrder(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.ClaimForWorker(ctx, worker, legacy.ID, core.WorkOrderClaim{SessionID: "pinned-session", ClientToken: "pinned-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryReads := 0
+	service.ConfigProvider = func(context.Context) (*config.Config, error) {
+		registryReads++
+		return cfg, nil
+	}
+	released, err := service.Release(ctx, worker, claimed.ID, core.WorkOrderRelease{SessionID: "pinned-session", Reason: "machine handoff", Outcome: core.WorkOrderOutcomeChildFailure, FailureDetail: "harness exited"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registryReads != 0 {
+		t.Fatalf("release read the server configuration %d times", registryReads)
+	}
+	if released.State != core.WorkOrderQueued || released.ReviewRound != 1 || released.ReviewSeat != 2 {
+		t.Fatalf("released seat identity=%+v", released)
+	}
+	if released.RequiredHarness != "" || released.RequiredModel != "" || released.RequiredEffort != "" || released.RequiredHarnessConfig != nil {
+		t.Fatalf("released order kept execution pins: %+v", released)
+	}
+	if refreshes, _ := st.CountEvents(ctx, legacy.TaskID, "work_order.harness_refreshed"); refreshes != 0 {
+		t.Fatalf("harness refresh events = %d", refreshes)
+	}
+	time.Sleep(time.Millisecond)
+	next, err := storetest.For(st).ClaimWorkOrder(ctx, legacy.ID, core.WorkOrderClaim{SessionID: "next-machine", ClientToken: "next-token", ClaimantID: "next-worker", WorkerID: "next-worker", Model: "local-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil || next.ReviewRound != 1 || next.ReviewSeat != 2 {
+		t.Fatalf("next machine claim=%+v err=%v", next, err)
+	}
+}

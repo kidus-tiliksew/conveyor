@@ -4700,12 +4700,12 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 		eligible.UpdatedAt, eligible.Claimable = now, true
 		var command pgconn.CommandTag
 		var updateErr error
+		eligible.ClearExecutionPins()
 		if change := request.Refreezes[eligible.ID]; change != nil {
-			eligible.RequiredModel, eligible.RequiredHarness, eligible.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
-			eligible.RequiredHarnessConfig, eligible.ExecutionTimeoutText = change.RequiredHarnessConfig, change.ExecutionTimeoutText
-			command, updateErr = tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,required_model=$3,required_harness=$4,required_effort=$5,required_harness_config=$6,execution_timeout=$7,updated_at=$1 WHERE workspace_id=$8 AND id=$9 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), change.RequiredModel, change.RequiredHarness, change.RequiredEffort, harnessSnapshotJSON(change.RequiredHarnessConfig), change.ExecutionTimeoutText, workspaceID, eligible.ID)
+			eligible.ExecutionTimeoutText = change.ExecutionTimeoutText
+			command, updateErr = tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,`+clearExecutionPinsSQL+`,execution_timeout=$3,updated_at=$1 WHERE workspace_id=$4 AND id=$5 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), change.ExecutionTimeoutText, workspaceID, eligible.ID)
 		} else {
-			command, updateErr = tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
+			command, updateErr = tx.Exec(ctx, `UPDATE work_orders SET last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,`+clearExecutionPinsSQL+`,updated_at=$1 WHERE workspace_id=$3 AND id=$4 AND state='queued' AND retry_suppressed=true AND session_id='' AND worker_id=''`, now, now.Add(queueTimeout), workspaceID, eligible.ID)
 		}
 		if updateErr != nil {
 			return store.InterruptedReviewRecoveryResult{}, updateErr
@@ -5267,6 +5267,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	}
 	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
 		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL, model_enforcement='',
+		`+clearExecutionPinsSQL+`,
 		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
 		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
 		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
@@ -5339,54 +5340,6 @@ func reviewSeatAcceptedTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID, w
 		AND e.payload_json->>'review_work_order_id'=$3
 	)`, workspaceID, taskID, workOrderID).Scan(&accepted)
 	return accepted, err
-}
-
-// RefreshWorkOrderHarnessSnapshot durably replaces the pinned harness snapshot
-// of an unclaimed queued or stale order on queue re-entry. The
-// active-attempt snapshot stays immutable: claimed orders are rejected.
-func (s *Store) RefreshWorkOrderHarnessSnapshot(ctx context.Context, id string, snapshot *core.HarnessSnapshot) (core.WorkOrder, error) {
-	if snapshot == nil || snapshot.Name == "" {
-		return core.WorkOrder{}, fmt.Errorf("harness snapshot is required")
-	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	order, err := scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE", workspace(ctx), id))
-	if err != nil {
-		return core.WorkOrder{}, notFound(err, "work order %s", id)
-	}
-	if order.Stage == core.StageReview {
-		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
-		if acceptedErr != nil {
-			return core.WorkOrder{}, acceptedErr
-		}
-		if accepted {
-			return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot refresh its harness", id)
-		}
-	}
-	if (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) || order.SessionID != "" || order.WorkerID != "" {
-		return core.WorkOrder{}, fmt.Errorf("work order %s does not hold an unclaimed queue entry", id)
-	}
-	if order.RequiredHarnessConfig == nil || order.RequiredHarnessConfig.Name != snapshot.Name {
-		return core.WorkOrder{}, fmt.Errorf("work order %s does not pin harness %s", id, snapshot.Name)
-	}
-	now := time.Now().UTC()
-	previous := order.RequiredHarnessConfig
-	order, err = scanWorkOrder(tx.QueryRow(ctx, "UPDATE work_orders SET required_harness_config=$1, updated_at=$2 WHERE workspace_id=$3 AND id=$4 RETURNING "+workOrderColumns,
-		harnessSnapshotJSON(snapshot), now, workspace(ctx), id))
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	q := s.queries.WithTx(tx)
-	if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.harness_refreshed", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "harness": snapshot.Name, "previous_command": previous.Command, "command": snapshot.Command}), At: now}); err != nil {
-		return core.WorkOrder{}, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return core.WorkOrder{}, err
-	}
-	return order, nil
 }
 
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
@@ -5520,8 +5473,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_contract=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4`, setupContractJSON(change.Setup), now, workspace(ctx), order.TaskID); err != nil {
 			return core.WorkOrder{}, err
 		}
-		order.RequiredModel, order.RequiredHarness, order.RequiredEffort = change.RequiredModel, change.RequiredHarness, change.RequiredEffort
-		order.RequiredHarnessConfig, order.ExecutionTimeoutText = change.RequiredHarnessConfig, change.ExecutionTimeoutText
+		order.ExecutionTimeoutText = change.ExecutionTimeoutText
 		if !reflect.DeepEqual(priorContract, change.Setup) {
 			actor := store.ActorFromContext(ctx)
 			q := s.queries.WithTx(tx)
@@ -5530,7 +5482,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			}
 		}
 	}
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,operator_direction=$3,required_model=$4,required_harness=$5,required_effort=$6,required_harness_config=$7,execution_timeout=$8,updated_at=$1 WHERE workspace_id=$9 AND id=$10 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), direction, order.RequiredModel, order.RequiredHarness, order.RequiredEffort, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText, workspace(ctx), id))
+	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,operator_direction=$3,`+clearExecutionPinsSQL+`,execution_timeout=$4,updated_at=$1 WHERE workspace_id=$5 AND id=$6 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), direction, order.ExecutionTimeoutText, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -5673,7 +5625,7 @@ func (s *Store) expireWorkOrderClaimTx(ctx context.Context, tx pgx.Tx, order cor
 	}
 	attemptID := order.AttemptID
 	taskRunClaim := core.IsTaskRunClaimantID(order.ClaimantID)
-	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='claimed' RETURNING `+workOrderColumns, attemptID, core.WorkOrderOutcomeExpired, !taskRunClaim, now, workspace(ctx), order.ID))
+	updated, err := scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',last_attempt_id=$1,client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,`+clearExecutionPinsSQL+`,last_attempt_outcome=$2,next_retry_at=NULL,retry_suppressed=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6 AND state='claimed' RETURNING `+workOrderColumns, attemptID, core.WorkOrderOutcomeExpired, !taskRunClaim, now, workspace(ctx), order.ID))
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -6698,6 +6650,11 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return order, err
 }
+
+// clearExecutionPinsSQL resets every harness, model, and effort pin on an
+// order re-entering the queue, including a legacy pre-DEC-23 harness snapshot.
+// Review round and seat stay untouched (req-worker AC-2.2, AC-2.3; DEC-56).
+const clearExecutionPinsSQL = `required_model='',required_harness='',required_effort='',required_harness_config='{}'::jsonb`
 
 func harnessSnapshotJSON(snapshot *core.HarnessSnapshot) []byte {
 	if snapshot == nil {
