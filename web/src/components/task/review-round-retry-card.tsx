@@ -2,7 +2,9 @@ import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RotateCcw, TriangleAlert } from 'lucide-react'
 import { retryReviewRound } from '../../lib/api'
+import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { ActivityItem } from '../../lib/types'
+import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -12,13 +14,15 @@ export function hasReviewRoundRetry(item: ActivityItem) {
 
 export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
   const recovery = item.review_recovery
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const [reason, setReason] = useState('')
   const mutation = useMutation({
     mutationFn: () => retryReviewRound(item.task.id, requestId.current, reason.trim()),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+    onMutate: (): MutationWorkspace => ({ workspace }),
+    onSuccess: (_data, _variables, started) => {
+      if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })

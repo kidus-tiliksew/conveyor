@@ -7858,3 +7858,234 @@ test('non-conflict gate failures keep their existing behavior without a refetch'
   await expect(gate.getByRole('button', { name: 'Merge pull request' })).toBeEnabled()
   expect(detailRequests).toBe(1)
 })
+
+// Recovery mutations refresh task detail under its workspace-scoped key
+// (conveyor:web/src/lib/query-keys.ts#taskDetailQueryKey). The stream answers
+// 204 and no fixture lists blockers, so neither SSE nor dependency polling can
+// refetch detail: a second detail read after the mutation is the mutation's
+// own refresh, and the refreshed title proves the panel rendered it.
+interface RecoveryRefreshCase {
+  name: string
+  taskId: string
+  mutation: string
+  respond: unknown
+  prepare?: (page: Page, item: ReturnType<typeof activity>) => Promise<void>
+  act: (page: Page) => Promise<void>
+}
+
+const recoveryRefreshCases: RecoveryRefreshCase[] = [
+  {
+    name: 'checkpoint proposal recovery',
+    taskId: 'operator-checkpoint',
+    mutation: '**/v1/work-orders/attempt-recovery-implement-1/recover*',
+    respond: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true },
+    prepare: async (page, item) => {
+      item.task.context = { designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }] }
+      await page.route('**/v1/system-designs**', (route) =>
+        route.fulfill({ json: designCollection('operator-checkpoint', false) }),
+      )
+      await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', (route) =>
+        route.fulfill({ json: {} }),
+      )
+    },
+    act: (page) =>
+      page
+        .getByRole('region', { name: 'Confirm proposals and recover work order' })
+        .getByRole('button', { name: 'Confirm v2 and recover' })
+        .click(),
+  },
+  {
+    name: 'work-order recovery',
+    taskId: 'recovery',
+    mutation: '**/v1/work-orders/*/recover*',
+    respond: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true },
+    act: (page) => page.getByRole('button', { name: 'Recover work order' }).click(),
+  },
+  {
+    name: 'interrupted review recovery',
+    taskId: 'interrupted-review',
+    mutation: '**/v1/tasks/*/review-round/recover*',
+    respond: {
+      request_id: 'recover-1',
+      task_id: 'interrupted-review',
+      review_round: 1,
+      recovered_orders: [{ id: 'seat-2' }],
+      retained_orders: [{ id: 'seat-1' }],
+    },
+    act: (page) => page.getByRole('button', { name: 'Recover interrupted review round' }).click(),
+  },
+  {
+    name: 'review round retry',
+    taskId: 'review-retry',
+    mutation: '**/v1/tasks/*/review-round/retry*',
+    respond: {
+      request_id: 'retry-1',
+      task_id: 'review-retry',
+      prior_round: 1,
+      new_round: 2,
+      pr_head: 'abc',
+      work_orders: [{ id: 'seat-1' }, { id: 'seat-2' }],
+    },
+    act: async (page) => {
+      await page.getByLabel('Review retry reason').fill('Retry with the corrected harness configuration')
+      await page.getByRole('button', { name: 'Retry review round' }).click()
+    },
+  },
+  {
+    name: 'redispatch',
+    taskId: 'redispatch-refresh',
+    mutation: '**/v1/tasks/redispatch-refresh/redispatch*',
+    respond: {},
+    prepare: async (_page, item) => {
+      item.task.state = 'queued'
+      item.work_orders = []
+    },
+    act: (page) => page.getByRole('button', { name: 'Redispatch', exact: true }).click(),
+  },
+]
+
+for (const recovery of recoveryRefreshCases) {
+  test(`recovery refreshes task detail after success (${recovery.name})`, async ({ page }) => {
+    const item = activity(recovery.taskId, false)
+    await recovery.prepare?.(page, item)
+    const calls: string[] = []
+    let mutated = false
+    await page.route('**/v1/tasks/*/events/stream*', (route) => route.fulfill({ status: 204 }))
+    await page.route(`**/v1/tasks/${recovery.taskId}/activity*`, (route) => {
+      calls.push(`detail:${new URL(route.request().url()).searchParams.get('workspace_id')}`)
+      return route.fulfill({
+        json: mutated ? { ...item, task: { ...item.task, title: 'Refreshed after recovery' } } : item,
+      })
+    })
+    await page.route(recovery.mutation, (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      calls.push('mutation')
+      mutated = true
+      return route.fulfill({ json: recovery.respond })
+    })
+
+    await page.goto(`/tasks/${recovery.taskId}/full`)
+    await expect.poll(() => calls).toEqual(['detail:demo'])
+    await recovery.act(page)
+    await expect(page.getByText('Refreshed after recovery').first()).toBeVisible()
+    expect(calls.slice(0, 3)).toEqual(['detail:demo', 'mutation', 'detail:demo'])
+  })
+}
+
+// A recovery that completes after the operator switched workspace refreshes
+// only the workspace it was issued in. The held response is a deterministic
+// barrier; the activity refetch its onSuccess triggers marks completion.
+test('recovery completion after workspace switch does not refresh the new workspace task', async ({ page }) => {
+  const item = activity('recovery', false)
+  const detailReads: string[] = []
+  const activityReads: string[] = []
+  let releaseRecovery = () => {}
+  const recoveryHeld = new Promise<void>((resolve) => {
+    releaseRecovery = resolve
+  })
+  let recoveryReceived = false
+  await page.route('**/v1/workspaces', (route) =>
+    route.fulfill({
+      json: [
+        { id: 'demo', name: 'Demo' },
+        { id: 'other', name: 'Other' },
+      ],
+    }),
+  )
+  await page.route('**/v1/tasks/*/events/stream*', (route) => route.fulfill({ status: 204 }))
+  await page.route('**/v1/tasks/recovery/activity*', (route) => {
+    const workspace = new URL(route.request().url()).searchParams.get('workspace_id') ?? ''
+    detailReads.push(workspace)
+    return route.fulfill({
+      json: { ...item, task: { ...item.task, workspace, title: `Recovery in ${workspace}` } },
+    })
+  })
+  await page.route('**/v1/activity*', (route) => {
+    const workspace = new URL(route.request().url()).searchParams.get('workspace_id') ?? ''
+    activityReads.push(workspace)
+    return route.fulfill({
+      json: [
+        {
+          task: { ...item.task, workspace, title: `Recovery in ${workspace}` },
+          latest_stage: 'review',
+          last_event_at: createdAt,
+          needs_attention: false,
+        },
+      ],
+    })
+  })
+  await page.route('**/v1/work-orders/*/recover*', async (route) => {
+    recoveryReceived = true
+    await recoveryHeld
+    await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
+  })
+
+  await page.goto('/tasks/recovery/full')
+  await page.getByRole('button', { name: 'Recover work order' }).click()
+  await expect.poll(() => recoveryReceived).toBe(true)
+
+  // Switching lands on the Board; opening the same task ID there reads it in
+  // the newly selected workspace.
+  await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
+  await page.getByText('Recovery in other').first().click()
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+  await expect.poll(() => detailReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  const demoReads = detailReads.filter((workspace) => workspace === 'demo').length
+  const otherActivityReads = activityReads.filter((workspace) => workspace === 'other').length
+
+  releaseRecovery()
+  // onSuccess invalidates task detail before activity, so once the activity
+  // refetch arrives the detail invalidation has already run.
+  await expect
+    .poll(() => activityReads.filter((workspace) => workspace === 'other').length)
+    .toBeGreaterThan(otherActivityReads)
+  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
+  expect(detailReads.filter((workspace) => workspace === 'demo')).toHaveLength(demoReads)
+})
+
+// Work-order timeline entries name their stage. A verify order reads
+// Verification in every state that becomes its own entry, never Review.
+test('verify order timeline labels follow stage', async ({ page }) => {
+  const item = activity('stage-labels', false)
+  const base = (item.work_orders ?? [])[0] ?? {}
+  const order = (id: string, stage: string, state: string, extra: Record<string, unknown> = {}) => ({
+    ...base,
+    id,
+    task_id: 'stage-labels',
+    job_id: id,
+    stage,
+    state,
+    claimable: state === 'queued',
+    retry_suppressed: false,
+    queue_entered_at: '2026-07-15T12:00:00Z',
+    queue_deadline: '2026-07-16T12:00:00Z',
+    progress: undefined,
+    ...extra,
+  })
+  item.jobs = []
+  item.work_orders = [
+    order('stage-labels-verify-1', 'verify', 'queued'),
+    order('stage-labels-verify-2', 'verify', 'claimed', { agent: 'claude-code', model: 'claude-opus-5-5' }),
+    order('stage-labels-verify-3', 'verify', 'stale'),
+    order('stage-labels-verify-4', 'verify', 'timed_out', { execution_deadline: '2026-07-15T16:00:00Z' }),
+    order('stage-labels-spec-1', 'spec', 'stale'),
+    order('stage-labels-implement-1', 'implement', 'timed_out', { execution_deadline: '2026-07-15T16:00:00Z' }),
+    order('stage-labels-review-1-seat-1', 'review', 'queued'),
+  ]
+  await page.route('**/v1/tasks/stage-labels/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/tasks/stage-labels/full')
+
+  for (const title of [
+    'Verification — waiting for an operator agent',
+    'Verification — in progress',
+    'Verification — went stale in the queue',
+    'Verification — timed out',
+    'Plan — went stale in the queue',
+    'Implementation — timed out',
+    'Review — waiting for an operator agent',
+  ]) {
+    await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
+  }
+  // Only the one review order reads Review.
+  await expect(page.getByText(/^Review — /)).toHaveCount(1)
+})

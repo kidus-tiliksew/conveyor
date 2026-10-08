@@ -544,6 +544,18 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 			args = append(args, f.Query)
 		}
 	}
+	// Updated is the task's last activity: the newest event time in its own
+	// workspace (the maximum (at, id) tuple has the maximum at), or created_at
+	// before any event — the instant activity markers report as LastEventAt.
+	const lastActivity = "COALESCE((SELECT MAX(e.at) FROM events e WHERE e.workspace_id=tasks.workspace_id AND e.task_id=tasks.id),created_at)"
+	if !f.UpdatedFrom.IsZero() {
+		q += " AND " + lastActivity + ">=?"
+		args = append(args, f.UpdatedFrom)
+	}
+	if !f.UpdatedTo.IsZero() {
+		q += " AND " + lastActivity + "<?"
+		args = append(args, f.UpdatedTo)
+	}
 	if !f.CreatedFrom.IsZero() {
 		q += " AND created_at>=?"
 		args = append(args, f.CreatedFrom)

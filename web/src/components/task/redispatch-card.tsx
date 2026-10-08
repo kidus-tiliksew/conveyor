@@ -3,6 +3,7 @@ import { RotateCcw } from 'lucide-react'
 import { useRef } from 'react'
 import { redispatchTask, reviewTask } from '../../lib/api'
 import { dependencyBlockedImplementationOrder, failedTriage, unsatisfiableDependencyOrder } from '../../lib/activity'
+import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { ActivityItem } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
@@ -34,8 +35,11 @@ export function FailedTriageCard({ item }: { item: ActivityItem }) {
         queryClient.invalidateQueries({ queryKey: ['activity', workspace] }, { throwOnError: true }),
         queryClient.invalidateQueries({ queryKey: ['task-operations', workspace] }, { throwOnError: true }),
       ])
-      await queryClient.invalidateQueries({ queryKey: ['task', workspace, item.task.id] }, { throwOnError: true })
-      const refreshed = queryClient.getQueryData<ActivityItem>(['task', workspace, item.task.id])
+      await queryClient.invalidateQueries(
+        { queryKey: taskDetailQueryKey(workspace, item.task.id) },
+        { throwOnError: true },
+      )
+      const refreshed = queryClient.getQueryData<ActivityItem>(taskDetailQueryKey(workspace, item.task.id))
       if (!refreshed || failedTriage(refreshed)?.jobId === failure.jobId) {
         throw new Error(
           'Retry was accepted, but recovery is not yet confirmed by refreshed task data. Refresh status to check again.',
@@ -108,11 +112,13 @@ export function canRedispatch(item: ActivityItem) {
 // parked task at its recorded recovery stage, or reopen a closed task with a
 // decided stage.
 export function RedispatchCard({ item }: { item: ActivityItem }) {
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const mutation = useMutation({
     mutationFn: () => redispatchTask(item.task.id),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+    onMutate: (): MutationWorkspace => ({ workspace }),
+    onSuccess: (_data, _variables, started) => {
+      if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })

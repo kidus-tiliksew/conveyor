@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { type CurrentExecutionState, deriveCurrentExecutionState, pendingPlanRevisionRequest } from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
+import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
@@ -71,8 +72,9 @@ export function CheckpointProposalRecoveryCard({
         .join(' ')
       return recoverWorkOrder(state.order.id, requestId.current, direction)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+    onMutate: (): MutationWorkspace => ({ workspace }),
+    onSuccess: (_data, _variables, started) => {
+      if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
     // This also refreshes after a partial multi-proposal sequence: confirmed
@@ -192,12 +194,14 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
   const checkpoint = order.checkpoint?.verification
   const canOperateGates = useWorkspaceCapability('operate_gates')
   const canRecoverWork = useWorkspaceCapability('recover_work')
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const mutation = useMutation({
     mutationFn: () => recoverWorkOrder(order.id, requestId.current),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+    onMutate: (): MutationWorkspace => ({ workspace }),
+    onSuccess: (_data, _variables, started) => {
+      if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
@@ -300,8 +304,9 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
   const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
     mutationFn: () => recoverWorkOrder(order.id, requestId.current, direction.trim() || undefined),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['task', item.task.id] })
+    onMutate: (): MutationWorkspace => ({ workspace }),
+    onSuccess: (_data, _variables, started) => {
+      if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
@@ -320,7 +325,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
     },
     onSettled: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['task', workspace, item.task.id] }),
+        queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(workspace, item.task.id) }),
         queryClient.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
         queryClient.invalidateQueries({ queryKey: ['requirements', workspace] }),
         queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] }),

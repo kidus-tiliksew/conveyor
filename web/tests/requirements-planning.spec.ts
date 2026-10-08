@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 
 const requirement = {
   requirement: {
@@ -920,6 +921,122 @@ test('requirement confirmation offers explicit attachment to eligible checkpoint
   await offer.getByRole('button', { name: 'Attach to 1 task' }).click()
   await expect.poll(() => contextWrites).toBe(1)
   await expect(offer).toHaveCount(0)
+})
+
+// The checkpoint-context offer refreshes each selected task's detail under the
+// workspace-scoped key it was opened in (taskDetailQueryKey). Confirming the
+// requirement first invalidates the whole ['task', workspace] family, so the
+// selected tasks' detail entries are seeded fresh only after that refresh has
+// run. The offer's own invalidation is then the only thing that can mark them
+// stale. Assertions read the cache state directly: no navigation, SSE, polling,
+// or time-based staleness is involved, and another workspace's entry for the
+// same task ID must stay untouched.
+test('recovery refreshes task detail after success (requirements checkpoint-context offer)', async ({ page }) => {
+  await initShell(page)
+  await installQueryClientProbe(page)
+  let requirementReads = 0
+  const contextWrites: string[] = []
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+    if (path === '/v1/requirements/req-retries') {
+      requirementReads++
+      return route.fulfill({ json: requirement })
+    }
+    if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (path === '/v1/requirements/req-retries/versions/1/confirm')
+      return route.fulfill({
+        json: { requirement: requirement.requirement, version: requirement.pending_versions[0] },
+      })
+    if (path === '/v1/requirements/req-retries/checkpoint-context-candidates')
+      return route.fulfill({
+        json: [
+          { id: 'paused-a', title: 'Paused delivery A', state: 'running' },
+          { id: 'paused-b', title: 'Paused delivery B', state: 'running' },
+          { id: 'paused-c', title: 'Unselected delivery', state: 'running' },
+        ],
+      })
+    const context = /^\/v1\/tasks\/([^/]+)\/context$/.exec(path)
+    if (context) {
+      contextWrites.push(context[1])
+      return route.fulfill({ json: { requirements: [{ id: 'req-retries', title: 'Retry behavior', version: 1 }] } })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/requirements?requirement=req-retries')
+  await expect.poll(() => requirementReads).toBeGreaterThan(0)
+  const readsBeforeConfirm = requirementReads
+  await page.getByRole('button', { name: 'Confirm version 1' }).click()
+  const offer = page.getByRole('dialog', { name: 'Attach confirmed requirement' })
+  await expect(offer).toContainText('Paused delivery A')
+  // The confirmation's settle step refetches the active requirement read; once
+  // that read arrives, its ['task', workspace] invalidation has already run.
+  await expect.poll(() => requirementReads).toBeGreaterThan(readsBeforeConfirm)
+
+  const keys = {
+    a: ['task', 'demo', 'paused-a'],
+    b: ['task', 'demo', 'paused-b'],
+    c: ['task', 'demo', 'paused-c'],
+    foreign: ['task', 'other', 'paused-a'],
+  }
+  await withQueryClient(
+    page,
+    (client, all) => {
+      for (const key of Object.values(all)) client.setQueryData(key, { task: { id: key[2] } })
+    },
+    keys,
+  )
+  const invalidated = () =>
+    withQueryClient(
+      page,
+      (client, all) =>
+        Object.fromEntries(
+          Object.entries(all).map(([name, key]) => [name, client.getQueryState(key)?.isInvalidated ?? null]),
+        ),
+      keys,
+    )
+  expect(await invalidated()).toEqual({ a: false, b: false, c: false, foreign: false })
+
+  await offer.getByRole('checkbox', { name: /Paused delivery A/ }).check()
+  await offer.getByRole('checkbox', { name: /Paused delivery B/ }).check()
+  await offer.getByRole('button', { name: 'Attach to 2 tasks' }).click()
+  await expect(offer).toHaveCount(0)
+  expect(contextWrites.sort()).toEqual(['paused-a', 'paused-b'])
+  // Exactly the selected tasks' detail in the initiating workspace.
+  await expect.poll(invalidated).toEqual({ a: true, b: true, c: false, foreign: false })
+})
+
+// The parked planning page selects a session named by its `session` search
+// parameter, the lineage explorer's destination for sessions and bundles.
+test('planning session deep link selects the named session', async ({ page }) => {
+  await initShell(page)
+  await page.addInitScript(() => localStorage.setItem('conveyor-planning-session:demo', 'session-restored'))
+  const session = (id: string, title: string) => ({
+    id,
+    title,
+    status: 'active',
+    goal: 'open',
+    workspace: 'demo',
+    created_at: '2026-08-06T09:00:00Z',
+    updated_at: '2026-08-06T09:00:00Z',
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/planning-sessions')
+      return route.fulfill({
+        json: [session('session-restored', 'Restored session'), session('session-linked', 'Linked session')],
+      })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/planning?session=session-linked')
+  await expect(page.getByRole('button', { name: /Linked session/ })).toHaveAttribute('aria-current', 'true')
+  await page.goto('/planning')
+  await expect(page.getByRole('button', { name: /Restored session/ })).toHaveAttribute('aria-current', 'true')
 })
 
 test('planning uses deployment configuration and sends no execution detail', async ({ page }) => {

@@ -70,6 +70,7 @@ import {
   uploadArtifact,
   uploadReferenceDocument,
 } from '../lib/api'
+import { taskDetailQueryKey } from '../lib/query-keys'
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type {
@@ -1365,11 +1366,17 @@ function CheckpointContextOffer({
       const failed = results.filter((result) => result.status === 'rejected')
       if (failed.length > 0) throw new Error(`Could not attach context to ${failed.length} selected task(s).`)
     },
-    onSettled: async () => {
+    // Bind the refresh to the workspace and selection the operator acted on,
+    // so a completion after a workspace switch never refreshes the new one.
+    onMutate: () => ({ workspace, taskIds: [...selected] }),
+    onSettled: async (_data, _error, _variables, started) => {
+      const scope = started ?? { workspace, taskIds: selected }
       await Promise.all([
-        client.invalidateQueries({ queryKey: ['checkpoint-context-candidates', workspace, requirementId] }),
+        client.invalidateQueries({ queryKey: ['checkpoint-context-candidates', scope.workspace, requirementId] }),
         client.invalidateQueries({ queryKey: ['activity'] }),
-        ...selected.map((taskId) => client.invalidateQueries({ queryKey: ['task', taskId] })),
+        ...scope.taskIds.map((taskId) =>
+          client.invalidateQueries({ queryKey: taskDetailQueryKey(scope.workspace, taskId) }),
+        ),
       ])
     },
     onSuccess: onClose,

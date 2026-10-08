@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearch } from '@tanstack/react-router'
 import { MessageSquarePlus } from 'lucide-react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
@@ -38,11 +39,14 @@ export function PlanningPage() {
     enabled: Boolean(workspace),
   })
 
+  // A `session` deep link (the lineage explorer's destination) wins over the
+  // session restored for this workspace.
+  const { session: linkedSession } = useSearch({ from: '/planning' })
   useEffect(() => {
     if (!workspace) return
     restoredWorkspace.current = workspace
-    setSelectedId(localStorage.getItem(`conveyor-planning-session:${workspace}`) ?? '')
-  }, [workspace])
+    setSelectedId(linkedSession || (localStorage.getItem(`conveyor-planning-session:${workspace}`) ?? ''))
+  }, [workspace, linkedSession])
   useEffect(() => {
     if (!sessions?.length || restoredWorkspace.current !== workspace) return
     if (!sessions.some((session) => session.id === selectedId)) setSelectedId(sessions[0].id)

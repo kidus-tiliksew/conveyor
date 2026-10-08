@@ -1183,6 +1183,21 @@ export async function downloadArtifact(artifact: Artifact) {
   URL.revokeObjectURL(url)
 }
 
+// The lineage explorer downloads an evidence artifact it only knows by ID. The
+// workspace is passed explicitly, so the read is bound to the workspace whose
+// lineage listed it rather than whatever the stored selection is by then.
+export async function downloadLineageEvidence(workspace: string, artifactId: string) {
+  const response = await fetch(workspaceURL(`/v1/artifacts/${encodeURIComponent(artifactId)}`, workspace))
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = artifactId
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 export function fetchWorkspaceConfig() {
   return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders() }).then(async (response) => {
     if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))

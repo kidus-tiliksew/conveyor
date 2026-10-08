@@ -1860,12 +1860,6 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		ServesRequirementIDs: parseTaskFilterList(values["serves_requirement"]),
 		GoverningDesignIDs:   parseTaskFilterList(values["governing_design"]),
 	}
-	// Updated bounds previously meant last activity. Rejecting the retired
-	// spelling keeps stale API callers from silently receiving Created semantics
-	// or an unfiltered result; saved browser state is migrated by the UI.
-	if values.Has("updated_from") || values.Has("updated_to") {
-		return filter, fmt.Errorf("updated_from and updated_to are retired; use created_from and created_to")
-	}
 	for _, state := range parseTaskFilterList(values["state"]) {
 		candidate := core.TaskState(state)
 		valid := false
@@ -1877,11 +1871,21 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		}
 		filter.States = append(filter.States, candidate)
 	}
+	// Updated bounds select on last activity — the row's "Updated" instant —
+	// and Created bounds on the persisted creation instant (AC-2.4). They are
+	// separate predicates: neither is an alias for the other, each is validated
+	// on its own, and a task must satisfy both when both are sent.
 	var err error
-	if filter.CreatedFrom, err = parseTaskFilterInstant(values.Get("created_from")); err != nil {
+	if filter.UpdatedFrom, err = parseTaskFilterInstant("updated_from", values.Get("updated_from")); err != nil {
 		return filter, err
 	}
-	if filter.CreatedTo, err = parseTaskFilterInstant(values.Get("created_to")); err != nil {
+	if filter.UpdatedTo, err = parseTaskFilterInstant("updated_to", values.Get("updated_to")); err != nil {
+		return filter, err
+	}
+	if filter.CreatedFrom, err = parseTaskFilterInstant("created_from", values.Get("created_from")); err != nil {
+		return filter, err
+	}
+	if filter.CreatedTo, err = parseTaskFilterInstant("created_to", values.Get("created_to")); err != nil {
 		return filter, err
 	}
 	return filter, filter.Validate()
@@ -1902,14 +1906,14 @@ func parseTaskFilterList(raw []string) []string {
 // parseTaskFilterInstant takes an absolute RFC 3339 instant. The bound is
 // resolved in the browser, where the operator's own day boundaries live, so the
 // server never has to guess a timezone for "the last month".
-func parseTaskFilterInstant(raw string) (time.Time, error) {
+func parseTaskFilterInstant(name, raw string) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}, nil
 	}
 	value, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("updated bounds must be RFC 3339 instants: %w", err)
+		return time.Time{}, fmt.Errorf("%s must be an RFC 3339 instant: %w", name, err)
 	}
 	return value, nil
 }

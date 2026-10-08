@@ -289,7 +289,7 @@ async function fixture(
     if (path.includes('/verification/')) return route.fulfill({ json: { items: [] } })
     return route.fulfill({ json: [] })
   })
-  return { recoveries }
+  return { recoveries, item }
 }
 
 const verifyEntry = (page: Page) => page.getByRole('article', { name: 'Verification', exact: true })
@@ -484,4 +484,33 @@ test('a running verify order is labelled Verification', async ({ page }) => {
   await fixture(page, { claimed: true })
   await page.goto(`/tasks/${taskId}/full`)
   await expect(page.locator('#current-execution-title')).toHaveText('Verification is in progress')
+})
+
+// The verification-checkpoint recovery mutation refreshes task detail under its
+// workspace-scoped key. The stream answers 204, so the second detail read after
+// the recovery is the mutation's own refresh.
+test('recovery refreshes task detail after success (verification checkpoint)', async ({ page }) => {
+  const { item } = await fixture(page)
+  const calls: string[] = []
+  let recovered = false
+  await page.route('**/v1/tasks/*/events/stream*', (route) => route.fulfill({ status: 204 }))
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => {
+    calls.push(`detail:${new URL(route.request().url()).searchParams.get('workspace_id')}`)
+    return route.fulfill({
+      json: recovered ? { ...item, task: { ...item.task, title: 'Refreshed after recovery' } } : item,
+    })
+  })
+  await page.route('**/v1/work-orders/verify-1/recover*', (route) => {
+    calls.push('mutation')
+    recovered = true
+    return route.fallback()
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  await expect.poll(() => calls).toEqual(['detail:demo'])
+  await page
+    .getByRole('region', { name: 'Verification checkpoint', exact: true })
+    .getByRole('button', { name: 'Recover verification' })
+    .click()
+  await expect(page.getByText('Refreshed after recovery').first()).toBeVisible()
+  expect(calls.slice(0, 3)).toEqual(['detail:demo', 'mutation', 'detail:demo'])
 })

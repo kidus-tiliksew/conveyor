@@ -159,7 +159,16 @@ const blueprintDetailRoute = createRoute({
   path: '/blueprints/$taskId',
   component: BlueprintDetailPage,
 })
-const planningRoute = createRoute({ getParentRoute: () => rootRoute, path: '/planning', component: PlanningPage })
+// `session` selects a planning session by deep link — the lineage explorer's
+// destination for sessions and their bundles — ahead of the restored choice.
+const planningRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/planning',
+  validateSearch: (search: Record<string, unknown>): { session?: string } => ({
+    session: typeof search.session === 'string' && search.session ? search.session : undefined,
+  }),
+  component: PlanningPage,
+})
 const monitorRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitor', component: MonitorPage })
 
 const routeTree = rootRoute.addChildren([

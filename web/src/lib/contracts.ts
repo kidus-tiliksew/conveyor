@@ -86,6 +86,15 @@ export const stageLabels: Record<string, string> = {
   monitor: 'Monitor',
 }
 
+// Work-order timeline entries name the stage the order serves. A verify order
+// reads Verification, never Review (component-web-task-surfaces).
+export const workOrderStageLabels: Record<string, string> = {
+  spec: 'Plan',
+  implement: 'Implementation',
+  review: 'Review',
+  verify: 'Verification',
+}
+
 export const taskStateLabels: Record<string, string> = {
   claiming: 'Claiming',
   queued: 'Queued',
