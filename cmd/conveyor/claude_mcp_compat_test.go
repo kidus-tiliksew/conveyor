@@ -156,14 +156,16 @@ func TestInstalledClaudeCodeJSONMCPCompatibility(t *testing.T) {
 			receipt := newClaudeMCPReceipt(core.StageImplement)
 			var output strings.Builder
 			var outputMu sync.Mutex
-			command.Stdout = io.MultiWriter(receipt, writerFunc(func(p []byte) (int, error) {
+			// The real child's stdout passes the same ingress guard the
+			// launcher installs ahead of its redactor.
+			command.Stdout = newClaudeReceiptIngressGuard(io.MultiWriter(receipt, writerFunc(func(p []byte) (int, error) {
 				outputMu.Lock()
 				defer outputMu.Unlock()
 				if output.Len() < 1<<20 {
 					output.Write(p)
 				}
 				return len(p), nil
-			}))
+			})), receipt)
 			command.Stderr = io.Discard
 			if err = command.Start(); err != nil {
 				t.Fatal(err)
