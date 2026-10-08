@@ -27,18 +27,19 @@ var kitDefaultSearchPaths = []string{"/usr/local/bin", "/usr/bin", "/bin"}
 var kitRunnerEnvironmentKeys = []string{"CONVEYOR_KIT_OPERATIONS", "CONVEYOR_KIT_ATTEMPT_DIR", "CONVEYOR_KIT_UI_HOST", "CONVEYOR_KIT_UI_PORT"}
 
 // kitOperatorConfigSources are the local configuration sources an operator
-// selects explicitly or by user default. Only these may select a
-// verification_toolchains record (feature-verification-kit-execution VK-4.2;
-// req-verification-kits REQ-7/AC-7.3).
+// selects explicitly or by user default. Only these may supply
+// verification_toolchains or kit_permissions records
+// (feature-verification-kit-execution VK-4.2; req-verification-kits
+// REQ-7/AC-7.3; component-verification-runner).
 var kitOperatorConfigSources = map[string]bool{"flag": true, "environment CONVEYOR_CONFIG": true, "user default": true}
 
-// kitToolchainConfigRefusal explains why verification_toolchains records in
-// the loaded configuration cannot select a profile, or returns "" when an
-// operator selected a file outside every checkout input. A working-directory
-// conveyor.yaml or any file inside the verified checkout is repository content,
-// so it can never widen PATH, HOME or tool settings. Other configuration keeps
-// its existing precedence.
-func kitToolchainConfigRefusal(path, source string, checkouts []string) string {
+// kitConfigSourceRefusal explains why the loaded configuration cannot supply
+// local execution authority, or returns "" when an operator selected a file
+// outside every checkout input. A working-directory conveyor.yaml or any file
+// that resolves inside the verified checkout or its Git common directory is
+// repository content, so it can never widen PATH, HOME or tool settings or
+// grant local kit actions. Other configuration keeps its existing precedence.
+func kitConfigSourceRefusal(path, source string, checkouts []string) string {
 	if !kitOperatorConfigSources[source] {
 		if source == "" {
 			source = "an unidentified source"
@@ -62,6 +63,21 @@ func kitToolchainConfigRefusal(path, source string, checkouts []string) string {
 		}
 	}
 	return ""
+}
+
+// kitPermissionsSourceRefusal refuses kit_permissions records from
+// configuration that kitConfigSourceRefusal rejected, before any local action
+// is resolved or any attempt starts. Checkout content is untrusted, so it
+// cannot authorize local actions (req-verification-kits REQ-7/AC-7.3;
+// component-verification-runner). The diagnostic carries no credential value.
+func kitPermissionsSourceRefusal(cfg *config.Config, path, source, refusal string) error {
+	if refusal == "" || cfg == nil || len(cfg.KitPermissions) == 0 {
+		return nil
+	}
+	if source == "" {
+		source = "an unidentified source"
+	}
+	return &kitPreflightError{message: fmt.Sprintf("kit_permissions_untrusted_source: the configuration file %s, selected by %s, %s, so its kit_permissions records cannot authorize local actions; no attempt was started; remedy: move the kit_permissions records to operator configuration outside the checkout and select it with --config, CONVEYOR_CONFIG or the user default", path, source, refusal)}
 }
 
 // kitToolchain is the immutable toolchain snapshot resolved once per subject.

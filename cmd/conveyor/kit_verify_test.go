@@ -387,7 +387,7 @@ func ordinaryKitVerifyOptions(t *testing.T, f *kitExecutionFixture, discovery st
 	if err := os.WriteFile(coveragePath, core.JSONPayload(coverage), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return kitVerifyOptions{configPath: cfgPath, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
+	return kitVerifyOptions{configPath: cfgPath, configSource: "flag", coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
 }
 
 // TestKitVerifyPreStartRefusalsPrintCheckpoint covers VK-13.2: refusals an
@@ -670,4 +670,186 @@ func TestKitRunnerPrelaunchBlocked(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestKitMissingGrantGuidanceIsPhased requires the inline admission refusal and
+// the printed checkpoint guidance to carry one phased remedy: grant on the live
+// claim's current context first, and recover and grant the successor's new
+// context only after the checkpoint seal releases the order
+// (req-verification-kits AC-3.2, AC-7.3; component-verification-runner).
+func TestKitMissingGrantGuidanceIsPhased(t *testing.T) {
+	e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	options := ordinaryKitVerifyOptions(t, f, "no_manifest")
+	f.snapshot.PermissionGrants = nil
+	err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+	var admission *kitAdmissionError
+	if err == nil || !errors.As(err, &admission) {
+		t.Fatalf("missing grant was not an admission refusal: %v", err)
+	}
+	remedy := kitMissingGrantRemedy("order", "context")
+	if !strings.Contains(err.Error(), remedy) {
+		t.Fatalf("inline refusal lacks the shared remedy:\n%v", err)
+	}
+	if !strings.Contains(f.output.String(), "Missing grant: "+remedy) {
+		t.Fatalf("printed guidance lacks the shared remedy:\n%s", f.output.String())
+	}
+	live := strings.Index(remedy, "while this claim is live")
+	inspect := strings.Index(remedy, "conveyor verification permissions inspect order` and grants the missing subject against context context")
+	sealed := strings.Index(remedy, "seals context context and releases the order")
+	recovery := strings.Index(remedy, "recovers verify order order")
+	successor := strings.Index(remedy, "grants against that new context")
+	if live != 0 || inspect < live || sealed < inspect || recovery < sealed || successor < recovery || !strings.Contains(remedy, "does not carry over") {
+		t.Fatalf("remedy phases are out of order: %s", remedy)
+	}
+	if f.starts != 0 || f.uploads != 0 || f.outcome != "" {
+		t.Fatalf("missing grant started work: starts=%d uploads=%d outcome=%q", f.starts, f.uploads, f.outcome)
+	}
+}
+
+// TestKitPermissionsUntrustedSourceRefused applies the configuration trust rule
+// of verification_toolchains to kit_permissions: only an operator-selected file
+// outside every checkout input may supply local actions, and a refusal starts
+// no attempt, registers no operation and launches no child
+// (req-verification-kits REQ-7/AC-7.3; component-verification-runner).
+func TestKitPermissionsUntrustedSourceRefused(t *testing.T) {
+	e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+	refusedRun := func(t *testing.T, f *kitExecutionFixture, options kitVerifyOptions, want string) {
+		t.Helper()
+		err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+		var preflight *kitPreflightError
+		var admission *kitAdmissionError
+		if err == nil || !errors.As(err, &preflight) || !errors.As(err, &admission) {
+			t.Fatalf("%s %s admitted kit_permissions: %v", options.configSource, options.configPath, err)
+		}
+		for _, text := range []string{"kit_permissions_untrusted_source", want, "no attempt was started", "--config, CONVEYOR_CONFIG or the user default"} {
+			if !strings.Contains(err.Error(), text) {
+				t.Fatalf("diagnostic lacks %q: %v", text, err)
+			}
+		}
+		if !strings.Contains(f.output.String(), `outcome "operator_action_required"`) {
+			t.Fatalf("refusal did not print the checkpoint guidance:\n%s", f.output.String())
+		}
+		if f.starts != 0 || len(f.operations) != 0 || f.uploads != 0 || f.outcome != "" {
+			t.Fatalf("untrusted kit_permissions consumed work: starts=%d operations=%v uploads=%d outcome=%q", f.starts, f.operations, f.uploads, f.outcome)
+		}
+	}
+	// commitConfig places the options' configuration inside the checkout as
+	// committed repository content, so the checkout stays clean.
+	commitConfig := func(t *testing.T, f *kitExecutionFixture, options kitVerifyOptions) string {
+		t.Helper()
+		data, err := os.ReadFile(options.configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inside := filepath.Join(f.v.root, localExecutionConfigName)
+		if err = os.WriteFile(inside, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{{"add", localExecutionConfigName}, {"commit", "-qm", "repository kit_permissions"}} {
+			if _, err := localKitGit(t.Context(), f.v.root, args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		head, err := localKitGit(t.Context(), f.v.root, "rev-parse", "HEAD")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.order.HeadSHA = strings.TrimSpace(string(head))
+		f.snapshot.Contexts[0].Revisions[0].SHA = f.order.HeadSHA
+		return inside
+	}
+	for _, tc := range []struct {
+		name, want string
+		setup      func(*testing.T, *kitExecutionFixture, kitVerifyOptions) kitVerifyOptions
+	}{
+		{"working-directory file", "not operator-selected configuration", func(t *testing.T, f *kitExecutionFixture, o kitVerifyOptions) kitVerifyOptions {
+			o.configSource = "working-directory file"
+			return o
+		}},
+		{"unidentified source", "an unidentified source", func(t *testing.T, f *kitExecutionFixture, o kitVerifyOptions) kitVerifyOptions {
+			o.configSource = ""
+			return o
+		}},
+		{"flag inside checkout", "repository content inside the verified checkout", func(t *testing.T, f *kitExecutionFixture, o kitVerifyOptions) kitVerifyOptions {
+			o.configPath = commitConfig(t, f, o)
+			return o
+		}},
+		{"CONVEYOR_CONFIG inside checkout", "repository content inside the verified checkout", func(t *testing.T, f *kitExecutionFixture, o kitVerifyOptions) kitVerifyOptions {
+			o.configPath, o.configSource = commitConfig(t, f, o), "environment CONVEYOR_CONFIG"
+			return o
+		}},
+		{"symlink into checkout", "repository content inside the verified checkout", func(t *testing.T, f *kitExecutionFixture, o kitVerifyOptions) kitVerifyOptions {
+			inside := commitConfig(t, f, o)
+			link := filepath.Join(t.TempDir(), "linked.yaml")
+			if err := os.Symlink(inside, link); err != nil {
+				t.Fatal(err)
+			}
+			o.configPath = link
+			return o
+		}},
+		{"symlink into Git directory", "repository content inside the verified checkout", func(t *testing.T, f *kitExecutionFixture, o kitVerifyOptions) kitVerifyOptions {
+			data, err := os.ReadFile(o.configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			common, err := localKitGit(t.Context(), f.v.root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+			if err != nil {
+				t.Fatal(err)
+			}
+			inside := filepath.Join(strings.TrimSpace(string(common)), localExecutionConfigName)
+			if err = os.WriteFile(inside, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(t.TempDir(), "common.yaml")
+			if err = os.Symlink(inside, link); err != nil {
+				t.Fatal(err)
+			}
+			o.configPath, o.configSource = link, "environment CONVEYOR_CONFIG"
+			return o
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newKitExecutionFixture(t, e)
+			options := tc.setup(t, f, ordinaryKitVerifyOptions(t, f, "no_manifest"))
+			refusedRun(t, f, options, tc.want)
+		})
+	}
+	for _, source := range []string{"flag", "environment CONVEYOR_CONFIG", "user default"} {
+		t.Run("external "+source, func(t *testing.T) {
+			f := newKitExecutionFixture(t, e)
+			options := ordinaryKitVerifyOptions(t, f, "no_manifest")
+			options.configSource = source
+			if err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output); err != nil {
+				t.Fatal(err)
+			}
+			if f.starts != 1 || f.outcome != "succeeded" {
+				t.Fatalf("operator kit_permissions: starts=%d outcome=%q", f.starts, f.outcome)
+			}
+		})
+	}
+	t.Run("kit subject", func(t *testing.T) {
+		h := newToolchainHost(t)
+		f, subject := newToolchainKitFixture(t, h)
+		grantToolchainSubject(f, subject, []config.VerificationToolchain{h.record(f.v.rpc.client.base)})
+		f.v.configSource, f.v.configRefusal = "flag", "is repository content inside the verified checkout"
+		err := f.v.run(t.Context(), subject, t.TempDir())
+		var admission *kitAdmissionError
+		if !errors.As(err, &admission) || !strings.Contains(err.Error(), "kit_permissions_untrusted_source") || !strings.Contains(err.Error(), "no attempt was started") {
+			t.Fatalf("kit subject admitted untrusted kit_permissions: %v", err)
+		}
+		if f.starts != 0 || len(f.operations) != 0 || f.outcome != "" {
+			t.Fatalf("kit refusal consumed work: starts=%d operations=%v outcome=%q", f.starts, f.operations, f.outcome)
+		}
+		if _, err := os.Stat(filepath.Join(h.observed, "main.env")); !os.IsNotExist(err) {
+			t.Fatal("untrusted kit_permissions launched a child")
+		}
+		f.v.configRefusal = ""
+		if err := f.v.run(t.Context(), subject, t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		if f.starts != 1 || f.outcome != "succeeded" {
+			t.Fatalf("trusted kit subject: starts=%d outcome=%q", f.starts, f.outcome)
+		}
+	})
 }

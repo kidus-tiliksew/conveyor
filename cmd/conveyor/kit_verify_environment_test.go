@@ -509,9 +509,15 @@ func TestKitToolchainRepositoryConfigurationRefused(t *testing.T) {
 	} {
 		options := kitVerifyOptions{configPath: refused.path, configSource: refused.source, coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
 		err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", options, &f.output)
+		// The same file also holds kit_permissions, which the runner refuses
+		// first with the shared source rule; the toolchain refusal stays the
+		// second line of defense below.
 		var preflight *kitPreflightError
-		if !errors.As(err, &preflight) || !strings.Contains(err.Error(), refused.want) || !strings.Contains(err.Error(), "no attempt was started") {
+		if !errors.As(err, &preflight) || !strings.Contains(err.Error(), refused.want) || !strings.Contains(err.Error(), "no attempt was started") || !strings.Contains(err.Error(), "kit_permissions_untrusted_source") {
 			t.Fatalf("%s %s: repository toolchain accepted: %v", refused.source, refused.path, err)
+		}
+		if _, err := resolveKitToolchain(&cfg, refused.path, kitConfigSourceRefusal(refused.path, refused.source, []string{f.v.root}), f.v.rpc.client.base, "demo", "repo", nil); !errors.As(err, &preflight) || !strings.Contains(err.Error(), "toolchain preflight refused") || !strings.Contains(err.Error(), refused.want) {
+			t.Fatalf("%s %s: repository toolchain record accepted: %v", refused.source, refused.path, err)
 		}
 		if f.starts != 0 || len(f.operations) != 0 || f.uploads != 0 || f.outcome != "" {
 			t.Fatalf("repository toolchain consumed work: starts=%d uploads=%d outcome=%q", f.starts, f.uploads, f.outcome)
