@@ -316,9 +316,15 @@ func recomputeDecisionSweepsForDocumentTx(ctx context.Context, tx *sql.Tx, tier,
 		cited := regexp.MustCompile(`\b` + regexp.QuoteMeta(d.supersedes) + `\b`).MatchString(content)
 		kind := ""
 		if cited && (errors.Is(e, sql.ErrNoRows) || current.Status == core.DecisionSweepAutoCleared) {
+			// The locked row's prior state names the transition: a first
+			// insert opens, an auto_cleared row reopens
+			// (component-document-corpus).
+			kind = "decision.supersession_sweep_opened"
+			if e == nil {
+				kind = "decision.supersession_sweep_reopened"
+			}
 			current = core.DecisionSupersessionSweepEntry{DecisionID: d.id, SupersededDecisionID: d.supersedes, DocumentTier: tier, DocumentID: documentID, Status: core.DecisionSweepOpen, DetectedBy: actor.ID, DetectedAt: now}
 			_, err = documentExec(ctx, tx, `INSERT INTO decision_supersession_sweeps(workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at) VALUES(?,?,?,?,?,'open',?,?) ON DUPLICATE KEY UPDATE status='open',detected_by=VALUES(detected_by),detected_at=VALUES(detected_at),resolved_by='',resolved_at=NULL`, documentWorkspace(ctx), d.id, d.supersedes, tier, documentID, actor.ID, now)
-			kind = "decision.supersession_sweep_opened"
 		} else if !cited && e == nil && current.Status == core.DecisionSweepOpen {
 			current.Status, current.ResolvedBy, current.ResolvedAt = core.DecisionSweepAutoCleared, actor.ID, now
 			_, err = documentExec(ctx, tx, `UPDATE decision_supersession_sweeps SET status='auto_cleared',resolved_by=?,resolved_at=? WHERE workspace_id=? AND decision_id=? AND document_tier=? AND document_id=?`, actor.ID, now, documentWorkspace(ctx), d.id, tier, documentID)

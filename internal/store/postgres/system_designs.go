@@ -944,7 +944,7 @@ func recomputeDecisionSupersessionSweepTx(ctx context.Context, tx pgx.Tx, q *db.
 		return err
 	}
 	actor, now := store.ActorFromContext(ctx), time.Now().UTC()
-	rows, err := tx.Query(ctx, `
+	const currentCorpus = `
 WITH current_corpus AS (
   SELECT r.workspace_id,'requirement'::text document_tier,r.id document_id,v.content
   FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
@@ -957,20 +957,41 @@ WITH current_corpus AS (
   SELECT d.workspace_id,'reference_document',d.id,v.content
   FROM reference_documents d JOIN reference_document_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
   WHERE d.workspace_id=$1 AND d.deleted_at IS NULL
-)
-INSERT INTO decision_supersession_sweeps(workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at)
-SELECT $1,$2,$3,document_tier,document_id,'open',$4,$5
-FROM current_corpus WHERE content ~ ('\m' || $3 || '\M')
-ON CONFLICT (workspace_id,decision_id,document_tier,document_id) DO UPDATE
-SET status='open',detected_by=excluded.detected_by,detected_at=excluded.detected_at,resolved_by='',resolved_at=NULL
-WHERE decision_supersession_sweeps.status='auto_cleared'
-RETURNING decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at`,
+)`
+	// The kind follows the row's prior state, never the final status: a
+	// guarded UPDATE reopens only auto_cleared rows, then an INSERT that skips
+	// every existing row opens the missing ones (component-document-corpus).
+	reopened, err := tx.Query(ctx, currentCorpus+`
+UPDATE decision_supersession_sweeps s
+SET status='open',detected_by=$4,detected_at=$5,resolved_by='',resolved_at=NULL
+FROM current_corpus c
+WHERE s.workspace_id=$1 AND s.decision_id=$2 AND s.status='auto_cleared'
+  AND s.document_tier=c.document_tier AND s.document_id=c.document_id
+  AND c.content ~ ('\m' || $3::text || '\M')
+RETURNING `+decisionSweepReturning,
 		workspace(ctx), decision.ID, decision.Supersedes, actor.ID, now)
 	if err != nil {
 		return err
 	}
-	return appendDecisionSweepEvents(ctx, rows, q, "decision.supersession_sweep_opened")
+	if err = appendDecisionSweepEvents(ctx, reopened, q, "decision.supersession_sweep_reopened"); err != nil {
+		return err
+	}
+	opened, err := tx.Query(ctx, currentCorpus+`
+INSERT INTO decision_supersession_sweeps AS s (workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at)
+SELECT $1,$2,$3,document_tier,document_id,'open',$4,$5
+FROM current_corpus WHERE content ~ ('\m' || $3::text || '\M')
+ON CONFLICT (workspace_id,decision_id,document_tier,document_id) DO NOTHING
+RETURNING `+decisionSweepReturning,
+		workspace(ctx), decision.ID, decision.Supersedes, actor.ID, now)
+	if err != nil {
+		return err
+	}
+	return appendDecisionSweepEvents(ctx, opened, q, "decision.supersession_sweep_opened")
 }
+
+// decisionSweepReturning lists the sweep columns in scanDecisionSupersessionSweep
+// order, qualified by the statement's alias s.
+const decisionSweepReturning = `s.decision_id,s.superseded_decision_id,s.document_tier,s.document_id,s.status,s.detected_by,s.detected_at,s.resolved_by,s.resolved_at`
 
 func recomputeDecisionSweepsForDocumentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, tier, documentID, content string) error {
 	exists, err := decisionSupersessionSweepTableExistsTx(ctx, tx)
@@ -993,16 +1014,30 @@ RETURNING s.decision_id,s.superseded_decision_id,s.document_tier,s.document_id,s
 	if err = appendDecisionSweepEvents(ctx, cleared, q, "decision.supersession_sweep_auto_cleared"); err != nil {
 		return err
 	}
+	reopened, err := tx.Query(ctx, `
+UPDATE decision_supersession_sweeps s
+SET status='open',detected_by=$4,detected_at=$5,resolved_by='',resolved_at=NULL
+FROM decisions d
+WHERE s.workspace_id=$1 AND s.document_tier=$2 AND s.document_id=$3 AND s.status='auto_cleared'
+  AND d.workspace_id=s.workspace_id AND d.id=s.decision_id
+  AND d.supersedes IS NOT NULL AND d.confirmed_at IS NOT NULL
+  AND $6 ~ ('\m' || d.supersedes || '\M')
+RETURNING `+decisionSweepReturning,
+		workspace(ctx), tier, documentID, actor.ID, now, content)
+	if err != nil {
+		return err
+	}
+	if err = appendDecisionSweepEvents(ctx, reopened, q, "decision.supersession_sweep_reopened"); err != nil {
+		return err
+	}
 	opened, err := tx.Query(ctx, `
-INSERT INTO decision_supersession_sweeps(workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at)
+INSERT INTO decision_supersession_sweeps AS s (workspace_id,decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at)
 SELECT d.workspace_id,d.id,d.supersedes,$2,$3,'open',$4,$5
 FROM decisions d
 WHERE d.workspace_id=$1 AND d.supersedes IS NOT NULL AND d.confirmed_at IS NOT NULL
   AND $6 ~ ('\m' || d.supersedes || '\M')
-ON CONFLICT (workspace_id,decision_id,document_tier,document_id) DO UPDATE
-SET status='open',detected_by=excluded.detected_by,detected_at=excluded.detected_at,resolved_by='',resolved_at=NULL
-WHERE decision_supersession_sweeps.status='auto_cleared'
-RETURNING decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at`,
+ON CONFLICT (workspace_id,decision_id,document_tier,document_id) DO NOTHING
+RETURNING `+decisionSweepReturning,
 		workspace(ctx), tier, documentID, actor.ID, now, content)
 	if err != nil {
 		return err
