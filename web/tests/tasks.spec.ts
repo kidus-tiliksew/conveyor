@@ -146,8 +146,9 @@ function matchOperations(url: string) {
   // tasks nobody holds, anything else is an exact user ID (REQ-4).
   const assignee = params.get('assignee') ?? ''
   const needle = (params.get('q') ?? '').toLowerCase()
-  const from = params.get('created_from') ?? ''
-  const to = params.get('created_to') ?? ''
+  // Updated is last activity: the row's last event, or creation before any.
+  const from = params.get('updated_from') ?? ''
+  const to = params.get('updated_to') ?? ''
   return operations
     .filter((item) => {
       if (states.length && !states.includes(item.task.state)) return false
@@ -162,9 +163,10 @@ function matchOperations(url: string) {
       ) {
         return false
       }
-      if (from && item.task.created_at < from) return false
+      const updated = item.last_event_at || item.task.created_at
+      if (from && updated < from) return false
       // The upper bound is exclusive, exactly as the store evaluates it.
-      if (to && item.task.created_at >= to) return false
+      if (to && updated >= to) return false
       if (
         requirements.length &&
         !(item.task.context?.requirements ?? []).some((entry) => requirements.includes(entry.id))
@@ -649,9 +651,9 @@ test('tasks view pages through server-side results', async ({ page }) => {
   expect(requests.some((url) => url.includes('offset=2'))).toBe(true)
 })
 
-// AC-2.4: the shared filter family — created-at range, served requirement, and
+// AC-2.4: the shared filter family — updated-at range, served requirement, and
 // governing design — is applied by the server on the Tasks surface.
-test('tasks view filters by created-at range, served requirement, and governing design', async ({ page }) => {
+test('tasks view filters by updated-at range, served requirement, and governing design', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('button', { name: 'Open filters' }).click()
   await page.getByRole('tab', { name: 'Requirement' }).click()
@@ -669,16 +671,18 @@ test('tasks view filters by created-at range, served requirement, and governing 
   await expect(rows(page)).toHaveCount(1)
 
   await page.getByRole('option', { name: 'Any system design' }).click()
-  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
   await page.getByRole('option', { name: 'Custom range' }).click()
   // Fixed dates rather than a preset, so the assertion does not depend on when
-  // the suite runs. The end date is inclusive of its own day.
-  await page.getByLabel('Created from').fill('2026-08-04')
-  await page.getByLabel('Created to').fill('2026-08-04')
+  // the suite runs. The end date is inclusive of its own day. Bounced web plan
+  // was last active on 4 August; Shipped web change was created that day but
+  // last active on the 5th, so it is not in this window.
+  await page.getByLabel('Updated from').fill('2026-08-04')
+  await page.getByLabel('Updated to').fill('2026-08-04')
   await expect(rows(page)).toHaveCount(1)
-  await expect(page.getByRole('link', { name: 'Shipped web change' })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Bounced web plan' })).toBeVisible()
 
-  await page.getByLabel('Created to').fill('2026-08-03')
+  await page.getByLabel('Updated to').fill('2026-08-03')
   await expect(page.getByText('Choose an end date on or after the start date.')).toBeVisible()
 
   await page.getByRole('button', { name: 'Reset filters' }).click()
@@ -1017,4 +1021,82 @@ test('failed triage Tasks row uses recorded stages and keeps truthful plan state
   await expect(gateRow).not.toContainText('Triage failed')
   await expect(gateRow).toContainText('Plan awaiting approval')
   await testInfo.attach('failed-triage-tasks', { body: await page.screenshot(), contentType: 'image/png' })
+})
+
+// AC-2.4: both surfaces send the same Updated window — the row's last activity,
+// not its creation — as the same server parameters, with local-day half-open
+// bounds. Tasks defaults to any time; an invalid range sends nothing; a filter
+// change returns to the first page.
+test('Tasks and Board share Updated range parameters', async ({ page }) => {
+  const taskRequests: URL[] = []
+  const boardRequests: URL[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/task-operations') taskRequests.push(url)
+    if (url.pathname === '/v1/activity') boardRequests.push(url)
+  })
+  await routeTasksSurface(page)
+  // Two rows per page, so a page change is visible before the filter resets it.
+  await page.route('**/v1/task-operations?**', (route) => {
+    const params = new URL(route.request().url()).searchParams
+    const matched = matchOperations(route.request().url())
+    const offset = Number(params.get('offset') ?? '0')
+    return route.fulfill({
+      body: JSON.stringify(matched.slice(offset, offset + 2)),
+      headers: {
+        'content-type': 'application/json',
+        'X-Conveyor-Total': String(matched.length),
+        'X-Conveyor-Limit': '2',
+        'X-Conveyor-Offset': String(offset),
+      },
+    })
+  })
+  await page.goto('/tasks')
+  await expect(rows(page)).toHaveCount(2)
+  // Tasks opens on any time: no Updated bound at all.
+  expect(taskRequests.at(-1)?.searchParams.has('updated_from')).toBe(false)
+  expect(taskRequests.at(-1)?.searchParams.has('updated_to')).toBe(false)
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('3–4 of 5')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('option', { name: 'Custom range' }).click()
+  await page.getByLabel('Updated from').fill('2026-08-05')
+  await page.getByLabel('Updated to').fill('2026-08-05')
+  // An old task with new activity: Shipped web change was created on 4 August
+  // and last active on the 5th, so the Updated window selects it.
+  await expect(rows(page)).toHaveCount(1)
+  await expect(page.getByRole('link', { name: 'Shipped web change' })).toBeVisible()
+  await expect(page.getByText('3–4 of 5')).toHaveCount(0)
+
+  const expectedFrom = await page.evaluate(() => new Date(2026, 7, 5).toISOString())
+  const expectedTo = await page.evaluate(() => new Date(2026, 7, 6).toISOString())
+  const filtered = taskRequests.at(-1)
+  expect(filtered?.searchParams.get('updated_from')).toBe(expectedFrom)
+  expect(filtered?.searchParams.get('updated_to')).toBe(expectedTo)
+  expect(filtered?.searchParams.has('created_from')).toBe(false)
+  expect(filtered?.searchParams.get('offset') ?? '0').toBe('0')
+
+  // An inverted range shows its error in place and asks the server nothing.
+  const before = taskRequests.length
+  await page.getByLabel('Updated to').fill('2026-08-04')
+  await expect(page.getByText('Choose an end date on or after the start date.')).toBeVisible()
+  expect(taskRequests.length).toBe(before)
+
+  // The Board offers the same member and sends the same parameters.
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
+  expect(boardRequests.at(-1)?.searchParams.has('updated_from')).toBe(true)
+  await page.getByRole('option', { name: 'Custom range' }).click()
+  await page.getByLabel('Updated from').fill('2026-08-05')
+  await page.getByLabel('Updated to').fill('2026-08-05')
+  await expect
+    .poll(() => {
+      const last = boardRequests.at(-1)?.searchParams
+      return [last?.get('updated_from'), last?.get('updated_to'), last?.has('created_from')]
+    })
+    .toEqual([expectedFrom, expectedTo, false])
 })

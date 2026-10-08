@@ -922,6 +922,117 @@ test('requirement confirmation offers explicit attachment to eligible checkpoint
   await expect(offer).toHaveCount(0)
 })
 
+// The checkpoint-context offer refreshes each selected task's detail under the
+// workspace-scoped key it was opened in. Date.now is fixed, so a cached detail
+// never goes stale by time. The confirmation that opens the offer also
+// invalidates the workspace's task family, so this case proves the end-to-end
+// outcome (the returning task shows its new context) rather than isolating the
+// offer's own key; the recovery-card cases in task-full.spec.ts isolate it.
+test('recovery refreshes task detail after success (requirements checkpoint-context offer)', async ({ page }) => {
+  await initShell(page)
+  await page.clock.setFixedTime(new Date('2026-08-06T10:00:00Z'))
+  const detailReads: string[] = []
+  let contextWrites = 0
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const url = new URL(route.request().url())
+    const path = url.pathname
+    if (path === '/v1/tasks/paused-task/activity') {
+      detailReads.push(url.searchParams.get('workspace_id') ?? '')
+      return route.fulfill({
+        json: {
+          task: {
+            id: 'paused-task',
+            workspace: 'demo',
+            source: 'operator',
+            title: contextWrites > 0 ? 'Paused delivery with context' : 'Paused delivery',
+            body: '',
+            class: 'feature',
+            level: '',
+            spec_approval: false,
+            merge_approval: false,
+            policy_version: 1,
+            repo: 'conveyor',
+            base_branch: 'main',
+            branch: 'conveyor/task-paused-task',
+            state: 'running',
+            created_at: '2026-08-06T09:00:00Z',
+          },
+          jobs: [],
+          events: [],
+          interventions: [],
+          work_orders: [],
+          attachments: [],
+          verification_evidence: [],
+          needs_attention: false,
+        },
+      })
+    }
+    if (path.endsWith('/events/stream')) return route.fulfill({ status: 204 })
+    if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
+    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
+    if (path === '/v1/requirements/req-retries/versions/1/confirm')
+      return route.fulfill({
+        json: { requirement: requirement.requirement, version: requirement.pending_versions[0] },
+      })
+    if (path === '/v1/requirements/req-retries/checkpoint-context-candidates')
+      return route.fulfill({ json: [{ id: 'paused-task', title: 'Paused delivery', state: 'running' }] })
+    if (path === '/v1/tasks/paused-task/context') {
+      contextWrites++
+      return route.fulfill({ json: { requirements: [{ id: 'req-retries', title: 'Retry behavior', version: 1 }] } })
+    }
+    return route.fulfill({ json: [] })
+  })
+
+  // Prime the task-detail cache, then move to the requirement in-app.
+  await page.goto('/tasks/paused-task/full')
+  await expect(page.getByRole('heading', { name: 'Paused delivery' })).toBeVisible()
+  expect(detailReads).toEqual(['demo'])
+  await page.getByRole('link', { name: 'Requirements' }).first().click()
+  await page.getByRole('button', { name: 'Confirm version 1' }).click()
+  const offer = page.getByRole('dialog', { name: 'Attach confirmed requirement' })
+  await offer.getByRole('checkbox').check()
+  await offer.getByRole('button', { name: 'Attach to 1 task' }).click()
+  await expect(offer).toHaveCount(0)
+  expect(contextWrites).toBe(1)
+
+  await page.goBack()
+  await expect(page.getByRole('heading', { name: 'Paused delivery with context' })).toBeVisible()
+  expect(detailReads).toEqual(['demo', 'demo'])
+})
+
+// The parked planning page selects a session named by its `session` search
+// parameter, the lineage explorer's destination for sessions and bundles.
+test('planning session deep link selects the named session', async ({ page }) => {
+  await initShell(page)
+  await page.addInitScript(() => localStorage.setItem('conveyor-planning-session:demo', 'session-restored'))
+  const session = (id: string, title: string) => ({
+    id,
+    title,
+    status: 'active',
+    goal: 'open',
+    workspace: 'demo',
+    created_at: '2026-08-06T09:00:00Z',
+    updated_at: '2026-08-06T09:00:00Z',
+  })
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/planning-sessions')
+      return route.fulfill({
+        json: [session('session-restored', 'Restored session'), session('session-linked', 'Linked session')],
+      })
+    return route.fulfill({ json: [] })
+  })
+  await page.goto('/planning?session=session-linked')
+  await expect(page.getByRole('button', { name: /Linked session/ })).toHaveAttribute('aria-current', 'true')
+  await page.goto('/planning')
+  await expect(page.getByRole('button', { name: /Restored session/ })).toHaveAttribute('aria-current', 'true')
+})
+
 test('planning uses deployment configuration and sends no execution detail', async ({ page }) => {
   await initShell(page)
   let createdWith: Record<string, unknown> = {}

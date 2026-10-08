@@ -4,6 +4,7 @@ import { groupForSummary } from '../../lib/activity'
 import { fetchTaskActivity, fetchTaskAudit, fetchVerificationPage, fetchVerificationSummary } from '../../lib/api'
 import { stageGroups } from '../../lib/contracts'
 import type { TaskAuditKind, VerificationCollection } from '../../lib/types'
+import { taskDetailQueryKey } from '../../lib/query-keys'
 import { useTaskStream } from '../../lib/use-task-stream'
 import { useActivity, useWorkspaceSelection } from '../app-shell'
 
@@ -12,7 +13,7 @@ import { useActivity, useWorkspaceSelection } from '../app-shell'
 export function useTaskDetail(taskId: string) {
   const { workspace } = useWorkspaceSelection()
   const query = useQuery({
-    queryKey: ['task', workspace, taskId],
+    queryKey: taskDetailQueryKey(workspace, taskId),
     queryFn: () => fetchTaskActivity(taskId),
     // A dependency can merge without emitting an event on this task. Poll only
     // while the task reports active blockers; SSE remains the fast path.

@@ -78,15 +78,17 @@ const designCorpus = [
 function matchingActivity(url: string) {
   const params = new URL(url).searchParams
   const values = (key: string) => params.getAll(key)
-  return activity.filter(({ task }) => {
+  return activity.filter(({ task, last_event_at }) => {
     const query = params.get('q')?.toLocaleLowerCase()
     if (query && !`${task.id} ${task.title}`.toLocaleLowerCase().includes(query)) return false
     if (values('state').length > 0 && !values('state').includes(task.state)) return false
     if (values('repository').length > 0 && !values('repository').includes(task.repo)) return false
-    const from = params.get('created_from')
-    if (from && task.created_at < from) return false
-    const to = params.get('created_to')
-    if (to && task.created_at >= to) return false
+    // Updated is last activity: the row's last event, or creation before any.
+    const updated = last_event_at || task.created_at
+    const from = params.get('updated_from')
+    if (from && updated < from) return false
+    const to = params.get('updated_to')
+    if (to && updated >= to) return false
     const assigneeFilter = params.get('assignee')
     const assignee = (task as typeof task & { assignee?: { user_id: string } }).assignee
     if (assigneeFilter === 'unassigned' && assignee) return false
@@ -347,62 +349,95 @@ test('board opens on the last month and remembers the operator adjustment per wo
   await openBoard(page, seen)
 
   // The default is a starting point the operator can see the effect of: the
-  // board asks the server for recently created tasks across the workspace.
+  // board asks the server for recently updated tasks across the workspace.
   await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(1)
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(0)
   // The Board owns the only activity refresh lifecycle; the rail reads the
   // pending-proposals attention projection instead of mounting a second,
   // unfiltered activity request.
   expect(seen).toHaveLength(1)
-  expect(seen[0]).toContain('created_from=')
+  expect(seen[0]).toContain('updated_from=')
   expect(requests.filter((path) => path === '/v1/workspaces/demo/members')).toHaveLength(1)
   expect(requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
 
   // Adjusting it is what gets remembered — including across a reload.
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('option', { name: 'Any time' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
   await page.reload()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Any time' })).toHaveAttribute('aria-selected', 'true')
 
   // Persistence is scoped to the workspace it was set in, so another workspace
   // opens on its own default rather than inheriting a repository filter or a
   // window from a workspace it has nothing in common with.
   expect(await page.evaluate(() => localStorage.getItem('conveyor-task-filters:board:demo'))).toContain(
-    '"created":"any"',
+    '"updated":"any"',
   )
   await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
   await page.reload()
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
 })
 
-test('board migrates a saved Updated window and persists only the Created shape', async ({ page }) => {
+// A saved Created window from the previous release migrates to the Updated
+// window with the same bounds, per workspace, keeping the other saved members;
+// the next change persists only the canonical Updated shape.
+test('saved Created windows migrate to Updated per workspace', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []
+  // Seeded once: the init script runs again on reload and must not undo the
+  // workspace switch or the persisted migration.
   await page.addInitScript(() => {
+    if (localStorage.getItem('conveyor-workspace')) return
     localStorage.setItem('conveyor-workspace', 'demo')
     localStorage.setItem(
       'conveyor-task-filters:board:demo',
-      JSON.stringify({ updated: '7d', updatedFrom: '', updatedTo: '' }),
+      JSON.stringify({ created: '7d', createdFrom: '', createdTo: '', repositories: ['conveyor'] }),
+    )
+    localStorage.setItem(
+      'conveyor-task-filters:board:other',
+      JSON.stringify({ created: 'custom', createdFrom: '2026-08-08', createdTo: '2026-08-09' }),
     )
   })
   await routeBoard(page, seen)
   await page.goto('/')
 
+  await expect.poll(() => seen.length).toBeGreaterThan(0)
+  const demo = new URL(seen.at(-1) ?? '', 'http://localhost').searchParams
+  expect(demo.has('updated_from')).toBe(true)
+  expect(demo.has('created_from')).toBe(false)
+  expect(demo.getAll('repository')).toEqual(['conveyor'])
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last 7 days' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('option', { name: 'Any time' }).click()
 
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('conveyor-task-filters:board:demo') ?? '{}'))
-  expect(stored).toMatchObject({ created: 'any', createdFrom: '', createdTo: '' })
-  expect(stored).not.toHaveProperty('updated')
+  expect(stored).toMatchObject({ updated: 'any', updatedFrom: '', updatedTo: '', repositories: ['conveyor'] })
+  expect(stored).not.toHaveProperty('created')
+  expect(stored).not.toHaveProperty('createdFrom')
+
+  // The other workspace migrates its own custom range, untouched by demo's.
+  await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
+  await page.reload()
+  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await expect(page.getByRole('option', { name: 'Custom range' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByLabel('Updated from')).toHaveValue('2026-08-08')
+  await expect(page.getByLabel('Updated to')).toHaveValue('2026-08-09')
+  const other = new URL(seen.at(-1) ?? '', 'http://localhost').searchParams
+  expect(other.get('updated_from')).toBe(await page.evaluate(() => new Date(2026, 7, 8).toISOString()))
+  expect(other.get('updated_to')).toBe(await page.evaluate(() => new Date(2026, 7, 10).toISOString()))
+  // Older busy conveyor change was created on 5 August but last active on the
+  // 9th, so the migrated window selects it by activity.
+  await expect(cards(page).filter({ hasText: 'Older busy conveyor change' })).toHaveCount(1)
+  await expect(cards(page).filter({ hasText: 'Recent conveyor change' })).toHaveCount(0)
 })
 
 test('board sends the shared filter family to the whole-workspace activity query', async ({ page }) => {
@@ -415,7 +450,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
 
   await page.getByRole('button', { name: 'Open filters' }).click()
-  await page.getByRole('tab', { name: 'Created' }).click()
+  await page.getByRole('tab', { name: 'Updated' }).click()
   await page.getByRole('option', { name: 'Any time' }).click()
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
@@ -572,8 +607,8 @@ test('simultaneous filtered Board and task-order consumers share one serialized 
   await page.goto('/tasks/task-recent')
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
   await expect.poll(() => urls.length).toBeGreaterThanOrEqual(2)
-  expect(urls.some((url) => new URL(url).searchParams.has('created_from'))).toBe(true)
-  expect(urls.some((url) => !new URL(url).searchParams.has('created_from'))).toBe(true)
+  expect(urls.some((url) => new URL(url).searchParams.has('updated_from'))).toBe(true)
+  expect(urls.some((url) => !new URL(url).searchParams.has('updated_from'))).toBe(true)
   expect(maxActive).toBe(1)
 })
 
