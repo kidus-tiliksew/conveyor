@@ -954,13 +954,48 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 		}
 	})
 
-	t.Run("missing direct context", func(t *testing.T) {
+	// An unrecoverable planned version is an incomplete evaluation: the
+	// delivery stays neutral activity and no other branch adds a reason
+	// (req-260811-228be6 AC-1.1, AC-1.4).
+	t.Run("missing direct context is not evaluated", func(t *testing.T) {
 		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
 			ID: 44, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
 		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
-		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
-			!slices.Contains(deliveries[0].Reasons, "planned requirement version unavailable") {
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 ||
+			deliveries[0].PinnedVersion != 0 || deliveries[0].CurrentVersion != 2 {
 			t.Fatalf("missing-context delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("missing direct context suppresses every reason on a reconciled delivery", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
+			ID: 45, TaskID: "delivery", Kind: "merge.reconciled", At: mergeAt,
+			Payload: core.JSONPayload(map[string]any{"head_sha": "outside-head", "approved_head_sha": "reviewed-head", "factory_review_validated": false}),
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
+			t.Fatalf("incomplete reconciled delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("removed direct context is not evaluated", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{contextEvent, {
+			ID: 46, TaskID: "delivery", Kind: store.TaskContextRequirementRemoved, At: confirmedV2.Add(time.Minute),
+			Payload: core.JSONPayload(map[string]any{"id": "req-versioned"}),
+		}, {
+			ID: 47, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
+		if len(deliveries) != 1 || deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
+			t.Fatalf("removed-context delivery = %+v", deliveries)
+		}
+	})
+
+	t.Run("non-serving delivery without a pin stays suspect", func(t *testing.T) {
+		deliveries := classifyRequirementDeliveries("delivery", []core.Event{{
+			ID: 48, TaskID: "delivery", Kind: "merge.confirmed", At: mergeAt,
+		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, false)
+		if len(deliveries) != 1 || !deliveries[0].NeedsAttention ||
+			!slices.Contains(deliveries[0].Reasons, "delivered through related work without serving this requirement") {
+			t.Fatalf("non-serving delivery = %+v", deliveries)
 		}
 	})
 
@@ -972,7 +1007,7 @@ func TestRequirementDeliveryClassificationNamesSuspectConditions(t *testing.T) {
 			Payload: core.JSONPayload(map[string]any{"id": "req-versioned", "version": 2}),
 		}}, versions, "req-versioned", requirementDeliveryWatermark{At: confirmedV2}, true)
 		if len(deliveries) != 1 || deliveries[0].PinnedVersion != 0 ||
-			!slices.Contains(deliveries[0].Reasons, "planned requirement version unavailable") {
+			deliveries[0].NeedsAttention || len(deliveries[0].Reasons) != 0 {
 			t.Fatalf("event-bounded delivery = %+v", deliveries)
 		}
 	})
@@ -1299,6 +1334,130 @@ func TestRequirementStalenessAcknowledgmentAndFollowUpLifecycle(t *testing.T) {
 		summaries[0].Staleness.Deliveries[0].FollowUp == nil ||
 		summaries[0].Staleness.Deliveries[0].FollowUp.TaskID != firstResult.Task.ID {
 		t.Fatalf("linked causal delivery missing from list: status=%d summaries=%+v", listResponse.Code, summaries)
+	}
+}
+
+// TestRequirementStalenessTreatsUnrecoverablePlannedVersionAsNotEvaluated
+// covers req-260811-228be6 AC-1.1 and AC-1.4 through the HTTP read model: a
+// directly serving delivery whose planned version cannot be recovered raises
+// no stale signal on the list or detail view, while a complete suspect
+// delivery on the same requirement still does.
+func TestRequirementStalenessTreatsUnrecoverablePlannedVersionAsNotEvaluated(t *testing.T) {
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.Actor{ID: "alice", Role: core.ActorHuman})
+	st := store.NewMemory()
+	requirement, v1, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-unrecoverable-pin", Title: "Unrecoverable pin"}, core.RequirementVersion{
+		Content: "# Intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery stays aligned."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, v1.Version); err != nil {
+		t.Fatal(err)
+	}
+	unpinned := core.Task{ID: "unpinned-delivery", Workspace: "demo", Title: "Unpinned delivery", Repo: "conveyor", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, unpinned); err != nil {
+		t.Fatal(err)
+	}
+	// The context event predates every confirmed version and names none, so
+	// the task directly serves the requirement but its planned version is
+	// unrecoverable.
+	if err = st.AppendEvent(ctx, core.Event{TaskID: unpinned.ID, Kind: store.TaskContextRequirementAdded, At: time.Now().UTC().Add(-time.Hour),
+		Payload: core.JSONPayload(map[string]any{"id": requirement.ID})}); err != nil {
+		t.Fatal(err)
+	}
+	mergeAt := time.Now().UTC().Add(time.Minute)
+	if err = st.AppendEvent(ctx, core.Event{TaskID: unpinned.ID, Kind: "merge.reconciled", At: mergeAt, Payload: core.JSONPayload(map[string]any{
+		"head_sha": "outside-head", "approved_head_sha": "reviewed-head", "factory_review_validated": false, "task_title": unpinned.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "token"
+	handler := server.Handler()
+	getView := func() requirementView {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements/"+requirement.ID, nil)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("requirement status=%d body=%s", response.Code, response.Body.String())
+		}
+		var view requirementView
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	listSummaries := func() []requirementSummary {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)))
+		var summaries []requirementSummary
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &summaries) != nil || len(summaries) != 1 {
+			t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+		}
+		return summaries
+	}
+
+	view := getView()
+	if view.Staleness.DeliveryAfterIntent || view.Staleness.PartialEvaluation || len(view.Staleness.Deliveries) != 1 ||
+		view.Staleness.Deliveries[0].TaskID != unpinned.ID || view.Staleness.Deliveries[0].NeedsAttention ||
+		len(view.Staleness.Deliveries[0].Reasons) != 0 {
+		t.Fatalf("unrecoverable pin raised staleness on detail: %+v", view.Staleness)
+	}
+	summaries := listSummaries()
+	if summaries[0].Staleness.DeliveryAfterIntent || len(summaries[0].Staleness.Deliveries) != 1 || summaries[0].Staleness.Deliveries[0].NeedsAttention {
+		t.Fatalf("unrecoverable pin raised staleness on list: %+v", summaries[0].Staleness)
+	}
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/requirements/%s/staleness/%s/acknowledge", requirement.ID, view.Staleness.Deliveries[0].SignalID), nil)
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("X-Conveyor-Actor", "alice")
+	acknowledged := httptest.NewRecorder()
+	handler.ServeHTTP(acknowledged, request)
+	if acknowledged.Code == http.StatusCreated {
+		t.Fatalf("not-evaluated delivery accepted an acknowledgment: %s", acknowledged.Body.String())
+	}
+
+	// Positive control: a complete delivery merged outside factory review on
+	// the same requirement still raises the signal.
+	pinned := core.Task{ID: "pinned-outside-delivery", Workspace: "demo", Title: "Pinned outside delivery", Repo: "conveyor", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+	if err = st.CreateTask(ctx, pinned); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: pinned.ID, Kind: store.TaskContextRequirementAdded,
+		Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": v1.Version})}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.AppendEvent(ctx, core.Event{TaskID: pinned.ID, Kind: "merge.reconciled", At: mergeAt.Add(time.Minute), Payload: core.JSONPayload(map[string]any{
+		"head_sha": "outside-head", "approved_head_sha": "reviewed-head", "factory_review_validated": false, "task_title": pinned.Title,
+	})}); err != nil {
+		t.Fatal(err)
+	}
+	view = getView()
+	suspect := 0
+	for _, delivery := range view.Staleness.Deliveries {
+		switch delivery.TaskID {
+		case unpinned.ID:
+			if delivery.NeedsAttention || len(delivery.Reasons) != 0 {
+				t.Fatalf("unrecoverable pin became suspect: %+v", delivery)
+			}
+		case pinned.ID:
+			if !delivery.NeedsAttention || !slices.Contains(delivery.Reasons, "merged outside factory review") {
+				t.Fatalf("complete outside delivery lost its signal: %+v", delivery)
+			}
+			suspect++
+		}
+	}
+	if !view.Staleness.DeliveryAfterIntent || len(view.Staleness.Deliveries) != 2 || suspect != 1 {
+		t.Fatalf("mixed staleness=%+v", view.Staleness)
+	}
+	summaries = listSummaries()
+	listSuspect := 0
+	for _, delivery := range summaries[0].Staleness.Deliveries {
+		if delivery.NeedsAttention {
+			listSuspect++
+		}
+	}
+	if !summaries[0].Staleness.DeliveryAfterIntent || listSuspect != 1 {
+		t.Fatalf("list counted the unrecoverable pin: %+v", summaries[0].Staleness)
 	}
 }
 

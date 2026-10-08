@@ -59,7 +59,10 @@ Resolving drift is an audited judgment with four outcomes:
 - `requirements_amended`: the change was intentional and intent should catch
   up. Conveyor auto-drafts an amendment proposal on the requirement you name,
   clearly marked as drift-originated. It is a proposal like any other; the
-  existing confirmation stays authoritative until you confirm.
+  existing confirmation stays authoritative until you confirm. The drift
+  stays open, linked to that proposed version, and closes as
+  `requirements_amended` only when you confirm that exact version.
+  Dismissing it leaves the drift open for another outcome.
 - `design_document_updated`: accepted only once a newer version of the
   drifted design is actually confirmed.
 - `conflict_resolved`: judged and settled without a document change.
@@ -80,9 +83,12 @@ walks the deliveries reachable through its serving links and flags any merge
 that needs attention, with a plain-language reason:
 
 - planned against v1; v2 was current at merge
-- planned requirement version unavailable
 - merged outside factory review
 - delivered through related work without serving this requirement
+
+A delivery that served the requirement directly but whose planned version
+cannot be recovered is an incomplete evaluation. It shows as neutral
+delivery activity and raises no signal.
 
 Each flagged delivery gets a content-addressed signal ID, so if the facts
 change (a new version, a new merge), it is a new signal; acknowledging one

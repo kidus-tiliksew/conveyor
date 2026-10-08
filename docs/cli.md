@@ -343,7 +343,7 @@ preserve unrelated entries and nested policies.
 | Command | What it does |
 |---|---|
 | `conveyor monitor status` | Workspace monitor health and unresolved drift, as JSON. |
-| `conveyor monitor resolve <drift-id> --outcome <outcome>` | Record an audited drift reconciliation. Outcomes: `requirements_amended`, `design_document_updated`, `conflict_resolved`, `change_reverted`. |
+| `conveyor monitor resolve <drift-id> --outcome <outcome>` | Record an audited drift reconciliation. Outcomes: `requirements_amended`, `design_document_updated`, `conflict_resolved`, `change_reverted`. `requirements_amended` proposes a requirement revision and leaves the drift open until that version is confirmed. |
 
 See [Misalignment](misalignment.md) for what drift is and when to use each
 outcome.
