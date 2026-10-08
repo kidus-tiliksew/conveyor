@@ -67,7 +67,14 @@ import {
   useCanRequestTaskChanges,
 } from './review-panel'
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
-import { reviewGateCopy, SystemDesignProposalCard, useSystemDesignProposals } from './system-design-proposal-card'
+import {
+  hasProposalReviewNotice,
+  ProposalReviewNotice,
+  proposalNoticeLabel,
+  proposalReviewEffect,
+  SystemDesignProposalCard,
+  useSystemDesignProposals,
+} from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
 import { VerificationEntry } from './verification-entry'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
@@ -129,11 +136,11 @@ export function Timeline({
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
   const pendingProposals = usePendingProposals()
-  const gateCopy = reviewGateCopy(
-    (pendingProposals.data?.items ?? [])
-      .filter((proposal) => proposal.origin_type === 'task' && proposal.origin_id === item.task.id)
-      .map((proposal) => proposal.tier),
-  )
+  const pendingItems = pendingProposals.data?.items ?? []
+  // The attention signal decides whether the task states a proposal effect;
+  // the server's claim-wait projection alone decides whether anything waits
+  // (req-260810-23b69f AC-2.1; req-260810-70ce2f REQ-1).
+  const proposalEffect = proposalReviewEffect(item, pendingItems)
   const structuredCheckpoint = Boolean(currentExecution?.order.checkpoint?.decision_request?.trim())
   const citedSystemDesigns = new Set(
     structuredCheckpoint && currentExecution?.order.checkpoint?.class === 'authority_conflict'
@@ -179,29 +186,16 @@ export function Timeline({
     executionActions
       ? [
           canOperate &&
-            item.pending_authority === true &&
+            hasProposalReviewNotice(proposalEffect) &&
             designProposals.length === 0 && {
               key: 'pending-authority',
               dot: 'bg-attention-dot',
               card: (
                 <section
-                  aria-label="Review is waiting on a document decision"
+                  aria-label={proposalNoticeLabel(proposalEffect)}
                   className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
                 >
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-                    <div className="text-xs leading-5 text-muted">
-                      <p className="font-medium text-attention">{gateCopy.headline}</p>
-                      <p>{gateCopy.explanation}</p>
-                      <Link
-                        to="/pending-proposals"
-                        search={{ task: item.task.id }}
-                        className="mt-1 inline-block font-medium text-primary hover:underline"
-                      >
-                        {gateCopy.link}
-                      </Link>
-                    </div>
-                  </div>
+                  <ProposalReviewNotice effect={proposalEffect} taskId={item.task.id} pending={pendingItems} />
                 </section>
               ),
             },
@@ -243,8 +237,8 @@ export function Timeline({
                 <SystemDesignProposalCard
                   task={item.task}
                   proposals={standaloneDesignProposals}
-                  reviewWaiting={item.pending_authority === true}
-                  gateCopy={gateCopy}
+                  effect={proposalEffect}
+                  pending={pendingItems}
                 />
               ),
             },

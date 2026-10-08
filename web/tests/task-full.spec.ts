@@ -1689,6 +1689,11 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       context: attachedContext[taskId],
     },
     pending_authority: taskId === 'design-proposal' || taskId === 'design-proposal-queued',
+    proposal_claim_waiting: taskId === 'design-proposal' || taskId === 'design-proposal-queued',
+    waiting_proposals:
+      taskId === 'design-proposal' || taskId === 'design-proposal-queued'
+        ? [{ tier: 'system_design', id: 'design-lifecycle', version: 2 }]
+        : undefined,
     jobs: reviewActivity.jobs,
     events:
       taskId === 'blueprint-parent'
@@ -5703,7 +5708,9 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   })
   await page.route('**/v1/tasks/design-proposal/activity*', (route) => {
     const item = activity('design-proposal', false)
-    return route.fulfill({ json: { ...item, pending_authority: pendingAuthority } })
+    return route.fulfill({
+      json: { ...item, pending_authority: pendingAuthority, proposal_claim_waiting: pendingAuthority },
+    })
   })
   await page.route('**/v1/tasks/design-proposal/events/stream*', async (route) => {
     await activityEvent
@@ -5721,9 +5728,12 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   })
 
   await page.goto('/tasks/design-proposal/full')
-  const card = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+  const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
   await expect(card).toHaveCount(1)
-  await expect(card).toContainText('This review cannot be claimed until you confirm or dismiss')
+  await expect(card).toContainText('Verification and review cannot be claimed until you confirm or dismiss')
+  await expect(card.getByRole('list', { name: 'Proposals verification and review are waiting on' })).toContainText(
+    'System Design design-lifecycle v2',
+  )
   await expect(card).toContainText('System Design update proposed')
   await expect(card).toContainText('Version 2 proposed by this task')
   await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal' })).toHaveAttribute(
@@ -5739,7 +5749,7 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   await page.evaluate(() => ((window as unknown as { noReload?: boolean }).noReload = true))
   await card.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect(card).toHaveCount(0)
-  await expect(page.getByText('Review is waiting on a System Design decision')).toHaveCount(0)
+  await expect(page.getByText('Verification and review are waiting on a System Design decision')).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as { noReload?: boolean }).noReload)).toBe(true)
   expect(confirmHeaders.authorization).toBeUndefined()
   expect(confirmHeaders['if-match']).toBe('"1"')
@@ -5749,9 +5759,11 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   pendingAuthority = true
   await page.goto('/tasks/design-proposal')
   await expect(
-    page.getByRole('region', { name: 'Review is waiting on a document decision' }).getByRole('button', {
-      name: 'Confirm version 2',
-    }),
+    page
+      .getByRole('region', { name: 'Verification and review are waiting on a document decision' })
+      .getByRole('button', {
+        name: 'Confirm version 2',
+      }),
   ).toBeVisible()
 })
 
@@ -5768,7 +5780,7 @@ test('maintainer sees a pending task System Design proposal without an enabled C
   )
 
   await page.goto('/tasks/design-proposal/full')
-  const card = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+  const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
   await expect(card).toHaveCount(1)
   await expect(card).toContainText('System Design update proposed')
   await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeDisabled()
@@ -5781,9 +5793,9 @@ test('task detail renders no proposal card for a pending version another task ra
 
   await page.goto('/tasks/design-proposal/full')
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toContainText(
-    'Confirm or dismiss the proposal',
-  )
+  await expect(
+    page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
+  ).toContainText('Confirm or dismiss the proposal')
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByText('System Design update proposed')).toHaveCount(0)
 })
@@ -5798,9 +5810,51 @@ test('task detail renders a proposal-only card without the review-gate headline'
   const card = page.getByRole('region', { name: 'System Design proposals from this task' })
   await expect(card).toContainText('System Design update proposed')
   await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
-  await expect(card).not.toContainText('Review is waiting on a System Design decision')
+  await expect(card).not.toContainText('Verification and review are waiting on a System Design decision')
 })
 
+function pendingQueue(taskId: string, items: Array<{ id: string; tier: string; version?: number; title?: string }>) {
+  const queued = [
+    ...items.map((item) => ({
+      title: 'Pending document',
+      ...item,
+      origin_type: 'task',
+      origin_id: taskId,
+      proposed_at: createdAt,
+      age_seconds: 1,
+    })),
+    // Neither another task nor a non-task origin changes this task's notice.
+    ...['task', 'operator'].map((origin_type) => ({
+      id: `unrelated-${origin_type}`,
+      title: 'Unrelated proposal',
+      tier: 'decision',
+      origin_type,
+      origin_id: origin_type === 'task' ? 'other-task' : taskId,
+      proposed_at: createdAt,
+      age_seconds: 1,
+    })),
+  ]
+  return {
+    items: queued,
+    attention: { task_count: 1, pending_proposal_count: queued.length, total: queued.length + 1 },
+  }
+}
+
+function queuedOrder(taskId: string, stage: 'implement' | 'verify' | 'review') {
+  return {
+    id: `${taskId}-${stage}-1`,
+    task_id: taskId,
+    stage,
+    state: 'queued',
+    ...(stage === 'review' ? { review_seat: 1 } : {}),
+    claimable: stage === 'implement',
+    created_at: createdAt,
+    updated_at: createdAt,
+  }
+}
+
+// req-260810-70ce2f REQ-1 and req-260810-23b69f AC-2.1: the wait copy is read
+// from the server's waiting_proposals, never from the tiers the task authored.
 for (const withDesignCard of [false, true]) {
   for (const { tiers, noun } of [
     { tiers: ['requirement'], noun: 'requirement' },
@@ -5810,111 +5864,161 @@ for (const withDesignCard of [false, true]) {
     { tiers: ['system_design', 'future_kind'], noun: 'document' },
     { tiers: [], noun: 'document' },
   ]) {
-    test(`review gate copy uses ${noun} for ${tiers.join('+') || 'missing kinds'} with design card ${withDesignCard}`, async ({
+    test(`verification and review wait copy uses ${noun} for ${tiers.join('+') || 'missing kinds'} with design card ${withDesignCard}`, async ({
       page,
     }) => {
       const taskId = 'design-proposal-queued'
+      const blockers = tiers.map((tier, index) => ({ tier, id: `pending-${index}`, version: 2 }))
       await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
       await page.route('**/v1/system-designs**', (route) =>
         route.fulfill({ json: withDesignCard ? designCollection(taskId, false) : [] }),
       )
-      await page.route('**/v1/pending-proposals*', (route) =>
-        route.fulfill({
-          json: {
-            items: [
-              ...tiers.map((tier, index) => ({
-                id: `pending-${index}`,
-                title: 'Pending document',
-                tier,
-                version: 2,
-                origin_type: 'task',
-                origin_id: taskId,
-                proposed_at: createdAt,
-                age_seconds: 1,
-              })),
-              // Neither another task nor a non-task origin changes this gate's copy.
-              ...['task', 'operator'].map((origin_type) => ({
-                id: `unrelated-${origin_type}`,
-                title: 'Unrelated proposal',
-                tier: 'decision',
-                origin_type,
-                origin_id: origin_type === 'task' ? 'other-task' : taskId,
-                proposed_at: createdAt,
-                age_seconds: 1,
-              })),
-            ],
-            attention: { task_count: 1, pending_proposal_count: tiers.length + 2, total: tiers.length + 3 },
-          },
-        }),
-      )
+      await page.route('**/v1/pending-proposals*', (route) => route.fulfill({ json: pendingQueue(taskId, blockers) }))
       await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
         route.fulfill({
           json: {
             ...activity(taskId, false),
-            work_orders: [
-              {
-                id: `${taskId}-review-1`,
-                task_id: taskId,
-                stage: 'review',
-                state: 'queued',
-                review_seat: 1,
-                claimable: false,
-                created_at: createdAt,
-                updated_at: createdAt,
-              },
-            ],
+            proposal_claim_waiting: true,
+            waiting_proposals: blockers,
+            work_orders: [queuedOrder(taskId, 'review')],
           },
         }),
       )
       await page.goto(`/tasks/${taskId}/full`)
-      const card = page.getByRole('region', { name: 'Review is waiting on a document decision' })
-      await expect(card.getByText(`Review is waiting on a ${noun} decision`, { exact: true })).toBeVisible()
+      const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
+      await expect(
+        card.getByText(`Verification and review are waiting on a ${noun} decision`, { exact: true }),
+      ).toBeVisible()
       const proposal = tiers.length > 1 ? 'proposals' : 'proposal'
       await expect(card).toContainText(
-        `This review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
+        `Verification and review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
       )
       await expect(card.getByRole('link', { name: `Confirm or dismiss the ${proposal}`, exact: true })).toHaveAttribute(
         'href',
         /pending-proposals.*task=design-proposal-queued/,
       )
       await expect(card.getByText('System Design update proposed')).toHaveCount(withDesignCard ? 1 : 0)
+      await expect(card.getByRole('list', { name: 'Proposals review will not include' })).toHaveCount(0)
       await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toHaveCount(0)
       await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toHaveCount(0)
     })
   }
 }
 
-for (const { pendingAuthority, stage } of [
-  { pendingAuthority: false, stage: 'review' },
-  { pendingAuthority: true, stage: 'implement' },
-]) {
-  test(`redispatch remains available for queued ${stage} with pending authority ${pendingAuthority}`, async ({
-    page,
-  }) => {
+// A task-authored decision proposal is listed and flagged, but it never holds
+// verification or review, so no surface may say a claim is blocked
+// (req-260810-23b69f AC-2.1, AC-2.2; REQ-3).
+for (const stage of ['verify', 'review'] as const) {
+  test(`a pending decision proposal says review will not include it with a queued ${stage} order`, async ({ page }) => {
+    const taskId = 'design-proposal-queued'
+    await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+    await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: [] }))
+    await page.route('**/v1/pending-proposals*', (route) =>
+      route.fulfill({
+        json: pendingQueue(taskId, [{ id: 'DEC-71', tier: 'decision', title: 'Keep the gate narrow.' }]),
+      }),
+    )
+    await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...activity(taskId, false),
+          needs_attention: true,
+          pending_authority: true,
+          proposal_claim_waiting: false,
+          waiting_proposals: undefined,
+          work_orders: [queuedOrder(taskId, stage)],
+        },
+      }),
+    )
+    await page.goto(`/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Pending proposals from this task' })
+    await expect(
+      card.getByText('Review will not include this pending decision proposal', { exact: true }),
+    ).toBeVisible()
+    await expect(card).toContainText('Verification and review are not waiting on it.')
+    await expect(card.getByRole('list', { name: 'Proposals review will not include' })).toContainText(
+      'Decision DEC-71 — Keep the gate narrow.',
+    )
+    await expect(card).not.toContainText('Unrelated proposal')
+    await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal', exact: true })).toHaveAttribute(
+      'href',
+      /pending-proposals.*task=design-proposal-queued/,
+    )
+    await expect(page.getByText(/cannot be claimed/)).toHaveCount(0)
+    await expect(page.getByText(/(Review is|are) waiting on/)).toHaveCount(0)
+    await expect(
+      page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
+    ).toHaveCount(0)
+    // The decision is an attention signal, not a claim wait, so recovery stays available.
+    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+  })
+}
+
+test('a mixed proposal notice attributes the wait only to the requirement', async ({ page }) => {
+  const taskId = 'design-proposal-queued'
+  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+  await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: [] }))
+  await page.route('**/v1/pending-proposals*', (route) =>
+    route.fulfill({
+      json: pendingQueue(taskId, [
+        { id: 'req-claims', tier: 'requirement', version: 3, title: 'Claim waits' },
+        { id: 'DEC-72', tier: 'decision', title: 'Record the dashboard wording.' },
+      ]),
+    }),
+  )
+  await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
+    route.fulfill({
+      json: {
+        ...activity(taskId, false),
+        proposal_claim_waiting: true,
+        waiting_proposals: [{ tier: 'requirement', id: 'req-claims', version: 3 }],
+        work_orders: [queuedOrder(taskId, 'verify')],
+      },
+    }),
+  )
+  await page.goto(`/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
+  await expect(
+    card.getByText('Verification and review are waiting on a requirement decision', { exact: true }),
+  ).toBeVisible()
+  const blockers = card.getByRole('list', { name: 'Proposals verification and review are waiting on' })
+  await expect(blockers).toContainText('Requirement req-claims v3 — Claim waits')
+  await expect(blockers).not.toContainText('DEC-72')
+  const signalOnly = card.getByRole('list', { name: 'Proposals review will not include' })
+  await expect(signalOnly).toContainText('Decision DEC-72 — Record the dashboard wording.')
+  await expect(signalOnly).not.toContainText('req-claims')
+  await expect(card).toContainText('Review will not include this pending decision proposal')
+  await expect(card).toContainText('Verification and review are not waiting on it.')
+  await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposals', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toHaveCount(0)
+})
+
+for (const { waiting, stage } of [
+  { waiting: false, stage: 'review' },
+  { waiting: false, stage: 'verify' },
+  { waiting: true, stage: 'implement' },
+] as const) {
+  test(`redispatch remains available for queued ${stage} with claim waiting ${waiting}`, async ({ page }) => {
     const taskId = 'design-proposal-queued'
     await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
       route.fulfill({
         json: {
           ...activity(taskId, false),
-          pending_authority: pendingAuthority,
-          work_orders: [
-            {
-              id: `${taskId}-${stage}-1`,
-              task_id: taskId,
-              stage,
-              state: 'queued',
-              created_at: createdAt,
-              updated_at: createdAt,
-            },
-          ],
+          // The attention signal stays on: only the claim wait suppresses recovery.
+          pending_authority: true,
+          proposal_claim_waiting: waiting,
+          waiting_proposals: waiting ? [{ tier: 'system_design', id: 'design-lifecycle', version: 2 }] : undefined,
+          work_orders: [{ ...queuedOrder(taskId, stage), claimable: true }],
         },
       }),
     )
     await page.goto(`/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
     await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
-    if (!pendingAuthority)
-      await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toHaveCount(0)
+    if (!waiting)
+      await expect(
+        page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
+      ).toHaveCount(0)
   })
 }
 

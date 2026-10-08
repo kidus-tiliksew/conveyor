@@ -434,7 +434,13 @@ export interface ActivitySummary {
   latest_stage?: Stage
   last_event_at: string
   needs_attention: boolean
+  /** Operator-attention signal: any pending proposal this task authored while it is in review. */
   pending_authority: boolean
+  /**
+   * True only while a task-authored, implementation-origin requirement or System
+   * Design proposal withholds this task's verify and review claims.
+   */
+  proposal_claim_waiting?: boolean
   forge_failure?: ForgeFailure
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
@@ -829,7 +835,12 @@ export interface ActivityItem {
   checkout_guidance: string
   needs_attention: boolean
   at_merge_gate: boolean
+  /** Operator-attention signal: any pending proposal this task authored while it is in review. */
   pending_authority?: boolean
+  /** True only while a qualifying proposal withholds this task's verify and review claims. */
+  proposal_claim_waiting?: boolean
+  /** The proposals that withhold this task's verify and review claims. */
+  waiting_proposals?: WaitingProposal[]
   forge_failure?: ForgeFailure
   spec?: SpecVersion
   attachments?: Artifact[]
@@ -857,6 +868,13 @@ export interface PendingProposal {
   origin_id?: string
   proposed_at: string
   age_seconds: number
+}
+
+/** A task-authored proposal that withholds its task's verify and review claims. */
+export interface WaitingProposal {
+  tier: 'requirement' | 'system_design'
+  id: string
+  version: number
 }
 
 export interface PendingProposalsResponse {

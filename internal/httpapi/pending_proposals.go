@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type pendingProposalItem struct {
@@ -60,6 +62,10 @@ func (s *Server) pendingAuthorityTasks(ctx context.Context, proposals []core.Pen
 	return pendingAuthorityByTask(orders, proposals), nil
 }
 
+// pendingAuthorityByTask is the operator-attention signal (req-260810-23b69f
+// AC-2.1, AC-2.2): any pending proposal this task authored, in any tier, while
+// the task is submitted for or in review. It is a signal only and never states
+// that a claim is withheld; proposalClaimWaitingByTask owns that narrower fact.
 func pendingAuthorityByTask(orders []core.WorkOrder, proposals []core.PendingProposal) map[string]bool {
 	originTasks := make(map[string]bool)
 	for _, proposal := range proposals {
@@ -81,6 +87,113 @@ func pendingAuthorityByTask(orders []core.WorkOrder, proposals []core.PendingPro
 		}
 	}
 	return result
+}
+
+// waitingProposal identifies one pending proposal that withholds its origin
+// task's verify and review claims.
+type waitingProposal struct {
+	Tier    string `json:"tier"`
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// requirementVersionWithholdsClaims and systemDesignVersionWithholdsClaims are
+// the claim-gate predicate of req-260810-70ce2f REQ-1 (AC-1.1–AC-1.4), stated
+// over one durable version: an unresolved implementation-origin version
+// authored by this task. The store claim transactions apply the same
+// predicate in SQL and in memory (component-work-orders); the parity tests in
+// pending_proposals_test.go claim real verify and review orders against each
+// fixture this projection classifies. Decisions, task-context suggestions, and
+// operator, session, drift, or other-task origins never withhold a claim.
+func requirementVersionWithholdsClaims(taskID string, version core.RequirementVersion) bool {
+	return version.Origin == core.RequirementOriginImplementation && version.OriginTaskID == taskID && !version.Confirmed && !version.Retired
+}
+
+func systemDesignVersionWithholdsClaims(taskID string, version core.SystemDesignVersion) bool {
+	return version.Origin == core.SystemDesignOriginImplementation && version.OriginTaskID == taskID && !version.Confirmed && !version.Dismissed
+}
+
+// claimWaitWindowTasks reports the tasks whose verify or review claim is
+// pending or in flight: a submitted implementation (which stays submitted until
+// its review round is terminal) or a verify or review order not yet terminal.
+func claimWaitWindowTasks(orders []core.WorkOrder) map[string]bool {
+	result := make(map[string]bool)
+	for _, order := range orders {
+		switch {
+		case order.Stage == core.StageImplement && order.State == core.WorkOrderSubmitted:
+			result[order.TaskID] = true
+		case (order.Stage == core.StageVerify || order.Stage == core.StageReview) &&
+			(order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted):
+			result[order.TaskID] = true
+		}
+	}
+	return result
+}
+
+// proposalClaimWaitingByTask returns, for each task in its claim window, the
+// pending proposals that withhold its verify and review claims. The normalized
+// PendingProposal drops the raw origin, so each candidate requirement or System
+// Design version authored by a windowed task is re-read and judged by the
+// claim-gate predicate. Reads are bounded by those candidates and deduplicated
+// within the call; a version resolved or removed between the list and the read
+// is judged on its re-read state. Other storage failures are returned.
+func (s *Server) proposalClaimWaitingByTask(ctx context.Context, orders []core.WorkOrder, proposals []core.PendingProposal) (map[string][]waitingProposal, error) {
+	window := claimWaitWindowTasks(orders)
+	result := make(map[string][]waitingProposal)
+	seen := make(map[waitingProposal]bool)
+	for _, proposal := range proposals {
+		if proposal.OriginType != "task" || !window[proposal.OriginID] {
+			continue
+		}
+		if proposal.Tier != "requirement" && proposal.Tier != "system_design" {
+			continue
+		}
+		identity := waitingProposal{Tier: proposal.Tier, ID: proposal.ID, Version: proposal.Version}
+		if seen[identity] {
+			continue
+		}
+		seen[identity] = true
+		taskID := proposal.OriginID
+		var withholds bool
+		switch proposal.Tier {
+		case "requirement":
+			version, err := s.Store.GetRequirementVersion(ctx, proposal.ID, proposal.Version)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			withholds = requirementVersionWithholdsClaims(taskID, version)
+		case "system_design":
+			version, err := s.Store.GetSystemDesignVersion(ctx, proposal.ID, proposal.Version)
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			withholds = systemDesignVersionWithholdsClaims(taskID, version)
+		}
+		if withholds {
+			result[taskID] = append(result[taskID], identity)
+		}
+	}
+	return result, nil
+}
+
+// proposalSignals reads one task page's orders once and derives both the
+// attention signal and the narrower claim-wait projection from them.
+func (s *Server) proposalSignals(ctx context.Context, proposals []core.PendingProposal, taskIDs []string) (map[string]bool, map[string][]waitingProposal, error) {
+	orders, err := s.Store.ListWorkOrdersForTasks(ctx, taskIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	waiting, err := s.proposalClaimWaitingByTask(ctx, orders, proposals)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pendingAuthorityByTask(orders, proposals), waiting, nil
 }
 
 func pendingTaskContextByTask(proposals []core.PendingProposal) map[string]bool {
