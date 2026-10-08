@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/mail"
@@ -28,20 +30,17 @@ type createWorkspaceRequest struct {
 	Document json.RawMessage `json:"document,omitempty"`
 }
 
+// createWorkspaceDocument is the partial policy document accepted at
+// creation. Execution detail is refused before decoding (DEC-56(2)).
 type createWorkspaceDocument struct {
-	Workspace                 *string                             `json:"workspace,omitempty"`
-	MaxBounces                *int                                `json:"max_bounces,omitempty"`
-	WorkOrderQueueTimeoutText *string                             `json:"work_order_queue_timeout,omitempty"`
-	ExecutionSettings         *config.ContextualExecutionSettings `json:"execution_settings,omitempty"`
-	Routing                   *config.Routing                     `json:"routing,omitempty"`
-	Repos                     *[]config.Repo                      `json:"repos,omitempty"`
-	Harnesses                 *[]config.Harness                   `json:"harnesses,omitempty"`
-	Review                    *config.ReviewPanel                 `json:"review,omitempty"`
-	Setups                    *[]config.ExecutionSetup            `json:"setups,omitempty"`
-	DefaultSetup              *string                             `json:"default_setup,omitempty"`
-	Execution                 *config.ExecutionPolicy             `json:"execution,omitempty"`
-	Monitor                   *config.MonitorConfig               `json:"monitor,omitempty"`
-	PlanningModels            *[]string                           `json:"planning_models,omitempty"`
+	Workspace                 *string                 `json:"workspace,omitempty"`
+	MaxBounces                *int                    `json:"max_bounces,omitempty"`
+	WorkOrderQueueTimeoutText *string                 `json:"work_order_queue_timeout,omitempty"`
+	StageTimeouts             *map[string]string      `json:"stage_timeouts,omitempty"`
+	Repos                     *[]config.Repo          `json:"repos,omitempty"`
+	Review                    *config.ReviewPanel     `json:"review,omitempty"`
+	Execution                 *config.ExecutionPolicy `json:"execution,omitempty"`
+	Monitor                   *config.MonitorConfig   `json:"monitor,omitempty"`
 }
 
 func (s *Server) provisionIdentityUser(w http.ResponseWriter, r *http.Request) {
@@ -235,8 +234,25 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "workspace creation unavailable", http.StatusNotFound)
 		return
 	}
+	body, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	if readErr != nil {
+		writeValidationError(w, "workspace", readErr)
+		return
+	}
+	// Creation refuses client-local execution detail exactly as the
+	// configuration PUT does, before decoding, queue registration, or
+	// persistence (DEC-56(2); component-http-api).
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeValidationError(w, "workspace", err)
+		return
+	}
+	if field := forbiddenExecutionField(raw); field != "" {
+		writeValidationError(w, field, fmt.Errorf("%s is retired execution detail and must not be supplied", field))
+		return
+	}
 	var request createWorkspaceRequest
-	decoder := json.NewDecoder(r.Body)
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		writeValidationError(w, "workspace", err)
@@ -253,11 +269,11 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	base := *s.Deployment
 	base.Workspace = request.ID
-	var next *config.Config
-	var err error
-	if len(request.Document) == 0 || string(request.Document) == "null" {
-		next = &base
-	} else {
+	// The candidate starts from the deployment's policy projection, so even
+	// a legacy deployment value contributes no execution detail.
+	document := base.PolicyDocument()
+	document.Workspace = request.ID
+	if len(request.Document) != 0 && string(request.Document) != "null" {
 		var partial createWorkspaceDocument
 		partialDecoder := json.NewDecoder(bytes.NewReader(request.Document))
 		partialDecoder.DisallowUnknownFields()
@@ -265,8 +281,6 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeValidationError(w, "document", decodeErr)
 			return
 		}
-		document := base.WorkspaceDocument()
-		document.Workspace = request.ID
 		if partial.Workspace != nil && *partial.Workspace != "" && *partial.Workspace != request.ID {
 			writeValidationError(w, "document.workspace", errors.New("document workspace must match id"))
 			return
@@ -277,21 +291,13 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		if partial.WorkOrderQueueTimeoutText != nil {
 			document.WorkOrderQueueTimeoutText = *partial.WorkOrderQueueTimeoutText
 		}
-		if partial.ExecutionSettings != nil {
-			document.ExecutionSettings = partial.ExecutionSettings
-			if partial.Setups == nil {
-				document.Setups = nil
-				document.DefaultSetup = ""
+		if partial.StageTimeouts != nil {
+			for stage, timeout := range *partial.StageTimeouts {
+				document.StageTimeouts[stage] = timeout
 			}
-		}
-		if partial.Routing != nil {
-			document.Routing = *partial.Routing
 		}
 		if partial.Repos != nil {
 			document.Repos = *partial.Repos
-		}
-		if partial.Harnesses != nil {
-			document.Harnesses = *partial.Harnesses
 		}
 		if partial.Review != nil {
 			if len(partial.Review.Seats) == 0 {
@@ -299,20 +305,6 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			document.Review = *partial.Review
-			if partial.Setups == nil {
-				document.Setups = nil
-				document.DefaultSetup = ""
-			}
-		}
-		if partial.Setups != nil {
-			if len(*partial.Setups) == 0 {
-				writeValidationError(w, "setups", errors.New("setups must contain at least one setup"))
-				return
-			}
-			document.Setups = *partial.Setups
-		}
-		if partial.DefaultSetup != nil {
-			document.DefaultSetup = *partial.DefaultSetup
 		}
 		if partial.Execution != nil {
 			document.Execution = *partial.Execution
@@ -320,19 +312,16 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		if partial.Monitor != nil {
 			document.Monitor = *partial.Monitor
 		}
-		if partial.PlanningModels != nil {
-			document.PlanningModels = *partial.PlanningModels
-		}
-		data, marshalErr := yaml.Marshal(document)
-		if marshalErr != nil {
-			writeValidationError(w, "document", marshalErr)
-			return
-		}
-		next, err = config.ParseWorkspaceDocument(data, &base, "workspace creation")
-		if err != nil {
-			writeValidationError(w, validationField(err), err)
-			return
-		}
+	}
+	data, marshalErr := yaml.Marshal(document)
+	if marshalErr != nil {
+		writeValidationError(w, "document", marshalErr)
+		return
+	}
+	next, err := config.ParseWorkspaceDocument(data, &base, "workspace creation")
+	if err != nil {
+		writeValidationError(w, validationField(err), err)
+		return
 	}
 	if s.EnsureWorkspaceQueues != nil {
 		if err := s.EnsureWorkspaceQueues(request.ID, next); err != nil {

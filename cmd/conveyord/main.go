@@ -67,7 +67,7 @@ func main() {
 		log.Fatal("worker retry delay must be positive and worker retry max must be at least the initial delay")
 	}
 
-	deployment, err := config.Load(*configPath)
+	deployment, err := config.LoadDeployment(*configPath, log.Printf)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}

@@ -1400,119 +1400,8 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		requestedPlanning = c.ExecutionSettings.ControlPlane.Planning
 	}
 	applyContextualExecutionSettings(c)
-	if c.PackDir != "" {
-		c.packDirSet = true
-	}
-	if c.packDirSet && strings.TrimSpace(c.PackDir) == "" {
-		return nil, fmt.Errorf("pack_dir override %q is empty", c.PackDir)
-	}
-	if c.packDirSet && !filepath.IsAbs(c.PackDir) {
-		configDir, err := filepath.Abs(filepath.Dir(path))
-		if err != nil {
-			return nil, err
-		}
-		c.PackDir = filepath.Join(configDir, c.PackDir)
-	}
-	if c.MaxBounces == 0 {
-		c.MaxBounces = 10
-	}
-	if c.MaxBounces < 1 {
-		return nil, fmt.Errorf("max_bounces must be at least 1")
-	}
-	if c.WorkOrderQueueTimeoutText == "" {
-		c.WorkOrderQueueTimeout = DefaultWorkOrderQueueTimeout
-		c.WorkOrderQueueTimeoutText = DefaultWorkOrderQueueTimeoutText
-	} else {
-		parsed, parseErr := time.ParseDuration(c.WorkOrderQueueTimeoutText)
-		if parseErr != nil || parsed <= 0 {
-			return nil, fmt.Errorf("work_order_queue_timeout must be a positive duration")
-		}
-		c.WorkOrderQueueTimeout = parsed
-	}
-	if c.Monitor.PollIntervalText == "" {
-		c.Monitor.PollIntervalText = "1m"
-	}
-	monitorPoll, err := time.ParseDuration(c.Monitor.PollIntervalText)
-	if err != nil || monitorPoll <= 0 {
-		return nil, fmt.Errorf("monitor.poll_interval must be a positive duration")
-	}
-	c.Monitor.PollInterval = monitorPoll
-	if c.Monitor.StartupWindowText == "" {
-		c.Monitor.StartupWindowText = "24h"
-	}
-	startupWindow, err := time.ParseDuration(c.Monitor.StartupWindowText)
-	if err != nil || startupWindow <= 0 {
-		return nil, fmt.Errorf("monitor.startup_window must be a positive duration")
-	}
-	c.Monitor.StartupWindow = startupWindow
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if err := normalizeDeploymentScalars(c, path); err != nil {
 		return nil, err
-	}
-	if c.PlanningSnapshotMaxBytes == 0 {
-		c.PlanningSnapshotMaxBytes = 512 << 20
-	}
-	if c.PlanningSnapshotMaxBytes < 0 {
-		return nil, fmt.Errorf("planning_snapshot_max_bytes must be positive")
-	}
-	c.WorktreeRoot = expandDefault(c.WorktreeRoot, home, DefaultWorktreeRoot(home))
-	if !filepath.IsAbs(c.WorktreeRoot) {
-		return nil, fmt.Errorf("worktree_root must be absolute after home expansion")
-	}
-	c.WorktreeRoot = filepath.Clean(c.WorktreeRoot)
-	if c.Database.URL == "" {
-		c.Database.URL = os.Getenv("CONVEYOR_DATABASE_URL")
-	}
-	if c.Database.Backend == "" {
-		c.Database.Backend = DatabaseForURL(c.Database.URL).Backend
-	}
-	if c.Database.Backend != "postgres" && c.Database.Backend != "memory" && c.Database.Backend != "singlestore" {
-		return nil, fmt.Errorf("database.backend must be %q, %q or %q", "postgres", "memory", "singlestore")
-	}
-	if (c.Database.Backend == "postgres" || c.Database.Backend == "singlestore") && c.Database.URL == "" {
-		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
-	}
-	// An absent execution block means the shipped default: both gates on
-	// (DEC-55(1); component-task-lifecycle). There is no mode axis (DEC-55(2)).
-	// A block that carried only the retired evidence key decodes empty and
-	// keeps these defaults (DEC-53).
-	if c.Execution == (ExecutionPolicy{}) {
-		c.Execution.SpecApproval = true
-		c.Execution.MergeApproval = true
-	}
-	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
-		return nil, fmt.Errorf("execution.default_mode is deprecated (DEC-55) and must be auto or manual when present")
-	}
-	// Legacy documents keep their stored value readable, but it is never
-	// re-emitted or consulted; normalization drops it.
-	c.Execution.DefaultMode = ""
-	if c.Execution.VerifyConcurrency == 0 {
-		c.Execution.VerifyConcurrency = 1
-	}
-	if c.Execution.VerifyConcurrency < 1 {
-		return nil, fmt.Errorf("execution.verify_concurrency must be at least 1")
-	}
-	if c.Execution.ImplementConcurrency == 0 {
-		c.Execution.ImplementConcurrency = 1
-	}
-	if c.Execution.ReviewConcurrency == 0 {
-		c.Execution.ReviewConcurrency = 1
-	}
-	if c.Execution.ImplementConcurrency < 1 {
-		return nil, fmt.Errorf("execution.implement_concurrency must be at least 1")
-	}
-	if c.Execution.ReviewConcurrency < 1 {
-		return nil, fmt.Errorf("execution.review_concurrency must be at least 1")
-	}
-	if c.Execution.FirstActivityTimeoutText == "" {
-		c.Execution.FirstActivityTimeout = DefaultFirstActivityTimeout
-		c.Execution.FirstActivityTimeoutText = DefaultFirstActivityTimeoutText
-	} else {
-		parsed, parseErr := time.ParseDuration(c.Execution.FirstActivityTimeoutText)
-		if parseErr != nil || parsed <= 0 {
-			return nil, fmt.Errorf("execution.first_activity_timeout must be a positive duration")
-		}
-		c.Execution.FirstActivityTimeout = parsed
 	}
 	harnesses := make(map[string]Harness, len(c.Harnesses))
 	for i := range c.Harnesses {
@@ -1723,6 +1612,135 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			return nil, fmt.Errorf("execution.first_activity_timeout must be shorter than %s execution timeout", stageName(stage))
 		}
 	}
+	return finishNormalization(c, requestedPlanning)
+}
+
+// normalizeDeploymentScalars validates and defaults the settings that the
+// client loader and the deployment loader share: pack, bounce and queue
+// limits, monitor, planning snapshot, worktree root, database, and the
+// execution policy (component-runtime).
+func normalizeDeploymentScalars(c *Config, path string) error {
+	if c.PackDir != "" {
+		c.packDirSet = true
+	}
+	if c.packDirSet && strings.TrimSpace(c.PackDir) == "" {
+		return fmt.Errorf("pack_dir override %q is empty", c.PackDir)
+	}
+	if c.packDirSet && !filepath.IsAbs(c.PackDir) {
+		configDir, err := filepath.Abs(filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		c.PackDir = filepath.Join(configDir, c.PackDir)
+	}
+	if c.MaxBounces == 0 {
+		c.MaxBounces = 10
+	}
+	if c.MaxBounces < 1 {
+		return fmt.Errorf("max_bounces must be at least 1")
+	}
+	if c.WorkOrderQueueTimeoutText == "" {
+		c.WorkOrderQueueTimeout = DefaultWorkOrderQueueTimeout
+		c.WorkOrderQueueTimeoutText = DefaultWorkOrderQueueTimeoutText
+	} else {
+		parsed, parseErr := time.ParseDuration(c.WorkOrderQueueTimeoutText)
+		if parseErr != nil || parsed <= 0 {
+			return fmt.Errorf("work_order_queue_timeout must be a positive duration")
+		}
+		c.WorkOrderQueueTimeout = parsed
+	}
+	if c.Monitor.PollIntervalText == "" {
+		c.Monitor.PollIntervalText = "1m"
+	}
+	monitorPoll, err := time.ParseDuration(c.Monitor.PollIntervalText)
+	if err != nil || monitorPoll <= 0 {
+		return fmt.Errorf("monitor.poll_interval must be a positive duration")
+	}
+	c.Monitor.PollInterval = monitorPoll
+	if c.Monitor.StartupWindowText == "" {
+		c.Monitor.StartupWindowText = "24h"
+	}
+	startupWindow, err := time.ParseDuration(c.Monitor.StartupWindowText)
+	if err != nil || startupWindow <= 0 {
+		return fmt.Errorf("monitor.startup_window must be a positive duration")
+	}
+	c.Monitor.StartupWindow = startupWindow
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	if c.PlanningSnapshotMaxBytes == 0 {
+		c.PlanningSnapshotMaxBytes = 512 << 20
+	}
+	if c.PlanningSnapshotMaxBytes < 0 {
+		return fmt.Errorf("planning_snapshot_max_bytes must be positive")
+	}
+	c.WorktreeRoot = expandDefault(c.WorktreeRoot, home, DefaultWorktreeRoot(home))
+	if !filepath.IsAbs(c.WorktreeRoot) {
+		return fmt.Errorf("worktree_root must be absolute after home expansion")
+	}
+	c.WorktreeRoot = filepath.Clean(c.WorktreeRoot)
+	if c.Database.URL == "" {
+		c.Database.URL = os.Getenv("CONVEYOR_DATABASE_URL")
+	}
+	if c.Database.Backend == "" {
+		c.Database.Backend = DatabaseForURL(c.Database.URL).Backend
+	}
+	if c.Database.Backend != "postgres" && c.Database.Backend != "memory" && c.Database.Backend != "singlestore" {
+		return fmt.Errorf("database.backend must be %q, %q or %q", "postgres", "memory", "singlestore")
+	}
+	if (c.Database.Backend == "postgres" || c.Database.Backend == "singlestore") && c.Database.URL == "" {
+		return fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
+	}
+	// An absent execution block means the shipped default: both gates on
+	// (DEC-55(1); component-task-lifecycle). There is no mode axis (DEC-55(2)).
+	// A block that carried only the retired evidence key decodes empty and
+	// keeps these defaults (DEC-53).
+	if c.Execution == (ExecutionPolicy{}) {
+		c.Execution.SpecApproval = true
+		c.Execution.MergeApproval = true
+	}
+	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
+		return fmt.Errorf("execution.default_mode is deprecated (DEC-55) and must be auto or manual when present")
+	}
+	// Legacy documents keep their stored value readable, but it is never
+	// re-emitted or consulted; normalization drops it.
+	c.Execution.DefaultMode = ""
+	if c.Execution.VerifyConcurrency == 0 {
+		c.Execution.VerifyConcurrency = 1
+	}
+	if c.Execution.VerifyConcurrency < 1 {
+		return fmt.Errorf("execution.verify_concurrency must be at least 1")
+	}
+	if c.Execution.ImplementConcurrency == 0 {
+		c.Execution.ImplementConcurrency = 1
+	}
+	if c.Execution.ReviewConcurrency == 0 {
+		c.Execution.ReviewConcurrency = 1
+	}
+	if c.Execution.ImplementConcurrency < 1 {
+		return fmt.Errorf("execution.implement_concurrency must be at least 1")
+	}
+	if c.Execution.ReviewConcurrency < 1 {
+		return fmt.Errorf("execution.review_concurrency must be at least 1")
+	}
+	if c.Execution.FirstActivityTimeoutText == "" {
+		c.Execution.FirstActivityTimeout = DefaultFirstActivityTimeout
+		c.Execution.FirstActivityTimeoutText = DefaultFirstActivityTimeoutText
+	} else {
+		parsed, parseErr := time.ParseDuration(c.Execution.FirstActivityTimeoutText)
+		if parseErr != nil || parsed <= 0 {
+			return fmt.Errorf("execution.first_activity_timeout must be a positive duration")
+		}
+		c.Execution.FirstActivityTimeout = parsed
+	}
+	return nil
+}
+
+// finishNormalization resolves the control-plane planning settings and
+// validates repositories, planning models, and monitor scope. Both loaders
+// call it after their routes are settled.
+func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config, error) {
 	normalizedSettings := contextualExecutionSettings(c.Routing)
 	planning := requestedPlanning
 	if planning.Model == "" {
