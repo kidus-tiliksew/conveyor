@@ -143,6 +143,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 17 {
+			if err := s.migrateVerificationChunkExpiryIndex(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue

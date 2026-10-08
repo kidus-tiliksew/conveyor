@@ -70,8 +70,8 @@ type kitVerifier struct {
 	task                          core.Task
 	snapshot                      store.VerificationSnapshot
 	config                        *config.Config
-	configPath                    string
-	toolchainRefusal              string
+	configPath, configSource      string
+	configRefusal                 string
 	toolchain                     *kitToolchain
 	tools                         *kitToolResolution
 	coverage                      store.VerificationCoverage
@@ -120,7 +120,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	if err != nil {
 		return err
 	}
-	v.config, v.configPath = cfg, o.configPath
+	v.config, v.configPath, v.configSource = cfg, o.configPath, o.configSource
 	if o.contextID == "" {
 		err = rpc.call(ctx, "prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "kit-" + v.order.AttemptID}, &v.snapshot)
 	} else {
@@ -188,7 +188,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			return fmt.Errorf("attempt directory must be outside all checkout inputs")
 		}
 	}
-	v.toolchainRefusal = kitToolchainConfigRefusal(v.configPath, o.configSource, roots)
+	v.configRefusal = kitConfigSourceRefusal(v.configPath, o.configSource, roots)
 	if err = os.MkdirAll(attemptRoot, 0700); err != nil {
 		return err
 	}
@@ -250,6 +250,16 @@ func kitAdmission(format string, args ...any) error {
 	return &kitAdmissionError{fmt.Errorf(format, args...)}
 }
 
+// kitMissingGrantRemedy is the one missing-grant remedy that the inline
+// admission refusal and the printed checkpoint guidance share. The server
+// admits a grant only for the live claim's unsealed context, so the remedy
+// names the live-claim grant first and the recovery path only after the
+// checkpoint seal releases the order (req-verification-kits AC-3.2, AC-7.3;
+// component-verification-runner, component-verification-service).
+func kitMissingGrantRemedy(orderID, contextID string) string {
+	return fmt.Sprintf("while this claim is live, an operator runs `conveyor verification permissions inspect %[1]s` and grants the missing subject against context %[2]s; if the grant wait ends first, submit_verification with outcome operator_action_required seals context %[2]s and releases the order, and the operator then recovers verify order %[1]s, waits for the successor claim to prepare a new context, runs `conveyor verification permissions inspect %[1]s` again and grants against that new context; a grant on the sealed context does not carry over", orderID, contextID)
+}
+
 // kitCheckpointGuidance prints the exact operator-checkpoint submission of
 // feature-verification-kit-execution VK-13.1 for subjects that never started.
 func kitCheckpointGuidance(output io.Writer, orderID, contextID string, refused []string, causes []error) error {
@@ -257,7 +267,8 @@ func kitCheckpointGuidance(output io.Writer, orderID, contextID string, refused 
 	for _, message := range refused {
 		_, _ = fmt.Fprintf(output, "  - %s\n", message)
 	}
-	_, _ = fmt.Fprintf(output, "After the grant wait, record the operator checkpoint: call submit_verification with context_id %q, the registered coverage, outcome \"operator_action_required\", feedback stating the reason above and required_action stating the operator act. For a missing grant the act is: recover verify order %s, then grant the listed subjects against the next claim's context with `conveyor verification permissions inspect %s`. For a missing local binding, credential or prerequisite the act is: configure it on the verifier host, then recover verify order %[2]s. Do not submit blocked or waiting as the stage outcome; those are report_verification_outcome states.\n", contextID, orderID, orderID)
+	_, _ = fmt.Fprintf(output, "Missing grant: %s.\n", kitMissingGrantRemedy(orderID, contextID))
+	_, _ = fmt.Fprintf(output, "After the grant wait, record the operator checkpoint: call submit_verification with context_id %q, the registered coverage, outcome \"operator_action_required\", feedback stating the reason above and required_action stating the operator act. For a missing grant the act is the recovery phase above. For a missing local binding, credential, prerequisite or untrusted kit_permissions source the act is: correct it on the verifier host, then recover verify order %s. Do not submit blocked or waiting as the stage outcome; those are report_verification_outcome states.\n", contextID, orderID)
 	// The causes stay inspectable, so a toolchain preflight refusal keeps its
 	// typed diagnostic and remedy.
 	return errors.Join(append([]error{fmt.Errorf("verification blocked: %d subject(s) not admitted before start", len(refused))}, causes...)...)
@@ -397,10 +408,16 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	if grant == nil {
 		// VK-12.2: name the exact operator act that opens the grant window.
-		return &kitAdmissionError{fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; an operator runs `conveyor verification permissions inspect %s` (context %s) and grants while this claim is live", e.ID, kitRequiredActions(e), v.order.ID, vc.ID)}
+		return &kitAdmissionError{fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; %s", e.ID, kitRequiredActions(e), kitMissingGrantRemedy(v.order.ID, vc.ID))}
 	}
 	if err := v.live(ctx, grant.ID); err != nil {
 		return err
+	}
+	// Checkout content cannot supply local authority: kit_permissions from a
+	// configuration source that is not operator-selected, or that resolves
+	// inside a checkout input, are refused before any action is resolved.
+	if err := kitPermissionsSourceRefusal(v.config, v.configPath, v.configSource, v.configRefusal); err != nil {
+		return kitAdmissionActions(&kitAdmissionError{err}, e)
 	}
 	local, err := v.config.KitActions(v.rpc.client.base, v.rpc.client.workspace, v.task.Repo)
 	if err != nil {
@@ -451,7 +468,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	// VK-EXEC-3).
 	credentials := append(append(append([]string{}, secrets...), kitParentSecrets()...), kitApprovedSecrets()...)
 	credentials = append(credentials, v.rpc.client.token, v.rpc.claimToken)
-	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.toolchainRefusal, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
+	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.configRefusal, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
 	if err != nil {
 		return err
 	}

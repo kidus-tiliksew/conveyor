@@ -152,7 +152,7 @@ func prepareArtifact(ctx context.Context, a core.Artifact, content []byte) (core
 		if a.TaskID == "" {
 			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
 		}
-		a.ContentType, err = core.NormalizeVerificationEvidenceContentType(a.ContentType, a.SizeBytes)
+		a.ContentType, err = core.ValidateVerificationEvidenceArtifact(a.ContentType, content)
 		if err != nil {
 			return core.Artifact{}, err
 		}

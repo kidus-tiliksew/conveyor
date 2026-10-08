@@ -188,7 +188,11 @@ An authorized operator's refusal names a stable reason with recovery text:
 or `grant_revoked`. Foreign and unauthorized callers receive a generic
 refusal. If the window closed before the grant arrived, the operator recovers
 the verify order; the next verifier claim prepares a new context and repeats
-the wait, and the operator grants against that context.
+the wait, and the operator grants against that context. `conveyor kit verify`
+prints this remedy in both phases, in its inline refusal and in its checkpoint
+guidance: grant against the current context while this claim is live, and
+recover and grant against the successor's new context only after the
+checkpoint seal releases the order.
 
 ## Permission admission and invocation
 
@@ -199,6 +203,15 @@ or credential handle names. `operator_interaction` has no target. The binding
 of each action must match its local grant. The work-order grant separately
 binds the subject contract and submitted revision. The runner requires both
 grants to cover every requested action and checks revocation while running.
+
+Local `kit_permissions` records are honored only from operator-selected
+configuration: the file named by `--config`, by `CONVEYOR_CONFIG`, or the user
+default, resolving outside the verified checkout and its Git common directory
+after symlinks. Records in a working-directory `conveyor.yaml`, in a file
+inside the checkout, or behind a symlink into it are refused with
+`kit_permissions_untrusted_source` before any attempt starts. Treat that as an
+admission refusal: the remedy moves the records to operator configuration
+outside the checkout. Never copy records into the checkout yourself.
 
 The manifest cannot grant access. Missing grants, prerequisites or interaction
 require a truthful blocked/waiting report identifying the needed operator act.
