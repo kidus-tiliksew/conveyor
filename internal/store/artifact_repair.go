@@ -35,7 +35,8 @@ type ArtifactRepairReceipt struct {
 }
 
 // NormalizeArtifactRepair requires trusted workspace/actor context; the HTTP
-// capability boundary is ART-HTTP-3 (req-security-boundaries REQ-1).
+// capability boundary is the repair route's capability check
+// (component-artifacts; req-security-boundaries REQ-1).
 func NormalizeArtifactRepair(ctx context.Context, r ArtifactRepairRequest) (ArtifactRepairRequest, error) {
 	ws, ok := WorkspaceFromContext(ctx)
 	if !ok || strings.TrimSpace(ws) == "" || ActorFromContext(ctx).Role != core.ActorUser {

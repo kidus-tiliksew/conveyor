@@ -1,7 +1,7 @@
 # GitHub lifecycle coordination
 
 Phase 5.3 projects Conveyor's durable lifecycle onto GitHub without making
-GitHub the source of truth (spec §21.12 change 5, amended by §21.15).
+GitHub the source of truth (component-git-delivery).
 
 ## Issue on spec approval
 
@@ -90,7 +90,7 @@ PostgreSQL-backed worker coverage reproduces the production transaction/event
 ordering and verifies single-seat and panel publication, retry/reconciliation
 idempotency, requested-changes-to-approval resolution history, and preservation
 of internal state when GitHub fails. Categorizing those failures under the
-§21.41 forge taxonomy remains the non-overlapping responsibility of parked task
+forge error taxonomy (component-git-delivery) remains the non-overlapping responsibility of parked task
 `260728-c0f858`.
 
 ## Explicit boundary

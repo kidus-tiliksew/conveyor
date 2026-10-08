@@ -9,7 +9,7 @@ import (
 )
 
 // The first API configuration write after conveyor init files its install task.
-// Registration never writes to a checkout (req-repository-onboarding REQ-3; DEC-32).
+// Registration never writes to a checkout (req-repository-onboarding REQ-3; DEC-49).
 func (s *Server) fileRepositoryInstallTasks(ctx context.Context, repos []config.Repo) error {
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	for _, repo := range repos {

@@ -30,7 +30,7 @@ type mcpReadSnapshot struct {
 	owner, workspace, query string
 	expires                 time.Time
 	items                   []json.RawMessage
-	// events is set only for list_task_events windows (MCP-READ-9).
+	// events is set only for list_task_events windows (component-mcp-investigation-reads).
 	events *mcpEventWindow
 	// access is the LRU sequence. It never extends expires.
 	access uint64

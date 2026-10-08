@@ -10,7 +10,7 @@ import (
 )
 
 // TreeEntry uses a kit-relative Git path and the blob OID from the exact source
-// tree, not a filesystem content hash. Gitlinks never expand scope (VK-3).
+// tree, not a filesystem content hash. Gitlinks never expand scope (component-verification-kit-contract).
 type TreeEntry struct {
 	Mode    string `json:"mode"`
 	Path    string `json:"path"`
@@ -72,7 +72,7 @@ func NormalizeKit(kit Kit) ([]byte, error) {
 	return json.Marshal(k)
 }
 
-// ContentDigest is shared by forge-tree and checkout callers (VK-3). Hash input
+// ContentDigest is shared by forge-tree and checkout callers (component-verification-kit-contract). Hash input
 // is NormalizeKit(k), LF, then each sorted '<mode> <path> <blob OID>\n' record.
 // Record delimiters and validation make the byte stream unambiguous.
 func ContentDigest(k Kit, entries []TreeEntry) (string, error) {

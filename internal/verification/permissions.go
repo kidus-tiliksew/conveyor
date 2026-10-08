@@ -10,7 +10,7 @@ import (
 )
 
 // VerificationPermission names an action in an operator-owned environment.
-// Grants are admission authority, not a sandbox (VK-4; REQ-7/AC-7.3).
+// Grants are admission authority, not a sandbox (component-verification-runner; req-verification-kits REQ-7/AC-7.3).
 type VerificationPermission struct {
 	Kind    string `json:"kind" yaml:"kind"`
 	Binding string `json:"binding" yaml:"binding"`
@@ -154,7 +154,7 @@ type ActionRequirement struct {
 
 // ActionRequirements lists the closed action slots ValidateRequestedActions
 // enforces, in declaration order. Operator grant surfaces present these slots
-// with unresolved targets (feature-verification-kit-execution VK-12.1).
+// with unresolved targets (component-verification-runner).
 func ActionRequirements(e Exercise) []ActionRequirement {
 	var out []ActionRequirement
 	index := map[ActionRequirement]int{}

@@ -44,14 +44,14 @@ propose-confirm boundary; the incidents behind each rule are in the
   documents by version.
 - Requirements are black-box contracts with one capability per document; do
   not prescribe storage, services, queries, queues, or algorithms unless the
-  mechanism is itself a public contract (DEC-34).
+  mechanism is itself a public contract (DEC-57(1)).
 - Confirmed-document precedence is requirements, then decisions, then System
-  Design documents (DEC-34).
-- Reference documents orient and never restate acceptance criteria (DEC-34).
+  Design documents (DEC-57(2)).
+- Reference documents orient and never restate acceptance criteria (DEC-57(3)).
 - A proposal cannot cite a pending decision or design as authority; confirm
   requirements before decisions that cite them, then decisions before designs
-  that cite both (DEC-34).
-- Recommend DEC-34's baseline-and-overlay pattern when
+  that cite both (DEC-57(4)).
+- Recommend DEC-57(5)'s baseline-and-overlay pattern when
   `GET /v1/system-designs` returns an empty workspace list before a first
   design, delivery already spans several design baselines, or the operator
   asks how to document in-flight work. Explain evergreen component baselines
@@ -126,7 +126,7 @@ paths:
 - When the operator takes the baseline-and-overlay recommendation, draft the
   temporary overlay to open with the exact baseline versions it changes, the
   requirements it implements, its delivery state, and the absorbing owner for
-  each lasting mechanism (DEC-34).
+  each lasting mechanism (DEC-57(5)).
 - Governed scope is load-bearing: merges touching those paths without a
   proposed revision raise the drift signal. Scope only what the document
   genuinely describes.

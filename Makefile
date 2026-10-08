@@ -1,6 +1,6 @@
 # Local integration tests run against a PostgreSQL container owned by one
-# managed validation invocation (component-verification-strategy, "Validation
-# resource ownership and recovery"). Each invocation gets its own Compose
+# managed validation invocation (component-validation-tooling, "Invocation
+# inventory" and "Owned teardown"). Each invocation gets its own Compose
 # project conveyor-test-<invocation-id>, a free loopback port, and a durable
 # inventory under $XDG_STATE_HOME/conveyor/<task>/invocations/. Teardown and
 # `make test-db-down INVOCATION=<dir>` remove only that inventory's sealed
@@ -58,8 +58,8 @@ DEV_COMPOSE := docker compose --env-file $(ENV_FILE) -f compose.dev.yaml
 
 all: build
 
-# REQ-7/AC-7.1 (component-verification-strategy): one Make graph shares
-# web-deps and ui across the complete ordinary validation session.
+# component-validation-tooling ("The ordinary validation session"): one Make
+# graph shares web-deps and ui across the complete ordinary validation session.
 .PHONY: validate test-validation test-validation-docker test-validation-environment test-worker-environment
 validate: build vet fmt-check test
 
@@ -103,7 +103,8 @@ build: conveyor-cli
 conveyor-cli: ui
 	go build $(LDFLAGS) -o $(BIN)/conveyor ./cmd/conveyor
 
-# VK-10: each gate builds its own CLI and prepares the browser before fixtures.
+# Repository-local verification lifecycle scenario (component-verification-service):
+# each gate builds its own CLI and prepares the browser before fixtures.
 export CONVEYOR_VK10_CLI := $(abspath $(BIN)/conveyor)
 export CONVEYOR_VK10_SOURCE := $(CURDIR)
 vk10-runtime: conveyor-cli browser-runtime
@@ -127,8 +128,8 @@ test-image:
 RELEASE_DIR ?= dist
 RELEASE_TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
-# REQ-11 / AC-11.1: release archives use the same build-injected identity as
-# ordinary builds. VERSION must be the pushed tag when invoked by release.yml.
+# req-deployment-and-releases REQ-3/AC-3.1: release archives use the same
+# build-injected identity as ordinary builds. VERSION must be the pushed tag when invoked by release.yml.
 release: release-archives
 
 release-archives:

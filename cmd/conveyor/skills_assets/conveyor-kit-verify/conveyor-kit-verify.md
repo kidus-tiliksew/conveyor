@@ -5,14 +5,17 @@ approved plan and pinned authority. Implementation ends at submission; review
 assesses sealed evidence. A successful kit supplies evidence and never grants
 acceptance or operator approval.
 
-Authority: `req-verification-kits` v1 REQ-8/AC-8.1 and REQ-8/AC-8.4;
-`feature-verification-kit-execution` v5 VK-2 through VK-9, including VK-4.1,
-VK-5.1 and VK-7.1; DEC-29, DEC-40 and DEC-43. The `conveyor-kit` skill covers
-the full authoring contract. This playbook describes the shipped CLI and MCP
-protocol, including ordinary checks when no kit is selected. The operator grant
-flow and the grant wait follow `req-verification-kits` v2 REQ-3/AC-3.2,
-REQ-7/AC-7.3 and REQ-8/AC-8.2 and `feature-verification-kit-execution` v9
-VK-12.
+Authority: `req-verification-kits` REQ-8/AC-8.1 and REQ-8/AC-8.4;
+`component-verification-service` (contexts, obligations, coverage, operations,
+outcomes and sealing), `component-verification-kit-contract` (discovery and
+selection), `component-verification-runner` (execution authority, toolchain
+and preflight) and `component-verification-evidence` (typed evidence); DEC-53,
+DEC-40 and DEC-43. The `conveyor-kit` skill covers the full authoring
+contract. This playbook describes the shipped CLI and MCP protocol, including
+ordinary checks when no kit is selected. The operator grant flow and the grant
+wait follow `req-verification-kits` REQ-3/AC-3.2, REQ-7/AC-7.3 and
+REQ-8/AC-8.2 and `component-verification-runner` ("Operator grants and
+revocations").
 
 ## Establish the exact context
 
@@ -78,7 +81,8 @@ kind, ID and immutable version; extra context pins are allowed. No pins or a
 mismatch excludes a valid kit. Invalid manifests or unavailable kit content
 block complete success. `no_manifest` and `no_selected_kits` describe discovery,
 not acceptance or a waiver of ordinary checks. The runner checks the local
-kit digest against the server receipt before launching it (VK-2, VK-3).
+kit digest against the server receipt before launching it
+(`component-verification-kit-contract`).
 
 ## Register ordinary obligations and coverage
 
@@ -120,7 +124,7 @@ but completion cannot drop an existing source or check and must submit the
 recorded coverage. If no checks apply, supply an explicit empty-set assessment
 with source dispositions and scope justification. Manifest absence alone is
 insufficient. The reviewer judges the adequacy of this interpretation under
-DEC-29; mechanical coverage validation does not infer all governing prose.
+DEC-53; mechanical coverage validation does not infer all governing prose.
 
 ## Operator grants and the claim-bound window
 
@@ -219,13 +223,13 @@ Never approve access or supply an ambient factory/forge credential. Sensitive
 inputs use approved `CONVEYOR_KIT_SECRET_*` handles; the runner rejects them in
 the safe inputs file. Permission admission does not sandbox arbitrary code;
 execute only in an operator-authorized environment that enforces the required
-restrictions (VK-4).
+restrictions (`component-verification-runner`).
 
 ## Toolchain environment and preflight
 
 Verification children use the default toolchain unless the local execution
 configuration has a `verification_toolchains` record for the exact server,
-workspace and repository (VK-4.2). The default is
+workspace and repository (`component-verification-runner`). The default is
 `PATH=/usr/local/bin:/usr/bin:/bin`, `LANG=C.UTF-8`, and an attempt-private
 `HOME` and `TMPDIR`. Repository content, workspace or task policy, and the
 parent environment cannot select, create or widen a record.
@@ -279,8 +283,8 @@ with the subject, the failed prerequisite or configuration field, the search
 path and the `verification_toolchains` remedy. It starts no attempt, registers
 no operation, launches no child and reports no execution. Report that
 diagnostic and the operator act it names. With a matching unrevoked grant, it
-is the runner's admission refusal for that subject (VK-13.2
-`admission_refused`). A tool or fingerprinted configured location that changes
+is the runner's admission refusal for that subject (`admission_refused`;
+`component-verification-runner`). A tool or fingerprinted configured location that changes
 after preflight or during execution blocks the attempt through the existing
 outcome path.
 
@@ -381,7 +385,7 @@ interactive/hybrid contracts require an authenticated operator observation.
 Ordinary observations require their declared completion evidence. Every
 declared operation must be completed or reconciled as applied. Neither
 `supports` references nor an explicit empty assertion set claims AC acceptance
-(VK-5, VK-7.1).
+(`component-verification-evidence`; `component-verification-service`).
 
 ## Reconciliation, retries and UI
 
@@ -401,7 +405,7 @@ automatically. Applied operations preserve original provenance and permit only
 remaining safe work. Definitively not-applied operations can admit a new
 dispatch; unknown stays blocked. Operator-action policy requires a recorded
 operator disposition and authorization. A new source/context does not erase
-unresolved prior operations (VK-4.1).
+unresolved prior operations (`component-verification-service`).
 
 Repeating a CLI invocation with the original start key retries retained spool
 uploads under the live claim but refuses to relaunch an existing attempt.
@@ -438,7 +442,7 @@ head, scope and pins and closes the context to new attempts/evidence.
 `submit_verification.outcome` accepts only `succeeded`, `feedback` and
 `operator_action_required`. `blocked`, `waiting`, `failed`, `timed_out` and
 `cancelled` are exercise states for `report_verification_outcome.state`; never
-submit them as the stage outcome (feature-verification-kit-execution VK-13.1).
+submit them as the stage outcome (`component-verification-service`).
 
 | Verification state at submission | `submit_verification.outcome` |
 | --- | --- |

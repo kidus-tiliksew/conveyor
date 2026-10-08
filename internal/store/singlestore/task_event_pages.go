@@ -16,7 +16,7 @@ import (
 // candidates inside both the row limit and the running byte budget return
 // their variable-width columns; the lookahead and every candidate past the
 // budget return fixed-width boundary and size metadata, so the driver never
-// transfers them (component-mcp-protocol v14 MCP-READ-9). The derived boundary
+// transfers them (component-mcp-investigation-reads). The derived boundary
 // row survives an empty window via LEFT JOIN.
 const taskEventWindowSelect = `SELECT b.max_id, b.matching, w.id, w.at, w.source_bytes, w.fits,
 	CASE WHEN w.fits AND w.within_limit THEN e.task_id END,

@@ -60,7 +60,7 @@ export default defineConfig({
   },
   webServer: {
     // Vite runs in a sealed process group recorded in the validation
-    // invocation inventory (component-verification-strategy). Owned cleanup
+    // invocation inventory (component-validation-tooling). Owned cleanup
     // or explicit recovery removes a server orphaned by forced termination.
     command: `python3 ../scripts/validation_resources.py launch --role vite -- npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `http://127.0.0.1:${port}`,

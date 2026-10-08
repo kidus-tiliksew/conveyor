@@ -9,7 +9,7 @@ import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { MarkdownProse } from '../ui/markdown-prose'
 
-// Machine-owned fenced blocks (§4.1) are stripped from the prose and
+// Machine-owned fenced blocks of the legacy spec format are stripped from the prose and
 // rendered structurally by the acceptance checklist below.
 const machineBlock = /```conveyor:(?:acceptance|decomposition)\n[\s\S]*?```\n?/g
 
@@ -22,7 +22,7 @@ const verifyIcons: Record<AcceptanceCriterion['verify'], typeof FlaskConical> = 
 
 // The spec review card: rendered markdown plus the
 // acceptance-criteria checklist. Human-verify criteria surface as explicit
-// checkboxes rather than being pretend-verified (§4.1 rule 2).
+// checkboxes rather than being pretend-verified.
 export function SpecCard({
   spec,
   collapsible = true,

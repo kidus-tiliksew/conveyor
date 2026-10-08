@@ -1,50 +1,82 @@
 # Recovering an implementation checkpoint
 
-Authority: component-git-delivery v9 CP-1 through CP-5 and
-component-work-orders v15 HO-1 through HO-4. Checkpoints preserve unfinished
-work. They do not establish validation or review approval.
+Authority: `component-attempt-checkpoints`, in particular "Preservation
+identity", "The exclusive local writer", "Launch and successor admission",
+"Push and audit reconciliation", and "Recovering an existing checkpoint".
+`component-git-delivery` owns checkout and repository identity, and
+`component-work-orders` owns claims and release outcomes. A checkpoint
+preserves unfinished work. It never establishes validation or review approval.
 
-1. Install the matching Conveyor server and CLI versions. Resolve any existing
-   task gate through its normal operator action. Do not request another recovery
-   solely because a checkpoint trailer and a release event use different words.
-2. Resume with `conveyor --workspace demo run <task-id>` or the worker. The
-   launcher obtains the exact claim, acquires the task writer lock, and asks the
-   server to admit that session and writer generation. A surviving child keeps
-   the inherited lock even if its launcher dies. The successor waits for local
-   ownership before starting its child.
-3. Inside that session, run `conveyor --workspace demo checkout <task-id>`.
-   Keep the launcher-provided predecessor, current attempt, session, and writer
-   environment. Checkout compares the predecessor descriptor against durable
-   claim and release records, repository identity, branch, and any checkpoint
-   audit. Dirty work additionally requires the original local producer record.
-4. Checkout resumes an interrupted push or audit before returning the worktree.
-   Inspect the preserved diff and run the normal validation gates before
-   submission. A local commit, a remote push, and an acknowledged audit are
-   separate results.
+The examples use server `https://conveyor.kidus.sh` and workspace `demo`;
+substitute your own.
 
-## Existing checkpoints
+## Procedure
 
-For task `260915-e190ff`, inspect checkpoint `52e9a323` through its assigned
-branch; for `260915-e26dd8`, inspect `6328315f`. The session resolves the full
-commit SHA and compares its immutable attempt/order trailers with the task's
-claim and checkpoint history. Matching identity with different termination text
-can be reconciled without modifying that commit. The reconciliation event keeps
-the original reason, observed release reason, producer, recovering writer, and
-claim/release/checkpoint event references.
+1. Run matching Conveyor server and CLI versions.
+2. Resolve only a gate that actually requires recovery, through its ordinary
+   operator action. A checkpoint commit's `Termination-Reason` line that
+   differs from the recorded release reason needs no second recovery:
+   termination text is evidence, not an ownership key.
+3. Resume through the launcher, not a standalone checkout:
 
-The twenty-file checkpoint is not proof that the attempt that discovered those
-files authored them. If its producing identity cannot be established from the
-history and local recovery record, retain the files and report the missing or
-conflicting evidence. Do not relabel the producer to get past checkout.
+   ```sh
+   conveyor --server https://conveyor.kidus.sh --workspace demo run <task-id>
+   ```
 
-The local record lives under the repository common Git directory in
-`conveyor-writers/`, alongside its OS lock. It retains the producer and the
-observed parent plus any checkpoint SHA whose push or audit may be outstanding.
-Do not delete it to bypass an ownership refusal. A clean checkpoint with no
-audit needs this matching producer evidence to recover a missing audit.
+   or let a worker claim the order. The launcher obtains the live claim,
+   acquires the task's writer lock, and asks the server to admit its session
+   as a new writer generation. A successor may be claimed while the
+   predecessor's launcher still holds the lock, but it starts no writing child
+   until that lock is released.
+4. Inside the launched session, resolve the worktree:
 
-No recovery path amends trailers, rewrites events, resets or rebases a branch,
-force-pushes, stashes dirty content, strips predecessor variables, or creates an
-empty commit. Divergent history and unverifiable ownership stop recovery.
-Standalone operator checkout lacks the execution session's evidence and is not
-a proof that resumed execution can recover a checkpoint.
+   ```sh
+   conveyor --server https://conveyor.kidus.sh --workspace demo checkout <task-id>
+   ```
+
+   Keep the launcher-provided environment intact: `CONVEYOR_WRITER_PATH`,
+   `CONVEYOR_WRITER_GENERATION`, `CONVEYOR_CURRENT_ATTEMPT_ID`, and, when a
+   predecessor exists, `CONVEYOR_PREDECESSOR`, `CONVEYOR_PREVIOUS_ATTEMPT_ID`,
+   and `CONVEYOR_PREVIOUS_WORK_ORDER_ID`. Checkout joins the inherited writer
+   lock and validates the predecessor descriptor against the durable claim
+   and release history, the repository identity, and the assigned branch.
+   Dirty work additionally requires the local producer record to name the
+   durable predecessor.
+5. Checkout finishes any outstanding push or audit for an existing checkpoint
+   before it returns the worktree. A local commit, a remote push, and an
+   acknowledged audit are separate results; read each one. Reconciliation is
+   idempotent and leaves the original commit and events unchanged.
+6. Inspect the preserved diff, then run the repository's normal validation
+   gates before submitting. Preserved work is unvalidated.
+
+## What stops recovery
+
+Recovery stops, names the missing evidence, and leaves the files in place
+when:
+
+- the producer of dirty or committed work cannot be established from the
+  durable history and the local record, or the evidence conflicts;
+- the task, order, attempt, session, repository, or branch does not match;
+- the remote task branch has diverged from the local history;
+- the writer generation is stale because a successor was admitted.
+
+Do not relabel a producer to get past checkout. Files found in a worktree are
+never attributed to the session that found them.
+
+## The local record
+
+The writer lock and its provenance record live under the repository's common
+Git directory in `conveyor-writers/`. The record holds the writer, the
+producer, the parent commit observed when the writer started, and any
+checkpoint SHA whose push or audit may be outstanding. It is recovery
+evidence, never authority. Do not delete it to bypass an ownership refusal; a
+clean checkpoint without a durable audit needs its matching producer evidence
+to recover the missing audit.
+
+## What recovery never does
+
+No recovery path resets or rebases a branch, force-pushes, stashes, amends
+trailers, rewrites events, deletes writer records, strips predecessor
+variables, or creates an empty commit (DEC-10). A standalone operator checkout
+carries no predecessor or current-attempt evidence and is not proof that a
+checkpoint can be recovered.

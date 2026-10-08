@@ -323,7 +323,7 @@ type Decision struct {
 
 // ContainsDecisionToken applies the corpus whole-token rule. Decision IDs use
 // ASCII word characters around their numeric suffix, so regexp word boundaries
-// distinguish DEC-1 from DEC-18 without interpreting adjacent prose as a cite.
+// distinguish DEC-1 from DEC-10 without interpreting adjacent prose as a cite.
 func ContainsDecisionToken(content, decisionID string) bool {
 	if !decisionIDPattern.MatchString(decisionID) {
 		return false

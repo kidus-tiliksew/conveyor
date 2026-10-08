@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// validManifestV2 is validManifest under schema 2 (VK-3.1): kit and exercise
+// validManifestV2 is validManifest under schema 2 (component-verification-kit-contract): kit and exercise
 // descriptions plus mapping-form required assertions.
 var validManifestV2 = strings.NewReplacer(
 	"schema_version: 1\nkits:", "schema_version: 2\nkits:",

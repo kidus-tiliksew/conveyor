@@ -253,7 +253,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 		for _, item := range page.Items {
 			var metadata map[string]string
 			requireOK(t, json.Unmarshal(item.Metadata, &metadata))
-			// A described assertion is stored in object form (VK-3.1) and
+			// A described assertion is stored in object form (component-verification-kit-contract) and
 			// must read as required exactly like a bare-string assertion.
 			want := "false"
 			if metadata["assertion_id"] == "required-check" || metadata["assertion_id"] == "described-check" {

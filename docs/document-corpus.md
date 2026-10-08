@@ -27,7 +27,7 @@ anything uploaded as Markdown. They cannot be cited, on purpose. When a claim
 in an overview should become enforceable, an operator promotes it into a
 requirement, and Conveyor records a `derived_from` link back to the overview
 when that requirement is confirmed. Informative documents never restate
-acceptance criteria (DEC-34).
+acceptance criteria (DEC-57(3)).
 
 ## Requirements
 
@@ -38,7 +38,7 @@ At proposal time, the first non-blank line must be a non-empty `# <title>` headi
 
 A requirement is a black-box contract and each requirement document covers
 one capability. It does not prescribe storage, services, queries, queues, or
-algorithms unless that mechanism is itself a public contract (DEC-34).
+algorithms unless that mechanism is itself a public contract (DEC-57(1)).
 
 ````markdown
 # Sign-in recovery
@@ -87,8 +87,8 @@ design raises a drift signal.
 
 ## Baselines and overlays
 
-DEC-34 recommends evergreen System Design documents as component baselines and
-a temporary feature overlay for delivery that changes several baselines. The
+DEC-57(5) recommends evergreen System Design documents as component baselines
+and a temporary feature overlay for delivery that changes several baselines. The
 overlay opens by naming the exact baseline versions it changes, the
 requirements it implements, its delivery state, and the absorbing document
 for each lasting mechanism; it does not outrank a requirement or decision.
@@ -96,13 +96,13 @@ for each lasting mechanism; it does not outrank a requirement or decision.
 Planning agents recommend this pattern when a workspace creates its first
 System Design document, when in-flight delivery spans several baselines, or
 when an operator asks how to document a feature under development. A workspace
-may decline and revise evergreen baselines directly, as Conveyor's own corpus
-does, and the agent does not press the pattern again after that choice.
+may decline and revise evergreen baselines directly, and the agent does not
+press the pattern again after that choice. The demo workspace's own corpus
+adopts the component-and-feature form of the pattern (DEC-58).
 
 After delivery, the operator proposes the baseline revisions and then archives
-the overlay naming those documents as successors. The archive step ships with
-req-document-archive REQ-1 AC-1.7; until then, the operator retires
-the overlay by hand.
+the overlay naming those documents as its successors (req-document-archive
+REQ-1/AC-1.7).
 
 ## Decisions
 
@@ -125,12 +125,12 @@ IDs, they are never recycled.
 ## Precedence and confirmation order
 
 When confirmed documents disagree, read requirements first, decisions second,
-and System Design documents third (DEC-34). Requirements hold the public
+and System Design documents third (DEC-57(2)). Requirements hold the public
 contract, decisions constrain the chosen direction, and designs describe the
 mechanism within those constraints.
 
 Confirm requirements before the decisions that cite them, then confirm
-decisions before the designs that cite both (DEC-34). A pending document has no
+decisions before the designs that cite both (DEC-57(4)). A pending document has no
 authority, so this order prevents a proposal from depending on an unconfirmed
 premise.
 

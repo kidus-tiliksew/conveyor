@@ -62,7 +62,7 @@ export interface VerificationObservation {
   fact: string
   supporting: Array<{ evidence_id: string }>
 }
-// Operator grant projection (component-http-api VK-HTTP-8). Field names
+// Operator grant projection (component-verification-runner). Field names
 // mirror store.VerificationPermissionView; no payloads, tokens or credential
 // values are present.
 export interface VerificationSubjectRef {
@@ -382,7 +382,7 @@ export interface Intervention {
   at: string
 }
 
-// §4.1 machine-owned blocks, validated by internal/pipeline/output.go.
+// Legacy spec-format machine-owned blocks, validated by internal/pipeline/output.go.
 export interface AcceptanceCriterion {
   id: string
   criterion: string
@@ -973,7 +973,7 @@ export interface WorkOrderCheckpoint {
   verification?: WorkOrderVerificationCheckpoint
 }
 
-// feature-verification-kit-execution VK-13.3: the sealed verify checkpoint's
+// component-verification-service: the sealed verify checkpoint's
 // context reference. It never makes the order review-eligible.
 export interface WorkOrderVerificationCheckpoint {
   context_id: string
@@ -1400,7 +1400,7 @@ export interface DocumentEventPage {
   snapshot_id: number
 }
 
-// Workspace verification kit registry (feature-verification-kit-execution VK-11).
+// Workspace verification kit registry (component-verification-kit-contract).
 export type VerificationKitRepositoryState = 'ok' | 'no_manifest' | 'invalid' | 'unavailable'
 export type VerificationKitUnavailableReason = 'no_app' | 'permission' | 'unknown_revision' | 'truncated' | 'transport'
 export type VerificationKitStatus = 'current' | 'behind' | 'pending' | 'unresolved' | 'unpinned' | 'invalid'

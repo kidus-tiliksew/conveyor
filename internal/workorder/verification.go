@@ -200,7 +200,7 @@ func (s *Service) verificationAccess(ctx context.Context, id, session, token str
 }
 
 // verificationCheckpointReplayAccess names the exact claim retained by a
-// checkpoint release (component-persistence VK-STORE-16). The immutable claim
+// checkpoint release (component-verification-service). The immutable claim
 // event supplies its identity; the store authenticates token, actor and head.
 func (s *Service) verificationCheckpointReplayAccess(ctx context.Context, id, session, token string) (store.VerificationStore, store.VerificationAccess, core.WorkOrder, error) {
 	refuse := func() (store.VerificationStore, store.VerificationAccess, core.WorkOrder, error) {
@@ -234,7 +234,7 @@ func (s *Service) verificationCheckpointReplayAccess(ctx context.Context, id, se
 	return refuse()
 }
 
-// Verification runs no repository code and makes no acceptance decision (VK-8).
+// Verification runs no repository code and makes no acceptance decision (component-verification-service).
 func (s *Service) Verification(ctx context.Context, id, session, token, operation string, raw []byte) (any, error) {
 	request := VerificationRequestType(operation)
 	if request == nil {
@@ -291,7 +291,7 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	case *VerificationSubmitRequest:
 		command.Kind, command.ContextID = store.VerificationSeal, r.ContextID
 		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback, RequiredAction: r.RequiredAction}
-		// VK-13.1: scope is already authenticated; refuse before any staged write.
+		// component-verification-service: scope is already authenticated; refuse before any staged write.
 		if err := store.ValidateVerificationOutcome(*command.Submission); err != nil {
 			if replay {
 				// A retained-claim replay is not yet authenticated: no remedy detail.
@@ -519,7 +519,7 @@ func validVerificationSubject(s core.VerificationSubject) bool {
 
 // ValidateVerificationSuccess evaluates only evidence from the frozen subject
 // and attempt. The sealing task also calls this evaluator inside its transaction
-// (feature-verification-kit-execution VK-7.1; req-verification-kits REQ-4).
+// (component-verification-service; req-verification-kits REQ-4).
 func ValidateVerificationSuccess(snapshot store.VerificationSnapshot, runID string, exit *int) error {
 	return store.ValidateVerificationSuccess(snapshot, runID, exit)
 }

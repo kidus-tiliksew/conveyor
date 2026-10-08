@@ -63,8 +63,10 @@ func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
 	return x
 }
 
-// RunAll is the common memory and PostgreSQL conformance entry point.
-// component-verification-strategy owns these cases; logtest stays separate.
+// RunAll is the common conformance entry point for the memory, PostgreSQL,
+// and SingleStore backends. component-verification-strategy owns its
+// orchestration and method coverage check; each domain component owns its own
+// cases, and logtest stays separate.
 func RunAll(t *testing.T, factory Factory) {
 	t.Helper()
 	started := time.Now()

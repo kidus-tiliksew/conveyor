@@ -16,7 +16,7 @@ import (
 // TestTaskEventWindowDelayedCommitIntegration reverses commit order on
 // SingleStore: a lower event ID commits after a higher one was captured, and
 // the single-statement recount refuses the next window with the restart
-// diagnostic (component-mcp-protocol v14 MCP-READ-9/MCP-READ-10).
+// diagnostic (component-mcp-investigation-reads).
 func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ws := "event-window-" + core.NewTaskID()
@@ -91,7 +91,7 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 // TestTaskEventWindowFetchBoundsIntegration inspects the bytes the driver
 // delivers: the lookahead and every candidate past the byte budget, including
 // events whose oversized column is not the payload, return only fixed-width
-// metadata (component-mcp-protocol v14 MCP-READ-9).
+// metadata (component-mcp-investigation-reads).
 func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ws := "event-fetch-" + core.NewTaskID()

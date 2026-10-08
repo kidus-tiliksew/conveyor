@@ -7,7 +7,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// req-verification-kits REQ-4/REQ-7; feature-verification-kit-execution VK-2/VK-7/VK-13 and component-task-lifecycle.
+// req-verification-kits REQ-4/REQ-7; component-verification-service and component-task-lifecycle.
 
 type VerificationCompletion struct {
 	Task         core.Task
@@ -90,7 +90,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		}
 		order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueWindow)
 		order.RetrySuppressed, order.RetrySuppressionReason = true, "operator checkpoint reached"
-		// VK-13.3: the context reference is resolvable but success-only
+		// component-verification-service: the context reference is resolvable but success-only
 		// verification_context_id stays empty, so review admission is impossible.
 		reference := &core.WorkOrderVerificationCheckpoint{ContextID: c.ContextID, HeadSHA: order.HeadSHA, Reason: c.SealedCheckpoint.Reason, RequiredAction: c.SealedCheckpoint.RequiredAction, Summary: c.SealedCheckpoint.Summary, Grounds: []core.WorkOrderVerificationCheckpointGround{}, OperationIDs: c.SealedCheckpoint.OperationIDs}
 		for _, g := range c.SealedCheckpoint.Grounds {
@@ -146,7 +146,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 }
 
 // verificationGroundReference bounds one sealed ground for the work-order
-// reference (feature-verification-kit-execution VK-13.5). Identifiers and
+// reference (component-verification-service). Identifiers and
 // declared permissions are copied from server records; explanation text is
 // already redacted at attempt termination and is truncated here.
 func verificationGroundReference(g VerificationCheckpointGround) core.WorkOrderVerificationCheckpointGround {

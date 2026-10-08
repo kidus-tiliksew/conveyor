@@ -120,7 +120,7 @@ func (f *permissionRouteFixture) post(ctx context.Context, request store.Verific
 	return w, body
 }
 
-// VK-HTTP-8: the operator projection exposes exact frozen subjects, grant
+// component-verification-runner: the operator projection exposes exact frozen subjects, grant
 // receipts and eligibility without payloads, tokens or a self-grant path.
 func TestVerificationPermissionProjectionAndReceipt(t *testing.T) {
 	f := newPermissionRouteFixture(t)
@@ -226,7 +226,7 @@ func TestVerificationPermissionProjectionAndReceipt(t *testing.T) {
 	}
 }
 
-// VK-12.2: authorized operators learn why the claim-bound window is closed.
+// component-verification-runner: authorized operators learn why the claim-bound window is closed.
 func TestVerificationPermissionClaimWindowReasons(t *testing.T) {
 	f := newPermissionRouteFixture(t)
 	request := store.VerificationPermissionRequest{ContextID: f.contextID, RequestKey: "late", Subject: f.subject, Actions: []core.VerificationPermission{}}

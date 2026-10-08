@@ -276,7 +276,7 @@ type TaskStore interface {
 	ListFeatures(ctx context.Context) ([]core.Feature, error)
 	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
 	// CreateClaimedVerificationEvidence atomically derives evidence ownership
-	// from an exact live implement claim (req-review-gates-evidence REQ-3/AC-3.1; DEC-29).
+	// from an exact live implement claim (component-artifacts; DEC-53).
 	CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error)
 }
 
@@ -512,7 +512,7 @@ type ActivityStore interface {
 	// Live streams use overlapping pages to reconcile delayed visibility.
 	ReadTaskEventStream(ctx context.Context, query TaskEventStreamQuery) (TaskEventStreamPage, error)
 	// ReadTaskEventWindow returns one bounded window of a task-event traversal
-	// from a single consistent read view (component-mcp-protocol v14 MCP-READ-9).
+	// from a single consistent read view (component-mcp-investigation-reads).
 	ReadTaskEventWindow(ctx context.Context, query TaskEventWindowQuery) (TaskEventWindow, error)
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind

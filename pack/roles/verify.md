@@ -7,8 +7,8 @@ the submitted SHA or the worktree is dirty. Do not edit or commit the
 implementation, approve acceptance, confirm governance, or merge.
 
 Follow the conveyor-kit-verify skill and its canonical execution playbook
-(feature-verification-kit-execution VK-2, VK-4, VK-5.1, VK-7 and VK-8;
-req-verification-kits REQ-8/AC-8.4). Fetch get_work_order with the exact session
+(component-verification-service, component-verification-runner and
+component-verification-evidence; req-verification-kits REQ-8/AC-8.4). Fetch get_work_order with the exact session
 and workspace, resolve its artifacts, and prepare or read the server-created
 verification context. Inspect exact revisions, pins, selection reasons,
 ordinary obligations, grants and prior attempts. Read get_evidence_schemas
@@ -55,8 +55,8 @@ unreplayable timed_out or cancelled attempts, subjects never admitted
 (a missing grant after the wait, or a missing local binding, credential or
 host prerequisite) and unresolved operations to
 operator_action_required, with feedback stating the reason and
-required_action stating the exact operator act (feature-verification-kit-execution
-VK-13.1). Once a context exists, submit that checkpoint rather than calling
+required_action stating the exact operator act
+(component-verification-service). Once a context exists, submit that checkpoint rather than calling
 release_work_order; an identical retry from the same claim returns the
 original receipt. Check publication
 status separately from exercise results. If required capabilities are

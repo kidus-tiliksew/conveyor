@@ -11,7 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// DEC-43 / VK-2: the same policy handoff and claim lifecycle runs against all
+// DEC-43 / component-task-lifecycle: the same policy handoff and claim lifecycle runs against all
 // stores. ChangeTaskPolicyCommand is policy-only: it refuses a request without
 // a policy, ignores caller-supplied execution setups and order plans, and
 // leaves the task's legacy setup name untouched (DEC-56).

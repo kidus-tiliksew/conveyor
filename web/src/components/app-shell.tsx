@@ -370,7 +370,7 @@ function MobileNav() {
   )
 }
 
-// The rail is the workspace switcher (§21.10: workspace context is explicit
+// The rail is the workspace switcher (component-web-dashboard: workspace context is explicit
 // everywhere): one initials tile per workspace, "+" creates a new one.
 function IconRail() {
   const { closeDrawer } = useContext(ShellNavContext)
@@ -484,10 +484,11 @@ function NavSidebar({ className }: { className?: string }) {
         <NavItem to="/pending-proposals" icon={BellRing} label="Pending proposals">
           {pendingProposalAttention > 0 && <Badge variant="attention">{pendingProposalAttention}</Badge>}
         </NavItem>
-        {/* Exactly the operating surfaces §21.61 accepts, and no others
-            (REQ-4, AC-4.1). Planning and Blueprint history are parked, not
-            retired: their routes stay mounted for deep links, the §21.49
-            anchor redirect is untouched, and blueprint history reaches through
+        {/* Exactly the accepted operating surfaces, and no others
+            (req-document-operating-surfaces REQ-4, AC-4.1). Planning and
+            Blueprint history are parked, not retired: their routes stay
+            mounted for deep links, the blueprint anchor redirect
+            (component-web-task-surfaces) is untouched, and blueprint history reaches through
             task detail — only these two entries left the sidebar. */}
         <NavItem to="/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/settings" icon={Settings} label="Settings" />

@@ -41,7 +41,7 @@ type checkpointActivityView struct {
 	Class           string                           `json:"class,omitempty"`
 	Citations       []checkpointCitationActivityView `json:"citations,omitempty"`
 	// Verification is the verify-checkpoint context reference of
-	// component-http-api VK-HTTP-9; it never confers review admission.
+	// component-verification-service; it never confers review admission.
 	Verification *core.WorkOrderVerificationCheckpoint `json:"verification,omitempty"`
 }
 

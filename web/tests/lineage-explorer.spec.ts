@@ -420,7 +420,8 @@ test('the Knowledge explorer exposes loading and error states with updated acces
   await expect(panel.getByText('Lineage temporarily unavailable.')).toBeVisible()
 })
 
-// AC-4.1 first half: the navigation carries exactly the §21.61 surface set.
+// req-document-operating-surfaces AC-4.1 first half: the navigation carries
+// exactly the accepted operating surface set.
 test('primary navigation shows exactly the accepted operating surfaces', async ({ page }) => {
   await initShell(page)
   await routeAPI(page)

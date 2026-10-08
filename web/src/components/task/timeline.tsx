@@ -131,8 +131,8 @@ export function Timeline({
   // orders, so it never offers one.
   const preemptOrder = executionActions && canRecover ? claimedWorkOrder(item) : undefined
   // A System Design revision this task proposed is a decision waiting on the
-  // operator, so it belongs in the live tail beside the other ones (spec
-  // §21.62). A blueprint anchor runs no session and proposes nothing, which is
+  // operator, so it belongs in the live tail beside the other ones
+  // (component-web-task-surfaces). A blueprint anchor runs no session and proposes nothing, which is
   // why this rides `executionActions` like the rest of the tail.
   const designProposals = useSystemDesignProposals(item.task)
   const pendingProposals = usePendingProposals()

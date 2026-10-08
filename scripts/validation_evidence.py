@@ -769,7 +769,7 @@ DISPOSABLE_CACHE_CHILDREN = ("go-build", "go-tmp", "tmp", "playwright", "npm")
 
 # The creation marker records, per disposable child, a boot-relative tick
 # sampled before the child's mkdir. It is the only source of a creation bound:
-# no wall-clock or filesystem timestamp is ever used (component-verification-strategy).
+# no wall-clock or filesystem timestamp is ever used (component-validation-tooling).
 CACHE_MARKER = ".conveyor-cache.json"
 CACHE_MARKER_SCHEMA = 1
 CACHE_MARKER_LIMIT = 64 * 1024
@@ -798,7 +798,7 @@ def owner_only_ancestor(path, lstat=os.lstat):
     only the invoking user's processes can reach anything below it. Under
     POSIX ACLs the group bits carry the ACL mask, so a named-user grant also
     shows as group execute. Privileged processes are outside this
-    owner-isolation assumption (component-verification-strategy). Metadata
+    owner-isolation assumption (component-validation-tooling). Metadata
     that cannot be read, a symlink, or a foreign owner never qualifies.
     """
     uid = os.getuid()

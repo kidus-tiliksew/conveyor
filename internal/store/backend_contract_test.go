@@ -12,7 +12,7 @@ import (
 )
 
 // The deployment contract must not depend on a driver outside its backend.
-// This check runs in the no-database tier (component-persistence; DEC-36).
+// This check runs in the no-database tier (component-persistence; DEC-51).
 func TestBackendImportBoundary(t *testing.T) {
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {

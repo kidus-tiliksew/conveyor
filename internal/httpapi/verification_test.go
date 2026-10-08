@@ -182,7 +182,7 @@ func TestVerificationToolSchemasMatchRequestTypes(t *testing.T) {
 		expected := core.VerificationJSONSchema(reflect.TypeOf(workorder.VerificationRequestType(name)))["properties"].(map[string]any)
 		for field, shape := range expected {
 			published := props[field]
-			// Descriptions annotate the published mapping (VK-13.1); shape must match.
+			// Descriptions annotate the published mapping (component-verification-service); shape must match.
 			if annotated, ok := published.(map[string]any); ok {
 				published = map[string]any{}
 				for k, v := range annotated {
@@ -384,8 +384,7 @@ func TestVerificationRecoveryStrictAndWorkerRefusal(t *testing.T) {
 	}
 }
 
-// feature-verification-kit-execution VK-13.1/VK-13.2 (component-http-api VK-HTTP-9
-// and component-mcp-protocol VK-MCP-5): one remedy over REST and MCP, then a pre-execution checkpoint.
+// component-verification-service: one remedy over REST and MCP, then a pre-execution checkpoint.
 func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	s, ctx, id := verificationHTTPFixture(t)
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
@@ -472,7 +471,7 @@ func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	if receipt.NextStage != "verify" || len(receipt.Grounds) != 1 {
 		t.Fatalf("checkpoint receipt = %+v", receipt)
 	}
-	// VK-HTTP-9: the task activity projection keeps the context reference.
+	// component-verification-service: the task activity projection keeps the context reference.
 	views, err := s.checkpointWorkOrderViews(ctx, []core.WorkOrder{order}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -481,7 +480,7 @@ func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	if !strings.Contains(string(projected), `"verification":{"context_id":"`+vc.ID+`"`) || !strings.Contains(string(projected), `"kind":"missing_grant"`) {
 		t.Fatalf("activity projection dropped the checkpoint reference: %s", projected)
 	}
-	// component-persistence VK-STORE-16: the retained claim replays after release.
+	// component-verification-service: the retained claim replays after release.
 	events, err = s.Store.ListEvents(ctx, "verification-http")
 	if err != nil {
 		t.Fatal(err)

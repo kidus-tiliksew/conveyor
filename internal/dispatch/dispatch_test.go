@@ -267,7 +267,7 @@ func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &capturingInputAgent{}
-	// A stale pre-§21.33 route may still say in_process. New spec dispatch must
+	// A stale legacy route may still say in_process. New spec dispatch must
 	// ignore that execution marker and create an MCP work order; only an already
 	// in-flight legacy call may finish through the old completion path.
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionInProcess}}}}
@@ -559,7 +559,7 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
 	// Simulate completion of a spec call that was already in flight when
-	// §21.33 moved new spec dispatch to MCP work orders.
+	// new spec dispatch moved to MCP work orders (component-work-orders).
 	_ = dispatcher.runInProcess(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), cfg, task, cfg.Routing.Stages["spec"])
 	if agent.calls != 1 {
 		t.Fatalf("calls = %d, want 1", agent.calls)

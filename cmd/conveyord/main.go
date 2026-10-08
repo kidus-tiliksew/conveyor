@@ -554,7 +554,7 @@ func resolveConveyordGitHubAppKey(getenv func(string) string, logf func(string, 
 	return key, nil
 }
 
-// DEC-41: production monitor polling resolves the same workspace app identity
+// DEC-59: production monitor polling resolves the same workspace app identity
 // as dispatch and work-order reads, before constructing GitHubSource.
 func workspaceMonitorGitHubRunner(ctx context.Context, st githubtrigger.AppStore, workspace, repo string, client *githubtrigger.AppClient) (func(context.Context, ...string) ([]byte, error), error) {
 	token, err := client.WorkspaceToken(ctx, st, workspace)

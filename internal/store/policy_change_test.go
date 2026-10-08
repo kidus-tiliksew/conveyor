@@ -8,7 +8,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// VK-7: changing the verify toggle must preserve the exact comparison.
+// Changing the verify toggle must preserve the exact comparison that sealed
+// review acceptance checks (component-verification-service).
 func TestPolicyHandoffVerificationBinding(t *testing.T) {
 	for _, stage := range []core.Stage{core.StageReview, core.StageVerify} {
 		for _, scope := range []string{"", config.RefreshReviewDelta, config.RefreshReviewFull} {
