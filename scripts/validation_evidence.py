@@ -776,11 +776,16 @@ CACHE_MARKER_LIMIT = 64 * 1024
 CACHE_MARKER_ENTRY_FIELDS = frozenset(("device", "inode", "created_ticks"))
 
 
-def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=None, created_after=None):
-    """Return live or ambiguously inspected processes that may use path."""
+def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=None, created_after=None,
+                       disregarded=None):
+    """Return live or ambiguously inspected processes that may use path.
+
+    disregarded, when given, receives the shared inspector's records for
+    uninspectable Linux SSH session processes it did not count.
+    """
     try:
         return validation_resources.active_cache_users(path, proc, uid=uid, created_after=created_after,
-                                                       backend=backend)
+                                                       backend=backend, disregarded=disregarded)
     except validation_resources.Refusal as exc:
         raise Refused(str(exc)) from exc
 
@@ -1018,11 +1023,17 @@ def creation_bounds(root, proc=validation_resources.PROC):
     return marker["children"]
 
 
-def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
+def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC, report=None):
+    """Remove the disposable children of the task cache; return their names.
+
+    report, when given, is called with one line per distinct disregarded SSH
+    session process as each child is inspected, before any refusal, so the
+    retained output names every process the guard did not count.
+    """
     expected = task_cache_root(task, task_cache)
     refs = [Path(value).resolve() for value in references]
     bounds = creation_bounds(expected, proc)
-    removable = []
+    removable, seen = [], set()
     for name in DISPOSABLE_CACHE_CHILDREN:
         child = expected / name
         if not child.exists() and not child.is_symlink():
@@ -1037,8 +1048,11 @@ def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
         # A creation bound applies only from the marker's tick for this exact
         # child (same boot, device, and inode). The shared inspector then
         # disregards only an uninspectable process with a known start strictly
-        # before that tick; readable references always block. Without a bound
-        # an uninspectable process that remains after owner isolation blocks.
+        # before that tick; readable references always block. On Linux it
+        # also disregards an uninspectable OpenSSH session process of the
+        # invoking user with a live root-owned SSH parent, whatever its start,
+        # and reports it here. Otherwise an uninspectable process that remains
+        # after owner isolation blocks.
         uid = os.getuid() if owner_only_ancestor(resolved) is not None else None
         created_after = None
         entry = bounds.get(name)
@@ -1046,7 +1060,11 @@ def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC):
             info = os.lstat(resolved)
             if info.st_dev == entry["device"] and info.st_ino == entry["inode"]:
                 created_after = entry["created_ticks"]
-        users = active_cache_users(resolved, proc, uid=uid, created_after=created_after)
+        disregarded = []
+        users = active_cache_users(resolved, proc, uid=uid, created_after=created_after, disregarded=disregarded)
+        if report is not None:
+            for record in validation_resources.distinct_disregards(disregarded, seen):
+                report(validation_resources.disregard_line(record))
         detail = users[:20]
         if len(users) > len(detail):
             detail.append("... " + str(len(users) - len(detail)) + " more")
@@ -1080,7 +1098,8 @@ def main():
             return 0
         if args.action == "cleanup":
             require(args.task and args.task_cache, "cleanup requires --task and --task-cache")
-            removed = cleanup_cache(args.task, args.task_cache, args.reference)
+            removed = cleanup_cache(args.task, args.task_cache, args.reference,
+                                    report=lambda line: print(line, flush=True))
             print("Removed disposable cache children: " + (", ".join(removed) if removed else "none"))
             return 0
         root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").decode().strip()).resolve()

@@ -73,7 +73,8 @@ established and cleanup refuses.
 
 A process whose working directory, root, open files, or cache variables can be
 read and point into a child always blocks cleanup. A process that cannot be
-inspected blocks it too, unless owner isolation rules it out. When the child
+inspected blocks it too, unless owner isolation, a creation bound, or the Linux
+SSH session rule below rules it out. When the child
 or one of its canonical ancestors is a directory owned by the invoking user
 with neither group nor other execute permission, such as a mode 0700
 `$XDG_CACHE_HOME`, other unprivileged users cannot reach the child, so only the
@@ -120,6 +121,46 @@ isolation keeps cleanup refusing. A filesystem birth time is never used as a
 bound: it is a wall-clock reading, and ordering it against boot-relative process
 start ticks would need the history of clock steps between the two events,
 which no host records.
+
+On Linux an uninspectable OpenSSH session process of the invoking user does
+not block cleanup, whatever its start tick and whether or not a bound exists.
+OpenSSH runs each connection's session process (`sshd-session: <user>` or
+`sshd-session: <user>@notty`) as the connected user and marks it
+non-dumpable, so its cwd, root, descriptors, and environment cannot be read.
+A remote client that keeps opening connections therefore always leaves some
+session processes newer than the cache. The guard disregards such a process
+only when all of these hold, read from `/proc/<pid>/stat` and the ownership of
+the `/proc/<pid>` directory, which stay readable for a non-dumpable process:
+
+- the process runs as the invoking user;
+- its `stat` command name is exactly `sshd-session` or `sshd`;
+- none of its cwd, root, descriptors, or cache variables can be read into the
+  child, since any readable reference still blocks;
+- its `stat` parent PID names a live process owned by uid 0 whose command name
+  is exactly `sshd-session` or `sshd` and which started no later than the
+  process;
+- a second read of both `stat` files and both owners, after the process's
+  entries were inspected, returns the same facts.
+
+A missing, unreadable, malformed, exited, or changed fact leaves the process
+ambiguous. A same-user process can rename itself, but it cannot acquire a
+root-owned SSH parent, and a session process reparented to init fails the
+parent check. Shells and builds started under SSH are separate processes and
+are inspected individually. No other process class is disregarded, and the
+macOS backend does not apply this rule.
+
+Cleanup prints one line per disregarded process to standard output as it
+inspects each child, before any later refusal, and then the usual summary:
+
+```text
+Disregarded Linux SSH session: pid=666814 parent=666711 command=sshd-session parent_command=sshd-session reason=same-user-uninspectable-with-live-root-owned-ssh-parent
+Removed disposable cache children: go-build, go-tmp, tmp, playwright, npm
+```
+
+Each process appears once per invocation, in PID order per child. Save the
+command's complete standard output, standard error, and exit status in durable
+task state, not in the task cache, so the retained result names every process
+the guard did not count.
 
 A child that cleanup removed and a later `prepare-cache` re-created gets a
 fresh entry: its new device and inode, and the tick sampled before that
@@ -266,8 +307,12 @@ rechecks that resource's identity and refuses a changed process birth or
 binding, a changed container or network ID or label, a changed database
 incarnation, a symlink or substituted path, a path in use, a path that
 contains or is named by a recorded or `--reference` retained reference, a
-malformed reference list, and an unknown resource kind. Pending and ambiguous
-entries have no sealed identity and are never removed. Recovery is
+malformed reference list, and an unknown resource kind. A temporary path
+uses the same live-use inspector as cache cleanup, including the Linux SSH
+session rule; the removal detail or refusal message names each disregarded
+session process with the same line, and the inventory and `recovery.jsonl`
+retain it. Pending and ambiguous entries have no sealed identity and are never
+removed. Recovery is
 idempotent, appends every action and refusal to `recovery.jsonl`, and never
 edits an evidence manifest or log: an interrupted attempt stays incomplete and
 nonreusable. Resources created before this inventory existed, such as

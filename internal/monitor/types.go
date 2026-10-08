@@ -287,7 +287,11 @@ func (s *Service) Resolve(ctx context.Context, id, outcome, requirementID string
 		return Drift{}, errors.New("monitor storage is unavailable")
 	}
 	drift, err := s.Store.ResolveDrift(ctx, strings.TrimSpace(id), strings.TrimSpace(outcome), strings.TrimSpace(requirementID))
-	if err == nil {
+	// requirements_amended proposes the requirement revision and leaves the
+	// drift open; confirming that exact version closes it (DEC-46;
+	// req-delivery-and-forge AC-4.2, AC-4.3). Only a closed record is audited
+	// as reconciled.
+	if err == nil && !drift.ResolvedAt.IsZero() {
 		_ = s.Store.AuditMonitor(ctx, "monitor.drift_reconciled", map[string]any{
 			"drift_id": drift.ID, "task_id": drift.TaskID, "outcome": drift.Outcome, "requirement_id": drift.RequirementID,
 		})

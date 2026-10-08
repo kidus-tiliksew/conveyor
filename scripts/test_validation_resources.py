@@ -7,11 +7,13 @@ DockerLifecycleTests use real Docker and PostgreSQL and run in
 """
 
 import errno
+import functools
 import json
 import os
 from pathlib import Path
 import plistlib
 import secrets
+import shutil
 import signal
 import socket
 import struct
@@ -1034,6 +1036,348 @@ class HostBackendTests(IsolatedState):
             self.assertEqual(backing, "disk")
 
 
+class FixtureProc:
+    """A fixture /proc tree for the Linux inspector.
+
+    Each entry gets a stat file (or a raw or missing one) and readable cwd,
+    root, fd, and environ entries only when the case names them, so an entry
+    without them is uninspectable like a non-dumpable process. Owners come
+    from the files, except that owner() reports another uid for an entry
+    through an injected Path.stat.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.root.mkdir()
+        self.owners = {}
+
+    def entry(self, pid, *, command="fixture", ppid=1, start=100, state="S", uid=None, raw=None,
+              stat=True, cwd=None, root=None, descriptor=None, environ=None):
+        entry = self.root / str(pid)
+        entry.mkdir()
+        if raw is not None:
+            (entry / "stat").write_text(raw)
+        elif stat:
+            (entry / "stat").write_text(f"{pid} ({command}) {state} {ppid} {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 "
+                                        f"20 0 1 0 {start} 0 0\n")
+        if uid is not None:
+            self.owners[entry] = uid
+        if cwd is not None:
+            (entry / "cwd").symlink_to(cwd, target_is_directory=True)
+        if root is not None:
+            (entry / "root").symlink_to(root, target_is_directory=True)
+        if descriptor is not None:
+            (entry / "fd").mkdir()
+            (entry / "fd" / "3").symlink_to(descriptor)
+        if environ is not None:
+            (entry / "environ").write_bytes(environ)
+        return entry
+
+    def ssh(self, pid=4242, parent=100, *, child_command="sshd-session", parent_command="sshd-session",
+            parent_uid=0, parent_start=50, start=100, **child):
+        """A same-user session process and its privilege-separation monitor."""
+        self.entry(parent, command=parent_command, ppid=1, start=parent_start, uid=parent_uid)
+        return self.entry(pid, command=child_command, ppid=parent, start=start, **child)
+
+    def owned(self):
+        real = Path.stat
+        owners = self.owners
+
+        def stat(path, *args, **kwargs):
+            info = real(path, *args, **kwargs)
+            uid = owners.get(Path(path))
+            if uid is None:
+                return info
+            values = list(info)
+            values[4] = uid  # st_uid
+            return os.stat_result(values)
+        return patch.object(Path, "stat", stat)
+
+
+class LinuxSSHSessionTests(unittest.TestCase):
+    """The Linux inspector's OpenSSH session rule over fixture /proc trees.
+
+    The real inspector runs every case; only process-entry owners are
+    injected, so no case needs root or a running SSH daemon.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.cache = self.base / "cache"
+        self.cache.mkdir(mode=0o700)
+        self.proc = FixtureProc(self.base / "proc")
+
+    def scan(self, uid=None, **kwargs):
+        found = []
+        with self.proc.owned():
+            users = resources.active_cache_users(self.cache, self.proc.root,
+                                                 uid=os.getuid() if uid is None else uid,
+                                                 disregarded=found, **kwargs)
+        return users, found
+
+    def assert_ambiguous(self, pid=4242):
+        users, found = self.scan()
+        self.assertIn(f"{pid}:ambiguous:cwd", users)
+        self.assertFalse([record for record in found if record["pid"] == pid], found)
+        return users
+
+    def test_same_user_session_with_live_root_owned_parent_is_disregarded_and_recorded(self):
+        for child_command, parent_command in (("sshd-session", "sshd-session"), ("sshd", "sshd"),
+                                              ("sshd-session", "sshd")):
+            with self.subTest(child=child_command, parent=parent_command):
+                self.proc.ssh(child_command=child_command, parent_command=parent_command)
+                users, found = self.scan()
+                self.assertEqual(users, [])
+                self.assertEqual(found, [{"pid": 4242, "ppid": 100, "command": child_command,
+                                          "parent_command": parent_command, "start": 100,
+                                          "reason": resources.SSH_DISREGARD_REASON}])
+                self.assertEqual(resources.disregard_line(found[0]),
+                                 f"Disregarded Linux SSH session: pid=4242 parent=100 command={child_command} "
+                                 f"parent_command={parent_command} "
+                                 "reason=same-user-uninspectable-with-live-root-owned-ssh-parent")
+                shutil.rmtree(self.proc.root)
+                self.proc = FixtureProc(self.base / "proc")
+
+    def test_rule_applies_whatever_the_creation_tick_and_without_a_collector(self):
+        self.proc.ssh(start=10**9)
+        users, found = self.scan(created_after=1)
+        self.assertEqual((users, [record["pid"] for record in found]), ([], [4242]))
+        with self.proc.owned():
+            self.assertEqual(resources.active_cache_users(self.cache, self.proc.root, uid=os.getuid()), [])
+            # Without owner isolation the parent is inspected as a process of
+            # its own; the session process still does not count.
+            users = resources.active_cache_users(self.cache, self.proc.root)
+        self.assertFalse([value for value in users if value.startswith("4242:")], users)
+
+    def test_unverified_ancestry_stays_ambiguous(self):
+        cases = {
+            "user-owned parent (renamed process)": dict(parent_uid=os.getuid()),
+            "root-owned parent named systemd": dict(parent_command="systemd"),
+            "root-owned parent named sshd-sessionx": dict(parent_command="sshd-sessionx"),
+            "differently named child": dict(child_command="bash"),
+            "child named like a session listener": dict(child_command="sshd-session: kidus"),
+            "zombie parent": None,
+            "parent started after the child (reused PID)": dict(parent_start=101),
+        }
+        for label, ssh in cases.items():
+            with self.subTest(label):
+                if ssh is None:
+                    self.proc.entry(100, command="sshd-session", uid=0, start=50, state="Z")
+                    self.proc.entry(4242, command="sshd-session", ppid=100)
+                else:
+                    self.proc.ssh(**ssh)
+                self.assert_ambiguous()
+                shutil.rmtree(self.proc.root)
+                self.proc = FixtureProc(self.base / "proc")
+
+    def test_missing_unreadable_or_reparented_parent_stays_ambiguous(self):
+        cases = {
+            "exited parent": lambda: None,
+            "parent without stat": lambda: self.proc.entry(100, uid=0, stat=False),
+            "parent with malformed stat": lambda: self.proc.entry(100, uid=0, raw="100 (sshd-session S 1\n"),
+        }
+        for label, parent in cases.items():
+            with self.subTest(label):
+                parent()
+                self.proc.entry(4242, command="sshd-session", ppid=100)
+                self.assert_ambiguous()
+                shutil.rmtree(self.proc.root)
+                self.proc = FixtureProc(self.base / "proc")
+        # Reparented to init (or a subreaper) after its monitor exited.
+        self.proc.entry(1, command="systemd", ppid=0, start=1, uid=0)
+        self.proc.entry(4242, command="sshd-session", ppid=1)
+        self.assert_ambiguous()
+        shutil.rmtree(self.proc.root)
+        self.proc = FixtureProc(self.base / "proc")
+        for ppid in (0, 4242):
+            with self.subTest(ppid=ppid):
+                self.proc.entry(4242, command="sshd-session", ppid=ppid)
+                self.assert_ambiguous()
+                shutil.rmtree(self.proc.root)
+                self.proc = FixtureProc(self.base / "proc")
+
+    def test_unreadable_or_malformed_child_stat_stays_ambiguous(self):
+        raws = {
+            "missing": None,
+            "no closing parenthesis": "4242 (sshd-session S 100 4242 4242\n",
+            "truncated": "4242 (sshd-session) S 100\n",
+            "another pid": "4343 (sshd-session) S 100 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n",
+            "non-numeric parent": "4242 (sshd-session) S x 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 100 0 0\n",
+            "not text": b"\xff\xfe",
+        }
+        for label, raw in raws.items():
+            with self.subTest(label):
+                self.proc.entry(100, command="sshd-session", uid=0, start=50)
+                entry = self.proc.entry(4242, stat=False)
+                if isinstance(raw, bytes):
+                    (entry / "stat").write_bytes(raw)
+                elif raw is not None:
+                    (entry / "stat").write_text(raw)
+                self.assert_ambiguous()
+                shutil.rmtree(self.proc.root)
+                self.proc = FixtureProc(self.base / "proc")
+
+    def test_foreign_session_process_stays_ambiguous_without_owner_isolation(self):
+        self.proc.ssh(uid=os.getuid() + 1)
+        with self.proc.owned():
+            found = []
+            users = resources.active_cache_users(self.cache, self.proc.root, disregarded=found)
+        self.assertIn("4242:ambiguous:cwd", users)
+        self.assertEqual(found, [])
+
+    def test_identity_changes_during_inspection_stay_ambiguous(self):
+        """The second read of every fact must match the first: exit, reparenting, and PID reuse do not qualify."""
+        real = resources._proc_stat
+
+        def changing(pid_changed, change):
+            calls = {}
+
+            def stat(pid, proc=resources.PROC):
+                info = real(pid, proc)
+                calls[pid] = calls.get(pid, 0) + 1
+                if pid == pid_changed and info is not None and calls[pid] > 1:
+                    return change(dict(info))
+                return info
+            return patch.object(resources, "_proc_stat", stat)
+
+        cases = {
+            "child start changed (PID reused)": (4242, lambda info: {**info, "start": info["start"] + 1}),
+            "child reparented": (4242, lambda info: {**info, "ppid": 1}),
+            "child renamed": (4242, lambda info: {**info, "command": "bash"}),
+            "child exited": (4242, lambda info: None),
+            "child became a zombie": (4242, lambda info: {**info, "state": "Z"}),
+            "parent start changed (PID reused)": (100, lambda info: {**info, "start": info["start"] + 1}),
+            "parent exited": (100, lambda info: None),
+            "parent became a zombie": (100, lambda info: {**info, "state": "Z"}),
+            "parent renamed": (100, lambda info: {**info, "command": "systemd"}),
+        }
+        self.proc.ssh()
+        for label, (pid, change) in cases.items():
+            with self.subTest(label), changing(pid, change):
+                self.assert_ambiguous()
+        # An owner that changes between the two reads also disqualifies.
+        real_stat = Path.stat
+        parent = self.proc.root / "100"
+        reads = []
+
+        def owner(path, *args, **kwargs):
+            info = real_stat(path, *args, **kwargs)
+            if Path(path) != parent:
+                return info
+            reads.append(path)
+            values = list(info)
+            values[4] = 0 if len(reads) == 1 else os.getuid()
+            return os.stat_result(values)
+        with patch.object(Path, "stat", owner):
+            found = []
+            users = resources.active_cache_users(self.cache, self.proc.root, uid=os.getuid(), disregarded=found)
+        self.assertIn("4242:ambiguous:cwd", users)
+        self.assertEqual(found, [])
+
+    def test_readable_references_still_block_a_session_process(self):
+        (self.cache / "object").write_text("cached")
+        cases = {
+            "cwd": dict(cwd=self.cache),
+            "root": dict(root=self.cache),
+            "fd:3": dict(descriptor=self.cache / "object"),
+            "env:GOCACHE": dict(cwd=self.base, environ=b"GOCACHE=" + os.fsencode(self.cache) + b"\0"),
+        }
+        for label, references in cases.items():
+            with self.subTest(label):
+                self.proc.ssh(**references)
+                users, found = self.scan()
+                self.assertIn("4242:" + label, users)
+                self.assertEqual(found, [])
+                shutil.rmtree(self.proc.root)
+                self.proc = FixtureProc(self.base / "proc")
+        # Mixed: a readable descriptor into the cache beside unreadable cwd,
+        # root, and environ keeps both the reference and the ambiguity.
+        self.proc.ssh(descriptor=self.cache / "object")
+        users, found = self.scan()
+        self.assertIn("4242:fd:3", users)
+        self.assertIn("4242:ambiguous:cwd", users)
+        self.assertIn("4242:ambiguous:environ", users)
+        self.assertEqual(found, [])
+        self.assertTrue((self.cache / "object").is_file())
+
+    def test_macos_backend_never_applies_the_rule(self):
+        table = {301: {"vnode_error": True, "environment": None}}
+        found = []
+        with patch.object(resources, "darwin", return_value=FakeDarwin(table)), \
+                patch.object(resources, "_ssh_session", side_effect=AssertionError("Linux rule on macOS")):
+            users = resources.active_cache_users(self.cache, backend=resources.DARWIN_BACKEND, disregarded=found)
+        self.assertEqual(users, ["301:ambiguous:cwd", "301:ambiguous:environ"])
+        self.assertEqual(found, [])
+
+
+class SSHSessionPathRemovalTests(IsolatedState):
+    """Temporary-path teardown and recovery retain the disregarded session processes."""
+
+    def setUp(self):
+        super().setUp()
+        self.proc = FixtureProc(self.base / "proc")
+        self.proc.ssh()
+        inspector = functools.partial(resources.active_cache_users, proc=self.proc.root)
+        patcher = patch.object(resources, "active_cache_users", inspector)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        owned = self.proc.owned()
+        owned.start()
+        self.addCleanup(owned.stop)
+        self.line = ("Disregarded Linux SSH session: pid=4242 parent=100 command=sshd-session "
+                     "parent_command=sshd-session reason=" + resources.SSH_DISREGARD_REASON)
+
+    def path_identity(self, name="disposable"):
+        path = self.base / name
+        path.mkdir(mode=0o700)
+        info = path.lstat()
+        return {"path": str(path), "device": info.st_dev, "inode": info.st_ino}
+
+    def test_removal_detail_names_the_disregarded_process(self):
+        identity = self.path_identity()
+        state, detail = resources.remove_path(identity)
+        self.assertEqual(state, "removed")
+        self.assertEqual(detail, "removed disposable path " + identity["path"] + "; " + self.line)
+        self.assertFalse(Path(identity["path"]).exists())
+
+    def test_refusal_keeps_the_disregarded_process_once_across_rescans(self):
+        identity = self.path_identity()
+        # An unrelated uninspectable process still blocks, through every rescan.
+        self.proc.entry(4343, command="bash", ppid=100)
+        with patch.object(resources.time, "sleep"), \
+                self.assertRaises(resources.Refusal) as refused:
+            resources.remove_path(identity)
+        message = str(refused.exception)
+        self.assertIn("is in use: 4343:ambiguous:cwd", message)
+        self.assertEqual(message.count(self.line), 1)
+        self.assertTrue(Path(identity["path"]).is_dir())
+
+    def test_owner_cleanup_and_recovery_retain_the_detail(self):
+        owner = resources.Invocation.create("ssh-owner", self.checkout, ["true"])
+        self.assertEqual(owner.finish(outcome="success"), [])
+        [entry] = [value for value in resources.load_inventory(owner.path)["resources"] if value["kind"] == "path"]
+        self.assertEqual(entry["state"], "removed")
+        self.assertTrue(entry["detail"].endswith("; " + self.line), entry["detail"])
+
+        orphan = resources.Invocation.create("ssh-orphan", self.checkout, ["true"])
+        os.close(orphan._owner_lock)
+        orphan._owner_lock = None
+
+        def foreign_owner(value):
+            value["owner"]["birth"] = {"start_ticks": -1, "boot_id": "another-boot"}
+        value = json.loads((orphan.path / "inventory.json").read_text())
+        foreign_owner(value)
+        resources.write_json(orphan.path / "inventory.json", value)
+        complete, actions = resources.recover(orphan.path)
+        self.assertTrue(complete)
+        [action] = [value for value in actions if value["kind"] == "path"]
+        self.assertTrue(action["detail"].endswith("; " + self.line), action["detail"])
+        logged = [json.loads(line) for line in (orphan.path / "recovery.jsonl").read_text().splitlines()]
+        self.assertIn(self.line, [value for value in logged if value["kind"] == "path"][0]["detail"])
+
+
 @unittest.skipUnless(os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1",
                      "real Docker fixtures run through make test-validation-docker")
 class DockerLifecycleTests(IsolatedState):
@@ -1231,6 +1575,30 @@ class DockerLifecycleTests(IsolatedState):
         self.assertTrue(database["identity"]["incarnation"])
         self.assertEqual(self.labelled_containers(inventory["invocation"]), [])
         self.assertNotIn("conveyor:conveyor", (path / "inventory.json").read_text())
+
+
+class TestSelectionTests(unittest.TestCase):
+    """Class-level opt-in decorators stay on the classes they select.
+
+    A skip decorator marks the class directly below it, so a helper inserted
+    between a decorator and its class silently takes the decorator over. Only
+    DockerLifecycleTests is opt-in (CONVEYOR_VALIDATION_DOCKER=1, through make
+    test-validation-docker), and HostBackendTests needs a process backend; no
+    other class in this module may carry a class-level skip.
+    """
+
+    def test_only_the_selected_classes_carry_a_class_skip(self):
+        docker = os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1"
+        expected = {"DockerLifecycleTests": not docker, "HostBackendTests": not HAS_BACKEND}
+        classes = {name: value for name, value in globals().items()
+                   if isinstance(value, type) and value.__module__ == __name__}
+        self.assertIn("DockerLifecycleTests", classes)
+        for name, value in sorted(classes.items()):
+            with self.subTest(name):
+                self.assertEqual(value.__dict__.get("__unittest_skip__", False), expected.get(name, False))
+        if not docker:
+            self.assertEqual(DockerLifecycleTests.__unittest_skip_why__,
+                             "real Docker fixtures run through make test-validation-docker")
 
 
 if __name__ == "__main__":

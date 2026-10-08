@@ -15,7 +15,6 @@ async function mockRepositories(page: Page, initial: WorkspaceConfigRepo[] = [],
     execution: {
       spec_approval: true,
       merge_approval: true,
-      require_verification_evidence: false,
       implement_concurrency: 1,
       review_concurrency: 1,
       first_activity_timeout: '2m',

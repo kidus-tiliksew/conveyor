@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -379,13 +381,168 @@ type ExecutionPolicy struct {
 	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
-	// RequireVerificationEvidence fails review submission closed until the
-	// task owns an eligible screenshot or short recording.
-	RequireVerificationEvidence bool `yaml:"require_verification_evidence" json:"require_verification_evidence"`
 	// FirstActivityTimeout is worker child-output liveness, independent of
 	// the claim lease and fixed execution deadline (component-harness-execution).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
 	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
+}
+
+// RetiredEvidenceToggleKey is the execution key of the retired
+// workspace evidence toggle. No workspace setting refuses a submission for
+// review because no verification-evidence artifact is attached
+// (req-review-gates-evidence REQ-8/AC-8.3; DEC-53). Legacy deployment files,
+// workspace documents, and stored rows that still carry the key keep loading:
+// decoding drops it, so it is never consulted or re-emitted, and the first
+// occurrence in a process is logged once.
+const RetiredEvidenceToggleKey = "require_verification_evidence"
+
+var (
+	// retiredExecutionKeyWarning and retiredExecutionKeyLogf are the
+	// process-scoped warning seam for the retired key; tests replace both.
+	retiredExecutionKeyWarning = &sync.Once{}
+	retiredExecutionKeyLogf    = log.Printf
+	executionPolicyYAMLFields  = yamlFieldNames(reflect.TypeOf(ExecutionPolicy{}))
+)
+
+func warnRetiredExecutionKey() {
+	retiredExecutionKeyWarning.Do(func() {
+		retiredExecutionKeyLogf("config: ignoring retired execution.%s; verification evidence never gates review submission (DEC-53)", RetiredEvidenceToggleKey)
+	})
+}
+
+// UnmarshalYAML drops the retired evidence key before decoding the execution
+// block, including from mappings merged through YAML "<<" keys. Every other
+// key, direct or merged, must name an ExecutionPolicy field, so an unrelated
+// unknown key still fails with the decoder's own unknown-field error and line
+// on every load path, including strict KnownFields decoders (DEC-53). The
+// decoder keeps yaml.v3 merge precedence; shared anchors are never mutated.
+// A recursive merge alias or excessive merge fan-out fails with yaml.v3's own
+// error before decoding.
+func (p *ExecutionPolicy) UnmarshalYAML(node *yaml.Node) error {
+	walk := executionMergeWalk{seen: map[string]bool{}, active: map[*yaml.Node]bool{}}
+	node, err := walk.mapping(node)
+	if err != nil {
+		return err
+	}
+	if walk.retired {
+		warnRetiredExecutionKey()
+	}
+	if len(walk.unknown) != 0 {
+		return &yaml.TypeError{Errors: walk.unknown}
+	}
+	type plain ExecutionPolicy
+	return node.Decode((*plain)(p))
+}
+
+// maxExecutionMergeVisits bounds the mappings one execution block may expand
+// through merges. Legitimate configuration stays far below it; alias fan-out
+// that would expand exponentially fails instead.
+const maxExecutionMergeVisits = 10000
+
+// executionMergeWalk checks an execution mapping and the mappings it merges.
+// active holds the mappings on the current merge path, so an alias back to
+// one of them is a cycle; visits bounds total expansion.
+type executionMergeWalk struct {
+	seen    map[string]bool
+	active  map[*yaml.Node]bool
+	visits  int
+	unknown []string
+	retired bool
+}
+
+// mapping returns a copy of an execution mapping without the retired key,
+// with merged mappings copied the same way. It records each unknown field
+// name once, in yaml.v3's order: explicit keys first, then the merge value.
+// A non-mapping node is returned unchanged for Decode to judge.
+func (w *executionMergeWalk) mapping(node *yaml.Node) (*yaml.Node, error) {
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		if w.active[node.Alias] {
+			return nil, fmt.Errorf("yaml: line %d: anchor '%s' value contains itself", node.Line, node.Value)
+		}
+		if node.Alias.Kind == yaml.MappingNode {
+			node = node.Alias
+		}
+	}
+	if node.Kind != yaml.MappingNode {
+		return node, nil
+	}
+	if w.visits++; w.visits > maxExecutionMergeVisits {
+		return nil, fmt.Errorf("yaml: line %d: document contains excessive aliasing", node.Line)
+	}
+	w.active[node] = true
+	defer delete(w.active, node)
+	copied := *node
+	copied.Content = make([]*yaml.Node, 0, len(node.Content))
+	var merge *yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			merge = value
+			copied.Content = append(copied.Content, key, value)
+			continue
+		}
+		if key.Value == RetiredEvidenceToggleKey {
+			w.retired = true
+			continue
+		}
+		if !w.seen[key.Value] {
+			w.seen[key.Value] = true
+			if !executionPolicyYAMLFields[key.Value] {
+				w.unknown = append(w.unknown, fmt.Sprintf("line %d: field %s not found in type config.ExecutionPolicy", key.Line, key.Value))
+			}
+		}
+		copied.Content = append(copied.Content, key, value)
+	}
+	if merge == nil {
+		return &copied, nil
+	}
+	var merged *yaml.Node
+	if merge.Kind == yaml.SequenceNode {
+		sequence := *merge
+		sequence.Content = make([]*yaml.Node, len(merge.Content))
+		for i, item := range merge.Content {
+			checked, err := w.mapping(item)
+			if err != nil {
+				return nil, err
+			}
+			sequence.Content[i] = checked
+		}
+		merged = &sequence
+	} else {
+		checked, err := w.mapping(merge)
+		if err != nil {
+			return nil, err
+		}
+		merged = checked
+	}
+	for i := 0; i+1 < len(copied.Content); i += 2 {
+		if copied.Content[i+1] == merge {
+			copied.Content[i+1] = merged
+		}
+	}
+	return &copied, nil
+}
+
+// isYAMLMergeKey matches yaml.v3's merge-key rule.
+func isYAMLMergeKey(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && node.Value == "<<" && (node.Tag == "" || node.Tag == "!" || node.Tag == "!!merge" || node.Tag == "tag:yaml.org,2002:merge")
+}
+
+// yamlFieldNames lists the YAML keys a struct type decodes.
+func yamlFieldNames(value reflect.Type) map[string]bool {
+	names := make(map[string]bool, value.NumField())
+	for i := 0; i < value.NumField(); i++ {
+		field := value.Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+		if name == "-" || !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(field.Name)
+		}
+		names[name] = true
+	}
+	return names
 }
 
 const (
@@ -1317,9 +1474,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 	}
 	// An absent execution block means the shipped default: both gates on
 	// (DEC-55(1); component-task-lifecycle). There is no mode axis (DEC-55(2)).
-	executionDefaultsProbe := c.Execution
-	executionDefaultsProbe.RequireVerificationEvidence = false
-	if executionDefaultsProbe == (ExecutionPolicy{}) {
+	// A block that carried only the retired evidence key decodes empty and
+	// keeps these defaults (DEC-53).
+	if c.Execution == (ExecutionPolicy{}) {
 		c.Execution.SpecApproval = true
 		c.Execution.MergeApproval = true
 	}

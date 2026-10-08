@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import validation_evidence as evidence
 import validation_resources
+from test_validation_resources import FixtureProc
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -1756,7 +1757,7 @@ class CacheCreationMarkerTests(unittest.TestCase):
         self.prepare()
         calls = []
 
-        def inspector(path, proc=None, backend=None, uid=None, created_after=None):
+        def inspector(path, proc=None, backend=None, uid=None, created_after=None, disregarded=None):
             calls.append(created_after)
             return []
         for backend in (validation_resources.DARWIN_BACKEND, validation_resources.UNAVAILABLE):
@@ -1774,7 +1775,7 @@ class CacheCreationMarkerTests(unittest.TestCase):
         self.prepare()
         calls = {}
 
-        def inspector(path, proc=None, backend=None, uid=None, created_after=None):
+        def inspector(path, proc=None, backend=None, uid=None, created_after=None, disregarded=None):
             calls[Path(path).name] = (created_after, uid)
             return []
         with patch.object(evidence, "active_cache_users", inspector):
@@ -1874,6 +1875,128 @@ class CacheCreationMarkerTests(unittest.TestCase):
         self.assertIn(f"{between.pid}:ambiguous:cwd", stale)
         self.assertFalse([user for user in fresh if user.startswith(f"{between.pid}:")], fresh)
         self.assertIn(f"{after.pid}:ambiguous:cwd", fresh)
+
+class CacheCleanupSSHSessionTests(unittest.TestCase):
+    """Cache cleanup with uninspectable OpenSSH session processes of the invoking user.
+
+    The fixture /proc tree is the shared one from the validation_resources
+    suite; only process-entry owners are injected. The real inspector runs
+    every case, under owner isolation (TemporaryDirectory is 0700).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.base / "cache-home")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        self.proc = FixtureProc(self.base / "proc")
+        (self.proc.root / "sys" / "kernel" / "random").mkdir(parents=True)
+        (self.proc.root / "sys" / "kernel" / "random" / "boot_id").write_text("boot-a\n")
+        (self.proc.root / "uptime").write_text("1000.00 0\n")
+        self.tick = 1000 * os.sysconf("SC_CLK_TCK")
+        self.lines = []
+
+    def line(self, pid, parent, command="sshd-session", parent_command="sshd-session"):
+        return (f"Disregarded Linux SSH session: pid={pid} parent={parent} command={command} "
+                f"parent_command={parent_command} reason=same-user-uninspectable-with-live-root-owned-ssh-parent")
+
+    def prepare(self):
+        return evidence.prepare_cache("fixture-task", self.task_cache, self.proc.root)
+
+    def cleanup(self, references=()):
+        with self.proc.owned():
+            return evidence.cleanup_cache("fixture-task", self.task_cache, list(references), self.proc.root,
+                                          report=self.lines.append)
+
+    def main(self, *references):
+        stdout, stderr = StringIO(), StringIO()
+        argv = ["validation_evidence.py", "cleanup", "--task", "fixture-task", "--task-cache", str(self.task_cache)]
+        for reference in references:
+            argv += ["--reference", str(reference)]
+        with patch.object(sys, "argv", argv), self.proc.owned(), \
+                patch.object(evidence, "cleanup_cache", functools.partial(evidence.cleanup_cache, proc=self.proc.root)), \
+                patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+            status = evidence.main()
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_sessions_newer_than_the_cache_are_disregarded_and_reported_once(self):
+        children = list(evidence.DISPOSABLE_CACHE_CHILDREN)
+        self.assertEqual(self.prepare()["recorded"], children)
+        unknown = self.task_cache / "retained-unknown-child"
+        unknown.mkdir()
+        durable = self.base / "state" / "conveyor" / "fixture-task" / "command.log"
+        durable.parent.mkdir(parents=True)
+        durable.write_text("evidence")
+        marker = (self.task_cache / evidence.CACHE_MARKER).read_bytes()
+        # Both sessions start after every child's creation tick, so the
+        # creation bound cannot disregard them.
+        self.proc.ssh(4242, 100, start=self.tick + 5, parent_start=self.tick + 4)
+        self.proc.ssh(4343, 101, child_command="sshd", parent_command="sshd", start=self.tick + 9,
+                      parent_start=1)
+        self.assertEqual(self.cleanup([durable]), children)
+        self.assertEqual(self.lines, [self.line(4242, 100), self.line(4343, 101, "sshd", "sshd")])
+        for name in children:
+            self.assertFalse((self.task_cache / name).exists())
+        self.assertTrue(unknown.is_dir())
+        self.assertEqual((self.task_cache / evidence.CACHE_MARKER).read_bytes(), marker)
+        self.assertEqual(durable.read_text(), "evidence")
+
+    def test_cli_prints_each_disregarded_session_before_the_removal_summary(self):
+        self.prepare()
+        self.proc.ssh(4242, 100, start=self.tick + 5)
+        status, stdout, stderr = self.main()
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(stdout.splitlines(), [
+            self.line(4242, 100),
+            "Removed disposable cache children: " + ", ".join(evidence.DISPOSABLE_CACHE_CHILDREN)])
+
+    def test_later_child_refusal_keeps_the_reported_sessions(self):
+        self.prepare()
+        (self.task_cache / "tmp" / "object").write_text("cached")
+        self.proc.ssh(4242, 100, start=self.tick + 5)
+        # A readable build process holds a descriptor in tmp, which is inspected after go-build.
+        self.proc.entry(4545, command="go", ppid=4242, start=self.tick + 6, cwd=self.base, root=Path("/"),
+                        descriptor=self.task_cache / "tmp" / "object", environ=b"")
+        with self.assertRaisesRegex(evidence.Refused, r"active: tmp \(4545:fd:3\)"):
+            self.cleanup()
+        self.assertEqual(self.lines, [self.line(4242, 100)])
+        status, stdout, stderr = self.main()
+        self.assertEqual(status, 2)
+        self.assertEqual(stdout.splitlines(), [self.line(4242, 100)])
+        self.assertIn("disposable cache child is active: tmp (4545:fd:3)", stderr)
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertTrue((self.task_cache / name).is_dir())
+
+    def test_unverified_sessions_and_readable_references_still_refuse(self):
+        self.prepare()
+        (self.task_cache / "go-build" / "object").write_text("cached")
+        cases = {
+            "user-owned parent": (dict(parent_uid=os.getuid()), "4242:ambiguous:cwd"),
+            "root-owned systemd parent": (dict(parent_command="systemd"), "4242:ambiguous:cwd"),
+            "other command": (dict(child_command="bash"), "4242:ambiguous:cwd"),
+            "readable cwd": (dict(cwd=self.task_cache / "go-build"), "4242:cwd"),
+            "readable descriptor beside unreadable entries": (
+                dict(descriptor=self.task_cache / "go-build" / "object"), "4242:fd:3"),
+        }
+        for label, (ssh, reason) in cases.items():
+            with self.subTest(label):
+                self.lines.clear()
+                self.proc.ssh(4242, 100, start=self.tick + 5, **ssh)
+                with self.assertRaisesRegex(evidence.Refused, "active: go-build .*" + reason):
+                    self.cleanup()
+                self.assertEqual(self.lines, [])
+                shutil.rmtree(self.proc.root / "4242")
+                shutil.rmtree(self.proc.root / "100")
+        # A parent that exited leaves the session ambiguous too.
+        self.proc.entry(4242, command="sshd-session", ppid=100, start=self.tick + 5)
+        with self.assertRaisesRegex(evidence.Refused, "4242:ambiguous:cwd"):
+            self.cleanup()
+        self.assertEqual(self.lines, [])
+        self.assertTrue((self.task_cache / "go-build" / "object").is_file())
+
 
 class MakeGraphTests(unittest.TestCase):
     # Exercise both the local default and .github/workflows/ci.yml explicitly,

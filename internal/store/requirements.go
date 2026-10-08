@@ -426,6 +426,7 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	}
 	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierRequirement, requirementID, confirmed.Content)
 	m.activatePendingRequirementContextLocked(ctx, workspace, requirementID, version)
+	m.reconcileConfirmedRequirementDriftLocked(ctx, workspace, requirementID, confirmed, now)
 	return requirement, confirmed, nil
 }
 

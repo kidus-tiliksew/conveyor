@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,7 +228,10 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 	}
 }
 
-func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
+// requirements_amended proposes the revision atomically and leaves the drift
+// open; confirming that version through the operator route closes it once
+// (DEC-46; req-delivery-and-forge AC-4.2, AC-4.3).
+func TestResolveDriftProposesRequirementAmendmentUntilConfirmed(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-runtime", Title: "Runtime contract"}, core.RequirementVersion{
@@ -264,8 +268,14 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 		return response
 	}
 	body := `{"outcome":"requirements_amended","requirement_id":"` + requirement.ID + `"}`
-	if response := resolve(drift.ID, body); response.Code != http.StatusOK {
+	response := resolve(drift.ID, body)
+	if response.Code != http.StatusOK {
 		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
+	}
+	var open monitor.Drift
+	if err = json.Unmarshal(response.Body.Bytes(), &open); err != nil || open.ID != drift.ID || open.Outcome != "" ||
+		!open.ResolvedAt.IsZero() || open.RequirementID != requirement.ID {
+		t.Fatalf("amendment response drift=%+v err=%v", open, err)
 	}
 	versions, err := st.ListRequirementVersions(ctx, requirement.ID)
 	if err != nil || len(versions) != 2 || versions[1].Origin != core.RequirementOriginDriftAmendment ||
@@ -286,8 +296,39 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	for _, event := range events {
 		kinds[event.Kind]++
 	}
+	if kinds["monitor.drift_reconciled"] != 0 {
+		t.Fatalf("open amendment reconciled drift: %+v", events)
+	}
+	status, err := st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil || status.DriftCount != 1 || status.Drift[0].ID != drift.ID {
+		t.Fatalf("amendment proposal lowered drift count: %+v err=%v", status.Drift, err)
+	}
+	for _, activity := range status.Activity {
+		if activity.Kind == "monitor.drift_reconciled" {
+			t.Fatalf("open amendment audited as reconciled: %+v", activity)
+		}
+	}
+	confirmRequest := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/requirements/%s/versions/%d/confirm", requirement.ID, versions[1].Version), nil)
+	confirmRequest.Header.Set("Authorization", "Bearer token")
+	confirmRequest.Header.Set("X-Conveyor-Actor", "alice")
+	confirmed := httptest.NewRecorder()
+	server.Handler().ServeHTTP(confirmed, confirmRequest)
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	if events, err = st.ListEvents(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	clear(kinds)
+	for _, event := range events {
+		kinds[event.Kind]++
+	}
 	if kinds["monitor.drift_reconciled"] != 1 {
-		t.Fatalf("drift events=%+v", events)
+		t.Fatalf("confirmed amendment events=%+v", events)
+	}
+	if response = resolve(drift.ID, body); response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &open) != nil ||
+		open.Outcome != "requirements_amended" || open.ResolvedAt.IsZero() {
+		t.Fatalf("closed replay status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	missing := monitor.Drift{ID: "drift-no-requirement", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.Revert,
@@ -304,7 +345,7 @@ func TestResolveDriftAtomicallyProposesRequirementAmendment(t *testing.T) {
 	if response := resolve(missing.ID, `{"outcome":"requirements_amended","requirement_id":"req-missing"}`); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "unknown monitor requirement_id") {
 		t.Fatalf("unknown requirement status=%d body=%s", response.Code, response.Body.String())
 	}
-	status, err := st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
+	status, err = st.(monitor.Store).MonitorStatus(ctx, true, time.Now().UTC())
 	if err != nil || status.DriftCount != 1 || status.Drift[0].ID != missing.ID {
 		t.Fatalf("unresolved missing-reference drift=%+v err=%v", status.Drift, err)
 	}

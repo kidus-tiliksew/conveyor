@@ -411,29 +411,16 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID str
 	var d monitor.Drift
 	err := s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
 		var err error
+		if outcome == "requirements_amended" {
+			d, err = proposeDriftAmendment(ctx, tx, ws, id, requirementID)
+			return translateBackendConflict(err)
+		}
 		d, err = scanDrift(tx.QueryRowContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND id=? FOR UPDATE", ws, id), ws)
 		if err != nil {
 			return translateBackendConflict(err)
 		}
 		if !d.ResolvedAt.IsZero() {
-			if requirementID != "" && requirementID != d.RequirementID {
-				return monitor.ErrRequirementIDInvalid
-			}
 			return nil
-		}
-		if outcome == "requirements_amended" {
-			if requirementID != "" && d.RequirementID != "" && requirementID != d.RequirementID {
-				return monitor.ErrRequirementIDInvalid
-			}
-			if d.RequirementID == "" {
-				d.RequirementID = requirementID
-			}
-			if d.RequirementID == "" {
-				return monitor.ErrRequirementIDMissing
-			}
-			if err = proposeDriftRequirement(ctx, tx, ws, d); err != nil {
-				return translateBackendConflict(err)
-			}
 		}
 		if outcome == "design_document_updated" {
 			if d.SystemDesignID == "" {
@@ -468,6 +455,117 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID str
 		return translateBackendConflict(err)
 	})
 	return d, translateBackendConflict(err)
+}
+
+// proposeDriftAmendment records requirements_amended as a requirement
+// proposal and leaves the drift open, linked through the proposal's
+// origin_drift_id. Confirming that version closes the drift inside the
+// confirmation transaction (reconcileConfirmedRequirementDriftTx); dismissing
+// it leaves the drift open (DEC-46; req-delivery-and-forge AC-4.2, AC-4.3).
+//
+// Confirmation locks the requirement row before the drift row. This path
+// discovers the drift's requirement without a row lock, locks that
+// requirement, then locks and revalidates the drift, so both take one order.
+func proposeDriftAmendment(ctx context.Context, tx *sql.Tx, ws, id, requirementID string) (monitor.Drift, error) {
+	discovered, err := scanDrift(tx.QueryRowContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND id=?", ws, id), ws)
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	// A drift already closed needs no requirement lock: the replay below
+	// reports it as recorded.
+	target := ""
+	if discovered.ResolvedAt.IsZero() {
+		target = requirementID
+		if requirementID != "" && discovered.RequirementID != "" && requirementID != discovered.RequirementID {
+			return monitor.Drift{}, monitor.ErrRequirementIDInvalid
+		}
+		if discovered.RequirementID != "" {
+			target = discovered.RequirementID
+		}
+		if target == "" {
+			return monitor.Drift{}, monitor.ErrRequirementIDMissing
+		}
+		var locked string
+		err = tx.QueryRowContext(ctx, "SELECT id FROM requirements WHERE workspace_id=? AND id=? FOR UPDATE", ws, target).Scan(&locked)
+		if errors.Is(err, sql.ErrNoRows) {
+			return monitor.Drift{}, monitor.ErrUnknownRequirementID
+		}
+		if err != nil {
+			return monitor.Drift{}, err
+		}
+	}
+	d, err := scanDrift(tx.QueryRowContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND id=? FOR UPDATE", ws, id), ws)
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	if !d.ResolvedAt.IsZero() {
+		if requirementID != "" && requirementID != d.RequirementID {
+			return monitor.Drift{}, monitor.ErrRequirementIDInvalid
+		}
+		return d, nil
+	}
+	if d.RequirementID != "" && d.RequirementID != target {
+		return monitor.Drift{}, monitor.ErrRequirementIDInvalid
+	}
+	d.RequirementID = target
+	var pending int
+	err = tx.QueryRowContext(ctx, "SELECT version FROM requirement_versions WHERE workspace_id=? AND requirement_id=? AND origin_drift_id=? AND origin=? AND NOT confirmed AND NOT retired ORDER BY version DESC LIMIT 1",
+		ws, target, d.ID, string(core.RequirementOriginDriftAmendment)).Scan(&pending)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if err = proposeDriftRequirement(ctx, tx, ws, d); err != nil {
+			return monitor.Drift{}, err
+		}
+	case err != nil:
+		return monitor.Drift{}, err
+	default:
+		// A retry reuses the live pending amendment; the current version
+		// must still be confirmed for the link to stand.
+		var current sql.NullInt64
+		if err = tx.QueryRowContext(ctx, "SELECT current_version FROM requirements WHERE workspace_id=? AND id=?", ws, target).Scan(&current); err != nil {
+			return monitor.Drift{}, err
+		}
+		if !current.Valid {
+			return monitor.Drift{}, monitor.ErrRequirementIDInvalid
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE repository_drift SET requirement_id=? WHERE workspace_id=? AND id=?", target, ws, id); err != nil {
+		return monitor.Drift{}, err
+	}
+	return d, nil
+}
+
+// reconcileConfirmedRequirementDriftTx runs inside requirement confirmation,
+// after the requirement row lock. It closes only the unresolved drift in the
+// same workspace and requirement that the confirmed drift-amendment version
+// names (DEC-46; req-delivery-and-forge AC-4.2). An error rolls the whole
+// confirmation back.
+func reconcileConfirmedRequirementDriftTx(ctx context.Context, tx *sql.Tx, requirementID string, confirmed core.RequirementVersion) error {
+	if confirmed.Origin != core.RequirementOriginDriftAmendment || confirmed.OriginDriftID == "" {
+		return nil
+	}
+	ws := documentWorkspace(ctx)
+	drift := monitor.Drift{ID: confirmed.OriginDriftID, RequirementID: requirementID, ResolvedAt: confirmed.ConfirmedAt}
+	err := tx.QueryRowContext(ctx, "SELECT COALESCE(task_id,''),COALESCE(system_design_id,'') FROM repository_drift WHERE workspace_id=? AND id=? AND requirement_id=? AND resolved_at IS NULL FOR UPDATE",
+		ws, drift.ID, requirementID).Scan(&drift.TaskID, &drift.SystemDesignID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE repository_drift SET resolved_at=?,outcome='requirements_amended' WHERE workspace_id=? AND id=? AND resolved_at IS NULL", drift.ResolvedAt, ws, drift.ID); err != nil {
+		return err
+	}
+	if err = insertEvent(ctx, tx, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: drift.ResolvedAt,
+		Payload: core.JSONPayload(store.RequirementDriftReconciledPayload(drift, confirmed))}); err != nil {
+		return err
+	}
+	if drift.SystemDesignID != "" {
+		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "system_design.drift_resolved", At: drift.ResolvedAt,
+			Payload: core.JSONPayload(store.RequirementDesignDriftResolvedPayload(ws, drift, confirmed))})
+	}
+	return nil
 }
 
 // Drift resolution owns this proposal transaction; confirmation remains an operator act.

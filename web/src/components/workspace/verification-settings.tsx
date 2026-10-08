@@ -2,9 +2,11 @@ import type { WorkspaceConfigDocument } from '../../lib/types'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Switch } from '../ui/switch'
 
-// The workspace's verification defaults (component-web-dashboard VK-WEB-4).
-// Both switches edit the shared configuration draft and save through the page's
-// save bar; tasks freeze them at intake (DEC-43).
+// The workspace's verification default (component-web-dashboard VK-WEB-4).
+// The switch edits the shared configuration draft and saves through the page's
+// save bar; tasks freeze it at intake (DEC-43). No workspace switch refuses a
+// submission for missing verification evidence (req-review-gates-evidence
+// AC-8.3; DEC-53).
 export function VerificationSettings({
   draft,
   setDraft,
@@ -33,17 +35,6 @@ export function VerificationSettings({
               New tasks run their repository's kits and checks before review. Filed tasks keep the policy they started
               with.
             </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <Switch
-            aria-label="Require verification evidence"
-            checked={draft.execution.require_verification_evidence}
-            onChange={(checked) => setExecution({ require_verification_evidence: checked })}
-          />
-          <div>
-            <p className="text-sm font-medium">Require verification evidence</p>
-            <p className="text-xs text-faint">Require an eligible screenshot or short recording before review</p>
           </div>
         </div>
       </CardContent>

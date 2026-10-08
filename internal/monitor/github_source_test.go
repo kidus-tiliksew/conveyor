@@ -194,6 +194,115 @@ func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
 	}
 }
 
+// External pull-request merges and reverts carry the observed default-branch
+// commit's first-parent paths, so governed-scope evaluation can raise document
+// drift for them (req-260811-228be6 AC-4.3; component-monitor-drift). An empty
+// comparison keeps the repository observation without document paths; only an
+// empty direct push is suppressed.
+func TestGitHubSourceCarriesFirstParentPathsForExternalMergesAndReverts(t *testing.T) {
+	compared := map[string]int{}
+	suppressed := 0
+	source := GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		ResolveTask: resolvePrefixID,
+		Run: func(_ context.Context, args ...string) ([]byte, error) {
+			path := strings.Join(args, " ")
+			switch {
+			case strings.Contains(path, "/commits -f"):
+				return []byte(`[
+{"sha":"external-merge","html_url":"https://example/external","parents":[{"sha":"main-before"},{"sha":"external-head"}],"commit":{"message":"Merge pull request #7","committer":{"date":"2026-07-28T10:00:00Z"}}},
+{"sha":"revert-commit","html_url":"https://example/revert","parents":[{"sha":"external-merge"}],"commit":{"message":"Revert \"feature\"","committer":{"date":"2026-07-28T10:01:00Z"}}},
+{"sha":"empty-external","html_url":"https://example/empty-external","parents":[{"sha":"revert-commit"},{"sha":"other-head"}],"commit":{"message":"Merge pull request #8","committer":{"date":"2026-07-28T10:02:00Z"}}},
+{"sha":"empty-revert","html_url":"https://example/empty-revert","parents":[{"sha":"empty-external"}],"commit":{"message":"revert nothing","committer":{"date":"2026-07-28T10:03:00Z"}}}
+]`), nil
+			case strings.Contains(path, "external-merge/pulls"):
+				return []byte(`[{"number":7,"html_url":"https://example/pr/7","merged_at":"2026-07-28T09:59:00Z","head":{"ref":"feature","sha":"external-head"}}]`), nil
+			case strings.Contains(path, "empty-external/pulls"):
+				return []byte(`[{"number":8,"html_url":"https://example/pr/8","merged_at":"2026-07-28T10:01:30Z","head":{"ref":"other","sha":"other-head"}}]`), nil
+			case strings.Contains(path, "/pulls"):
+				return []byte(`[]`), nil
+			case strings.Contains(path, "compare/main-before...external-merge"):
+				compared["external-merge"]++
+				return []byte(`{"files":[{"filename":"internal/monitor/types.go"},{"filename":"docs/new.md","previous_filename":"docs/old.md"}]}`), nil
+			case strings.Contains(path, "compare/external-merge...revert-commit"):
+				compared["revert-commit"]++
+				return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
+			case strings.Contains(path, "compare/revert-commit...empty-external"):
+				compared["empty-external"]++
+				return []byte(`{"files":[]}`), nil
+			case strings.Contains(path, "compare/empty-external...empty-revert"):
+				compared["empty-revert"]++
+				return []byte(`{"files":[]}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected args %v", args)
+			}
+		},
+		OnSuppressed: func(context.Context, map[string]any) error { suppressed++; return nil },
+	}
+	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suppressed != 0 || len(observations) != 4 {
+		t.Fatalf("suppressed=%d observations=%+v", suppressed, observations)
+	}
+	want := map[string]struct {
+		kind  SignalKind
+		paths string
+	}{
+		"pr:7":          {ExternalPRMerge, "docs/new.md,docs/old.md,internal/monitor/types.go"},
+		"revert-commit": {Revert, "internal/monitor/types.go"},
+		"pr:8":          {ExternalPRMerge, ""},
+		"empty-revert":  {Revert, ""},
+	}
+	for _, observation := range observations {
+		expected, ok := want[observation.OccurrenceID]
+		if !ok || observation.Kind != expected.kind || strings.Join(observation.ChangedPaths, ",") != expected.paths {
+			t.Fatalf("observation %s = %+v; want %+v", observation.OccurrenceID, observation, expected)
+		}
+	}
+	for _, sha := range []string{"external-merge", "revert-commit", "empty-external", "empty-revert"} {
+		if compared[sha] != 1 {
+			t.Fatalf("first-parent comparison for %s ran %d times", sha, compared[sha])
+		}
+	}
+}
+
+// A failed first-parent comparison for an external merge or revert aborts the
+// poll with the categorized forge error instead of reporting a complete
+// observation without document paths.
+func TestGitHubSourceExternalMergeComparisonFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name, message, pulls string
+	}{
+		{name: "external merge", message: "Merge pull request #9", pulls: `[{"number":9,"html_url":"https://example/pr/9","merged_at":"2026-07-28T09:59:00Z","head":{"ref":"feature","sha":"feature-head"}}]`},
+		{name: "revert", message: "Revert \"feature\"", pulls: `[]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := GitHubSource{
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", ResolveTask: resolvePrefixID,
+				Run: func(_ context.Context, args ...string) ([]byte, error) {
+					path := strings.Join(args, " ")
+					switch {
+					case strings.Contains(path, "/commits -f"):
+						return []byte(fmt.Sprintf(`[{"sha":"observed","html_url":"https://example/observed","parents":[{"sha":"parent"}],"commit":{"message":%q,"committer":{"date":"2026-07-28T10:00:00Z"}}}]`, test.message)), nil
+					case strings.Contains(path, "/pulls"):
+						return []byte(test.pulls), nil
+					case strings.Contains(path, "compare/parent...observed"):
+						return []byte(`{}`), nil
+					default:
+						return nil, fmt.Errorf("unexpected args %v", args)
+					}
+				},
+			}
+			observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+			if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgeResponse || len(observations) != 0 {
+				t.Fatalf("incomplete comparison accepted: observations=%+v err=%v", observations, err)
+			}
+		})
+	}
+}
+
 func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 	limitFiles := make([]map[string]string, 300)
 	for i := range limitFiles {
@@ -330,7 +439,7 @@ func TestRecordedLineageRejectsUnrelatedRepositoryAndUnrecordedHead(t *testing.T
 func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *testing.T) {
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprint(approved), func(t *testing.T) {
-			calls := 0
+			calls, compares := 0, 0
 			source := GitHubSource{WorkspaceID: "demo", Repository: "repo", GitHubSlug: "org/repo", ResolveTask: resolvePrefixID}
 			source.ReconcileMerged = func(_ context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
 				calls++
@@ -343,15 +452,18 @@ func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *test
 				request := strings.Join(args, " ")
 				switch {
 				case strings.Contains(request, "/commits -f"):
-					return []byte(`[{"sha":"landed","html_url":"https://github.com/org/repo/commit/landed","commit":{"message":"merged","committer":{"date":"2026-09-10T12:00:00Z"}}}]`), nil
+					return []byte(`[{"sha":"landed","html_url":"https://github.com/org/repo/commit/landed","parents":[{"sha":"main-before"},{"sha":"reviewed-head"}],"commit":{"message":"merged","committer":{"date":"2026-09-10T12:00:00Z"}}}]`), nil
 				case strings.Contains(request, "/pulls/12"):
 					return []byte(`{"number":12,"html_url":"https://github.com/org/repo/pull/12","merged_at":"2026-09-10T12:00:00Z","merged_by":{"login":" operator "},"merge_commit_sha":" landed ","head":{"ref":"conveyor/task-task","sha":"reviewed-head"}}`), nil
 				case strings.Contains(request, "/pulls"):
 					return []byte(`[{"number":12,"html_url":"https://github.com/org/repo/pull/12","merged_at":"2026-09-10T12:00:00Z","merge_commit_sha":" landed ","head":{"ref":"conveyor/task-task","sha":"reviewed-head"}}]`), nil
 				case strings.Contains(request, "/check-runs"):
 					return []byte(`{"check_runs":[]}`), nil
+				case strings.Contains(request, "compare/main-before...landed"):
+					compares++
+					return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
 				default:
-					return []byte(`{"files":[]}`), nil
+					return nil, fmt.Errorf("unexpected args %v", args)
 				}
 			}
 			observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
@@ -361,11 +473,16 @@ func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *test
 			if calls != 1 {
 				t.Fatalf("reconcile calls=%d", calls)
 			}
-			if approved && len(observations) != 0 {
-				t.Fatalf("approved merge filed occurrence=%+v", observations)
+			// An approved-head GitHub merge stays a factory merge: no
+			// out-of-pipeline observation and no first-parent read
+			// (req-delivery-and-forge AC-3.5). The unapproved head is an
+			// external merge carrying the landed commit's first-parent paths.
+			if approved && (len(observations) != 0 || compares != 0) {
+				t.Fatalf("approved merge filed occurrence=%+v compares=%d", observations, compares)
 			}
-			if !approved && (len(observations) != 1 || observations[0].Kind != ExternalPRMerge) {
-				t.Fatalf("unapproved merge observations=%+v", observations)
+			if !approved && (len(observations) != 1 || observations[0].Kind != ExternalPRMerge || compares != 1 ||
+				strings.Join(observations[0].ChangedPaths, ",") != "internal/monitor/types.go") {
+				t.Fatalf("unapproved merge observations=%+v compares=%d", observations, compares)
 			}
 		})
 	}

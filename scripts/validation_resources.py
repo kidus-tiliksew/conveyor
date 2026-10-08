@@ -138,15 +138,27 @@ def boot_id(proc: Path = PROC) -> str | None:
 
 
 def _proc_stat(pid: int, proc: Path = PROC):
+    """Parse /proc/<pid>/stat, or return None when it is unreadable or malformed.
+
+    The command name is the text between the first "(" and the last ")"; the
+    kernel does not escape it, so it may itself contain parentheses or spaces.
+    """
     try:
         raw = (proc / str(pid) / "stat").read_text()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
-    fields = raw.rsplit(")", 1)[1].split()
+    head, separator, tail = raw.rpartition(")")
+    opening = head.find("(")
+    if not separator or opening < 0 or head[:opening].strip() != str(pid):
+        return None
+    fields = tail.split()
     # Fields after the command name start at field 3 (state); pgrp is field 5
     # and starttime is field 22 in proc(5).
-    return {"state": fields[0], "ppid": int(fields[1]), "pgrp": int(fields[2]), "session": int(fields[3]),
-            "start": int(fields[19])}
+    try:
+        return {"command": head[opening + 1:], "state": fields[0], "ppid": int(fields[1]),
+                "pgrp": int(fields[2]), "session": int(fields[3]), "start": int(fields[19])}
+    except (IndexError, ValueError):
+        return None
 
 
 def process_birth(pid: int, proc: Path = PROC) -> dict | None:
@@ -704,7 +716,8 @@ def _inspection_failure(process, label):
     return process.name + ":ambiguous:" + label
 
 
-def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=None, backend=None):
+def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=None, backend=None,
+                       disregarded=None):
     """Return live or ambiguously inspected processes that may use path.
 
     With uid, only that user's processes are inspected. Callers pass it only
@@ -712,8 +725,12 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
     enter. Every readable process is inspected in full. For an uninspectable
     (for example non-dumpable) process, created_after (start ticks) drops one
     that started before the path existed, and sessions drops one outside the
-    sessions that could have inherited the path. The macOS backend inspects
-    only the invoking user's processes.
+    sessions that could have inherited the path. On Linux an uninspectable
+    OpenSSH session process of the invoking user is also dropped when it has
+    no readable reference and a live root-owned SSH parent (see
+    _ssh_session); disregarded, when given, is a list that receives one record
+    per such process so callers can report it. The macOS backend inspects only
+    the invoking user's processes and never applies the SSH rule.
     """
     path = Path(path).resolve()
     selected = process_backend(proc, backend)
@@ -747,65 +764,152 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
         info = _proc_stat(int(process.name), Path(proc))
         if info is not None and info["state"] in ("Z", "X"):
             continue  # An exited, unreaped process holds no cwd, root, or descriptors.
-        process_cwd = None
-        for label in ("cwd", "root"):
-            candidate = process / label
-            try:
-                # A deleted directory reads as "<path> (deleted)"; inspect the
-                # recorded path instead of treating it as uninspectable.
-                target = Path(os.readlink(candidate).removesuffix(" (deleted)")).resolve()
-            except OSError:
-                failure = _inspection_failure(process, label)
-                if failure:
-                    users.append(failure)
+        found = _linux_process_users(process, path)
+        if found and all(":ambiguous:" in value for value in found):
+            session = _ssh_session(process, owner, info, Path(proc))
+            if session is not None:
+                if disregarded is not None:
+                    disregarded.append(session)
                 continue
-            if label == "cwd":
-                process_cwd = target
-            if _inside(target, path):
-                users.append(process.name + ":" + label)
-        descriptors = process / "fd"
-        try:
-            entries = list(descriptors.iterdir())
-        except OSError:
-            failure = _inspection_failure(process, "fd")
-            if failure:
-                users.append(failure)
-            entries = []
-        for descriptor in entries:
-            try:
-                raw_target = os.readlink(descriptor)
-            except FileNotFoundError:
-                continue  # The descriptor closed during inspection.
-            except OSError:
-                failure = _inspection_failure(process, "fd:" + descriptor.name)
-                if failure:
-                    users.append(failure)
-                continue
-            # Sockets, pipes, eventfds, and anonymous inodes are readable proc
-            # entries but not filesystem paths and therefore cannot name cache
-            # ownership. Absolute descriptor targets are inspected canonically.
-            if not raw_target.startswith("/"):
-                continue
-            try:
-                target = Path(raw_target.removesuffix(" (deleted)")).resolve()
-            except OSError:
-                users.append(process.name + ":ambiguous:fd:" + descriptor.name)
-                continue
-            if _inside(target, path):
-                users.append(process.name + ":fd:" + descriptor.name)
-        try:
-            environment = (process / "environ").read_bytes()
-        except OSError:
-            failure = _inspection_failure(process, "environ")
-            if failure:
-                users.append(failure)
-            continue
-        users += _environment_users(process.name, environment.split(b"\0"), process_cwd, path)
+        users += found
 
     def started(pid):
         info = _proc_stat(int(pid), Path(proc))
         return None if info is None else (info["start"], info["session"])
     return _without_unrelated(users, started, created_after, sessions)
+
+
+def _linux_process_users(process: Path, path: Path) -> list[str]:
+    """Inspect one /proc entry's cwd, root, descriptors, and cache environment."""
+    users = []
+    process_cwd = None
+    for label in ("cwd", "root"):
+        candidate = process / label
+        try:
+            # A deleted directory reads as "<path> (deleted)"; inspect the
+            # recorded path instead of treating it as uninspectable.
+            target = Path(os.readlink(candidate).removesuffix(" (deleted)")).resolve()
+        except OSError:
+            failure = _inspection_failure(process, label)
+            if failure:
+                users.append(failure)
+            continue
+        if label == "cwd":
+            process_cwd = target
+        if _inside(target, path):
+            users.append(process.name + ":" + label)
+    descriptors = process / "fd"
+    try:
+        entries = list(descriptors.iterdir())
+    except OSError:
+        failure = _inspection_failure(process, "fd")
+        if failure:
+            users.append(failure)
+        entries = []
+    for descriptor in entries:
+        try:
+            raw_target = os.readlink(descriptor)
+        except FileNotFoundError:
+            continue  # The descriptor closed during inspection.
+        except OSError:
+            failure = _inspection_failure(process, "fd:" + descriptor.name)
+            if failure:
+                users.append(failure)
+            continue
+        # Sockets, pipes, eventfds, and anonymous inodes are readable proc
+        # entries but not filesystem paths and therefore cannot name cache
+        # ownership. Absolute descriptor targets are inspected canonically.
+        if not raw_target.startswith("/"):
+            continue
+        try:
+            target = Path(raw_target.removesuffix(" (deleted)")).resolve()
+        except OSError:
+            users.append(process.name + ":ambiguous:fd:" + descriptor.name)
+            continue
+        if _inside(target, path):
+            users.append(process.name + ":fd:" + descriptor.name)
+    try:
+        environment = (process / "environ").read_bytes()
+    except OSError:
+        failure = _inspection_failure(process, "environ")
+        if failure:
+            users.append(failure)
+        return users
+    return users + _environment_users(process.name, environment.split(b"\0"), process_cwd, path)
+
+
+# OpenSSH runs each connection's unprivileged session process as the connected
+# user and marks it non-dumpable, so its cwd, root, fd, and environ cannot be
+# read; its parent is the root-owned privilege-separation monitor. OpenSSH 9.8
+# and later name both "sshd-session"; earlier releases name both "sshd".
+SSH_SESSION_COMMANDS = frozenset(("sshd-session", "sshd"))
+SSH_DISREGARD_REASON = "same-user-uninspectable-with-live-root-owned-ssh-parent"
+
+
+def _ssh_session(process: Path, owner: int, first, proc: Path) -> dict | None:
+    """Return a disregard record when an uninspectable process is an OpenSSH session.
+
+    The caller has found no readable reference for the process. The rule
+    holds only when every fact below is read and still holds after a second
+    read: the process runs as the invoking user, its stat command is exactly
+    sshd-session or sshd, and its stat parent is a live process owned by uid 0
+    with the same kind of command that started no later than the process.
+    Ownership comes from the numeric /proc directory and every other fact from
+    stat, both readable for a non-dumpable process. A same-user process can
+    rename itself (prctl PR_SET_NAME) but cannot acquire a root-owned SSH
+    parent, and a reparented process names init or a subreaper instead. Any
+    unreadable, malformed, exited, or changed fact leaves the process
+    ambiguous (component-validation-tooling).
+    """
+    if owner != os.getuid() or first is None or first["command"] not in SSH_SESSION_COMMANDS:
+        return None
+    pid, ppid = int(process.name), first["ppid"]
+    if ppid <= 0 or ppid == pid:
+        return None
+    parent_entry = proc / str(ppid)
+    try:
+        if parent_entry.stat().st_uid != 0:
+            return None
+    except OSError:
+        return None
+    parent = _proc_stat(ppid, proc)
+    if (parent is None or parent["command"] not in SSH_SESSION_COMMANDS or parent["state"] in ("Z", "X")
+            or parent["start"] > first["start"]):
+        return None
+    # Read every fact again: an exit, reparenting, or PID reuse during
+    # inspection changes the start tick, parent, or owner.
+    again = _proc_stat(pid, proc)
+    parent_again = _proc_stat(ppid, proc)
+    try:
+        owners = (process.stat().st_uid, parent_entry.stat().st_uid)
+    except OSError:
+        return None
+    if again is None or parent_again is None or owners != (owner, 0):
+        return None
+    if again["state"] in ("Z", "X") or parent_again["state"] in ("Z", "X"):
+        return None
+    if ((again["command"], again["ppid"], again["start"]) != (first["command"], ppid, first["start"])
+            or (parent_again["command"], parent_again["start"]) != (parent["command"], parent["start"])):
+        return None
+    return {"pid": pid, "ppid": ppid, "command": first["command"], "parent_command": parent["command"],
+            "start": first["start"], "reason": SSH_DISREGARD_REASON}
+
+
+def disregard_line(record: dict) -> str:
+    """The retained output line for one disregarded SSH session process."""
+    return (f"Disregarded Linux SSH session: pid={record['pid']} parent={record['ppid']} "
+            f"command={record['command']} parent_command={record['parent_command']} reason={record['reason']}")
+
+
+def distinct_disregards(records, seen: set) -> list[dict]:
+    """Return records, in PID order, for processes not yet in seen (pid and start tick), adding them to it."""
+    fresh = []
+    for record in sorted(records, key=lambda value: (value["pid"], value["start"])):
+        key = (record["pid"], record["start"])
+        if key not in seen:
+            seen.add(key)
+            fresh.append(record)
+    return fresh
 
 
 def _environment_users(name: str, entries, process_cwd, path: Path) -> list[str]:
@@ -1685,8 +1789,14 @@ def remove_path(identity: dict, references=(), created_after=None, sessions=None
         resolved = Path(reference).resolve()
         if resolved == path or resolved.is_relative_to(path) or path.is_relative_to(resolved):
             raise Refusal(f"recorded path {path} contains or is named by retained reference {reference}")
+    seen, disregards = set(), []
+
     def scan():
-        return active_cache_users(path, uid=os.getuid(), created_after=created_after, sessions=sessions)
+        found = []
+        users = active_cache_users(path, uid=os.getuid(), created_after=created_after, sessions=sessions,
+                                   disregarded=found)
+        disregards.extend(distinct_disregards(found, seen))
+        return users
 
     users = scan()
     for _ in range(3):
@@ -1697,10 +1807,13 @@ def remove_path(identity: dict, references=(), created_after=None, sessions=None
         time.sleep(0.2)
         again = set(scan())
         users = [value for value in users if value in again]
+    # Disregarded SSH session processes are named in the refusal or in the
+    # resource detail, which the inventory and recovery.jsonl retain.
+    reported = "".join("; " + disregard_line(record) for record in disregards)
     if users:
-        raise Refusal(f"recorded path {path} is in use: " + ", ".join(users[:10]))
+        raise Refusal(f"recorded path {path} is in use: " + ", ".join(users[:10]) + reported)
     shutil.rmtree(path)
-    return "removed", "removed disposable path " + str(path)
+    return "removed", "removed disposable path " + str(path) + reported
 
 
 def teardown_resource(invocation: Invocation, entry: dict, references=(), grace: float = 5.0) -> tuple[str, str]:
