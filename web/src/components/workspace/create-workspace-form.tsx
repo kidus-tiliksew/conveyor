@@ -6,7 +6,7 @@ import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 
-// The immutable workspace id (§21.10: [a-z0-9][a-z0-9-]{0,62}) is derived
+// The immutable workspace id (pattern [a-z0-9][a-z0-9-]{0,62}) is derived
 // from the display name rather than asked for; config comes later through
 // the Workspace page, not at creation time.
 function slugify(name: string) {

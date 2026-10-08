@@ -1,22 +1,28 @@
 # Store conformance
 
-`RunAll(t, Factory)` is the shared entry point for the memory and PostgreSQL
-backends. Each `Factory.New` call returns a fresh backend and workspace. The
-PostgreSQL factory also isolates deployment identity in a fresh schema through
-the existing guarded integration helper. Its database name must end in `_test`.
+`RunAll(t, Factory)` is the shared conformance entry point for every store
+backend: memory, PostgreSQL, and SingleStore. Each `Factory.New` call returns a
+fresh backend, workspace context, workspace ID, and configuration. `RunAll`
+refuses a fixture whose context names a different workspace. The PostgreSQL
+and SingleStore factories run only against an owned test database whose name
+ends in `_test`, and each test binary drops its shared schema or database when
+it exits.
 
-Memory invokes `RunAll` once in `internal/store/all_conformance_test.go` under
-`make test`. PostgreSQL invokes it once in
-`internal/store/postgres/all_conformance_integration_test.go` under
-`make test-integration`. CI already runs the same PostgreSQL package through
-`make test-integration-ci`; no workflow or gate changes are needed.
+| Backend | Entry point | Make target |
+| --- | --- | --- |
+| Memory | `internal/store/all_conformance_test.go` | `make test` |
+| PostgreSQL | `internal/store/postgres/all_conformance_integration_test.go` | `make test-integration` (CI: `make test-integration-ci`) |
+| SingleStore | `internal/store/singlestore/all_conformance_integration_test.go` | `make test-integration-singlestore-ci` |
 
 Factory capability flags describe identity, membership, and token behavior.
-Capability suites skip only when their flags are absent. A production-capable
-factory must report every capability. Both current factories report all three.
-`Factory` has no named-suite skip list: the experimental-backend `Factory.Skip`
-mechanism is removed, so every registered suite runs unless one of its
-capability flags is absent (DEC-38, DEC-39).
+A capability suite skips only when its factory does not report the capability.
+A production-capable factory must report every capability; the PostgreSQL and
+SingleStore factories are production-capable, and the memory factory reports
+every capability without being production-capable. `Factory` has no named-suite
+skip list, so every registered suite runs unless one of its capability flags is
+absent (DEC-38, DEC-39). PostgreSQL is the reference implementation: a case
+that exposes different behavior keeps PostgreSQL unchanged and fixes the
+diverging backend.
 
 `coverage.go` explicitly declares the methods exercised by each named suite and
 its helpers. `RunAll` checks that declarations and registered runners match.
@@ -25,45 +31,11 @@ and `Close` as plumbing. Its negative tests add an undeclared method and remove
 the declarations for an existing method. Declarations do not establish coverage
 of every argument or failure branch; reviewers still assess the assertions.
 
-Assertions use public store APIs. PostgreSQL-specific legacy seeding stays in
-the integration fixture. The event-log pack remains in
-`internal/eventlog/logtest` and is not invoked by `RunAll`.
+Assertions use public store APIs. Backend-specific setup reaches a suite only
+through fixture hooks, never through shared assertions on backend tables. The
+event-log pack remains in `internal/eventlog/logtest` and is not invoked by
+`RunAll`.
 
-## Implementation verification, 2026-09-05
-
-Work order `260905-a67325-implement-1`, workspace `demo`:
-
-| Run | Wall-clock time |
-| --- | ---: |
-| Memory `RunAll` | 0.535 seconds |
-| PostgreSQL `RunAll` | 49.550 seconds |
-
-These are local macOS arm64 measurements, including fixture setup and cleanup,
-not performance limits. Set `GOFLAGS=-v` on the corresponding Make target to
-include the `RunAll elapsed` log. PostgreSQL was also measured with
-`GOFLAGS='-run=TestPostgresConformanceIntegration -v' make test-integration`.
-
-Validation passed: `make fmt-check`, `make build`, `make vet`, `make test`, and
-`make test-integration`. The web run passed all 241 Playwright tests. An additional
-Make-driven `go build ./...` passed. A signature comparison preserved all 193
-original `Store` methods without caller edits. The 37 registered suites declare
-coverage for the 253-method `Backend`, with the two plumbing exemptions.
-
-The suite exposed these memory differences from PostgreSQL:
-
-- `SetTaskHold` committed a hold when its audit actor contained a NUL.
-  PostgreSQL updates the row, rejects the event text, and rolls the transaction
-  back. Memory now validates representable audit text before changing the hold.
-  The shared test verifies that failed event insertion leaves both the hold and
-  event count unchanged.
-- `ListRequirementDeliveryEventsForTasks` returned empty map entries and ignored
-  workspace context. PostgreSQL returns only matching event rows in the current
-  workspace. Memory now filters task ownership and omits empty entries. Shared
-  cases check empty results, a populated batch, and foreign-workspace exclusion.
-
-PostgreSQL implementation, schema, migrations, and the event-log pack are
-unchanged. Complete design revisions were proposed through the claimed MCP
-session as `component-verification-strategy` v2 and `component-persistence` v4,
-using the served confirmed v1 baselines. These proposals remain unconfirmed.
-Confirmed DEC-34 and DEC-38 establish PostgreSQL reference precedence over the
-older verification design's memory-reference sentence.
+`component-verification-strategy` owns the harness, its orchestration, and the
+method coverage check. Each domain component owns the conformance cases for its
+own store methods.

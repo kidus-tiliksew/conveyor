@@ -9,7 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
-// req-verification-kits REQ-3/REQ-7; feature-verification-kit-execution VK-4.1 (DEC-43).
+// req-verification-kits REQ-3/REQ-7; component-verification-service (DEC-43).
 
 func verificationBinding(c VerificationCommand, rows []VerificationRow) (core.VerificationBinding, error) {
 	r, ok := verificationFind(rows, "verification_contexts", c.ContextID)
@@ -206,7 +206,7 @@ func reconcileVerificationOperation(c VerificationCommand, rows []VerificationRo
 	if op.Original.ContextID == "" || !sameVerificationAuthority(op.Original, binding) {
 		return ErrVerificationConflict
 	}
-	// VK-4 / VK-WO-2: claim-bound reconciliation needs fresh subject
+	// component-verification-service: claim-bound reconciliation needs fresh subject
 	// authority, even before a successor execution attempt can be started.
 	// Operator recovery and the internal claim-loss reconciler do not pass here.
 	cr, ok := verificationFind(rows, "verification_contexts", c.ContextID)

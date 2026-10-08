@@ -124,7 +124,7 @@ function requirementAttentionCount(item: RequirementSummary) {
  * Requirements is a document tree beside a document canvas. The tree groups
  * the product overviews apart from
  * the requirement corpus; whichever document is selected becomes the canvas,
- * with shared Changes and History views (component-web-dashboard v6). Machinery signals
+ * with shared Changes and History views (component-web-document-surfaces). Machinery signals
  * and actions remain in the canvas attention surface; the tree may carry the
  * compact aggregate approved for the Requirements list. The
  * assistant column is withdrawn while in-product planning is parked — nothing
@@ -1087,8 +1087,8 @@ function RequirementDetailCanvas({
             <div className="mt-10 space-y-4 border-t border-border pt-8">
               <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
               {/*
-          Delivery is task-centric: `serves` sits on the task itself (spec
-          §21.58 change 6). Blueprints are retained below as the historical
+          Delivery is task-centric: `serves` sits on the task itself
+          (req-task-centric-delivery REQ-1). Blueprints are retained below as the historical
           lens over records planned before the noun was retired, so they stay
           readable without being mislabelled as newly planned work.
         */}

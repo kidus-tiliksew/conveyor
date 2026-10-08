@@ -43,7 +43,7 @@ function outcomeOf(context: VerificationMetadata | undefined, order: WorkOrder |
     return 'failed'
   }
   // A verify order released at its operator checkpoint waits on a person even
-  // before any context was sealed (feature-verification-kit-execution VK-13.5).
+  // before any context was sealed (component-verification-service).
   if (order?.state === 'queued' && order.last_failure_message === 'operator checkpoint reached') return 'needs_operator'
   if (job.state === 'running' || order?.state === 'claimed') return 'running'
   if (job.state === 'failed') return 'failed'

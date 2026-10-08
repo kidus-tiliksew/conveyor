@@ -27,7 +27,7 @@ import { VerificationReviewResult } from './verification-stage'
 // action. Amber stays reserved for states that are genuinely stuck; a clean
 // approval reads as good news. Reason codes are auto-derived per action
 // (see contracts.ts) — the comment is the operator's signal. The card renders
-// as the event timeline's live tail (§13.3 element 3): the decision point is
+// as the event timeline's live tail (component-web-task-surfaces): the decision point is
 // where the story currently ends, and acting on it resolves in place into
 // the recorded intervention entry.
 

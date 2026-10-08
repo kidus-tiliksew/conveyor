@@ -72,7 +72,7 @@ func kitPins(k Kit) []Pin {
 
 // Evaluate is pure; it copies pins and explanations into a receipt for every
 // entry. Exact snapshot membership, not global currency, governs eligibility
-// (req-verification-kits AC-2.1 through AC-2.4, VK-2).
+// (req-verification-kits AC-2.1 through AC-2.4; component-verification-kit-contract).
 func Evaluate(m *Manifest, context SelectionContext, trees map[string][]TreeEntry) SelectionReceipt {
 	r := SelectionReceipt{SchemaVersion: 1, ManifestRevision: context.ManifestRevision, SourceRevision: context.SourceRevision, ContextPins: append([]Pin{}, context.Pins...), Stage: context.Stage, Kits: []KitReceipt{}, Diagnostics: []Diagnostic{}}
 	if m == nil {

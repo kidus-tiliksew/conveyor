@@ -56,7 +56,7 @@ func verificationPageRequest(r *http.Request, kind string) (store.VerificationPa
 	return p, nil
 }
 
-// feature-verification-kit-execution VK-9 / DEC-43: the initial response contains only bounded metadata. The
+// component-verification-publication / DEC-43: the initial response contains only bounded metadata. The
 // first context has small overview pages; attempts and evidence are on demand.
 func (s *Server) getTaskVerification(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

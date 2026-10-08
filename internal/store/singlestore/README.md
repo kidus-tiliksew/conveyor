@@ -29,7 +29,7 @@ no durable dispatch or publication jobs to reconcile.
 ## Schema and migrations
 
 `migrations/0001_schema.sql` defines all 56 current relational tables from
-scratch. It uses the schema domains in component-persistence v4 as its
+scratch. It uses the schema domains in component-persistence as its
 checklist. No PostgreSQL migration runs against SingleStore. JSON stores JSON
 objects and array-valued projections, timestamps use `DATETIME(6)`, and all
 tables are rowstores with binary UTF-8 collation for case-sensitive identifiers. Key columns use `VARCHAR(255)`; other text is `LONGTEXT`.

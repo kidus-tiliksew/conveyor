@@ -146,7 +146,7 @@ func assertNoCredentials(t *testing.T, secrets []string, values ...any) {
 	}
 }
 
-// VK-4.2 / VK-EXEC-3: tools only in a Homebrew-shaped prefix or a custom Go bin
+// component-verification-runner: tools only in a Homebrew-shaped prefix or a custom Go bin
 // are refused by the default profile before any attempt, and succeed for an
 // ordinary subject under an explicit scoped profile.
 func TestKitToolchainOrdinarySubject(t *testing.T) {
@@ -350,7 +350,7 @@ func TestKitToolchainChangeDuringExecution(t *testing.T) {
 	}
 }
 
-// VK-4.2: an explicitly configured GOENV file is fingerprinted at preflight.
+// component-verification-runner: an explicitly configured GOENV file is fingerprinted at preflight.
 // Editing it in place, or replacing it with identical content, during
 // execution invalidates the result although every executable is unchanged.
 func TestKitToolchainConfigurationChangeDuringExecution(t *testing.T) {
@@ -450,7 +450,7 @@ func TestKitToolchainConfigurationCredentialRefused(t *testing.T) {
 	assertNoCredentials(t, secrets, err.Error(), f.output.String())
 }
 
-// REQ-7/AC-7.3, VK-4.2: repository content never selects a toolchain profile.
+// req-verification-kits REQ-7/AC-7.3; component-verification-runner: repository content never selects a toolchain profile.
 // A matching record in a tracked working-directory conveyor.yaml, or in a file
 // inside the checkout named explicitly, cannot widen PATH/HOME/settings or start
 // an attempt; the same record in operator-selected configuration succeeds.

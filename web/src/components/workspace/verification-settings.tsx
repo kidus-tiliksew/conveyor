@@ -2,7 +2,7 @@ import type { WorkspaceConfigDocument } from '../../lib/types'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Switch } from '../ui/switch'
 
-// The workspace's verification default (component-web-dashboard VK-WEB-4).
+// The workspace's verification default (component-web-dashboard).
 // The switch edits the shared configuration draft and saves through the page's
 // save bar; tasks freeze it at intake (DEC-43). No workspace switch refuses a
 // submission for missing verification evidence (req-review-gates-evidence

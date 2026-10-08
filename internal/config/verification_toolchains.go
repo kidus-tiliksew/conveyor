@@ -12,8 +12,7 @@ import (
 )
 
 // Bounds for the client-local verification_toolchains section
-// (feature-verification-kit-execution VK-4.2; component-harness-execution
-// VK-EXEC-3).
+// (component-verification-runner).
 const (
 	MaxVerificationToolchains           = 32
 	MaxVerificationToolchainSearchPaths = 32

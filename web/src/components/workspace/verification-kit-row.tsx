@@ -11,8 +11,8 @@ import type {
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 
-// One kit in the workspace verification list (component-web-dashboard
-// VK-WEB-4). Manifest text renders as plain text nodes, never markup (AC-10.4).
+// One kit in the workspace verification list (component-web-dashboard). Manifest
+// text renders as plain text nodes, never markup (req-verification-kits AC-10.4).
 
 const STATUS: Record<VerificationKitStatus, { label: string; variant: 'positive' | 'failure' | 'default' }> = {
   current: { label: 'Current', variant: 'positive' },

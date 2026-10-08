@@ -16,7 +16,7 @@ const WorktreeHandoffCommand core.WorkOrderCommand = "order.worktree_handoff"
 
 // EvaluateWorktreeHandoff runs inside each store's task-serialized transaction.
 // Events preserve provenance; current relational claim state grants authority
-// (component-work-orders HO-1 through HO-3; DEC-35, DEC-36).
+// (component-attempt-checkpoints; DEC-50, DEC-51).
 func EvaluateWorktreeHandoff(task core.Task, order core.WorkOrder, claim core.WorkOrderClaimIdentity, repository string, events []core.Event, request core.WorktreeHandoffRequest, now time.Time) (core.WorktreeHandoff, []core.Event, error) {
 	var result core.WorktreeHandoff
 	refuse := func(reason string) (core.WorktreeHandoff, []core.Event, error) {

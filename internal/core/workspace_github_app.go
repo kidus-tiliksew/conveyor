@@ -2,7 +2,7 @@ package core
 
 import "time"
 
-// WorkspaceGitHubAppStatus is the secret-free workspace projection (DEC-41).
+// WorkspaceGitHubAppStatus is the secret-free workspace projection (DEC-59).
 type WorkspaceGitHubAppStatus struct {
 	Connected              bool       `json:"connected"`
 	WorkspaceID            string     `json:"workspace_id"`

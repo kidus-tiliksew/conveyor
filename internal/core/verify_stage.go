@@ -3,7 +3,7 @@ package core
 import "fmt"
 
 // VerifyStageHead binds verification to the submitted revision, including refresh
-// submissions (DEC-43; feature-verification-kit-execution VK-2).
+// submissions (DEC-43; component-verification-service).
 func VerifyStageHead(task Task) string {
 	if task.ApprovalStale && task.RefreshHeadSHA != "" {
 		return task.RefreshHeadSHA
@@ -12,7 +12,7 @@ func VerifyStageHead(task Task) string {
 }
 
 // VerifyReviewReady requires a completed order carrying its sealed context.
-// Backend review acceptance rechecks the referenced result and pins (VK-7).
+// Backend review acceptance rechecks the referenced result and pins (component-verification-service).
 func VerifyReviewReady(task Task, orders []WorkOrder) bool {
 	if !task.SetupContract.VerifyStage {
 		return true
@@ -39,7 +39,7 @@ func ValidateVerifyDispatch(task Task, order WorkOrder) error {
 }
 
 // ConflictingExecutorClaims preserves same-stage exclusivity and prevents an
-// implementer and verifier from executing against one task concurrently (VK-2).
+// implementer and verifier from executing against one task concurrently (component-verification-service).
 func ConflictingExecutorClaims(a, b WorkOrder) bool {
 	if a.ID == b.ID || a.TaskID != b.TaskID || b.State != WorkOrderClaimed {
 		return false

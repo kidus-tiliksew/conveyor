@@ -12,7 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// DEC-41; component-identity-membership. Mutations serialize on the workspace
+// DEC-59; component-identity-membership. Mutations serialize on the workspace
 // and append metadata-only events in the same transaction as encrypted storage.
 const appStatusColumns = `workspace_id,app_id,app_slug,client_id,COALESCE(installation_id,0),COALESCE(installation_account,''),connected_by,connected_at,installation_recorded_at`
 

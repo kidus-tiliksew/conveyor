@@ -7,7 +7,7 @@ import type { BlueprintDelivery, BlueprintView, Task } from './types'
 // its own phrasing — or leak a raw task state.
 
 // The client mirror of core.BlueprintAnchor: children exist only through
-// blueprint materialization from an approved §4.1 decomposition, so the
+// blueprint materialization from an approved legacy decomposition, so the
 // parent/child relation is the classification. No stored flag, no new entity.
 export function isBlueprintAnchor(task: Pick<Task, 'children'>): boolean {
   return (task.children?.length ?? 0) > 0

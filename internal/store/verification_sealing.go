@@ -11,7 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// req-verification-kits REQ-4; req-verification-evidence REQ-1; feature-verification-kit-execution VK-5.1 and VK-7.
+// req-verification-kits REQ-4; req-verification-evidence REQ-1; component-verification-service.
 
 type VerificationCoverage struct {
 	Sources       []VerificationCoverageSource `json:"sources"`
@@ -35,7 +35,7 @@ type VerificationResult struct {
 	Checkpoint  *VerificationCheckpoint `json:"Checkpoint,omitempty"`
 }
 
-// feature-verification-kit-execution VK-13.2/VK-13.3: server-computed grounds
+// component-verification-service: server-computed grounds
 // for an operator checkpoint. Only admission_refused carries an unverified cause.
 const (
 	VerificationGroundAttemptBlocked      = "attempt_blocked"
@@ -78,14 +78,14 @@ type VerificationCheckpoint struct {
 	// AttemptGrounds lists, in ground order, the attempt IDs of the
 	// attempt_* grounds: the latest attempt of each subject that stopped the
 	// verification. Historical reads link exactly these attempts instead of
-	// reclassifying superseded ones (component-web-dashboard VK-WEB-6).
+	// reclassifying superseded ones (component-web-task-surfaces).
 	AttemptGrounds string `json:"attempt_grounds"`
 	// HeadSHA is the submitted task-repository revision; WorkOrderAttemptID is
-	// the releasing claim attempt (component-http-api VK-HTTP-9).
+	// the releasing claim attempt (component-verification-service).
 	HeadSHA            string `json:"head_sha"`
 	WorkOrderAttemptID string `json:"work_order_attempt_id"`
 	// Claim retains the exact releasing claim so an identical submission can be
-	// authenticated after release (VK-STORE-16). Reads never return its hash.
+	// authenticated after release (component-verification-service). Reads never return its hash.
 	Claim VerificationRetainedClaim `json:"retained_claim"`
 }
 
@@ -187,7 +187,7 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 	checkpoint := s.Outcome == "operator_action_required"
 	record := &VerificationCheckpoint{Reason: s.Feedback, RequiredAction: s.RequiredAction, Grounds: []VerificationCheckpointGround{}, Subjects: []VerificationCheckpointSubject{}, MissingSubjects: []core.VerificationSubject{}, OperationIDs: []string{}, EvidenceIDs: []string{}, SessionID: c.Access.Claim.SessionID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID}
 	if checkpoint {
-		// VK-13.3: the checkpoint retains the task repository's submitted head
+		// component-verification-service: the checkpoint retains the task repository's submitted head
 		// from the locked order. Scope revisions are sorted by repository name,
 		// so an additional repository can precede the task's own revision.
 		for _, revision := range vc.Revisions {
@@ -210,7 +210,7 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 			}
 		}
 		if latest == nil && checkpoint {
-			// VK-13.2: an unstarted subject is recorded as missing evidence, never
+			// component-verification-service: an unstarted subject is recorded as missing evidence, never
 			// as an executed attempt. A missing grant is verified from records.
 			ground := VerificationCheckpointGround{Kind: VerificationGroundMissingGrant, Subject: subject, ServerVerified: true}
 			if verificationSubjectGranted(snapshot, vc, subject) {
@@ -283,7 +283,8 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 	return result, nil
 }
 
-// ValidateVerificationOutcome publishes the VK-13.1 stage vocabulary. It runs
+// ValidateVerificationOutcome publishes the stage outcome vocabulary
+// (component-verification-service). It runs
 // after scope authentication and before any staged write.
 func ValidateVerificationOutcome(s VerificationSubmission) error {
 	switch s.Outcome {
@@ -371,7 +372,7 @@ func verificationCheckpointAttemptGrounds(grounds []VerificationCheckpointGround
 }
 
 // verificationPermissionNames renders declared permissions as kind:binding
-// with an optional path, the form operators grant against (VK-12.2).
+// with an optional path, the form operators grant against (component-verification-runner).
 func verificationPermissionNames(permissions []verification.Permission) []string {
 	names := []string{}
 	for _, p := range permissions {
@@ -403,7 +404,7 @@ func VerificationSealedCommand(c VerificationCommand, mutation VerificationMutat
 }
 
 // VerifyVerificationCheckpointReplay authenticates a seal from the exact claim
-// retained by a checkpoint release (component-persistence VK-STORE-16). The
+// retained by a checkpoint release (component-verification-service). The
 // ordinary claim check runs against that retained identity in observing mode,
 // so token, actor, head and stage rules are unchanged. The sealed-context
 // branch of PrepareVerificationMutation then returns the original receipt for

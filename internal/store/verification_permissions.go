@@ -50,7 +50,7 @@ func BindVerificationPermissionOrder(ctx context.Context, c *VerificationCommand
 		return ErrVerificationAccess
 	}
 	// The caller is an authorized operator of this order from here on, so
-	// state refusals carry a stable reason (VK-12.2; component-http-api VK-HTTP-8).
+	// state refusals carry a stable reason (component-verification-runner).
 	if reason := VerificationPermissionOrderState(task, order, now); reason != "" {
 		return verificationRefuse(ErrVerificationAccess, reason)
 	}

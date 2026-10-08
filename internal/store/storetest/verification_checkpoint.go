@@ -13,7 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// feature-verification-kit-execution VK-13; req-verification-kits AC-3.2,
+// component-verification-service; req-verification-kits AC-3.2,
 // AC-3.3, AC-3.4 and AC-4.3: grounded operator checkpoints on every backend.
 func runVerificationCheckpoints(t *testing.T, x Fixture) {
 	t.Run("MissingGrantBeforeExecution", func(t *testing.T) { runVerificationMissingGrantCheckpoint(t, x) })
@@ -103,7 +103,7 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	if order.Checkpoint == nil || order.Checkpoint.Verification == nil || order.Checkpoint.Verification.ContextID != v.contextID || order.Checkpoint.Verification.HeadSHA != order.HeadSHA || len(order.Checkpoint.Verification.Grounds) != 1 || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundMissingGrant {
 		t.Fatalf("checkpoint reference = %+v", order.Checkpoint)
 	}
-	// VK-13.5: the authenticated reference names the declared permission an
+	// component-verification-service: the authenticated reference names the declared permission an
 	// operator grants, and the summary carries it for historical contexts.
 	if ground := order.Checkpoint.Verification.Grounds[0]; !reflect.DeepEqual(ground.Permissions, []core.WorkOrderVerificationCheckpointPermission{{Kind: "network", TargetBinding: "fixture"}}) || len(ground.EvidenceIDs) != 0 || ground.AttemptID != "" || ground.Truncated {
 		t.Fatalf("missing-grant reference ground = %+v", ground)
@@ -121,7 +121,7 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	if cp.Claim.ClientTokenHash != "" || cp.Claim.SessionID != v.access.Claim.SessionID || cp.HeadSHA != v.revisions[0].SHA || cp.WorkOrderAttemptID != v.access.WorkOrderAttemptID {
 		t.Fatalf("retained claim exposed or incomplete: %+v", cp.Claim)
 	}
-	// VK-STORE-16: the exact retained claim replays the identical submission
+	// component-verification-service: the exact retained claim replays the identical submission
 	// and receives the original receipt without another lifecycle event.
 	state := verificationPublicState(t, &observer)
 	replayed, err := x.Backend.ApplyVerification(v.ctx, seal)
@@ -193,7 +193,7 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 
 // runVerificationCheckpointTaskRepositoryHead retains the task repository's
 // submitted head when an additional repository sorts first in the scope
-// (VK-13.3; req-verification-evidence REQ-1/AC-1.2).
+// (component-verification-service; req-verification-evidence REQ-1/AC-1.2).
 func runVerificationCheckpointTaskRepositoryHead(t *testing.T, x Fixture) {
 	// Both repositories are registered by the conformance factory; the
 	// additional repository "app" sorts before the task repository "conveyor".
@@ -241,7 +241,7 @@ func runVerificationWaitingCheckpoint(t *testing.T, x Fixture) {
 	if cp == nil || len(cp.Grounds) != 1 || cp.Grounds[0].Kind != store.VerificationGroundAttemptWaiting || cp.Grounds[0].AttemptID != v.runID || cp.Grounds[0].Explanation != "Operator interaction required" || len(cp.Grounds[0].EvidenceIDs) != 1 || len(cp.EvidenceIDs) != 1 || len(cp.MissingSubjects) != 0 {
 		t.Fatalf("waiting checkpoint = %+v", cp)
 	}
-	// VK-13.5: the reference links the waiting attempt and its retained evidence.
+	// component-verification-service: the reference links the waiting attempt and its retained evidence.
 	order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
 	requireOK(t, err)
 	if order.Checkpoint == nil || order.Checkpoint.Verification == nil || len(order.Checkpoint.Verification.Grounds) != 1 {
@@ -256,8 +256,7 @@ func runVerificationWaitingCheckpoint(t *testing.T, x Fixture) {
 // blocked attempt was retried to success while another subject waits. Only
 // the waiting subject's latest attempt is a ground, the context header names
 // exactly that attempt, and both login attempts stay readable as history
-// (feature-verification-kit-execution VK-13.2/VK-13.5; component-web-dashboard
-// VK-WEB-6; req-verification-kits REQ-3/AC-3.4; req-verification-evidence
+// (component-verification-service; component-web-task-surfaces; req-verification-kits REQ-3/AC-3.4; req-verification-evidence
 // REQ-1/AC-1.4).
 func runVerificationRetriedAttemptGround(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x, true)

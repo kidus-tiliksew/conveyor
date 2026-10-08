@@ -18,7 +18,7 @@ import (
 )
 
 // VerificationDiscovery contains only exact-revision repository observations.
-// Repository content grants no execution authority (DEC-43, VK-2).
+// Repository content grants no execution authority (DEC-43, component-verification-service).
 type VerificationDiscovery struct {
 	Revision       string                              `json:"revision"`
 	State          string                              `json:"state"`
@@ -231,9 +231,9 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 }
 
 // ResolveBranchHead reads the commit a branch currently names through the
-// workspace GitHub App, a DEC-41 forge read act (DEC-43). The workspace kit
-// registry reads manifests at that commit (feature-verification-kit-execution
-// VK-11); no local checkout participates. States are present, permission,
+// workspace GitHub App, a control-plane forge read act under DEC-59 (DEC-43).
+// The workspace kit registry reads manifests at that commit
+// (component-verification-kit-contract); no local checkout participates. States are present, permission,
 // unknown_revision or transport.
 func (c *AppClient) ResolveBranchHead(ctx context.Context, st AppStore, workspace, slug, branch string) (string, string) {
 	parts := strings.Split(slug, "/")

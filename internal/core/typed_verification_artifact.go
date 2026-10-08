@@ -10,7 +10,8 @@ import (
 	"unicode/utf8"
 )
 
-// ValidateTypedVerificationArtifact is the dedicated VK-6 byte policy. The
+// ValidateTypedVerificationArtifact is the dedicated typed-evidence byte policy
+// (component-verification-evidence). The
 // legacy visual-only role and its eligibility predicate remain unchanged.
 func ValidateTypedVerificationArtifact(contentType string, content []byte) (string, error) {
 	media, _, err := mime.ParseMediaType(contentType)

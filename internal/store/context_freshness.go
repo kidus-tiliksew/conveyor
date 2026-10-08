@@ -194,7 +194,7 @@ func ProjectContext(snapshot core.ContextSnapshot, history []core.ContextObserva
 
 // In-process jobs have no external work-order claim. Their existing running
 // job and system actor form a separate explicit input boundary, never a
-// fabricated external session (component-harness-execution CF-H1).
+// fabricated external session (component-context-freshness).
 func EvaluateInProcessContextObservation(ctx context.Context, task core.Task, job core.Job, events []core.Event, o core.ContextObservation, now time.Time) (core.ContextObservation, *core.Event, error) {
 	ws, ok := WorkspaceFromContext(ctx)
 	actor := ActorFromContext(ctx)

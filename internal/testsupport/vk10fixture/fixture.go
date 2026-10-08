@@ -504,8 +504,8 @@ func (f *fixture) prepareRunner() (string, string, string) {
 	return coveragePath, inputsPath, configPath
 }
 
-// unavailableToolchain covers feature-verification-kit-execution VK-4.2 and
-// component-verification-strategy VK-TEST-3: an entrypoint missing from the
+// unavailableToolchain covers toolchain preflight (component-verification-runner):
+// an entrypoint missing from the
 // default search path fails toolchain preflight without an attempt, evidence
 // or operation. A verification_toolchains record naming a directory with that
 // entrypoint lets the same claim run it.
@@ -1043,7 +1043,7 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			}
 			submission := workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: outcome, Coverage: f.coverage, Feedback: "Fixture exercise requires correction or restoration of its unavailable integration."}
 			if outcome == "operator_action_required" {
-				// feature-verification-kit-execution VK-13.1: a checkpoint names the operator act.
+				// component-verification-service: a checkpoint names the operator act.
 				submission.RequiredAction = "Restore the fixture integration, then recover the verify order."
 			}
 			must(t, f.rpc("submit_verification", submission, nil))

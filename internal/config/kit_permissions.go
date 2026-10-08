@@ -9,7 +9,7 @@ import (
 )
 
 // KitPermissionGrant is client-local. It never enters WorkspaceDocument or
-// the frozen pipeline policy (VK-4; req-execution-configuration REQ-7/AC-7.1;
+// the frozen pipeline policy (component-verification-runner; req-execution-configuration REQ-7/AC-7.1;
 // req-verification-kits AC-7.3; component-verification-runner "Local
 // kit_permissions").
 type KitPermissionGrant struct {

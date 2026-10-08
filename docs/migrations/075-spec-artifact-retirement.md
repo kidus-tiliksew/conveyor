@@ -50,7 +50,7 @@ no active spec-stage work order. The durable migration query above remains the
 required source for the exact gate-resident set because awaiting human gates
 are intentionally absent from `list_work_orders`.
 
-## §21.58 relocation verification
+## Former specification section 21.58 relocation verification
 
 | Retired spec-artifact function | Landed successor |
 | --- | --- |

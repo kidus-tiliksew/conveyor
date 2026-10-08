@@ -597,7 +597,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 			if comparison.ReviewedHeadSHA != order.HeadSHA {
 				return fmt.Errorf("task %s recorded comparison does not match submitted head", task.ID)
 			}
-			// VK-7: verification and normal review consume the same commit pair.
+			// component-verification-service: verification and normal review consume the same commit pair.
 			order.BaselineSHA = comparison.BaseBranch
 		}
 	}

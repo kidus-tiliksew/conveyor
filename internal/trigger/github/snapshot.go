@@ -13,7 +13,7 @@ import (
 )
 
 // SnapshotClient uses only the request's workspace installation credential.
-// DEC-32, DEC-41; req-delivery-and-forge AC-1.4 and AC-2.3.
+// DEC-49, DEC-59; req-delivery-and-forge AC-1.4 and AC-2.3.
 type SnapshotClient struct {
 	HTTP    *http.Client
 	BaseURL string

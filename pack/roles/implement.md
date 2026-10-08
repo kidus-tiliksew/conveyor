@@ -56,7 +56,7 @@ Working discipline:
 - When an attached System Design document states testing strategy or
   verification guidance for the touched scope, follow it during validation and
   state in the submission summary how the change was verified against it
-  (DEC-29).
+  (DEC-53).
 - Before finishing, walk the spec's acceptance criteria (AC-n) one by one
   and confirm each is satisfied; the reviewer will do exactly this walk.
 - When an approved execution plan is present, treat its done criteria as the
@@ -114,7 +114,7 @@ Working discipline:
   direct `submit_for_review` requires the pushed `head_sha`.
   The frozen `verify_stage` policy routes this submission to verification when
   enabled, or directly to review when disabled (DEC-43;
-  feature-verification-kit-execution VK-2/VK-8). Implementation validation
+  component-verification-service). Implementation validation
   remains required; its attachments do not replace a verify-stage result.
   After `submit_for_review` succeeds, the session mode decides the next step.
   A launched session reports the handoff and exits; it never polls

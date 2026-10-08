@@ -1,8 +1,8 @@
 # Known limitations
 
 These are the accepted boundaries of the Phase 4.7 implementation. Historical
-sandbox-era limitations were retired with the execution-plane demolition in
-spec §21.4.
+sandbox-era limitations were retired with the execution-plane demolition
+(DEC-56).
 
 ## External work-order usage is self-reported
 
@@ -40,7 +40,7 @@ retries remain valid only with the task's original context.
 Task intake stores a canonical branch name and selected base as metadata; it
 does not create a local or remote ref. The operator-owned implementation agent
 must resolve a dedicated checkout with `conveyor checkout <task-id>` and then
-push that exact branch before review (spec §21.8). Worktree registrations and
+push that exact branch before review (component-git-delivery). Worktree registrations and
 paths remain local to the operator's clone; Conveyor stores the assigned branch
 and base but does not centrally track or clean those local directories. The CLI
 therefore performs the safety checks and returns the local path on each use.

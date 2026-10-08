@@ -759,7 +759,7 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	// enrollment, never from the assigned task or a client assertion.
 	claim.OwnerUserID = worker.OwnerUserID
 	claim.Agent = "worker"
-	claim.Model = order.RequiredModel // compatibility for pre-DEC-23 in-flight review orders
+	claim.Model = order.RequiredModel // compatibility for legacy in-flight review orders that carry a server-pinned model
 	if claim.Lease <= 0 {
 		claim.Lease = DefaultClaimLease
 	}
@@ -1252,7 +1252,7 @@ func providerUsageLimit(detail string) bool {
 }
 
 // RefreshContext retains worker ownership while using the same claim-scoped
-// selection and observation service as MCP and task-run children (CF-H1).
+// selection and observation service as MCP and task-run children (component-context-freshness).
 func (s *Service) RefreshContext(ctx context.Context, worker core.Worker, id, session, prior string) (core.ContextFreshness, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil || order.WorkerID != worker.ID || order.WorkerID == "" || order.SessionID != session {

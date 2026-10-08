@@ -90,8 +90,8 @@ const operations = [
     },
     latest_stage: 'implement',
     last_event_at: '2026-08-03T09:00:00Z',
-    // The list-scoped summary: the reason, never the work order (§21.58
-    // change 7). The detail surfaces are where the order itself renders.
+    // The list-scoped summary: the reason, never the work order
+    // (component-web-task-surfaces). The detail surfaces are where the order itself renders.
     stalled: {
       needed: true,
       reason: 'dispatch is failing repeatedly',
@@ -460,7 +460,7 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
   await expect(page.getByText('task operations unavailable')).toBeVisible()
 })
 
-// Staleness renders from the durable §21.34 state the projection carries, and
+// Staleness renders from the durable staleness state the projection carries, and
 // it says why the task cannot move. It sits beside the
 // needs-operator badge rather than replacing it: a task can hold at a gate and
 // carry a stalled order at once, and a row that hides one of those misreads.

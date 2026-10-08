@@ -23,7 +23,7 @@ type kitUIProcess struct {
 
 // startKitUI launches the optional loopback UI with the subject's toolchain
 // snapshot and child environment. When preflight resolved the UI entrypoint,
-// the launched identity must match it (feature-verification-kit-execution VK-4.2).
+// the launched identity must match it (component-verification-runner).
 func startKitUI(ui *verification.UI, cwd string, env []string, toolchain kitToolchain, expected *kitResolvedTool) (*kitUIProcess, error) {
 	if ui.Port < 1 || ui.Port > 65535 || len(ui.Argv) == 0 {
 		return nil, fmt.Errorf("invalid loopback UI contract")

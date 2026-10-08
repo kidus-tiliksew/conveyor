@@ -1,7 +1,7 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 
-// Workspace verification tab (component-web-dashboard VK-WEB-4) against a
-// mocked VK-11 projection (feature-verification-kit-execution v6).
+// Workspace verification tab (component-web-dashboard) against a
+// mocked workspace kit registry projection (component-verification-kit-contract).
 
 const config = {
   workspace: 'demo',

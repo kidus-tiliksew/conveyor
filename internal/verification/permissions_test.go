@@ -89,7 +89,7 @@ func TestKitRequestedFilesystemCannotExpandToParent(t *testing.T) {
 	}
 }
 
-// VK-12.1: operator surfaces present the same action slots that
+// component-verification-runner: operator surfaces present the same action slots that
 // ValidateRequestedActions enforces, with no machine-specific targets.
 func TestActionRequirementsMatchValidation(t *testing.T) {
 	e := Exercise{Kind: "hybrid", Permissions: []Permission{{Kind: "network", TargetBinding: "api"}, {Kind: "filesystem_write", Path: "out"}}, Prerequisites: []Prerequisite{{ID: "token", Kind: "credential", EnvironmentBinding: "api-token"}}, Inputs: []Input{{Name: "secret", Sensitive: true}, {Name: "plain"}}}

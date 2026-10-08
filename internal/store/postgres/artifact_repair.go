@@ -19,7 +19,7 @@ func (s *Store) RepairArtifactMetadata(ctx context.Context, r store.ArtifactRepa
 		return result, err
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		// Request lock precedes artifact row lock (component-persistence ART-STORE-3).
+		// Request lock precedes artifact row lock (component-artifacts).
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "artifact-repair:"+workspace(ctx)+":"+r.RequestID); err != nil {
 			return err
 		}

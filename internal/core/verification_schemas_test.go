@@ -54,7 +54,7 @@ func TestArtifactMediaVerificationRecordingPolicy(t *testing.T) {
 }
 
 // Bare-string required assertions stay valid MCP input beside the schema-2
-// {id, description} form (feature-verification-kit-execution VK-3.1).
+// {id, description} form (component-verification-kit-contract).
 func TestVerificationAssertionSchemaAcceptsBothForms(t *testing.T) {
 	schema := VerificationJSONSchema(reflect.TypeOf(verification.Exercise{}))
 	items := schema["properties"].(map[string]any)["required_assertions"].(map[string]any)["items"].(map[string]any)

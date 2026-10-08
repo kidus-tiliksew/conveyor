@@ -10,7 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// feature-verification-kit-execution VK-9 / DEC-43: user inspection has its own bounded read contract. Neither
+// component-verification-publication / DEC-43: user inspection has its own bounded read contract. Neither
 // pages nor summaries expose execution inputs, evidence payloads or artifacts.
 const VerificationPageLimit = 50
 const VerificationReadTimeFormat = "2006-01-02T15:04:05.000000000Z"

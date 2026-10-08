@@ -12,7 +12,7 @@ import (
 )
 
 // runTaskEventWindows holds every backend to the bounded task-event traversal
-// of component-mcp-protocol v14 MCP-READ-9: (at, id) order across timestamp
+// (component-mcp-investigation-reads): (at, id) order across timestamp
 // ties and window boundaries, exact kind filtering, a captured ID ceiling,
 // the append-only count guard, byte budgets and workspace scope.
 func runTaskEventWindows(t *testing.T, x Fixture) {

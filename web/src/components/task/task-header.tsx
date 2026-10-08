@@ -54,7 +54,7 @@ import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
 // came from, where to read it — and the task-run command
-// (§21.8). Anything the specification card or the timeline already states is
+// (component-web-task-surfaces). Anything the specification card or the timeline already states is
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
@@ -771,8 +771,9 @@ function HoldControl({ item, hold, onClose }: { item: ActivityItem; hold: boolea
 
 /**
  * Set, reassign, or clear the task's assignee from the workspace's own member
- * list (REQ-4). Assigning constrains who may claim the task's work orders; it
- * never touches queue order (DEC-18).
+ * list (req-task-lifecycle-and-queue AC-2.4, AC-2.5). Assigning constrains who
+ * may claim the task's work orders; it never touches queue order
+ * (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-55).
  *
  * Assignment is an operator act, carried by the `set_assignee` capability. The
  * caller's role for this workspace comes from the server's own self-identity

@@ -16,7 +16,7 @@ import (
 // list_task_events traverses a long history as bounded immutable windows. Each
 // window is one rendered snapshot; an opaque cursor opens the next window from
 // the captured boundary and the predecessor's last (at, id) tuple.
-// component-mcp-protocol v14 MCP-READ-9; req-task-centric-operations-view v5 REQ-2.
+// component-mcp-investigation-reads; req-task-centric-operations-view REQ-2.
 const (
 	// mcpReadEventItemMax keeps any single rendered event returnable inside
 	// the 65536-byte response with its page envelope.

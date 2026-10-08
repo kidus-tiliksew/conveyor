@@ -39,7 +39,7 @@ func verificationMCPTools() []map[string]any {
 		schema["required"] = required
 		description := "Claim-bound verification evidence. Results support independent review and never confer acceptance or operator approval."
 		if name == "submit_verification" {
-			// feature-verification-kit-execution VK-13.1: one published mapping;
+			// component-verification-service: one published mapping;
 			// outcome validation stays in the shared service after scope checks.
 			description += " " + store.VerificationOutcomeMapping
 			props["outcome"] = map[string]any{"type": "string", "description": store.VerificationOutcomeMapping}

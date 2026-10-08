@@ -45,7 +45,7 @@ func VerificationJSONSchema(t reflect.Type) map[string]any {
 		return map[string]any{}
 	}
 	// A required assertion is a bare ID string or an id/description object
-	// (feature-verification-kit-execution VK-3.1); bare strings stay valid input.
+	// (component-verification-kit-contract); bare strings stay valid input.
 	if t == reflect.TypeOf(verification.Assertion{}) {
 		return map[string]any{"anyOf": []map[string]any{
 			{"type": "string"},

@@ -74,7 +74,7 @@ export function selectedReviewVersion<T extends ReviewVersion>(
     : versions.find((v) => v.version === search.target)
 }
 
-// req-document-operating-surfaces v5 REQ-1/2 and component-web-dashboard v6:
+// req-document-operating-surfaces REQ-1/REQ-2 and component-web-document-surfaces:
 // the caller supplies exactly one attention surface, never duplicated by tabs.
 export function DocumentReview({
   search,

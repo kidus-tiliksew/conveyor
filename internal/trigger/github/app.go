@@ -24,7 +24,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
-// AppCredentials signs only in memory (DEC-41; req-delivery-and-forge AC-1.6).
+// AppCredentials signs only in memory (DEC-59; req-delivery-and-forge AC-1.6).
 type AppCredentials struct {
 	AppID      int64
 	PrivateKey string

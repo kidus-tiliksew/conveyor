@@ -18,7 +18,7 @@ import (
 )
 
 // kitDefaultSearchPaths is the minimal default executable search path
-// (feature-verification-kit-execution VK-4.2).
+// (component-verification-runner).
 var kitDefaultSearchPaths = []string{"/usr/local/bin", "/usr/bin", "/bin"}
 
 // kitRunnerEnvironmentKeys belong to the runner's operation channel, attempt
@@ -82,8 +82,7 @@ func kitPermissionsSourceRefusal(cfg *config.Config, path, source, refusal strin
 
 // kitToolchain is the immutable toolchain snapshot resolved once per subject.
 // Executable lookup, preflight, provenance and launch all read this value
-// (feature-verification-kit-execution VK-4.2; component-harness-execution
-// VK-EXEC-3).
+// (component-verification-runner).
 type kitToolchain struct {
 	configured                    bool
 	searchPaths                   []string

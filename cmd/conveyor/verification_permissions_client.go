@@ -14,7 +14,7 @@ import (
 
 // verificationPermissionRefusal is a server refusal of an operator grant act.
 // Reason and Recovery are present only for an authorized operator
-// (component-http-api VK-HTTP-8).
+// (component-verification-runner).
 type verificationPermissionRefusal struct {
 	Status                    int
 	Reason, Message, Recovery string

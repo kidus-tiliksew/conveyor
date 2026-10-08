@@ -26,13 +26,13 @@ import (
 
 // kitExerciseActions resolves the exercise's local actions. Refusals that an
 // operator resolves on this host (local bindings, credential handles and
-// values, service prerequisites) are admission refusals for the VK-13.2
+// values, service prerequisites) are pre-start admission refusals for the
 // checkpoint; invalid contract declarations stay ordinary refusals. Executable
 // prerequisites are resolved by toolchain preflight.
 func kitExerciseActions(e verification.Exercise, root, repository string, local []verification.VerificationPermission) ([]verification.VerificationPermission, []string, []string, error) {
 	actions := []verification.VerificationPermission{}
 	// PATH, LANG, HOME and TMPDIR come from the subject's resolved toolchain
-	// snapshot (feature-verification-kit-execution VK-4.2).
+	// snapshot (component-verification-runner).
 	env := []string{}
 	secrets := []string{}
 	for _, p := range e.Permissions {
@@ -275,7 +275,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		return err
 	}
 	defer channel.Close()
-	// Register the entire closed operation set before any child starts (VK-4.1).
+	// Register the entire closed operation set before any child starts (component-verification-service).
 	// A child that exits without signalling must still leave durable uncertainty.
 	for _, op := range e.Operations {
 		if err := v.live(launchCtx, grantID); err != nil {
@@ -293,8 +293,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	}
 	connection, _ := json.Marshal(map[string]any{"url": channel.URL + "/operations", "nonce": channel.Nonce, "operations": operations})
 	// Attempt-private HOME/TMPDIR materialization never re-reads configuration
-	// or overwrites an explicit home or setting (component-harness-execution
-	// VK-EXEC-3).
+	// or overwrites an explicit home or setting (component-verification-runner).
 	env, err = kitMergeEnvironment(toolchain.environment(dir), env, []string{"CONVEYOR_KIT_OPERATIONS=" + string(connection), "CONVEYOR_KIT_ATTEMPT_DIR=" + dir})
 	if err != nil {
 		return v.prelaunchBlocked(launchCtx, dir, runID, grantID, "child environment keys collide")
@@ -526,7 +525,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	return nil
 }
 
-// VK-4 / VK-10: an authorized attempt that cannot launch stays missing
+// component-verification-runner: an authorized attempt that cannot launch stays missing
 // execution evidence. Report only while the original authority remains valid;
 // leave prepared operations untouched for the server's reconciliation rules.
 func (v *kitVerifier) prelaunchBlocked(ctx context.Context, dir, runID, grantID, diagnostic string) error {

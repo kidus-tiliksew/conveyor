@@ -9,7 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// feature-verification-kit-execution VK-9 / DEC-43: backend-bounded metadata selection, separate from claim-bound snapshots.
+// component-verification-publication / DEC-43: backend-bounded metadata selection, separate from claim-bound snapshots.
 func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAccess, p store.VerificationPageRequest) (store.VerificationReadPage, error) {
 	cursor, err := store.ValidateVerificationPage(ctx, a, &p)
 	if err != nil {
@@ -99,7 +99,7 @@ func verificationReadProjection(kind string) string {
 	switch kind {
 	case "assertions":
 		// A described required assertion is stored as {"id","description"}
-		// (feature-verification-kit-execution VK-3.1); undescribed ones stay
+		// (component-verification-kit-contract); undescribed ones stay
 		// bare ID strings, so required status matches either form.
 		return `SELECT r.workspace_id,r.task_id,r.id,r.context_id,r.run_id,r.state,r.read_at,
  JSON_BUILD_OBJECT('type','assertion_result','assertion_id',LEFT(JSON_EXTRACT_STRING(r.body,'Envelope','payload','assertion_id'),2048),

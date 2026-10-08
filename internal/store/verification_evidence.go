@@ -209,7 +209,7 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 				e.Payload = verificationRewriteArtifact(e.Payload, a.ArtifactID, replacement.ArtifactID)
 			} else {
 				// Reusing bytes requires a same-task accepted evidence link, never merely
-				// knowledge of a content hash (VK-6). The adapter verifies retained bytes.
+				// knowledge of a content hash (component-verification-evidence). The adapter verifies retained bytes.
 				known := false
 				for _, upload := range uploads {
 					if verificationEqual(a, upload.Reference) {
