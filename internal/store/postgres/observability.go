@@ -85,6 +85,79 @@ func (s *Store) FinalizeWorkOrderAttemptObservability(ctx context.Context, workO
 	return tx.Commit(ctx)
 }
 
+// RecordWorkOrderAttemptCapture records one already-ended attempt's capture
+// for any stage (req-260820-221be8 AC-2.1; DEC-26; component-work-orders).
+// The order row lock serializes it with a concurrent successor claim and with
+// duplicate deliveries; identity comes only from the immutable claim event.
+func (s *Store) RecordWorkOrderAttemptCapture(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error) {
+	capture = store.NormalizeAttemptCapture(capture)
+	if !store.AttemptCaptureIdentityComplete(claim, capture) {
+		return core.WorkOrderAttemptCaptureResult{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	order, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), workOrderID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return core.WorkOrderAttemptCaptureResult{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	if err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	// Same predicate as store.AttemptCaptureClaimEventMatches.
+	var authorized bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM events claimed
+		WHERE claimed.workspace_id=$1 AND claimed.task_id=$2
+		  AND claimed.kind='work_order.claimed' AND claimed.payload_json->>'id'=$3
+		  AND claimed.payload_json->>'attempt_id'=$4
+		  AND claimed.payload_json->>'session_id'=$5
+		  AND COALESCE(claimed.payload_json->>'claimed_by','')=$6
+		  AND COALESCE(claimed.payload_json->>'worker_id','')=$7
+	)`, workspace(ctx), order.TaskID, order.ID, capture.AttemptID, capture.SessionID, claim.ClaimantID, claim.WorkerID).Scan(&authorized); err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	if !authorized {
+		return core.WorkOrderAttemptCaptureResult{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	existingReason, existing := "", true
+	err = tx.QueryRow(ctx, `SELECT termination_reason FROM work_order_transcript_captures
+		WHERE workspace_id=$1 AND work_order_id=$2 AND attempt_id=$3`, workspace(ctx), workOrderID, capture.AttemptID).Scan(&existingReason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, err = false, nil
+	}
+	if err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	reason, err := store.AttemptCaptureReason(order, capture, existingReason, existing)
+	if err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM work_order_activity_snapshots
+		WHERE workspace_id=$1 AND work_order_id=$2 AND attempt_id=$3`, workspace(ctx), workOrderID, capture.AttemptID); err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	result := core.WorkOrderAttemptCaptureResult{TerminationReason: reason}
+	if capture.Transcript != nil && !existing {
+		tag, insertErr := tx.Exec(ctx, `INSERT INTO work_order_transcript_captures
+			(workspace_id, work_order_id, attempt_id, content, termination_reason, truncated, captured_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT (workspace_id, work_order_id, attempt_id) DO NOTHING`,
+			workspace(ctx), workOrderID, capture.AttemptID, capture.Transcript.Content,
+			reason, capture.Transcript.Truncated, time.Now().UTC())
+		if insertErr != nil {
+			return core.WorkOrderAttemptCaptureResult{}, insertErr
+		}
+		result.Created = tag.RowsAffected() == 1
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	return result, nil
+}
+
 func (s *Store) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
 	var snapshot core.WorkOrderActivitySnapshot
 	err := s.boundary.QueryRow(ctx, `SELECT attempt_id, content, captured_at

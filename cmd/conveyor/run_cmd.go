@@ -131,7 +131,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 	var lastTUIStage runTUIStage
 	var setup localExecutionSetup
 	setupLoaded := false
-	var lastStage core.Stage
+	setupProbed := false
 	var lastRepository config.Repo
 	// One persistent program owns the terminal for the whole attached run;
 	// every attached-path print below must route through it while it lives.
@@ -184,21 +184,13 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				stopApp()
 				return printFinalRunSummaryStyled(output, item.Task, runStages, outputTerminal)
 			}
+			if !attached {
+				return reportUnattachedRunWait(output, taskID, item, len(runStages) > 0)
+			}
 			if item != nil && len(item.PendingProposals) > 0 && !interactiveTUI {
 				for _, proposal := range item.PendingProposals {
 					_, _ = fmt.Fprintf(output, "Waiting on %s proposal %s v%d; %s\n", proposal.Kind, proposal.DocumentID, proposal.Version, proposal.ActorHint)
 				}
-				if !attached {
-					return nil
-				}
-			}
-			if !attached {
-				if lastStage == core.StageSpec {
-					_, err = fmt.Fprintf(output, "task %s reached the pending spec approval gate; operator approval is required\n", taskID)
-					return err
-				}
-				_, err = fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
-				return err
 			}
 			if item == nil {
 				stopApp()
@@ -272,13 +264,6 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
 				return err
 			}
-			if strings.TrimSpace(setupName) != "" {
-				if err = probeLocalExecutionConfig(ctx, setup.Config); err != nil {
-					stopApp()
-					_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
-					return fmt.Errorf("setup %q failed pre-claim harness probe: %w", setupName, err)
-				}
-			}
 			setupLoaded = true
 		}
 		local := setup.Config
@@ -293,12 +278,6 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			}
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
-		if selected.Order.Stage == core.StageVerify {
-			if err := probeConfiguredHarness(ctx, local, selected.Harness.Name); err != nil {
-				stopApp()
-				return localExecutionSetupRemedy(configPath, err)
-			}
-		}
 		preflightErr, checked := preflights[selected.Repository.URL]
 		if !checked {
 			preflightErr = c.preflightLocalGitCredential(contextWithLocalExecutionConfig(ctx, local), selected)
@@ -307,6 +286,24 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		if preflightErr != nil {
 			stopApp()
 			return preflightErr
+		}
+		if !setupProbed {
+			// req-execution-configuration AC-10.4, AC-10.9; req-local-task-runs
+			// AC-1.4; DEC-56(2): the default and a named setup are probed the
+			// same way, locally and once, before the first claim. Every distinct
+			// stage and seat harness is probed concurrently; neither the probe
+			// nor the selection writes the persisted default.
+			if err = probeLocalExecutionConfig(ctx, local); err != nil {
+				stopApp()
+				_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
+				return localExecutionSetupRemedy(configPath, fmt.Errorf("%s failed pre-claim harness probe: %w", runSetupLabel(setupName, local), err))
+			}
+			setupProbed = true
+		} else if selected.Order.Stage == core.StageVerify {
+			if err := probeConfiguredHarness(ctx, local, selected.Harness.Name); err != nil {
+				stopApp()
+				return localExecutionSetupRemedy(configPath, err)
+			}
 		}
 		lastRepository = selected.Repository
 		stageTimeout := local.Routing.Stages[string(selected.Order.Stage)].TimeoutText
@@ -399,12 +396,59 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			return runErr
 		}
 		runStages = append(runStages, selected.Order.Stage)
-		lastStage = selected.Order.Stage
 	}
 }
 
 func taskRunReviewHasPendingProposals(item *workerservice.DispatchOrder) bool {
 	return item != nil && (item.Order.Stage == core.StageReview || item.Order.Stage == core.StageVerify) && len(item.PendingProposals) > 0
+}
+
+// reportUnattachedRunWait answers a run without a terminal from the live
+// run-order projection alone: pending proposals and a pending human gate are
+// both named, and only a projection with neither reports an absence of
+// claimable orders. It never polls, claims, renews, or decides
+// (req-local-task-runs AC-2.2, AC-2.5; component-local-launchers).
+func reportUnattachedRunWait(output io.Writer, taskID string, item *workerservice.DispatchOrder, ranStages bool) error {
+	if item != nil {
+		for _, proposal := range item.PendingProposals {
+			if _, err := fmt.Fprintf(output, "Waiting on %s proposal %s v%d; %s\n", proposal.Kind, proposal.DocumentID, proposal.Version, proposal.ActorHint); err != nil {
+				return err
+			}
+		}
+		if item.Gate != nil {
+			label := strings.TrimSpace(item.Gate.Label)
+			if label == "" {
+				label = strings.TrimSpace(item.Gate.Kind) + " gate"
+			}
+			claimed := "no work order was claimed"
+			if ranStages {
+				claimed = "no further work order was claimed"
+			}
+			parts := []string{"task " + taskID + " is waiting on " + label}
+			if summary := strings.TrimSpace(item.Gate.Summary); summary != "" {
+				parts = append(parts, summary)
+			}
+			_, err := fmt.Fprintln(output, strings.Join(append(parts, claimed), "; "))
+			return err
+		}
+		if len(item.PendingProposals) > 0 {
+			return nil
+		}
+	}
+	_, err := fmt.Fprintf(output, "task %s has no claimable spec, implement, or review order\n", taskID)
+	return err
+}
+
+// runSetupLabel names the setup a run validated and probed so a refusal
+// identifies it alongside the configuration path.
+func runSetupLabel(setupName string, local *config.Config) string {
+	if name := strings.TrimSpace(setupName); name != "" {
+		return fmt.Sprintf("setup %q", name)
+	}
+	if local != nil && strings.TrimSpace(local.DefaultSetup) != "" {
+		return fmt.Sprintf("default setup %q", local.DefaultSetup)
+	}
+	return "default setup"
 }
 
 func waitAtTaskRunGateAttached(ctx context.Context, c *client, controller *runTUIController, item workerservice.DispatchOrder, stage runTUIStage) (runGateDecision, string, error) {
@@ -1006,7 +1050,14 @@ func probeLocalExecutionConfig(ctx context.Context, local *config.Config) error 
 	}
 	for _, probe := range probes {
 		if !validLocalHarnessProbe(probe) {
-			return fmt.Errorf("harness %q failed validation probe: %s", probe.Harness, probe.Message)
+			message := strings.TrimSpace(probe.Message)
+			switch {
+			case probe.Healthy && message == "":
+				message = "probe printed no identifying output"
+			case message == "":
+				message = "probe failed without output"
+			}
+			return fmt.Errorf("harness %q failed validation probe: %s", probe.Harness, message)
 		}
 	}
 	return nil

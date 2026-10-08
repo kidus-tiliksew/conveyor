@@ -57,14 +57,25 @@ integers from 1 through 1000000. An offset above zero requires a snapshot.
 The response is `{items, total, limit, offset, next_offset?, snapshot,
 expires_at, evidence}`. Repeat the same tool and filters with the returned
 `snapshot` and `next_offset`; only `limit` and `offset` may change. Each
-snapshot freezes rendered results for five minutes, is bound to the owner,
-workspace, and query, and is held only by the serving process. Expiry, process
+snapshot freezes rendered results for five minutes, is bound to the presenting
+credential (another credential of the same user cannot use it), workspace, and
+query, and is held only by the serving process. A first `get_task`,
+`get_document`, or `get_decision` read that returns its complete single item
+retains nothing: its response has no `snapshot`, `expires_at`, or
+`next_offset`, and a client that needs the item again restarts the read. Expiry, process
 restart, another server replica, changed filters, and changed ownership refuse
 reuse. Restart at offset zero without a snapshot. Membership is rechecked on
 every call; workspace-list snapshots also recheck every listed membership.
 
 A snapshot holds at most 1000 items and 1 MiB of rendered item data. Each
-process holds at most 32 snapshots and refuses new ones while full. Each
+credential retains at most 8 snapshots (event windows included) and 16 event
+cursors across all of its workspaces; a new read at that cap evicts the same
+credential's least-recently-used snapshot or traversal, never another
+caller's. Each process holds at most 32 snapshots and 64 cursors. At that
+ceiling a new read is refused with `snapshot capacity reached: process limit
+32 retained snapshots; retry at <time> after expiry (within 5 minutes)` (or
+the `event cursor capacity reached: process limit 64 retained cursors` form),
+naming the earliest expiry; pages of existing snapshots still work. Each
 response's JSON text is capped at 64 KiB. Oversized reads fail without partial
 results: narrow filters or reduce the page size. A single document/task too
 large for that response must be read through its existing authenticated REST
@@ -130,7 +141,7 @@ the ordinary `workspace_id`, `task_id`, optional exact `event_kind`, and
   request: it returns the same window until you use that window's `snapshot`
   or its `next_cursor`, after which the consumed cursor is retired. Opening a
   window retires its predecessor's snapshot, so one traversal occupies one of
-  the process's 32 snapshot slots no matter how many windows it spans.
+  its credential's snapshot slots no matter how many windows it spans.
   Capacity admission counts the cache after that replacement, so advancing an
   existing traversal is never refused for the slot it frees.
 - **Errors and restarts.** `event <id> exceeds the 65536-byte output budget`
@@ -142,7 +153,9 @@ the ordinary `workspace_id`, `task_id`, optional exact `event_kind`, and
   restart read` covers a retired, expired, tampered, or foreign cursor or
   snapshot, a changed filter, a process restart, and another replica. Expiry
   stays at the first window's five-minute deadline and is never extended. A
-  full cache refuses new traversals with `snapshot capacity reached`.
+  full process cache refuses new traversals with `snapshot capacity reached`
+  and the earliest expiry; a credential at its own cap evicts its
+  least-recently-used traversal instead.
 - **Authorization.** Every page and cursor rechecks the user credential,
   membership, and `view_workspace` before any cache or store access; revoked
   access answers `workspace_not_found`. Redaction, payload allowlisting, exact

@@ -517,6 +517,7 @@ func testHarnessObservability(t *testing.T, format string) {
 	var transcript *core.WorkOrderAttemptTranscript
 	var failureDetail string
 	checkpointRequests := 0
+	captureRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
@@ -552,10 +553,27 @@ func testHarnessObservability(t *testing.T, format string) {
 			}
 			checkpointRequests++
 			if request.Transcript != nil {
-				transcript = request.Transcript
-				panic(http.ErrAbortHandler)
+				// The Git audit never carries this launcher's spool: its
+				// producer may be a predecessor attempt.
+				t.Errorf("checkpoint audit carried a transcript")
 			}
 			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
+		case "attempt-observability":
+			var capture core.WorkOrderAttemptCapture
+			if err := json.NewDecoder(r.Body).Decode(&capture); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			captureRequests++
+			transcript = capture.Transcript
+			mu.Unlock()
+			if capture.AttemptID != "attempt-observability" {
+				t.Errorf("capture attempt=%q", capture.AttemptID)
+			}
+			// Capture delivery is best-effort: an aborted response must not
+			// change the ending.
+			panic(http.ErrAbortHandler)
 		case "release":
 			var request struct {
 				FailureDetail string `json:"failure_detail"`
@@ -614,8 +632,8 @@ func testHarnessObservability(t *testing.T, format string) {
 	if format == "opencode" && !strings.Contains(failureDetail, "! agent step ended early · reason unknown") {
 		t.Fatalf("missing flushed final warning: %q", failureDetail)
 	}
-	if checkpointRequests != 2 || !strings.Contains(stderr.String(), "retrying checkpoint without transcript") {
-		t.Fatalf("checkpoint_requests=%d stderr=%q", checkpointRequests, stderr.String())
+	if checkpointRequests != 1 || captureRequests != 1 || !strings.Contains(stderr.String(), "deliver attempt transcript capture") {
+		t.Fatalf("checkpoint_requests=%d capture_requests=%d stderr=%q", checkpointRequests, captureRequests, stderr.String())
 	}
 	if !checkpointReceivedToken {
 		t.Fatal("worker-side checkpoint push did not receive the child-only Git credential environment")
@@ -2337,6 +2355,7 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 			var mu sync.Mutex
 			reconcileCalls := 0
 			releases := make(chan core.WorkOrderRelease, 1)
+			captures := make(chan core.WorkOrderAttemptCapture, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if serveDirectTaskGET(w, r) {
 					return
@@ -2348,8 +2367,13 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 					w.WriteHeader(http.StatusNoContent)
 				case strings.HasSuffix(r.URL.Path, "/claim"):
 					_ = json.NewEncoder(w).Encode(core.WorkOrder{
-						ID: "exit-checkpoint-order", State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(time.Minute),
+						ID: "exit-checkpoint-order", State: core.WorkOrderClaimed, AttemptID: "attempt-exit-checkpoint", LeaseExpiresAt: time.Now().Add(time.Minute),
 					})
+				case strings.HasSuffix(r.URL.Path, "/attempt-observability"):
+					var capture core.WorkOrderAttemptCapture
+					_ = json.NewDecoder(r.Body).Decode(&capture)
+					captures <- capture
+					_ = json.NewEncoder(w).Encode(core.WorkOrderAttemptCaptureResult{Created: true, TerminationReason: capture.TerminationReason})
 				case strings.HasSuffix(r.URL.Path, "/reconcile"):
 					mu.Lock()
 					reconcileCalls++
@@ -2418,6 +2442,30 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 				strings.Contains(presented.String(), test.checkpointReason)
 			if hasPause != test.wantPause {
 				t.Fatalf("checkpoint pause=%t want=%t output=%q", hasPause, test.wantPause, presented.String())
+			}
+			// Every mediated ending delivers exactly one capture of this attempt,
+			// bound to the reason the ending recorded: the checkpoint reason, the
+			// child-failure release reason, or no declaration when the persisted
+			// reason could not be confirmed.
+			wantCaptureReason := test.checkpointReason
+			if test.wantRelease {
+				wantCaptureReason = "could not confirm work-order completion"
+			}
+			if test.reconcileFailure {
+				wantCaptureReason = ""
+			}
+			select {
+			case capture := <-captures:
+				if capture.AttemptID != "attempt-exit-checkpoint" || capture.TerminationReason != wantCaptureReason || capture.Transcript == nil {
+					t.Fatalf("capture=%+v want reason %q", capture, wantCaptureReason)
+				}
+			default:
+				t.Fatal("ending delivered no capture")
+			}
+			select {
+			case duplicate := <-captures:
+				t.Fatalf("duplicate capture: %+v", duplicate)
+			default:
 			}
 			select {
 			case release := <-releases:
@@ -3334,7 +3382,8 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	mode := ""
 	for _, arg := range os.Args {
 		switch arg {
-		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability", "env-branch":
+		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability", "env-branch",
+			"capture-await-exit", "capture-output-await-exit", "capture-output-await-emit-exit", "capture-flood", "crash-child":
 			mode = arg
 		}
 	}
@@ -3404,6 +3453,39 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		// Exit directly so the Go test runner does not append PASS to the
 		// deliberately unterminated final harness event.
 		os.Exit(0)
+	case "capture-await-exit":
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(captureHelperExitCode())
+	case "capture-output-await-exit":
+		fmt.Fprintln(os.Stdout, "capture activity")
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(captureHelperExitCode())
+	case "capture-output-await-emit-exit":
+		fmt.Fprintln(os.Stdout, "initial activity")
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		fmt.Fprintln(os.Stdout, "deadline activity")
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO_2"))
+		os.Exit(captureHelperExitCode())
+	case "crash-child":
+		// The harness of a launcher the test will SIGKILL: it produces output,
+		// reports its PID (its process group) on the readiness pipe, and then
+		// blocks until the test kills it.
+		fmt.Fprintln(os.Stdout, "crash child activity")
+		ready, err := os.OpenFile(os.Getenv("CONVEYOR_CRASH_READY"), os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(ready, "%d\n", os.Getpid())
+		_ = ready.Close()
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(0)
+	case "capture-flood":
+		line := strings.Repeat("a", 1023) + "\n"
+		for written := 0; written < 5*1024*1024; written += len(line) {
+			fmt.Fprint(os.Stdout, line)
+		}
+		fmt.Fprintln(os.Stdout, "newest tail marker")
+		os.Exit(0)
 	case "stall-deadline-race":
 		raceDirectory := os.Getenv("CONVEYOR_FAKE_HARNESS_RACE_DIR")
 		fmt.Fprintln(os.Stdout, "initial activity")
@@ -3415,6 +3497,26 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		waitForWorkerHelperFile(t, filepath.Join(raceDirectory, "finish"))
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// awaitCaptureFIFO blocks the helper child until the test opens and closes
+// the named pipe for writing. It is an ordering signal, not a timer.
+func awaitCaptureFIFO(t *testing.T, path string) {
+	t.Helper()
+	pipe, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, pipe)
+	_ = pipe.Close()
+}
+
+func captureHelperExitCode() int {
+	code, err := strconv.Atoi(os.Getenv("CONVEYOR_CAPTURE_EXIT"))
+	if err != nil {
+		return 0
+	}
+	return code
 }
 
 func waitForWorkerHelperFile(t *testing.T, path string) {

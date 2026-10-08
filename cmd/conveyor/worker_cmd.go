@@ -634,6 +634,15 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 				}
 				return localExecutionSetupRemedy(configPath, selectErr)
 			}
+			// Every stage launches only on a healthy, unexpired local probe of
+			// the exact harness definition this iteration loaded; otherwise the
+			// order stays queued and unrelated active children continue
+			// (req-execution-configuration AC-10.4, AC-10.9; DEC-56(2)).
+			if admitErr := harnessProbes.admit(selected.Harness, time.Now().UTC()); admitErr != nil {
+				reportWorkerProbeRefusal(selected, localExecutionSetupRemedy(configPath, admitErr))
+				overflowSkipped = true
+				continue
+			}
 			if selected.Order.Stage == core.StageVerify {
 				if err := probeConfiguredHarness(ctx, setup.Config, selected.Harness.Name); err != nil {
 					fmt.Fprintf(os.Stderr, "skip work order %s: %v\n", selected.Order.ID, localExecutionSetupRemedy(configPath, err))
@@ -658,6 +667,12 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 					if retryErr := waitForWorkerReconnect(ctx, reconnect, &retryDelay, "heartbeat after Git preflight", err); retryErr != nil {
 						return retryErr
 					}
+					continue
+				}
+				// A fresh Git check can also outlast the probe observation.
+				if admitErr := harnessProbes.admit(selected.Harness, time.Now().UTC()); admitErr != nil {
+					reportWorkerProbeRefusal(selected, localExecutionSetupRemedy(configPath, admitErr))
+					overflowSkipped = true
 					continue
 				}
 			}
@@ -974,8 +989,14 @@ func probeHarnessTargets(ctx context.Context, targets []workerservice.HarnessPro
 			command := exec.CommandContext(probeCtx, harness.ProbeCommand[0], harness.ProbeCommand[1:]...)
 			command.Env = isolatedChildEnvironment(os.Environ(), nil)
 			output, err := command.CombinedOutput()
+			timedOut := err != nil && ctx.Err() == nil && errors.Is(probeCtx.Err(), context.DeadlineExceeded)
 			cancel()
 			message := strings.TrimSpace(string(output))
+			if timedOut {
+				// Name the bound so a refusal remedy distinguishes a slow
+				// harness from a broken one.
+				message = strings.TrimSuffix(fmt.Sprintf("probe timed out after %s; %s", timeout, message), "; ")
+			}
 			if len(message) > 500 {
 				message = message[:500]
 			}
@@ -1130,6 +1151,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	var redactedStdout, redactedStderr *localGitOutputWriter
 	var failureTail *boundedTailWriter
 	var transcriptSpool *boundedTranscriptSpool
+	// attemptCapture stays nil until the harness child starts: a pre-launch
+	// failure has no harness session and therefore no transcript to capture
+	// (req-260820-221be8 AC-2.1; component-local-launchers).
+	var attemptCapture *attemptCaptureFinalizer
 	var terminalRenderer *harnessEventRenderer
 	var failureRenderer *harnessEventRenderer
 	// workingDirectory is the launcher-resolved child checkout. The checkpoint
@@ -1164,7 +1189,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		if strings.HasPrefix(reason, "claim authority lost") {
 			cause = core.WorkOrderReleaseCauseLeaseLoss
 		}
-		return c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
+		releaseErr := c.releaseDispatchOrderContext(releaseCtx, credential, item, core.WorkOrderRelease{SessionID: sessionID, Outcome: outcome, Reason: reason, Cause: cause, ExitStatus: exitStatus, FailureDetail: detail})
+		if releaseErr != nil {
+			// The launcher could not prove it committed this ending; let
+			// Conveyor bind any capture to the attempt's persisted ending.
+			attemptCapture.arm("")
+		} else {
+			attemptCapture.arm(reason)
+		}
+		return releaseErr
 	}
 	var childStopped func() bool
 	var writer *worktreeWriter
@@ -1230,16 +1263,17 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		if originalReason == "" {
 			originalReason = reason
 		}
+		// The audit carries no transcript: the producer may be a predecessor
+		// attempt, and this launcher's spool belongs only to its own attempt.
+		// The ending capture is delivered separately for every stage through
+		// attemptCapture (component-attempt-checkpoints; DEC-26).
 		auditRequest := core.WorktreeHandoffRequest{SessionID: sessionID, Generation: handoff.Writer.Generation, Action: "audit", Producer: producer, CommitSHA: result.CommitSHA, OriginalReason: originalReason}
-		if transcriptSpool != nil {
-			if content, truncated, readErr := transcriptSpool.Snapshot(); readErr == nil {
-				auditRequest.Transcript = &core.WorkOrderAttemptTranscript{Content: content, Truncated: truncated}
-			}
-		}
 		_, err := c.worktreeHandoffContext(checkpointCtx, credential, item, auditRequest)
-		if err != nil && auditRequest.Transcript != nil {
-			_, _ = fmt.Fprintf(stderr, "warning: checkpoint response failed: %v; retrying checkpoint without transcript because capture is best-effort\n", err)
-			auditRequest.Transcript = nil
+		if err != nil {
+			// The audit is idempotent for one producer and commit, so a lost
+			// response is retried once exactly as before the transcript moved
+			// to the separate capture delivery.
+			_, _ = fmt.Fprintf(stderr, "warning: checkpoint response failed: %v; retrying the idempotent audit once\n", err)
 			_, err = c.worktreeHandoffContext(checkpointCtx, credential, item, auditRequest)
 		}
 		if err != nil {
@@ -1275,7 +1309,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		_ = makeCheckoutWritable(directory)
 		_ = os.RemoveAll(directory)
 	}()
-	transcriptSpool, err = newBoundedTranscriptSpool(directory, workerAttemptTranscriptLimit)
+	transcriptSpool, err = newAttemptTranscriptSpool(directory, workerAttemptTranscriptLimit)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "warning: create attempt transcript spool: %v; continuing because capture is best-effort\n", err)
 		transcriptSpool = nil
@@ -1482,10 +1516,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return lost
 	}
 	leaseExpiresAt = handoffLease
+	activityObservedHook := workerActivityObservedTestHook
 	newCommand := func(commandArgv []string) *exec.Cmd {
 		command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
-		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
-		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
+		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity, observed: activityObservedHook}
+		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity, observed: activityObservedHook}
 		command.Env = childEnv
 		if writer != nil {
 			command.ExtraFiles = []*os.File{writer.file}
@@ -1522,7 +1557,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		cancel()
 	}
 	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
+	childWaitedHook := workerChildWaitedTestHook
+	go func() {
+		done <- command.Wait()
+		if childWaitedHook != nil {
+			childWaitedHook()
+		}
+	}()
 	processGroup := harnessProcessGroup{pgid: command.Process.Pid, done: done}
 	childJoined := false
 	terminateChild := func(completed *error) error {
@@ -1536,6 +1577,23 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 	}()
 	childStopped = func() bool { return childJoined && !processGroupAlive(processGroup.pgid) }
+	attemptCapture = newAttemptCaptureFinalizer(sessionID, claimed.AttemptID, func(captureCtx context.Context, capture core.WorkOrderAttemptCapture) error {
+		_, captureErr := c.captureDispatchAttemptContext(captureCtx, credential, item, capture)
+		return captureErr
+	}, stderr)
+	if transcriptSpool != nil {
+		attemptCapture.setSnapshot(transcriptSpool.Snapshot)
+	}
+	// Runs before the spool and attempt directory are removed. The child
+	// process group is stopped and output flushed before the single capture
+	// delivery, whichever ending path returned.
+	defer func() {
+		if !childJoined {
+			_ = terminateChild(nil)
+		}
+		flushOutput()
+		attemptCapture.finish()
+	}()
 	firstActivityTimer := time.NewTimer(firstActivityTimeout)
 	defer firstActivityTimer.Stop()
 	firstActivityDeadline := firstActivityTimer.C
@@ -1614,6 +1672,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		if checkpointReleaseReason == "" {
 			return nil
 		}
+		attemptCapture.arm(checkpointReleaseReason)
 		if err := checkpointAttempt(checkpointReleaseReason); err != nil {
 			return fmt.Errorf("handoff preserved its release; checkpoint recovery pending: %w", err)
 		}
@@ -1677,6 +1736,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				return presentCheckpointRelease()
 			}
 			if checkpointErr != nil {
+				attemptCapture.arm("")
 				return fmt.Errorf("confirm work-order completion: %w", checkpointErr)
 			}
 			_ = releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, "could not confirm work-order completion", exitStatus)
@@ -1715,8 +1775,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			return errors.New(reason)
 		}
 		if renewed.State != core.WorkOrderSubmitted && renewed.State != core.WorkOrderCompleted {
+			attemptCapture.arm("")
 			return fmt.Errorf("harness exited without authorized completion; server reports %s (%s)", renewed.State, reconciled.Reason)
 		}
+		attemptCapture.arm(core.AttemptHandoffTerminationReason(renewed.State))
 		// A successful review verdict submission is authoritative even when
 		// the review child subsequently reports a non-zero exit.
 		if waitErr != nil && item.Order.Stage != core.StageReview {
@@ -1751,6 +1813,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			if checkpointReleaseReason != "" {
 				return presentCheckpointRelease()
 			}
+			attemptCapture.arm(core.AttemptHandoffTerminationReason(finalizedOrder.State))
 			return nil
 		case <-firstActivityObserved:
 			if !firstActivityTimer.Stop() {
@@ -1768,6 +1831,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				stallDeadline = stallTimer.C
 			}
 		case <-firstActivityDeadline:
+			if hook := workerFirstActivityDeadlineTestHook; hook != nil {
+				hook()
+			}
 			// Prefer output or normal child exit when either raced the timer.
 			select {
 			case <-firstActivity.observed:
@@ -1794,12 +1860,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				}
 				_ = terminateChild(nil)
 				if checkpointErr != nil {
+					attemptCapture.arm("")
 					return checkpointErr
 				}
 				if workerOrderPreempted(renewErr) {
+					attemptCapture.arm("")
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
 				if workerOrderCancelled(renewErr) {
+					attemptCapture.arm("")
 					return errWorkerOrderCancelled
 				}
 				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
@@ -1811,6 +1880,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = terminateChild(nil)
+				attemptCapture.arm("")
 				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -1872,12 +1942,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				}
 				_ = terminateChild(nil)
 				if checkpointErr != nil {
+					attemptCapture.arm("")
 					return checkpointErr
 				}
 				if workerOrderPreempted(renewErr) {
+					attemptCapture.arm("")
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
 				if workerOrderCancelled(renewErr) {
+					attemptCapture.arm("")
 					return errWorkerOrderCancelled
 				}
 				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
@@ -1889,6 +1962,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = terminateChild(nil)
+				attemptCapture.arm("")
 				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -1937,12 +2011,15 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				}
 				_ = terminateChild(nil)
 				if checkpointErr != nil {
+					attemptCapture.arm("")
 					return checkpointErr
 				}
 				if workerOrderPreempted(renewErr) {
+					attemptCapture.arm("")
 					return attemptAuthorityLoss(errWorkerOrderPreempted.Error(), checkpointAttempt)
 				}
 				if workerOrderCancelled(renewErr) {
+					attemptCapture.arm("")
 					return errWorkerOrderCancelled
 				}
 				_ = releaseAfterCheckpoint(core.WorkOrderOutcomeReleased, "claim authority lost: "+renewErr.Error(), nil)
@@ -1957,6 +2034,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			if renewed.State != core.WorkOrderClaimed {
 				_ = terminateChild(nil)
+				attemptCapture.arm("")
 				return attemptAuthorityLoss("claim authority lost: server reports "+string(renewed.State), checkpointAttempt)
 			}
 			leaseExpiresAt = renewed.LeaseExpiresAt
@@ -2104,11 +2182,16 @@ func (s *firstActivitySignal) generationUnchanged(generation uint64) bool {
 type firstActivityWriter struct {
 	Destination io.Writer
 	Signal      *firstActivitySignal
+	// observed is a test seam captured at launch (workerActivityObservedTestHook).
+	observed func()
 }
 
 func (w *firstActivityWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
 		w.Signal.observe()
+		if w.observed != nil {
+			w.observed()
+		}
 	}
 	return w.Destination.Write(p)
 }
@@ -2329,6 +2412,23 @@ var workerPreStartTestHook func(context.Context)
 // workerStallDeadlineTestHook lets tests hold a selected stall-timer
 // generation while child output races that boundary.
 var workerStallDeadlineTestHook func()
+
+// workerFirstActivityDeadlineTestHook runs when the first-activity timer is
+// selected, before the launcher re-checks output and child exit, so tests can
+// make either race that boundary deterministically.
+var workerFirstActivityDeadlineTestHook func()
+
+// workerChildWaitedTestHook runs after the child's exit status is queued for
+// the supervision loop, proving to a test that child exit is observable.
+var workerChildWaitedTestHook func()
+
+// workerActivityObservedTestHook runs after child output advanced the
+// activity generation and before that output is forwarded.
+var workerActivityObservedTestHook func()
+
+// newAttemptTranscriptSpool creates the attempt's bounded transcript spool;
+// tests replace it to exercise spool failures.
+var newAttemptTranscriptSpool = newBoundedTranscriptSpool
 
 // preStartClaimRenewal keeps a claimed work order's lease renewed between a
 // successful claim and child launch, when pre-start setup can outlast the

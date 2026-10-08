@@ -165,6 +165,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"LegacyVerificationEvidence", true, runLegacyVerificationEvidence},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
+		{"AttemptObservability", true, runAttemptObservability},
 		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
 		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},

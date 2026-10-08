@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -231,6 +232,7 @@ func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFla
 	command := `command: ["` + strings.ReplaceAll(os.Args[0], `"`, `\"`) + `", "-test.run=TestTaskRunHarnessHelper", "--", "{prompt}", "{mcp_config}"]`
 	localConfig := strings.Replace(string(template), `command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]`, command, 1)
 	localConfig = strings.ReplaceAll(localConfig, "effort: high", `effort: ""`)
+	localConfig = withHealthyRunProbe(t, localConfig)
 	if localConfig == string(template) {
 		t.Fatal("local harness command fixture was not replaced")
 	}
@@ -272,7 +274,24 @@ func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFla
 	return stats, output.String(), err
 }
 
+// specGateProjection is the live run-order projection the server returns once
+// a submitted plan is waiting at the spec approval gate.
+func specGateProjection() *workerservice.DispatchOrder {
+	return &workerservice.DispatchOrder{
+		Task:     core.Task{ID: "target", Title: "Plan target", State: core.TaskAwaiting, Repo: "conveyor", BaseBranch: "main"},
+		Gate:     &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan v1", SpecVersion: 1},
+		Dispatch: "run", Auth: "user",
+	}
+}
+
 func runSpecTaskScenario(t *testing.T, input string, step, terminal bool) (taskRunStats, string, error) {
+	t.Helper()
+	return runSpecTaskScenarioAfter(t, input, step, terminal, specGateProjection())
+}
+
+// runSpecTaskScenarioAfter runs a spec stage and then serves after as the live
+// projection; nil serves an empty (no content) projection.
+func runSpecTaskScenarioAfter(t *testing.T, input string, step, terminal bool, after *workerservice.DispatchOrder) (taskRunStats, string, error) {
 	t.Helper()
 	t.Setenv("CONVEYOR_FAKE_TASK_RUN_HARNESS", "1")
 	origin := filepath.Join(t.TempDir(), "origin.git")
@@ -338,7 +357,11 @@ func runSpecTaskScenario(t *testing.T, input string, step, terminal bool) (taskR
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
 			stats.getCalls++
 			if stats.states["target-spec-1"] == core.WorkOrderCompleted {
-				w.WriteHeader(http.StatusNoContent)
+				if after == nil {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(after)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
@@ -372,7 +395,7 @@ func runSpecTaskScenario(t *testing.T, input string, step, terminal bool) (taskR
 		t.Fatal(err)
 	}
 	command := `command: ["` + strings.ReplaceAll(os.Args[0], `"`, `\"`) + `", "-test.run=TestTaskRunHarnessHelper", "--", "{prompt}", "{mcp_config}"]`
-	localConfig := strings.Replace(string(template), `command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]`, command, 1)
+	localConfig := withHealthyRunProbe(t, strings.Replace(string(template), `command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]`, command, 1))
 	configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
 	if err = os.WriteFile(configPath, []byte(localConfig), 0o600); err != nil {
 		t.Fatal(err)
@@ -396,7 +419,7 @@ func TestRunTaskExecutesConfirmedSpecAndStopsAtOperatorGate(t *testing.T) {
 	if len(stats.progress) != 1 || stats.progress[0] != "conveyor run mode: confirmed-per-stage" {
 		t.Fatalf("progress=%q", stats.progress)
 	}
-	for _, want := range []string{"Next: spec work order target-spec-1", "Execution: harness local-agent, model gpt-5.6-sol, effort high, timeout 30m", "Proceed with spec?", "pending spec approval gate", "operator approval is required"} {
+	for _, want := range []string{"Next: spec work order target-spec-1", "Execution: harness local-agent, model gpt-5.6-sol, effort high, timeout 30m", "Proceed with spec?", "task target is waiting on spec approval gate; submitted execution plan v1; no further work order was claimed\n"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}
@@ -1448,7 +1471,7 @@ func TestRunTaskDefaultNonTerminalStopsAtPlanGateWithoutClaim(t *testing.T) {
 	if len(stats.progress) != 1 || stats.progress[0] != "conveyor run mode: auto-chained" {
 		t.Fatalf("progress=%q", stats.progress)
 	}
-	if !strings.Contains(output, "pending spec approval gate") || strings.Contains(output, "Proceed with") {
+	if !strings.Contains(output, "task target is waiting on spec approval gate; submitted execution plan v1; no further work order was claimed\n") || strings.Contains(output, "Proceed with") {
 		t.Fatalf("output=%q", output)
 	}
 }
@@ -1486,7 +1509,7 @@ func TestTaskRunReviewClaimRefusalRefreshesAndWaitsOnlyForProposalCode(t *testin
 				t.Fatal(err)
 			}
 			configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
-			if err = os.WriteFile(configPath, template, 0o600); err != nil {
+			if err = os.WriteFile(configPath, []byte(withHealthyRunProbe(t, string(template))), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			t.Chdir(fixture.primary)
@@ -1627,5 +1650,409 @@ func TestContextFreshnessSummaryDoesNotAcknowledgeOrPoll(t *testing.T) {
 	changed, summary := contextFreshnessSummary(f)
 	if changed == key || !strings.Contains(summary, "4 omissions, 1 truncated inputs") || !strings.Contains(summary, "incomplete coverage true") || !strings.Contains(summary, "observation_unavailable") {
 		t.Fatal(summary)
+	}
+}
+
+// withHealthyRunProbe replaces the example harness's absent agent-cli probe
+// with a present, healthy one: every run, with or without a named setup,
+// probes its setup before the first claim (req-execution-configuration
+// AC-10.4).
+func withHealthyRunProbe(t *testing.T, value string) string {
+	t.Helper()
+	const probe = "probe_command: [agent-cli, --version]"
+	if !strings.Contains(value, probe) {
+		t.Fatal("example harness probe fixture was not found")
+	}
+	return strings.Replace(value, probe, "probe_command: [echo, conveyor-probe-ok]", 1)
+}
+
+type unattachedRunCalls struct {
+	reads, claims, renewals, other int
+	paths                          []string
+}
+
+// runUnattachedProjection invokes a run without a terminal against one fixed
+// live projection; nil serves an empty projection.
+func runUnattachedProjection(t *testing.T, projection *workerservice.DispatchOrder, inputTerminal bool) (unattachedRunCalls, string, error) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls unattachedRunCalls
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls.paths = append(calls.paths, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			calls.reads++
+			if projection == nil {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(projection)
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			calls.claims++
+			http.Error(w, "must not claim", http.StatusInternalServerError)
+		case strings.HasSuffix(r.URL.Path, "/renew"):
+			calls.renewals++
+			http.Error(w, "must not renew", http.StatusInternalServerError)
+		default:
+			calls.other++
+			http.Error(w, "must not mutate", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	c := &client{base: server.URL, token: "user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	err := runTaskWithPresentation(ctx, c, "target", filepath.Join(t.TempDir(), "unused.yaml"), strings.NewReader(""), &output, false, inputTerminal, false, false)
+	mu.Lock()
+	defer mu.Unlock()
+	return calls, output.String(), err
+}
+
+func TestUnattachedRunNamesLivePendingGate(t *testing.T) {
+	task := core.Task{ID: "target", Title: "Ship target", State: core.TaskAwaiting, Branch: "conveyor/task-target", BaseBranch: "main", NextStage: core.StageReview}
+	for _, gate := range []workerservice.TaskRunGate{
+		{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan v3", SpecVersion: 3, CanOperate: true},
+		{Kind: "merge", Label: "merge approval gate", Summary: "conveyor/task-target into main", CanOperate: true},
+		{Kind: "plan_revision", Label: "plan revision gate", Summary: "implementation requested revision of execution plan v2", PlanVersion: 2},
+		{Kind: "human", Label: "human recovery gate", Summary: "task is awaiting_human after review"},
+	} {
+		for _, inputTerminal := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/input-terminal=%t", gate.Kind, inputTerminal), func(t *testing.T) {
+				gate := gate
+				calls, output, err := runUnattachedProjection(t, &workerservice.DispatchOrder{Task: task, Gate: &gate, Dispatch: "run", Auth: "user"}, inputTerminal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "task target is waiting on " + gate.Label + "; " + gate.Summary + "; no work order was claimed\n"
+				if output != want {
+					t.Fatalf("output=%q want %q", output, want)
+				}
+				if calls.reads != 1 || calls.claims != 0 || calls.renewals != 0 || calls.other != 0 {
+					t.Fatalf("unattached gate run made requests %v", calls.paths)
+				}
+			})
+		}
+	}
+}
+
+func TestUnattachedRunGateAndProposalsAreBothShown(t *testing.T) {
+	proposals := []workerservice.TaskRunProposal{
+		{Kind: "requirement", DocumentID: "req-local-task-runs", Title: "Runs", Version: 6, ActorHint: "an operator can confirm"},
+		{Kind: "decision", DocumentID: "DEC-60", Title: "Probe", Version: 1, ActorHint: "an operator can confirm"},
+	}
+	task := core.Task{ID: "target", Title: "Ship target", State: core.TaskAwaiting}
+	for name, projection := range map[string]workerservice.DispatchOrder{
+		"gate": {Task: task, PendingProposals: proposals, Gate: &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: "conveyor/task-target into main"}},
+		"queued review": {
+			Order: core.WorkOrder{ID: "target-review-1", TaskID: "target", Stage: core.StageReview, State: core.WorkOrderQueued, ReviewSeat: 1},
+			Task:  task, PendingProposals: proposals,
+			Gate: &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: "task is awaiting_human after review"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls, output, err := runUnattachedProjection(t, &projection, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantLines := []string{
+				"Waiting on requirement proposal req-local-task-runs v6; an operator can confirm",
+				"Waiting on decision proposal DEC-60 v1; an operator can confirm",
+				"task target is waiting on " + projection.Gate.Label + "; " + projection.Gate.Summary + "; no work order was claimed",
+			}
+			if output != strings.Join(wantLines, "\n")+"\n" {
+				t.Fatalf("output=%q", output)
+			}
+			if calls.reads != 1 || calls.claims != 0 || calls.renewals != 0 || calls.other != 0 {
+				t.Fatalf("unattached run made requests %v", calls.paths)
+			}
+		})
+	}
+}
+
+func TestUnattachedRunDoesNotInferGateFromLastStage(t *testing.T) {
+	const idle = "task target has no claimable spec, implement, or review order\n"
+	t.Run("fresh idle projection", func(t *testing.T) {
+		calls, output, err := runUnattachedProjection(t, &workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskRunning}}, false)
+		if err != nil || output != idle || calls.reads != 1 || calls.claims != 0 || calls.other != 0 {
+			t.Fatalf("err=%v output=%q calls=%v", err, output, calls.paths)
+		}
+	})
+	t.Run("fresh empty projection", func(t *testing.T) {
+		calls, output, err := runUnattachedProjection(t, nil, false)
+		if err != nil || output != idle || calls.reads != 1 || calls.claims != 0 || calls.other != 0 {
+			t.Fatalf("err=%v output=%q calls=%v", err, output, calls.paths)
+		}
+	})
+	t.Run("fresh parked task with gate", func(t *testing.T) {
+		calls, output, err := runUnattachedProjection(t, &workerservice.DispatchOrder{
+			Task: core.Task{ID: "target", Title: "Ship target", State: core.TaskParked},
+			Gate: &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: "task is parked after review"},
+		}, false)
+		if err != nil || strings.Contains(output, "waiting on") || strings.Contains(output, "no claimable") || calls.claims != 0 || calls.other != 0 {
+			t.Fatalf("terminal handling was not authoritative: err=%v output=%q calls=%v", err, output, calls.paths)
+		}
+	})
+	for name, after := range map[string]*workerservice.DispatchOrder{
+		"cleared after spec": {Task: core.Task{ID: "target", Title: "Plan target", State: core.TaskRunning}, Dispatch: "run", Auth: "user"},
+		"empty after spec":   nil,
+		"closed after spec":  {Task: core.Task{ID: "target", Title: "Plan target", State: core.TaskClosed}, Dispatch: "run", Auth: "user"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stats, output, err := runSpecTaskScenarioAfter(t, "", false, false, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats.claimCalls != 1 || stats.planSubmits != 1 {
+				t.Fatalf("stats=%+v", stats)
+			}
+			if strings.Contains(output, "spec approval gate") || strings.Contains(output, "waiting on") || strings.Contains(output, "operator approval is required") {
+				t.Fatalf("run inferred a gate from its last stage: %q", output)
+			}
+			if after != nil && after.Task.State == core.TaskClosed {
+				if strings.Contains(output, "no claimable") || !strings.Contains(output, "closed") {
+					t.Fatalf("terminal projection output=%q", output)
+				}
+			} else if !strings.HasSuffix(output, idle) {
+				t.Fatalf("cleared projection output=%q", output)
+			}
+		})
+	}
+}
+
+const runProbeHealthyScript = "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$CONVEYOR_TEST_RUN_PROBE_LOG\"\nprintf 'probe ok %s\\n' \"$1\"\n"
+
+// writeRunProbeSetupConfig writes the example configuration with distinct
+// stage, seat, and named-setup harnesses. The default setup routes every
+// stage through local-agent and its two seats through seat-a and seat-b; the
+// named setup alt routes everything through alt-agent. probes overrides a
+// harness's probe argv (YAML flow sequence) and timeouts its probe timeout;
+// every other harness runs the healthy logging probe.
+func writeRunProbeSetupConfig(t *testing.T, probes, timeouts map[string]string) string {
+	t.Helper()
+	directory := t.TempDir()
+	healthy := filepath.Join(directory, "probe-healthy")
+	if err := os.WriteFile(healthy, []byte(runProbeHealthyScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONVEYOR_TEST_RUN_PROBE_LOG", filepath.Join(directory, "probes.log"))
+	template, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(template)
+	start := strings.Index(value, "harnesses:\n")
+	end := strings.Index(value, "\n\n# One durable review order")
+	if start < 0 || end < start {
+		t.Fatal("example harness block was not found")
+	}
+	var harnesses strings.Builder
+	harnesses.WriteString("harnesses:\n")
+	for _, name := range []string{"local-agent", "seat-a", "seat-b", "alt-agent"} {
+		probe, ok := probes[name]
+		if !ok {
+			probe = `["` + healthy + `", ` + name + `]`
+		}
+		timeout, ok := timeouts[name]
+		if !ok {
+			timeout = "10s"
+		}
+		fmt.Fprintf(&harnesses, "  - name: %s\n    mcp_transport: json_file\n    command: [agent-cli, --prompt, \"{prompt}\", --mcp-config, \"{mcp_config}\"]\n    model_args: [--model, \"{model}\"]\n    effort_args:\n      high: [--effort, high]\n    probe_command: %s\n    probe_timeout: %s\n", name, probe, timeout)
+	}
+	value = value[:start] + strings.TrimSuffix(harnesses.String(), "\n") + value[end:]
+	for _, replacement := range [][2]string{
+		{"    - model: gpt-5.6\n      harness: local-agent\n    - model: claude-opus-4.1\n      harness: local-agent", "    - model: gpt-5.6\n      harness: seat-a\n    - model: claude-opus-4.1\n      harness: seat-b"},
+		{"        - {model: gpt-5.6, harness: local-agent}\n        - {model: claude-opus-4.1, harness: local-agent}\n", "        - {model: gpt-5.6, harness: seat-a}\n        - {model: claude-opus-4.1, harness: seat-b}\n" +
+			"  - name: alt\n    refresh_review: delta\n    execution_settings:\n      control_plane:\n        triage: {model: gpt-5.6-luna, timeout: 20m}\n" +
+			"      spec:\n        harness: alt-agent\n        model: gpt-5.6-sol\n        model_policy: explicit\n        timeout: 30m\n" +
+			"      implementation:\n        harness: alt-agent\n        model_policy: harness_default\n        timeout: 4h\n" +
+			"      review:\n        execution: mcp\n        timeout: 1h\n    review:\n      seats:\n        - {model: gpt-5.6, harness: alt-agent}\n"},
+	} {
+		if !strings.Contains(value, replacement[0]) {
+			t.Fatalf("example fixture %q was not found", replacement[0])
+		}
+		value = strings.Replace(value, replacement[0], replacement[1], 1)
+	}
+	path := filepath.Join(directory, "conveyor.yaml")
+	if err = os.WriteFile(path, []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func readRunProbeLog(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("CONVEYOR_TEST_RUN_PROBE_LOG"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(data))
+	slices.Sort(lines)
+	return lines
+}
+
+type runProbeResult struct {
+	claims        int
+	probesAtClaim []string
+	other         []string
+	output        string
+	err           error
+}
+
+// runProbeScenario runs one spec order with the given setup. The claim is
+// refused so the run ends at its first claim; the result records which probes
+// had already completed when that claim arrived.
+func runProbeScenario(t *testing.T, ctx context.Context, configPath, setupName string, preflight func()) runProbeResult {
+	t.Helper()
+	t.Setenv(localGitTokenEnv, "")
+	var mu sync.Mutex
+	var result runProbeResult
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Order:      core.WorkOrder{ID: "target-spec-1", TaskID: "target", Stage: core.StageSpec, State: core.WorkOrderQueued},
+				Task:       core.Task{ID: "target", Title: "Plan target", State: core.TaskRunning, Repo: "conveyor", BaseBranch: "main"},
+				Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git", Base: "main"}, Dispatch: "run", Auth: "user",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/run-orders/target-spec-1/claim":
+			result.claims++
+			result.probesAtClaim = readRunProbeLog(t)
+			http.Error(w, "claimed elsewhere", http.StatusConflict)
+		default:
+			result.other = append(result.other, r.Method+" "+r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "user-credential", workspace: "demo", gitPreflight: func(context.Context, workerservice.DispatchOrder, []string) error {
+		if preflight != nil {
+			preflight()
+		}
+		return nil
+	}}
+	var output bytes.Buffer
+	err := runTaskWithPresentationAndSetup(ctx, c, "target", configPath, setupName, strings.NewReader(""), &output, false, false, false, false)
+	mu.Lock()
+	defer mu.Unlock()
+	result.output, result.err = output.String(), err
+	return result
+}
+
+func TestRunProbesDefaultAndNamedSetupBeforeFirstClaim(t *testing.T) {
+	for _, test := range []struct {
+		setup string
+		want  []string
+	}{
+		{setup: "", want: []string{"local-agent", "seat-a", "seat-b"}},
+		{setup: "alt", want: []string{"alt-agent"}},
+	} {
+		t.Run("setup="+test.setup, func(t *testing.T) {
+			configPath := writeRunProbeSetupConfig(t, nil, nil)
+			before, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := runProbeScenario(t, t.Context(), configPath, test.setup, func() {
+				if probes := readRunProbeLog(t); len(probes) != 0 {
+					t.Errorf("probes ran before the Git preflight: %v", probes)
+				}
+			})
+			if result.err == nil || result.err.Error() != "claimed elsewhere" || result.claims != 1 || len(result.other) != 0 {
+				t.Fatalf("err=%v claims=%d other=%v output=%q", result.err, result.claims, result.other, result.output)
+			}
+			// Each distinct stage and seat definition is probed exactly once,
+			// and every probe completed before the first claim.
+			if !slices.Equal(result.probesAtClaim, test.want) || !slices.Equal(readRunProbeLog(t), test.want) {
+				t.Fatalf("probes at claim=%v after=%v want %v", result.probesAtClaim, readRunProbeLog(t), test.want)
+			}
+			after, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("probe or setup selection rewrote the persisted configuration")
+			}
+			if loaded, err := config.Load(configPath); err != nil || loaded.DefaultSetup != "default" {
+				t.Fatalf("persisted default=%q err=%v", loaded.DefaultSetup, err)
+			}
+		})
+	}
+}
+
+func TestRunFailedProbeClaimsNothingAndNamesRemedy(t *testing.T) {
+	directory := t.TempDir()
+	script := func(name, contents string) string {
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return `["` + path + `"]`
+	}
+	failures := []struct {
+		name, probe, timeout, message string
+		cancel                        bool
+	}{
+		{name: "missing binary", probe: `["` + filepath.Join(directory, "absent-probe") + `"]`, message: "absent-probe"},
+		{name: "nonzero exit", probe: script("nonzero", "printf 'harness unauthenticated\\n'\nexit 3\n"), message: "harness unauthenticated"},
+		{name: "timeout", probe: script("timeout", "exec sleep 30\n"), timeout: "100ms", message: "probe timed out after 100ms"},
+		{name: "cancelled", cancel: true, message: "context canceled"},
+		{name: "empty result", probe: script("empty", "exit 0\n"), message: "probe printed no identifying output"},
+		{name: "malformed result", probe: script("blank", "printf '  \\n\\t\\n'\n"), message: "probe printed no identifying output"},
+	}
+	for _, failure := range failures {
+		for _, setup := range []struct{ name, harness, first, label string }{
+			{name: "", harness: "seat-b", first: "local-agent", label: `default setup "default"`},
+			{name: "alt", harness: "alt-agent", first: "alt-agent", label: `setup "alt"`},
+		} {
+			t.Run(failure.name+"/setup="+setup.name, func(t *testing.T) {
+				probes, timeouts := map[string]string{}, map[string]string{}
+				if failure.probe != "" {
+					probes[setup.harness] = failure.probe
+				}
+				if failure.timeout != "" {
+					timeouts[setup.harness] = failure.timeout
+				}
+				configPath := writeRunProbeSetupConfig(t, probes, timeouts)
+				before, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var hook func()
+				harness := setup.harness
+				if failure.cancel {
+					// Cancellation fails every probe; the first in name order is named.
+					hook, harness = cancel, setup.first
+				}
+				result := runProbeScenario(t, ctx, configPath, setup.name, hook)
+				if result.claims != 0 || len(result.other) != 0 {
+					t.Fatalf("failed probe claimed=%d other=%v", result.claims, result.other)
+				}
+				for _, want := range []string{setup.label, "failed pre-claim harness probe", `"` + harness + `"`, failure.message, configPath, localExecutionSetupCommand + " --config " + configPath} {
+					if result.err == nil || !strings.Contains(result.err.Error(), want) {
+						t.Fatalf("error %v does not name %q", result.err, want)
+					}
+				}
+				if !strings.Contains(result.output, "Next: spec work order target-spec-1") {
+					t.Fatalf("pending order was not presented: %q", result.output)
+				}
+				after, err := os.ReadFile(configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(before, after) {
+					t.Fatal("failed probe rewrote the persisted configuration")
+				}
+			})
+		}
 	}
 }

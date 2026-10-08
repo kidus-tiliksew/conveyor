@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -563,5 +566,781 @@ func TestMCPReadDismissalArchive(t *testing.T) {
 				t.Fatalf("history=%v", d)
 			}
 		})
+	}
+}
+
+// mcpReadTestBase is the injected cache clock's start; capacity tests never sleep.
+var mcpReadTestBase = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+
+type mcpReadTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *mcpReadTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+func (c *mcpReadTestClock) Set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+func (c *mcpReadTestClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// lockedMembership serializes the shared membership fixture so parallel reads
+// are race-free; role changes go through the same lock.
+type lockedMembership struct {
+	mu sync.Mutex
+	*membershipFixture
+}
+
+func (m *lockedMembership) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.membershipFixture.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+}
+func (m *lockedMembership) AuthorizeDeployment(ctx context.Context, userID string, capability core.Capability) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.membershipFixture.AuthorizeDeployment(ctx, userID, capability)
+}
+func (m *lockedMembership) ListWorkspacesForUser(ctx context.Context, userID string) ([]core.Workspace, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.membershipFixture.ListWorkspacesForUser(ctx, userID)
+}
+func (m *lockedMembership) setRole(userID, workspaceID string, role core.WorkspaceRole) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if role == "" {
+		delete(m.roles[userID], workspaceID)
+		return
+	}
+	m.roles[userID][workspaceID] = role
+}
+
+// newMCPCapacityFixture adds credentials for cache-identity tests: reader-2 is
+// a second credential of user reader; c1..c6 belong to distinct users. reader
+// can also read the private workspace. The cache clock is injected.
+func newMCPCapacityFixture(t *testing.T) (*Server, context.Context, *mcpReadTestClock, *lockedMembership) {
+	t.Helper()
+	s, ctx := newMCPReadFixture(t)
+	clock := &mcpReadTestClock{now: mcpReadTestBase}
+	s.mcpReads.clock = clock.Now
+	membership := s.Memberships.(*membershipFixture)
+	credentials := s.Credentials.(staticCredentialVerifier)
+	credentials["reader-2"] = core.AuthenticatedCredential{ID: "reader-pat-2", OwnerUserID: "reader", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	membership.roles["reader"]["private"] = core.WorkspaceRoleViewer
+	for i := 1; i <= 6; i++ {
+		token, user := fmt.Sprintf("c%d", i), fmt.Sprintf("user-%d", i)
+		credentials[token] = core.AuthenticatedCredential{ID: token + "-pat", OwnerUserID: user, Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+		membership.roles[user] = map[string]core.WorkspaceRole{"demo": core.WorkspaceRoleViewer}
+	}
+	locked := &lockedMembership{membershipFixture: membership}
+	s.Memberships = locked
+	return s, ctx, clock, locked
+}
+
+// mcpReadTry is a goroutine-safe tools/call: it reports instead of failing.
+func mcpReadTry(h http.Handler, token, name string, args map[string]any) (mcpReadPage, string, string, error) {
+	wire, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(string(wire)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		return mcpReadPage{}, "", "", fmt.Errorf("MCP HTTP %d: %s", rec.Code, rec.Body.String())
+	}
+	var envelope struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil || len(envelope.Result.Content) != 1 {
+		return mcpReadPage{}, "", "", fmt.Errorf("unexpected response %s", rec.Body.String())
+	}
+	text := envelope.Result.Content[0].Text
+	if envelope.Result.IsError {
+		return mcpReadPage{}, "", text, nil
+	}
+	if len(text) > mcpReadMaxBytes {
+		return mcpReadPage{}, "", "", fmt.Errorf("unbounded response: %d", len(text))
+	}
+	var page mcpReadPage
+	if err := json.Unmarshal([]byte(text), &page); err != nil {
+		return mcpReadPage{}, "", "", err
+	}
+	return page, text, "", nil
+}
+
+func readAs(t *testing.T, h http.Handler, token, name string, args map[string]any) mcpReadPage {
+	t.Helper()
+	page, _, toolErr, err := mcpReadTry(h, token, name, args)
+	if err != nil || toolErr != "" {
+		t.Fatalf("%s as %s: %v %s", name, token, err, toolErr)
+	}
+	return page
+}
+
+func refusalAs(t *testing.T, h http.Handler, token, name string, args map[string]any) string {
+	t.Helper()
+	_, _, toolErr, err := mcpReadTry(h, token, name, args)
+	if err != nil || toolErr == "" {
+		t.Fatalf("%s as %s was not refused: %v", name, token, err)
+	}
+	return toolErr
+}
+
+func withArgs(base map[string]any, kv ...any) map[string]any {
+	args := maps.Clone(base)
+	for i := 0; i+1 < len(kv); i += 2 {
+		args[kv[i].(string)] = kv[i+1]
+	}
+	return args
+}
+
+type mcpCacheOccupancy struct{ snapshots, cursors int }
+
+// mcpCacheView copies the cache state, including access sequence and expiry.
+func mcpCacheView(s *Server) (map[string]mcpReadSnapshot, map[string]mcpEventCursor) {
+	s.mcpReads.mu.Lock()
+	defer s.mcpReads.mu.Unlock()
+	entries, cursors := map[string]mcpReadSnapshot{}, map[string]mcpEventCursor{}
+	maps.Copy(entries, s.mcpReads.entries)
+	maps.Copy(cursors, s.mcpReads.cursors)
+	return entries, cursors
+}
+
+func mcpCacheOwners(s *Server) map[string]mcpCacheOccupancy {
+	entries, cursors := mcpCacheView(s)
+	owners := map[string]mcpCacheOccupancy{}
+	for _, v := range entries {
+		o := owners[v.owner]
+		o.snapshots++
+		owners[v.owner] = o
+	}
+	for _, v := range cursors {
+		o := owners[v.owner]
+		o.cursors++
+		owners[v.owner] = o
+	}
+	return owners
+}
+
+func assertCacheUnchanged(t *testing.T, s *Server, step string, entries map[string]mcpReadSnapshot, cursors map[string]mcpEventCursor) {
+	t.Helper()
+	afterEntries, afterCursors := mcpCacheView(s)
+	if !reflect.DeepEqual(entries, afterEntries) || !reflect.DeepEqual(cursors, afterCursors) {
+		t.Fatalf("%s changed the cache: %d/%d snapshots, %d/%d cursors", step, len(entries), len(afterEntries), len(cursors), len(afterCursors))
+	}
+}
+
+// TestMCPReadCredentialQuotaParallelIsolation starts many simultaneous first
+// reads under one credential. Its quota stays at eight in every admission while
+// a second credential (same user, a distinct user, or with A spread over two
+// workspaces) keeps every snapshot it admitted.
+func TestMCPReadCredentialQuotaParallelIsolation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		other, otherID string
+		workspaces     []string
+	}{
+		"same owner user":     {"reader-2", "reader-pat-2", []string{"demo"}},
+		"multiple workspaces": {"c1", "c1-pat", []string{"demo", "private"}},
+		"distinct owners":     {"other", "other-pat", []string{"demo"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _, _, _ := newMCPCapacityFixture(t)
+			h := s.Handler()
+			s.mcpReads.beforeAdmit = func() {
+				for owner, o := range mcpCacheOwners(s) {
+					if o.snapshots > mcpReadCredentialSnapshots || o.cursors > mcpReadCredentialCursors {
+						t.Errorf("%s holds %d snapshots and %d cursors", owner, o.snapshots, o.cursors)
+					}
+				}
+			}
+			type result struct{ token, snapshot, failure string }
+			const readsA, readsB = 3 * mcpReadCredentialSnapshots, 4
+			results := make(chan result, readsA+readsB)
+			start := make(chan struct{})
+			var ready, done sync.WaitGroup
+			launch := func(token, workspace string) {
+				ready.Add(1)
+				done.Add(1)
+				go func() {
+					defer done.Done()
+					ready.Done()
+					<-start
+					page, _, toolErr, err := mcpReadTry(h, token, "list_tasks", map[string]any{"workspace_id": workspace})
+					failure := toolErr
+					if err != nil {
+						failure = err.Error()
+					}
+					results <- result{token, page.Snapshot, failure}
+				}()
+			}
+			for i := range readsA {
+				launch("reader", tc.workspaces[i%len(tc.workspaces)])
+			}
+			for range readsB {
+				launch(tc.other, "demo")
+			}
+			ready.Wait()
+			close(start)
+			done.Wait()
+			close(results)
+			var tokensA, tokensB []string
+			for r := range results {
+				if r.failure != "" || r.snapshot == "" {
+					t.Fatalf("%s first read failed: %q", r.token, r.failure)
+				}
+				if r.token == "reader" {
+					tokensA = append(tokensA, r.snapshot)
+				} else {
+					tokensB = append(tokensB, r.snapshot)
+				}
+			}
+			owners := mcpCacheOwners(s)
+			if owners["reader-pat"].snapshots != mcpReadCredentialSnapshots || owners[tc.otherID].snapshots != readsB || len(owners) != 2 {
+				t.Fatalf("occupancy=%+v", owners)
+			}
+			entries, _ := mcpCacheView(s)
+			retainedA := 0
+			for _, token := range tokensA {
+				if _, ok := entries[token]; ok {
+					retainedA++
+				}
+			}
+			if retainedA != mcpReadCredentialSnapshots {
+				t.Fatalf("credential A retained %d of its own tokens", retainedA)
+			}
+			// B never lost a slot to A, and neither credential can use the other's
+			// tokens even when both belong to one user.
+			for _, token := range tokensB {
+				readAs(t, h, tc.other, "list_tasks", map[string]any{"workspace_id": "demo", "snapshot": token})
+				if e := refusalAs(t, h, "reader", "list_tasks", map[string]any{"workspace_id": "demo", "snapshot": token}); e != "snapshot unavailable: restart read" {
+					t.Fatalf("A used B's token: %q", e)
+				}
+			}
+			for _, token := range tokensA {
+				if entry, ok := entries[token]; ok {
+					if e := refusalAs(t, h, tc.other, "list_tasks", map[string]any{"workspace_id": entry.workspace, "snapshot": token}); !strings.Contains(e, "snapshot unavailable") && !strings.Contains(e, "workspace_not_found") {
+						t.Fatalf("B used A's token: %q", e)
+					}
+				}
+			}
+			readAs(t, h, tc.other, "list_tasks", map[string]any{"workspace_id": "demo"})
+			// The quota spans workspaces: switching workspace evicts A's own
+			// oldest snapshots instead of opening a second allowance.
+			for range mcpReadCredentialSnapshots {
+				readAs(t, h, "reader", "list_tasks", map[string]any{"workspace_id": "private"})
+			}
+			entries, _ = mcpCacheView(s)
+			for _, entry := range entries {
+				if entry.owner == "reader-pat" && entry.workspace != "private" {
+					t.Fatal("a second workspace widened credential A's quota")
+				}
+			}
+			if owners = mcpCacheOwners(s); owners["reader-pat"].snapshots != mcpReadCredentialSnapshots || owners[tc.otherID].snapshots != readsB+1 {
+				t.Fatalf("occupancy after workspace switch=%+v", owners)
+			}
+		})
+	}
+}
+
+// TestMCPReadSingleItemDoesNotRetainSnapshot proves complete single-item reads
+// stay available at a full process cache because they retain nothing, while
+// get_task_context still retains and pages. Not-found identities are the
+// zero-result case: a refusal that also retains nothing.
+func TestMCPReadSingleItemDoesNotRetainSnapshot(t *testing.T) {
+	s, ctx, clock, _ := newMCPCapacityFixture(t)
+	st := s.Store
+	h := s.Handler()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(st.CreateTask(ctx, core.Task{ID: "single", Workspace: "demo", Title: "Single", State: core.TaskQueued}))
+	_, design, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "component-single", Title: "Single", Category: "Component"}, core.SystemDesignVersion{Content: "# Single\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+	must(err)
+	_, _, err = st.ConfirmSystemDesignVersion(ctx, design.DocumentID, design.Version)
+	must(err)
+	decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Single read", Context: "Test", AlternativesRejected: "None", Origin: core.DecisionOriginOperator})
+	must(err)
+	_, err = st.ConfirmDecision(ctx, decision.ID)
+	must(err)
+	_, _, err = st.ProposeTaskContext(store.WithActor(ctx, store.Actor{ID: "agent:triage", Role: core.ActorAgent}), core.TaskContextProposalInput{TaskID: "single", TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.DocumentID, Source: core.TaskContextProposalTriage, Justification: "context"})
+	must(err)
+	_, err = st.ConfirmTaskContextProposal(store.WithActor(ctx, store.Actor{ID: "user:operator", Role: core.ActorUser}), "single", core.TaskContextProposalSystemDesign, design.DocumentID)
+	must(err)
+
+	// Fill the process ceiling from four other credentials.
+	for _, token := range []string{"c1", "c2", "c3", "c4"} {
+		for range mcpReadCredentialSnapshots {
+			readAs(t, h, token, "list_tasks", map[string]any{"workspace_id": "demo"})
+		}
+	}
+	entries, cursors := mcpCacheView(s)
+	if len(entries) != mcpReadSnapshotCount {
+		t.Fatalf("fixture holds %d snapshots", len(entries))
+	}
+	for name, tc := range map[string]struct{ found, missing map[string]any }{
+		"get_task":     {map[string]any{"workspace_id": "demo", "task_id": "single"}, map[string]any{"workspace_id": "demo", "task_id": "absent"}},
+		"get_document": {map[string]any{"workspace_id": "demo", "kind": "system_design", "document_id": design.DocumentID}, map[string]any{"workspace_id": "demo", "kind": "system_design", "document_id": "component-absent"}},
+		"get_decision": {map[string]any{"workspace_id": "demo", "decision_id": decision.ID}, map[string]any{"workspace_id": "demo", "decision_id": "DEC-999999"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for i := 0; i < mcpReadSnapshotCount+8; i++ {
+				page, raw, toolErr, err := mcpReadTry(h, "reader", name, tc.found)
+				if err != nil || toolErr != "" {
+					t.Fatalf("read %d at a full cache: %v %s", i, err, toolErr)
+				}
+				var fields map[string]json.RawMessage
+				must(json.Unmarshal([]byte(raw), &fields))
+				_, snapshot := fields["snapshot"]
+				_, expires := fields["expires_at"]
+				_, next := fields["next_offset"]
+				if page.Total != 1 || len(page.Items) != 1 || page.Offset != 0 || snapshot || expires || next || !strings.Contains(page.Evidence, "restart the read") {
+					t.Fatalf("single-item envelope=%s", raw)
+				}
+			}
+			if e := refusalAs(t, h, "reader", name, tc.missing); strings.Contains(e, "capacity") {
+				t.Fatalf("zero-result read reached admission: %q", e)
+			}
+			// Explicit snapshot and offset arguments keep their validation.
+			if e := refusalAs(t, h, "reader", name, withArgs(tc.found, "snapshot", strings.Repeat("ab", 16))); e != "snapshot unavailable: restart read" {
+				t.Fatalf("explicit snapshot=%q", e)
+			}
+			if e := refusalAs(t, h, "reader", name, withArgs(tc.found, "offset", 1)); e != "offset requires snapshot" {
+				t.Fatalf("offset without snapshot=%q", e)
+			}
+		})
+	}
+	assertCacheUnchanged(t, s, "single-item reads", entries, cursors)
+
+	// get_task_context has several entries, so it still retains and pages.
+	contextArgs := map[string]any{"workspace_id": "demo", "task_id": "single", "limit": 1}
+	if e := refusalAs(t, h, "reader", "get_task_context", contextArgs); !strings.HasPrefix(e, "snapshot capacity reached: process limit 32") {
+		t.Fatalf("get_task_context did not need a snapshot: %q", e)
+	}
+	clock.Advance(mcpReadSnapshotTTL)
+	first := readAs(t, h, "reader", "get_task_context", contextArgs)
+	if first.Snapshot == "" || first.NextOffset == nil || *first.NextOffset != 1 || first.Total < 2 || first.ExpiresAt.IsZero() {
+		t.Fatalf("get_task_context page=%+v", first)
+	}
+	second := readAs(t, h, "reader", "get_task_context", withArgs(contextArgs, "snapshot", first.Snapshot, "offset", 1))
+	if len(second.Items) != 1 || second.Snapshot != first.Snapshot {
+		t.Fatalf("get_task_context second page=%+v", second)
+	}
+}
+
+// TestMCPReadCredentialLRUEviction admits a ninth snapshot at the caller's
+// quota and proves the caller's untouched least-recently-used snapshot is the
+// victim, accesses never extend expiry, and equal access sequences break ties
+// by token.
+func TestMCPReadCredentialLRUEviction(t *testing.T) {
+	s, _, clock, _ := newMCPCapacityFixture(t)
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo", "limit": 1}
+	sameUser := readAs(t, h, "reader-2", "list_tasks", args).Snapshot
+	distinct := readAs(t, h, "other", "list_tasks", args).Snapshot
+	tokens, expires := []string{}, []time.Time{}
+	for range mcpReadCredentialSnapshots {
+		page := readAs(t, h, "reader", "list_tasks", args)
+		tokens, expires = append(tokens, page.Snapshot), append(expires, page.ExpiresAt)
+		clock.Advance(time.Second)
+	}
+	if !expires[0].Equal(mcpReadTestBase.Add(mcpReadSnapshotTTL)) {
+		t.Fatalf("expiry=%s", expires[0])
+	}
+	// A successful page read refreshes the oldest; a failed one does not.
+	if touched := readAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", tokens[0])); !touched.ExpiresAt.Equal(expires[0]) {
+		t.Fatalf("access extended expiry: %s", touched.ExpiresAt)
+	}
+	if e := refusalAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", tokens[1], "offset", 5)); e != "offset exceeds snapshot" {
+		t.Fatalf("failed page=%q", e)
+	}
+	clock.Advance(time.Minute)
+	ninth := readAs(t, h, "reader", "list_tasks", args)
+	if e := refusalAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", tokens[1])); e != "snapshot unavailable: restart read" {
+		t.Fatalf("untouched LRU snapshot survived: %q", e)
+	}
+	for i, token := range append(append([]string{tokens[0]}, tokens[2:]...), ninth.Snapshot) {
+		page := readAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", token))
+		if i == 0 && !page.ExpiresAt.Equal(expires[0]) {
+			t.Fatalf("touched snapshot expiry moved: %s", page.ExpiresAt)
+		}
+	}
+	readAs(t, h, "reader-2", "list_tasks", withArgs(args, "snapshot", sameUser))
+	readAs(t, h, "other", "list_tasks", withArgs(args, "snapshot", distinct))
+	if owners := mcpCacheOwners(s); owners["reader-pat"].snapshots != mcpReadCredentialSnapshots || owners["reader-pat-2"].snapshots != 1 || owners["other-pat"].snapshots != 1 {
+		t.Fatalf("occupancy=%+v", owners)
+	}
+
+	// Equal access sequences evict the lexicographically smaller token.
+	s.mcpReads.mu.Lock()
+	retained := []string{}
+	for token, entry := range s.mcpReads.entries {
+		if entry.owner == "reader-pat" {
+			retained = append(retained, token)
+		}
+	}
+	slices.Sort(retained)
+	low, high := retained[2], retained[5]
+	for _, token := range []string{high, low} {
+		entry := s.mcpReads.entries[token]
+		entry.access = 0
+		s.mcpReads.entries[token] = entry
+	}
+	s.mcpReads.mu.Unlock()
+	readAs(t, h, "reader", "list_tasks", args)
+	entries, _ := mcpCacheView(s)
+	if _, ok := entries[low]; ok {
+		t.Fatal("tie-break kept the lower token")
+	}
+	if _, ok := entries[high]; !ok {
+		t.Fatal("tie-break evicted the higher token")
+	}
+	// Expiry stays fixed at capture regardless of later accesses.
+	clock.Set(expires[0])
+	if e := refusalAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", tokens[0])); e != "snapshot unavailable: restart read" {
+		t.Fatalf("touched snapshot outlived its expiry: %q", e)
+	}
+}
+
+// TestMCPReadProcessCeilingRefusal fills 32 slots from credentials below their
+// quotas. Another credential is refused with the resource, count and earliest
+// expiry; existing pages stay usable; the expiry sweep admits it.
+func TestMCPReadProcessCeilingRefusal(t *testing.T) {
+	s, ctx, clock, _ := newMCPCapacityFixture(t)
+	if err := s.Store.CreateTask(ctx, core.Task{ID: "quiet", Workspace: "demo", State: core.TaskQueued}); err != nil {
+		t.Fatal(err)
+	}
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo"}
+	type held struct{ credential, token string }
+	var all []held
+	for _, plan := range []struct {
+		credential string
+		reads      int
+	}{{"reader", 7}, {"reader-2", 7}, {"c1", 6}, {"c2", 6}, {"c3", 6}} {
+		for range plan.reads {
+			all = append(all, held{plan.credential, readAs(t, h, plan.credential, "list_tasks", args).Snapshot})
+			clock.Advance(time.Second)
+		}
+	}
+	if len(all) != mcpReadSnapshotCount {
+		t.Fatalf("fixture holds %d", len(all))
+	}
+	entries, cursors := mcpCacheView(s)
+	want := "snapshot capacity reached: process limit 32 retained snapshots; retry at 2026-10-08T12:05:00Z after expiry (within 5 minutes)"
+	for _, credential := range []string{"c4", "reader", "c1"} {
+		for _, name := range []string{"list_tasks", "list_task_events"} {
+			a := args
+			if name == "list_task_events" {
+				a = map[string]any{"workspace_id": "demo", "task_id": "quiet"}
+			}
+			e := refusalAs(t, h, credential, name, a)
+			if e != want {
+				t.Fatalf("%s refusal=%q", credential, e)
+			}
+			for _, secret := range []string{"pat", "workspace_id", "list_tasks", all[0].token, "reader"} {
+				if strings.Contains(e, secret) {
+					t.Fatalf("refusal disclosed %q: %q", secret, e)
+				}
+			}
+		}
+	}
+	assertCacheUnchanged(t, s, "process refusal", entries, cursors)
+	for _, h2 := range all {
+		readAs(t, h, h2.credential, "list_tasks", withArgs(args, "snapshot", h2.token))
+	}
+	// The earliest expiry frees exactly one slot.
+	clock.Set(mcpReadTestBase.Add(mcpReadSnapshotTTL))
+	admitted := readAs(t, h, "c4", "list_tasks", args)
+	if e := refusalAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", all[0].token)); e != "snapshot unavailable: restart read" {
+		t.Fatalf("expired snapshot=%q", e)
+	}
+	readAs(t, h, "c4", "list_tasks", withArgs(args, "snapshot", admitted.Snapshot))
+	readAs(t, h, all[1].credential, "list_tasks", withArgs(args, "snapshot", all[1].token))
+	if e := refusalAs(t, h, "c5", "list_tasks", args); e != "snapshot capacity reached: process limit 32 retained snapshots; retry at 2026-10-08T12:05:01Z after expiry (within 5 minutes)" {
+		t.Fatalf("next earliest expiry=%q", e)
+	}
+	// Sub-second expiries round up so the stated time follows the expiry.
+	if got := mcpReadRetryAt(mcpReadTestBase.Add(1500 * time.Millisecond)); got != "2026-10-08T12:00:02Z" {
+		t.Fatalf("rounding=%s", got)
+	}
+}
+
+// mcpCountingStore counts the store reads behind list_tasks and get_task.
+type mcpCountingStore struct {
+	store.Store
+	reads *atomic.Int64
+}
+
+func (s mcpCountingStore) ListTaskPage(ctx context.Context, q store.TaskOperationsQuery) (store.TaskPage, error) {
+	s.reads.Add(1)
+	return s.Store.ListTaskPage(ctx, q)
+}
+func (s mcpCountingStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.reads.Add(1)
+	return s.Store.GetTask(ctx, id)
+}
+
+// TestMCPReadAdmissionFailureLeavesCacheUnchanged runs every pre-admission
+// failure while the caller is at its quota: nothing is retained, evicted or
+// touched. Revoked membership refuses before any store or cache access.
+func TestMCPReadAdmissionFailureLeavesCacheUnchanged(t *testing.T) {
+	s, ctx, _, membership := newMCPCapacityFixture(t)
+	reads := &atomic.Int64{}
+	for i := range 300 {
+		if err := s.Store.CreateTask(ctx, core.Task{ID: fmt.Sprintf("bulky-%03d", i), Workspace: "demo", Title: fmt.Sprintf("bulky-%03d %s", i, strings.Repeat("b", 4000)), State: core.TaskQueued}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Store.CreateTask(ctx, core.Task{ID: "huge", Workspace: "demo", Body: strings.Repeat("x", mcpReadMaxBytes), State: core.TaskClosed}); err != nil {
+		t.Fatal(err)
+	}
+	s.Store = mcpCountingStore{Store: s.Store, reads: reads}
+	// A user credential without an ID never shares an anonymous cache owner.
+	s.Credentials.(staticCredentialVerifier)["anonymous"] = core.AuthenticatedCredential{OwnerUserID: "reader", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	s.Credentials.(staticCredentialVerifier)["blank"] = core.AuthenticatedCredential{ID: " ", OwnerUserID: "reader", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo", "query": "absent", "limit": 1}
+	var held []string
+	for range mcpReadCredentialSnapshots {
+		held = append(held, readAs(t, h, "reader", "list_tasks", args).Snapshot)
+	}
+	readAs(t, h, "other", "list_tasks", args)
+	entries, cursors := mcpCacheView(s)
+	for name, tc := range map[string]struct {
+		call  func() string
+		want  string
+		setup func() func()
+	}{
+		"snapshot byte budget": {call: func() string {
+			return refusalAs(t, h, "reader", "list_tasks", map[string]any{"workspace_id": "demo", "query": "bulky"})
+		}, want: "snapshot byte budget"},
+		"output budget": {call: func() string {
+			return refusalAs(t, h, "reader", "list_tasks", map[string]any{"workspace_id": "demo", "query": "bulky-0", "limit": 25})
+		}, want: "65536-byte output budget"},
+		"oversized single item": {call: func() string {
+			return refusalAs(t, h, "reader", "get_task", map[string]any{"workspace_id": "demo", "task_id": "huge"})
+		}, want: "65536-byte output budget"},
+		"missing credential ID": {call: func() string {
+			return refusalAs(t, h, "anonymous", "list_tasks", map[string]any{"workspace_id": "demo"})
+		}, want: "list_tasks requires an operator-scoped user credential"},
+		"blank credential ID": {call: func() string {
+			return refusalAs(t, h, "blank", "list_tasks", map[string]any{"workspace_id": "demo"})
+		}, want: "list_tasks requires an identified credential"},
+		"invalid arguments": {call: func() string {
+			return refusalAs(t, h, "reader", "list_tasks", map[string]any{"workspace_id": "demo", "limit": 101})
+		}, want: "invalid limit"},
+		"redaction failure": {call: func() string {
+			return refusalAs(t, h, "reader", "list_tasks", map[string]any{"workspace_id": "demo"})
+		}, want: "read redaction unavailable", setup: func() func() {
+			original := s.WorkOrders
+			s.WorkOrders = &workorder.Service{Store: s.Store, RedactionSecrets: mcpReadSecretFixture{fail: true}}
+			return func() { s.WorkOrders = original }
+		}},
+	} {
+		if tc.setup != nil {
+			restore := tc.setup()
+			if e := tc.call(); !strings.Contains(e, tc.want) {
+				t.Fatalf("%s: %q", name, e)
+			}
+			restore()
+		} else if e := tc.call(); !strings.Contains(e, tc.want) {
+			t.Fatalf("%s: %q", name, e)
+		}
+		assertCacheUnchanged(t, s, name, entries, cursors)
+	}
+	// Revocation refuses snapshot follow-ups and first reads before the store
+	// or cache is consulted; restoring access shows nothing was consumed.
+	membership.setRole("reader", "demo", "")
+	before := reads.Load()
+	for _, a := range []map[string]any{withArgs(args, "snapshot", held[0]), args} {
+		if e := refusalAs(t, h, "reader", "list_tasks", a); !strings.Contains(e, "workspace_not_found") {
+			t.Fatalf("revoked read=%q", e)
+		}
+	}
+	if reads.Load() != before {
+		t.Fatal("revoked read reached the store")
+	}
+	assertCacheUnchanged(t, s, "revoked membership", entries, cursors)
+	membership.setRole("reader", "demo", core.WorkspaceRoleViewer)
+	for _, token := range held {
+		readAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", token))
+	}
+}
+
+// mcpAdmissionBarrier holds every admission at the beforeAdmit boundary until
+// want callers have arrived, then releases them together so they compete for
+// the admission lock at once. It never sleeps.
+type mcpAdmissionBarrier struct {
+	mu      sync.Mutex
+	arrived int
+	want    int
+	all     chan struct{}
+	release chan struct{}
+}
+
+func newMCPAdmissionBarrier(want int) *mcpAdmissionBarrier {
+	return &mcpAdmissionBarrier{want: want, all: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *mcpAdmissionBarrier) hook() {
+	b.mu.Lock()
+	b.arrived++
+	if b.arrived == b.want {
+		close(b.all)
+	}
+	b.mu.Unlock()
+	<-b.release
+}
+
+// TestMCPReadCredentialLRUAdmissionBarrier holds competing first reads of one
+// credential at a full per-credential cache at the admission boundary, touches
+// the oldest snapshot while they wait, and then releases them together with a
+// second credential's admissions. The credential never exceeds eight, the
+// touched snapshot survives, exactly the untouched least-recently-used
+// snapshots are evicted, and the other credential loses nothing
+// (component-mcp-investigation-reads "Admission and eviction").
+func TestMCPReadCredentialLRUAdmissionBarrier(t *testing.T) {
+	s, _, clock, _ := newMCPCapacityFixture(t)
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo", "limit": 1}
+	tokens := []string{}
+	for range mcpReadCredentialSnapshots {
+		tokens = append(tokens, readAs(t, h, "reader", "list_tasks", args).Snapshot)
+		clock.Advance(time.Second)
+	}
+	other := readAs(t, h, "other", "list_tasks", args).Snapshot
+
+	const competingA, competingB = 3, 2
+	barrier := newMCPAdmissionBarrier(competingA + competingB)
+	s.mcpReads.beforeAdmit = barrier.hook
+	type result struct{ credential, token, failure string }
+	results := make(chan result, competingA+competingB)
+	var done sync.WaitGroup
+	launch := func(credential string) {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			page, _, toolErr, err := mcpReadTry(h, credential, "list_tasks", args)
+			failure := toolErr
+			if err != nil {
+				failure = err.Error()
+			}
+			results <- result{credential, page.Snapshot, failure}
+		}()
+	}
+	for range competingA {
+		launch("reader")
+	}
+	for range competingB {
+		launch("other")
+	}
+	<-barrier.all
+	// Every admission is parked before the lock. A successful page read now
+	// refreshes the oldest snapshot, so it must not be a victim.
+	readAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", tokens[0]))
+	s.mcpReads.beforeAdmit = nil
+	close(barrier.release)
+	done.Wait()
+	close(results)
+	newA := []string{}
+	for r := range results {
+		if r.failure != "" || r.token == "" {
+			t.Fatalf("%s competing admission failed: %q", r.credential, r.failure)
+		}
+		if r.credential == "reader" {
+			newA = append(newA, r.token)
+		}
+	}
+	owners := mcpCacheOwners(s)
+	if owners["reader-pat"].snapshots != mcpReadCredentialSnapshots || owners["other-pat"].snapshots != 1+competingB {
+		t.Fatalf("occupancy=%+v", owners)
+	}
+	entries, _ := mcpCacheView(s)
+	// tokens[0] was touched; tokens[1..3] are the three least recently used.
+	for i, token := range tokens {
+		_, kept := entries[token]
+		if wantKept := i == 0 || i > competingA; kept != wantKept {
+			t.Fatalf("token %d kept=%v want %v", i, kept, wantKept)
+		}
+	}
+	for _, token := range append(newA, other) {
+		if _, kept := entries[token]; !kept {
+			t.Fatal("a competing admission or the other credential's snapshot was evicted")
+		}
+	}
+}
+
+// TestMCPReadProcessCeilingAdmissionBarrier releases two different
+// credentials' first reads together when exactly one process slot is left:
+// exactly one is admitted and the other is refused with the process-ceiling
+// text, so occupancy never exceeds 32 (component-mcp-investigation-reads).
+func TestMCPReadProcessCeilingAdmissionBarrier(t *testing.T) {
+	s, _, _, _ := newMCPCapacityFixture(t)
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo"}
+	for _, token := range []string{"c1", "c2", "c3"} {
+		for range mcpReadCredentialSnapshots {
+			readAs(t, h, token, "list_tasks", args)
+		}
+	}
+	for range mcpReadCredentialSnapshots - 1 {
+		readAs(t, h, "c4", "list_tasks", args)
+	}
+	if entries, _ := mcpCacheView(s); len(entries) != mcpReadSnapshotCount-1 {
+		t.Fatalf("fixture holds %d snapshots", len(entries))
+	}
+	barrier := newMCPAdmissionBarrier(2)
+	s.mcpReads.beforeAdmit = barrier.hook
+	failures := make(chan string, 2)
+	var done sync.WaitGroup
+	for _, credential := range []string{"c5", "c6"} {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			_, _, toolErr, err := mcpReadTry(h, credential, "list_tasks", args)
+			if err != nil {
+				toolErr = err.Error()
+			}
+			failures <- toolErr
+		}()
+	}
+	<-barrier.all
+	s.mcpReads.beforeAdmit = nil
+	close(barrier.release)
+	done.Wait()
+	close(failures)
+	admitted, refused := 0, 0
+	for failure := range failures {
+		switch {
+		case failure == "":
+			admitted++
+		case strings.HasPrefix(failure, "snapshot capacity reached: process limit 32 retained snapshots; retry at "):
+			refused++
+		default:
+			t.Fatalf("unexpected refusal %q", failure)
+		}
+	}
+	if admitted != 1 || refused != 1 {
+		t.Fatalf("admitted=%d refused=%d", admitted, refused)
+	}
+	if entries, _ := mcpCacheView(s); len(entries) != mcpReadSnapshotCount {
+		t.Fatalf("occupancy=%d", len(entries))
 	}
 }

@@ -381,6 +381,74 @@ func (s *Store) FinalizeWorkOrderAttemptObservability(ctx context.Context, id, w
 	return err
 }
 
+// attemptCaptureInsertFault is a test-only seam that fails the capture
+// transaction after the snapshot supersession and before the insert, so the
+// native integration test can prove the rollback leaves no partial capture.
+// SingleStore has no triggers to inject that failure. It is nil in production.
+var attemptCaptureInsertFault func() error
+
+// RecordWorkOrderAttemptCapture records one already-ended attempt's capture
+// for any stage (req-260820-221be8 AC-2.1; DEC-26; component-work-orders).
+// orderTx holds the task-operation lock, which serializes it with successor
+// claims and duplicate deliveries, so the existence check and insert are one
+// atomic decision. Identity comes only from the immutable claim event.
+func (s *Store) RecordWorkOrderAttemptCapture(ctx context.Context, id string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error) {
+	capture = store.NormalizeAttemptCapture(capture)
+	var result core.WorkOrderAttemptCaptureResult
+	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
+		events, err := documentTaskEvents(ctx, tx, o.TaskID)
+		if err != nil {
+			return err
+		}
+		authorized := false
+		for _, event := range events {
+			if store.AttemptCaptureClaimEventMatches(event, o, claim, capture) {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return store.ErrWorkOrderClaimUnauthorized
+		}
+		existingReason, existing := "", true
+		err = documentRow(ctx, tx, `SELECT termination_reason FROM work_order_transcript_captures WHERE workspace_id=? AND work_order_id=? AND attempt_id=?`, documentWorkspace(ctx), id, capture.AttemptID).Scan(&existingReason)
+		if errors.Is(err, sql.ErrNoRows) {
+			existing, err = false, nil
+		}
+		if err != nil {
+			return err
+		}
+		reason, err := store.AttemptCaptureReason(o, capture, existingReason, existing)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM work_order_activity_snapshots WHERE workspace_id=? AND work_order_id=? AND attempt_id=?`, documentWorkspace(ctx), id, capture.AttemptID); err != nil {
+			return err
+		}
+		result = core.WorkOrderAttemptCaptureResult{TerminationReason: reason}
+		if capture.Transcript == nil || existing {
+			return nil
+		}
+		if attemptCaptureInsertFault != nil {
+			if err = attemptCaptureInsertFault(); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO work_order_transcript_captures(workspace_id,work_order_id,attempt_id,content,termination_reason,truncated,captured_at) VALUES(?,?,?,?,?,?,?)`, documentWorkspace(ctx), id, capture.AttemptID, capture.Transcript.Content, reason, capture.Transcript.Truncated, time.Now().UTC()); err != nil {
+			return err
+		}
+		result.Created = true
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return core.WorkOrderAttemptCaptureResult{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	if err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	return result, nil
+}
+
 func (s *Store) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
 	var snapshot core.WorkOrderActivitySnapshot
 	err := documentRow(ctx, s.db, `SELECT attempt_id, content, captured_at

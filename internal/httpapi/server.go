@@ -168,6 +168,9 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/reconcile", s.reconcileWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
+		// Parent-launcher attempt-ending capture: observational only, every
+		// stage (req-260820-221be8 AC-2.1; DEC-26; component-http-api).
+		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-observability", s.captureWorkerOrderAttempt)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/worktree-handoff", s.workerWorktreeHandoff)
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkerAuth).Get("/worker/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
@@ -241,6 +244,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Delete("/tasks/{id}/run-orders/{order_id}/agent-credential", s.revokeTaskRunAgentCredential)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
+			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-observability", s.captureTaskRunOrderAttempt)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
 			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
 			// Request-changes is the human merge-gate action, not part of the
