@@ -18,8 +18,9 @@ import (
 // the cutoff boundary, expiry after the claim is gone, a bounded backlog and a
 // backlog above the production 100-row limit drained over successive runs,
 // no-op replay without a second event, retained finalized evidence, expiry
-// and finalization overlapping in both serialized orders and released
-// concurrently, and rollback on a failed audit write (req-verification-evidence REQ-2/AC-2.1,
+// and finalization overlapping in both serialized orders through the
+// deterministic selection seam and released concurrently, and rollback on a
+// failed audit write (req-verification-evidence REQ-2/AC-2.1,
 // AC-2.4; component-verification-evidence).
 func runVerificationChunkExpiry(t *testing.T, x Fixture) {
 	reconciler := store.WithActor(x.Context, store.Actor{ID: "verification-reconciler", Role: core.ActorSystem})
@@ -256,74 +257,132 @@ func runVerificationChunkExpiry(t *testing.T, x Fixture) {
 			t.Fatalf("backlog audit: %d event(s), %d deleted, want 2 and %d", len(events), deletedTotal(t, events), total)
 		}
 	})
-	// FinalizationWinsOverlappingExpiry starts expiry while finalization holds
-	// its transaction, after expiry can select the staging rows as candidates.
-	// The locked recheck finds them consumed, so expiry deletes nothing and
-	// writes no event, and the finalized evidence, bytes and receipt survive.
+	// barrier bounds every channel wait so a broken seam fails the case
+	// instead of hanging; it never orders the operations.
+	barrier := func(t *testing.T, what string, ch <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(time.Minute):
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+	// pausedExpiry starts expiry with the selection seam installed. It returns
+	// once expiry has selected its candidates and is parked before any locked
+	// recheck transaction, with the selected rows, a release function, and the
+	// channel that carries expiry's result.
+	type expiryResult struct {
+		n   int
+		err error
+	}
+	pausedExpiry := func(t *testing.T, ctx context.Context) ([]store.VerificationChunkCandidate, func(), <-chan expiryResult) {
+		t.Helper()
+		var selected []store.VerificationChunkCandidate
+		reached, release, done := make(chan struct{}), make(chan struct{}), make(chan expiryResult, 1)
+		paused := store.WithVerificationChunkExpirySelectedForTest(ctx, func(rows []store.VerificationChunkCandidate) {
+			selected = rows
+			close(reached)
+			<-release
+		})
+		go func() {
+			n, err := x.Backend.ExpireVerificationChunks(paused, store.VerificationChunkExpiryLimit)
+			done <- expiryResult{n, err}
+		}()
+		barrier(t, "expiry to select candidates", reached)
+		var once sync.Once
+		return selected, func() { once.Do(func() { close(release) }) }, done
+	}
+	selectedUpload := func(t *testing.T, selected []store.VerificationChunkCandidate, taskID, upload string, want int) {
+		t.Helper()
+		n := 0
+		for _, c := range selected {
+			if c.TaskID == taskID && c.UploadID == upload {
+				n++
+			}
+		}
+		if n != want || len(selected) != want {
+			t.Fatalf("expiry selected %d of %d chunk(s) of %s (%d selected in total)", n, want, upload, len(selected))
+		}
+	}
+	// FinalizationWinsOverlappingExpiry parks expiry at the selection seam
+	// after it has selected the upload's staging rows and before its locked
+	// recheck. Finalization then consumes exactly those rows and commits. A
+	// second, unpaused expiry run finds nothing, which shows the rows are gone.
+	// Released, the paused expiry rechecks under its locks, deletes nothing
+	// and writes no event, and the finalized evidence, bytes and receipt
+	// survive.
 	t.Run("FinalizationWinsOverlappingExpiry", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		drain(t)
 		finalize, data := upload(t, &v, "race-final", 3)
-		type result struct {
-			n   int
-			err error
-		}
-		expired := make(chan result, 1)
-		var once sync.Once
-		inside := store.WithVerificationFault(v.ctx, func(step string) error {
-			once.Do(func() {
-				go func() {
-					n, err := x.Backend.ExpireVerificationChunks(at(reconciler, 25*time.Hour), store.VerificationChunkExpiryLimit)
-					expired <- result{n, err}
-				}()
-				// Hold the finalization transaction open while expiry selects
-				// candidates and waits for the task lock.
-				time.Sleep(300 * time.Millisecond)
-			})
-			return nil
-		})
-		receipt, err := x.Backend.ApplyVerification(inside, v.command(finalize))
+		selected, release, done := pausedExpiry(t, at(reconciler, 25*time.Hour))
+		defer release()
+		selectedUpload(t, selected, v.access.TaskID, "race-final", 3)
+		receipt, err := x.Backend.ApplyVerification(v.ctx, v.command(finalize))
 		requireOK(t, err)
-		r := <-expired
+		if n := expire(t, at(reconciler, 25*time.Hour), store.VerificationChunkExpiryLimit); n != 0 {
+			t.Fatalf("finalization left %d selected chunk(s) unconsumed", n)
+		}
+		release()
+		var r expiryResult
+		select {
+		case r = <-done:
+		case <-time.After(time.Minute):
+			t.Fatal("timed out waiting for the released expiry")
+		}
 		requireOK(t, r.err)
 		if r.n != 0 {
-			t.Fatalf("expiry deleted %d consumed chunk(s)", r.n)
+			t.Fatalf("expiry deleted %d consumed chunk(s) after its recheck", r.n)
 		}
 		if events := expiryEvents(t, v.access.TaskID); len(events) != 0 {
 			t.Fatalf("expiry recorded %d event(s) for consumed rows", len(events))
 		}
 		retained(t, &v, finalize, receipt, data)
-		if n := expire(t, at(reconciler, 25*time.Hour), store.VerificationChunkExpiryLimit); n != 0 || len(expiryEvents(t, v.access.TaskID)) != 0 {
-			t.Fatalf("replayed expiry after finalization deleted %d chunk(s)", n)
-		}
 	})
-	// ExpiryWinsOverlappingFinalization starts finalization while expiry holds
-	// its transaction after the deletion. Finalization waits for the task lock,
-	// finds no chunks, and retains nothing; expiry records exactly the rows it
-	// deleted, once.
+	// ExpiryWinsOverlappingFinalization parks expiry at the selection seam
+	// and checks it selected the upload's rows, then releases it. Inside its
+	// locked transaction, before commit, expiry's audit fault point starts
+	// finalization, which cannot read the rows until expiry releases the task
+	// and verification locks. The locks, not timing, order the two: expiry
+	// deletes the 3 rows and records them once, and finalization is refused
+	// and retains nothing.
 	t.Run("ExpiryWinsOverlappingFinalization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		drain(t)
 		finalize, data := upload(t, &v, "race-expire", 3)
-		finalized := make(chan error, 1)
+		finalized, started := make(chan error, 1), make(chan struct{})
 		var once sync.Once
-		inside := store.WithVerificationFault(at(reconciler, 25*time.Hour), func(step string) error {
+		locked := store.WithVerificationFault(at(reconciler, 25*time.Hour), func(step string) error {
 			once.Do(func() {
 				go func() {
 					_, err := x.Backend.ApplyVerification(v.ctx, v.command(finalize))
 					finalized <- err
 				}()
-				time.Sleep(300 * time.Millisecond)
+				close(started)
 			})
 			return nil
 		})
-		n, err := x.Backend.ExpireVerificationChunks(inside, store.VerificationChunkExpiryLimit)
-		requireOK(t, err)
-		if n != 3 {
-			t.Fatalf("expiry deleted %d chunk(s), want 3", n)
+		selected, release, done := pausedExpiry(t, locked)
+		selectedUpload(t, selected, v.access.TaskID, "race-expire", 3)
+		release()
+		var r expiryResult
+		select {
+		case r = <-done:
+		case <-time.After(time.Minute):
+			t.Fatal("timed out waiting for expiry")
 		}
-		if err := <-finalized; err == nil {
-			t.Fatal("finalization of an expired upload succeeded")
+		requireOK(t, r.err)
+		barrier(t, "finalization to start inside expiry's transaction", started)
+		if r.n != 3 {
+			t.Fatalf("expiry deleted %d chunk(s), want 3", r.n)
+		}
+		select {
+		case err := <-finalized:
+			if err == nil {
+				t.Fatal("finalization of an expired upload succeeded")
+			}
+		case <-time.After(time.Minute):
+			t.Fatal("timed out waiting for finalization")
 		}
 		notRetained(t, &v, finalize, data)
 		events := expiryEvents(t, v.access.TaskID)

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // TestVerificationChunkExpiryGrouping pins the bounded expiry helpers: only
@@ -85,5 +87,34 @@ func TestVerificationChunkExpiryGrouping(t *testing.T) {
 	}
 	if event.Kind != "verification.chunk.expire" || event.ActorID != "verification-reconciler" || event.ActorRole != core.ActorSystem || event.TaskID != "task-a" || payload.DeletedCount != 2 || !reflect.DeepEqual(payload.ChunkIDs, []string{"u1:0", "u1:1"}) || !reflect.DeepEqual(payload.UploadIDs, []string{"u1"}) || payload.Cutoff != fixed.Format(time.RFC3339Nano) {
 		t.Fatalf("event = %+v payload = %+v", event, payload)
+	}
+}
+
+// TestVerificationChunkExpirySelectionSeam keeps the conformance seam
+// context-scoped: without the test value it does nothing, and with it the
+// callback sees every selected row before any group runs.
+func TestVerificationChunkExpirySelectionSeam(t *testing.T) {
+	backend := NewVolatileBackend().(*volatileMemory)
+	groups := [][]VerificationChunkCandidate{{{ID: "a:0", TaskID: "task-a"}, {ID: "a:1", TaskID: "task-a"}}, {{ID: "b:0", TaskID: "task-b"}}}
+	var order []string
+	run := func(ctx context.Context) {
+		n, err := ExecuteVerificationChunkExpiry(ctx, backend, groups, func(_ taskops.TaskLease, group []VerificationChunkCandidate) (int, error) {
+			order = append(order, "group:"+group[0].TaskID)
+			return len(group), nil
+		})
+		if err != nil || n != 3 {
+			t.Fatalf("expiry = %d, %v", n, err)
+		}
+	}
+	run(context.Background())
+	if !reflect.DeepEqual(order, []string{"group:task-a", "group:task-b"}) {
+		t.Fatalf("production order = %v", order)
+	}
+	order = nil
+	run(WithVerificationChunkExpirySelectedForTest(context.Background(), func(rows []VerificationChunkCandidate) {
+		order = append(order, "selected:"+strconv.Itoa(len(rows)))
+	}))
+	if !reflect.DeepEqual(order, []string{"selected:3", "group:task-a", "group:task-b"}) {
+		t.Fatalf("seam order = %v", order)
 	}
 }

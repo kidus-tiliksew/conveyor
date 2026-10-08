@@ -101,11 +101,29 @@ func VerificationChunkExpiryEvent(taskID string, cutoff time.Time, deleted []Ver
 	return core.Event{TaskID: taskID, Kind: "verification." + VerificationExpireChunks, ActorID: verificationReconcilerActor, ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"cutoff": cutoff.UTC().Format(time.RFC3339Nano), "deleted_count": len(deleted), "chunk_ids": chunks, "upload_ids": uploads})}
 }
 
+type verificationChunkExpirySelectedKey struct{}
+
+// WithVerificationChunkExpirySelectedForTest installs a conformance seam that
+// every backend reaches after its bounded candidate read and before any locked
+// recheck transaction. The callback receives the selected rows and may block,
+// so a test can let finalization consume those rows before expiry rechecks
+// them. Without this context value the seam does nothing.
+func WithVerificationChunkExpirySelectedForTest(ctx context.Context, selected func([]VerificationChunkCandidate)) context.Context {
+	return context.WithValue(ctx, verificationChunkExpirySelectedKey{}, selected)
+}
+
 // ExecuteVerificationChunkExpiry runs each task group through the taskops
 // chunk.expire verification lease and sums the deleted rows. It stops at the
 // first error or at context cancellation; committed groups stay committed and
 // remaining rows wait for a later tick.
 func ExecuteVerificationChunkExpiry(ctx context.Context, backend taskops.Backend, groups [][]VerificationChunkCandidate, expire func(taskops.TaskLease, []VerificationChunkCandidate) (int, error)) (int, error) {
+	if selected, ok := ctx.Value(verificationChunkExpirySelectedKey{}).(func([]VerificationChunkCandidate)); ok {
+		var rows []VerificationChunkCandidate
+		for _, group := range groups {
+			rows = append(rows, group...)
+		}
+		selected(rows)
+	}
 	total := 0
 	for _, group := range groups {
 		if err := ctx.Err(); err != nil {
