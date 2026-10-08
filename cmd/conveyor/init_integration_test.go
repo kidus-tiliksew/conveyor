@@ -78,6 +78,23 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if !strings.Contains(rerunOutput.String(), "already initialized; issuing a fresh") || secondInitToken == "" || secondInitToken == firstInitToken {
 		t.Fatalf("rerun output=%q", rerunOutput.String())
 	}
+	// A file in the pre-DEC-56 init shape is accepted on rerun and left
+	// unchanged (component-identity-membership).
+	legacyPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	legacy := legacyExecutorInitConfig(t, databaseURL, answers)
+	if err = os.WriteFile(legacyPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var legacyOutput strings.Builder
+	if err = initializeDeployment(t.Context(), &legacyOutput, legacyPath, answers); err != nil {
+		t.Fatalf("rerun over a legacy executor config: %v", err)
+	}
+	if after, readErr := os.ReadFile(legacyPath); readErr != nil || string(after) != string(legacy) {
+		t.Fatalf("legacy config was rewritten: %v", readErr)
+	}
+	if signInTokenFromOutput(t, legacyOutput.String()) == "" {
+		t.Fatalf("legacy rerun output=%q", legacyOutput.String())
+	}
 
 	st, err := postgresstore.Open(t.Context(), databaseURL)
 	if err != nil {
@@ -155,7 +172,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if err != nil || len(workspaces) != 1 || workspaces[0].ID != "fresh" {
 		t.Fatalf("workspaces=%+v err=%v", workspaces, err)
 	}
-	deployment, err := config.Load(configPath)
+	deployment, err := config.LoadDeployment(configPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

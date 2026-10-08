@@ -111,8 +111,10 @@ conveyor init
 Enter the organization, your display name and email, workspace ID and name,
 and repository name, URL, and default branch. Record the workspace ID and
 repository name; clients need them. Initialization registers repository
-metadata and does not clone the repository. It writes `conveyor.yaml`,
-initializes the database, and prints your sign-in link.
+metadata and does not clone the repository. It writes `conveyor.yaml` with
+pipeline policy and the in-process control-plane models only, initializes the
+database, and prints your sign-in link. Harnesses and executor models belong
+in each client's local execution config ([Client setup](client-setup.md)).
 
 A workspace accepts no task until a repository is registered. The dashboard
 shows a notice on the Board and New task sheet until one exists. Register
