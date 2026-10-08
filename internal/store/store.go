@@ -218,7 +218,7 @@ type TaskStore interface {
 	// exception (verify_stage and stage_timeouts.verify). The backend derives
 	// the new frozen policy and every order change inside its task
 	// transaction; it never selects or reassigns an execution setup
-	// (DEC-7, DEC-43, DEC-56; component-task-lifecycle).
+	// (DEC-47, DEC-43, DEC-56; component-task-lifecycle).
 	ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error)

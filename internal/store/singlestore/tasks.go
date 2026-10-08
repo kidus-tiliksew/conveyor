@@ -1212,7 +1212,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 }
 
 // ChangeTaskPolicyCommand commits the operator's frozen-policy exception in one
-// task transaction, matching the memory and PostgreSQL backends (DEC-7,
+// task transaction, matching the memory and PostgreSQL backends (DEC-47,
 // DEC-43; component-task-lifecycle, component-persistence).
 func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
 	var result store.SetupChangeResult

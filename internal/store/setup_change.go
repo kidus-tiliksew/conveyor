@@ -23,7 +23,7 @@ var ErrSetupChangeConflict = fmt.Errorf("setup change conflict")
 // TaskID, RequestID, Reason, and Policy; the backend derives every other
 // field with PlanTaskPolicyChange inside its task transaction, after replay
 // resolution and claim exclusion, and never accepts a caller-supplied order
-// plan or execution setup (DEC-7, DEC-43, DEC-56). The derived fields keep
+// plan or execution setup (DEC-47, DEC-43, DEC-56). The derived fields keep
 // their historical names because persisted replay results and audit events
 // use them.
 type SetupChangeRequest struct {

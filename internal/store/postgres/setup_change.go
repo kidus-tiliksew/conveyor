@@ -20,7 +20,7 @@ import (
 // ChangeTaskPolicyCommand commits the operator's frozen-policy exception in one
 // transaction: replay identity, claim exclusion, the derived policy and
 // verify/review handoff, audit events, and the task_setup_changes replay record
-// (DEC-7, DEC-43; component-task-lifecycle, component-persistence).
+// (DEC-47, DEC-43; component-task-lifecycle, component-persistence).
 func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
 	request, validationErr := store.PrepareSetupChangeRequest(raw)
 	request.PolicyActor = store.ActorFromContext(ctx)

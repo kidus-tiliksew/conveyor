@@ -72,7 +72,7 @@ type Command struct {
 const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 
 // SetupChangeCommand identifies the atomic frozen-policy exception write span
-// (DEC-7, DEC-43; component-task-lifecycle). The span may contain canonical
+// (DEC-47, DEC-43; component-task-lifecycle). The span may contain canonical
 // order.create and order.cancel transitions, but it is admitted as one
 // transaction so the frozen policy, verify/review handoff orders, projections,
 // and events cannot commit independently. Execution-setup reassignment through

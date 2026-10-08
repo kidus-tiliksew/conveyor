@@ -16,6 +16,7 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -715,10 +716,16 @@ func (s *heartbeatHTTPSecrets) ListGitHubAppKeysForRedaction(context.Context) ([
 	return nil, s.err
 }
 
-// The heartbeat wire boundary accepts client-local harness reports that the
-// server configuration does not name, bounds the body, and never echoes
-// rejected field values (DEC-56; req-worker REQ-1; req-security-boundaries REQ-2).
-func TestWorkerHeartbeatHTTPAcceptsClientLocalProbesWithinBounds(t *testing.T) {
+type heartbeatHTTPFixture struct {
+	handler    http.Handler
+	store      store.Store
+	secrets    *heartbeatHTTPSecrets
+	credential string
+	workerID   string
+}
+
+func newHeartbeatHTTPFixture(t *testing.T) heartbeatHTTPFixture {
+	t.Helper()
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo"}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
@@ -732,8 +739,8 @@ func TestWorkerHeartbeatHTTPAcceptsClientLocalProbesWithinBounds(t *testing.T) {
 	server.WorkOrders = orders
 	server.Workers = workers
 	handler := server.Handler()
-	call := func(method, path, body, token string) *httptest.ResponseRecorder {
-		request := httptest.NewRequest(method, path, strings.NewReader(body))
+	call := func(path, body, token string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		if token != "" {
 			request.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -741,21 +748,58 @@ func TestWorkerHeartbeatHTTPAcceptsClientLocalProbesWithinBounds(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		return response
 	}
-	pairResponse := call(http.MethodPost, "/v1/workers/pairings", `{"ttl_seconds":60}`, "operator")
+	pairResponse := call("/v1/workers/pairings", `{"ttl_seconds":60}`, "operator")
 	var pairing struct {
 		PairingToken string `json:"pairing_token"`
 	}
 	if err := json.Unmarshal(pairResponse.Body.Bytes(), &pairing); err != nil || pairing.PairingToken == "" {
 		t.Fatalf("pairing status=%d body=%s", pairResponse.Code, pairResponse.Body.String())
 	}
-	enrollResponse := call(http.MethodPost, "/v1/worker/enroll", `{"pairing_token":"`+pairing.PairingToken+`","name":"laptop"}`, "")
+	enrollResponse := call("/v1/worker/enroll", `{"pairing_token":"`+pairing.PairingToken+`","name":"laptop"}`, "")
 	var enrollment workerservice.Enrollment
 	if err := json.Unmarshal(enrollResponse.Body.Bytes(), &enrollment); err != nil || enrollment.Credential == "" {
 		t.Fatalf("enroll status=%d body=%s", enrollResponse.Code, enrollResponse.Body.String())
 	}
-	heartbeat := func(body string) *httptest.ResponseRecorder {
-		return call(http.MethodPost, "/v1/worker/heartbeat", body, enrollment.Credential)
+	return heartbeatHTTPFixture{handler: handler, store: st, secrets: secrets, credential: enrollment.Credential, workerID: enrollment.Worker.ID}
+}
+
+// heartbeat posts body; a negative contentLength sends it with no declared
+// length, as a chunked request does.
+func (f heartbeatHTTPFixture) heartbeat(body string, contentLength int64) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/v1/worker/heartbeat", strings.NewReader(body))
+	if contentLength < 0 {
+		request.Body = io.NopCloser(strings.NewReader(body))
+		request.ContentLength = -1
+		request.TransferEncoding = []string{"chunked"}
 	}
+	request.Header.Set("Authorization", "Bearer "+f.credential)
+	response := httptest.NewRecorder()
+	f.handler.ServeHTTP(response, request)
+	return response
+}
+
+func (f heartbeatHTTPFixture) stored(t *testing.T) core.Worker {
+	t.Helper()
+	workers, err := f.store.ListWorkers(store.WithWorkspace(t.Context(), "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, worker := range workers {
+		if worker.ID == f.workerID {
+			return worker
+		}
+	}
+	t.Fatalf("worker %s not listed", f.workerID)
+	return core.Worker{}
+}
+
+// The heartbeat wire boundary accepts client-local harness reports that the
+// server configuration does not name, bounds the body, and never echoes
+// rejected field values (DEC-56; req-worker REQ-1; req-security-boundaries REQ-2).
+func TestWorkerHeartbeatHTTPAcceptsClientLocalProbesWithinBounds(t *testing.T) {
+	f := newHeartbeatHTTPFixture(t)
+	secrets := f.secrets
+	heartbeat := func(body string) *httptest.ResponseRecorder { return f.heartbeat(body, 0) }
 
 	accepted := heartbeat(`{"probes":[{"harness":"local-only-agent","fingerprint":"` + strings.Repeat("0f", 32) + `","healthy":false,"message":"token=` + strings.Repeat("Q", 24) + `","transition":"healthy_to_unhealthy"}]}`)
 	if accepted.Code != http.StatusOK {
@@ -782,5 +826,66 @@ func TestWorkerHeartbeatHTTPAcceptsClientLocalProbesWithinBounds(t *testing.T) {
 	unavailable := heartbeat(`{"probes":[{"harness":"local-only-agent","message":"probe failed"}]}`)
 	if unavailable.Code != http.StatusServiceUnavailable || strings.Contains(unavailable.Body.String(), "key store") {
 		t.Fatalf("redaction failure status=%d body=%s", unavailable.Code, unavailable.Body.String())
+	}
+}
+
+// The 256 KiB cap covers the whole body, including bytes after the JSON value,
+// whether the length is declared or the body is chunked; a refused body
+// changes neither the stored probes nor the liveness lease
+// (component-harness-execution "Fingerprints and heartbeat probes").
+func TestWorkerHeartbeatHTTPBoundsTheWholeBody(t *testing.T) {
+	f := newHeartbeatHTTPFixture(t)
+	seed := `{"probes":[{"harness":"seed-agent","healthy":true}]}`
+	if response := f.heartbeat(seed, 0); response.Code != http.StatusOK {
+		t.Fatalf("seed heartbeat status=%d body=%s", response.Code, response.Body.String())
+	}
+	padded := func(value string, size int) string {
+		return value + strings.Repeat(" \n\t\r", size)[:size-len(value)]
+	}
+	value := `{"probes":[{"harness":"limit-agent","healthy":true}]}`
+	for _, tc := range []struct {
+		name          string
+		body          string
+		contentLength int64
+		status        int
+	}{
+		{name: "trailing whitespace one byte over the limit, declared length", body: padded(value, maxWorkerHeartbeatBytes+1), status: http.StatusRequestEntityTooLarge},
+		{name: "trailing whitespace one byte over the limit, chunked", body: padded(value, maxWorkerHeartbeatBytes+1), contentLength: -1, status: http.StatusRequestEntityTooLarge},
+		{name: "300 KiB of trailing whitespace, declared length", body: padded(`{"probes":[]}`, 300<<10), status: http.StatusRequestEntityTooLarge},
+		{name: "300 KiB of trailing whitespace, chunked", body: padded(`{"probes":[]}`, 300<<10), contentLength: -1, status: http.StatusRequestEntityTooLarge},
+		{name: "trailing garbage within the limit", body: value + ` {"probes":[]}`, status: http.StatusBadRequest},
+		{name: "trailing garbage within the limit, chunked", body: value + " x", contentLength: -1, status: http.StatusBadRequest},
+		{name: "trailing garbage over the limit", body: value + strings.Repeat("x", maxWorkerHeartbeatBytes), status: http.StatusRequestEntityTooLarge},
+		{name: "trailing garbage over the limit, chunked", body: value + strings.Repeat("x", maxWorkerHeartbeatBytes), contentLength: -1, status: http.StatusRequestEntityTooLarge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := f.stored(t)
+			response := f.heartbeat(tc.body, tc.contentLength)
+			if response.Code != tc.status {
+				t.Fatalf("status=%d want %d body=%s", response.Code, tc.status, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "limit-agent") {
+				t.Fatalf("refusal echoed the body: %s", response.Body.String())
+			}
+			after := f.stored(t)
+			if !after.LeaseExpiresAt.Equal(before.LeaseExpiresAt) || len(after.Probes) != 1 || after.Probes[0].Harness != "seed-agent" {
+				t.Fatalf("refused heartbeat changed the worker: lease %s -> %s probes=%+v", before.LeaseExpiresAt, after.LeaseExpiresAt, after.Probes)
+			}
+		})
+	}
+	for _, contentLength := range []int64{0, -1} {
+		exact := padded(value, maxWorkerHeartbeatBytes)
+		if len(exact) != maxWorkerHeartbeatBytes {
+			t.Fatalf("exact body is %d bytes", len(exact))
+		}
+		before := f.stored(t)
+		response := f.heartbeat(exact, contentLength)
+		if response.Code != http.StatusOK {
+			t.Fatalf("exact-limit body (length %d) status=%d body=%s", contentLength, response.Code, response.Body.String())
+		}
+		after := f.stored(t)
+		if len(after.Probes) != 1 || after.Probes[0].Harness != "limit-agent" || !after.LeaseExpiresAt.After(before.LeaseExpiresAt) {
+			t.Fatalf("exact-limit body was not applied: lease %s -> %s probes=%+v", before.LeaseExpiresAt, after.LeaseExpiresAt, after.Probes)
+		}
 	}
 }

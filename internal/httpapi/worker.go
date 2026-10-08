@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -153,12 +154,22 @@ func (s *Server) heartbeatWorker(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Probes []core.HarnessProbe `json:"probes"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWorkerHeartbeatBytes)).Decode(&request); err != nil {
+	// Read the whole body through the cap before decoding, so bytes after the
+	// JSON value count toward the limit whether or not Content-Length is known
+	// (component-harness-execution "Fingerprints and heartbeat probes").
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWorkerHeartbeatBytes))
+	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			http.Error(w, "heartbeat body exceeds the size limit", http.StatusRequestEntityTooLarge)
 			return
 		}
+		http.Error(w, "malformed heartbeat body", http.StatusBadRequest)
+		return
+	}
+	// json.Unmarshal accepts trailing whitespace and refuses any other
+	// trailing data.
+	if err := json.Unmarshal(body, &request); err != nil {
 		http.Error(w, "malformed heartbeat body", http.StatusBadRequest)
 		return
 	}
