@@ -25,7 +25,7 @@ const localGitCredentialHelp = "Git credentials resolve locally: set CONVEYOR_GI
 // localGitCredential is invocation-local, shared by run and worker. It resolves
 // on the executing machine for committing, pushing, and opening the pull
 // request; no stored forge credential or control-plane installation token is
-// forwarded to it (req-260821-830dbf REQ-6, AC-6.1 through AC-6.3,
+// forwarded to it (req-delivery-and-forge REQ-7, AC-7.1 through AC-7.3,
 // DEC-59(3)-(4); component-local-launchers).
 type localGitCredential struct {
 	token  string

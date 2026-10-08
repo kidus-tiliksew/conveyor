@@ -244,7 +244,7 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	command.SetArgs([]string{"init"})
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "REQ-4/AC-4.6") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "req-agent-guidance-install REQ-2/AC-2.6") {
 		t.Fatalf("outside-checkout error = %v", err)
 	}
 	if len(repoFixtureSnapshot(t, root)) != 0 {
@@ -432,7 +432,7 @@ func repoFixtureSnapshot(t *testing.T, root string) map[string]string {
 	return result
 }
 
-// AC-4.7/4.10: unresolved input never leaks into owned guidance or reports.
+// req-agent-guidance-install AC-2.7/2.10: unresolved input never leaks into owned guidance or reports.
 func TestRepoInitConnectionVerification(t *testing.T) {
 	root := t.TempDir()
 	mustGit(t, root, "init", "-b", "main")

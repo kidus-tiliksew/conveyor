@@ -11,7 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// req-verification-kits REQ-4/REQ-5; feature-verification-kit-execution VK-5.1 and VK-7.
+// req-verification-kits REQ-4; req-verification-evidence REQ-1; feature-verification-kit-execution VK-5.1 and VK-7.
 
 type VerificationCoverage struct {
 	Sources       []VerificationCoverageSource `json:"sources"`

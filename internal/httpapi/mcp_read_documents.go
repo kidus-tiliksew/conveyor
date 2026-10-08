@@ -10,7 +10,7 @@ import (
 )
 
 // Document identities use explicit maps to exclude unrelated machinery fields.
-// req-document-operating-surfaces AC-5.2/5.4/5.8.
+// req-document-archive AC-1.2/1.4/1.8.
 func documentReadIdentity(kind, id, title string, current int, archived bool, superseded []string) map[string]any {
 	return map[string]any{"kind": kind, "id": id, "title": title, "current_version": current, "archived": archived, "superseded_by": superseded, "active_authority": kind != "reference" && !archived && current > 0, "informative": kind == "reference"}
 }

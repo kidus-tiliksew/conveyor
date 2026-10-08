@@ -13,7 +13,7 @@ import (
 
 // archiveDismissedDocumentTx shares the document lock with proposal and
 // confirmation writes. Projection and ordered audit events commit together
-// (req-document-operating-surfaces REQ-5; component-document-corpus).
+// (req-document-archive REQ-1; component-document-corpus).
 func archiveDismissedDocumentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, kind, id string, now time.Time) (bool, error) {
 	table, versions, idKey, flag := "requirements", "requirement_versions", "requirement_id", "retired"
 	switch kind {

@@ -193,7 +193,7 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 
 // runVerificationCheckpointTaskRepositoryHead retains the task repository's
 // submitted head when an additional repository sorts first in the scope
-// (VK-13.3; req-verification-kits REQ-5/AC-5.2).
+// (VK-13.3; req-verification-evidence REQ-1/AC-1.2).
 func runVerificationCheckpointTaskRepositoryHead(t *testing.T, x Fixture) {
 	// Both repositories are registered by the conformance factory; the
 	// additional repository "app" sorts before the task repository "conveyor".
@@ -257,7 +257,8 @@ func runVerificationWaitingCheckpoint(t *testing.T, x Fixture) {
 // the waiting subject's latest attempt is a ground, the context header names
 // exactly that attempt, and both login attempts stay readable as history
 // (feature-verification-kit-execution VK-13.2/VK-13.5; component-web-dashboard
-// VK-WEB-6; req-verification-kits REQ-3/AC-3.4, REQ-5/AC-5.4).
+// VK-WEB-6; req-verification-kits REQ-3/AC-3.4; req-verification-evidence
+// REQ-1/AC-1.4).
 func runVerificationRetriedAttemptGround(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x, true)
 	register := func(id string) core.VerificationSubject {

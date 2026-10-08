@@ -38,7 +38,7 @@ func repoInitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := repositoryRoot(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("req-repository-onboarding REQ-4/AC-4.6: conveyor repo init requires a repository checkout")
+				return fmt.Errorf("req-agent-guidance-install REQ-2/AC-2.6: conveyor repo init requires a repository checkout")
 			}
 			root, err = filepath.EvalSymlinks(root)
 			if err != nil {
@@ -53,7 +53,7 @@ func repoInitCmd() *cobra.Command {
 	return cmd
 }
 
-// req-repository-onboarding AC-4.7: all fields come from one authenticated
+// req-agent-guidance-install AC-2.7: all fields come from one authenticated
 // registration, never from a singleton fallback or inferred network target.
 type repoInitContext struct{ Server, Workspace, Name, Base string }
 
@@ -196,7 +196,7 @@ func planRepoGuidance(root string, section []byte) (plan []repoGuidanceFile, err
 			err = &os.PathError{Op: "prepare guidance", Path: target, Err: err}
 		}
 	}()
-	// AC-4.1 / component-runtime: preflight the logical pair before reading
+	// req-agent-guidance-install AC-2.1 / component-runtime: preflight the logical pair before reading
 	// sections. Only a direct link to the other regular root file is supported.
 	names := []string{"AGENTS.md", "CLAUDE.md"}
 	plan = make([]repoGuidanceFile, 2)
@@ -268,7 +268,7 @@ func mirrorRepoGuidanceStatus(plan []repoGuidanceFile) {
 
 var repoInitContextLine = regexp.MustCompile("(?m)^Server: `([^`]+)`\\. Workspace: `([^`]+)`\\.$")
 
-// AC-4.9 / component-runtime: validate both prior contexts before staging any
+// req-agent-guidance-install AC-2.9 / component-runtime: validate both prior contexts before staging any
 // file. An unavailable refresh retains the owned bytes, not a reconstructed copy.
 func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, error) {
 	var priorContext repoInitContext
@@ -330,8 +330,8 @@ func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, erro
 	return true, nil
 }
 
-// prepareRepository keeps req-repository-onboarding REQ-4/AC-4.1 through
-// AC-4.5 in one preflight and rollback boundary (component-runtime, DEC-40).
+// prepareRepository keeps req-agent-guidance-install REQ-2/AC-2.1 through
+// AC-2.5 in one preflight and rollback boundary (component-runtime, DEC-40).
 // The shared skill installer retains ownership and refresh semantics unchanged.
 type repoSkillInstaller func(string, []skillDestination, string, bool, bool) ([]skillInstallFile, []skillInstallReport, error)
 
@@ -376,7 +376,7 @@ func prepareRepositoryWithOptions(root, version, name, base string, out io.Write
 	if retained {
 		fmt.Fprintln(out, "repo\tcontext retained without reverification\tprior verified guidance")
 	}
-	// AC-4.3: explicit guidance-only mode never inspects skill destinations.
+	// req-agent-guidance-install AC-2.3: explicit guidance-only mode never inspects skill destinations.
 	var destinations []skillDestination
 	if !options.guidanceOnly {
 		destinations = skillDestinations(root, supportedSkillTools, true)

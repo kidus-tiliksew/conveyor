@@ -237,7 +237,7 @@ func (m *memory) setRequirementArchived(ctx context.Context, id, actor string, a
 }
 
 // validateSupersededByLocked keeps replacement authority live and
-// workspace-local (req-document-operating-surfaces REQ-5/AC-5.7).
+// workspace-local (req-document-archive REQ-1/AC-1.7).
 func (m *memory) validateSupersededByLocked(workspace, targetID string, ids []string) ([]string, error) {
 	accepted := make([]string, 0, len(ids))
 	seen := make(map[string]bool, len(ids))

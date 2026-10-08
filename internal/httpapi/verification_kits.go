@@ -17,10 +17,10 @@ import (
 )
 
 // Workspace kit registry (feature-verification-kit-execution v6 VK-11,
-// req-verification-kits v2 REQ-11). The read reports what each configured
+// req-verification-kit-inventory v1 REQ-1). The read reports what each configured
 // repository's base-branch manifest declares and how kit pins compare with the
 // currently confirmed corpus. It is display-only: verify-stage selection keeps
-// using the frozen work-order snapshot (AC-11.5) and this handler writes nothing.
+// using the frozen work-order snapshot (req-verification-kit-inventory AC-1.5) and this handler writes nothing.
 
 // kitRegistryRepositoryLimit bounds discovery and pin resolution for one
 // repository. Tests shorten it to exercise the timeout path.
@@ -69,7 +69,7 @@ type kitRegistryPin struct {
 }
 
 // kitRegistryExercise is the normalized VK-3 contract with descriptions always
-// present (empty under schema 1, AC-10.2) and assertions always in object form.
+// present (empty under schema 1, req-verification-kits AC-10.2) and assertions always in object form.
 type kitRegistryExercise struct {
 	ID                 string                        `json:"id"`
 	Description        string                        `json:"description"`
@@ -135,7 +135,7 @@ func (s *Server) getWorkspaceVerificationKits(w http.ResponseWriter, r *http.Req
 			// Pin status reads the corpus at request time, so a newly confirmed
 			// version shows without any cache invalidation. A failed corpus read
 			// or an expired budget makes the repository unavailable rather than
-			// reporting statuses derived from missing data (AC-11.4).
+			// reporting statuses derived from missing data (req-verification-kit-inventory AC-1.4).
 			var err error
 			for j := range out.Kits {
 				if err = pins.apply(ctx, &out.Kits[j]); err != nil {
@@ -212,7 +212,7 @@ func projectRepositoryKits(repo config.Repo, sha string, d github.VerificationDi
 	receipt := verification.Evaluate(manifest, verification.SelectionContext{Stage: "verify", ManifestRevision: sha, SourceRevision: sha}, d.Trees)
 	// Discovery reports "malformed" whenever Parse returns an error, which
 	// includes a single invalid entry. VK-11 maps that state to an invalid
-	// repository. Diagnostics stay where they belong (AC-11.4): the repository
+	// repository. Diagnostics stay where they belong (req-verification-kit-inventory AC-1.4): the repository
 	// carries only manifest-level ones, and each kit is invalid only through its
 	// own receipt, which Evaluate also marks for manifest-level diagnostics.
 	out.Diagnostics = append(out.Diagnostics, receipt.Diagnostics...)
@@ -276,7 +276,7 @@ func nonNil[T any](v []T) []T {
 }
 
 // kitPinResolver compares pins with the workspace corpus once per document per
-// request (AC-11.3).
+// request (req-verification-kit-inventory AC-1.3).
 type kitPinResolver struct {
 	store        store.Store
 	mu           sync.Mutex

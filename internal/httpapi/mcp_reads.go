@@ -17,7 +17,7 @@ import (
 )
 
 // Operator reads are observational projections, never work-order service calls.
-// req-accounts-and-membership REQ-4/REQ-5; req-document-operating-surfaces REQ-5.
+// req-accounts-and-membership REQ-4/REQ-5; req-document-archive REQ-1.
 const (
 	mcpReadMaxItems      = 1000
 	mcpReadMaxBytes      = 64 << 10

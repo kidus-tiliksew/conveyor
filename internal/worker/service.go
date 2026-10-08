@@ -104,7 +104,7 @@ type DispatchOrder struct {
 
 // ClaimDelivery carries no stored credential and no control-plane installation
 // token. Git credentials for committing, pushing, and opening the pull request
-// resolve on the worker host (req-260821-830dbf REQ-6/AC-6.1, DEC-59(3)-(4);
+// resolve on the worker host (req-delivery-and-forge REQ-7/AC-7.1, DEC-59(3)-(4);
 // component-work-orders).
 type ClaimDelivery struct {
 	WorkOrder core.WorkOrder `json:"work_order"`
