@@ -461,7 +461,10 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		if err = recomputeDecisionSweepsForDocumentTx(ctx, tx, q, core.DecisionSweepTierRequirement, requirementID, confirmed.Content); err != nil {
 			return err
 		}
-		return activatePendingTaskContextTx(ctx, tx, q, workspace(ctx), requirementID, version, false)
+		if err = activatePendingTaskContextTx(ctx, tx, q, workspace(ctx), requirementID, version, false); err != nil {
+			return err
+		}
+		return reconcileConfirmedRequirementDriftTx(ctx, tx, q, requirementID, confirmed)
 	})
 	if err != nil {
 		return core.Requirement{}, core.RequirementVersion{}, err

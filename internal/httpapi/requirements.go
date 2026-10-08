@@ -903,17 +903,21 @@ func classifyRequirementDeliveries(taskID string, events []core.Event, versions 
 		currentVersion := confirmedRequirementVersionAt(versions, event.At)
 		pinnedVersion := taskRequirementVersionAt(events, versions, requirementID, event)
 		reasons := []string{}
-		if pinnedVersion > 0 && currentVersion > pinnedVersion {
-			reasons = append(reasons, fmt.Sprintf("planned against v%d; v%d was current at merge", pinnedVersion, currentVersion))
-		}
-		if directlyServing && currentVersion > 0 && pinnedVersion == 0 {
-			reasons = append(reasons, "planned requirement version unavailable")
-		}
-		if event.Kind == "merge.reconciled" && !reconciledMergeHasFactoryReview(events, event) {
-			reasons = append(reasons, "merged outside factory review")
-		}
-		if !directlyServing {
-			reasons = append(reasons, "delivered through related work without serving this requirement")
+		// A directly serving delivery whose planned version cannot be
+		// recovered is an incomplete evaluation. It stays neutral delivery
+		// activity and raises no staleness signal from any condition
+		// (req-260811-228be6 AC-1.1, AC-1.2, AC-1.4).
+		incomplete := directlyServing && currentVersion > 0 && pinnedVersion == 0
+		if !incomplete {
+			if pinnedVersion > 0 && currentVersion > pinnedVersion {
+				reasons = append(reasons, fmt.Sprintf("planned against v%d; v%d was current at merge", pinnedVersion, currentVersion))
+			}
+			if event.Kind == "merge.reconciled" && !reconciledMergeHasFactoryReview(events, event) {
+				reasons = append(reasons, "merged outside factory review")
+			}
+			if !directlyServing {
+				reasons = append(reasons, "delivered through related work without serving this requirement")
+			}
 		}
 		var payload struct {
 			URL string `json:"url"`

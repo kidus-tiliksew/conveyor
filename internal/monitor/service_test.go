@@ -94,6 +94,87 @@ func TestReadmeDirectPushPreservesGovernedDriftOnRedelivery(t *testing.T) {
 	}
 }
 
+// External pull-request merges at an unapproved head and reverts that touch a
+// governed path raise drift on that System Design document regardless of task
+// context, through the poller, source, and service (req-260811-228be6 AC-4.3;
+// component-monitor-drift). A repeated observation records no second drift.
+func TestExternalMergeAndRevertRaiseGovernedDocumentDrift(t *testing.T) {
+	for _, test := range []struct {
+		name, message, pulls, occurrence string
+		kind                             monitor.SignalKind
+	}{
+		{name: "external merge", message: "Merge pull request #41 from contributor/feature", kind: monitor.ExternalPRMerge, occurrence: "pr:41",
+			pulls: `[{"number":41,"html_url":"https://github.com/kidus-tiliksew/conveyor/pull/41","merged_at":"2026-09-15T14:08:00Z","head":{"ref":"contributor/feature","sha":"feature-head"}}]`},
+		{name: "revert", message: "Revert \"feature\"", kind: monitor.Revert, occurrence: "observed-sha", pulls: `[]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, st, ctx := testService(t)
+			content := "# Monitor fixture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/monitor/**\n```"
+			design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "monitor-fixture", Title: "Monitor fixture", Category: "Component design"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
+				t.Fatal(err)
+			}
+			compares := 0
+			source := monitor.GitHubSource{
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "kidus-tiliksew/conveyor",
+				ResolveTask: func(context.Context, string, int) (string, bool, error) { return "", false, nil },
+				Run: func(_ context.Context, args ...string) ([]byte, error) {
+					request := strings.Join(args, " ")
+					switch {
+					case strings.Contains(request, "/commits -f"):
+						return []byte(fmt.Sprintf(`[{"sha":"observed-sha","html_url":"https://github.com/kidus-tiliksew/conveyor/commit/observed-sha","parents":[{"sha":"first-parent"},{"sha":"feature-head"}],"commit":{"message":%q,"committer":{"date":"2026-09-15T14:08:33Z"}}}]`, test.message)), nil
+					case strings.Contains(request, "/commits/observed-sha/pulls"):
+						return []byte(test.pulls), nil
+					case strings.Contains(request, "/compare/first-parent...observed-sha"):
+						compares++
+						return []byte(`{"files":[{"filename":"internal/monitor/types.go"},{"filename":"web/src/app.tsx"}]}`), nil
+					default:
+						return nil, fmt.Errorf("unexpected GitHub request: %s", request)
+					}
+				},
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour}
+				if err := poller.Poll(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if compares != 2 {
+				t.Fatalf("first-parent comparisons=%d", compares)
+			}
+			status, err := service.Status(ctx)
+			if err != nil || len(status.Observations) != 1 {
+				t.Fatalf("status=%+v err=%v", status, err)
+			}
+			observation := status.Observations[0]
+			if observation.Kind != test.kind || observation.OccurrenceID != test.occurrence || observation.DeduplicatedCount != 1 {
+				t.Fatalf("observation=%+v", observation)
+			}
+			repositoryDrift, documentDrift := 0, 0
+			for _, drift := range status.Drift {
+				switch drift.SystemDesignID {
+				case "":
+					repositoryDrift++
+				case design.ID:
+					documentDrift++
+					if drift.SystemDesignVersion != version.Version || drift.Kind != test.kind || drift.TaskID != observation.TaskID ||
+						strings.Join(drift.MatchingPaths, ",") != "internal/monitor/types.go" {
+						t.Fatalf("document drift=%+v", drift)
+					}
+				default:
+					t.Fatalf("unexpected drift=%+v", drift)
+				}
+			}
+			if repositoryDrift != 1 || documentDrift != 1 || status.DriftCount != 2 {
+				t.Fatalf("drift=%+v count=%d", status.Drift, status.DriftCount)
+			}
+		})
+	}
+}
+
 type sourceFunc func(context.Context, time.Time) ([]monitor.Observation, error)
 
 func (f sourceFunc) Observations(ctx context.Context, since time.Time) ([]monitor.Observation, error) {

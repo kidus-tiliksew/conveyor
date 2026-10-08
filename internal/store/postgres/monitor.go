@@ -354,6 +354,29 @@ func scanDrift(row interface{ Scan(...any) error }, ws string) (monitor.Drift, e
 	return drift, nil
 }
 
+const driftResolutionSelect = `SELECT id,repository,kind,source_url,commit_sha,
+			COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome
+			FROM repository_drift WHERE workspace_id=$1 AND id=$2`
+
+func scanResolutionDrift(ctx context.Context, tx pgx.Tx, id, suffix string) (monitor.Drift, error) {
+	var drift monitor.Drift
+	var kind string
+	var resolvedAt *time.Time
+	if err := tx.QueryRow(ctx, driftResolutionSelect+suffix, workspace(ctx), id).
+		Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
+			&drift.RequirementID, &drift.SystemDesignID, &drift.SystemDesignVersion, &drift.CausalEventID, &drift.MatchingPaths, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return monitor.Drift{}, fmt.Errorf("drift %s not found", id)
+		}
+		return monitor.Drift{}, err
+	}
+	drift.WorkspaceID, drift.Kind = workspace(ctx), monitor.SignalKind(kind)
+	if resolvedAt != nil {
+		drift.ResolvedAt = *resolvedAt
+	}
+	return drift, nil
+}
+
 func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
 	requirementID = strings.TrimSpace(requirementID)
 	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
@@ -364,102 +387,19 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID str
 	}
 	var drift monitor.Drift
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		var kind string
-		var resolvedAt *time.Time
-		if err := tx.QueryRow(ctx, `SELECT id,repository,kind,source_url,commit_sha,
-			COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome
-			FROM repository_drift WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id).
-			Scan(&drift.ID, &drift.Repository, &kind, &drift.SourceURL, &drift.CommitSHA,
-				&drift.RequirementID, &drift.SystemDesignID, &drift.SystemDesignVersion, &drift.CausalEventID, &drift.MatchingPaths, &drift.TaskID, &drift.DetectedAt, &resolvedAt, &drift.Outcome); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("drift %s not found", id)
-			}
+		if outcome == "requirements_amended" {
+			var err error
+			drift, err = proposeDriftAmendmentTx(ctx, tx, q, id, requirementID)
 			return err
 		}
-		drift.WorkspaceID, drift.Kind = workspace(ctx), monitor.SignalKind(kind)
-		if resolvedAt != nil {
-			drift.ResolvedAt = *resolvedAt
-			if requirementID != "" && requirementID != drift.RequirementID {
-				return fmt.Errorf("%w: drift %s is linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
-			}
+		var err error
+		if drift, err = scanResolutionDrift(ctx, tx, id, " FOR UPDATE"); err != nil {
+			return err
+		}
+		if !drift.ResolvedAt.IsZero() {
 			return nil
 		}
 		now := time.Now().UTC()
-		if outcome == "requirements_amended" {
-			if requirementID != "" && drift.RequirementID != "" && requirementID != drift.RequirementID {
-				return fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
-			}
-			if drift.RequirementID == "" {
-				drift.RequirementID = requirementID
-			}
-			if drift.RequirementID == "" {
-				return fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
-			}
-			var currentVersion *int32
-			var highWaterMark int
-			if err := tx.QueryRow(ctx, `SELECT current_version,statement_high_water_mark FROM requirements
-				WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), drift.RequirementID).
-				Scan(&currentVersion, &highWaterMark); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return fmt.Errorf("%w: %s", monitor.ErrUnknownRequirementID, drift.RequirementID)
-				}
-				return err
-			}
-			if currentVersion == nil {
-				return fmt.Errorf("%w: requirement %s has no confirmed current version", monitor.ErrRequirementIDInvalid, drift.RequirementID)
-			}
-			current, err := scanRequirementVersion(tx.QueryRow(ctx, requirementVersionSelect+
-				` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, workspace(ctx), drift.RequirementID, *currentVersion), drift.RequirementID, int(*currentVersion))
-			if err != nil {
-				return err
-			}
-			if !current.Confirmed {
-				return fmt.Errorf("%w: requirement %s current version is not confirmed", monitor.ErrRequirementIDInvalid, drift.RequirementID)
-			}
-			proposal, err := store.DriftAmendmentVersion(drift, current)
-			if err != nil {
-				return err
-			}
-			var latestVersion int
-			var issued []string
-			if err = tx.QueryRow(ctx, `SELECT coalesce(max(rv.version),0),
-				coalesce(array_agg(DISTINCT ids.id) FILTER (WHERE ids.id IS NOT NULL),'{}')
-				FROM requirement_versions rv
-				LEFT JOIN LATERAL jsonb_array_elements(rv.statements_json) statement ON true
-				LEFT JOIN LATERAL (
-				  SELECT statement->>'id' AS id
-				  UNION ALL
-				  SELECT criterion->>'id' FROM jsonb_array_elements(coalesce(statement->'acceptance_criteria','[]'::jsonb)) criterion
-				) ids ON true
-				WHERE rv.workspace_id=$1 AND rv.requirement_id=$2`, workspace(ctx), drift.RequirementID).
-				Scan(&latestVersion, &issued); err != nil {
-				return err
-			}
-			if err = core.ValidateRequirementRevision(highWaterMark, issued, proposal.Statements); err != nil {
-				return err
-			}
-			statements, err := marshalRequirementStatements(proposal.Statements)
-			if err != nil {
-				return err
-			}
-			proposal.Workspace, proposal.Version, proposal.CreatedAt = workspace(ctx), latestVersion+1, now
-			if _, err = tx.Exec(ctx, `INSERT INTO requirement_versions
-				(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
-				VALUES ($1,$2,$3,$4,$5,$6,'',$7,false,$8)`, workspace(ctx), drift.RequirementID,
-				proposal.Version, proposal.Content, statements, string(proposal.Origin), drift.ID, now); err != nil {
-				return err
-			}
-			if _, err = tx.Exec(ctx, `UPDATE requirements SET updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), drift.RequirementID, now); err != nil {
-				return err
-			}
-			if err = insertRequirementEvent(ctx, q, "requirement.version_proposed", map[string]any{
-				"workspace_id": workspace(ctx), "requirement_id": drift.RequirementID,
-				"version": proposal.Version, "origin": proposal.Origin,
-				"origin_drift_id": drift.ID, "statement_count": len(proposal.Statements),
-			}); err != nil {
-				return err
-			}
-		}
 		if outcome == "design_document_updated" {
 			if drift.SystemDesignID == "" {
 				return fmt.Errorf("drift %s cannot resolve as design_document_updated without a system design", id)
@@ -497,6 +437,164 @@ func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID str
 		return nil
 	})
 	return drift, err
+}
+
+// proposeDriftAmendmentTx records requirements_amended as a requirement
+// proposal and leaves the drift open, linked through the proposal's
+// origin_drift_id. Confirming that version closes the drift inside the
+// confirmation transaction (reconcileConfirmedRequirementDriftTx); dismissing
+// it leaves the drift open (DEC-46; req-delivery-and-forge AC-4.2, AC-4.3).
+//
+// Confirmation locks the requirement before the drift. This path discovers
+// the drift's requirement without a lock, locks that requirement, then locks
+// and revalidates the drift, so both paths take the same order.
+func proposeDriftAmendmentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, id, requirementID string) (monitor.Drift, error) {
+	discovered, err := scanResolutionDrift(ctx, tx, id, "")
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	// A drift already closed needs no requirement lock: the replay below
+	// reports it as recorded.
+	target := ""
+	if discovered.ResolvedAt.IsZero() {
+		target = requirementID
+		if requirementID != "" && discovered.RequirementID != "" && requirementID != discovered.RequirementID {
+			return monitor.Drift{}, fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, id, discovered.RequirementID)
+		}
+		if discovered.RequirementID != "" {
+			target = discovered.RequirementID
+		}
+		if target == "" {
+			return monitor.Drift{}, fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
+		}
+	}
+	var currentVersion *int32
+	var highWaterMark int
+	if target != "" {
+		if err = tx.QueryRow(ctx, `SELECT current_version,statement_high_water_mark FROM requirements
+			WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), target).
+			Scan(&currentVersion, &highWaterMark); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return monitor.Drift{}, fmt.Errorf("%w: %s", monitor.ErrUnknownRequirementID, target)
+			}
+			return monitor.Drift{}, err
+		}
+	}
+	drift, err := scanResolutionDrift(ctx, tx, id, " FOR UPDATE")
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	if !drift.ResolvedAt.IsZero() {
+		if requirementID != "" && requirementID != drift.RequirementID {
+			return monitor.Drift{}, fmt.Errorf("%w: drift %s is linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
+		}
+		return drift, nil
+	}
+	if drift.RequirementID != "" && drift.RequirementID != target {
+		return monitor.Drift{}, fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
+	}
+	drift.RequirementID = target
+	if currentVersion == nil {
+		return monitor.Drift{}, fmt.Errorf("%w: requirement %s has no confirmed current version", monitor.ErrRequirementIDInvalid, target)
+	}
+	current, err := scanRequirementVersion(tx.QueryRow(ctx, requirementVersionSelect+
+		` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`, workspace(ctx), target, *currentVersion), target, int(*currentVersion))
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	if !current.Confirmed {
+		return monitor.Drift{}, fmt.Errorf("%w: requirement %s current version is not confirmed", monitor.ErrRequirementIDInvalid, target)
+	}
+	link := func() error {
+		_, err := tx.Exec(ctx, `UPDATE repository_drift SET requirement_id=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, target)
+		return err
+	}
+	var pending int
+	err = tx.QueryRow(ctx, `SELECT version FROM requirement_versions
+		WHERE workspace_id=$1 AND requirement_id=$2 AND origin_drift_id=$3 AND origin=$4 AND NOT confirmed AND NOT retired
+		ORDER BY version DESC LIMIT 1`, workspace(ctx), target, drift.ID, string(core.RequirementOriginDriftAmendment)).Scan(&pending)
+	if err == nil {
+		return drift, link()
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return monitor.Drift{}, err
+	}
+	proposal, err := store.DriftAmendmentVersion(drift, current)
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	var latestVersion int
+	var issued []string
+	if err = tx.QueryRow(ctx, `SELECT coalesce(max(rv.version),0),
+		coalesce(array_agg(DISTINCT ids.id) FILTER (WHERE ids.id IS NOT NULL),'{}')
+		FROM requirement_versions rv
+		LEFT JOIN LATERAL jsonb_array_elements(rv.statements_json) statement ON true
+		LEFT JOIN LATERAL (
+		  SELECT statement->>'id' AS id
+		  UNION ALL
+		  SELECT criterion->>'id' FROM jsonb_array_elements(coalesce(statement->'acceptance_criteria','[]'::jsonb)) criterion
+		) ids ON true
+		WHERE rv.workspace_id=$1 AND rv.requirement_id=$2`, workspace(ctx), target).
+		Scan(&latestVersion, &issued); err != nil {
+		return monitor.Drift{}, err
+	}
+	if err = core.ValidateRequirementRevision(highWaterMark, issued, proposal.Statements); err != nil {
+		return monitor.Drift{}, err
+	}
+	statements, err := marshalRequirementStatements(proposal.Statements)
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	now := time.Now().UTC()
+	proposal.Workspace, proposal.Version, proposal.CreatedAt = workspace(ctx), latestVersion+1, now
+	if _, err = tx.Exec(ctx, `INSERT INTO requirement_versions
+		(workspace_id,requirement_id,version,content,statements_json,origin,origin_session_id,origin_drift_id,confirmed,created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'',$7,false,$8)`, workspace(ctx), target,
+		proposal.Version, proposal.Content, statements, string(proposal.Origin), drift.ID, now); err != nil {
+		return monitor.Drift{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE requirements SET updated_at=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), target, now); err != nil {
+		return monitor.Drift{}, err
+	}
+	if err = insertRequirementEvent(ctx, q, "requirement.version_proposed", map[string]any{
+		"workspace_id": workspace(ctx), "requirement_id": target,
+		"version": proposal.Version, "origin": proposal.Origin,
+		"origin_drift_id": drift.ID, "statement_count": len(proposal.Statements),
+	}); err != nil {
+		return monitor.Drift{}, err
+	}
+	return drift, link()
+}
+
+// reconcileConfirmedRequirementDriftTx runs inside requirement confirmation,
+// after the requirement row lock. It closes only the unresolved drift in the
+// same workspace and requirement that the confirmed drift-amendment version
+// names (DEC-46; req-delivery-and-forge AC-4.2). An error rolls the whole
+// confirmation back.
+func reconcileConfirmedRequirementDriftTx(ctx context.Context, tx pgx.Tx, q *db.Queries, requirementID string, confirmed core.RequirementVersion) error {
+	if confirmed.Origin != core.RequirementOriginDriftAmendment || confirmed.OriginDriftID == "" {
+		return nil
+	}
+	drift := monitor.Drift{ID: confirmed.OriginDriftID, RequirementID: requirementID, ResolvedAt: confirmed.ConfirmedAt}
+	err := tx.QueryRow(ctx, `UPDATE repository_drift SET resolved_at=$4,outcome='requirements_amended'
+		WHERE workspace_id=$1 AND id=$2 AND requirement_id=$3 AND resolved_at IS NULL
+		RETURNING COALESCE(task_id,''),COALESCE(system_design_id,'')`, workspace(ctx), drift.ID, requirementID, drift.ResolvedAt).
+		Scan(&drift.TaskID, &drift.SystemDesignID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: drift.ResolvedAt,
+		Payload: core.JSONPayload(store.RequirementDriftReconciledPayload(drift, confirmed))}); err != nil {
+		return err
+	}
+	if drift.SystemDesignID != "" {
+		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.drift_resolved", At: drift.ResolvedAt,
+			Payload: core.JSONPayload(store.RequirementDesignDriftResolvedPayload(workspace(ctx), drift, confirmed))})
+	}
+	return nil
 }
 
 func nullableMonitorEventID(id int64) any {

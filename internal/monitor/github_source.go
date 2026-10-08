@@ -337,14 +337,24 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				}
 			}
 		}
+		// Every out-of-pipeline kind (direct push, external pull-request
+		// merge at a head no task approval covers, revert) carries the
+		// observed commit's first-parent paths so governed-scope evaluation
+		// raises document drift for it (req-260811-228be6 AC-4.3;
+		// component-monitor-drift). The comparison reads the default-branch
+		// commit against its first parent, never the pull request's branch
+		// head, through the workspace App runner (DEC-59).
 		var changedPaths []string
-		if kind == DirectPush && len(commit.Parents) > 0 {
+		if len(commit.Parents) > 0 {
 			var diffErr error
 			changedPaths, diffErr = s.pathsFromFirstParent(ctx, commit.Parents[0].SHA, commit.SHA)
 			if diffErr != nil {
 				return nil, diffErr
 			}
-			if len(changedPaths) == 0 {
+			// Only an empty direct push is suppressed. An empty external
+			// merge or revert comparison carries no document paths but keeps
+			// its repository observation.
+			if kind == DirectPush && len(changedPaths) == 0 {
 				if s.OnSuppressed != nil {
 					_ = s.OnSuppressed(ctx, map[string]any{
 						"reason": "first_parent_empty", "repository": s.Repository,
