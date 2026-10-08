@@ -28,9 +28,9 @@ var kitRunnerEnvironmentKeys = []string{"CONVEYOR_KIT_OPERATIONS", "CONVEYOR_KIT
 
 // kitOperatorConfigSources are the local configuration sources an operator
 // selects explicitly or by user default. Only these may supply
-// verification_toolchains or kit_permissions records
-// (feature-verification-kit-execution VK-4.2; req-verification-kits
-// REQ-7/AC-7.3; component-verification-runner).
+// verification_toolchains or kit_permissions records (req-verification-kits
+// REQ-7/AC-7.3; component-verification-runner "Local kit_permissions" and
+// "Toolchain environment and preflight").
 var kitOperatorConfigSources = map[string]bool{"flag": true, "environment CONVEYOR_CONFIG": true, "user default": true}
 
 // kitConfigSourceRefusal explains why the loaded configuration cannot supply
