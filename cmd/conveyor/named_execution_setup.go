@@ -1,8 +1,8 @@
 package main
 
-// Named local setup management is governed by req-260811-0ee057
-// REQ-15/AC-15.1-15.4 and REQ-16/AC-16.1-16.3. Setup contents never leave
-// the operator host.
+// Named local setup management is governed by req-execution-configuration
+// REQ-10/AC-10.1-AC-10.9 and REQ-11/AC-11.1-AC-11.5. Setup contents never
+// leave the operator host (req-execution-configuration AC-9.8).
 
 import (
 	"context"

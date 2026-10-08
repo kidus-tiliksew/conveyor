@@ -1,8 +1,9 @@
 package main
 
 // The attended-run terminal app: one persistent Bubble Tea program owns the
-// terminal for the whole conveyor run invocation (req-260811-0ee057 AC-5.6,
-// AC-5.7). Every interaction — stage previews and confirmations, the live
+// terminal for the whole conveyor run invocation (component-local-launchers,
+// conveyor run; req-local-task-runs REQ-2/AC-2.3 and REQ-4/AC-4.1-AC-4.4).
+// Every interaction — stage previews and confirmations, the live
 // agent stream, gate prompts, notices, and the child's stderr — flows through
 // this model; nothing else may write to the terminal while it runs, because a
 // single competing raw writer corrupts the repaint (the v0.4.1 lesson).

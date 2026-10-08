@@ -1,8 +1,10 @@
 package main
 
 // Local execution setup is a client-only creation path governed by
-// req-260811-0ee057 REQ-14/AC-14.1-14.3. It deliberately has no HTTP client:
-// detected harness definitions and stage choices stay on the operator host.
+// req-execution-configuration REQ-9/AC-9.1, AC-9.2, AC-9.3, AC-9.8, AC-9.9
+// and component-harness-execution, Interactive creation. It deliberately has
+// no HTTP client: detected harness definitions and stage choices stay on the
+// operator host.
 
 import (
 	"context"

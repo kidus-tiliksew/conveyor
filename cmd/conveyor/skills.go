@@ -21,7 +21,8 @@ const skillsOwnerPrefix = "<!-- conveyor:skills-install owner=v1 version="
 
 // embeddedSkills is the release-carried snapshot of the repository's agent
 // skill wrappers and the canonical playbooks those wrappers consume
-// (req-260811-0ee057 REQ-12/AC-12.1).
+// (req-agent-guidance-install REQ-1/AC-1.1; component-cli-onboarding,
+// Embedded skills).
 //
 //go:embed skills_assets/*/*
 var embeddedSkills embed.FS
@@ -149,7 +150,7 @@ type skillInstallReport struct {
 }
 
 // supportedSkillTools maps each detected agent binary to its native skill
-// destination (req-260811-0ee057 AC-12.3).
+// destination (req-agent-guidance-install AC-1.5, AC-1.6).
 var supportedSkillTools = []skillTool{
 	{name: "claude", binary: "claude", root: ".claude/skills"},
 	{name: "codex", binary: "codex", root: ".codex/skills", legacyPath: ".codex/plugins/cache/personal/conveyor/0.1.0"},
@@ -307,7 +308,8 @@ func listEmbeddedSkillsForDestinations(cmd *cobra.Command, base string, destinat
 }
 
 // installEmbeddedSkills preflights the complete set before writing and only
-// refreshes files carrying Conveyor's marker (req-260811-0ee057 AC-12.2).
+// refreshes files carrying Conveyor's marker (req-agent-guidance-install
+// AC-1.2, AC-1.3, AC-1.4; component-cli-onboarding, conveyor skills install).
 func installEmbeddedSkills(base, root, version string) ([]skillInstallFile, error) {
 	destination := skillDestination{tool: supportedSkillTools[0], root: root}
 	plan, _, err := installEmbeddedSkillsForDestinations(base, []skillDestination{destination}, version, false)
