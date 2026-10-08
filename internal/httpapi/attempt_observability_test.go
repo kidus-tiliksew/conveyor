@@ -80,7 +80,7 @@ func TestAttemptObservabilityHTTPBindingAndBodyLimit(t *testing.T) {
 	}
 	for _, test := range []struct {
 		name, token, path, body, code string
-		status                       int
+		status                        int
 	}{
 		{name: "child agent credential", token: "child-token", path: path, body: body("run-session", claimed.AttemptID, "", ""), status: http.StatusUnauthorized},
 		{name: "revoked or unknown credential", token: "revoked-token", path: path, body: body("run-session", claimed.AttemptID, "", ""), status: http.StatusUnauthorized},
