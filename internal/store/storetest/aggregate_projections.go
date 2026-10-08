@@ -210,6 +210,12 @@ func runWorkspaceControl(t *testing.T, x Fixture) {
 			t.Fatalf("empty %s reconciliation=%d", name, count)
 		}
 	}
+	// RuntimeConfig composes deployment control-plane settings into a
+	// policy-only workspace on every backend (runtime_planning.go).
+	t.Run("PolicyOnlyPlanningUsesDeploymentControlPlane", func(t *testing.T) { runPolicyOnlyPlanningUsesDeploymentControlPlane(t, x) })
+	t.Run("PolicyOnlyPlanningRejectsMissingDeploymentControlPlane", func(t *testing.T) {
+		runPolicyOnlyPlanningRejectsMissingDeploymentControlPlane(t, x)
+	})
 }
 
 // runMonitorPullRequestEvents holds all backends to the monitor's narrow read

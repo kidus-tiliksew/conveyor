@@ -171,18 +171,21 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	}
 	return config.VersionedDocument{Document: doc, Version: version}, nil
 }
+
+// RuntimeConfig composes the stored policy document with the deployment's
+// control-plane settings through the shared runtime helper
+// (component-runtime; component-persistence).
 func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
+	if deployment == nil {
+		return nil, fmt.Errorf("deployment configuration is required")
+	}
 	data, _, err := s.configRow(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if deployment == nil {
-		return nil, fmt.Errorf("deployment config is required")
-	}
 	base := *deployment
 	base.Workspace, _ = workspace(ctx)
-	cfg, _, err := config.ParseStoredWorkspaceDocument([]byte(data), &base, "stored workspace config")
-	return cfg, err
+	return config.ParseRuntimeWorkspaceDocument([]byte(data), &base, "stored workspace config")
 }
 func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next *config.Config) (config.UpdateReceipt, error) {
 	ws, err := workspace(ctx)

@@ -198,3 +198,80 @@ func TestAssembleReportsRenderableByteExhaustion(t *testing.T) {
 		t.Fatalf("exhaustion reasons=%v, want renderable_bytes", result.ExhaustionReasons)
 	}
 }
+
+// TestPolicyOnlyRuntimeContextBudgets proves the lineage readers see the
+// deployment's planning context limits through RuntimeConfig composition for a
+// policy-only workspace (component-lineage; component-runtime; DEC-56(3)).
+func TestPolicyOnlyRuntimeContextBudgets(t *testing.T) {
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	backend := store.NewVolatileBackend()
+	t.Cleanup(backend.Close)
+	if _, err := backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/example/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	deployment := func(t *testing.T, contextYAML string) *config.Config {
+		t.Helper()
+		parsed, err := config.ParseDeployment([]byte(`workspace: demo
+database: {url: "postgres://db.invalid/conveyor"}
+execution_settings:
+  control_plane:
+    triage: {model: deploy-triage, timeout: 7m}
+    planning: {model: deploy-planner, timeout: 9m`+contextYAML+`}
+repos: []
+`), "lineage-runtime.yaml", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	configured, err := backend.RuntimeConfig(ctx, deployment(t, `, context: {depth: 3, nodes: 11, renderable_bytes: 1, artifact_refs: 5, authority_nodes: 9}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Budget{Depth: 3, Nodes: 11, Links: 11 * config.DefaultLineageContextLinksPerNode, RenderableBytes: 1, ArtifactRefs: 5, AuthorityNodes: 9}
+	if got := BudgetFromConfig(configured); got != want {
+		t.Fatalf("configured budget = %+v, want %+v", got, want)
+	}
+	if got := config.ServedRequirementAuthorityNodes(configured); got != 9 {
+		t.Fatalf("served authority limit = %d, want 9", got)
+	}
+	defaults := Budget{
+		Depth: config.DefaultLineageContextDepth, Nodes: config.DefaultLineageContextNodes,
+		Links:           config.DefaultLineageContextNodes * config.DefaultLineageContextLinksPerNode,
+		RenderableBytes: config.DefaultLineageContextRenderableBytes, ArtifactRefs: config.DefaultLineageContextArtifactRefs,
+		AuthorityNodes: config.DefaultServedRequirementAuthorityNodes,
+	}
+	partial, err := backend.RuntimeConfig(ctx, deployment(t, `, context: {nodes: 7}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPartial := defaults
+	wantPartial.Nodes, wantPartial.Links = 7, 7*config.DefaultLineageContextLinksPerNode
+	if got := BudgetFromConfig(partial); got != wantPartial {
+		t.Fatalf("partially configured budget = %+v, want %+v", got, wantPartial)
+	}
+	if got := config.ServedRequirementAuthorityNodes(partial); got != config.DefaultServedRequirementAuthorityNodes {
+		t.Fatalf("absent authority axis = %d", got)
+	}
+
+	// The configured one-byte renderable budget is enforced at assembly with
+	// an explicit omission, not only copied into the runtime value.
+	task := core.Task{ID: "task-runtime-budget", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-task-runtime-budget", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err = backend.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = backend.CreateArtifact(ctx, core.Artifact{Name: "context.md", ContentType: "text/markdown", TaskID: task.ID}, []byte("bounded context")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Assemble(ctx, backend, configured, []core.LineageNode{{Type: core.LineageTask, ID: task.ID}}, task.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 0 || result.OmittedCount != 1 || len(result.ExhaustionReasons) != 1 || result.ExhaustionReasons[0] != "renderable_bytes" {
+		t.Fatalf("items=%d omitted=%d reasons=%v, want one renderable_bytes omission", len(result.Items), result.OmittedCount, result.ExhaustionReasons)
+	}
+	roomy, err := Assemble(ctx, backend, partial, []core.LineageNode{{Type: core.LineageTask, ID: task.ID}}, task.ID, true)
+	if err != nil || len(roomy.Items) != 1 || roomy.OmittedCount != 0 {
+		t.Fatalf("default renderable budget items=%d omitted=%d err=%v", len(roomy.Items), roomy.OmittedCount, err)
+	}
+}
