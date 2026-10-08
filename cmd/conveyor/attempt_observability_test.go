@@ -30,6 +30,10 @@ type captureFixture struct {
 	reconcile  func(call int) (workerservice.ClaimReconciliation, int, string)
 	captureErr int
 	specOrigin string
+	// gate, when set, holds renewal at "claimed" until the child's first
+	// output, so terminal and authority-loss responses can never reach the
+	// pre-start renewal (deterministic ordering, no timers).
+	gate chan struct{}
 
 	mu         sync.Mutex
 	sessionID  string
@@ -74,7 +78,15 @@ func (f *captureFixture) server() *httptest.Server {
 			call := f.renewCalls
 			f.mu.Unlock()
 			order, status, code := core.WorkOrder{ID: "capture-order", State: core.WorkOrderClaimed, AttemptID: captureFixtureAttempt, LeaseExpiresAt: time.Now().Add(time.Minute)}, 0, ""
-			if f.renew != nil {
+			gated := false
+			if f.gate != nil {
+				select {
+				case <-f.gate:
+				default:
+					gated = true
+				}
+			}
+			if f.renew != nil && !gated {
 				order, status, code = f.renew(call)
 			}
 			if status != 0 {
@@ -124,6 +136,11 @@ func (f *captureFixture) server() *httptest.Server {
 			f.capturePth = append(f.capturePth, path)
 			f.mu.Unlock()
 			if f.captureErr != 0 {
+				if f.captureErr == http.StatusConflict {
+					w.Header().Set("X-Conveyor-Error-Code", "attempt_capture_unverified")
+					http.Error(w, "attempt ending unverified", f.captureErr)
+					return
+				}
 				http.Error(w, "capture refused", f.captureErr)
 				return
 			}
@@ -184,6 +201,11 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 		wantNoCapture  bool
 		wantTranscript bool
 		dispatches     []string
+		// gateOnOutput holds renew responses at "claimed" until the child's
+		// first output is observed by the launcher.
+		gateOnOutput bool
+		// captureStatus makes the fake server refuse the capture.
+		captureStatus int
 	}
 	handoffState := func(stage core.Stage) core.WorkOrderState {
 		if stage == core.StageImplement {
@@ -221,7 +243,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 				}
 				return "harness exited before completing work order"
 			},
-			wantErr: "harness exited", wantTranscript: true, dispatches: []string{"worker"},
+			wantErr: "harness exited", wantTranscript: true, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "plan revision self release", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
@@ -232,17 +254,41 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 				}
 			},
 			wantReason: func(core.Stage) string { return core.WorkOrderReleaseReasonPlanRevisionRequested },
-			dispatches: []string{"worker"},
+			dispatches: []string{"worker", "run"},
+		},
+		{
+			name: "operator checkpoint self release", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			reconcile: func(core.Stage) func(int) (workerservice.ClaimReconciliation, int, string) {
+				return func(int) (workerservice.ClaimReconciliation, int, string) {
+					return workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "capture-order", State: core.WorkOrderQueued,
+						LastAttemptID: captureFixtureAttempt, LastFailureMessage: core.WorkOrderReleaseReasonOperatorCheckpointReached}, ReleasedAtCheckpoint: true}, 0, ""
+				}
+			},
+			wantReason: func(core.Stage) string { return core.WorkOrderReleaseReasonOperatorCheckpointReached },
+			dispatches: []string{"worker", "run"},
+		},
+		{
+			// An ordinary agent release_work_order: the launcher did not commit
+			// the ending, so Conveyor binds the capture to the persisted reason.
+			name: "ordinary agent self release", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			reconcile: func(core.Stage) func(int) (workerservice.ClaimReconciliation, int, string) {
+				return func(int) (workerservice.ClaimReconciliation, int, string) {
+					return workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "capture-order", State: core.WorkOrderQueued,
+						LastAttemptID: captureFixtureAttempt, LastFailureMessage: "agent released: blocked on missing credential"}, Reason: "session released the claim"}, 0, ""
+				}
+			},
+			wantReason: func(core.Stage) string { return "" },
+			wantErr:    "server reports queued", wantTranscript: true, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "first activity timeout", mode: "silent", firstActivity: 100 * time.Millisecond, renewEvery: time.Minute,
 			wantReason: func(core.Stage) string { return workerFirstActivityTimeoutReason },
-			wantErr:    workerFirstActivityTimeoutReason, dispatches: []string{"worker"},
+			wantErr:    workerFirstActivityTimeoutReason, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "stall timeout", mode: "early-then-silent", stall: "150ms", firstActivity: time.Second, renewEvery: time.Minute,
 			wantReason: func(core.Stage) string { return workerStallTimeoutReason },
-			wantErr:    workerStallTimeoutReason, wantTranscript: true, dispatches: []string{"worker"},
+			wantErr:    workerStallTimeoutReason, wantTranscript: true, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "authority loss reported by renewal", mode: "early-then-silent", firstActivity: time.Second, renewEvery: 30 * time.Millisecond,
@@ -252,7 +298,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 				}
 			},
 			wantReason: func(core.Stage) string { return "" },
-			wantErr:    "claim authority lost", dispatches: []string{"worker"},
+			wantErr:    "claim authority lost", wantTranscript: true, gateOnOutput: true, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "preemption", mode: "early-then-silent", firstActivity: time.Second, renewEvery: 30 * time.Millisecond,
@@ -262,7 +308,20 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 				}
 			},
 			wantReason: func(core.Stage) string { return "" },
-			wantErr:    "preempted", dispatches: []string{"worker"},
+			wantErr:    "preempted", wantTranscript: true, gateOnOutput: true, dispatches: []string{"worker", "run"},
+		},
+		{
+			// Server-side cancellation: the row cannot name the ending, so the
+			// capture is delivered without a declaration and refused as
+			// unverified; the cancellation result is unchanged.
+			name: "server cancellation", mode: "early-then-silent", firstActivity: time.Second, renewEvery: 30 * time.Millisecond,
+			renew: func(core.Stage) func(int) (core.WorkOrder, int, string) {
+				return func(int) (core.WorkOrder, int, string) {
+					return core.WorkOrder{}, http.StatusConflict, "work order was cancelled"
+				}
+			},
+			wantReason: func(core.Stage) string { return "" },
+			wantErr:    errWorkerOrderCancelled.Error(), wantTranscript: true, gateOnOutput: true, captureStatus: http.StatusConflict, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "worker shutdown", mode: "early-then-silent", firstActivity: time.Second, renewEvery: time.Minute, cancelAfter: true,
@@ -277,7 +336,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 				}
 			},
 			wantReason:     func(stage core.Stage) string { return core.AttemptHandoffTerminationReason(handoffState(stage)) },
-			wantTranscript: true, dispatches: []string{"run"},
+			wantTranscript: true, gateOnOutput: true, dispatches: []string{"worker", "run"},
 		},
 		{
 			name: "explicit run interruption leaves no capture", mode: "early-then-silent", firstActivity: time.Second, renewEvery: time.Minute, cancelAfter: true,
@@ -289,7 +348,13 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 			for _, dispatch := range test.dispatches {
 				t.Run(fmt.Sprintf("%s/%s/%s", stage, dispatch, test.name), func(t *testing.T) {
 					workerClaimRenewInterval = test.renewEvery
-					fixture := &captureFixture{t: t, stage: stage, dispatch: dispatch}
+					fixture := &captureFixture{t: t, stage: stage, dispatch: dispatch, captureErr: test.captureStatus}
+					if test.gateOnOutput {
+						fixture.gate = make(chan struct{})
+						var once sync.Once
+						workerActivityObservedTestHook = func() { once.Do(func() { close(fixture.gate) }) }
+						t.Cleanup(func() { workerActivityObservedTestHook = nil })
+					}
 					if stage == core.StageSpec {
 						fixture.specOrigin = newGitFixture(t).origin
 					}
@@ -347,6 +412,9 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 					}
 					if len(releases) > 1 {
 						t.Fatalf("duplicate releases: %+v", releases)
+					}
+					if test.captureStatus != 0 && !strings.Contains(stderr.String(), "deliver attempt transcript capture") {
+						t.Fatalf("refused capture left no warning: %q", stderr.String())
 					}
 					wantPath := "/v1/worker/work-orders/capture-order/attempt-observability"
 					if dispatch == "run" {

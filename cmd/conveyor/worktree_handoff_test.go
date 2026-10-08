@@ -165,9 +165,20 @@ func TestCheckpointHandoffLauncherPlanRevision(t *testing.T) {
 						}
 					case "reconcile":
 						response, err = workers.ReconcileClaim(ctx, identity(r.URL.Query().Get("session_id")), id)
+					case "attempt-observability":
+						var capture core.WorkOrderAttemptCapture
+						err = json.NewDecoder(r.Body).Decode(&capture)
+						if err == nil {
+							response, err = workers.CaptureAttempt(ctx, identity(capture.SessionID), id, capture)
+						}
 					case "worktree-handoff":
 						var input core.WorktreeHandoffRequest
 						err = json.NewDecoder(r.Body).Decode(&input)
+						if err == nil && input.Transcript != nil {
+							// The launcher's spool belongs to its own attempt; it never
+							// rides the (possibly predecessor) Git producer's audit.
+							t.Errorf("worktree handoff %s carried a transcript", input.Action)
+						}
 						if err == nil {
 							if termination == "audit-failure" && input.Action == "audit" && id == order.ID && failedAudits.Add(1) <= 2 {
 								http.Error(w, "injected audit persistence failure", 503)
@@ -317,6 +328,27 @@ func TestCheckpointHandoffLauncherPlanRevision(t *testing.T) {
 				}
 				if count != 1 {
 					t.Fatalf("checkpoint audit count=%d", count)
+				}
+				// The producing attempt and the recovering successor each have
+				// exactly one capture of their own output: the successor that
+				// preserved and audited the predecessor's Git work never labels its
+				// spool with the predecessor's attempt.
+				producerCaptures, err := st.ListWorkOrderTranscriptCaptures(ctx, order.ID)
+				must(err)
+				if len(producerCaptures) != 1 || producerCaptures[0].AttemptID != released.LastAttemptID ||
+					producerCaptures[0].TerminationReason != core.WorkOrderReleaseReasonPlanRevisionRequested ||
+					!strings.Contains(producerCaptures[0].Content, "checkpoint fixture child executed produce") ||
+					strings.Contains(producerCaptures[0].Content, "resume") {
+					t.Fatalf("producer captures=%+v (attempt %s)", producerCaptures, released.LastAttemptID)
+				}
+				recovered, err := st.GetWorkOrder(ctx, successor.ID)
+				must(err)
+				successorCaptures, err := st.ListWorkOrderTranscriptCaptures(ctx, successor.ID)
+				must(err)
+				if len(successorCaptures) != 1 || successorCaptures[0].AttemptID != recovered.LastAttemptID || recovered.LastAttemptID == released.LastAttemptID ||
+					successorCaptures[0].TerminationReason != core.WorkOrderReleaseReasonOperatorCheckpointReached ||
+					!strings.Contains(successorCaptures[0].Content, "checkpoint fixture child executed resume") {
+					t.Fatalf("successor captures=%+v (attempt %s)", successorCaptures, recovered.LastAttemptID)
 				}
 			})
 		}

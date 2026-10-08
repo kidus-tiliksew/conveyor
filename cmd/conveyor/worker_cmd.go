@@ -1309,7 +1309,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		_ = makeCheckoutWritable(directory)
 		_ = os.RemoveAll(directory)
 	}()
-	transcriptSpool, err = newBoundedTranscriptSpool(directory, workerAttemptTranscriptLimit)
+	transcriptSpool, err = newAttemptTranscriptSpool(directory, workerAttemptTranscriptLimit)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "warning: create attempt transcript spool: %v; continuing because capture is best-effort\n", err)
 		transcriptSpool = nil
@@ -1516,10 +1516,11 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		return lost
 	}
 	leaseExpiresAt = handoffLease
+	activityObservedHook := workerActivityObservedTestHook
 	newCommand := func(commandArgv []string) *exec.Cmd {
 		command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
-		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity}
-		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity}
+		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity, observed: activityObservedHook}
+		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity, observed: activityObservedHook}
 		command.Env = childEnv
 		if writer != nil {
 			command.ExtraFiles = []*os.File{writer.file}
@@ -1556,7 +1557,13 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		cancel()
 	}
 	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
+	childWaitedHook := workerChildWaitedTestHook
+	go func() {
+		done <- command.Wait()
+		if childWaitedHook != nil {
+			childWaitedHook()
+		}
+	}()
 	processGroup := harnessProcessGroup{pgid: command.Process.Pid, done: done}
 	childJoined := false
 	terminateChild := func(completed *error) error {
@@ -1824,6 +1831,9 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 				stallDeadline = stallTimer.C
 			}
 		case <-firstActivityDeadline:
+			if hook := workerFirstActivityDeadlineTestHook; hook != nil {
+				hook()
+			}
 			// Prefer output or normal child exit when either raced the timer.
 			select {
 			case <-firstActivity.observed:
@@ -2172,11 +2182,16 @@ func (s *firstActivitySignal) generationUnchanged(generation uint64) bool {
 type firstActivityWriter struct {
 	Destination io.Writer
 	Signal      *firstActivitySignal
+	// observed is a test seam captured at launch (workerActivityObservedTestHook).
+	observed func()
 }
 
 func (w *firstActivityWriter) Write(p []byte) (int, error) {
 	if len(p) > 0 {
 		w.Signal.observe()
+		if w.observed != nil {
+			w.observed()
+		}
 	}
 	return w.Destination.Write(p)
 }
@@ -2397,6 +2412,23 @@ var workerPreStartTestHook func(context.Context)
 // workerStallDeadlineTestHook lets tests hold a selected stall-timer
 // generation while child output races that boundary.
 var workerStallDeadlineTestHook func()
+
+// workerFirstActivityDeadlineTestHook runs when the first-activity timer is
+// selected, before the launcher re-checks output and child exit, so tests can
+// make either race that boundary deterministically.
+var workerFirstActivityDeadlineTestHook func()
+
+// workerChildWaitedTestHook runs after the child's exit status is queued for
+// the supervision loop, proving to a test that child exit is observable.
+var workerChildWaitedTestHook func()
+
+// workerActivityObservedTestHook runs after child output advanced the
+// activity generation and before that output is forwarded.
+var workerActivityObservedTestHook func()
+
+// newAttemptTranscriptSpool creates the attempt's bounded transcript spool;
+// tests replace it to exercise spool failures.
+var newAttemptTranscriptSpool = newBoundedTranscriptSpool
 
 // preStartClaimRenewal keeps a claimed work order's lease renewed between a
 // successful claim and child launch, when pre-start setup can outlast the

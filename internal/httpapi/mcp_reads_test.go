@@ -1183,3 +1183,164 @@ func TestMCPReadAdmissionFailureLeavesCacheUnchanged(t *testing.T) {
 		readAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", token))
 	}
 }
+
+// mcpAdmissionBarrier holds every admission at the beforeAdmit boundary until
+// want callers have arrived, then releases them together so they compete for
+// the admission lock at once. It never sleeps.
+type mcpAdmissionBarrier struct {
+	mu      sync.Mutex
+	arrived int
+	want    int
+	all     chan struct{}
+	release chan struct{}
+}
+
+func newMCPAdmissionBarrier(want int) *mcpAdmissionBarrier {
+	return &mcpAdmissionBarrier{want: want, all: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *mcpAdmissionBarrier) hook() {
+	b.mu.Lock()
+	b.arrived++
+	if b.arrived == b.want {
+		close(b.all)
+	}
+	b.mu.Unlock()
+	<-b.release
+}
+
+// TestMCPReadCredentialLRUAdmissionBarrier holds competing first reads of one
+// credential at a full per-credential cache at the admission boundary, touches
+// the oldest snapshot while they wait, and then releases them together with a
+// second credential's admissions. The credential never exceeds eight, the
+// touched snapshot survives, exactly the untouched least-recently-used
+// snapshots are evicted, and the other credential loses nothing
+// (component-mcp-investigation-reads "Admission and eviction").
+func TestMCPReadCredentialLRUAdmissionBarrier(t *testing.T) {
+	s, _, clock, _ := newMCPCapacityFixture(t)
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo", "limit": 1}
+	tokens := []string{}
+	for range mcpReadCredentialSnapshots {
+		tokens = append(tokens, readAs(t, h, "reader", "list_tasks", args).Snapshot)
+		clock.Advance(time.Second)
+	}
+	other := readAs(t, h, "other", "list_tasks", args).Snapshot
+
+	const competingA, competingB = 3, 2
+	barrier := newMCPAdmissionBarrier(competingA + competingB)
+	s.mcpReads.beforeAdmit = barrier.hook
+	type result struct{ credential, token, failure string }
+	results := make(chan result, competingA+competingB)
+	var done sync.WaitGroup
+	launch := func(credential string) {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			page, _, toolErr, err := mcpReadTry(h, credential, "list_tasks", args)
+			failure := toolErr
+			if err != nil {
+				failure = err.Error()
+			}
+			results <- result{credential, page.Snapshot, failure}
+		}()
+	}
+	for range competingA {
+		launch("reader")
+	}
+	for range competingB {
+		launch("other")
+	}
+	<-barrier.all
+	// Every admission is parked before the lock. A successful page read now
+	// refreshes the oldest snapshot, so it must not be a victim.
+	readAs(t, h, "reader", "list_tasks", withArgs(args, "snapshot", tokens[0]))
+	s.mcpReads.beforeAdmit = nil
+	close(barrier.release)
+	done.Wait()
+	close(results)
+	newA := []string{}
+	for r := range results {
+		if r.failure != "" || r.token == "" {
+			t.Fatalf("%s competing admission failed: %q", r.credential, r.failure)
+		}
+		if r.credential == "reader" {
+			newA = append(newA, r.token)
+		}
+	}
+	owners := mcpCacheOwners(s)
+	if owners["reader-pat"].snapshots != mcpReadCredentialSnapshots || owners["other-pat"].snapshots != 1+competingB {
+		t.Fatalf("occupancy=%+v", owners)
+	}
+	entries, _ := mcpCacheView(s)
+	// tokens[0] was touched; tokens[1..3] are the three least recently used.
+	for i, token := range tokens {
+		_, kept := entries[token]
+		if wantKept := i == 0 || i > competingA; kept != wantKept {
+			t.Fatalf("token %d kept=%v want %v", i, kept, wantKept)
+		}
+	}
+	for _, token := range append(newA, other) {
+		if _, kept := entries[token]; !kept {
+			t.Fatal("a competing admission or the other credential's snapshot was evicted")
+		}
+	}
+}
+
+// TestMCPReadProcessCeilingAdmissionBarrier releases two different
+// credentials' first reads together when exactly one process slot is left:
+// exactly one is admitted and the other is refused with the process-ceiling
+// text, so occupancy never exceeds 32 (component-mcp-investigation-reads).
+func TestMCPReadProcessCeilingAdmissionBarrier(t *testing.T) {
+	s, _, _, _ := newMCPCapacityFixture(t)
+	h := s.Handler()
+	args := map[string]any{"workspace_id": "demo"}
+	for _, token := range []string{"c1", "c2", "c3"} {
+		for range mcpReadCredentialSnapshots {
+			readAs(t, h, token, "list_tasks", args)
+		}
+	}
+	for range mcpReadCredentialSnapshots - 1 {
+		readAs(t, h, "c4", "list_tasks", args)
+	}
+	if entries, _ := mcpCacheView(s); len(entries) != mcpReadSnapshotCount-1 {
+		t.Fatalf("fixture holds %d snapshots", len(entries))
+	}
+	barrier := newMCPAdmissionBarrier(2)
+	s.mcpReads.beforeAdmit = barrier.hook
+	failures := make(chan string, 2)
+	var done sync.WaitGroup
+	for _, credential := range []string{"c5", "c6"} {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			_, _, toolErr, err := mcpReadTry(h, credential, "list_tasks", args)
+			if err != nil {
+				toolErr = err.Error()
+			}
+			failures <- toolErr
+		}()
+	}
+	<-barrier.all
+	s.mcpReads.beforeAdmit = nil
+	close(barrier.release)
+	done.Wait()
+	close(failures)
+	admitted, refused := 0, 0
+	for failure := range failures {
+		switch {
+		case failure == "":
+			admitted++
+		case strings.HasPrefix(failure, "snapshot capacity reached: process limit 32 retained snapshots; retry at "):
+			refused++
+		default:
+			t.Fatalf("unexpected refusal %q", failure)
+		}
+	}
+	if admitted != 1 || refused != 1 {
+		t.Fatalf("admitted=%d refused=%d", admitted, refused)
+	}
+	if entries, _ := mcpCacheView(s); len(entries) != mcpReadSnapshotCount {
+		t.Fatalf("occupancy=%d", len(entries))
+	}
+}

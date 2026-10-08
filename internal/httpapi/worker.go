@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -157,10 +156,9 @@ func (s *Server) heartbeatWorker(w http.ResponseWriter, r *http.Request) {
 	// Read the whole body through the cap before decoding, so bytes after the
 	// JSON value count toward the limit whether or not Content-Length is known
 	// (component-harness-execution "Fingerprints and heartbeat probes").
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWorkerHeartbeatBytes))
+	body, err := readWholeBoundedBody(w, r, maxWorkerHeartbeatBytes)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if errors.Is(err, errBodyTooLarge) {
 			http.Error(w, "heartbeat body exceeds the size limit", http.StatusRequestEntityTooLarge)
 			return
 		}

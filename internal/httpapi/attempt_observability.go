@@ -29,15 +29,19 @@ type attemptObservabilityRequest struct {
 // optional transcript is refused instead of silently dropped so a launcher
 // bug cannot record an ending without the capture it meant to deliver.
 func decodeAttemptObservability(w http.ResponseWriter, r *http.Request) (core.WorkOrderAttemptCapture, bool) {
-	body := http.MaxBytesReader(w, r.Body, attemptObservabilityBodyLimit)
-	var request attemptObservabilityRequest
-	decoder := json.NewDecoder(body)
-	if err := decoder.Decode(&request); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+	// The whole encoded body counts toward the cap, including anything after
+	// the JSON object; only trailing whitespace is accepted after it.
+	body, err := readWholeBoundedBody(w, r, attemptObservabilityBodyLimit)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
 			http.Error(w, "attempt capture exceeds 6 MiB", http.StatusRequestEntityTooLarge)
 			return core.WorkOrderAttemptCapture{}, false
 		}
+		http.Error(w, "malformed attempt capture", http.StatusBadRequest)
+		return core.WorkOrderAttemptCapture{}, false
+	}
+	var request attemptObservabilityRequest
+	if err := json.Unmarshal(body, &request); err != nil {
 		http.Error(w, "malformed attempt capture", http.StatusBadRequest)
 		return core.WorkOrderAttemptCapture{}, false
 	}
