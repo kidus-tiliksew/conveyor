@@ -114,10 +114,10 @@ func (s *Store) RecordWorkspaceGitHubAppInstallation(ctx context.Context, id str
 	return result, nil
 }
 func (s *Store) GetWorkspaceGitHubAppStatus(ctx context.Context, id string) (core.WorkspaceGitHubAppStatus, error) {
-	result, err := scanAppStatus(s.pool.QueryRow(ctx, `SELECT `+appStatusColumns+` FROM workspace_github_apps WHERE workspace_id=$1`, id))
+	result, err := scanAppStatus(s.boundary.QueryRow(ctx, `SELECT `+appStatusColumns+` FROM workspace_github_apps WHERE workspace_id=$1`, id))
 	if errors.Is(err, store.ErrNotFound) {
 		var exists string
-		if e := s.pool.QueryRow(ctx, `SELECT id FROM workspaces WHERE id=$1`, id).Scan(&exists); e != nil {
+		if e := s.boundary.QueryRow(ctx, `SELECT id FROM workspaces WHERE id=$1`, id).Scan(&exists); e != nil {
 			if errors.Is(e, pgx.ErrNoRows) {
 				return core.WorkspaceGitHubAppStatus{}, store.ErrNotFound
 			}
@@ -131,7 +131,7 @@ func (s *Store) GetWorkspaceGitHubAppForUse(ctx context.Context, id string) (cor
 	var r core.WorkspaceGitHubAppCredential
 	var at sql.NullTime
 	var nonce, ciphertext []byte
-	err := s.pool.QueryRow(ctx, `SELECT `+appStatusColumns+`,private_key_nonce,private_key_ciphertext FROM workspace_github_apps WHERE workspace_id=$1`, id).Scan(&r.WorkspaceID, &r.AppID, &r.AppSlug, &r.ClientID, &r.InstallationID, &r.InstallationAccount, &r.ConnectedBy, &r.ConnectedAt, &at, &nonce, &ciphertext)
+	err := s.boundary.QueryRow(ctx, `SELECT `+appStatusColumns+`,private_key_nonce,private_key_ciphertext FROM workspace_github_apps WHERE workspace_id=$1`, id).Scan(&r.WorkspaceID, &r.AppID, &r.AppSlug, &r.ClientID, &r.InstallationID, &r.InstallationAccount, &r.ConnectedBy, &r.ConnectedAt, &at, &nonce, &ciphertext)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, store.ErrNotFound
 	}

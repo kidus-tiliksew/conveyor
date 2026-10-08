@@ -4,11 +4,10 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error) {
-	rows, err := db.New(s.pool).ListDocumentOperatorNotesForTask(ctx, workspace(ctx), taskID)
+	rows, err := s.queries.ListDocumentOperatorNotesForTask(ctx, workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}

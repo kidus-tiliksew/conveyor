@@ -26,6 +26,11 @@ type Fixture struct {
 	SeedLegacy           func(*testing.T, string) (int, func(*testing.T))
 	SeedArtifact         func(*testing.T, context.Context, core.Artifact, []byte)
 	ArtifactRepairEvents func(context.Context) ([]core.Event, error)
+	// WorkspaceEvents returns the bound workspace's events without a task
+	// whose kind starts with kindPrefix, ascending by (at, id). Shared cases
+	// use it where no public read exposes a workspace event kind, such as
+	// decision supersession sweep transitions.
+	WorkspaceEvents func(ctx context.Context, kindPrefix string) ([]core.Event, error)
 	// SeedEvents inserts test-only task events with controlled immutable IDs
 	// and recorded times, modelling SingleStore's per-aggregator
 	// AUTO_INCREMENT ranges. Each event's ID is a positive relative rank added
@@ -158,6 +163,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"LegacyVerificationEvidence", true, runLegacyVerificationEvidence},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
+		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
 		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},
 		{"WorkOrderClocks", true, runWorkOrderClocks},

@@ -56,7 +56,7 @@ func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPair
 func (s *Store) ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error) {
 	var pairing core.WorkerPairing
 	var consumed *time.Time
-	err := s.pool.QueryRow(ctx, `UPDATE worker_pairings SET consumed_at=$2 WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING token_hash,workspace_id,COALESCE(owner_user_id,''),expires_at,consumed_at,created_at`, tokenHash, now).Scan(&pairing.TokenHash, &pairing.Workspace, &pairing.OwnerUserID, &pairing.ExpiresAt, &consumed, &pairing.CreatedAt)
+	err := s.boundary.QueryRow(ctx, `UPDATE worker_pairings SET consumed_at=$2 WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>$2 RETURNING token_hash,workspace_id,COALESCE(owner_user_id,''),expires_at,consumed_at,created_at`, tokenHash, now).Scan(&pairing.TokenHash, &pairing.Workspace, &pairing.OwnerUserID, &pairing.ExpiresAt, &consumed, &pairing.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkerPairing{}, store.ErrPairingInvalid
 	}
@@ -81,7 +81,7 @@ func (s *Store) CreateWorker(ctx context.Context, worker core.Worker) error {
 }
 
 func (s *Store) ListWorkers(ctx context.Context) ([]core.Worker, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE workspace_id=$1 ORDER BY created_at,id`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, `SELECT id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at FROM workers WHERE workspace_id=$1 ORDER BY created_at,id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (
 		query += ` AND workspace_id=$2`
 		args = append(args, workspaceID)
 	}
-	worker, err := scanWorker(s.pool.QueryRow(ctx, query, args...))
+	worker, err := scanWorker(s.boundary.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.Worker{}, store.ErrWorkerUnauthorized
 	}
@@ -126,7 +126,7 @@ func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (
 func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
 	data, _ := json.Marshal(probes)
 	now := time.Now().UTC()
-	worker, err := scanWorker(s.pool.QueryRow(ctx, `UPDATE workers SET lease_expires_at=$1,last_seen_at=$2,probe_results=$3
+	worker, err := scanWorker(s.boundary.QueryRow(ctx, `UPDATE workers SET lease_expires_at=$1,last_seen_at=$2,probe_results=$3
 		WHERE workspace_id=$4 AND id=$5 AND revoked_at IS NULL
 		AND (owner_user_id IS NULL OR EXISTS (
 			SELECT 1 FROM users u
@@ -145,7 +145,7 @@ func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires tim
 
 func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 	now := time.Now().UTC()
-	tag, err := s.pool.Exec(ctx, `UPDATE workers SET revoked_at=COALESCE(revoked_at,$1),lease_expires_at=NULL WHERE workspace_id=$2 AND id=$3`, now, workspace(ctx), id)
+	tag, err := s.boundary.Exec(ctx, `UPDATE workers SET revoked_at=COALESCE(revoked_at,$1),lease_expires_at=NULL WHERE workspace_id=$2 AND id=$3`, now, workspace(ctx), id)
 	if err != nil {
 		return err
 	}
@@ -216,12 +216,12 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	}
 	now := time.Now().UTC()
 	expires := now.Add(lease)
-	row := s.pool.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND claimant_id=$6 AND session_id=$7 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID)
+	row := s.boundary.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND claimant_id=$6 AND session_id=$7 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID)
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		current, getErr := s.GetWorkOrder(ctx, workOrderID)
 		if getErr == nil && current.State == core.WorkOrderCancelled {
-			matches, matchErr := cancelledSessionMatches(ctx, s.pool, workspace(ctx), current.TaskID, current.JobID, claim.SessionID)
+			matches, matchErr := cancelledSessionMatches(ctx, s.boundary, workspace(ctx), current.TaskID, current.JobID, claim.SessionID)
 			if matchErr != nil {
 				return core.WorkOrder{}, matchErr
 			}
@@ -237,7 +237,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 			(current.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
 				current.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) && current.LastAttemptID != "" {
 			var releasedByClaim bool
-			if matchErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
+			if matchErr := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 				SELECT 1 FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3
 				AND kind='work_order.claimed' AND payload_json->>'id'=$4
 				AND payload_json->>'attempt_id'=$5 AND (
@@ -254,7 +254,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 			}
 		}
 		var preempted bool
-		if preemptErr := s.pool.QueryRow(ctx, `SELECT EXISTS (
+		if preemptErr := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 			SELECT 1 FROM work_order_preemptions
 			WHERE workspace_id=$1 AND work_order_id=$2 AND revoked_worker_id=$3 AND revoked_session_id=$4
 		)`, workspace(ctx), workOrderID, claim.WorkerID, claim.SessionID).Scan(&preempted); preemptErr != nil {
@@ -755,4 +755,42 @@ func scanWorker(row interface{ Scan(...any) error }) (core.Worker, error) {
 		_ = json.Unmarshal(probes, &worker.Probes)
 	}
 	return worker, err
+}
+
+// ListClaimBlockingProposalsForTask is the listing's read of the claim
+// predicate. The locked claim calls the same helper inside its transaction
+// (req-260810-70ce2f AC-1.1; component-work-orders).
+func (s *Store) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
+	return claimBlockingProposalsTx(ctx, s.boundary, workspace(ctx), taskID)
+}
+
+// claimBlockingProposalsTx returns the task's undecided implementation-origin
+// System Design and requirement versions in one workspace, archived documents
+// included, in store.SortClaimBlockingProposals order.
+func claimBlockingProposalsTx(ctx context.Context, q boundaryQuerier, workspaceID, taskID string) ([]store.ClaimBlockingProposal, error) {
+	rows, err := q.Query(ctx, `
+SELECT 'system_design'::text AS tier,document_id AS id,version FROM system_design_versions
+WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed
+UNION ALL
+SELECT 'requirement'::text,requirement_id,version FROM requirement_versions
+WHERE workspace_id=$1 AND origin=$4 AND origin_task_id=$3 AND NOT confirmed AND NOT retired`, workspaceID, string(core.SystemDesignOriginImplementation), taskID, string(core.RequirementOriginImplementation))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.ClaimBlockingProposal{}
+	for rows.Next() {
+		var item store.ClaimBlockingProposal
+		if err := rows.Scan(&item.Tier, &item.ID, &item.Version); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Go orders the result so every backend names the same first proposal,
+	// independent of database collation.
+	store.SortClaimBlockingProposals(out)
+	return out, nil
 }

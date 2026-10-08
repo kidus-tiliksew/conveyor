@@ -91,12 +91,10 @@ func scanObservation(row interface{ Scan(...any) error }, ws string) (monitor.Ob
 	return r, nil
 }
 func (s *Store) Observe(ctx context.Context, o monitor.Observation) (monitor.ObservationRecord, bool, error) {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return monitor.ObservationRecord{}, false, translateBackendConflict(err)
-	}
-	if o.WorkspaceID != "" && o.WorkspaceID != ws {
-		return monitor.ObservationRecord{}, false, errors.New("monitor workspace differs from context")
+	// The record must name the bound workspace before any lookup or write
+	// (component-monitor-drift).
+	if _, err := store.MonitorRecordWorkspace(ctx, o.WorkspaceID); err != nil {
+		return monitor.ObservationRecord{}, false, err
 	}
 	if !validSignal(o.Kind) {
 		return monitor.ObservationRecord{}, false, errors.New("invalid monitor signal kind")
@@ -226,19 +224,17 @@ func scanDrift(row interface{ Scan(...any) error }, ws string) (monitor.Drift, e
 	return d, translateBackendConflict(err)
 }
 func (s *Store) RecordDrift(ctx context.Context, d monitor.Drift) (monitor.Drift, bool, error) {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return monitor.Drift{}, false, translateBackendConflict(err)
-	}
-	if d.WorkspaceID != "" && d.WorkspaceID != ws {
-		return monitor.Drift{}, false, errors.New("monitor workspace differs from context")
+	// The record must name the bound workspace before any lookup or write
+	// (component-monitor-drift).
+	if _, err := store.MonitorRecordWorkspace(ctx, d.WorkspaceID); err != nil {
+		return monitor.Drift{}, false, err
 	}
 	if !d.Kind.Drift() {
 		return monitor.Drift{}, false, errors.New("invalid drift kind")
 	}
 	fresh := false
 	var r monitor.Drift
-	err = s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
+	err := s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
 		var e error
 		r, e = scanDrift(tx.QueryRowContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND id=?", ws, d.ID), ws)
 		if e == nil {

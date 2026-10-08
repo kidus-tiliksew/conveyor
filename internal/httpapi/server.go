@@ -1470,10 +1470,8 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
-	var cursor int64
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
-		cursor = max(cursor, marker.LastEventID)
 	}
 	since, err := decodeActivityCursor(r.URL.Query().Get("since"))
 	if err != nil {
@@ -1527,31 +1525,80 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 			Stalled:                   marker.Stalled,
 		}
 		fullItems = append(fullItems, item)
-		if since == 0 || marker.LastEventID > since {
+		if !since.delta || store.ActivityMarkerAfter(marker, since.frontier) {
 			items = append(items, item)
 		}
 	}
-	w.Header().Set("X-Conveyor-Cursor", encodeActivityCursor(cursor))
+	// The frontier is the page's maximum (at, id) tuple, so a later event with
+	// a lower ID still enters the next delta (component-http-api;
+	// component-persistence).
+	w.Header().Set("X-Conveyor-Cursor", encodeActivityCursor(store.ActivityFrontier(markers)))
 	writeConditionalJSON(w, r, items, fullItems)
 }
 
-func encodeActivityCursor(id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte("v1:" + strconv.FormatInt(id, 10)))
+// activityCursor is a decoded `since` value. A zero value, an empty cursor, a
+// zero frontier, or a legacy v1 numeric cursor all read the full page; only a
+// v2 cursor with a nonzero frontier selects a delta.
+type activityCursor struct {
+	delta    bool
+	frontier store.TaskEventPosition
 }
 
-func decodeActivityCursor(value string) (int64, error) {
+// encodeActivityCursor writes the v2 cursor: UTC Unix microseconds and the
+// decimal event ID of the frontier tuple. The zero frontier encodes as 0:0.
+func encodeActivityCursor(frontier store.TaskEventPosition) string {
+	var micros int64
+	if !frontier.At.IsZero() {
+		micros = frontier.At.UTC().UnixMicro()
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte("v2:" + strconv.FormatInt(micros, 10) + ":" + strconv.FormatInt(frontier.ID, 10)))
+}
+
+// decodeActivityCursor accepts v2 and the legacy v1 numeric cursor. A v1
+// cursor cannot locate a time, so it reads the full page once and the response
+// carries a v2 cursor. Malformed input, a negative time or ID, and an unknown
+// version are refused.
+func decodeActivityCursor(value string) (activityCursor, error) {
 	if value == "" {
-		return 0, nil
+		return activityCursor{}, nil
 	}
+	invalid := fmt.Errorf("invalid activity cursor")
 	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || !strings.HasPrefix(string(raw), "v1:") {
-		return 0, fmt.Errorf("invalid activity cursor")
+	if err != nil {
+		return activityCursor{}, invalid
 	}
-	id, err := strconv.ParseInt(strings.TrimPrefix(string(raw), "v1:"), 10, 64)
-	if err != nil || id < 0 {
-		return 0, fmt.Errorf("invalid activity cursor")
+	text := string(raw)
+	switch {
+	case strings.HasPrefix(text, "v1:"):
+		id, err := strconv.ParseInt(strings.TrimPrefix(text, "v1:"), 10, 64)
+		if err != nil || id < 0 {
+			return activityCursor{}, invalid
+		}
+		return activityCursor{}, nil
+	case strings.HasPrefix(text, "v2:"):
+		fields := strings.Split(strings.TrimPrefix(text, "v2:"), ":")
+		if len(fields) != 2 {
+			return activityCursor{}, invalid
+		}
+		micros, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil || micros < 0 {
+			return activityCursor{}, invalid
+		}
+		id, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || id < 0 {
+			return activityCursor{}, invalid
+		}
+		if micros == 0 && id == 0 {
+			return activityCursor{}, nil
+		}
+		frontier := store.TaskEventPosition{ID: id}
+		if micros > 0 {
+			frontier.At = time.UnixMicro(micros).UTC()
+		}
+		return activityCursor{delta: true, frontier: frontier}, nil
+	default:
+		return activityCursor{}, invalid
 	}
-	return id, nil
 }
 
 func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue any) {

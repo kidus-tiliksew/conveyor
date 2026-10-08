@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -98,9 +97,8 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 		})
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
-			pgErr.ConstraintName == "requirements_workspace_id_slug_key" {
+		// inTx translates the slug constraint to its sentinel; name the slug.
+		if err == store.ErrRequirementSlugConflict {
 			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: %s", store.ErrRequirementSlugConflict, requirement.Slug)
 		}
 		return core.Requirement{}, core.RequirementVersion{}, err
@@ -109,11 +107,11 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 }
 
 func (s *Store) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
-	return scanRequirement(s.pool.QueryRow(ctx, requirementSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+	return scanRequirement(s.boundary.QueryRow(ctx, requirementSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
 }
 
 func (s *Store) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
-	rows, err := s.pool.Query(ctx, requirementSelect+` WHERE workspace_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY title,id`, workspace(ctx), includeArchived)
+	rows, err := s.boundary.Query(ctx, requirementSelect+` WHERE workspace_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY title,id`, workspace(ctx), includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -557,13 +555,13 @@ func dismissRequirementVersionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, 
 }
 
 func (s *Store) GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error) {
-	return scanRequirementVersion(s.pool.QueryRow(ctx, requirementVersionSelect+
+	return scanRequirementVersion(s.boundary.QueryRow(ctx, requirementVersionSelect+
 		` WHERE workspace_id=$1 AND requirement_id=$2 AND version=$3`,
 		workspace(ctx), requirementID, version), requirementID, version)
 }
 
 func (s *Store) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {
-	rows, err := s.pool.Query(ctx, requirementVersionSelect+
+	rows, err := s.boundary.Query(ctx, requirementVersionSelect+
 		` WHERE workspace_id=$1 AND requirement_id=$2 ORDER BY version`, workspace(ctx), requirementID)
 	if err != nil {
 		return nil, err
@@ -581,7 +579,7 @@ func (s *Store) ListRequirementVersions(ctx context.Context, requirementID strin
 }
 
 func (s *Store) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
-	rows, err := s.pool.Query(ctx, requirementVersionSelect+
+	rows, err := s.boundary.Query(ctx, requirementVersionSelect+
 		` WHERE workspace_id=$1 ORDER BY requirement_id,version`, workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -703,12 +701,12 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 }
 
 func (s *Store) GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error) {
-	return scanPlanningSession(s.pool.QueryRow(ctx, planningSessionSelect+
+	return scanPlanningSession(s.boundary.QueryRow(ctx, planningSessionSelect+
 		` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
 }
 
 func (s *Store) ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error) {
-	rows, err := s.pool.Query(ctx, planningSessionSelect+
+	rows, err := s.boundary.Query(ctx, planningSessionSelect+
 		` WHERE workspace_id=$1 ORDER BY updated_at DESC, id`, workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -771,7 +769,7 @@ func (s *Store) RecordPlanningExplorationTokens(ctx context.Context, sessionID s
 	if tokens < 0 {
 		return core.PlanningSession{}, fmt.Errorf("planning exploration tokens must not be negative")
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE planning_sessions
+	if _, err := s.boundary.Exec(ctx, `UPDATE planning_sessions
 		SET exploration_tokens_used=exploration_tokens_used+$3, updated_at=now()
 		WHERE workspace_id=$1 AND id=$2`, workspace(ctx), sessionID, tokens); err != nil {
 		return core.PlanningSession{}, err
@@ -834,7 +832,7 @@ func (s *Store) AppendPlanningMessage(ctx context.Context, message core.Planning
 }
 
 func (s *Store) ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error) {
-	rows, err := s.pool.Query(ctx,
+	rows, err := s.boundary.Query(ctx,
 		`SELECT workspace_id,session_id,seq,role,content,parts_json,created_at
 		 FROM planning_messages WHERE workspace_id=$1 AND session_id=$2 ORDER BY seq`,
 		workspace(ctx), sessionID)
@@ -1008,7 +1006,7 @@ func firstTrimmed(values []string) string {
 }
 
 func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
+	rows, err := s.boundary.Query(ctx, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
 		FROM events WHERE workspace_id=$1 AND payload_json->>'session_id'=$2 ORDER BY id`, workspace(ctx), sessionID)
 	if err != nil {
 		return nil, err

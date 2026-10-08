@@ -209,7 +209,7 @@ func (s *Store) ListTaskContextProposals(ctx context.Context, taskID string, sta
 		query += fmt.Sprintf(" AND state=$%d", len(args))
 	}
 	query += ` ORDER BY task_id,target_kind,target_id`
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.boundary.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

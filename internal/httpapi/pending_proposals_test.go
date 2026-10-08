@@ -35,7 +35,7 @@ func TestProposalClaimWaitingPredicate(t *testing.T) {
 		"confirmed":                        {core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: task, Confirmed: true}, false},
 		"retired or dismissed":             {core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: task, Retired: true}, false},
 	} {
-		if got := requirementVersionWithholdsClaims(task, tc.version); got != tc.want {
+		if got := store.RequirementVersionWithholdsClaims(task, tc.version); got != tc.want {
 			t.Errorf("requirement %s: got %t want %t", name, got, tc.want)
 		}
 	}
@@ -50,7 +50,7 @@ func TestProposalClaimWaitingPredicate(t *testing.T) {
 		"confirmed":                        {core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: task, Confirmed: true}, false},
 		"dismissed":                        {core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: task, Dismissed: true}, false},
 	} {
-		if got := systemDesignVersionWithholdsClaims(task, tc.version); got != tc.want {
+		if got := store.SystemDesignVersionWithholdsClaims(task, tc.version); got != tc.want {
 			t.Errorf("system design %s: got %t want %t", name, got, tc.want)
 		}
 	}

@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +27,16 @@ func TestMemoryConformance(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) { return st.ListEvents(ctx, "") }, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
+			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) { return st.ListEvents(ctx, "") }, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
+				events, err := st.ListEvents(ctx, "")
+				var out []core.Event
+				for _, event := range events {
+					if strings.HasPrefix(event.Kind, kindPrefix) {
+						out = append(out, event)
+					}
+				}
+				return out, err
+			}, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
 				store.SeedArtifactMetadataForTest(t, st, ctx, a, b)
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return store.SeedEventsForTest(t, st, ctx, base, events)

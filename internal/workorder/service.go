@@ -167,11 +167,14 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 		if (order.Stage != core.StageReview && order.Stage != core.StageVerify) || order.State != core.WorkOrderQueued || checked {
 			continue
 		}
-		versions, listErr := s.Store.ListPendingSystemDesignVersionsForTask(ctx, order.TaskID)
+		// Listing applies the claim's own predicate, so an order never shows
+		// as claimable while its claim would refuse (req-260810-70ce2f
+		// AC-1.1; component-work-orders).
+		blocking, listErr := s.Store.ListClaimBlockingProposalsForTask(ctx, order.TaskID)
 		if listErr != nil {
 			return nil, listErr
 		}
-		pendingReviewTasks[order.TaskID] = len(versions) > 0
+		pendingReviewTasks[order.TaskID] = len(blocking) > 0
 	}
 	out := orders[:0]
 	for _, order := range orders {
@@ -212,12 +215,22 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		return core.WorkOrder{}, err
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		pending, pendingErr := s.Store.ListPendingSystemDesignVersionsForTask(ctx, order.TaskID)
-		if pendingErr != nil {
-			return core.WorkOrder{}, pendingErr
+		// The listing's read refuses early, before authority is pinned
+		// (req-260810-70ce2f AC-1.1; component-work-orders). The store checks
+		// assignment before proposals, so a claimant the task's assignee
+		// excludes continues to that permanent refusal instead of a wait.
+		blocking, blockingErr := s.Store.ListClaimBlockingProposalsForTask(ctx, order.TaskID)
+		if blockingErr != nil {
+			return core.WorkOrder{}, blockingErr
 		}
-		if len(pending) > 0 {
-			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on %d task-authored System Design proposal(s)", order.TaskID, len(pending))
+		if len(blocking) > 0 {
+			excluded, assigneeErr := s.assigneeExcludesClaimant(ctx, order.TaskID, claim)
+			if assigneeErr != nil {
+				return core.WorkOrder{}, assigneeErr
+			}
+			if !excluded {
+				return core.WorkOrder{}, store.ClaimBlockingProposalError(order.TaskID, blocking[0])
+			}
 		}
 	}
 	cfg, err := s.config(ctx)
@@ -278,6 +291,26 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		return core.WorkOrder{}, err
 	}
 	return order, nil
+}
+
+// assigneeExcludesClaimant reports whether the task's assignee rules out a
+// direct claimant. A worker claim's owner comes from its enrollment inside
+// the store transaction, so it is never judged here.
+func (s *Service) assigneeExcludesClaimant(ctx context.Context, taskID string, claim core.WorkOrderClaim) (bool, error) {
+	if claim.WorkerID != "" {
+		return false, nil
+	}
+	owner := claim.OwnerUserID
+	if owner == "" {
+		if credential, ok := store.CredentialFromContext(ctx); ok {
+			owner = credential.OwnerUserID
+		}
+	}
+	task, err := s.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	return task.Assignee != nil && task.Assignee.UserID != owner, nil
 }
 
 func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, error) {

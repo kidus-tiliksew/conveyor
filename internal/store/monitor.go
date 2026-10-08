@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +12,28 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 )
+
+// ErrMonitorWorkspaceMismatch refuses a monitor record whose WorkspaceID is
+// omitted or names a workspace other than the bound one.
+var ErrMonitorWorkspaceMismatch = errors.New("monitor record workspace must match the bound workspace")
+
+// MonitorRecordWorkspace is the one workspace rule for monitor record writes
+// (Observe and RecordDrift) on every backend. The context must be bound, and
+// the record must name exactly that workspace. Every production caller
+// normalizes the record into the resolved workspace first, so an omitted
+// record workspace is a mismatch rather than a default. Backends call it
+// before any insert, deduplication, lookup, or event (component-monitor-drift;
+// component-persistence).
+func MonitorRecordWorkspace(ctx context.Context, record string) (string, error) {
+	bound, ok := WorkspaceFromContext(ctx)
+	if !ok || bound == "" {
+		return "", ErrWorkspaceRequired
+	}
+	if record != bound {
+		return "", fmt.Errorf("%w: record names %q, request is bound to %q", ErrMonitorWorkspaceMismatch, record, bound)
+	}
+	return bound, nil
+}
 
 func (m *memory) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
 	return m.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, Payload: core.JSONPayload(payload)})
@@ -194,9 +217,9 @@ func payloadInt64(value any) int64 {
 func (m *memory) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	workspace := workspaceOrDefault(ctx, observation.WorkspaceID)
-	if workspace == "" || workspace != observation.WorkspaceID {
-		return monitor.ObservationRecord{}, false, ErrWorkspaceRequired
+	workspace, err := MonitorRecordWorkspace(ctx, observation.WorkspaceID)
+	if err != nil {
+		return monitor.ObservationRecord{}, false, err
 	}
 	key := monitorKey(workspace, observation.Identity())
 	if current, ok := m.monitorObservations[key]; ok {
@@ -246,9 +269,9 @@ func (m *memory) LinkTask(ctx context.Context, identity, taskID, outcome string)
 func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	workspace := workspaceOrDefault(ctx, drift.WorkspaceID)
-	if workspace == "" || workspace != drift.WorkspaceID {
-		return monitor.Drift{}, false, ErrWorkspaceRequired
+	workspace, err := MonitorRecordWorkspace(ctx, drift.WorkspaceID)
+	if err != nil {
+		return monitor.Drift{}, false, err
 	}
 	key := monitorKey(workspace, drift.ID)
 	if current, ok := m.monitorDrift[key]; ok {

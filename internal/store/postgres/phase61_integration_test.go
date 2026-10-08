@@ -274,9 +274,11 @@ func TestBlueprintParentForeignKeyIsWorkspaceScopedIntegration(t *testing.T) {
 	}
 	crossWorkspaceChild := phase61Task(otherWorkspace, "fk-invalid-child-"+suffix, core.TaskClosed, parent.ID)
 	err := st.CreateTask(otherCtx, crossWorkspaceChild)
+	// The foreign-key violation leaves the store as its generic error, never
+	// as a driver type (component-persistence; DEC-38).
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
-		t.Fatalf("cross-workspace parent reference error=%v, want foreign-key violation", err)
+	if !errors.Is(err, store.ErrBackendOperation) || errors.As(err, &pgErr) {
+		t.Fatalf("cross-workspace parent reference error=%v, want the store's backend-operation error", err)
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 
 func (s *Store) UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error {
 	now := time.Now().UTC()
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := s.boundary.Exec(ctx, `
 		INSERT INTO work_order_activity_snapshots (workspace_id, work_order_id, attempt_id, content, captured_at)
 		SELECT w.workspace_id, w.id, w.attempt_id, $1, $2
 		FROM work_orders w
@@ -87,7 +87,7 @@ func (s *Store) FinalizeWorkOrderAttemptObservability(ctx context.Context, workO
 
 func (s *Store) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
 	var snapshot core.WorkOrderActivitySnapshot
-	err := s.pool.QueryRow(ctx, `SELECT attempt_id, content, captured_at
+	err := s.boundary.QueryRow(ctx, `SELECT attempt_id, content, captured_at
 		FROM work_order_activity_snapshots
 		WHERE workspace_id=$1 AND work_order_id=$2`, workspace(ctx), workOrderID).
 		Scan(&snapshot.AttemptID, &snapshot.Content, &snapshot.CapturedAt)
@@ -101,7 +101,7 @@ func (s *Store) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID st
 }
 
 func (s *Store) ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error) {
-	rows, err := s.pool.Query(ctx, `SELECT attempt_id, content, termination_reason, truncated, captured_at
+	rows, err := s.boundary.Query(ctx, `SELECT attempt_id, content, termination_reason, truncated, captured_at
 		FROM work_order_transcript_captures
 		WHERE workspace_id=$1 AND work_order_id=$2
 		ORDER BY captured_at, attempt_id`, workspace(ctx), workOrderID)

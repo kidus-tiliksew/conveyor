@@ -175,6 +175,24 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 					result = append(result, e)
 				}
 				return result, rows.Err()
+			}, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
+				ws, _ := store.WorkspaceFromContext(ctx)
+				rows, err := st.db.QueryContext(ctx, `SELECT id,kind,payload_json,at FROM events WHERE workspace_id=? AND task_id IS NULL AND LEFT(kind,CHAR_LENGTH(?))=? ORDER BY at,id`, ws, kindPrefix, kindPrefix)
+				if err != nil {
+					return nil, err
+				}
+				defer rows.Close()
+				var result []core.Event
+				for rows.Next() {
+					var e core.Event
+					var payload []byte
+					if err := rows.Scan(&e.ID, &e.Kind, &payload, &e.At); err != nil {
+						return nil, err
+					}
+					e.Payload = payload
+					result = append(result, e)
+				}
+				return result, rows.Err()
 			}, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
 				_, err := st.db.ExecContext(ctx, `UPDATE artifacts SET content_type=?,size_bytes=?,content=? WHERE workspace_id=? AND id=?`, a.ContentType, a.SizeBytes, b, a.Workspace, a.ID)
 				if err != nil {
