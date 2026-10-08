@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -666,30 +667,12 @@ func withExecutionBlock(t *testing.T, data []byte, block string) []byte {
 	return out
 }
 
-// YAML merge keys inside the execution block keep yaml.v3 semantics on every
-// load path: explicit keys win, earlier sequence entries win, merged fields
-// are checked strictly, and a merged retired key is ignored with the same
-// single warning as a direct one (DEC-53).
-func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
-	warnings := captureRetiredExecutionKeyWarnings(t)
-	t.Setenv("HOME", t.TempDir())
-	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deployment, err := normalize(validConfig(), "merge key deployment")
-	if err != nil {
-		t.Fatal(err)
-	}
-	policy, err := MarshalPolicyDocument(deployment)
-	if err != nil {
-		t.Fatal(err)
-	}
-	type outcome struct {
-		spec, merge     bool
-		implement, view int
-	}
-	loaders := map[string]func(block string) (ExecutionPolicy, error){
+// executionBlockLoaders loads an execution block through each path that
+// decodes it: the deployment file, the workspace document, the stored
+// workspace document, and the strict stored-row decoder the stores use.
+func executionBlockLoaders(t *testing.T, example []byte, deployment *Config, policy []byte) map[string]func(block string) (ExecutionPolicy, error) {
+	t.Helper()
+	return map[string]func(block string) (ExecutionPolicy, error){
 		"deployment": func(block string) (ExecutionPolicy, error) {
 			path := filepath.Join(t.TempDir(), "conveyor.yaml")
 			if err := os.WriteFile(path, withExecutionBlock(t, example, block), 0o600); err != nil {
@@ -721,6 +704,32 @@ func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
 			return document.Execution, err
 		},
 	}
+}
+
+// YAML merge keys inside the execution block keep yaml.v3 semantics on every
+// load path: explicit keys win, earlier sequence entries win, merged fields
+// are checked strictly, and a merged retired key is ignored with the same
+// single warning as a direct one (DEC-53).
+func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := normalize(validConfig(), "merge key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		spec, merge     bool
+		implement, view int
+	}
+	loaders := executionBlockLoaders(t, example, deployment, policy)
 	accepted := []struct {
 		name, block string
 		want        outcome
@@ -755,6 +764,85 @@ func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
 	}
 	if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "DEC-53") {
 		t.Fatalf("merged retired key warnings=%q, want exactly one", *warnings)
+	}
+}
+
+// A recursive merge alias fails with yaml.v3's "contains itself" error and
+// the alias line on every load path, and alias fan-out fails with its
+// excessive-aliasing error. Neither overflows the stack nor expands without
+// bound; a deep or shared acyclic merge still loads.
+func TestExecutionBlockRecursiveMergesFailCleanly(t *testing.T) {
+	captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	// Keep an accidental unbounded recursion a quick test failure instead of
+	// a gigabyte-sized stack overflow.
+	previousMaxStack := debug.SetMaxStack(64 << 20)
+	t.Cleanup(func() { debug.SetMaxStack(previousMaxStack) })
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := normalize(validConfig(), "recursive merge deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deep, fanOut strings.Builder
+	deep.WriteString("{review_concurrency: 2, <<: ")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&deep, "&d%d {<<: ", i)
+	}
+	deep.WriteString("{spec_approval: true, merge_approval: true, implement_concurrency: 2}")
+	deep.WriteString(strings.Repeat("}", 201))
+	fanOut.WriteString("{<<: [&f0 {spec_approval: true}")
+	for level := 1; level <= 8; level++ {
+		fmt.Fprintf(&fanOut, ", &f%d {<<: [%s]}", level, strings.TrimSuffix(strings.Repeat(fmt.Sprintf("*f%d, ", level-1), 10), ", "))
+	}
+	fanOut.WriteString("]}")
+	cycles := map[string]string{
+		"direct self-reference":       "&e {<<: *e, spec_approval: true}",
+		"indirect cycle a->b->a":      "&a {<<: &b {merge_approval: true, <<: *a}, spec_approval: true}",
+		"cycle through a merge list":  "&e {<<: [{merge_approval: true}, *e], spec_approval: true}",
+		"indirect cycle through list": "&a {<<: [&b {<<: [{review_concurrency: 2}, *a]}], spec_approval: true}",
+	}
+	for loaderName, load := range executionBlockLoaders(t, example, deployment, policy) {
+		for name, block := range cycles {
+			done := make(chan error, 1)
+			go func() {
+				_, loadErr := load(block)
+				done <- loadErr
+			}()
+			select {
+			case loadErr := <-done:
+				if loadErr == nil || !strings.Contains(loadErr.Error(), "value contains itself") || !strings.Contains(loadErr.Error(), "line ") {
+					t.Fatalf("%s %s error=%v, want a recursive-anchor error with a line", loaderName, name, loadErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s %s did not return", loaderName, name)
+			}
+		}
+		started := time.Now()
+		if _, loadErr := load(fanOut.String()); loadErr == nil || !strings.Contains(loadErr.Error(), "excessive aliasing") {
+			t.Fatalf("%s alias fan-out error=%v", loaderName, loadErr)
+		}
+		if elapsed := time.Since(started); elapsed > 10*time.Second {
+			t.Fatalf("%s alias fan-out took %s", loaderName, elapsed)
+		}
+		for name, block := range map[string]string{
+			"deep acyclic chain":   deep.String(),
+			"shared acyclic alias": "{<<: [&base {spec_approval: true, implement_concurrency: 2}, {<<: *base, merge_approval: true, review_concurrency: 2}]}",
+		} {
+			got, loadErr := load(block)
+			if loadErr != nil {
+				t.Fatalf("%s %s: %v", loaderName, name, loadErr)
+			}
+			if !got.SpecApproval || !got.MergeApproval || got.ImplementConcurrency != 2 || got.ReviewConcurrency != 2 {
+				t.Fatalf("%s %s execution=%+v", loaderName, name, got)
+			}
+		}
 	}
 }
 

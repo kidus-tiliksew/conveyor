@@ -416,31 +416,61 @@ func warnRetiredExecutionKey() {
 // unknown key still fails with the decoder's own unknown-field error and line
 // on every load path, including strict KnownFields decoders (DEC-53). The
 // decoder keeps yaml.v3 merge precedence; shared anchors are never mutated.
+// A recursive merge alias or excessive merge fan-out fails with yaml.v3's own
+// error before decoding.
 func (p *ExecutionPolicy) UnmarshalYAML(node *yaml.Node) error {
-	var unknown []string
-	retired := false
-	node = checkExecutionMapping(node, map[string]bool{}, &unknown, &retired)
-	if retired {
+	walk := executionMergeWalk{seen: map[string]bool{}, active: map[*yaml.Node]bool{}}
+	node, err := walk.mapping(node)
+	if err != nil {
+		return err
+	}
+	if walk.retired {
 		warnRetiredExecutionKey()
 	}
-	if len(unknown) != 0 {
-		return &yaml.TypeError{Errors: unknown}
+	if len(walk.unknown) != 0 {
+		return &yaml.TypeError{Errors: walk.unknown}
 	}
 	type plain ExecutionPolicy
 	return node.Decode((*plain)(p))
 }
 
-// checkExecutionMapping returns a copy of an execution mapping without the
-// retired key, with merged mappings copied the same way. It records each
-// unknown field name once, in yaml.v3's order: explicit keys first, then the
-// merge value. A non-mapping node is returned unchanged for Decode to judge.
-func checkExecutionMapping(node *yaml.Node, seen map[string]bool, unknown *[]string, retired *bool) *yaml.Node {
-	if node.Kind == yaml.AliasNode && node.Alias != nil && node.Alias.Kind == yaml.MappingNode {
-		node = node.Alias
+// maxExecutionMergeVisits bounds the mappings one execution block may expand
+// through merges. Legitimate configuration stays far below it; alias fan-out
+// that would expand exponentially fails instead.
+const maxExecutionMergeVisits = 10000
+
+// executionMergeWalk checks an execution mapping and the mappings it merges.
+// active holds the mappings on the current merge path, so an alias back to
+// one of them is a cycle; visits bounds total expansion.
+type executionMergeWalk struct {
+	seen    map[string]bool
+	active  map[*yaml.Node]bool
+	visits  int
+	unknown []string
+	retired bool
+}
+
+// mapping returns a copy of an execution mapping without the retired key,
+// with merged mappings copied the same way. It records each unknown field
+// name once, in yaml.v3's order: explicit keys first, then the merge value.
+// A non-mapping node is returned unchanged for Decode to judge.
+func (w *executionMergeWalk) mapping(node *yaml.Node) (*yaml.Node, error) {
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		if w.active[node.Alias] {
+			return nil, fmt.Errorf("yaml: line %d: anchor '%s' value contains itself", node.Line, node.Value)
+		}
+		if node.Alias.Kind == yaml.MappingNode {
+			node = node.Alias
+		}
 	}
 	if node.Kind != yaml.MappingNode {
-		return node
+		return node, nil
 	}
+	if w.visits++; w.visits > maxExecutionMergeVisits {
+		return nil, fmt.Errorf("yaml: line %d: document contains excessive aliasing", node.Line)
+	}
+	w.active[node] = true
+	defer delete(w.active, node)
 	copied := *node
 	copied.Content = make([]*yaml.Node, 0, len(node.Content))
 	var merge *yaml.Node
@@ -452,38 +482,45 @@ func checkExecutionMapping(node *yaml.Node, seen map[string]bool, unknown *[]str
 			continue
 		}
 		if key.Value == RetiredEvidenceToggleKey {
-			*retired = true
+			w.retired = true
 			continue
 		}
-		if !seen[key.Value] {
-			seen[key.Value] = true
+		if !w.seen[key.Value] {
+			w.seen[key.Value] = true
 			if !executionPolicyYAMLFields[key.Value] {
-				*unknown = append(*unknown, fmt.Sprintf("line %d: field %s not found in type config.ExecutionPolicy", key.Line, key.Value))
+				w.unknown = append(w.unknown, fmt.Sprintf("line %d: field %s not found in type config.ExecutionPolicy", key.Line, key.Value))
 			}
 		}
 		copied.Content = append(copied.Content, key, value)
 	}
 	if merge == nil {
-		return &copied
+		return &copied, nil
 	}
-	merged := merge
-	switch {
-	case merge.Kind == yaml.SequenceNode:
+	var merged *yaml.Node
+	if merge.Kind == yaml.SequenceNode {
 		sequence := *merge
 		sequence.Content = make([]*yaml.Node, len(merge.Content))
 		for i, item := range merge.Content {
-			sequence.Content[i] = checkExecutionMapping(item, seen, unknown, retired)
+			checked, err := w.mapping(item)
+			if err != nil {
+				return nil, err
+			}
+			sequence.Content[i] = checked
 		}
 		merged = &sequence
-	default:
-		merged = checkExecutionMapping(merge, seen, unknown, retired)
+	} else {
+		checked, err := w.mapping(merge)
+		if err != nil {
+			return nil, err
+		}
+		merged = checked
 	}
 	for i := 0; i+1 < len(copied.Content); i += 2 {
 		if copied.Content[i+1] == merge {
 			copied.Content[i+1] = merged
 		}
 	}
-	return &copied
+	return &copied, nil
 }
 
 // isYAMLMergeKey matches yaml.v3's merge-key rule.
