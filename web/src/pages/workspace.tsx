@@ -35,23 +35,20 @@ const TABS: Array<{ id: TabId; label: string }> = [
 ]
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
-// The two verification switches live in execution but belong to the
-// Verification tab, so the policy slice compares execution without them.
+// The verify_stage switch lives in execution but belongs to the Verification
+// tab, so the policy slice compares execution without it.
 const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
   general: (document) => [document.work_order_queue_timeout, document.repos, document.monitor],
   policy: (document) => {
-    const { verify_stage: _verify, require_verification_evidence: _evidence, ...execution } = document.execution
+    const { verify_stage: _verify, ...execution } = document.execution
     return [document.max_bounces, document.stage_timeouts, document.review, execution]
   },
-  verification: (document) => [
-    document.execution.verify_stage ?? false,
-    document.execution.require_verification_evidence,
-  ],
+  verification: (document) => [document.execution.verify_stage ?? false],
 }
 
 function tabForField(field: string): TabId {
   if (/^(work_order_queue_timeout|repos|monitor)/.test(field)) return 'general'
-  if (/^execution\.(verify_stage|require_verification_evidence)/.test(field)) return 'verification'
+  if (/^execution\.verify_stage/.test(field)) return 'verification'
   return 'policy'
 }
 

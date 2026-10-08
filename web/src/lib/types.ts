@@ -665,7 +665,6 @@ export interface ExecutionPolicy {
   merge_approval: boolean
   // Absent on older documents; absent reads as off (DEC-43).
   verify_stage?: boolean
-  require_verification_evidence: boolean
   implement_concurrency: number
   review_concurrency: number
   first_activity_timeout: string
