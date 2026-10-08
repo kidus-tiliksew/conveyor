@@ -16,6 +16,7 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
+	"gopkg.in/yaml.v3"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -456,8 +457,10 @@ func TestWorkerConfigHTTPUsesConfiguredProvider(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &workerConfig); err != nil {
 		t.Fatal(err)
 	}
+	// The export is the policy projection, which omits the client-local
+	// first-activity timeout and every execution detail (DEC-56).
 	if providerCalls != 1 || workerConfig.Workspace != "demo" || workerConfig.ActiveHarnesses == nil ||
-		workerConfig.Execution.FirstActivityTimeoutText != config.DefaultFirstActivityTimeoutText {
+		workerConfig.Execution.FirstActivityTimeoutText != "" || len(workerConfig.Harnesses) != 0 || workerConfig.ExecutionSettings != nil {
 		t.Fatalf("provider calls=%d config=%+v", providerCalls, workerConfig)
 	}
 }
@@ -957,4 +960,48 @@ func TestWorkerHeartbeatHTTPBoundsTheWholeBody(t *testing.T) {
 			t.Fatalf("exact-limit body was not applied: lease %s -> %s probes=%+v", before.LeaseExpiresAt, after.LeaseExpiresAt, after.Probes)
 		}
 	}
+}
+
+func TestWorkerConfigHTTPServesPolicyProjectionOfComposedRuntime(t *testing.T) {
+	server, backend, deployment, ctx := composedRuntimeServer(t)
+	pairing, _, err := server.Workers.IssuePairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := server.Workers.Enroll(t.Context(), pairing, "policy-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := yaml.Marshal(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := backend.WorkspaceConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := getWorkerConfigHTTP(server, enrollment.Credential)
+	if response.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertPolicyOnlyExport(t, "worker config", response.Body.Bytes())
+	var exported map[string]json.RawMessage
+	if err = json.Unmarshal(response.Body.Bytes(), &exported); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"workspace", "max_bounces", "work_order_queue_timeout", "stage_timeouts", "review", "execution", "repos", "monitor", "active_harnesses"} {
+		if _, ok := exported[key]; !ok {
+			t.Fatalf("worker config omits policy field %q: %s", key, response.Body.String())
+		}
+	}
+	var workerConfig workerservice.WorkerConfig
+	if err = json.Unmarshal(response.Body.Bytes(), &workerConfig); err != nil {
+		t.Fatal(err)
+	}
+	if workerConfig.Workspace != "demo" || workerConfig.MaxBounces != 4 || len(workerConfig.Repos) != 1 || workerConfig.Repos[0].Name != "api" ||
+		workerConfig.StageTimeouts["implement"] == "" || workerConfig.ActiveHarnesses == nil {
+		t.Fatalf("worker config policy = %+v", workerConfig)
+	}
+	requireUnchangedComposition(t, backend, deployment, ctx, before, stored.Version)
 }

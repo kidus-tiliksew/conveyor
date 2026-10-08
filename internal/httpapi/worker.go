@@ -203,7 +203,10 @@ func (s *Server) getWorkerConfig(w http.ResponseWriter, r *http.Request) {
 	if active == nil {
 		active = []workerservice.HarnessProbeTarget{}
 	}
-	writeJSON(w, http.StatusOK, workerservice.WorkerConfig{WorkspaceDocument: cfg.WorkspaceDocument(), ActiveHarnesses: active})
+	// The runtime value carries deployment control-plane settings composed
+	// for in-process stages; a workspace export serves only its policy
+	// projection (component-harness-execution; component-runtime; DEC-56).
+	writeJSON(w, http.StatusOK, workerservice.WorkerConfig{WorkspaceDocument: cfg.PolicyDocument(), ActiveHarnesses: active})
 }
 
 func (s *Server) listWorkerOrders(w http.ResponseWriter, r *http.Request) {
