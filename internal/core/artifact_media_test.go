@@ -9,6 +9,8 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 )
 
 func TestArtifactMedia(t *testing.T) {
@@ -65,5 +67,46 @@ func TestArtifactMedia(t *testing.T) {
 	}
 	if _, err := ValidateArtifactMedia("text/plain", make([]byte, MaxArtifactBytes+1)); err == nil {
 		t.Fatal("oversized input accepted")
+	}
+}
+
+// TestValidateVerificationEvidenceArtifact pins the legacy evidence byte
+// policy: declared recordings are byte-checked like typed retention, so a
+// declaration alone never establishes the type (req-review-gates-evidence
+// AC-8.1; component-artifacts).
+func TestValidateVerificationEvidenceArtifact(t *testing.T) {
+	mp4, webm := testimage.MP4("legacy"), testimage.WebM("legacy")
+	for _, tc := range []struct {
+		name, media, want string
+		content           []byte
+	}{
+		{"mp4", "video/mp4", "video/mp4", mp4},
+		{"mp4 parameters and case", `VIDEO/MP4; codecs="avc1.42E01E"`, "video/mp4", mp4},
+		{"webm", "video/webm", "video/webm", webm},
+		{"webm parameters", "video/webm; codecs=vp9", "video/webm", webm},
+		{"png", "image/png", "image/png", testimage.PNG("legacy")},
+		{"jpeg", "image/jpeg", "image/jpeg", testimage.JPEG("legacy")},
+		{"webp", "image/webp", "image/webp", testimage.WebP("legacy")},
+		{"empty recording", "video/mp4", "", nil},
+		{"spoofed mp4", "video/mp4", "", testimage.PNG("spoofed")},
+		{"spoofed webm", "video/webm", "", []byte("plain text named capture.webm")},
+		{"truncated mp4", "video/mp4", "", mp4[:len(mp4)-3]},
+		{"mp4 bytes declared webm", "video/webm", "", mp4},
+		{"webm bytes declared mp4", "video/mp4", "", webm},
+		{"gif", "image/gif", "", testimage.GIF("legacy")},
+		{"image declared over recording", "image/png", "", mp4},
+	} {
+		got, err := ValidateVerificationEvidenceArtifact(tc.media, tc.content)
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%s: admitted as %s", tc.name, got)
+			} else if !strings.HasPrefix(err.Error(), "verification evidence") {
+				t.Errorf("%s: refusal %q lacks the verification evidence prefix", tc.name, err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %q, %v; want %s", tc.name, got, err, tc.want)
+		}
 	}
 }

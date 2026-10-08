@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -153,6 +154,15 @@ type OperatorObservationPayload struct {
 	Fact       string                  `json:"fact"`
 	CapturedAt string                  `json:"captured_at"`
 	Supporting []VerificationReference `json:"supporting"`
+}
+
+// VisualCaptureMediaTypes is the one visual_capture media list. The payload
+// validator and the published media_type enum read it, and it equals the image
+// and video rows that ValidateTypedVerificationArtifact retains, so GIF is
+// refused at decode, in the schema, and at retention (req-verification-evidence
+// REQ-1; component-verification-evidence).
+func VisualCaptureMediaTypes() []string {
+	return []string{"image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"}
 }
 
 // DecodeVerificationEvidence applies the byte limit to the actual submitted
@@ -444,10 +454,8 @@ func (e VerificationEvidence) validatePayload(authority VerificationEvidenceAuth
 		if err := refs([]VerificationReference{p.Artifact}, true); err != nil {
 			return err
 		}
-		switch p.MediaType {
-		case "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm":
-		default:
-			return fmt.Errorf("evidence.payload.media_type: unsupported visual media")
+		if !slices.Contains(VisualCaptureMediaTypes(), p.MediaType) {
+			return fmt.Errorf("evidence.payload.media_type: unsupported visual media; use image/png, image/jpeg, image/webp, video/mp4, or video/webm")
 		}
 		for _, a := range e.Artifacts {
 			if a.ArtifactID == p.Artifact.ArtifactID && a.MediaType != p.MediaType {

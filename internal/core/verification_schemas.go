@@ -345,7 +345,7 @@ func verificationSchemaConstraints(t reflect.Type, s map[string]any) {
 	case reflect.TypeOf(VisualCapturePayload{}):
 		nonempty("capture_tool", "target")
 		dates("captured_at")
-		enum("media_type", "image/png", "image/jpeg", "image/webp", "image/gif", "video/mp4", "video/webm")
+		enum("media_type", VisualCaptureMediaTypes()...)
 	case reflect.TypeOf(OperatorObservationPayload{}):
 		nonempty("operator_id", "fact")
 		dates("captured_at")

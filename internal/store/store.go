@@ -4566,7 +4566,7 @@ func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifac
 		if !ok || task.Workspace != artifact.Workspace {
 			return core.Artifact{}, fmt.Errorf("verification evidence task does not belong to workspace %s", artifact.Workspace)
 		}
-		normalized, err := core.NormalizeVerificationEvidenceContentType(artifact.ContentType, artifact.SizeBytes)
+		normalized, err := core.ValidateVerificationEvidenceArtifact(artifact.ContentType, content)
 		if err != nil {
 			return core.Artifact{}, err
 		}
