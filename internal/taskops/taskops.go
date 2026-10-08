@@ -71,10 +71,12 @@ type Command struct {
 // move the canonical lifecycle state.
 const WorkOrderMetadataCommand core.WorkOrderCommand = "order.metadata"
 
-// SetupChangeCommand identifies the atomic setup-change write span. The span
-// may contain canonical order.create and order.cancel transitions, but it is
-// admitted as one transaction so the frozen setup, replacement review seats,
-// projections, and events cannot commit independently (component-task-lifecycle).
+// SetupChangeCommand identifies the atomic frozen-policy exception write span
+// (DEC-7, DEC-43; component-task-lifecycle). The span may contain canonical
+// order.create and order.cancel transitions, but it is admitted as one
+// transaction so the frozen policy, verify/review handoff orders, projections,
+// and events cannot commit independently. Execution-setup reassignment through
+// this span is retired (DEC-56).
 const SetupChangeCommand = "task.setup.change"
 
 // SetAssigneeCommand is the serialized, capability-protected task assignment
@@ -126,7 +128,7 @@ func (p *Plane) SetAssignee(ctx context.Context, taskID, assigneeUserID string) 
 	return backend.SetTaskAssigneeCommand(ctx, TaskLease{taskID: taskID, command: SetAssigneeCommand, seal: &leaseSeal{}}, taskID, assigneeUserID)
 }
 
-// ExecuteSetupChange admits one store-specific setup-change plan to the
+// ExecuteSetupChange admits one store-specific frozen-policy change to the
 // command plane. The command-bound lease is unforgeable outside this package;
 // durable and memory backends retain their existing atomic write spans.
 func ExecuteSetupChange[T any](ctx context.Context, backend Backend, taskID string, apply func(TaskLease) (T, error)) (T, error) {

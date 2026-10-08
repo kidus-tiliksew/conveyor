@@ -18,6 +18,10 @@ import (
 
 type workerContextKey struct{}
 
+// maxWorkerHeartbeatBytes bounds one heartbeat body. It admits the maximum
+// probe count with full-size, fully escaped messages and identity fields.
+const maxWorkerHeartbeatBytes = 256 << 10
+
 func workerFromContext(ctx context.Context) (core.Worker, bool) {
 	worker, ok := ctx.Value(workerContextKey{}).(core.Worker)
 	return worker, ok
@@ -149,11 +153,21 @@ func (s *Server) heartbeatWorker(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Probes []core.HarnessProbe `json:"probes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxWorkerHeartbeatBytes)).Decode(&request); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "heartbeat body exceeds the size limit", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "malformed heartbeat body", http.StatusBadRequest)
 		return
 	}
 	updated, err := s.Workers.Heartbeat(r.Context(), worker, request.Probes)
+	if errors.Is(err, workerservice.ErrHarnessProbeRedaction) {
+		log.Printf("worker heartbeat: %v", err)
+		http.Error(w, workerservice.ErrHarnessProbeRedaction.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

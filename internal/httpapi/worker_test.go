@@ -708,3 +708,79 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 		}
 	}
 }
+
+type heartbeatHTTPSecrets struct{ err error }
+
+func (s *heartbeatHTTPSecrets) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
+	return nil, s.err
+}
+
+// The heartbeat wire boundary accepts client-local harness reports that the
+// server configuration does not name, bounds the body, and never echoes
+// rejected field values (DEC-56; req-worker REQ-1; req-security-boundaries REQ-2).
+func TestWorkerHeartbeatHTTPAcceptsClientLocalProbesWithinBounds(t *testing.T) {
+	st := store.NewMemory()
+	cfg := &config.Config{Workspace: "demo"}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	orders := &workorder.Service{Store: st, ConfigProvider: provider}
+	secrets := &heartbeatHTTPSecrets{}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider, RedactionSecrets: secrets}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.BearerToken = "operator"
+	server.ConfigProvider = provider
+	server.WorkOrders = orders
+	server.Workers = workers
+	handler := server.Handler()
+	call := func(method, path, body, token string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	pairResponse := call(http.MethodPost, "/v1/workers/pairings", `{"ttl_seconds":60}`, "operator")
+	var pairing struct {
+		PairingToken string `json:"pairing_token"`
+	}
+	if err := json.Unmarshal(pairResponse.Body.Bytes(), &pairing); err != nil || pairing.PairingToken == "" {
+		t.Fatalf("pairing status=%d body=%s", pairResponse.Code, pairResponse.Body.String())
+	}
+	enrollResponse := call(http.MethodPost, "/v1/worker/enroll", `{"pairing_token":"`+pairing.PairingToken+`","name":"laptop"}`, "")
+	var enrollment workerservice.Enrollment
+	if err := json.Unmarshal(enrollResponse.Body.Bytes(), &enrollment); err != nil || enrollment.Credential == "" {
+		t.Fatalf("enroll status=%d body=%s", enrollResponse.Code, enrollResponse.Body.String())
+	}
+	heartbeat := func(body string) *httptest.ResponseRecorder {
+		return call(http.MethodPost, "/v1/worker/heartbeat", body, enrollment.Credential)
+	}
+
+	accepted := heartbeat(`{"probes":[{"harness":"local-only-agent","fingerprint":"` + strings.Repeat("0f", 32) + `","healthy":false,"message":"token=` + strings.Repeat("Q", 24) + `","transition":"healthy_to_unhealthy"}]}`)
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("client-local probe status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	if strings.Contains(accepted.Body.String(), strings.Repeat("Q", 24)) || !strings.Contains(accepted.Body.String(), `"harness":"local-only-agent"`) {
+		t.Fatalf("heartbeat response=%s", accepted.Body.String())
+	}
+
+	invalid := heartbeat(`{"probes":[{"harness":"secret-name-` + strings.Repeat("s", 200) + `","healthy":true}]}`)
+	if invalid.Code != http.StatusBadRequest || strings.Contains(invalid.Body.String(), "secret-name") {
+		t.Fatalf("oversized harness name status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+	malformed := heartbeat(`{"probes":[{"harness":"secret-value`)
+	if malformed.Code != http.StatusBadRequest || strings.Contains(malformed.Body.String(), "secret-value") {
+		t.Fatalf("malformed body status=%d body=%s", malformed.Code, malformed.Body.String())
+	}
+	oversized := heartbeat(`{"probes":[{"harness":"codex","message":"` + strings.Repeat("m", 300<<10) + `"}]}`)
+	if oversized.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body status=%d", oversized.Code)
+	}
+
+	secrets.err = errors.New("key store unavailable")
+	unavailable := heartbeat(`{"probes":[{"harness":"local-only-agent","message":"probe failed"}]}`)
+	if unavailable.Code != http.StatusServiceUnavailable || strings.Contains(unavailable.Body.String(), "key store") {
+		t.Fatalf("redaction failure status=%d body=%s", unavailable.Code, unavailable.Body.String())
+	}
+}

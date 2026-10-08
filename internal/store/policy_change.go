@@ -34,9 +34,11 @@ func (p TaskPolicyChange) Validate() error {
 
 // PlanTaskPolicyChange runs inside the backend task transaction, after replay
 // resolution and claim exclusion. It never accepts client-supplied order plans.
+// Every derived field is reset first, so a caller-supplied execution setup,
+// order update, or review plan never reaches persistence (DEC-56).
 func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest) (SetupChangeRequest, error) {
 	if r.Policy == nil {
-		return r, nil
+		return r, fmt.Errorf("a frozen-policy change is required")
 	}
 	if err := r.Policy.Validate(); err != nil {
 		return r, err
@@ -56,8 +58,8 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	}
 	r.ReviewTransition = "policy_only"
 	r.NextStage = task.NextStage
-	r.WorkOrderUpdates, r.NewJobs, r.NewWorkOrders = nil, nil, nil
-	r.SupersedeWorkOrderIDs, r.RetainedWorkOrderIDs = nil, nil
+	r.WorkOrderUpdates, r.NewJobs, r.NewWorkOrders, r.SupersedeWorkOrderIDs = nil, nil, nil, nil
+	r.PriorReviewRound, r.ResultingReviewRound = 0, 0
 	for _, order := range orders {
 		if order.State == core.WorkOrderClaimed || (order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted) {
 			return r, fmt.Errorf("%w: task has an executing attempt or in-flight review verdict", ErrSetupChangeConflict)

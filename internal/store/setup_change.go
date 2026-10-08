@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,29 +13,40 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+// ErrSetupChangeConflict reports a frozen-policy change refused by task or
+// order state, or a replayed request_id with different inputs. The name is
+// kept for the task_setup_changes replay record the command shares with
+// retired setup changes.
 var ErrSetupChangeConflict = fmt.Errorf("setup change conflict")
 
-// SetupChangeRequest is a fully resolved transition plan. The service resolves
-// the named setup and constructs replacement snapshots; the store commits the
-// frozen contract, queue changes, review transition, and audit event atomically
+// SetupChangeRequest is one operator frozen-policy change. Callers supply only
+// TaskID, RequestID, Reason, and Policy; the backend derives every other
+// field with PlanTaskPolicyChange inside its task transaction, after replay
+// resolution and claim exclusion, and never accepts a caller-supplied order
+// plan or execution setup (DEC-7, DEC-43, DEC-56). The derived fields keep
+// their historical names because persisted replay results and audit events
+// use them.
 type SetupChangeRequest struct {
-	PolicyActor           Actor `json:"policy_actor,omitempty"`
-	Policy                *TaskPolicyChange
+	PolicyActor Actor `json:"policy_actor,omitempty"`
+	Policy      *TaskPolicyChange
+	TaskID      string
+	RequestID   string
+	Reason      string
+	// Derived by PlanTaskPolicyChange.
 	NextStage             core.Stage
-	TaskID                string
-	RequestID             string
-	Reason                string
 	Setup                 config.ExecutionSetup
 	WorkOrderUpdates      []core.WorkOrder
 	NewJobs               []core.Job
 	NewWorkOrders         []core.WorkOrder
 	SupersedeWorkOrderIDs []string
-	RetainedWorkOrderIDs  []string
 	ReviewTransition      string
 	PriorReviewRound      int
 	ResultingReviewRound  int
 }
 
+// SetupChangeResult is the persisted replay result of a frozen-policy change.
+// RetainedWorkOrders stays in the wire and replay shape; only retired setup
+// changes populated it.
 type SetupChangeResult struct {
 	RequestID            string    `json:"request_id"`
 	Task                 core.Task `json:"task"`
@@ -68,61 +78,43 @@ func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest 
 		}
 		request.Policy = &policy
 	}
-
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.Reason = strings.TrimSpace(request.Reason)
-	request.Setup.Name = strings.TrimSpace(request.Setup.Name)
-	sort.Strings(request.SupersedeWorkOrderIDs)
-	sort.Strings(request.RetainedWorkOrderIDs)
 	return request
 }
 
 func validateSetupChangeRequest(request SetupChangeRequest) error {
-	if request.Policy != nil {
-		if request.TaskID == "" || request.RequestID == "" || request.Reason == "" {
-			return fmt.Errorf("task, request_id, and nonblank reason are required")
-		}
-		return request.Policy.Validate()
+	if request.Policy == nil {
+		return fmt.Errorf("a frozen-policy change is required")
 	}
-	if request.TaskID == "" || request.RequestID == "" || request.Setup.Name == "" {
-		return fmt.Errorf("task, setup, and request_id are required")
+	if request.TaskID == "" || request.RequestID == "" || request.Reason == "" {
+		return fmt.Errorf("task, request_id, and nonblank reason are required")
 	}
-	if len(request.NewJobs) != len(request.NewWorkOrders) {
-		return fmt.Errorf("setup change requires one job per new work order")
-	}
-	return nil
+	return request.Policy.Validate()
 }
 
-// PrepareSetupChangeRequest normalizes optional audit text and validates the
-// required command identity shared by both persistence implementations.
+// PrepareSetupChangeRequest normalizes the operator's policy request and
+// validates the command identity shared by every persistence implementation.
 func PrepareSetupChangeRequest(request SetupChangeRequest) (SetupChangeRequest, error) {
 	request = normalizeSetupChangeRequest(request)
 	return request, validateSetupChangeRequest(request)
 }
 
+// SameSetupChange reports whether a replay carries the same command identity.
 func SameSetupChange(left, right SetupChangeRequest) bool {
-	if left.Policy != nil || right.Policy != nil {
-		return reflect.DeepEqual(SetupChangeIdentity(left), SetupChangeIdentity(right))
-	}
-	return left.TaskID == right.TaskID && left.RequestID == right.RequestID && left.Reason == right.Reason &&
-		reflect.DeepEqual(left.Setup, right.Setup)
+	return reflect.DeepEqual(SetupChangeIdentity(left), SetupChangeIdentity(right))
 }
 
+// SetupChangeIdentity is the replay identity persisted in task_setup_changes:
+// task, request ID, reason, policy, and the authenticated actor. Its JSON shape
+// is unchanged so stored policy replays still match.
 func SetupChangeIdentity(request SetupChangeRequest) any {
-	if request.Policy != nil {
-		return struct {
-			TaskID, RequestID, Reason string
-			Policy                    *TaskPolicyChange
-			Actor                     Actor
-		}{request.TaskID, request.RequestID, request.Reason, request.Policy, request.PolicyActor}
-	}
 	return struct {
-		TaskID    string                `json:"task_id"`
-		RequestID string                `json:"request_id"`
-		Reason    string                `json:"reason"`
-		Setup     config.ExecutionSetup `json:"setup"`
-	}{request.TaskID, request.RequestID, request.Reason, request.Setup}
+		TaskID, RequestID, Reason string
+		Policy                    *TaskPolicyChange
+		Actor                     Actor
+	}{request.TaskID, request.RequestID, request.Reason, request.Policy, request.PolicyActor}
 }
 
 func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSetup, request SetupChangeRequest, result SetupChangeResult) map[string]any {
@@ -142,13 +134,11 @@ func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSet
 	}
 }
 
-func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw SetupChangeRequest) (SetupChangeResult, error) {
+func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw SetupChangeRequest) (SetupChangeResult, error) {
 	request, err := PrepareSetupChangeRequest(raw)
-	if request.Policy != nil {
-		request.PolicyActor = ActorFromContext(ctx)
-	}
+	request.PolicyActor = ActorFromContext(ctx)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
-		return SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize setup change for task %s", request.TaskID)
+		return SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize policy change for task %s", request.TaskID)
 	}
 	if err != nil {
 		return SetupChangeResult{}, err
@@ -167,16 +157,12 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 		return SetupChangeResult{}, fmt.Errorf("task %s not found", request.TaskID)
 	}
 	if core.TaskTerminal(task.State) {
-		return SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change setup", ErrSetupChangeConflict, request.TaskID)
+		return SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change policy", ErrSetupChangeConflict, request.TaskID)
 	}
-	now := time.Now().UTC()
-	for id, order := range m.workOrders {
+	var orders []core.WorkOrder
+	for _, order := range m.workOrders {
 		if order.TaskID != task.ID {
 			continue
-		}
-		if request.Policy == nil {
-			order = m.refreshWorkOrderLocked(ctx, order, now)
-			m.workOrders[id] = order
 		}
 		// Submitted spec/implement attempts are delivered, not executing; only
 		// claimed attempts and in-flight review verdicts block.
@@ -186,18 +172,11 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 		if order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted {
 			return SetupChangeResult{}, fmt.Errorf("%w: task %s has an in-flight review verdict", ErrSetupChangeConflict, request.TaskID)
 		}
+		orders = append(orders, order)
 	}
-	if request.Policy != nil {
-		var orders []core.WorkOrder
-		for _, order := range m.workOrders {
-			if order.TaskID == task.ID {
-				orders = append(orders, order)
-			}
-		}
-		request, err = PlanTaskPolicyChange(task, orders, request)
-		if err != nil {
-			return SetupChangeResult{}, err
-		}
+	request, err = PlanTaskPolicyChange(task, orders, request)
+	if err != nil {
+		return SetupChangeResult{}, err
 	}
 	for _, desired := range request.WorkOrderUpdates {
 		current, exists := m.workOrders[desired.ID]
@@ -208,7 +187,7 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 	for i, job := range request.NewJobs {
 		order := request.NewWorkOrders[i]
 		if job.TaskID != task.ID || order.TaskID != task.ID || order.JobID != job.ID || order.Stage != job.Stage {
-			return SetupChangeResult{}, fmt.Errorf("invalid setup-change review member %d", i)
+			return SetupChangeResult{}, fmt.Errorf("invalid policy-change handoff member %d", i)
 		}
 		if _, _, exists := m.findJobLocked(job.ID); exists {
 			return SetupChangeResult{}, fmt.Errorf("%w: %w: job %s already exists", ErrSetupChangeConflict, ErrDispatchJobConflict, job.ID)
@@ -223,16 +202,16 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 			return SetupChangeResult{}, fmt.Errorf("%w: superseded work order %s is invalid", ErrSetupChangeConflict, id)
 		}
 	}
+	now := time.Now().UTC()
 	fromStage := task.NextStage
 	priorSetup := task.SetupContract
-	task.SetupName, task.SetupContract = request.Setup.Name, request.Setup
-	if request.Policy != nil {
-		task.NextStage = request.NextStage
-	}
+	// The frozen policy changes; the task's legacy SetupName is left as is.
+	task.SetupContract = request.Setup
+	task.NextStage = request.NextStage
 	m.tasks[task.ID] = task
 	result := SetupChangeResult{RequestID: request.RequestID, Task: task, ReviewTransition: request.ReviewTransition,
 		UpdatedWorkOrders: make([]string, 0, len(request.WorkOrderUpdates)), CreatedWorkOrders: make([]string, 0, len(request.NewWorkOrders)),
-		RetainedWorkOrders: append([]string(nil), request.RetainedWorkOrderIDs...), SupersededWorkOrders: append([]string(nil), request.SupersedeWorkOrderIDs...)}
+		RetainedWorkOrders: []string{}, SupersededWorkOrders: append([]string(nil), request.SupersedeWorkOrderIDs...)}
 	actor := ActorFromContext(ctx)
 	if fromStage != task.NextStage {
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": task.NextStage, "recovery_stage": task.RecoveryStage, "state": task.State})})
@@ -303,11 +282,6 @@ func (m *memory) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskL
 		if order.Stage == core.StageReview {
 			m.appendEventLocked(ctx, setupSeatEvent(task.ID, order, actor, workspace, priorSetup, request, "created_under_new_setup", now))
 		}
-	}
-	for _, id := range result.RetainedWorkOrders {
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.seat.setup_retained", ActorID: actor.ID, ActorRole: actor.Role,
-			Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "request_id": request.RequestID, "work_order_id": id,
-				"outcome": "retained_compatible_verdict", "previous_setup": priorSetup, "new_setup": request.Setup}), At: now})
 	}
 	payload := setupChangePayload(workspace, actor, priorSetup, request, result)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.setup.changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(payload), At: now})

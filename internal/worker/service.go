@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -309,47 +310,117 @@ func (s *Service) Authenticate(ctx context.Context, credential, requestedWorkspa
 	return store.WithActor(store.WithWorkspace(ctx, worker.Workspace), store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker}), worker, nil
 }
 
+// Heartbeat renews the worker liveness lease and stores the worker's own
+// harness probe reports. Harness identities and fingerprints are client-local
+// observations from the worker's execution setup, so the server accepts any
+// well-formed report without consulting a server-side harness list or an
+// active order snapshot (DEC-56; req-worker REQ-1, AC-2.1;
+// component-harness-execution). Each report is bounded in shape and size, and
+// its message is redacted before persistence; a redaction failure stores
+// nothing (req-security-boundaries REQ-2, REQ-3).
 func (s *Service) Heartbeat(ctx context.Context, worker core.Worker, probes []core.HarnessProbe) (core.Worker, error) {
-	cfg, err := s.ConfigProvider(ctx)
-	if err != nil {
-		return core.Worker{}, err
-	}
-	registered := map[string]map[string]bool{}
-	for _, harness := range cfg.Harnesses {
-		registeredHarness(registered, harness)
-	}
-	// An active worker-dispatched order owns its snapshotted harness definition
-	// even after the workspace registry hot reloads. Keep accepting health probes
-	// for durable implementation and review snapshots until they leave the active
-	// queue (component-work-orders).
-	active, err := s.ActiveHarnesses(ctx)
-	if err != nil {
-		return core.Worker{}, err
-	}
-	for _, target := range active {
-		registeredHarness(registered, target.Harness)
-	}
 	now := s.now()
-	for i := range probes {
-		fingerprints, ok := registered[probes[i].Harness]
-		if !ok {
-			return core.Worker{}, fmt.Errorf("unknown harness probe %q", probes[i].Harness)
-		}
-		if probes[i].Fingerprint != "" && !fingerprints[probes[i].Fingerprint] {
-			return core.Worker{}, fmt.Errorf("unknown harness probe fingerprint for %q", probes[i].Harness)
-		}
-		if probes[i].CheckedAt.IsZero() {
-			probes[i].CheckedAt = now
-		}
+	accepted, err := s.acceptHarnessProbes(ctx, probes, now)
+	if err != nil {
+		return core.Worker{}, err
 	}
-	return s.Store.HeartbeatWorker(ctx, worker.ID, now.Add(DefaultLivenessLease), probes)
+	return s.Store.HeartbeatWorker(ctx, worker.ID, now.Add(DefaultLivenessLease), accepted)
 }
 
-func registeredHarness(registered map[string]map[string]bool, harness config.Harness) {
-	if registered[harness.Name] == nil {
-		registered[harness.Name] = map[string]bool{}
+// Harness probe report bounds. MaxHarnessProbeMessageBytes matches the
+// worker's own probe-output cap; the other limits bound identity fields and
+// the number of reports in one heartbeat.
+const (
+	MaxHarnessProbes              = 64
+	MaxHarnessProbeNameBytes      = 128
+	MaxHarnessProbeMessageBytes   = 500
+	harnessProbeFingerprintLength = sha256.Size * 2
+)
+
+// ErrInvalidHarnessProbe marks a malformed heartbeat probe report. Its
+// messages name the offending report by index and never echo field values.
+var ErrInvalidHarnessProbe = errors.New("invalid harness probe report")
+
+// ErrHarnessProbeRedaction marks a heartbeat refused because its probe
+// messages could not be redacted before persistence.
+var ErrHarnessProbeRedaction = errors.New("harness probe redaction unavailable")
+
+func (s *Service) acceptHarnessProbes(ctx context.Context, probes []core.HarnessProbe, now time.Time) ([]core.HarnessProbe, error) {
+	if len(probes) > MaxHarnessProbes {
+		return nil, fmt.Errorf("%w: %d reports exceed the limit of %d", ErrInvalidHarnessProbe, len(probes), MaxHarnessProbes)
 	}
-	registered[harness.Name][HarnessFingerprint(harness)] = true
+	accepted := make([]core.HarnessProbe, 0, len(probes))
+	seen := make(map[string]bool, len(probes))
+	var redactor *redact.Redactor
+	for i, probe := range probes {
+		if err := validateHarnessProbe(probe); err != nil {
+			return nil, fmt.Errorf("%w: report %d %s", ErrInvalidHarnessProbe, i, err.Error())
+		}
+		key := probe.Harness + "\x00" + probe.Fingerprint
+		if seen[key] {
+			return nil, fmt.Errorf("%w: report %d repeats an earlier harness and fingerprint", ErrInvalidHarnessProbe, i)
+		}
+		seen[key] = true
+		if probe.Message != "" {
+			if redactor == nil {
+				var err error
+				if redactor, err = redact.WithSecrets(ctx, s.RedactionSecrets, nil); err != nil {
+					return nil, fmt.Errorf("%w: %w", ErrHarnessProbeRedaction, err)
+				}
+			}
+			probe.Message, _ = redactor.Redact(strings.ToValidUTF8(probe.Message, "\uFFFD"))
+			probe.Message = truncateUTF8(strings.TrimSpace(probe.Message), MaxHarnessProbeMessageBytes)
+		}
+		if probe.CheckedAt.IsZero() {
+			probe.CheckedAt = now
+		}
+		accepted = append(accepted, probe)
+	}
+	return accepted, nil
+}
+
+func validateHarnessProbe(probe core.HarnessProbe) error {
+	switch {
+	case strings.TrimSpace(probe.Harness) == "" || strings.TrimSpace(probe.Harness) != probe.Harness:
+		return errors.New("requires a harness name without surrounding whitespace")
+	case len(probe.Harness) > MaxHarnessProbeNameBytes:
+		return fmt.Errorf("harness name exceeds %d bytes", MaxHarnessProbeNameBytes)
+	case !utf8.ValidString(probe.Harness) || strings.IndexFunc(probe.Harness, unicode.IsControl) >= 0:
+		return errors.New("harness name must be printable UTF-8")
+	case probe.Fingerprint != "" && !validHarnessFingerprint(probe.Fingerprint):
+		return fmt.Errorf("fingerprint must be %d lowercase hexadecimal characters", harnessProbeFingerprintLength)
+	}
+	switch probe.Transition {
+	case "", "healthy_to_unhealthy", "unhealthy_to_healthy":
+		return nil
+	default:
+		return errors.New("transition is not a recognized health transition")
+	}
+}
+
+func validHarnessFingerprint(value string) bool {
+	if len(value) != harnessProbeFingerprintLength {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// truncateUTF8 keeps the leading limit bytes without splitting a rune, the
+// same head the worker keeps when it caps probe output.
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
 }
 
 func (s *Service) ActiveHarnesses(ctx context.Context) ([]HarnessProbeTarget, error) {

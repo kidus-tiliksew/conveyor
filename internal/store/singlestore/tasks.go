@@ -1211,14 +1211,15 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 	return result, err
 }
 
-func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
+// ChangeTaskPolicyCommand commits the operator's frozen-policy exception in one
+// task transaction, matching the memory and PostgreSQL backends (DEC-7,
+// DEC-43; component-task-lifecycle, component-persistence).
+func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
 	var result store.SetupChangeResult
 	r, validationErr := store.PrepareSetupChangeRequest(raw)
-	if r.Policy != nil {
-		r.PolicyActor = store.ActorFromContext(ctx)
-	}
+	r.PolicyActor = store.ActorFromContext(ctx)
 	if !lease.ValidForCommand(r.TaskID, taskops.SetupChangeCommand) {
-		return result, fmt.Errorf("taskops lease does not authorize setup change for task %s", r.TaskID)
+		return result, fmt.Errorf("taskops lease does not authorize policy change for task %s", r.TaskID)
 	}
 	if validationErr != nil {
 		return result, validationErr
@@ -1246,7 +1247,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 			return err
 		}
 		if core.TaskTerminal(t.State) {
-			return fmt.Errorf("%w: terminal task cannot change setup", store.ErrSetupChangeConflict)
+			return fmt.Errorf("%w: terminal task cannot change policy", store.ErrSetupChangeConflict)
 		}
 		orders, err := s.listOrders(ctx, tx, []string{t.ID})
 		if err != nil {
@@ -1274,18 +1275,12 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		}
 		fromStage := t.NextStage
 		prior := t.SetupContract
-		if r.Policy != nil {
-			t.NextStage = r.NextStage
-			if err = taskWrite(ctx, tx, t.ID, map[string]any{"next_stage": r.NextStage}); err != nil {
-				return err
-			}
-		}
-		if err = taskWrite(ctx, tx, t.ID, map[string]any{"setup_name": r.Setup.Name, "setup_contract": core.JSONPayload(r.Setup)}); err != nil {
+		// The frozen policy changes; the task's legacy setup_name is left as is.
+		if err = taskWrite(ctx, tx, t.ID, map[string]any{"next_stage": r.NextStage, "setup_contract": core.JSONPayload(r.Setup)}); err != nil {
 			return err
 		}
-		t.SetupName = r.Setup.Name
-		t.SetupContract = r.Setup
-		result = store.SetupChangeResult{RequestID: r.RequestID, Task: t, ReviewTransition: r.ReviewTransition, UpdatedWorkOrders: []string{}, CreatedWorkOrders: []string{}, RetainedWorkOrders: append([]string{}, r.RetainedWorkOrderIDs...), SupersededWorkOrders: append([]string{}, r.SupersedeWorkOrderIDs...)}
+		t.NextStage, t.SetupContract = r.NextStage, r.Setup
+		result = store.SetupChangeResult{RequestID: r.RequestID, Task: t, ReviewTransition: r.ReviewTransition, UpdatedWorkOrders: []string{}, CreatedWorkOrders: []string{}, RetainedWorkOrders: []string{}, SupersededWorkOrders: append([]string{}, r.SupersedeWorkOrderIDs...)}
 		now := time.Now().UTC()
 		actor := store.ActorFromContext(ctx)
 		if fromStage != t.NextStage {
@@ -1358,7 +1353,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 			o := orderDefaults(r.NewWorkOrders[i])
 			o.State = core.WorkOrderQueued
 			if j.TaskID != t.ID || o.TaskID != t.ID || o.JobID != j.ID || o.Stage != j.Stage {
-				return fmt.Errorf("invalid setup-change review member %d", i)
+				return fmt.Errorf("invalid policy-change handoff member %d", i)
 			}
 			if err = insertJobRow(ctx, tx, j); err != nil {
 				return err
@@ -1374,11 +1369,6 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 				continue
 			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: j.ID, Kind: "review.seat.setup_rebuilt", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "request_id": r.RequestID, "review_round": o.ReviewRound, "review_seat": o.ReviewSeat, "work_order_id": o.ID, "outcome": "created_under_new_setup", "previous_setup": prior, "new_setup": r.Setup})}); err != nil {
-				return err
-			}
-		}
-		for _, id := range result.RetainedWorkOrders {
-			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.seat.setup_retained", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "request_id": r.RequestID, "work_order_id": id, "outcome": "retained_compatible_verdict", "previous_setup": prior, "new_setup": r.Setup})}); err != nil {
 				return err
 			}
 		}

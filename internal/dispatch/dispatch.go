@@ -531,9 +531,9 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 }
 
 // BuildFutureWorkOrderRouting resolves one queued non-review order from the
-// task's frozen setup contract. Setup reassignment uses the same constructor
-// inputs as ordinary dispatch without creating a second routing shape
-// (component-work-orders; DEC-7).
+// task's frozen setup contract: the stage timeout and queue clock only, never
+// an execution pin (component-work-orders; DEC-7, DEC-56). Its former caller,
+// execution-setup reassignment, is retired; the frozen-routing tests keep it.
 func BuildFutureWorkOrderRouting(cfg *config.Config, task core.Task, stage core.Stage) (core.WorkOrder, error) {
 	if cfg == nil || (stage != core.StageSpec && stage != core.StageImplement && stage != core.StageVerify) {
 		return core.WorkOrder{}, fmt.Errorf("future work routing requires spec or implementation stage")
