@@ -355,8 +355,12 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		}
 		var currentVersion *int32
 		var highWaterMark int
-		if err := documentRow(ctx, tx, `SELECT current_version, statement_high_water_mark FROM requirements
-			 WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), requirementID).Scan(&currentVersion, &highWaterMark); err != nil {
+		// The previous title is read under the same row lock as the current
+		// version, so concurrent confirmations record a true rename chain
+		// (req-document-operating-surfaces AC-6.1).
+		var previousTitle string
+		if err := documentRow(ctx, tx, `SELECT current_version, statement_high_water_mark, title FROM requirements
+			 WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), requirementID).Scan(&currentVersion, &highWaterMark, &previousTitle); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("requirement %s not found", requirementID)
 			}
@@ -441,8 +445,9 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 			 WHERE workspace_id=? AND requirement_id=? AND version=?`, actor.ID, now, documentWorkspace(ctx), requirementID, version); err != nil {
 			return err
 		}
-		if _, err := documentExec(ctx, tx, `UPDATE requirements SET current_version=?, updated_at=?
-			 WHERE workspace_id=? AND id=?`, version, now, documentWorkspace(ctx), requirementID); err != nil {
+		title, renamed := core.ConfirmedDocumentTitle(previousTitle, stored.Content)
+		if _, err := documentExec(ctx, tx, `UPDATE requirements SET current_version=?, title=?, updated_at=?
+			 WHERE workspace_id=? AND id=?`, version, title, now, documentWorkspace(ctx), requirementID); err != nil {
 			return err
 		}
 		stored.Confirmed, stored.ConfirmedBy, stored.ConfirmedAt = true, actor.ID, now
@@ -460,6 +465,11 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		}
 		if err = insertRequirementEvent(ctx, tx, "requirement.version_confirmed", payload); err != nil {
 			return err
+		}
+		if renamed {
+			if err = insertRequirementEvent(ctx, tx, store.RequirementTitleChangedEvent, store.RequirementTitleChangedPayload(documentWorkspace(ctx), requirementID, previousTitle, title, version, actor.ID)); err != nil {
+				return err
+			}
 		}
 		if err = recomputeDecisionSweepsForDocumentTx(ctx, tx, core.DecisionSweepTierRequirement, requirementID, confirmed.Content); err != nil {
 			return err

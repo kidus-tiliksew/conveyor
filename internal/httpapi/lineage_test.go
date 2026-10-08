@@ -57,7 +57,7 @@ func TestLineageLabelsUseBoundedNodesAndReusePlanningSessions(t *testing.T) {
 func TestLineageSystemDesignDecisionAndRepositoryNodesResolveDirectlyWithLabels(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
-	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-labelled", Title: "Labelled architecture", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Labelled\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-labelled", Title: "Labelled architecture", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Labelled architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}

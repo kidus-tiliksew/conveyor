@@ -66,6 +66,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
 	runDocumentEventPages(t, factory)
 	runContextEligibility(t, factory)
+	RunDocumentTitleConformance(t, factory)
 
 	t.Run("requirement and system design archive lifecycle", func(t *testing.T) {
 		fixture := factory(t, requirementConformanceRepos)
@@ -2503,4 +2504,472 @@ func sameInstant(got, want time.Time) bool {
 		delta = -delta
 	}
 	return delta < time.Microsecond
+}
+
+// RunDocumentTitleConformance proves that every backend moves a requirement's
+// or System Design's listed title to the confirmed version's heading inside
+// the confirmation, records one title-change event, and leaves the title,
+// ID, and slug alone on every other path (req-document-operating-surfaces
+// AC-6.1; component-document-corpus).
+func RunDocumentTitleConformance(t *testing.T, factory RequirementFactory) {
+	t.Helper()
+	runDriftAmendmentTitleConformance(t, factory)
+	for _, tier := range documentTitleTiers() {
+		t.Run(tier.name+" proposal keeps the title and confirmation renames once", func(t *testing.T) {
+			st, ctx, workspace := newRequirementFixture(t, factory)
+			id := tier.prefix + core.NewTaskID()
+			slug := tier.create(t, ctx, st, id, "Original title", "# Original title\n\nFirst body.")
+			if title, err := tier.confirm(ctx, st, id, 1); err != nil || title != "Original title" {
+				t.Fatalf("confirm v1 title=%q err=%v", title, err)
+			}
+			version := tier.propose(t, ctx, st, id, "# Renamed title\n\nSecond body.")
+			proposedContent := tier.content(t, ctx, st, id, version)
+			assertDocumentTitle(t, tier, ctx, st, id, "Original title", slug, 1)
+			if events := documentTitleEvents(t, tier, ctx, st, id); len(events) != 0 {
+				t.Fatalf("proposal appended title events: %+v", events)
+			}
+			title, err := tier.confirm(ctx, st, id, version)
+			if err != nil || title != "Renamed title" {
+				t.Fatalf("confirm v%d returned title=%q err=%v", version, title, err)
+			}
+			assertDocumentTitle(t, tier, ctx, st, id, "Renamed title", slug, version)
+			if content := tier.content(t, ctx, st, id, version); content != proposedContent {
+				t.Fatalf("confirmed version content changed: %q", content)
+			}
+			events := tier.events(t, ctx, st, id)
+			index := slices.IndexFunc(events, func(event core.Event) bool { return event.Kind == tier.kind })
+			if index < 1 || events[index-1].Kind != tier.confirmedKind {
+				t.Fatalf("title event must directly follow %s: %+v", tier.confirmedKind, events)
+			}
+			assertDocumentTitleEvent(t, tier, events[index], workspace, id, "Original title", "Renamed title", version)
+			// Repeating the confirmation of the current version is idempotent.
+			if title, err = tier.confirm(ctx, st, id, version); err != nil || title != "Renamed title" {
+				t.Fatalf("repeat confirmation title=%q err=%v", title, err)
+			}
+			if events := documentTitleEvents(t, tier, ctx, st, id); len(events) != 1 {
+				t.Fatalf("repeat confirmation appended title events: %+v", events)
+			}
+		})
+
+		t.Run(tier.name+" initial confirmation renames from the created title", func(t *testing.T) {
+			st, ctx, workspace := newRequirementFixture(t, factory)
+			id := tier.prefix + core.NewTaskID()
+			slug := tier.create(t, ctx, st, id, "Listed title", "\r\n  \r\n#   Délivery — *tiers*  `only`  \r\nBody.\r\n")
+			title, err := tier.confirm(ctx, st, id, 1)
+			want := "Délivery — *tiers*  `only`"
+			if err != nil || title != want {
+				t.Fatalf("confirm v1 title=%q err=%v, want %q", title, err, want)
+			}
+			assertDocumentTitle(t, tier, ctx, st, id, want, slug, 1)
+			events := documentTitleEvents(t, tier, ctx, st, id)
+			if len(events) != 1 {
+				t.Fatalf("title events=%+v", events)
+			}
+			assertDocumentTitleEvent(t, tier, events[0], workspace, id, "Listed title", want, 1)
+		})
+
+		t.Run(tier.name+" headings that name no new title keep the listed title", func(t *testing.T) {
+			st, ctx, _ := newRequirementFixture(t, factory)
+			contents := []string{"# %s\n\nSame heading."}
+			if tier.acceptsHeadingless {
+				// Requirement creation refuses a body without a leading H1,
+				// so only System Design bodies reach confirmation this way.
+				contents = append(contents,
+					"Intro prose first.\n# Later heading",
+					"## Section heading\n# Later heading",
+					"#   \nEmpty heading.",
+					"#NoSpace heading",
+				)
+			}
+			for index, content := range contents {
+				// Titles derive workspace-unique slugs, so each case gets its own.
+				kept := fmt.Sprintf("Kept title %d", index)
+				if strings.Contains(content, "%s") {
+					content = fmt.Sprintf(content, kept)
+				}
+				id := tier.prefix + core.NewTaskID()
+				slug := tier.create(t, ctx, st, id, kept, content)
+				if title, err := tier.confirm(ctx, st, id, 1); err != nil || title != kept {
+					t.Fatalf("content %q: title=%q err=%v", content, title, err)
+				}
+				assertDocumentTitle(t, tier, ctx, st, id, kept, slug, 1)
+				if events := documentTitleEvents(t, tier, ctx, st, id); len(events) != 0 {
+					t.Fatalf("content %q appended title events: %+v", content, events)
+				}
+			}
+			// The comparison is exact, so a case-only change renames.
+			id := tier.prefix + core.NewTaskID()
+			tier.create(t, ctx, st, id, "Case title", "# case title")
+			if title, err := tier.confirm(ctx, st, id, 1); err != nil || title != "case title" {
+				t.Fatalf("case-only heading title=%q err=%v", title, err)
+			}
+		})
+
+		t.Run(tier.name+" refused confirmations leave the title unchanged", func(t *testing.T) {
+			st, ctx, _ := newRequirementFixture(t, factory)
+			id := tier.prefix + core.NewTaskID()
+			slug := tier.create(t, ctx, st, id, "Stable title", "# Stable title")
+			if _, err := tier.confirm(ctx, st, id, 1); err != nil {
+				t.Fatal(err)
+			}
+			stale := tier.propose(t, ctx, st, id, "# Stale If-Match heading")
+			if _, err := tier.confirm(ctx, st, id, stale, 0); err == nil {
+				t.Fatal("confirmation with a stale If-Match succeeded")
+			}
+			assertDocumentTitle(t, tier, ctx, st, id, "Stable title", slug, 1)
+			if err := tier.dismiss(ctx, st, id, stale); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tier.confirm(ctx, st, id, stale); err == nil {
+				t.Fatal("confirmation of a dismissed version succeeded")
+			}
+			assertDocumentTitle(t, tier, ctx, st, id, "Stable title", slug, 1)
+			skipped := tier.propose(t, ctx, st, id, "# Skipped heading")
+			final := tier.propose(t, ctx, st, id, "# Final heading")
+			if title, err := tier.confirm(ctx, st, id, final); err != nil || title != "Final heading" {
+				t.Fatalf("confirm final title=%q err=%v", title, err)
+			}
+			if _, err := tier.confirm(ctx, st, id, skipped); err == nil {
+				t.Fatal("confirmation of a version below the current one succeeded")
+			}
+			assertDocumentTitle(t, tier, ctx, st, id, "Final heading", slug, final)
+			archived := tier.propose(t, ctx, st, id, "# Archived heading")
+			if err := tier.archive(ctx, st, id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tier.confirm(ctx, st, id, archived); err == nil {
+				t.Fatal("confirmation on an archived document succeeded")
+			}
+			if title, gotSlug, current := tier.get(t, ctx, st, id); title != "Final heading" || gotSlug != slug || current != final {
+				t.Fatalf("archived document title=%q slug=%q current=%d", title, gotSlug, current)
+			}
+			if events := documentTitleEvents(t, tier, ctx, st, id); len(events) != 1 {
+				t.Fatalf("refused confirmations appended title events: %+v", events)
+			}
+		})
+
+		t.Run(tier.name+" renames stay inside their workspace", func(t *testing.T) {
+			st, ctx, _ := newRequirementFixture(t, factory)
+			otherWorkspace := "title-other-" + core.NewTaskID()
+			if control, ok := st.(store.WorkspaceControlStore); ok {
+				if _, err := control.CreateWorkspace(ctx, otherWorkspace, "Title other", &config.Config{Workspace: otherWorkspace, Repos: requirementConformanceRepos}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			otherCtx := store.WithWorkspace(ctx, otherWorkspace)
+			id := tier.prefix + core.NewTaskID()
+			slug := tier.create(t, ctx, st, id, "Shared title", "# Shared title")
+			otherSlug := tier.create(t, otherCtx, st, id, "Shared title", "# Shared title")
+			for _, c := range []context.Context{ctx, otherCtx} {
+				if _, err := tier.confirm(c, st, id, 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			version := tier.propose(t, ctx, st, id, "# Workspace rename")
+			if _, err := tier.confirm(ctx, st, id, version); err != nil {
+				t.Fatal(err)
+			}
+			assertDocumentTitle(t, tier, ctx, st, id, "Workspace rename", slug, version)
+			assertDocumentTitle(t, tier, otherCtx, st, id, "Shared title", otherSlug, 1)
+			if events := documentTitleEvents(t, tier, otherCtx, st, id); len(events) != 0 {
+				t.Fatalf("other workspace recorded title events: %+v", events)
+			}
+		})
+	}
+}
+
+// documentTitleTier adapts the requirement and System Design APIs to the
+// shared title cases.
+type documentTitleTier struct {
+	name, prefix, kind, confirmedKind, idKey string
+	acceptsHeadingless                       bool
+	create                                   func(*testing.T, context.Context, store.Store, string, string, string) string
+	propose                                  func(*testing.T, context.Context, store.Store, string, string) int
+	confirm                                  func(context.Context, store.Store, string, int, ...int) (string, error)
+	dismiss                                  func(context.Context, store.Store, string, int) error
+	archive                                  func(context.Context, store.Store, string) error
+	get                                      func(*testing.T, context.Context, store.Store, string) (string, string, int)
+	list                                     func(*testing.T, context.Context, store.Store) map[string]string
+	content                                  func(*testing.T, context.Context, store.Store, string, int) string
+	events                                   func(*testing.T, context.Context, store.Store, string) []core.Event
+}
+
+func documentTitleTiers() []documentTitleTier {
+	statements := []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep the listed title accurate."}}
+	governs := "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/workorder/**\n```"
+	requirementBody := func(content string) string { return content }
+	designBody := func(content string) string { return content + governs }
+	return []documentTitleTier{
+		{
+			name: "requirement", prefix: "req-title-", kind: store.RequirementTitleChangedEvent, confirmedKind: "requirement.version_confirmed", idKey: "requirement_id",
+			create: func(t *testing.T, ctx context.Context, st store.Store, id, title, content string) string {
+				t.Helper()
+				requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: title}, core.RequirementVersion{Content: requirementBody(content), Origin: core.RequirementOriginOperator, Statements: statements})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if requirement.Title != title {
+					t.Fatalf("create changed the title to %q", requirement.Title)
+				}
+				return requirement.Slug
+			},
+			propose: func(t *testing.T, ctx context.Context, st store.Store, id, content string) int {
+				t.Helper()
+				version, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: id, Content: requirementBody(content), Origin: core.RequirementOriginOperator, Statements: statements})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return version.Version
+			},
+			confirm: func(ctx context.Context, st store.Store, id string, version int, expected ...int) (string, error) {
+				requirement, _, err := st.ConfirmRequirementVersion(ctx, id, version, expected...)
+				return requirement.Title, err
+			},
+			dismiss: func(ctx context.Context, st store.Store, id string, version int) error {
+				_, _, err := st.DismissRequirementVersion(ctx, id, version)
+				return err
+			},
+			archive: func(ctx context.Context, st store.Store, id string) error {
+				return st.ArchiveRequirement(ctx, id, requirementConformanceActor, nil)
+			},
+			get: func(t *testing.T, ctx context.Context, st store.Store, id string) (string, string, int) {
+				t.Helper()
+				requirement, err := st.GetRequirement(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if requirement.ID != id {
+					t.Fatalf("requirement ID changed to %q", requirement.ID)
+				}
+				return requirement.Title, requirement.Slug, requirement.CurrentVersion
+			},
+			list: func(t *testing.T, ctx context.Context, st store.Store) map[string]string {
+				t.Helper()
+				requirements, err := st.ListRequirements(ctx, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				titles := map[string]string{}
+				for _, requirement := range requirements {
+					titles[requirement.ID] = requirement.Title
+				}
+				return titles
+			},
+			content: func(t *testing.T, ctx context.Context, st store.Store, id string, version int) string {
+				t.Helper()
+				stored, err := st.GetRequirementVersion(ctx, id, version)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return stored.Content
+			},
+			events: func(t *testing.T, ctx context.Context, st store.Store, id string) []core.Event {
+				t.Helper()
+				events, err := st.ListRequirementEvents(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return events
+			},
+		},
+		{
+			name: "system design", prefix: "design-title-", kind: store.SystemDesignTitleChangedEvent, confirmedKind: "system_design.version_confirmed", idKey: "document_id",
+			acceptsHeadingless: true,
+			create: func(t *testing.T, ctx context.Context, st store.Store, id, title, content string) string {
+				t.Helper()
+				document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: title, Category: "Architecture"}, core.SystemDesignVersion{Content: designBody(content), Origin: core.SystemDesignOriginOperator})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if document.Title != title {
+					t.Fatalf("create changed the title to %q", document.Title)
+				}
+				return document.Slug
+			},
+			propose: func(t *testing.T, ctx context.Context, st store.Store, id, content string) int {
+				t.Helper()
+				version, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: id, Content: designBody(content), Origin: core.SystemDesignOriginOperator})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return version.Version
+			},
+			confirm: func(ctx context.Context, st store.Store, id string, version int, expected ...int) (string, error) {
+				document, _, err := st.ConfirmSystemDesignVersion(ctx, id, version, expected...)
+				if err == nil && document.Category != "Architecture" {
+					return document.Title, fmt.Errorf("confirmation changed the category to %q", document.Category)
+				}
+				return document.Title, err
+			},
+			dismiss: func(ctx context.Context, st store.Store, id string, version int) error {
+				_, _, err := st.DismissSystemDesignVersion(ctx, id, version)
+				return err
+			},
+			archive: func(ctx context.Context, st store.Store, id string) error {
+				return st.ArchiveSystemDesign(ctx, id, requirementConformanceActor, nil)
+			},
+			get: func(t *testing.T, ctx context.Context, st store.Store, id string) (string, string, int) {
+				t.Helper()
+				document, err := st.GetSystemDesign(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if document.ID != id || document.Category != "Architecture" {
+					t.Fatalf("system design identity changed: id=%q category=%q", document.ID, document.Category)
+				}
+				return document.Title, document.Slug, document.CurrentVersion
+			},
+			list: func(t *testing.T, ctx context.Context, st store.Store) map[string]string {
+				t.Helper()
+				documents, err := st.ListSystemDesigns(ctx, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				titles := map[string]string{}
+				for _, document := range documents {
+					titles[document.ID] = document.Title
+				}
+				return titles
+			},
+			content: func(t *testing.T, ctx context.Context, st store.Store, id string, version int) string {
+				t.Helper()
+				stored, err := st.GetSystemDesignVersion(ctx, id, version)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return stored.Content
+			},
+			events: func(t *testing.T, ctx context.Context, st store.Store, id string) []core.Event {
+				t.Helper()
+				events, err := st.ListSystemDesignEvents(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return events
+			},
+		},
+	}
+}
+
+func assertDocumentTitle(t *testing.T, tier documentTitleTier, ctx context.Context, st store.Store, id, title, slug string, current int) {
+	t.Helper()
+	gotTitle, gotSlug, gotCurrent := tier.get(t, ctx, st, id)
+	if gotTitle != title || gotSlug != slug || gotCurrent != current {
+		t.Fatalf("%s %s title=%q slug=%q current=%d, want title=%q slug=%q current=%d", tier.name, id, gotTitle, gotSlug, gotCurrent, title, slug, current)
+	}
+	if listed := tier.list(t, ctx, st)[id]; listed != title {
+		t.Fatalf("%s %s listed title=%q, want %q", tier.name, id, listed, title)
+	}
+}
+
+func documentTitleEvents(t *testing.T, tier documentTitleTier, ctx context.Context, st store.Store, id string) []core.Event {
+	t.Helper()
+	var titleEvents []core.Event
+	for _, event := range tier.events(t, ctx, st, id) {
+		if event.Kind == tier.kind {
+			titleEvents = append(titleEvents, event)
+		}
+	}
+	return titleEvents
+}
+
+func assertDocumentTitleEvent(t *testing.T, tier documentTitleTier, event core.Event, workspace, id, oldTitle, newTitle string, version int) {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"workspace_id": workspace, tier.idKey: id, "old_title": oldTitle, "new_title": newTitle,
+		"version": float64(version), "confirmed_by": requirementConformanceActor,
+	}
+	if event.Kind != tier.kind || !reflect.DeepEqual(payload, want) || event.ActorID != requirementConformanceActor || event.TaskID != "" {
+		t.Fatalf("title event kind=%s actor=%q task=%q payload=%v, want %v", event.Kind, event.ActorID, event.TaskID, payload, want)
+	}
+}
+
+// runDriftAmendmentTitleConformance composes the listed-title update with the
+// requirements_amended drift closure that the same requirement confirmation
+// performs (req-document-operating-surfaces AC-6.1; DEC-46;
+// component-document-corpus; component-monitor-drift). Confirming a
+// drift-amendment version whose heading renames the requirement updates the
+// title once and closes the linked drift once; a replay records neither again.
+func runDriftAmendmentTitleConformance(t *testing.T, factory RequirementFactory) {
+	t.Run("renaming drift amendment confirmation updates the title and closes the drift together", func(t *testing.T) {
+		x := newDriftAmendmentFixture(t, factory)
+		before, err := x.st.GetRequirement(x.ctx, x.requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drift := x.recordDrift(t, true)
+		if _, err = x.monitor.ResolveDrift(x.ctx, drift.ID, "requirements_amended", x.requirement.ID); err != nil {
+			t.Fatal(err)
+		}
+		// The monitor's amendment carries the current heading forward; a
+		// revised amendment for the same drift renames the requirement.
+		renamed := driftVersionFor(x.requirement.ID, "Renamed by drift amendment", x.statements...)
+		renamed.OriginDriftID = drift.ID
+		proposed, err := x.st.ProposeRequirementVersion(x.ctx, renamed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if title, _, _ := documentTitleTiers()[0].get(t, x.ctx, x.st, x.requirement.ID); title != before.Title {
+			t.Fatalf("proposal changed the title to %q", title)
+		}
+		x.assertOpen(t, drift.ID, x.requirement.ID)
+
+		confirmed, _, err := x.st.ConfirmRequirementVersion(x.ctx, x.requirement.ID, proposed.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if confirmed.Title != "Renamed by drift amendment" || confirmed.Slug != before.Slug || confirmed.ID != before.ID {
+			t.Fatalf("confirmed requirement=%+v, want renamed title with slug %q", confirmed, before.Slug)
+		}
+		assertDriftAmendmentTitleEvents(t, x, before.Title, proposed.Version)
+		x.assertClosed(t, drift, "requirements_amended")
+		if count := x.reconciledEvents(t, drift.TaskID); count != 1 {
+			t.Fatalf("reconciliation events=%d, want 1", count)
+		}
+		x.assertReconciledPayload(t, drift.TaskID, proposed.Version)
+		x.assertDocumentResolved(t, drift.SystemDesignID, proposed.Version, 1)
+
+		// Replaying the confirmation records neither effect again.
+		if _, _, err = x.st.ConfirmRequirementVersion(x.ctx, x.requirement.ID, proposed.Version); err != nil {
+			t.Fatal(err)
+		}
+		assertDriftAmendmentTitleEvents(t, x, before.Title, proposed.Version)
+		if count := x.reconciledEvents(t, drift.TaskID); count != 1 {
+			t.Fatalf("replayed reconciliation events=%d, want 1", count)
+		}
+		x.assertDocumentResolved(t, drift.SystemDesignID, proposed.Version, 1)
+	})
+}
+
+// assertDriftAmendmentTitleEvents requires exactly one title event for the
+// amendment version, attributed to the confirming actor.
+func assertDriftAmendmentTitleEvents(t *testing.T, x *driftAmendmentFixture, oldTitle string, version int) {
+	t.Helper()
+	events, err := x.st.ListRequirementEvents(x.ctx, x.requirement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matched []core.Event
+	for _, event := range events {
+		if event.Kind != store.RequirementTitleChangedEvent {
+			continue
+		}
+		var payload map[string]any
+		if err = json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(payload["version"]) == fmt.Sprint(version) {
+			if payload["old_title"] != oldTitle || payload["new_title"] != "Renamed by drift amendment" || payload["confirmed_by"] != requirementConformanceActor {
+				t.Fatalf("drift amendment title event payload=%v", payload)
+			}
+			matched = append(matched, event)
+		}
+	}
+	if len(matched) != 1 {
+		t.Fatalf("title events for version %d=%d, want 1: %+v", version, len(matched), events)
+	}
 }

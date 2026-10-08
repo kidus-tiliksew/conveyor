@@ -207,7 +207,7 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	if _, _, err = st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior",
 	}, core.RequirementVersion{
-		Content: "# Retries stay bounded.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stay bounded."}},
+		Content: "# Retry behavior", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries stay bounded."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: intent.ID,
 	}); err != nil {
 		t.Fatal(err)

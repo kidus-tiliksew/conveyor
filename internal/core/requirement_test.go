@@ -440,3 +440,59 @@ func TestArtifactValidateAttachmentTargetKeepsOwnerExclusive(t *testing.T) {
 		})
 	}
 }
+
+func TestDocumentHeadingTitle(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		content string
+		want    string
+		ok      bool
+	}{
+		{name: "plain heading", content: "# Document operating surfaces\n\nProse.", want: "Document operating surfaces", ok: true},
+		{name: "leading blank and whitespace lines", content: "\n   \n\t\n# Renamed\nbody", want: "Renamed", ok: true},
+		{name: "crlf line endings", content: "\r\n# Windows title  \r\nbody\r\n", want: "Windows title", ok: true},
+		{name: "unicode and markdown kept", content: "# Délivery  `tiers` — *GitHub*  only", want: "Délivery  `tiers` — *GitHub*  only", ok: true},
+		{name: "surrounding whitespace trimmed", content: "#    Spaced title\t ", want: "Spaced title", ok: true},
+		{name: "empty heading", content: "#   \nbody", ok: false},
+		{name: "bare hash", content: "#\nbody", ok: false},
+		{name: "second-level heading", content: "## Section\n# Later", ok: false},
+		{name: "no space after hash", content: "#Title", ok: false},
+		{name: "indented heading", content: "  # Indented", ok: false},
+		{name: "prose before heading", content: "Intro\n# Later title", ok: false},
+		{name: "empty body", content: "", ok: false},
+		{name: "blank body", content: " \n\t\n", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := DocumentHeadingTitle(tt.content)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("DocumentHeadingTitle(%q) = %q, %v; want %q, %v", tt.content, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestConfirmedDocumentTitle(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, current, content, want string
+		changed                      bool
+	}{
+		{name: "different heading renames", current: "Old", content: "# New\nbody", want: "New", changed: true},
+		{name: "identical heading keeps", current: "Same", content: "# Same\nbody", want: "Same"},
+		{name: "case differs renames", current: "title", content: "# Title", want: "Title", changed: true},
+		{name: "missing heading keeps", current: "Kept", content: "No heading", want: "Kept"},
+		{name: "empty heading keeps", current: "Kept", content: "# \nbody", want: "Kept"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, changed := ConfirmedDocumentTitle(tt.current, tt.content)
+			if got != tt.want || changed != tt.changed {
+				t.Fatalf("ConfirmedDocumentTitle(%q, %q) = %q, %v; want %q, %v", tt.current, tt.content, got, changed, tt.want, tt.changed)
+			}
+		})
+	}
+}
