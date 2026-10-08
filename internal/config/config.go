@@ -411,27 +411,84 @@ func warnRetiredExecutionKey() {
 }
 
 // UnmarshalYAML drops the retired evidence key before decoding the execution
-// block. Every other key must name an ExecutionPolicy field, so an unrelated
+// block, including from mappings merged through YAML "<<" keys. Every other
+// key, direct or merged, must name an ExecutionPolicy field, so an unrelated
 // unknown key still fails with the decoder's own unknown-field error and line
-// on every load path, including strict KnownFields decoders (DEC-53).
+// on every load path, including strict KnownFields decoders (DEC-53). The
+// decoder keeps yaml.v3 merge precedence; shared anchors are never mutated.
 func (p *ExecutionPolicy) UnmarshalYAML(node *yaml.Node) error {
-	if removeDirectMappingKey(node, RetiredEvidenceToggleKey) {
+	var unknown []string
+	retired := false
+	node = checkExecutionMapping(node, map[string]bool{}, &unknown, &retired)
+	if retired {
 		warnRetiredExecutionKey()
 	}
-	if node.Kind == yaml.MappingNode {
-		var unknown []string
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			key := node.Content[i]
-			if !executionPolicyYAMLFields[key.Value] {
-				unknown = append(unknown, fmt.Sprintf("line %d: field %s not found in type config.ExecutionPolicy", key.Line, key.Value))
-			}
-		}
-		if len(unknown) != 0 {
-			return &yaml.TypeError{Errors: unknown}
-		}
+	if len(unknown) != 0 {
+		return &yaml.TypeError{Errors: unknown}
 	}
 	type plain ExecutionPolicy
 	return node.Decode((*plain)(p))
+}
+
+// checkExecutionMapping returns a copy of an execution mapping without the
+// retired key, with merged mappings copied the same way. It records each
+// unknown field name once, in yaml.v3's order: explicit keys first, then the
+// merge value. A non-mapping node is returned unchanged for Decode to judge.
+func checkExecutionMapping(node *yaml.Node, seen map[string]bool, unknown *[]string, retired *bool) *yaml.Node {
+	if node.Kind == yaml.AliasNode && node.Alias != nil && node.Alias.Kind == yaml.MappingNode {
+		node = node.Alias
+	}
+	if node.Kind != yaml.MappingNode {
+		return node
+	}
+	copied := *node
+	copied.Content = make([]*yaml.Node, 0, len(node.Content))
+	var merge *yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			merge = value
+			copied.Content = append(copied.Content, key, value)
+			continue
+		}
+		if key.Value == RetiredEvidenceToggleKey {
+			*retired = true
+			continue
+		}
+		if !seen[key.Value] {
+			seen[key.Value] = true
+			if !executionPolicyYAMLFields[key.Value] {
+				*unknown = append(*unknown, fmt.Sprintf("line %d: field %s not found in type config.ExecutionPolicy", key.Line, key.Value))
+			}
+		}
+		copied.Content = append(copied.Content, key, value)
+	}
+	if merge == nil {
+		return &copied
+	}
+	merged := merge
+	switch {
+	case merge.Kind == yaml.SequenceNode:
+		sequence := *merge
+		sequence.Content = make([]*yaml.Node, len(merge.Content))
+		for i, item := range merge.Content {
+			sequence.Content[i] = checkExecutionMapping(item, seen, unknown, retired)
+		}
+		merged = &sequence
+	default:
+		merged = checkExecutionMapping(merge, seen, unknown, retired)
+	}
+	for i := 0; i+1 < len(copied.Content); i += 2 {
+		if copied.Content[i+1] == merge {
+			copied.Content[i+1] = merged
+		}
+	}
+	return &copied
+}
+
+// isYAMLMergeKey matches yaml.v3's merge-key rule.
+func isYAMLMergeKey(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && node.Value == "<<" && (node.Tag == "" || node.Tag == "!" || node.Tag == "!!merge" || node.Tag == "tag:yaml.org,2002:merge")
 }
 
 // yamlFieldNames lists the YAML keys a struct type decodes.

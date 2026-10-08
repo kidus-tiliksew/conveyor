@@ -645,6 +645,152 @@ func TestExecutionBlockStillRejectsUnrelatedUnknownKeys(t *testing.T) {
 	}
 }
 
+// withExecutionBlock replaces the document's execution value with one parsed
+// YAML node, so merge keys, anchors, and aliases inside it survive encoding.
+func withExecutionBlock(t *testing.T, data []byte, block string) []byte {
+	t.Helper()
+	var root, value yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(block), &value); err != nil {
+		t.Fatal(err)
+	}
+	document := root.Content[0]
+	removeDirectMappingKey(document, "execution")
+	document.Content = append(document.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "execution"}, value.Content[0])
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// YAML merge keys inside the execution block keep yaml.v3 semantics on every
+// load path: explicit keys win, earlier sequence entries win, merged fields
+// are checked strictly, and a merged retired key is ignored with the same
+// single warning as a direct one (DEC-53).
+func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := normalize(validConfig(), "merge key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		spec, merge     bool
+		implement, view int
+	}
+	loaders := map[string]func(block string) (ExecutionPolicy, error){
+		"deployment": func(block string) (ExecutionPolicy, error) {
+			path := filepath.Join(t.TempDir(), "conveyor.yaml")
+			if err := os.WriteFile(path, withExecutionBlock(t, example, block), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				return ExecutionPolicy{}, err
+			}
+			return cfg.Execution, nil
+		},
+		"workspace": func(block string) (ExecutionPolicy, error) {
+			cfg, err := ParseWorkspaceDocument(withExecutionBlock(t, policy, block), deployment, "merge key workspace")
+			if err != nil {
+				return ExecutionPolicy{}, err
+			}
+			return cfg.Execution, nil
+		},
+		"stored workspace": func(block string) (ExecutionPolicy, error) {
+			cfg, _, err := ParseStoredWorkspaceDocument(withExecutionBlock(t, policy, block), deployment, "merge key stored")
+			if err != nil {
+				return ExecutionPolicy{}, err
+			}
+			return cfg.Execution, nil
+		},
+		"strict stored row": func(block string) (ExecutionPolicy, error) {
+			var document WorkspaceDocument
+			err := decodeKnown(withExecutionBlock(t, policy, block), &document)
+			return document.Execution, err
+		},
+	}
+	accepted := []struct {
+		name, block string
+		want        outcome
+	}{
+		{"inline merge", "{<<: {spec_approval: true, merge_approval: false}, implement_concurrency: 3, review_concurrency: 2}", outcome{true, false, 3, 2}},
+		{"anchored merge list, earlier entry wins", "{<<: [&a {spec_approval: true, merge_approval: false, review_concurrency: 4}, &b {spec_approval: false, merge_approval: true, implement_concurrency: 2}]}", outcome{true, false, 2, 4}},
+		{"explicit key overrides merge", "{<<: {spec_approval: true, merge_approval: true, implement_concurrency: 2, review_concurrency: 2}, merge_approval: false}", outcome{true, false, 2, 2}},
+		{"nested merge", "{<<: {<<: {spec_approval: true, review_concurrency: 3}, merge_approval: true, implement_concurrency: 2}}", outcome{true, true, 2, 3}},
+		{"retired true through merge", "{<<: {spec_approval: true, require_verification_evidence: true, implement_concurrency: 2, review_concurrency: 2}, merge_approval: false}", outcome{true, false, 2, 2}},
+		{"retired false through merge list", "{<<: [{merge_approval: true, implement_concurrency: 2, review_concurrency: 2}, {require_verification_evidence: false, spec_approval: false}]}", outcome{false, true, 2, 2}},
+	}
+	for loaderName, load := range loaders {
+		for _, tc := range accepted {
+			got, loadErr := load(tc.block)
+			if loadErr != nil {
+				t.Fatalf("%s %s: %v", loaderName, tc.name, loadErr)
+			}
+			if got.SpecApproval != tc.want.spec || got.MergeApproval != tc.want.merge || got.ImplementConcurrency != tc.want.implement || got.ReviewConcurrency != tc.want.view {
+				t.Fatalf("%s %s execution=%+v, want %+v", loaderName, tc.name, got, tc.want)
+			}
+		}
+		for _, block := range []string{
+			"{<<: {spec_approval: true, require_review_evidence: true}}",
+			"{<<: [{spec_approval: true}, {require_review_evidence: true}]}",
+			"{<<: {<<: {require_review_evidence: true}}, merge_approval: true}",
+			"{<<: {spec_approval: true, require_verification_evidence: true, require_review_evidence: true}}",
+		} {
+			if _, loadErr := load(block); loadErr == nil || !strings.Contains(loadErr.Error(), "field require_review_evidence not found in type config.ExecutionPolicy") || !strings.Contains(loadErr.Error(), "line ") {
+				t.Fatalf("%s accepted an unknown merged field in %s: %v", loaderName, block, loadErr)
+			}
+		}
+	}
+	if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "DEC-53") {
+		t.Fatalf("merged retired key warnings=%q, want exactly one", *warnings)
+	}
+}
+
+// Aliased merges resolve against their anchors without mutating them: a
+// retired key is ignored for the execution block but stays in the shared
+// anchor that another field decodes (DEC-53).
+func TestExecutionBlockAliasMergesLeaveAnchorsUnchanged(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	type anchored struct {
+		Base      map[string]any  `yaml:"base"`
+		Other     map[string]any  `yaml:"other"`
+		Execution ExecutionPolicy `yaml:"execution"`
+		Shared    map[string]any  `yaml:"shared"`
+	}
+	var decoded anchored
+	err := decodeKnown([]byte("base: &a {spec_approval: true, "+RetiredEvidenceToggleKey+": true}\n"+
+		"other: &b {spec_approval: false, merge_approval: true, review_concurrency: 2}\n"+
+		"execution: {<<: [*a, *b], review_concurrency: 5}\n"+
+		"shared: *a\n"), &decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Execution.SpecApproval || !decoded.Execution.MergeApproval || decoded.Execution.ReviewConcurrency != 5 {
+		t.Fatalf("alias merge execution=%+v", decoded.Execution)
+	}
+	if decoded.Shared[RetiredEvidenceToggleKey] != true || decoded.Base[RetiredEvidenceToggleKey] != true {
+		t.Fatalf("shared anchor was mutated: base=%v shared=%v", decoded.Base, decoded.Shared)
+	}
+	if err = decodeKnown([]byte("base: &a {require_review_evidence: true}\nexecution: {<<: *a}\n"), &decoded); err == nil || !strings.Contains(err.Error(), "line 1: field require_review_evidence not found in type config.ExecutionPolicy") {
+		t.Fatalf("unknown field through alias merge error=%v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("warnings=%q, want one", *warnings)
+	}
+}
+
 // An execution block holding only the retired key still means the shipped
 // default: both approval gates on.
 func TestRetiredKeyOnlyExecutionBlockKeepsShippedGateDefaults(t *testing.T) {
