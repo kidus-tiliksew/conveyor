@@ -227,7 +227,7 @@ type GovernedDesignMatch struct {
 // ResolveGovernedDesigns applies the same repository-relative governs fence
 // used by drift detection to a submitted branch diff. Document and path order
 // are stable so append-only context events are deterministic
-// (req-260811-228be6 REQ-5/AC-5.1, AC-5.4).
+// (req-task-centric-delivery REQ-6/AC-6.1, AC-6.4).
 func ResolveGovernedDesigns(designs []GovernanceDesignContext, repository string, changedPaths []string) []GovernedDesignMatch {
 	matches := make([]GovernedDesignMatch, 0)
 	for _, design := range designs {

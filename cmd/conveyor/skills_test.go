@@ -111,7 +111,7 @@ func TestVerificationKitSkillsInstallWithSiblingPlaybooks(t *testing.T) {
 
 var markdownLinkTarget = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 
-// Installed skills carry only their embedded files (req-agent-skills
+// Installed skills carry only their embedded files (req-agent-guidance-install
 // AC-1.1), so every relative link they ship must resolve inside the installed
 // root rather than to a repository-only document such as
 // docs/validation-evidence.md.
@@ -412,7 +412,8 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 }
 
 // Every claiming skill ships truthful claim identity and token-only usage
-// checkpoints (req-agent-skills AC-1.1, AC-3.2; req-usage-telemetry AC-2.1;
+// checkpoints (req-agent-guidance-install AC-1.1; req-agent-skills AC-3.2;
+// req-usage-telemetry AC-2.1;
 // DEC-1).
 func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 	t.Parallel()

@@ -13,7 +13,7 @@ import (
 )
 
 // VerificationEvidence is the schema-1, store-independent VK-5 contract
-// (req-verification-kits REQ-5). Legacy visual artifacts retain their own role
+// (req-verification-evidence REQ-1). Legacy visual artifacts retain their own role
 // and media limits. Stored ownership, reference resolution and batch acyclicity
 // belong to the verification service, not this structural validator.
 const MaxVerificationEvidenceBytes = 256 << 10
@@ -45,7 +45,7 @@ type VerificationCaptureActor struct {
 }
 type VerificationEnvironment struct {
 	// Missing optional knowledge is represented by the literal "unknown". Empty
-	// strings are never silently filled from the source checkout (AC-5.3).
+	// strings are never silently filled from the source checkout (req-verification-evidence AC-1.3).
 	Target       string            `json:"target"`
 	OS           string            `json:"os"`
 	Architecture string            `json:"architecture"`

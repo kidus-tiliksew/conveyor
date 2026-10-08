@@ -187,7 +187,7 @@ conveyor --server 'https://conveyor.example.com' --workspace 'my-workspace' repo
 
 Prepare the current Git checkout for factory work. The command writes only
 files at the checkout root and below it; it creates no commit, branch, or push.
-Outside a checkout it refuses with `req-repository-onboarding REQ-4/AC-4.6`.
+Outside a checkout it refuses with `req-agent-guidance-install REQ-2/AC-2.6`.
 
 The command adds or refreshes an owned section in `AGENTS.md` and `CLAUDE.md`,
 leaving every byte outside the markers unchanged. The opening marker is

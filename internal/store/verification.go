@@ -10,8 +10,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// VerificationStore is the VK-6 transaction boundary (req-verification-kits
-// REQ-5, REQ-6 and REQ-7). The caller supplies authenticated access separately
+// VerificationStore is the VK-6 transaction boundary (req-verification-evidence
+// REQ-1 and REQ-2; req-verification-kits REQ-7). The caller supplies authenticated access separately
 // from submitted evidence. Each command commits its records, artifacts, audit
 // event and publication queue intent together; a replay never repeats a write.
 type VerificationStore interface {

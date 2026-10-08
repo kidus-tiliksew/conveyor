@@ -38,7 +38,7 @@ func DocumentDismissalEventPayload(ctx context.Context, payload map[string]any) 
 }
 
 // DocumentRestoreConflict preserves the previously-confirmed-version boundary
-// of req-document-operating-surfaces AC-5.5.
+// of req-document-archive AC-1.5.
 type DocumentRestoreConflict struct{ DocumentID string }
 
 func (e *DocumentRestoreConflict) Error() string {

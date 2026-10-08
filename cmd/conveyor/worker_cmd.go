@@ -2675,7 +2675,7 @@ const (
 // childGitCredentialEnvironment keeps the forge token in process memory and
 // the child-only environment. Git invokes this same executable as askpass;
 // neither the token nor a token-bearing URL enters argv or Git configuration
-// (req-260821-830dbf REQ-6/AC-6.1).
+// (req-delivery-and-forge REQ-7/AC-7.2; req-security-boundaries REQ-2).
 func childGitCredentialEnvironment(token string) (map[string]string, error) {
 	if token == "" {
 		return nil, nil

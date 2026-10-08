@@ -177,7 +177,8 @@ type IssuedPersonalAccessToken struct {
 
 // ForgeAuthorClass is the non-secret identity class recorded for a forge
 // write. UserID is present only for user-attributed writes; credentials never
-// enter this value or an event payload (req-260821-830dbf REQ-3/REQ-4).
+// enter this value or an event payload (req-delivery-and-forge REQ-6,
+// REQ-1/AC-1.7; req-security-boundaries REQ-2).
 type ForgeAuthorClass string
 
 const (

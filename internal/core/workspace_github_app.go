@@ -17,7 +17,7 @@ type WorkspaceGitHubAppStatus struct {
 }
 
 // WorkspaceGitHubAppCredential crosses only the immediate in-process use boundary.
-// req-security-boundaries AC-6.2: the PEM is encrypted at rest and never serialized.
+// req-delivery-and-forge AC-1.11 and AC-1.5: the PEM is encrypted at rest and never serialized.
 type WorkspaceGitHubAppCredential struct {
 	WorkspaceGitHubAppStatus
 	PrivateKey string `json:"-"`
