@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 )
 
 const evidenceTime = "2026-09-20T10:00:00Z"
@@ -199,5 +201,51 @@ func TestVerificationDecodeSizeAndIntegrity(t *testing.T) {
 	}
 	if err := VerifyVerificationBytes([]byte("tampered"), hash); err == nil {
 		t.Fatal("hash mismatch accepted")
+	}
+}
+
+// TestVerificationVisualCaptureMediaMatchesRetention pins one media contract
+// for visual_capture: the payload validator, the published schema enum, and
+// typed artifact retention admit and refuse the same types. GIF bytes that the
+// generic image validator decodes are still refused by all three
+// (req-verification-evidence REQ-1; component-verification-evidence).
+func TestVerificationVisualCaptureMediaMatchesRetention(t *testing.T) {
+	schema := VerificationEvidenceSchemas()["visual_capture"].(map[string]any)
+	for _, tc := range []struct {
+		media string
+		bytes []byte
+		ok    bool
+	}{
+		{"image/png", testimage.PNG("visual"), true},
+		{"image/jpeg", testimage.JPEG("visual"), true},
+		{"image/webp", testimage.WebP("visual"), true},
+		{"video/mp4", testimage.MP4("visual"), true},
+		{"video/webm", testimage.WebM("visual"), true},
+		{"image/gif", testimage.GIF("visual"), false},
+	} {
+		t.Run(tc.media, func(t *testing.T) {
+			if _, err := ValidateArtifactMedia(tc.media, tc.bytes, TypedVerificationMedia); err != nil {
+				t.Fatalf("fixture bytes are not valid %s: %v", tc.media, err)
+			}
+			e, authority := evidenceFixture(t, "visual_capture")
+			e.Artifacts[0].MediaType = tc.media
+			e.Payload = evidencePayload(t, VisualCapturePayload{Artifact: VerificationReference{ArtifactID: "artifact", SHA256: e.Artifacts[0].SHA256}, MediaType: tc.media, CaptureTool: "browser", Target: "unknown", CapturedAt: evidenceTime})
+			raw := evidencePayload(t, e)
+			_, decodeErr := DecodeVerificationEvidence(raw, authority)
+			var decoded map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			schemaErr := validateVerificationSchema(decoded, schema)
+			_, retainErr := ValidateTypedVerificationArtifact(tc.media, tc.bytes)
+			for name, err := range map[string]error{"payload validator": decodeErr, "published schema": schemaErr, "typed retention": retainErr} {
+				if (err == nil) != tc.ok {
+					t.Errorf("%s admitted=%t for %s, want %t: %v", name, err == nil, tc.media, tc.ok, err)
+				}
+			}
+		})
+	}
+	if got := strings.Join(VisualCaptureMediaTypes(), ","); strings.Contains(got, "gif") {
+		t.Fatalf("visual capture media list includes GIF: %s", got)
 	}
 }

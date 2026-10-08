@@ -79,3 +79,22 @@ func ValidateArtifactMedia(declared string, content []byte, policy ...ArtifactMe
 	}
 	return detected, nil
 }
+
+// ValidateVerificationEvidenceArtifact is the byte policy of the legacy
+// verification_evidence role. It normalizes the declared type and size with
+// NormalizeVerificationEvidenceContentType, then runs the bounded MP4/WebM
+// container check that typed retention uses, so a declared recording is
+// byte-checked and a filename or declaration never establishes its type
+// (req-review-gates-evidence AC-8.1; component-artifacts). Image declarations
+// have already passed the full decode in ValidateArtifactMedia; this rechecks
+// them so a direct caller cannot skip that step. It returns the type to store.
+func ValidateVerificationEvidenceArtifact(contentType string, content []byte) (string, error) {
+	normalized, err := NormalizeVerificationEvidenceContentType(contentType, int64(len(content)))
+	if err != nil {
+		return "", err
+	}
+	if _, err = ValidateArtifactMedia(normalized, content, TypedVerificationMedia); err != nil {
+		return "", fmt.Errorf("verification evidence %s: %w", normalized, err)
+	}
+	return normalized, nil
+}

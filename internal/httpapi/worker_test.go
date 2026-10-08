@@ -121,6 +121,75 @@ func TestWorkerVerificationEvidenceUploadIsBoundToLiveClaim(t *testing.T) {
 	}
 }
 
+// TestWorkerVerificationEvidenceRecordingBytes covers the legacy claim-bound
+// route: a declared recording must pass the MP4/WebM container check, so
+// spoofed bytes answer 400 and store nothing (req-review-gates-evidence
+// AC-8.1; component-artifacts).
+func TestWorkerVerificationEvidenceRecordingBytes(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	orders := &workorder.Service{Store: st}
+	workers := &workerservice.Service{Store: st, WorkOrders: orders}
+	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment, err := workers.Enroll(t.Context(), pairing, "recording-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.CreateTask(ctx, core.Task{ID: "recording-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "recording-task-implement-1", TaskID: "recording-task", Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: job.TaskID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: enrollment.Worker.ID, ClaimantID: enrollment.Worker.ID, SessionID: "recording-session", ClientToken: "recording-token", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace, server.WorkOrders, server.Workers = "demo", orders, workers
+	handler := server.Handler()
+	upload := func(media string, content []byte) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, workerEvidenceRequest(t, enrollment.Credential, job.ID, "recording-session", "recording-token", media, content, nil))
+		return recorder
+	}
+	for _, tc := range []struct {
+		media   string
+		content []byte
+	}{
+		{"video/mp4", testimage.PNG("spoofed-recording")},
+		{"video/webm", []byte("text named capture.webm")},
+		{"video/webm", testimage.MP4("cross-format")},
+	} {
+		refused := upload(tc.media, tc.content)
+		if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), "verification evidence") {
+			t.Fatalf("%s spoofed bytes status=%d body=%s", tc.media, refused.Code, refused.Body.String())
+		}
+	}
+	artifacts, err := st.ListArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("refused recordings stored artifacts: %+v", artifacts)
+	}
+	for _, tc := range []struct {
+		media   string
+		content []byte
+	}{{"VIDEO/MP4; codecs=avc1", testimage.MP4("valid-recording")}, {"video/webm", testimage.WebM("valid-recording")}} {
+		accepted := upload(tc.media, tc.content)
+		if accepted.Code != http.StatusCreated {
+			t.Fatalf("%s valid recording status=%d body=%s", tc.media, accepted.Code, accepted.Body.String())
+		}
+	}
+}
+
 type unauthorizedWorkerStore struct{ store.Store }
 
 func (unauthorizedWorkerStore) IsDurable() bool { return true }
