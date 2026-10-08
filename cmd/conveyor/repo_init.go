@@ -196,7 +196,7 @@ func planRepoGuidance(root string, section []byte) (plan []repoGuidanceFile, err
 			err = &os.PathError{Op: "prepare guidance", Path: target, Err: err}
 		}
 	}()
-	// AC-4.1 / component-runtime: preflight the logical pair before reading
+	// req-agent-guidance-install AC-2.1 / component-runtime: preflight the logical pair before reading
 	// sections. Only a direct link to the other regular root file is supported.
 	names := []string{"AGENTS.md", "CLAUDE.md"}
 	plan = make([]repoGuidanceFile, 2)
@@ -268,7 +268,7 @@ func mirrorRepoGuidanceStatus(plan []repoGuidanceFile) {
 
 var repoInitContextLine = regexp.MustCompile("(?m)^Server: `([^`]+)`\\. Workspace: `([^`]+)`\\.$")
 
-// AC-4.9 / component-runtime: validate both prior contexts before staging any
+// req-agent-guidance-install AC-2.9 / component-runtime: validate both prior contexts before staging any
 // file. An unavailable refresh retains the owned bytes, not a reconstructed copy.
 func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, error) {
 	var priorContext repoInitContext
@@ -376,7 +376,7 @@ func prepareRepositoryWithOptions(root, version, name, base string, out io.Write
 	if retained {
 		fmt.Fprintln(out, "repo\tcontext retained without reverification\tprior verified guidance")
 	}
-	// AC-4.3: explicit guidance-only mode never inspects skill destinations.
+	// req-agent-guidance-install AC-2.3: explicit guidance-only mode never inspects skill destinations.
 	var destinations []skillDestination
 	if !options.guidanceOnly {
 		destinations = skillDestinations(root, supportedSkillTools, true)

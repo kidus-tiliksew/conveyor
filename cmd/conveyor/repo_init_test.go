@@ -432,7 +432,7 @@ func repoFixtureSnapshot(t *testing.T, root string) map[string]string {
 	return result
 }
 
-// AC-4.7/4.10: unresolved input never leaks into owned guidance or reports.
+// req-agent-guidance-install AC-2.7/2.10: unresolved input never leaks into owned guidance or reports.
 func TestRepoInitConnectionVerification(t *testing.T) {
 	root := t.TempDir()
 	mustGit(t, root, "init", "-b", "main")

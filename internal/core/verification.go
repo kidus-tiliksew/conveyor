@@ -45,7 +45,7 @@ type VerificationCaptureActor struct {
 }
 type VerificationEnvironment struct {
 	// Missing optional knowledge is represented by the literal "unknown". Empty
-	// strings are never silently filled from the source checkout (AC-5.3).
+	// strings are never silently filled from the source checkout (req-verification-evidence AC-1.3).
 	Target       string            `json:"target"`
 	OS           string            `json:"os"`
 	Architecture string            `json:"architecture"`
