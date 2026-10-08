@@ -227,7 +227,7 @@ func TestCheckpointHandoffLauncherPlanRevision(t *testing.T) {
 				worktreeRoot := filepath.Join(fixture.tmp, "worktrees")
 				ctx = contextWithWorktreeRoot(ctx, worktreeRoot)
 				launch := func(o core.WorkOrder, action string) {
-					item := workerservice.DispatchOrder{Order: o, Task: task, Repository: cfg.Repos[0], Dispatch: mode, Harness: config.Harness{Name: "fixture", Command: []string{os.Args[0], "-test.run=^TestCheckpointHandoffChild$", "--", action}}}
+					item := workerservice.DispatchOrder{Order: o, Task: task, Repository: cfg.Repos[0], Dispatch: mode, Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "fixture", Command: []string{os.Args[0], "-test.run=^TestCheckpointHandoffChild$", "--", action}}}
 					var out, diagnostics bytes.Buffer
 					launchCtx, cancel := context.WithCancel(ctx)
 					defer cancel()

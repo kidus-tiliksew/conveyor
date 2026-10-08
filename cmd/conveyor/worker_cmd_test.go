@@ -51,6 +51,11 @@ func serveDirectTaskGET(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// writeWorkerLocalExecutionConfig writes the example document with a generic
+// fixture command. Generic fixtures exercise the worker loop rather than the
+// JSON-file Claude adapter, so they use the credential-free TOML override
+// transport; JSON-file launches use fakeClaudeCommand instead
+// (component-harness-execution).
 func writeWorkerLocalExecutionConfig(t *testing.T, command, probe []string) string {
 	t.Helper()
 	cfg, err := config.Load(filepath.Join("..", "..", "conveyor.example.yaml"))
@@ -60,6 +65,7 @@ func writeWorkerLocalExecutionConfig(t *testing.T, command, probe []string) stri
 	if len(cfg.Harnesses) == 0 {
 		t.Fatal("example config has no harness")
 	}
+	cfg.Harnesses[0].MCPTransport = config.MCPTransportTOMLOverride
 	cfg.Harnesses[0].Command = append([]string(nil), command...)
 	cfg.Harnesses[0].ProbeCommand = append([]string(nil), probe...)
 	data, err := config.MarshalWorkspaceDocument(cfg)
@@ -184,7 +190,7 @@ func TestRunHarnessChildReleasesBeforeLaunchWhenRepositoryCannotBeResolved(t *te
 		Order:      core.WorkOrder{ID: "resolve-failure", Stage: core.StageImplement},
 		Task:       core.Task{ID: "resolve-task", Repo: "app", Branch: "conveyor/resolve-task"},
 		Repository: config.Repo{Name: "app", URL: fixture.origin},
-		Harness:    config.Harness{Name: "must-not-start", Command: []string{"sh", "-c", "touch " + marker}},
+		Harness:    config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "must-not-start", Command: []string{"sh", "-c", "touch " + marker}},
 	}
 	local := &config.Config{Repos: []config.Repo{{Name: "app", URL: fixture.origin, Checkout: outside}}}
 	ctx := contextWithLocalExecutionConfig(t.Context(), local)
@@ -292,7 +298,7 @@ func TestRecoveredHarnessContinuationLaunchAndCapture(t *testing.T) {
 				Order: core.WorkOrder{ID: "recovered-implement", Stage: core.StageImplement},
 				Task:  core.Task{ID: "task"}, Dispatch: test.dispatch,
 				Harness: config.Harness{
-					Name: "claude", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"},
+					Name: "claude", Command: fakeClaudeCommand(t, "TestWorkerHarnessHelper"),
 					ResumeCommand: []string{"--resume", "{session_id}"}, MCPTransport: config.MCPTransportJSONFile,
 				},
 			}
@@ -593,7 +599,7 @@ func testHarnessObservability(t *testing.T, format string) {
 		Order:      core.WorkOrder{ID: "observability-order", Stage: core.StageImplement},
 		Task:       core.Task{ID: "observability-task", Branch: "conveyor/observability", Repo: "conveyor"},
 		Repository: config.Repo{Name: "conveyor", URL: "https://example.test/conveyor.git"},
-		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "observability"}},
+		Harness:    config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "observability"}},
 	}
 	fixture := newGitFixture(t)
 	mustGit(t, fixture.primary, "remote", "set-url", "origin", item.Repository.URL)
@@ -802,9 +808,13 @@ func TestReportWorkerUsageFallbackIsBestEffortReplacementOnly(t *testing.T) {
 	}
 }
 
+// The JSON file keeps its private mode and now carries a credential
+// reference instead of the scoped credential; explicit and omitted json_file
+// produce the same registration (req-security-boundaries AC-2.6;
+// component-harness-execution).
 func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *testing.T) {
 	directory := t.TempDir()
-	jsonPath, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportJSONFile)
+	jsonPath, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", config.MCPTransportJSONFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,11 +829,27 @@ func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte("Bearer worker-secret")) {
-		t.Fatalf("JSON transport did not write the scoped credential: %s", data)
+	var document map[string]map[string]map[string]any
+	if err = json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]map[string]map[string]any{"mcpServers": {"conveyor": {
+		"type": "http", "url": "http://127.0.0.1:8080/mcp", "headers": map[string]any{"Authorization": "Bearer ${CONVEYOR_API_TOKEN}"},
+	}}}
+	if !reflect.DeepEqual(document, want) {
+		t.Fatalf("JSON registration = %#v, want %#v", document, want)
+	}
+	omittedDirectory := t.TempDir()
+	omittedPath, err := prepareMCPConfig(omittedDirectory, "http://127.0.0.1:8080/", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	omitted, err := os.ReadFile(omittedPath)
+	if err != nil || !bytes.Equal(omitted, data) {
+		t.Fatalf("omitted transport registration differs: %s err=%v", omitted, err)
 	}
 
-	override, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportTOMLOverride)
+	override, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", config.MCPTransportTOMLOverride)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -831,7 +857,7 @@ func TestPrepareMCPConfigPreservesJSONFileSecurityAndBuildsSecretFreeTOML(t *tes
 		t.Fatalf("unsafe or invalid TOML override: %s", override)
 	}
 
-	environment, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", "worker-secret", config.MCPTransportEnvironment)
+	environment, err := prepareMCPConfig(directory, "http://127.0.0.1:8080/", config.MCPTransportEnvironment)
 	if err != nil || environment != "" {
 		t.Fatalf("environment transport generated config %q: %v", environment, err)
 	}
@@ -1074,7 +1100,7 @@ func TestCodexParsesGeneratedMCPOverride(t *testing.T) {
 	if err != nil {
 		t.Skip("codex is not installed")
 	}
-	override, err := prepareMCPConfig(t.TempDir(), "http://127.0.0.1:8080", "must-not-appear", config.MCPTransportTOMLOverride)
+	override, err := prepareMCPConfig(t.TempDir(), "http://127.0.0.1:8080", config.MCPTransportTOMLOverride)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1434,7 +1460,7 @@ func TestRunHarnessChildStopsWithoutRetryWhenOrderIsCancelled(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "cancel-active-child", Stage: core.StageImplement}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "cancel"}}}
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "cancel-active-child", Stage: core.StageImplement}, Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "cancel"}}}
 	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, io.Discard, io.Discard)
 	if !errors.Is(err, errWorkerOrderCancelled) {
 		t.Fatalf("run error=%v", err)
@@ -1648,7 +1674,7 @@ func TestRunHarnessChildCompletesImplementAndReviewMCPFlows(t *testing.T) {
 	defer server.Close()
 
 	c := &client{base: server.URL, workspace: "demo"}
-	harness := config.Harness{Name: "fake", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}}
+	harness := config.Harness{Name: "fake", Command: fakeClaudeCommand(t, "TestWorkerHarnessHelper")}
 	outputs := map[core.Stage]string{}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
 		orderID := "fake-" + string(stage)
@@ -1773,7 +1799,7 @@ func TestRunHarnessChildReviewExitReconciliation(t *testing.T) {
 
 				item := workerservice.DispatchOrder{
 					Order:   core.WorkOrder{ID: "review-" + harnessName + "-exit", Stage: core.StageReview},
-					Harness: config.Harness{Name: harnessName, Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}},
+					Harness: config.Harness{Name: harnessName, Command: fakeClaudeCommand(t, "TestWorkerHarnessHelper")},
 					Model:   harnessName + "-review",
 				}
 				err := runHarnessChild(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item)
@@ -1843,7 +1869,7 @@ func TestRunHarnessChildReviewCanRetryAfterExitRelease(t *testing.T) {
 	defer server.Close()
 	item := workerservice.DispatchOrder{
 		Order:   core.WorkOrder{ID: "review-retry", Stage: core.StageReview},
-		Harness: config.Harness{Name: "claude", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}},
+		Harness: config.Harness{Name: "claude", Command: fakeClaudeCommand(t, "TestWorkerHarnessHelper")},
 		Model:   "claude-review",
 	}
 	c := &client{base: server.URL, workspace: "demo"}
@@ -1925,7 +1951,7 @@ func TestRunHarnessChildMaterializesSpecRepositoryOutsideWorkerDirectory(t *test
 		Order:      core.WorkOrder{ID: "fake-spec", Stage: core.StageSpec},
 		Task:       core.Task{ID: "task-spec", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-spec"},
 		Repository: config.Repo{Name: "app", URL: fixture.origin, Base: "main"},
-		Harness:    config.Harness{Name: "fake", Command: []string{os.Args[0], "-test.run=TestWorkerHarnessHelper", "--", "{prompt}", "{mcp_config}"}},
+		Harness:    config.Harness{Name: "fake", Command: fakeClaudeCommand(t, "TestWorkerHarnessHelper")},
 		Model:      "fake-model",
 	}
 	var stdout, stderr bytes.Buffer
@@ -2005,7 +2031,7 @@ func TestRunHarnessChildFirstActivityTimeoutReapsSilentHarnessProcessGroup(t *te
 		Order:      core.WorkOrder{ID: "silent-first-activity", Stage: core.StageImplement},
 		Task:       core.Task{ID: "silent-task", Branch: "conveyor/silent-task", Repo: "conveyor"},
 		Repository: config.Repo{Name: "conveyor", URL: fixture.origin},
-		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent-grandchild"}},
+		Harness:    config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent-grandchild"}},
 	}
 	var stdout, stderr bytes.Buffer
 	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, 500*time.Millisecond, &stdout, &stderr)
@@ -2094,7 +2120,7 @@ func TestRunHarnessChildFirstActivityDisarmsTimeoutWithoutAddingSilenceLimit(t *
 		t.Run(mode, func(t *testing.T) {
 			item := workerservice.DispatchOrder{
 				Order:   core.WorkOrder{ID: "active-first-activity-" + mode, Stage: core.StageImplement},
-				Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}},
+				Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}},
 			}
 			var stdout, stderr bytes.Buffer
 			started := time.Now()
@@ -2204,7 +2230,7 @@ func TestRunHarnessChildReapsOnlyAfterAttachedRunObservesTerminalOrder(t *testin
 				Order:    core.WorkOrder{ID: "run-order", TaskID: "run-task", Stage: core.StageImplement},
 				Task:     core.Task{ID: "run-task"},
 				Dispatch: "run",
-				Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", test.mode}},
+				Harness:  config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", test.mode}},
 			}
 			var stdout, stderr, presented bytes.Buffer
 			started := time.Now()
@@ -2290,7 +2316,7 @@ func TestRunHarnessChildExitUsesTerminalOrderObservedByRenewal(t *testing.T) {
 		Order:    core.WorkOrder{ID: "terminal-exit-order", TaskID: "terminal-exit-task", Stage: core.StageImplement},
 		Task:     core.Task{ID: "terminal-exit-task"},
 		Dispatch: "run",
-		Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "brief"}},
+		Harness:  config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "brief"}},
 	}
 	var stdout, stderr bytes.Buffer
 	if err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(
@@ -2425,7 +2451,7 @@ func TestRunHarnessChildExitClassifiesCheckpointReleaseBeforeRenewal(t *testing.
 				Order:    core.WorkOrder{ID: "exit-checkpoint-order", TaskID: "exit-checkpoint-task", Stage: core.StageImplement},
 				Task:     core.Task{ID: "exit-checkpoint-task"},
 				Dispatch: test.dispatch,
-				Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "exit"}},
+				Harness:  config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "exit"}},
 			}
 			var stdout, stderr, presented bytes.Buffer
 			err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(
@@ -2519,7 +2545,7 @@ func TestRunHarnessChildRunModeProgressFailureWarnsAndContinues(t *testing.T) {
 
 	item := workerservice.DispatchOrder{
 		Order:   core.WorkOrder{ID: "best-effort-progress", Stage: core.StageImplement},
-		Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "early-output"}},
+		Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "early-output"}},
 	}
 	var stdout, stderr bytes.Buffer
 	if err := runHarnessChildWithFirstActivityTimeoutAndOutputAndRunMode(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, time.Second, &stdout, &stderr, runModeConfirmed); err != nil {
@@ -2565,7 +2591,7 @@ func TestRunHarnessChildStallTimeoutStopsAndReleasesSilentChild(t *testing.T) {
 	item := workerservice.DispatchOrder{
 		Order: core.WorkOrder{ID: "stalled-silent-child", Stage: core.StageImplement},
 		Harness: config.Harness{
-			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"},
+			MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"},
 			StallTimeoutText: "150ms",
 		},
 	}
@@ -2628,7 +2654,7 @@ func TestRunHarnessChildContinuousOutputResetsStallTimeout(t *testing.T) {
 	item := workerservice.DispatchOrder{
 		Order: core.WorkOrder{ID: "continuous-output", Stage: core.StageImplement},
 		Harness: config.Harness{
-			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "continuous-output"},
+			MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "continuous-output"},
 			StallTimeoutText: "100ms",
 		},
 	}
@@ -2694,7 +2720,7 @@ func TestRunHarnessChildOutputRacingStallDeadlineStartsNewGeneration(t *testing.
 	item := workerservice.DispatchOrder{
 		Order: core.WorkOrder{ID: "stall-deadline-race", Stage: core.StageImplement},
 		Harness: config.Harness{
-			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "stall-deadline-race"},
+			MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "stall-deadline-race"},
 			StallTimeoutText: "100ms",
 		},
 	}
@@ -2746,7 +2772,7 @@ func TestRunHarnessChildClassifiesImmediateExitAndCancellation(t *testing.T) {
 		defer server.Close()
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
-		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "classified-" + mode, Stage: core.StageReview}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}}}
+		item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "classified-" + mode, Stage: core.StageReview}, Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode}}}
 		done := make(chan error, 1)
 		var stdout, stderr bytes.Buffer
 		go func() {
@@ -2831,7 +2857,7 @@ func TestRunHarnessChildRenewsClaimDuringSlowPreStartSetup(t *testing.T) {
 	}))
 	defer server.Close()
 
-	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "slow-setup", Stage: core.StageImplement}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "ok"}}}
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "slow-setup", Stage: core.StageImplement}, Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "ok"}}}
 	var stdout, stderr bytes.Buffer
 	if err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr); err != nil {
 		t.Fatalf("slow pre-start setup lost the claim: %v", err)
@@ -2882,7 +2908,7 @@ func TestRunHarnessChildAuthorityLossDuringPreStartSetupAbortsLaunch(t *testing.
 	}))
 	defer server.Close()
 
-	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "authority-lost", Stage: core.StageImplement}, Harness: config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "exit"}}}
+	item := workerservice.DispatchOrder{Order: core.WorkOrder{ID: "authority-lost", Stage: core.StageImplement}, Harness: config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "exit"}}}
 	var stdout, stderr bytes.Buffer
 	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "server reports queued") {
@@ -2966,7 +2992,7 @@ func TestRunHarnessChildPreemptAtRenewalTerminatesWithoutStaleCheckpointOrReleas
 		Order:      core.WorkOrder{ID: "preempted-order", Stage: core.StageImplement},
 		Task:       core.Task{ID: "preempted-task", Branch: "conveyor/preempted-task", Repo: "conveyor"},
 		Repository: config.Repo{Name: "conveyor", URL: fixture.origin},
-		Harness:    config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"}},
+		Harness:    config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "silent"}},
 	}
 	var stdout, stderr bytes.Buffer
 	err := runHarnessChildWithFirstActivityTimeoutAndOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, 5*time.Second, &stdout, &stderr)
@@ -3105,7 +3131,7 @@ func TestWorkerExecuteUsesClaimedTaskBranch(t *testing.T) {
 		Order:    core.WorkOrder{ID: "claimed-branch-order", TaskID: "claimed-branch-task", Stage: core.StageReview},
 		Task:     core.Task{ID: "claimed-branch-task", Branch: "stale-queued-branch"},
 		Dispatch: "worker",
-		Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "env-branch"}},
+		Harness:  config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "env-branch"}},
 	}
 	var stdout, stderr bytes.Buffer
 	if err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, &stdout, &stderr); err != nil {
@@ -3137,7 +3163,7 @@ func TestWorkerExecuteReleasesClaimOnTaskIDMismatch(t *testing.T) {
 		Order:    core.WorkOrder{ID: "mismatch-order", TaskID: "queued-task", Stage: core.StageReview},
 		Task:     core.Task{ID: "queued-task", Branch: "conveyor/queued-task"},
 		Dispatch: "worker",
-		Harness:  config.Harness{Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "env-branch"}},
+		Harness:  config.Harness{MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", "env-branch"}},
 	}
 	err := runHarnessChildWithOutput(t.Context(), &client{base: server.URL, workspace: "demo"}, "worker-credential", item, io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), `claimed task identity "claimed-task" does not match queued task "queued-task"`) {
@@ -3540,6 +3566,9 @@ func TestWorkerHarnessHelper(t *testing.T) {
 	if len(os.Args) < 3 {
 		t.Fatal("missing prompt and MCP config arguments")
 	}
+	// The child is reached as claude (fakeClaudeCommand) and reports its
+	// registration receipt before any other output, as Claude Code does.
+	emitFakeClaudeReceipt("", os.Getenv("CONVEYOR_FAKE_HARNESS_NATIVE_SESSION"))
 	if os.Getenv("CONVEYOR_FAKE_HARNESS_EMIT_ENV") == "1" {
 		fmt.Fprintf(os.Stdout, "token=%s address=%s worktree_root=%s workspace=%s\n", os.Getenv("CONVEYOR_API_TOKEN"), os.Getenv("CONVEYOR_ADDR"), os.Getenv("CONVEYOR_WORKTREE_ROOT"), os.Getenv("CONVEYOR_WORKSPACE"))
 		fmt.Fprintf(os.Stderr, "session=%s client=%s\n", os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN"))
@@ -3556,10 +3585,6 @@ func TestWorkerHarnessHelper(t *testing.T) {
 	session, orderID := os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_WORK_ORDER_ID")
 	if session == "" || configPath == "" || !strings.Contains(prompt, session) {
 		t.Fatalf("prompt does not carry exact session_id %q: %s", session, prompt)
-	}
-	if nativeSession := os.Getenv("CONVEYOR_FAKE_HARNESS_NATIVE_SESSION"); nativeSession != "" {
-		data, _ := json.Marshal(map[string]string{"type": "system", "subtype": "init", "session_id": nativeSession})
-		fmt.Fprintln(os.Stdout, string(data))
 	}
 	if reportPath := os.Getenv("CONVEYOR_FAKE_HARNESS_ARGV_REPORT"); reportPath != "" {
 		if err := os.WriteFile(reportPath, []byte(strings.Join(os.Args, "\n")+"\n"+prompt), 0o600); err != nil {
@@ -3587,7 +3612,9 @@ func TestWorkerHarnessHelper(t *testing.T) {
 		if requestErr != nil {
 			t.Fatal(requestErr)
 		}
-		request.Header.Set("Authorization", server.Headers["Authorization"])
+		// Claude Code expands ${VAR} header references from the child's
+		// environment; the file itself holds no credential.
+		request.Header.Set("Authorization", os.Expand(server.Headers["Authorization"], os.Getenv))
 		response, requestErr := http.DefaultClient.Do(request)
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -3886,6 +3913,557 @@ func TestOpenCodeStreamReportsOneSessionFallback(t *testing.T) {
 			}
 			if calls != want {
 				t.Fatalf("reports=%d want=%d", calls, want)
+			}
+		})
+	}
+}
+
+// fakeClaudeCommand returns the supported Claude Code JSON-file argv for a
+// test helper reached through an executable named claude, so the launcher's
+// executable-identity and argv checks run unchanged
+// (component-harness-execution).
+func fakeClaudeCommand(t *testing.T, helper string, args ...string) []string {
+	t.Helper()
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "claude")
+	if err = os.Symlink(binary, link); err != nil {
+		t.Fatal(err)
+	}
+	command := append([]string{link, "-test.run=" + helper, "--"}, args...)
+	return append(command, "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--output-format", "stream-json", "--verbose")
+}
+
+// fakeClaudeRegistration reads the generated --mcp-config file and resolves
+// its header the way Claude Code does: ${VAR} references expand from the
+// child's own environment.
+func fakeClaudeRegistration(t *testing.T) (configPath string, raw []byte, url, authorization string) {
+	t.Helper()
+	for index, argument := range os.Args {
+		if argument == "--mcp-config" && index+1 < len(os.Args) {
+			configPath = os.Args[index+1]
+		}
+	}
+	if configPath == "" {
+		t.Fatal("--mcp-config argument not found")
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document jsonMCPDocument
+	if err = json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	server := document.MCPServers[jsonMCPServerName]
+	return configPath, raw, server.URL, os.Expand(server.Headers["Authorization"], os.Getenv)
+}
+
+// emitFakeClaudeReceipt prints the stream-json initialization event a real
+// Claude Code child emits once its --mcp-config registration connects. An
+// empty stage lists every stage's lifecycle tools, as the server does.
+func emitFakeClaudeReceipt(stage core.Stage, nativeSession string) {
+	tools := claudeStageToolNames(stage)
+	if stage == "" {
+		for _, each := range []core.Stage{core.StageSpec, core.StageImplement, core.StageReview, core.StageVerify} {
+			tools = append(tools, claudeStageToolNames(each)...)
+		}
+	}
+	event := map[string]any{
+		"type": "system", "subtype": "init",
+		"mcp_servers": []map[string]string{{"name": "conveyor", "status": "connected", "source": "dynamic"}},
+		"tools":       tools,
+	}
+	if nativeSession != "" {
+		event["session_id"] = nativeSession
+	}
+	data, _ := json.Marshal(event)
+	fmt.Fprintln(os.Stdout, string(data))
+}
+
+func fakeClaudeStage() core.Stage {
+	if stage := os.Getenv("CONVEYOR_FAKE_CLAUDE_STAGE"); stage != "" {
+		return core.Stage(stage)
+	}
+	order := os.Getenv("CONVEYOR_WORK_ORDER_ID")
+	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview} {
+		if strings.Contains(order, string(stage)) {
+			return stage
+		}
+	}
+	return core.StageReview
+}
+
+// TestFakeClaudeHelper is a fake Claude Code child for JSON-file launches. It
+// records each launch, reports what it received, and emits or withholds its
+// receipt per CONVEYOR_FAKE_CLAUDE_MODE. Blocking modes wait on named pipes
+// or until the launcher terminates the process group; none uses a timer.
+func TestFakeClaudeHelper(t *testing.T) {
+	if os.Getenv("CONVEYOR_FAKE_CLAUDE") != "1" {
+		return
+	}
+	if launches := os.Getenv("CONVEYOR_FAKE_CLAUDE_LAUNCHES"); launches != "" {
+		file, err := os.OpenFile(launches, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(file, "%d\n", os.Getpid())
+		_ = file.Close()
+	}
+	configPath, raw, url, authorization := fakeClaudeRegistration(t)
+	if reportPath := os.Getenv("CONVEYOR_FAKE_CLAUDE_REPORT"); reportPath != "" {
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirInfo, err := os.Stat(filepath.Dir(configPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		report, _ := json.Marshal(map[string]any{
+			"argv": os.Args, "config_path": configPath, "config": string(raw), "url": url,
+			"expanded_authorization": authorization, "config_mode": uint32(info.Mode().Perm()), "dir_mode": uint32(dirInfo.Mode().Perm()),
+			"environment_token": os.Getenv("CONVEYOR_API_TOKEN"),
+		})
+		if err = os.WriteFile(reportPath, report, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stage := fakeClaudeStage()
+	switch os.Getenv("CONVEYOR_FAKE_CLAUDE_MODE") {
+	case "receipt-exit":
+		emitFakeClaudeReceipt(stage, "")
+		os.Exit(0)
+	case "receipt-await":
+		emitFakeClaudeReceipt(stage, os.Getenv("CONVEYOR_FAKE_HARNESS_NATIVE_SESSION"))
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(0)
+	case "fifo-then-receipt":
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		emitFakeClaudeReceipt(stage, "")
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO_2"))
+		os.Exit(0)
+	case "silent-receipt-timeout":
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(0)
+	case "eof-without-receipt":
+		fmt.Fprintln(os.Stdout, `{"type":"system","subtype":"hook_started"}`)
+		os.Exit(3)
+	case "zero-exit-without-receipt":
+		os.Exit(0)
+	case "failed-receipt":
+		grandchild := exec.Command(os.Args[0], "-test.run=^TestFakeClaudeGrandchildHelper$")
+		grandchild.Env = append(os.Environ(), "CONVEYOR_FAKE_CLAUDE_GRANDCHILD=1")
+		if err := grandchild.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := publishTestPID(os.Getenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE"), grandchild.Process.Pid); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(map[string]any{"type": "system", "subtype": "init",
+			"mcp_servers": []map[string]string{{"name": "conveyor", "status": "failed", "error": "token=" + os.Getenv("CONVEYOR_API_TOKEN")}},
+			"tools":       claudeStageToolNames(stage)})
+		fmt.Fprintln(os.Stdout, string(data))
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(0)
+	default:
+		t.Fatalf("unknown fake Claude mode %q", os.Getenv("CONVEYOR_FAKE_CLAUDE_MODE"))
+	}
+}
+
+// TestFakeClaudeGrandchildHelper is a descendant of the fake Claude child
+// that blocks until its process group is terminated.
+func TestFakeClaudeGrandchildHelper(t *testing.T) {
+	if os.Getenv("CONVEYOR_FAKE_CLAUDE_GRANDCHILD") != "1" {
+		return
+	}
+	awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+}
+
+type fakeClaudeLaunch struct {
+	mode         string
+	stage        core.Stage
+	dispatch     string
+	probeTimeout string
+	renew        func(call int) (core.WorkOrder, int, string)
+	reconcile    func(call int) (workerservice.ClaimReconciliation, int, string)
+	claim        func(*core.WorkOrder)
+	// ctx, when set, lets a test cancel the launch.
+	ctx context.Context
+}
+
+type fakeClaudeResult struct {
+	err      error
+	stdout   string
+	stderr   string
+	releases []core.WorkOrderRelease
+	captures []core.WorkOrderAttemptCapture
+	launches int
+	issued   int
+	revoked  int
+	report   map[string]any
+}
+
+func receiptBoundTimeout(mode string) string {
+	if mode == "silent-receipt-timeout" {
+		return "50ms"
+	}
+	return "10s"
+}
+
+// runFakeClaudeLaunch drives the real shared child launcher with a fake
+// claude executable against the captureFixture parent plane.
+func runFakeClaudeLaunch(t *testing.T, launch fakeClaudeLaunch) fakeClaudeResult {
+	t.Helper()
+	directory := t.TempDir()
+	launches := filepath.Join(directory, "launches")
+	report := filepath.Join(directory, "report.json")
+	t.Setenv("CONVEYOR_FAKE_CLAUDE", "1")
+	t.Setenv("CONVEYOR_FAKE_CLAUDE_MODE", launch.mode)
+	t.Setenv("CONVEYOR_FAKE_CLAUDE_LAUNCHES", launches)
+	t.Setenv("CONVEYOR_FAKE_CLAUDE_REPORT", report)
+	t.Setenv("CONVEYOR_FAKE_CLAUDE_STAGE", string(launch.stage))
+	if os.Getenv("CONVEYOR_CAPTURE_FIFO") == "" {
+		// Blocking modes without a test-driven pipe wait on one nobody
+		// writes; the launcher's process-group termination ends them.
+		newCaptureFIFO(t, "CONVEYOR_CAPTURE_FIFO")
+	}
+	dispatch := launch.dispatch
+	if dispatch == "" {
+		dispatch = "worker"
+	}
+	fixture := &captureFixture{t: t, stage: launch.stage, dispatch: dispatch, renew: launch.renew, reconcile: launch.reconcile, claim: launch.claim}
+	server := fixture.server()
+	defer server.Close()
+	timeout := launch.probeTimeout
+	if timeout == "" {
+		timeout = "10s"
+	}
+	item := workerservice.DispatchOrder{
+		Order:    core.WorkOrder{ID: "capture-order", TaskID: "capture-task", Stage: launch.stage},
+		Dispatch: dispatch,
+		Harness: config.Harness{
+			Name: "renamed-claude", Command: fakeClaudeCommand(t, "^TestFakeClaudeHelper$"),
+			ResumeCommand: []string{"--resume", "{session_id}"}, ProbeTimeoutText: timeout,
+		},
+	}
+	if dispatch == "run" {
+		item.Task = core.Task{ID: "capture-task", Branch: "conveyor/capture"}
+	}
+	ctx := launch.ctx
+	if ctx == nil {
+		ctx = t.Context()
+	}
+	var stdout, stderr bytes.Buffer
+	err := runHarnessChildWithFirstActivityTimeoutAndOutput(ctx, &client{base: server.URL, workspace: "demo"}, "parent-credential", item, time.Minute, &stdout, &stderr)
+	releases, captures, _, _ := fixture.snapshot()
+	fixture.mu.Lock()
+	issued, revoked := fixture.issued, fixture.revoked
+	fixture.mu.Unlock()
+	result := fakeClaudeResult{err: err, stdout: stdout.String(), stderr: stderr.String(), releases: releases, captures: captures, issued: issued, revoked: revoked}
+	if data, readErr := os.ReadFile(launches); readErr == nil {
+		result.launches = strings.Count(string(data), "\n")
+	}
+	if data, readErr := os.ReadFile(report); readErr == nil {
+		_ = json.Unmarshal(data, &result.report)
+	}
+	return result
+}
+
+// TestJSONMCPChildCredentialEnvironment proves the scoped credential reaches
+// only the launched child's environment: the registration file and argv carry
+// a reference, the parent's stale token is replaced in the child and left
+// unchanged in the parent, output is redacted, and the private attempt
+// directory and run credential are gone after the launch
+// (req-security-boundaries AC-2.2, AC-2.6; component-local-launchers).
+func TestJSONMCPChildCredentialEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		dispatch, childCredential string
+		issued                    int
+	}{
+		{dispatch: "run", childCredential: "run-agent-secret", issued: 1},
+		{dispatch: "worker", childCredential: "parent-credential"},
+	} {
+		t.Run(test.dispatch, func(t *testing.T) {
+			t.Setenv("CONVEYOR_API_TOKEN", "stale-parent-token")
+			result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "receipt-exit", stage: core.StageImplement, dispatch: test.dispatch})
+			if result.err == nil || !strings.Contains(result.err.Error(), "harness exited before completing work order") {
+				t.Fatalf("err = %v stderr=%q", result.err, result.stderr)
+			}
+			if os.Getenv("CONVEYOR_API_TOKEN") != "stale-parent-token" {
+				t.Fatal("launch changed the parent environment")
+			}
+			report := result.report
+			if report == nil {
+				t.Fatal("fake claude did not report its launch")
+			}
+			if report["environment_token"] != test.childCredential || report["expanded_authorization"] != "Bearer "+test.childCredential {
+				t.Fatalf("child environment token=%v expanded=%v", report["environment_token"], report["expanded_authorization"])
+			}
+			want, err := jsonMCPConfig(fmt.Sprint(report["url"]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report["config"] != string(want) || !strings.HasSuffix(fmt.Sprint(report["url"]), "/mcp") {
+				t.Fatalf("registration = %v, want %s", report["config"], want)
+			}
+			if report["config_mode"] != float64(0o600) || report["dir_mode"] != float64(0o700) {
+				t.Fatalf("registration modes file=%v dir=%v", report["config_mode"], report["dir_mode"])
+			}
+			argv, _ := json.Marshal(report["argv"])
+			for _, secret := range []string{test.childCredential, "stale-parent-token", "parent-credential", "run-agent-secret"} {
+				if strings.Contains(fmt.Sprint(report["config"]), secret) || strings.Contains(string(argv), secret) {
+					t.Fatalf("registration or argv carries %q", secret)
+				}
+				if strings.Contains(result.stdout, secret) || strings.Contains(result.stderr, secret) {
+					t.Fatalf("launcher output carries %q", secret)
+				}
+			}
+			if !strings.Contains(string(argv), `"--mcp-config","`+fmt.Sprint(report["config_path"])+`","--strict-mcp-config"`) {
+				t.Fatalf("argv does not load the generated file exclusively: %s", argv)
+			}
+			if _, err := os.Stat(filepath.Dir(fmt.Sprint(report["config_path"]))); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("attempt directory survived the launch: %v", err)
+			}
+			if result.issued != test.issued || result.revoked != test.issued {
+				t.Fatalf("run credential issued=%d revoked=%d", result.issued, result.revoked)
+			}
+			if result.launches != 1 {
+				t.Fatalf("launches = %d", result.launches)
+			}
+		})
+	}
+}
+
+// TestJSONMCPReceiptFailureCleanup proves a failed receipt stops the whole
+// process group, removes the attempt directory, revokes the run credential,
+// releases once with a safe reason, and launches nothing else
+// (req-security-boundaries AC-2.7).
+func TestJSONMCPReceiptFailureCleanup(t *testing.T) {
+	grandchildPID := filepath.Join(t.TempDir(), "grandchild.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE", grandchildPID)
+	result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "failed-receipt", stage: core.StageImplement, dispatch: "run"})
+	const want = "json_file MCP receipt failed: the conveyor MCP server status is failed, not connected"
+	if result.err == nil || result.err.Error() != want {
+		t.Fatalf("err = %v", result.err)
+	}
+	if len(result.releases) != 1 || result.releases[0].Reason != want || result.releases[0].Outcome != core.WorkOrderOutcomeChildFailure {
+		t.Fatalf("releases = %+v", result.releases)
+	}
+	if len(result.captures) != 1 || result.captures[0].TerminationReason != want {
+		t.Fatalf("captures = %+v", result.captures)
+	}
+	if result.launches != 1 {
+		t.Fatalf("launches = %d; a failed receipt must not fall back to another child", result.launches)
+	}
+	if result.issued != 1 || result.revoked != 1 {
+		t.Fatalf("run credential issued=%d revoked=%d", result.issued, result.revoked)
+	}
+	data, err := os.ReadFile(grandchildPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The grandchild shares the harness process group; termination reaps the
+	// group before the launcher returns.
+	if syscall.Kill(pid, 0) == nil {
+		var status syscall.WaitStatus
+		if _, waitErr := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); waitErr != nil && syscall.Kill(pid, 0) == nil {
+			t.Fatalf("descendant %d survived receipt failure", pid)
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(fmt.Sprint(result.report["config_path"]))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("attempt directory survived the failure: %v", err)
+	}
+	for _, text := range []string{result.err.Error(), result.stderr, result.stdout, result.releases[0].Reason} {
+		if strings.Contains(text, "run-agent-secret") || strings.Contains(text, "parent-credential") {
+			t.Fatalf("diagnostic carries a credential: %q", text)
+		}
+	}
+}
+
+// TestJSONMCPReceiptAuthorityRace orders receipt races with hooks and named
+// pipes rather than timers: a receipt that races the deadline or the child's
+// exit wins, a missing one fails, and authority loss, preemption, and
+// cancellation before any receipt keep their own endings without a receipt
+// release (component-local-launchers).
+func TestJSONMCPReceiptAuthorityRace(t *testing.T) {
+	t.Cleanup(func() { workerJSONMCPReceiptDecidedTestHook, workerJSONMCPReceiptDeadlineTestHook = nil, nil })
+	assertNoReceiptRelease := func(t *testing.T, result fakeClaudeResult) {
+		t.Helper()
+		for _, release := range result.releases {
+			if strings.Contains(release.Reason, "json_file MCP receipt") {
+				t.Fatalf("unexpected receipt release: %+v", result.releases)
+			}
+		}
+		if result.err != nil && strings.Contains(result.err.Error(), "json_file MCP receipt") {
+			t.Fatalf("unexpected receipt failure: %v", result.err)
+		}
+	}
+
+	t.Run("receipt racing the deadline wins", func(t *testing.T) {
+		emit := newCaptureFIFO(t, "CONVEYOR_CAPTURE_FIFO")
+		finish := newCaptureFIFO(t, "CONVEYOR_CAPTURE_FIFO_2")
+		decided := make(chan struct{}, 1)
+		deadlineSelected := false
+		workerJSONMCPReceiptDecidedTestHook = func() { decided <- struct{}{} }
+		workerJSONMCPReceiptDeadlineTestHook = func() {
+			// The deadline was selected while the child still withholds its
+			// receipt; release it and wait until the receipt is queued.
+			deadlineSelected = true
+			emit.release(t)
+			<-decided
+			go finish.release(t)
+		}
+		t.Cleanup(func() { workerJSONMCPReceiptDecidedTestHook, workerJSONMCPReceiptDeadlineTestHook = nil, nil })
+		result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "fifo-then-receipt", stage: core.StageImplement, probeTimeout: "1ns"})
+		if !deadlineSelected {
+			t.Fatal("the receipt deadline was not selected")
+		}
+		assertNoReceiptRelease(t, result)
+		if len(result.releases) != 1 || result.releases[0].Reason != "harness exited before completing work order" {
+			t.Fatalf("releases = %+v err=%v", result.releases, result.err)
+		}
+	})
+
+	t.Run("deadline without receipt fails", func(t *testing.T) {
+		result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "silent-receipt-timeout", stage: core.StageReview, probeTimeout: "1ns"})
+		// The deadline can pass before the child records its start; what
+		// matters is that no second child is ever launched.
+		if result.err == nil || result.err.Error() != "json_file MCP receipt failed: no Claude MCP initialization receipt within 1ns" || len(result.releases) != 1 || result.launches > 1 {
+			t.Fatalf("err=%v releases=%+v launches=%d", result.err, result.releases, result.launches)
+		}
+	})
+
+	t.Run("receipt written before exit wins", func(t *testing.T) {
+		// Wait copies all stdout before the exit is queued, so whichever of
+		// the receipt and exit cases is selected first, the receipt counts.
+		for iteration := 0; iteration < 10; iteration++ {
+			result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "receipt-exit", stage: core.StageImplement})
+			assertNoReceiptRelease(t, result)
+			if len(result.releases) != 1 || result.releases[0].Reason != "harness exited before completing work order" {
+				t.Fatalf("iteration %d releases = %+v err=%v", iteration, result.releases, result.err)
+			}
+		}
+	})
+
+	t.Run("exit without receipt fails", func(t *testing.T) {
+		result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "eof-without-receipt", stage: core.StageImplement})
+		want := "json_file MCP receipt failed: " + errClaudeReceiptMissing.Error()
+		if result.err == nil || result.err.Error() != want || len(result.releases) != 1 || result.releases[0].Reason != want {
+			t.Fatalf("err=%v releases=%+v", result.err, result.releases)
+		}
+	})
+
+	authority := []struct {
+		name     string
+		renew    func(int) (core.WorkOrder, int, string)
+		cancel   bool
+		wantErr  string
+		releases int
+	}{
+		{name: "preemption before receipt", renew: func(int) (core.WorkOrder, int, string) {
+			return core.WorkOrder{}, http.StatusConflict, "work_order_preempted"
+		}, wantErr: "preempted"},
+		{name: "lease loss before receipt", renew: func(int) (core.WorkOrder, int, string) {
+			return core.WorkOrder{ID: "capture-order", State: core.WorkOrderQueued}, 0, ""
+		}, wantErr: "claim authority lost"},
+		{name: "cancellation before receipt", cancel: true, wantErr: context.Canceled.Error(), releases: 1},
+	}
+	for _, test := range authority {
+		t.Run(test.name, func(t *testing.T) {
+			previous := workerClaimRenewInterval
+			t.Cleanup(func() { workerClaimRenewInterval = previous })
+			workerClaimRenewInterval = 10 * time.Millisecond
+			if test.cancel {
+				workerClaimRenewInterval = time.Minute
+			}
+			started := newCaptureFIFO(t, "CONVEYOR_CAPTURE_FIFO")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			// gate holds renewal at claimed until the child is blocked waiting
+			// for its receipt signal, so the authority ending happens strictly
+			// after launch and before any receipt.
+			gate := make(chan struct{})
+			var writer *os.File
+			go func() {
+				pipe, err := os.OpenFile(string(started), os.O_WRONLY, 0)
+				if err != nil {
+					t.Error(err)
+					close(gate)
+					return
+				}
+				writer = pipe
+				close(gate)
+				if test.cancel {
+					cancel()
+				}
+			}()
+			renew := test.renew
+			gatedRenew := func(call int) (core.WorkOrder, int, string) {
+				select {
+				case <-gate:
+					if renew != nil {
+						return renew(call)
+					}
+				default:
+				}
+				return core.WorkOrder{ID: "capture-order", State: core.WorkOrderClaimed, AttemptID: captureFixtureAttempt, LeaseExpiresAt: time.Now().Add(time.Minute)}, 0, ""
+			}
+			result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "silent-receipt-timeout", stage: core.StageImplement, probeTimeout: "1h", renew: gatedRenew, ctx: ctx})
+			<-gate
+			if writer != nil {
+				_ = writer.Close()
+			}
+			if result.err == nil || !strings.Contains(result.err.Error(), test.wantErr) {
+				t.Fatalf("err = %v, want %q", result.err, test.wantErr)
+			}
+			assertNoReceiptRelease(t, result)
+			if len(result.releases) != test.releases {
+				t.Fatalf("releases = %+v", result.releases)
+			}
+			if result.launches != 1 {
+				t.Fatalf("launches = %d", result.launches)
+			}
+		})
+	}
+}
+
+// TestJSONMCPReceiptOnContinuation proves each resumed child needs its own
+// receipt and a failed receipt never falls back to a cold launch
+// (req-260818-24dd3a; req-security-boundaries AC-2.7).
+func TestJSONMCPReceiptOnContinuation(t *testing.T) {
+	resumable := func(order *core.WorkOrder) {
+		order.WorkerID = "worker-1"
+		order.LastFailureMessage = core.WorkOrderReleaseReasonOperatorCheckpointReached
+		order.OperatorDirection = "Proceed."
+		order.ContinuationSessionID = "native-prior"
+		order.ContinuationAttemptID = order.LastAttemptID
+		order.ContinuationHarness = "renamed-claude"
+		order.ContinuationLaunchEnvironment = "worker:worker-1"
+	}
+	for _, test := range []struct {
+		mode, wantReason string
+	}{
+		{mode: "receipt-exit", wantReason: "harness exited before completing work order"},
+		{mode: "eof-without-receipt", wantReason: "json_file MCP receipt failed: " + errClaudeReceiptMissing.Error()},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: test.mode, stage: core.StageImplement, claim: resumable})
+			argv, _ := json.Marshal(result.report["argv"])
+			if !strings.Contains(string(argv), `"--resume","native-prior"`) || !strings.Contains(string(argv), `"--strict-mcp-config"`) {
+				t.Fatalf("launch was not a strict resumed launch: %s", argv)
+			}
+			if result.launches != 1 {
+				t.Fatalf("launches = %d; a receipt failure must not start a cold child", result.launches)
+			}
+			if len(result.releases) != 1 || result.releases[0].Reason != test.wantReason {
+				t.Fatalf("releases = %+v err=%v", result.releases, result.err)
 			}
 		})
 	}

@@ -46,9 +46,12 @@ func HarnessTemplates() []HarnessTemplate {
 				// (component-local-launchers) on any run longer than the liveness
 				// window. Headless -p has no interactive approver, so writes need
 				// bypassPermissions, and --add-dir .. reaches the sibling task
-				// worktrees outside the primary checkout the child starts in
-				// (component-harness-execution).
-				Command:       []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
+				// worktrees outside the primary checkout the child starts in.
+				// --strict-mcp-config makes the generated credential-free
+				// mcp.json the only MCP source, and stream-json with --verbose
+				// carries the initialization receipt the launcher requires
+				// (component-harness-execution; req-security-boundaries AC-2.7).
+				Command:       []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
 				ResumeCommand: []string{"--resume", "{session_id}"},
 				ModelArgs:     []string{"--model", "{model}"},
 				EffortArgs: map[string][]string{

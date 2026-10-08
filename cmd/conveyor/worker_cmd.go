@@ -634,6 +634,14 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 				}
 				return localExecutionSetupRemedy(configPath, selectErr)
 			}
+			// An unsupported JSON-file harness is refused before any claim and
+			// the order stays queued (component-harness-execution;
+			// req-security-boundaries AC-2.7).
+			if adapterErr := admitJSONMCPHarness(selected.Harness); adapterErr != nil {
+				reportWorkerAdapterRefusal(selected, localExecutionSetupRemedy(configPath, adapterErr))
+				overflowSkipped = true
+				continue
+			}
 			// Every stage launches only on a healthy, unexpired local probe of
 			// the exact harness definition this iteration loaded; otherwise the
 			// order stays queued and unrelated active children continue
@@ -1320,7 +1328,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 		}()
 	}
-	mcpConfig, err := prepareMCPConfig(directory, c.base, childCredential, item.Harness.MCPTransport)
+	mcpConfig, err := prepareMCPConfig(directory, c.base, item.Harness.MCPTransport)
 	if err != nil {
 		_ = release(core.WorkOrderOutcomeReleased, "prepare MCP config failed", nil)
 		return err
@@ -1358,6 +1366,23 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	}
 	argv, usageCollector := enableHarnessUsageCollection(item.Harness, argv)
 	coldArgv, _ = enableHarnessUsageCollection(item.Harness, coldArgv)
+	// A JSON-file child is trusted only as the supported Claude adapter with
+	// the generated file as its exclusive MCP source; its receipt is checked
+	// after launch (component-harness-execution; req-security-boundaries
+	// AC-2.6, AC-2.7).
+	var receipt *claudeMCPReceipt
+	if usesJSONMCPTransport(item.Harness.MCPTransport) {
+		argv, err = claudeJSONMCPLaunchArgv(item.Harness, argv, mcpConfig)
+		if err == nil {
+			coldArgv, err = claudeJSONMCPLaunchArgv(item.Harness, coldArgv, mcpConfig)
+		}
+		if err != nil {
+			_ = release(core.WorkOrderOutcomeReleased, "json_file MCP adapter refused", nil)
+			return err
+		}
+		receipt = newClaudeMCPReceipt(item.Order.Stage)
+		receipt.onDecide = workerJSONMCPReceiptDecidedTestHook
+	}
 	childAddress := c.base
 	if item.Harness.MCPTransport == config.MCPTransportEnvironment {
 		childAddress = strings.TrimRight(c.base, "/") + "/mcp"
@@ -1487,6 +1512,10 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		defer reporter.Stop()
 		observer := newContinuationSessionObserver(reporter.Observe)
 		stdoutFanout = io.MultiWriter(stdoutFanout, observer)
+	}
+	if receipt != nil {
+		// First, so no other destination's write error can starve it.
+		stdoutFanout = io.MultiWriter(receipt, stdoutFanout)
 	}
 	observabilityDestinations := []io.Writer{}
 	if transcriptSpool != nil {
@@ -1786,15 +1815,95 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		}
 		return nil
 	}
+	// A JSON-file child must confirm its registration within the harness probe
+	// timeout. A confirmed receipt clears both channels; any other decision,
+	// the deadline, or child exit without a receipt fails closed without a
+	// fallback launch (component-local-launchers; req-security-boundaries
+	// AC-2.7). Authority loss, preemption, and cancellation keep their own
+	// paths below.
+	var receiptResult <-chan error
+	var receiptDeadline <-chan time.Time
+	if receipt != nil {
+		receiptTimer := time.NewTimer(jsonMCPReceiptTimeout(item.Harness))
+		defer receiptTimer.Stop()
+		receiptResult = receipt.Result()
+		receiptDeadline = receiptTimer.C
+	}
+	// receiptFailed ends the attempt; completed carries an exit status the
+	// caller already received from done.
+	receiptFailed := func(cause error, completed *error) error {
+		waitErr := terminateChild(completed)
+		flushOutput()
+		reason := "json_file MCP receipt failed: " + cause.Error()
+		if claimFinalized {
+			// The order already reached a terminal handoff; there is no claim
+			// left to release, and the unconfirmed launch still fails.
+			attemptCapture.arm("")
+			return errors.New(reason)
+		}
+		var exitStatus *int
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
+			status := exitErr.ExitCode()
+			exitStatus = &status
+		}
+		if releaseErr := releaseAfterCheckpoint(core.WorkOrderOutcomeChildFailure, reason, exitStatus); releaseErr != nil {
+			return fmt.Errorf("%s: release claim: %w", reason, releaseErr)
+		}
+		return errors.New(reason)
+	}
+	// childExited consumes a receipt decision queued before exit: the child's
+	// stdout is fully copied before Wait returns, so a receipt written before
+	// exit is always visible here.
+	// Cancellation dominates: a cancelled launch keeps its cancellation
+	// ending rather than reporting a receipt failure.
+	childExited := func(waitErr error) error {
+		if receiptResult != nil && ctx.Err() == nil {
+			select {
+			case receiptErr := <-receiptResult:
+				receiptResult, receiptDeadline = nil, nil
+				if receiptErr != nil {
+					return receiptFailed(receiptErr, &waitErr)
+				}
+			default:
+				return receiptFailed(errClaudeReceiptMissing, &waitErr)
+			}
+		}
+		return handleChildExit(waitErr)
+	}
 	for {
 		select {
+		case receiptErr := <-receiptResult:
+			receiptResult, receiptDeadline = nil, nil
+			if receiptErr != nil && ctx.Err() == nil {
+				return receiptFailed(receiptErr, nil)
+			}
+		case <-receiptDeadline:
+			if hook := workerJSONMCPReceiptDeadlineTestHook; hook != nil {
+				hook()
+			}
+			if ctx.Err() != nil {
+				receiptResult, receiptDeadline = nil, nil
+				continue
+			}
+			// A receipt that raced the deadline wins.
+			select {
+			case receiptErr := <-receiptResult:
+				receiptResult, receiptDeadline = nil, nil
+				if receiptErr != nil {
+					return receiptFailed(receiptErr, nil)
+				}
+				continue
+			default:
+			}
+			return receiptFailed(fmt.Errorf("no Claude MCP initialization receipt within %s", jsonMCPReceiptTimeout(item.Harness)), nil)
 		case waitErr := <-done:
-			return handleChildExit(waitErr)
+			return childExited(waitErr)
 		case <-runTerminalDeadline:
 			// A normal child exit wins a race with the grace deadline.
 			select {
 			case waitErr := <-done:
-				return handleChildExit(waitErr)
+				return childExited(waitErr)
 			default:
 			}
 			if checkpointReleaseReason != "" {
@@ -1844,7 +1953,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			select {
 			case waitErr := <-done:
-				return handleChildExit(waitErr)
+				return childExited(waitErr)
 			default:
 			}
 			if claimFinalized {
@@ -1894,7 +2003,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			select {
 			case waitErr := <-done:
-				return handleChildExit(waitErr)
+				return childExited(waitErr)
 			default:
 			}
 			waitErr := terminateChild(nil)
@@ -1927,7 +2036,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			select {
 			case waitErr := <-done:
-				return handleChildExit(waitErr)
+				return childExited(waitErr)
 			default:
 			}
 			if claimFinalized {
@@ -1980,7 +2089,7 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			}
 			select {
 			case waitErr := <-done:
-				return handleChildExit(waitErr)
+				return childExited(waitErr)
 			default:
 			}
 			if !firstActivity.generationUnchanged(stallGeneration) {
@@ -2418,6 +2527,19 @@ var workerStallDeadlineTestHook func()
 // make either race that boundary deterministically.
 var workerFirstActivityDeadlineTestHook func()
 
+// reportWorkerAdapterRefusal reports a JSON-file harness the worker refused
+// before claiming; the order stays queued.
+var reportWorkerAdapterRefusal = func(item workerservice.DispatchOrder, err error) {
+	fmt.Fprintf(os.Stderr, "skip work order %s: %v\n", item.Order.ID, err)
+}
+
+// workerJSONMCPReceiptDecidedTestHook runs after a JSON-file receipt result
+// is queued; workerJSONMCPReceiptDeadlineTestHook runs when the receipt
+// deadline is selected, before a racing result is checked. Tests use them to
+// order receipt races deterministically.
+var workerJSONMCPReceiptDecidedTestHook func()
+var workerJSONMCPReceiptDeadlineTestHook func()
+
 // workerChildWaitedTestHook runs after the child's exit status is queued for
 // the supervision loop, proving to a test that child exit is observable.
 var workerChildWaitedTestHook func()
@@ -2716,15 +2838,17 @@ func renewDispatchClaimUntil(ctx context.Context, c *client, credential string, 
 	}
 }
 
-// prepareMCPConfig preserves the JSON-file transport for existing harnesses
-// while keeping scoped credentials out of TOML override argv (component-local-launchers).
-func prepareMCPConfig(directory, base, credential, transport string) (string, error) {
+// prepareMCPConfig renders {mcp_config} without any credential value: the
+// JSON file references ${CONVEYOR_API_TOKEN} and the TOML override names the
+// same variable, so the child credential travels only in the child's
+// environment (component-harness-execution; component-local-launchers;
+// req-security-boundaries AC-2.6).
+func prepareMCPConfig(directory, base, transport string) (string, error) {
 	endpoint := strings.TrimRight(base, "/") + "/mcp"
 	switch transport {
 	case "", config.MCPTransportJSONFile:
 		configPath := filepath.Join(directory, "mcp.json")
-		mcp := map[string]any{"mcpServers": map[string]any{"conveyor": map[string]any{"url": endpoint, "headers": map[string]string{"Authorization": "Bearer " + credential}}}}
-		data, err := json.Marshal(mcp)
+		data, err := jsonMCPConfig(endpoint)
 		if err != nil {
 			return "", fmt.Errorf("marshal MCP config: %w", err)
 		}

@@ -1099,7 +1099,7 @@ func TestExampleUsesContextualSettingsWithoutLiteralSubscriptionModel(t *testing
 		t.Fatalf("review settings=%+v route=%+v", cfg.Review, cfg.Routing.Stages["review"])
 	}
 	templates := HarnessTemplates()
-	if len(templates) != 5 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}) || !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
+	if len(templates) != 5 || !reflect.DeepEqual(templates[1].Harness.Command, []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}) || !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
 		t.Fatalf("Claude catalog template does not pre-authorize the scoped Conveyor MCP lifecycle: %+v", templates)
 	}
 }
@@ -1645,6 +1645,18 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 	}
 	if !reflect.DeepEqual(templates[1].Harness.ResumeCommand, []string{"--resume", "{session_id}"}) {
 		t.Fatalf("claude resume command = %#v", templates[1].Harness.ResumeCommand)
+	}
+	// The only built-in json_file template is Claude Code: its generated
+	// mcp.json is the exclusive MCP source and its stream-json output carries
+	// the initialization receipt the launcher requires
+	// (component-harness-execution; req-security-boundaries AC-2.7).
+	if want := []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}; !reflect.DeepEqual(templates[1].Harness.Command, want) {
+		t.Fatalf("claude command = %#v, want %#v", templates[1].Harness.Command, want)
+	}
+	for index, template := range templates {
+		if index != 1 && (template.Harness.MCPTransport == "" || template.Harness.MCPTransport == MCPTransportJSONFile) {
+			t.Fatalf("template %q unexpectedly resolves to json_file", template.ID)
+		}
 	}
 	grok := templates[2].Harness
 	if grok.MCPTransport != MCPTransportEnvironment || grok.MCPAttachment != "conveyor" {
