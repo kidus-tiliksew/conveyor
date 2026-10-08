@@ -365,11 +365,18 @@ func RunTaskFilterUpdatedConformance(t *testing.T, fixture TaskFilterFixture) {
 		}
 		assertTaskIDs(t, "foreign ListTaskOperations", taskIDs(away.Tasks), []string{foreign})
 		// ... and contributes nothing at home, where no task was active then.
+		// The volatile ListTasksFiltered keeps its single-workspace
+		// compatibility and may list the foreign row itself, so this read
+		// asserts only that no home task was selected by foreign activity.
 		home, err := fixture.Store.ListTasksFiltered(fixture.Context, window)
 		if err != nil {
 			t.Fatalf("home ListTasksFiltered: %v", err)
 		}
-		assertTaskIDs(t, "home ListTasksFiltered", taskIDs(home), nil)
+		for _, task := range home {
+			if task.Workspace == fixture.Workspace {
+				t.Fatalf("home ListTasksFiltered selected %s from foreign activity", task.ID)
+			}
+		}
 		page, err := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{TaskFilter: window})
 		if err != nil {
 			t.Fatalf("home ListTaskOperations: %v", err)

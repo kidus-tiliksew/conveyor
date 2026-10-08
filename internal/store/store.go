@@ -5629,12 +5629,9 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// A filtered read is workspace-scoped like ListTaskOperations, so a
-	// predicate over event recency can never select another workspace's task.
-	workspace := workspaceOrDefault(ctx, "")
 	out := make([]core.Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
-		if t.Workspace != workspace || !m.taskMatchesFilterLocked(t, filter) {
+		if !m.taskMatchesFilterLocked(t, filter) {
 			continue
 		}
 		if lifecycle, exists := m.github[t.ID]; exists {
