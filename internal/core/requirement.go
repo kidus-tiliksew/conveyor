@@ -554,6 +554,38 @@ func ConfirmableRequirementVersion(version RequirementVersion) error {
 	return ValidateRequirementStatements(version.Statements)
 }
 
+// DocumentHeadingTitle returns the title a requirement or System Design body
+// gives itself: the text of its first non-blank line when that line is a
+// non-empty "# <title>" heading. CRLF line endings are normalized and
+// surrounding whitespace is trimmed; internal spacing, Unicode, and Markdown
+// are kept. Later lines are never searched, so a body whose first non-blank
+// line is not an H1 names no title (req-document-operating-surfaces AC-6.1;
+// component-document-corpus).
+func DocumentHeadingTitle(content string) (string, bool) {
+	for _, line := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "# ") {
+			return "", false
+		}
+		title := strings.TrimSpace(line[2:])
+		return title, title != ""
+	}
+	return "", false
+}
+
+// ConfirmedDocumentTitle decides the listed title after a version with the
+// given body is confirmed. It reports the new title and true only when the
+// body's heading names a title that differs exactly from the current one.
+func ConfirmedDocumentTitle(current, content string) (string, bool) {
+	title, ok := DocumentHeadingTitle(content)
+	if !ok || title == current {
+		return current, false
+	}
+	return title, true
+}
+
 var (
 	requirementSlugStripPattern = regexp.MustCompile(`[^a-z0-9]+`)
 	requirementSlugTrimPattern  = regexp.MustCompile(`^-+|-+$`)

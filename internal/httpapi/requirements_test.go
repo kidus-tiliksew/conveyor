@@ -617,7 +617,7 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 	ctx := store.WithWorkspace(t.Context(), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-linked-stale", Title: "Linked intent"}, core.RequirementVersion{
-		Content: "# Delivery follows confirmed intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery remains traceable."}},
+		Content: "# Linked intent", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery remains traceable."}},
 		Origin: core.RequirementOriginChat, OriginSessionID: "session-linked-stale",
 	})
 	if err != nil {

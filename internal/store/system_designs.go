@@ -243,7 +243,9 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 	versions[version-1] = confirmed
 	m.systemDesignVersions[key] = versions
 	predecessor := document.CurrentVersion
-	document.CurrentVersion, document.UpdatedAt = version, now
+	previousTitle := document.Title
+	title, renamed := core.ConfirmedDocumentTitle(previousTitle, confirmed.Content)
+	document.CurrentVersion, document.Title, document.UpdatedAt = version, title, now
 	m.systemDesigns[key] = document
 	for _, dismissedVersion := range dismissed {
 		m.appendEventLocked(ctx, core.Event{Kind: "system_design.version_dismissed", Payload: core.JSONPayload(DocumentDismissalEventPayload(ctx, map[string]any{
@@ -256,6 +258,9 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		"confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID,
 		"origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs,
 	})})
+	if renamed {
+		m.appendEventLocked(ctx, core.Event{Kind: SystemDesignTitleChangedEvent, Payload: core.JSONPayload(SystemDesignTitleChangedPayload(workspace, documentID, previousTitle, title, version, actor.ID))})
+	}
 	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierSystemDesign, documentID, confirmed.Content)
 	m.reconcileConfirmedSystemDesignDriftLocked(ctx, documentID, version, confirmed.CreatedAt, now)
 	m.activatePendingDesignContextLocked(ctx, workspace, documentID, version)

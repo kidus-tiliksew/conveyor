@@ -1311,7 +1311,9 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 	if checkpoint.DecisionRequest != order.Checkpoint.DecisionRequest || len(checkpoint.Citations) != 2 {
 		t.Fatalf("checkpoint=%+v", checkpoint)
 	}
-	if got := checkpoint.Citations[0]; got.DocumentKind != "requirement" || got.DocumentTitle != requirement.Title ||
+	// Confirming version 2 renamed the requirement from its heading, so the
+	// citation reads the live title (req-document-operating-surfaces AC-6.1).
+	if got := checkpoint.Citations[0]; got.DocumentKind != "requirement" || got.DocumentTitle != "Updated checkpoint requirement" || requirement.Title != "Checkpoint requirement" ||
 		got.CurrentConfirmedVersion != secondRequirement.Version || !got.NewerConfirmed || len(got.PendingProposals) != 0 {
 		t.Fatalf("requirement citation=%+v", got)
 	}

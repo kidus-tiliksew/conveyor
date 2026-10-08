@@ -1100,7 +1100,7 @@ func TestPromotionSessionsCreatePendingVersionsAndDeferLineageUntilConfirmation(
 			derivation := &core.RequirementDerivation{DocumentID: document.ID, Version: source.Version, SectionAnchor: "#billing-rule", TargetID: test.targetID}
 			requirementID := ""
 			if test.existing {
-				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "# Baseline", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
+				requirement, baseline, createErr := st.CreateRequirement(ctx, core.Requirement{ID: "req-billing", Title: "Billing"}, core.RequirementVersion{Content: "# Billing", Statements: test.statements, Origin: core.RequirementOriginFeatureMigration})
 				if createErr != nil {
 					t.Fatal(createErr)
 				}

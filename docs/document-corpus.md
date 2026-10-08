@@ -162,6 +162,16 @@ becomes permanently unactionable. Attempting to confirm a version older than
 the current one returns a conflict. Versions are immutable and strictly
 monotonic per document.
 
+A requirement or System Design document's listed title follows the heading of
+the version an operator confirms. When the confirmed version's first non-blank
+line is a non-empty `# <title>` heading that differs from the listed title,
+the confirmation updates the title in the same transaction and records a
+`requirement.title_changed` or `system_design.title_changed` event naming the
+previous title, the new title, the confirmed version, and the confirming
+actor. Proposing a version never changes the title, and the document ID and
+slug never change, so citations, URLs, and lineage keep working
+(`req-document-operating-surfaces` AC-6.1).
+
 The same capability may dismiss one pending requirement or System Design
 version directly. The version keeps its immutable content, statement IDs,
 dismissal actor, and dismissal time in history, but leaves pending and

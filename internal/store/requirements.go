@@ -407,7 +407,10 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	versions[index] = confirmed
 	m.requirementVersions[key] = versions
 	previousConfirmedVersion := requirement.CurrentVersion
+	previousTitle := requirement.Title
+	title, renamed := core.ConfirmedDocumentTitle(previousTitle, confirmed.Content)
 	requirement.CurrentVersion = version
+	requirement.Title = title
 	requirement.UpdatedAt = now
 	m.requirements[key] = requirement
 	payload := map[string]any{
@@ -418,6 +421,9 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 		payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = confirmed.DerivedFrom.DocumentID, confirmed.DerivedFrom.Version, confirmed.DerivedFrom.SectionAnchor, confirmed.DerivedFrom.TargetID
 	}
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_confirmed", Payload: core.JSONPayload(payload)})
+	if renamed {
+		m.appendEventLocked(ctx, core.Event{Kind: RequirementTitleChangedEvent, Payload: core.JSONPayload(RequirementTitleChangedPayload(workspace, requirementID, previousTitle, title, version, actor.ID))})
+	}
 	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierRequirement, requirementID, confirmed.Content)
 	m.activatePendingRequirementContextLocked(ctx, workspace, requirementID, version)
 	return requirement, confirmed, nil

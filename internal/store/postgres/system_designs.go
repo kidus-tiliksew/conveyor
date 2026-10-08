@@ -214,7 +214,10 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 	var confirmed core.SystemDesignVersion
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var current *int
-		if err := tx.QueryRow(ctx, `SELECT current_version FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&current); err != nil {
+		// The previous title is read under the same row lock as the current
+		// version (req-document-operating-surfaces AC-6.1).
+		var previousTitle string
+		if err := tx.QueryRow(ctx, `SELECT current_version, title FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), documentID).Scan(&current, &previousTitle); err != nil {
 			return notFound(err, "system design %s", documentID)
 		}
 		if archived, archiveErr := documentArchivedTx(ctx, tx, "system_designs", workspace(ctx), documentID); archiveErr != nil {
@@ -273,7 +276,8 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 		if _, err = tx.Exec(ctx, `UPDATE system_design_versions SET confirmed=true,confirmed_by=$4,confirmed_at=$5 WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version, actor.ID, now); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE system_designs SET current_version=$3,updated_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, version, now); err != nil {
+		title, renamed := core.ConfirmedDocumentTitle(previousTitle, confirmed.Content)
+		if _, err = tx.Exec(ctx, `UPDATE system_designs SET current_version=$3,title=$5,updated_at=$4 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID, version, now, title); err != nil {
 			return err
 		}
 		confirmed.Confirmed, confirmed.ConfirmedBy, confirmed.ConfirmedAt = true, actor.ID, now
@@ -288,6 +292,11 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 		}
 		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})}); err != nil {
 			return err
+		}
+		if renamed {
+			if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: store.SystemDesignTitleChangedEvent, Payload: core.JSONPayload(store.SystemDesignTitleChangedPayload(workspace(ctx), documentID, previousTitle, title, version, actor.ID))}); err != nil {
+				return err
+			}
 		}
 		if err = recomputeDecisionSweepsForDocumentTx(ctx, tx, q, core.DecisionSweepTierSystemDesign, documentID, confirmed.Content); err != nil {
 			return err
