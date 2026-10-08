@@ -7,6 +7,7 @@ images/base/conveyor-shim
 web/node_modules/
 web/playwright-report/
 web/test-results/
+/test-results/
 .playwright-cli/
 /.codex-*/
 /.claude-*/
