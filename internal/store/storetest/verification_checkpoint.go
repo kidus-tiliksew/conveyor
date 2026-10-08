@@ -256,8 +256,8 @@ func runVerificationWaitingCheckpoint(t *testing.T, x Fixture) {
 // blocked attempt was retried to success while another subject waits. Only
 // the waiting subject's latest attempt is a ground, the context header names
 // exactly that attempt, and both login attempts stay readable as history
-// (component-verification-service; component-web-task-surfaces; req-verification-kits REQ-3/AC-3.4; req-verification-evidence
-// REQ-1/AC-1.4).
+// (component-verification-service; component-web-task-surfaces;
+// req-verification-kits REQ-3/AC-3.4; req-verification-evidence REQ-1/AC-1.4).
 func runVerificationRetriedAttemptGround(t *testing.T, x Fixture) {
 	v := newVerificationFixture(t, x, true)
 	register := func(id string) core.VerificationSubject {

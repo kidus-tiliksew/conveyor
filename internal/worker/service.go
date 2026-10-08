@@ -1252,7 +1252,8 @@ func providerUsageLimit(detail string) bool {
 }
 
 // RefreshContext retains worker ownership while using the same claim-scoped
-// selection and observation service as MCP and task-run children (component-context-freshness).
+// selection and observation service as MCP and task-run children
+// (component-context-freshness).
 func (s *Service) RefreshContext(ctx context.Context, worker core.Worker, id, session, prior string) (core.ContextFreshness, error) {
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil || order.WorkerID != worker.ID || order.WorkerID == "" || order.SessionID != session {
