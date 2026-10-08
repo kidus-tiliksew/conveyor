@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2695,6 +2696,125 @@ func TestActivitySupportsSlimConditionalGzipDeltaReads(t *testing.T) {
 	handler.ServeHTTP(delta, request)
 	if delta.Code != http.StatusOK || !bytes.Contains(delta.Body.Bytes(), []byte(`"id":"activity-delta"`)) || delta.Header().Get("X-Conveyor-Cursor") == full.Header().Get("X-Conveyor-Cursor") {
 		t.Fatalf("delta status=%d cursor=%q body=%s", delta.Code, delta.Header().Get("X-Conveyor-Cursor"), delta.Body.String())
+	}
+}
+
+// markerStore serves controlled activity markers so a test can model event
+// IDs that are not monotonic in commit order, as SingleStore and PostgreSQL
+// produce them.
+type markerStore struct {
+	store.Store
+	markers map[string]store.ActivityMarker
+}
+
+func (s *markerStore) ListActivityMarkersForTasks(_ context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+	out := []store.ActivityMarker{}
+	for _, id := range taskIDs {
+		if marker, ok := s.markers[id]; ok {
+			out = append(out, marker)
+		}
+	}
+	return out, nil
+}
+
+func TestActivityCursorUsesEventTupleFrontier(t *testing.T) {
+	base := store.NewMemory()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	created := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	for i, id := range []string{"tuple-a", "tuple-b", "tuple-c"} {
+		if err := base.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: id, Repo: "conveyor", State: core.TaskQueued, CreatedAt: created.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t1 := created.Add(time.Hour).Add(123456 * time.Microsecond)
+	t2 := t1.Add(time.Second)
+	markers := &markerStore{Store: base, markers: map[string]store.ActivityMarker{
+		"tuple-a": {TaskID: "tuple-a", LastEventAt: t1, LastEventID: 100},
+		"tuple-b": {TaskID: "tuple-b", LastEventAt: t1, LastEventID: 50},
+		"tuple-c": {TaskID: "tuple-c", LastEventAt: created, LastEventID: 900},
+	}}
+	server := NewServer(markers)
+	server.Workspace = "demo"
+	handler := authenticatedMemoryHandler(server)
+	read := func(since string) (*httptest.ResponseRecorder, []string) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		target := "/v1/activity"
+		if since != "" {
+			target += "?since=" + since
+		}
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		if recorder.Code != http.StatusOK {
+			return recorder, nil
+		}
+		var items []struct {
+			Task struct {
+				ID string `json:"id"`
+			} `json:"task"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &items); err != nil {
+			t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+		}
+		ids := []string{}
+		for _, item := range items {
+			ids = append(ids, item.Task.ID)
+		}
+		slices.Sort(ids)
+		return recorder, ids
+	}
+	cursorText := func(recorder *httptest.ResponseRecorder) string {
+		t.Helper()
+		raw, err := base64.RawURLEncoding.DecodeString(recorder.Header().Get("X-Conveyor-Cursor"))
+		if err != nil {
+			t.Fatalf("cursor is not base64url: %v", err)
+		}
+		return string(raw)
+	}
+	encode := func(text string) string { return base64.RawURLEncoding.EncodeToString([]byte(text)) }
+
+	full, ids := read("")
+	// The frontier is the maximum (at, id) tuple: tuple-c's ID 900 is the
+	// largest number but its event is the oldest, so it never sets the frontier.
+	if want := fmt.Sprintf("v2:%d:100", t1.UnixMicro()); cursorText(full) != want || !slices.Equal(ids, []string{"tuple-a", "tuple-b", "tuple-c"}) {
+		t.Fatalf("full read cursor=%q ids=%v, want %q and every task", cursorText(full), ids, want)
+	}
+	cursor := full.Header().Get("X-Conveyor-Cursor")
+
+	empty, ids := read(cursor)
+	if len(ids) != 0 || empty.Header().Get("X-Conveyor-Cursor") != cursor {
+		t.Fatalf("unchanged delta ids=%v cursor=%q", ids, cursorText(empty))
+	}
+
+	// A newer event with a lower ID than the frontier is still a change.
+	markers.markers["tuple-b"] = store.ActivityMarker{TaskID: "tuple-b", LastEventAt: t2, LastEventID: 40}
+	delta, ids := read(cursor)
+	if !slices.Equal(ids, []string{"tuple-b"}) || cursorText(delta) != fmt.Sprintf("v2:%d:40", t2.UnixMicro()) {
+		t.Fatalf("lower-ID newer event delta ids=%v cursor=%q", ids, cursorText(delta))
+	}
+	cursor = delta.Header().Get("X-Conveyor-Cursor")
+
+	// At an equal timestamp the ID breaks the tie in both directions.
+	markers.markers["tuple-a"] = store.ActivityMarker{TaskID: "tuple-a", LastEventAt: t2, LastEventID: 41}
+	markers.markers["tuple-c"] = store.ActivityMarker{TaskID: "tuple-c", LastEventAt: t2, LastEventID: 30}
+	tie, ids := read(cursor)
+	if !slices.Equal(ids, []string{"tuple-a"}) || cursorText(tie) != fmt.Sprintf("v2:%d:41", t2.UnixMicro()) {
+		t.Fatalf("timestamp-tie delta ids=%v cursor=%q", ids, cursorText(tie))
+	}
+
+	// A legacy numeric cursor cannot locate a time: it reads the full page once
+	// and upgrades the client to v2. A zero v2 frontier also reads everything.
+	for _, since := range []string{encode("v1:100"), encode("v1:0"), encode("v2:0:0")} {
+		upgraded, ids := read(since)
+		if !slices.Equal(ids, []string{"tuple-a", "tuple-b", "tuple-c"}) || !strings.HasPrefix(cursorText(upgraded), "v2:") {
+			t.Fatalf("since %q ids=%v cursor=%q, want a full page and a v2 cursor", since, ids, cursorText(upgraded))
+		}
+	}
+
+	for _, since := range []string{"not.base64", encode("v3:1:2"), encode("v2:-1:2"), encode("v2:1:-2"), encode("v2:1"), encode("v2:1:2:3"), encode("v2:x:1"), encode("v1:-1"), encode("v1:x"), encode("1:2")} {
+		refused, _ := read(since)
+		if refused.Code != http.StatusBadRequest {
+			t.Fatalf("since %q status=%d, want 400", since, refused.Code)
+		}
 	}
 }
 

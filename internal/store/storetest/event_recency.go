@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ func runEventRecency(t *testing.T, x Fixture) {
 	t.Run("ListEventsAfter resolves owned anchors chronologically", func(t *testing.T) { runEventAnchorCursor(t, x) })
 	t.Run("stream windows page by (at,id) from an inclusive bound", func(t *testing.T) { runEventStreamWindows(t, x) })
 	t.Run("activity markers and context filters use chronological recency", func(t *testing.T) { runChronologicalProjections(t, x) })
+	t.Run("activity delta keeps a newer lower-ID event after the frontier", func(t *testing.T) { runActivityDeltaFrontier(t, x) })
 	t.Run("intervention windows compare time, not ID", func(t *testing.T) { runInterventionWindowRecency(t, x) })
 	t.Run("numeric snapshot ceilings expose late lower-ID commits", func(t *testing.T) { runSnapshotCeilingResiduals(t, x) })
 	t.Run("causal merge windows compare (at,id) tuples", func(t *testing.T) { runCausalMergeRecency(t, x) })
@@ -331,6 +334,75 @@ func runChronologicalProjections(t *testing.T, x Fixture) {
 			ids = append(ids, task.ID)
 		}
 		t.Fatalf("governing-design filter=%v, want only %s", ids, attached.ID)
+	}
+}
+
+// runActivityDeltaFrontier captures an activity frontier, then commits newer
+// events whose IDs are lower than the frontier's, including timestamp ties,
+// across several tasks. Selecting markers strictly after the captured tuple
+// must return exactly the tasks that changed (component-persistence;
+// component-http-api).
+func runActivityDeltaFrontier(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	first, second, third := newAggregateTask(t, x), newAggregateTask(t, x), newAggregateTask(t, x)
+	ids := []string{first.ID, second.ID, third.ID}
+	at := seedTime()
+	seeded := x.SeedEvents(t, ctx, 0, []core.Event{
+		{ID: 500, TaskID: first.ID, Kind: "fixture.activity", At: at},
+		{ID: 400, TaskID: second.ID, Kind: "fixture.activity", At: at},
+		{ID: 900, TaskID: third.ID, Kind: "fixture.activity", At: at.Add(-time.Minute)},
+	})
+	base := seeded[0].ID - 500
+	markers, err := st.ListActivityMarkersForTasks(ctx, ids)
+	requireOK(t, err)
+	frontier := store.ActivityFrontier(markers)
+	if frontier.ID != seeded[0].ID || !frontier.At.Equal(seeded[0].At) {
+		t.Fatalf("frontier=%+v, want the maximum (at,id) tuple %d at %s", frontier, seeded[0].ID, seeded[0].At)
+	}
+	changed := func(frontier store.TaskEventPosition) []string {
+		t.Helper()
+		markers, err := st.ListActivityMarkersForTasks(ctx, ids)
+		requireOK(t, err)
+		out := []string{}
+		for _, marker := range markers {
+			if store.ActivityMarkerAfter(marker, frontier) {
+				out = append(out, marker.TaskID)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	if got := changed(frontier); len(got) != 0 {
+		t.Fatalf("unchanged delta=%v", got)
+	}
+
+	// A later event with a lower ID than the frontier commits on the second
+	// task, and the third task gains an event at the frontier's own time with
+	// a lower ID, which is chronologically before the frontier.
+	x.SeedEvents(t, ctx, base, []core.Event{
+		{ID: 100, TaskID: second.ID, Kind: "fixture.activity", At: at.Add(time.Second)},
+		{ID: 200, TaskID: third.ID, Kind: "fixture.activity", At: at},
+	})
+	want := []string{second.ID}
+	if got := changed(frontier); !slices.Equal(got, want) {
+		t.Fatalf("delta after a newer lower-ID event=%v want %v", got, want)
+	}
+	markers, err = st.ListActivityMarkersForTasks(ctx, ids)
+	requireOK(t, err)
+	next := store.ActivityFrontier(markers)
+	if next.ID != base+100 || !next.At.Equal(at.Add(time.Second)) {
+		t.Fatalf("advanced frontier=%+v, want the newer lower-ID event", next)
+	}
+
+	// At an equal timestamp a higher ID is after the frontier, and a lower ID
+	// is not.
+	x.SeedEvents(t, ctx, base, []core.Event{
+		{ID: 101, TaskID: first.ID, Kind: "fixture.activity", At: at.Add(time.Second)},
+		{ID: 99, TaskID: third.ID, Kind: "fixture.activity", At: at.Add(time.Second)},
+	})
+	want = []string{first.ID}
+	if got := changed(next); !slices.Equal(got, want) {
+		t.Fatalf("timestamp-tie delta=%v want %v", got, want)
 	}
 }
 
