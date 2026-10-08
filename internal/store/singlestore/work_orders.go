@@ -875,22 +875,55 @@ func (s *Store) claimOwnerTx(ctx context.Context, tx *sql.Tx, claim *core.WorkOr
 	}
 	return nil
 }
+
+// ListClaimBlockingProposalsForTask is the listing's read of the claim
+// predicate. The locked claim calls the same helper inside its transaction
+// (req-260810-70ce2f AC-1.1; component-work-orders).
+func (s *Store) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return claimBlockingProposalsTx(ctx, s.db, ws, taskID)
+}
+
+// claimBlockingProposalsTx returns the task's undecided implementation-origin
+// System Design and requirement versions in one workspace, archived documents
+// included, in store.SortClaimBlockingProposals order.
+func claimBlockingProposalsTx(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, workspaceID, taskID string) ([]store.ClaimBlockingProposal, error) {
+	rows, err := q.QueryContext(ctx, `SELECT 'system_design' AS tier,document_id AS id,version FROM system_design_versions WHERE workspace_id=? AND origin=? AND origin_task_id=? AND NOT confirmed AND NOT dismissed
+ UNION ALL SELECT 'requirement',requirement_id,version FROM requirement_versions WHERE workspace_id=? AND origin=? AND origin_task_id=? AND NOT confirmed AND NOT retired`,
+		workspaceID, string(core.SystemDesignOriginImplementation), taskID, workspaceID, string(core.RequirementOriginImplementation), taskID)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	defer rows.Close()
+	out := []store.ClaimBlockingProposal{}
+	for rows.Next() {
+		var item store.ClaimBlockingProposal
+		if err := rows.Scan(&item.Tier, &item.ID, &item.Version); err != nil {
+			return nil, translateBackendConflict(err)
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	// Go orders the result so every backend names the same first proposal,
+	// independent of database collation.
+	store.SortClaimBlockingProposals(out)
+	return out, nil
+}
+
 func (s *Store) reviewClaimGuardTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder, claim core.WorkOrderClaim, hash string) error {
-	var id string
-	var version int
-	err := tx.QueryRowContext(ctx, `SELECT document_id,version FROM system_design_versions WHERE workspace_id=? AND origin=? AND origin_task_id=? AND NOT confirmed AND NOT dismissed ORDER BY document_id,version LIMIT 1`, documentWorkspace(ctx), core.SystemDesignOriginImplementation, o.TaskID).Scan(&id, &version)
-	if err == nil {
-		return fmt.Errorf("review for task %s is waiting on task-authored System Design proposal %s v%d", o.TaskID, id, version)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	blocking, err := claimBlockingProposalsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
+	if err != nil {
 		return err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT requirement_id,version FROM requirement_versions WHERE workspace_id=? AND origin=? AND origin_task_id=? AND NOT confirmed AND NOT retired ORDER BY requirement_id,version LIMIT 1`, documentWorkspace(ctx), core.RequirementOriginImplementation, o.TaskID).Scan(&id, &version)
-	if err == nil {
-		return fmt.Errorf("review for task %s is waiting on task-authored requirement proposal %s v%d", o.TaskID, id, version)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
+	if len(blocking) > 0 {
+		return store.ClaimBlockingProposalError(o.TaskID, blocking[0])
 	}
 	if o.Stage == core.StageVerify {
 		return nil

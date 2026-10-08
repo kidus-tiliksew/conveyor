@@ -514,8 +514,21 @@ func (s *Server) claimTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found || next.Order.ID != orderID {
-		http.Error(w, "work order is not the task's next claimable order", http.StatusConflict)
-		return
+		// Listing withholds a review or verify order while a task-authored
+		// proposal is undecided. When that order is the task's only
+		// candidate, the claim itself reports the authoritative refusal, so a
+		// proposal that arrived after the client's read stays a typed wait
+		// (component-work-orders; component-mcp-protocol).
+		withheld, withheldErr := s.taskRunOrderWithheldByProposal(r.Context(), order, found)
+		if withheldErr != nil {
+			log.Printf("resolve task run claim proposal wait: %v", withheldErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !withheld {
+			http.Error(w, "work order is not the task's next claimable order", http.StatusConflict)
+			return
+		}
 	}
 	lease := time.Duration(request.LeaseSeconds) * time.Second
 	if lease <= 0 || lease > time.Hour {
@@ -536,6 +549,17 @@ func (s *Server) claimTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, claimed)
+}
+
+// taskRunOrderWithheldByProposal reports whether a queued verify or review
+// order with no other claimable candidate is withheld only by the
+// claim-blocking proposal read.
+func (s *Server) taskRunOrderWithheldByProposal(ctx context.Context, order core.WorkOrder, otherCandidate bool) (bool, error) {
+	if otherCandidate || order.State != core.WorkOrderQueued || (order.Stage != core.StageReview && order.Stage != core.StageVerify) {
+		return false, nil
+	}
+	blocking, err := s.Store.ListClaimBlockingProposalsForTask(ctx, order.TaskID)
+	return len(blocking) > 0, err
 }
 
 // taskRunReviewAwaitingProposal recognizes the existing store admission refusal

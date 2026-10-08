@@ -756,3 +756,41 @@ func scanWorker(row interface{ Scan(...any) error }) (core.Worker, error) {
 	}
 	return worker, err
 }
+
+// ListClaimBlockingProposalsForTask is the listing's read of the claim
+// predicate. The locked claim calls the same helper inside its transaction
+// (req-260810-70ce2f AC-1.1; component-work-orders).
+func (s *Store) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
+	return claimBlockingProposalsTx(ctx, s.boundary, workspace(ctx), taskID)
+}
+
+// claimBlockingProposalsTx returns the task's undecided implementation-origin
+// System Design and requirement versions in one workspace, archived documents
+// included, in store.SortClaimBlockingProposals order.
+func claimBlockingProposalsTx(ctx context.Context, q boundaryQuerier, workspaceID, taskID string) ([]store.ClaimBlockingProposal, error) {
+	rows, err := q.Query(ctx, `
+SELECT 'system_design'::text AS tier,document_id AS id,version FROM system_design_versions
+WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed
+UNION ALL
+SELECT 'requirement'::text,requirement_id,version FROM requirement_versions
+WHERE workspace_id=$1 AND origin=$4 AND origin_task_id=$3 AND NOT confirmed AND NOT retired`, workspaceID, string(core.SystemDesignOriginImplementation), taskID, string(core.RequirementOriginImplementation))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.ClaimBlockingProposal{}
+	for rows.Next() {
+		var item store.ClaimBlockingProposal
+		if err := rows.Scan(&item.Tier, &item.ID, &item.Version); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Go orders the result so every backend names the same first proposal,
+	// independent of database collation.
+	store.SortClaimBlockingProposals(out)
+	return out, nil
+}

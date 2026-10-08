@@ -97,21 +97,14 @@ type waitingProposal struct {
 	Version int    `json:"version"`
 }
 
-// requirementVersionWithholdsClaims and systemDesignVersionWithholdsClaims are
-// the claim-gate predicate of req-260810-70ce2f REQ-1 (AC-1.1–AC-1.4), stated
-// over one durable version: an unresolved implementation-origin version
-// authored by this task. The store claim transactions apply the same
-// predicate in SQL and in memory (component-work-orders); the parity tests in
+// store.RequirementVersionWithholdsClaims and
+// store.SystemDesignVersionWithholdsClaims are the claim-gate predicate of
+// req-260810-70ce2f REQ-1 (AC-1.1–AC-1.4), stated once in the store package.
+// Work-order listing, the claim precheck, and the store claim transactions
+// apply the same predicate (component-work-orders); the parity tests in
 // pending_proposals_test.go claim real verify and review orders against each
 // fixture this projection classifies. Decisions, task-context suggestions, and
 // operator, session, drift, or other-task origins never withhold a claim.
-func requirementVersionWithholdsClaims(taskID string, version core.RequirementVersion) bool {
-	return version.Origin == core.RequirementOriginImplementation && version.OriginTaskID == taskID && !version.Confirmed && !version.Retired
-}
-
-func systemDesignVersionWithholdsClaims(taskID string, version core.SystemDesignVersion) bool {
-	return version.Origin == core.SystemDesignOriginImplementation && version.OriginTaskID == taskID && !version.Confirmed && !version.Dismissed
-}
 
 // claimWaitWindowTasks reports the tasks whose verify or review claim is
 // pending or in flight: a submitted implementation (which stays submitted until
@@ -164,7 +157,7 @@ func (s *Server) proposalClaimWaitingByTask(ctx context.Context, orders []core.W
 			if err != nil {
 				return nil, err
 			}
-			withholds = requirementVersionWithholdsClaims(taskID, version)
+			withholds = store.RequirementVersionWithholdsClaims(taskID, version)
 		case "system_design":
 			version, err := s.Store.GetSystemDesignVersion(ctx, proposal.ID, proposal.Version)
 			if errors.Is(err, store.ErrNotFound) {
@@ -173,7 +166,7 @@ func (s *Server) proposalClaimWaitingByTask(ctx context.Context, orders []core.W
 			if err != nil {
 				return nil, err
 			}
-			withholds = systemDesignVersionWithholdsClaims(taskID, version)
+			withholds = store.SystemDesignVersionWithholdsClaims(taskID, version)
 		}
 		if withholds {
 			result[taskID] = append(result[taskID], identity)

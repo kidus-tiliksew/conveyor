@@ -162,6 +162,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"ArtifactIntake", true, runArtifactIntake},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
+		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
 		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},
 		{"WorkOrderClocks", true, runWorkOrderClocks},

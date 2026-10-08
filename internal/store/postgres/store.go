@@ -5009,26 +5009,14 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		var pendingDocument string
-		var pendingVersion int
-		pendingErr := tx.QueryRow(ctx, `SELECT document_id,version FROM system_design_versions
-			WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed
-			ORDER BY document_id,version LIMIT 1`, workspace(ctx), string(core.SystemDesignOriginImplementation), order.TaskID).Scan(&pendingDocument, &pendingVersion)
-		if pendingErr == nil {
-			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored System Design proposal %s v%d", order.TaskID, pendingDocument, pendingVersion)
+		// The listing's helper, inside the claim's transaction
+		// (req-260810-70ce2f AC-1.1; component-work-orders).
+		blocking, blockingErr := claimBlockingProposalsTx(ctx, tx, workspace(ctx), order.TaskID)
+		if blockingErr != nil {
+			return core.WorkOrder{}, blockingErr
 		}
-		if !errors.Is(pendingErr, pgx.ErrNoRows) {
-			return core.WorkOrder{}, pendingErr
-		}
-		var pendingRequirement string
-		pendingErr = tx.QueryRow(ctx, `SELECT requirement_id,version FROM requirement_versions
-			WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT retired
-			ORDER BY requirement_id,version LIMIT 1`, workspace(ctx), string(core.RequirementOriginImplementation), order.TaskID).Scan(&pendingRequirement, &pendingVersion)
-		if pendingErr == nil {
-			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored requirement proposal %s v%d", order.TaskID, pendingRequirement, pendingVersion)
-		}
-		if !errors.Is(pendingErr, pgx.ErrNoRows) {
-			return core.WorkOrder{}, pendingErr
+		if len(blocking) > 0 {
+			return core.WorkOrder{}, store.ClaimBlockingProposalError(order.TaskID, blocking[0])
 		}
 	}
 	if order.Stage == core.StageReview {

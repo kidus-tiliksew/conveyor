@@ -257,7 +257,7 @@ func (s *dependencyBatchObservationStore) ListDependencyBlockers(_ context.Conte
 	return s.blockers, nil
 }
 
-func (s *dependencyBatchObservationStore) ListPendingSystemDesignVersionsForTask(context.Context, string) ([]core.SystemDesignVersion, error) {
+func (s *dependencyBatchObservationStore) ListClaimBlockingProposalsForTask(context.Context, string) ([]store.ClaimBlockingProposal, error) {
 	return nil, nil
 }
 
@@ -340,12 +340,12 @@ func (s *scopedListObservationStore) ListDependencyBlockers(_ context.Context, t
 	return map[string]store.DependencyBlockers{"task-a": {BlockingTaskIDs: []string{"dependency"}}}, nil
 }
 
-func (s *scopedListObservationStore) ListPendingSystemDesignVersionsForTask(_ context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+func (s *scopedListObservationStore) ListClaimBlockingProposalsForTask(_ context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
 	s.designReads++
 	if taskID != "task-a" {
-		return nil, fmt.Errorf("unexpected design lookup for %s", taskID)
+		return nil, fmt.Errorf("unexpected proposal lookup for %s", taskID)
 	}
-	return []core.SystemDesignVersion{{DocumentID: "pending-design"}}, nil
+	return []store.ClaimBlockingProposal{{Tier: store.ClaimBlockingTierSystemDesign, ID: "pending-design", Version: 2}}, nil
 }
 
 func TestListForTaskUsesOnlyScopedReadsAndPreservesProjection(t *testing.T) {
@@ -2656,7 +2656,7 @@ func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) 
 	if review.ID == "" {
 		t.Fatalf("review order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, review.ID, core.WorkOrderClaim{SessionID: "reviewer", ClientToken: "review-secret", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on 1 task-authored System Design proposal") {
+	if _, err = service.Claim(ctx, review.ID, core.WorkOrderClaim{SessionID: "reviewer", ClientToken: "review-secret", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on task-authored System Design proposal "+design.ID+" v") {
 		t.Fatalf("review proposal gate error=%v", err)
 	}
 }
@@ -4402,6 +4402,204 @@ func TestConflictFixSubmissionRefusesSupersededRefreshRound(t *testing.T) {
 		}
 		if f.eventCount(t) != events || f.reads != 0 || f.reconciled != 0 {
 			t.Fatalf("refused replay wrote state: events %d→%d reads=%d reconciled=%d", events, f.eventCount(t), f.reads, f.reconciled)
+		}
+	})
+}
+
+// failingClaimBlockingStore fails the claim-blocking read.
+type failingClaimBlockingStore struct{ store.Store }
+
+func (failingClaimBlockingStore) ListClaimBlockingProposalsForTask(context.Context, string) ([]store.ClaimBlockingProposal, error) {
+	return nil, errors.New("claim-blocking read failed")
+}
+
+// TestClaimBlockingProposalsMatchListingAndClaim proves the workspace and
+// task listings advertise a verify or review order as claimable exactly when
+// Service.Claim admits it, across both proposal tiers and every nonblocking
+// origin (req-260810-70ce2f AC-1.1–AC-1.4; component-work-orders).
+func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
+	const designContent = "# Claim gate\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```"
+	requirementVersion := func(statement string) core.RequirementVersion {
+		return core.RequirementVersion{Content: "# Claim gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
+	}
+	type fixture struct {
+		ctx                     context.Context
+		st                      store.Store
+		task                    core.Task
+		requirementID, designID string
+	}
+	proposeRequirement := func(t *testing.T, f fixture, origin core.RequirementOrigin, taskID string) core.RequirementVersion {
+		t.Helper()
+		version := requirementVersion("Proposal by " + string(origin) + " for task " + taskID + "x")
+		version.RequirementID, version.Origin, version.OriginTaskID = f.requirementID, origin, taskID
+		if origin == core.RequirementOriginChat {
+			version.OriginTaskID, version.OriginSessionID = "", "session-1"
+		}
+		proposed, err := f.st.ProposeRequirementVersion(f.ctx, version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return proposed
+	}
+	proposeDesign := func(t *testing.T, f fixture, origin core.SystemDesignOrigin, taskID string) core.SystemDesignVersion {
+		t.Helper()
+		proposed, err := f.st.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: f.designID, Content: designContent + "\n\nRevision by " + taskID, Origin: origin, OriginTaskID: taskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return proposed
+	}
+	for _, tc := range []struct {
+		name  string
+		stage core.Stage
+		seed  func(*testing.T, fixture)
+		want  string // the proposal the refusal names; empty when claimable
+	}{
+		{name: "no proposal", stage: core.StageReview, seed: func(*testing.T, fixture) {}},
+		{name: "pending requirement", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
+		}, want: "requirement proposal req-claim v2"},
+		{name: "pending requirement on verify", stage: core.StageVerify, seed: func(t *testing.T, f fixture) {
+			proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
+		}, want: "requirement proposal req-claim v2"},
+		{name: "pending design", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposeDesign(t, f, core.SystemDesignOriginImplementation, f.task.ID)
+		}, want: "System Design proposal design-claim v2"},
+		{name: "mixed tiers name the design", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
+			proposeDesign(t, f, core.SystemDesignOriginImplementation, f.task.ID)
+		}, want: "System Design proposal design-claim v2"},
+		{name: "decision only", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			if _, err := f.st.ProposeDecision(f.ctx, core.Decision{Statement: "Decide.", Context: "Fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginImplementation, OriginTaskID: f.task.ID}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "operator session and other-task origins", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposeRequirement(t, f, core.RequirementOriginOperator, "")
+			proposeRequirement(t, f, core.RequirementOriginChat, "")
+			proposeRequirement(t, f, core.RequirementOriginImplementation, "another-task")
+			proposeDesign(t, f, core.SystemDesignOriginOperator, "")
+			proposeDesign(t, f, core.SystemDesignOriginImplementation, "another-task")
+		}},
+		{name: "archived document", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposeDesign(t, f, core.SystemDesignOriginImplementation, f.task.ID)
+			if err := f.st.ArchiveSystemDesign(f.ctx, f.designID, "operator", nil); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "System Design proposal design-claim v2"},
+		{name: "confirmed requirement", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposed := proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
+			if _, _, err := f.st.ConfirmRequirementVersion(f.ctx, f.requirementID, proposed.Version); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "dismissed design", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			proposed := proposeDesign(t, f, core.SystemDesignOriginImplementation, f.task.ID)
+			if _, _, err := f.st.DismissSystemDesignVersion(f.ctx, f.designID, proposed.Version); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "another workspace", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+			other := store.WithWorkspace(t.Context(), "other")
+			if _, _, err := f.st.CreateRequirement(other, core.Requirement{ID: f.requirementID, Title: "Other"}, func() core.RequirementVersion {
+				version := requirementVersion("Another workspace's proposal.")
+				version.Origin, version.OriginTaskID = core.RequirementOriginImplementation, f.task.ID
+				return version
+			}()); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(t.Context(), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "claim-gate", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: tc.stage, CreatedAt: time.Now().UTC()}
+			if tc.stage == core.StageVerify {
+				task.ReviewedHeadSHA = "submitted-head"
+				task.SetupContract.VerifyStage = true
+			}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			requirement := requirementVersion("Claims wait for task-authored proposals.")
+			requirement.Origin = core.RequirementOriginOperator
+			if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim", Title: "Claim gate"}, requirement); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := st.ConfirmRequirementVersion(ctx, "req-claim", 1); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-claim", Title: "Claim gate", Category: "Architecture"}, core.SystemDesignVersion{Content: designContent, Origin: core.SystemDesignOriginOperator}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := st.ConfirmSystemDesignVersion(ctx, "design-claim", 1); err != nil {
+				t.Fatal(err)
+			}
+			tc.seed(t, fixture{ctx: ctx, st: st, task: task, requirementID: "req-claim", designID: "design-claim"})
+			job := core.Job{ID: task.ID + "-" + string(tc.stage) + "-1", TaskID: task.ID, Stage: tc.stage, State: core.JobPending}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: tc.stage}
+			if tc.stage == core.StageVerify {
+				order.HeadSHA = task.ReviewedHeadSHA
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{
+				"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+				"verify": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			}}}
+			service := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+			workspaceOrders, err := service.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskOrders, err := service.ListForTask(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(workspaceOrders) != 1 || len(taskOrders) != 1 || workspaceOrders[0].Claimable != taskOrders[0].Claimable {
+				t.Fatalf("workspace listing=%+v task listing=%+v", workspaceOrders, taskOrders)
+			}
+			claimable := taskOrders[0].Claimable
+			_, claimErr := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "claim-session", ClientToken: "claim-token", ClaimantID: "claimant", Lease: time.Minute})
+			if tc.want == "" {
+				if !claimable || claimErr != nil {
+					t.Fatalf("claimable=%v claim err=%v, want an admitted claim", claimable, claimErr)
+				}
+				return
+			}
+			if claimable || claimErr == nil || !strings.Contains(claimErr.Error(), "waiting on task-authored "+tc.want) {
+				t.Fatalf("claimable=%v claim err=%v, want a withheld order naming %s", claimable, claimErr, tc.want)
+			}
+		})
+	}
+
+	t.Run("failed read", func(t *testing.T) {
+		ctx := store.WithWorkspace(t.Context(), "test")
+		base := store.NewMemory()
+		task := core.Task{ID: "claim-read-failure", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+		if err := base.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+		if err := base.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+			t.Fatal(err)
+		}
+		service := &Service{Store: failingClaimBlockingStore{base}}
+		if _, err := service.List(ctx); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
+			t.Fatalf("workspace listing err=%v", err)
+		}
+		if _, err := service.ListForTask(ctx, task.ID); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
+			t.Fatalf("task listing err=%v", err)
+		}
+		if _, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "s", ClientToken: "c", ClaimantID: "claimant", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
+			t.Fatalf("claim err=%v", err)
 		}
 	})
 }

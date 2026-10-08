@@ -392,6 +392,10 @@ type DocumentStore interface {
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
 	ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
+	// ListClaimBlockingProposalsForTask returns the task's undecided
+	// task-authored requirement and System Design versions in the bound
+	// workspace, the predicate that withholds its verify and review claims.
+	ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]ClaimBlockingProposal, error)
 	ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
@@ -3702,27 +3706,10 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot be claimed", id)
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		workspace := workspaceOrDefault(ctx, "")
-		for key, versions := range m.systemDesignVersions {
-			if key.workspace != workspace {
-				continue
-			}
-			for _, version := range versions {
-				if version.Origin == core.SystemDesignOriginImplementation && version.OriginTaskID == order.TaskID && !version.Confirmed && !version.Dismissed {
-					return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored System Design proposal %s v%d", order.TaskID, version.DocumentID, version.Version)
-				}
-			}
-		}
-		for key, versions := range m.requirementVersions {
-			if key.workspace != workspace {
-				continue
-			}
-			for _, version := range versions {
-				if version.Origin == core.RequirementOriginImplementation && version.OriginTaskID == order.TaskID &&
-					!version.Confirmed && !version.Retired {
-					return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored requirement proposal %s v%d", order.TaskID, version.RequirementID, version.Version)
-				}
-			}
+		// The same predicate and read the listing uses (req-260810-70ce2f
+		// AC-1.1; component-work-orders).
+		if blocking := m.claimBlockingProposalsLocked(workspaceOrDefault(ctx, ""), order.TaskID); len(blocking) > 0 {
+			return core.WorkOrder{}, ClaimBlockingProposalError(order.TaskID, blocking[0])
 		}
 	}
 	if order.State == core.WorkOrderStale {
