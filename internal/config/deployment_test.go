@@ -556,10 +556,10 @@ func TestDeploymentLoadKeepsLegacyDefaultSetupPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixtures := map[string][]byte{
-		"setup-only default setup":                   legacySetupDeployment(t, false),
+		"setup-only default setup":                    legacySetupDeployment(t, false),
 		"default setup overriding a stale projection": legacySetupDeployment(t, true),
-		"earlier init output":                        legacyInitShapedDeployment(t),
-		"annotated example":                          example,
+		"earlier init output":                         legacyInitShapedDeployment(t),
+		"annotated example":                           example,
 	}
 	for name, data := range fixtures {
 		t.Run(name, func(t *testing.T) {
