@@ -1297,6 +1297,8 @@ type reviewItem struct {
 	NeedsAttention            bool                                  `json:"needs_attention"`
 	AtMergeGate               bool                                  `json:"at_merge_gate"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
+	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
+	WaitingProposals          []waitingProposal                     `json:"waiting_proposals,omitempty"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
 	WorkOrders                []workOrderActivityView               `json:"work_orders"`
@@ -1316,6 +1318,7 @@ type activityItem struct {
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
+	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
@@ -1483,7 +1486,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, err := s.pendingAuthorityTasks(r.Context(), proposals, taskIDs)
+	pendingAuthority, claimWaiting, err := s.proposalSignals(r.Context(), proposals, taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -1510,10 +1513,13 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		}
 		// Project the existing presentation-only authority signal without
 		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; component-http-api).
+		// proposal_claim_waiting is the narrower read of the claim gate's own
+		// predicate (req-260810-70ce2f REQ-1); attention keeps its broader meaning.
 		item := activityItem{
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
 			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
 			PendingAuthority:          pendingAuthority[task.ID],
+			ProposalClaimWaiting:      len(claimWaiting[task.ID]) > 0,
 			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,
@@ -2102,12 +2108,21 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), workOrders, proposals)
+	if err != nil {
+		log.Printf("project proposal claim wait: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	waitingProposals := claimWaiting[id]
 	writeJSON(w, http.StatusOK, taskDetailProjection{reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
 		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority || len(task.Context.Proposals) > 0,
 		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
+		ProposalClaimWaiting:      len(waitingProposals) > 0,
+		WaitingProposals:          waitingProposals,
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,
 		WorkOrders:                workOrderViews,

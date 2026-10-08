@@ -3,7 +3,14 @@ import { Link } from '@tanstack/react-router'
 import { AlertTriangle, Check, FileText } from 'lucide-react'
 import { confirmSystemDesignVersion, fetchSystemDesigns, SystemDesignConflictError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type { SystemDesignSummary, SystemDesignVersionSummary, Task } from '../../lib/types'
+import type {
+  ActivityItem,
+  PendingProposal,
+  SystemDesignSummary,
+  SystemDesignVersionSummary,
+  Task,
+  WaitingProposal,
+} from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 
@@ -14,9 +21,12 @@ export interface Proposal {
   expected: number
 }
 
-// req-260820-6a468a AC-2.1 and req-260810-70ce2f AC-1.1:
-// the same review attention surface names every pending document tier.
-export function reviewGateCopy(tiers: readonly string[]) {
+// req-260810-70ce2f REQ-1 and req-260810-23b69f AC-2.1: only the task's own
+// implementation-origin requirement and System Design proposals withhold its
+// verify and review claims. The server names them in `waiting_proposals`; this
+// copy never infers a wait from the broader attention signal.
+export function waitingGateCopy(blockers: readonly Pick<WaitingProposal, 'tier'>[]) {
+  const tiers = blockers.map((blocker) => blocker.tier as string)
   const noun =
     tiers.length > 0 && tiers.every((tier) => tier === 'requirement')
       ? 'requirement'
@@ -25,10 +35,162 @@ export function reviewGateCopy(tiers: readonly string[]) {
         : 'document'
   const proposal = tiers.length > 1 ? 'proposals' : 'proposal'
   return {
-    headline: `Review is waiting on a ${noun} decision`,
-    explanation: `This review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
+    headline: `Verification and review are waiting on a ${noun} decision`,
+    explanation: `Verification and review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
     link: `Confirm or dismiss the ${proposal}`,
   }
+}
+
+/** The accessible name of a proposal notice that reports a real claim wait. */
+export const waitingRegionLabel = 'Verification and review are waiting on a document decision'
+/** The accessible name of a notice whose proposals hold nothing. */
+export const signalOnlyRegionLabel = 'Pending proposals from this task'
+
+const tierLabels: Record<string, string> = {
+  requirement: 'Requirement',
+  system_design: 'System Design',
+  decision: 'Decision',
+}
+
+function proposalLabel(proposal: { tier: string; id: string; version?: number }) {
+  const version = proposal.tier === 'decision' || proposal.version == null ? '' : ` v${proposal.version}`
+  return `${tierLabels[proposal.tier] ?? 'Document'} ${proposal.id}${version}`
+}
+
+// A task-authored proposal that is pending but withholds no claim: decisions,
+// and any requirement or System Design version the server did not name as a
+// blocker. Review does not include it and nothing waits on it
+// (req-260810-23b69f AC-2.1, AC-2.2; REQ-3).
+export function signalOnlyCopy(proposals: readonly Pick<PendingProposal, 'tier'>[]) {
+  const plural = proposals.length > 1
+  const decisions = proposals.length > 0 && proposals.every((proposal) => proposal.tier === 'decision')
+  const noun = `${decisions ? 'decision ' : ''}${plural ? 'proposals' : 'proposal'}`
+  return {
+    headline: `Review will not include ${plural ? 'these' : 'this'} pending ${noun}`,
+    explanation: `Verification and review are not waiting on ${plural ? 'them' : 'it'}.`,
+  }
+}
+
+export interface ProposalReviewEffect {
+  /** The server's claim-wait projection for this task. */
+  waiting: boolean
+  /** The proposals that withhold verify and review claims. */
+  blockers: WaitingProposal[]
+  /** Task-authored pending proposals that withhold nothing. */
+  signalOnly: PendingProposal[]
+}
+
+/**
+ * Splits the task's own pending proposals by their actual effect on review.
+ * Only a task carrying the pending-authority attention signal has an effect to
+ * state; the wait itself is read from `proposal_claim_waiting` and
+ * `waiting_proposals`, never from the proposal tiers.
+ */
+export function proposalReviewEffect(
+  item: Pick<ActivityItem, 'task' | 'pending_authority' | 'proposal_claim_waiting' | 'waiting_proposals'>,
+  pending: readonly PendingProposal[],
+): ProposalReviewEffect | undefined {
+  if (item.pending_authority !== true) return undefined
+  const waiting = item.proposal_claim_waiting === true
+  const blockers = waiting ? (item.waiting_proposals ?? []) : []
+  const blocking = (proposal: PendingProposal) =>
+    blockers.some(
+      (blocker) => blocker.tier === proposal.tier && blocker.id === proposal.id && blocker.version === proposal.version,
+    )
+  const signalOnly = pending.filter(
+    (proposal) =>
+      proposal.origin_type === 'task' &&
+      proposal.origin_id === item.task.id &&
+      (proposal.tier === 'decision' || proposal.tier === 'requirement' || proposal.tier === 'system_design') &&
+      !blocking(proposal),
+  )
+  return { waiting, blockers, signalOnly }
+}
+
+export function hasProposalReviewNotice(effect: ProposalReviewEffect | undefined): effect is ProposalReviewEffect {
+  return effect != null && (effect.waiting || effect.signalOnly.length > 0)
+}
+
+export function proposalNoticeLabel(effect: ProposalReviewEffect) {
+  return effect.waiting ? waitingRegionLabel : signalOnlyRegionLabel
+}
+
+function proposalLinkText(effect: ProposalReviewEffect) {
+  return effect.blockers.length + effect.signalOnly.length > 1
+    ? 'Confirm or dismiss the proposals'
+    : 'Confirm or dismiss the proposal'
+}
+
+/**
+ * The statement of each task-authored proposal's effect on review. Blockers are
+ * named apart from signal-only proposals, so a decision is never presented as
+ * the reason verification or review is waiting.
+ */
+export function ProposalReviewNotice({
+  effect,
+  taskId,
+  pending,
+  showLink = true,
+}: {
+  effect: ProposalReviewEffect
+  taskId: string
+  pending: readonly PendingProposal[]
+  showLink?: boolean
+}) {
+  if (!hasProposalReviewNotice(effect)) return null
+  const gate = waitingGateCopy(effect.blockers)
+  const signal = signalOnlyCopy(effect.signalOnly)
+  const title = (blocker: WaitingProposal) =>
+    pending.find(
+      (proposal) =>
+        proposal.tier === blocker.tier && proposal.id === blocker.id && proposal.version === blocker.version,
+    )?.title
+  return (
+    <div className="flex items-start gap-2">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+      <div className="min-w-0 space-y-2 text-xs leading-5 text-muted">
+        {effect.waiting && (
+          <div>
+            <p className="font-medium text-attention">{gate.headline}</p>
+            <p>{gate.explanation}</p>
+            {effect.blockers.length > 0 && (
+              <ul aria-label="Proposals verification and review are waiting on" className="mt-1 list-disc pl-4">
+                {effect.blockers.map((blocker) => (
+                  <li key={`${blocker.tier}:${blocker.id}:${blocker.version}`}>
+                    <span className="font-medium">{proposalLabel(blocker)}</span>
+                    {title(blocker) ? ` — ${title(blocker)}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {effect.signalOnly.length > 0 && (
+          <div>
+            <p className={effect.waiting ? 'font-medium' : 'font-medium text-attention'}>{signal.headline}</p>
+            <p>{signal.explanation}</p>
+            <ul aria-label="Proposals review will not include" className="mt-1 list-disc pl-4">
+              {effect.signalOnly.map((proposal) => (
+                <li key={`${proposal.tier}:${proposal.id}:${proposal.version ?? ''}`}>
+                  <span className="font-medium">{proposalLabel(proposal)}</span>
+                  {proposal.title ? ` — ${proposal.title}` : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {showLink && (
+          <Link
+            to="/pending-proposals"
+            search={{ task: taskId }}
+            className="inline-block font-medium text-primary hover:underline"
+          >
+            {proposalLinkText(effect)}
+          </Link>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // Document plus version, not the object reference: a refetch rebuilds these
@@ -100,13 +262,14 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
 export function SystemDesignProposalCard({
   task,
   proposals,
-  reviewWaiting = false,
-  gateCopy = reviewGateCopy([]),
+  effect,
+  pending = [],
 }: {
   task: Task
   proposals: Proposal[]
-  reviewWaiting?: boolean
-  gateCopy?: ReturnType<typeof reviewGateCopy>
+  /** The task's proposal effect on review, when it is in review. */
+  effect?: ProposalReviewEffect
+  pending?: readonly PendingProposal[]
 }) {
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
@@ -125,21 +288,14 @@ export function SystemDesignProposalCard({
   })
 
   if (proposals.length === 0) return null
+  const notice = hasProposalReviewNotice(effect) ? effect : undefined
 
   return (
     <section
-      aria-label={reviewWaiting ? 'Review is waiting on a document decision' : 'System Design proposals from this task'}
+      aria-label={notice?.waiting ? waitingRegionLabel : 'System Design proposals from this task'}
       className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
     >
-      {reviewWaiting && (
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-          <div className="text-xs leading-5 text-muted">
-            <p className="font-medium text-attention">{gateCopy.headline}</p>
-            <p>{gateCopy.explanation}</p>
-          </div>
-        </div>
-      )}
+      {notice && <ProposalReviewNotice effect={notice} taskId={task.id} pending={pending} showLink={false} />}
       {proposals.map((proposal) => {
         const active = confirm.variables != null && proposalIdentity(confirm.variables) === proposalIdentity(proposal)
         return (
@@ -172,13 +328,13 @@ export function SystemDesignProposalCard({
           </div>
         )
       })}
-      {reviewWaiting && (
+      {notice && (
         <Link
           to="/pending-proposals"
           search={{ task: task.id }}
           className="inline-block text-xs font-medium text-primary hover:underline"
         >
-          {gateCopy.link}
+          {proposalLinkText(notice)}
         </Link>
       )}
     </section>

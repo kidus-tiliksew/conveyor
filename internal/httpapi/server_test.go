@@ -1397,7 +1397,9 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 	detail := httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) || !strings.Contains(detail.Body.String(), `"needs_attention":true`) {
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) || !strings.Contains(detail.Body.String(), `"needs_attention":true`) ||
+		!strings.Contains(detail.Body.String(), `"proposal_claim_waiting":true`) ||
+		!strings.Contains(detail.Body.String(), `"waiting_proposals":[{"tier":"system_design","id":"`+design.ID+`","version":1}]`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 	activity := httptest.NewRecorder()
@@ -1427,7 +1429,8 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 	detail = httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":false`) {
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":false`) ||
+		!strings.Contains(detail.Body.String(), `"proposal_claim_waiting":false`) || strings.Contains(detail.Body.String(), `"waiting_proposals"`) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 	activity = httptest.NewRecorder()

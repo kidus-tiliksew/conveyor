@@ -193,6 +193,13 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
           checkout_guidance: '',
           needs_attention: requirementPending,
           pending_authority: requirementPending,
+          proposal_claim_waiting: requirementPending,
+          waiting_proposals: requirementPending
+            ? [
+                { tier: 'requirement', id: 'req-attention', version: 2 },
+                { tier: 'requirement', id: 'req-attention', version: 3 },
+              ]
+            : undefined,
           work_orders: [],
           attachments: [],
           verification_evidence: [],
@@ -224,8 +231,13 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
   ).toBeVisible()
 
   await page.goto('/tasks/review-task/full')
-  const warning = page.getByRole('region', { name: 'Review is waiting on a document decision' })
-  await expect(warning).toContainText('This review cannot be claimed until you confirm or dismiss')
+  const warning = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
+  await expect(warning).toContainText('Verification and review cannot be claimed until you confirm or dismiss')
+  await expect(warning.getByRole('list', { name: 'Proposals verification and review are waiting on' })).toContainText(
+    'Requirement req-attention v3 — Operator attention',
+  )
+  // The operator-origin decision in the queue is not this task's and is never listed here.
+  await expect(warning).not.toContainText('DEC-16')
   await warning.getByRole('link', { name: 'Confirm or dismiss the proposal' }).click()
   await expect(page.getByText('Showing proposals from task review-task.')).toBeVisible()
   const later = page.getByRole('listitem').filter({ hasText: 'v3' })
@@ -480,6 +492,8 @@ for (const tier of ['requirement', 'system_design'] as const) {
               checkout_guidance: '',
               needs_attention: !confirmed,
               pending_authority: !confirmed,
+              proposal_claim_waiting: !confirmed,
+              waiting_proposals: confirmed ? undefined : [{ tier, id: 'document', version: 2 }],
             },
           })
         if (path.endsWith('/events/stream')) return route.fulfill({ status: 204 })
@@ -550,7 +564,7 @@ for (const tier of ['requirement', 'system_design'] as const) {
       })
       if (outcome === 'success') {
         await page.goto('/tasks/origin-task/full')
-        const warning = page.getByRole('region', { name: 'Review is waiting on a document decision' })
+        const warning = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
         await warning.getByRole('link', { name: 'Confirm or dismiss the proposal' }).click()
       } else await page.goto('/pending-proposals')
       await page.getByRole('button', { name: 'Revise', exact: true }).click()
@@ -577,7 +591,9 @@ for (const tier of ['requirement', 'system_design'] as const) {
         expect(calls).toEqual(['propose', 'confirm'])
         await page.goBack()
         await expect(page.getByRole('heading', { name: 'Origin task', exact: true })).toBeVisible()
-        await expect(page.getByRole('region', { name: 'Review is waiting on a document decision' })).toHaveCount(0)
+        await expect(
+          page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
+        ).toHaveCount(0)
       } else {
         await expect(dialog.getByRole('alert')).toContainText(
           outcome === 'validation'

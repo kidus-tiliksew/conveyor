@@ -91,9 +91,14 @@ export function FailedTriageCard({ item }: { item: ActivityItem }) {
 
 export function canRedispatch(item: ActivityItem) {
   if (dependencyBlockedImplementationOrder(item) || unsatisfiableDependencyOrder(item)) return false
+  // Only a real claim wait makes a queued verify or review order unclaimable; a
+  // decision or other signal-only proposal never suppresses recovery
+  // (req-260810-70ce2f REQ-1; req-260810-23b69f REQ-3).
   if (
-    item.pending_authority === true &&
-    (item.work_orders ?? []).some((order) => order.stage === 'review' && order.state === 'queued')
+    item.proposal_claim_waiting === true &&
+    (item.work_orders ?? []).some(
+      (order) => (order.stage === 'review' || order.stage === 'verify') && order.state === 'queued',
+    )
   )
     return false
   return item.task.state === 'queued' || item.task.state === 'closed' || item.task.state === 'parked'
