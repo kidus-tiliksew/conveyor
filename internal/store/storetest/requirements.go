@@ -638,17 +638,31 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 				}
 			})
 		}
-		resolved, err := monitorStore.ResolveDrift(ctx, drift.ID, "requirements_amended", confirmed.ID)
-		if err != nil || resolved.RequirementID != confirmed.ID || resolved.Outcome != "requirements_amended" || resolved.ResolvedAt.IsZero() {
-			t.Fatalf("resolved drift=%+v err=%v", resolved, err)
+		// requirements_amended proposes the revision and leaves the drift open
+		// until that version is confirmed (DEC-46; req-delivery-and-forge
+		// AC-4.2, AC-4.3).
+		proposed, err := monitorStore.ResolveDrift(ctx, drift.ID, "requirements_amended", confirmed.ID)
+		if err != nil || proposed.RequirementID != confirmed.ID || proposed.Outcome != "" || !proposed.ResolvedAt.IsZero() {
+			t.Fatalf("proposed drift=%+v err=%v", proposed, err)
 		}
 		repeated, err := monitorStore.ResolveDrift(ctx, drift.ID, "requirements_amended", confirmed.ID)
-		if err != nil || repeated.RequirementID != confirmed.ID || !sameInstant(repeated.ResolvedAt, resolved.ResolvedAt) {
-			t.Fatalf("repeated resolution=%+v err=%v", repeated, err)
+		if err != nil || repeated.RequirementID != confirmed.ID || repeated.Outcome != "" || !repeated.ResolvedAt.IsZero() {
+			t.Fatalf("repeated proposal=%+v err=%v", repeated, err)
 		}
 		versions, err := st.ListRequirementVersions(ctx, confirmed.ID)
 		if err != nil || len(versions) != 2 || versions[1].OriginDriftID != drift.ID || versions[1].Confirmed {
 			t.Fatalf("amendment versions=%+v err=%v", versions, err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, confirmed.ID, versions[1].Version); err != nil {
+			t.Fatal(err)
+		}
+		resolved, fresh, err := monitorStore.RecordDrift(ctx, drift)
+		if err != nil || fresh || resolved.RequirementID != confirmed.ID || resolved.Outcome != "requirements_amended" || resolved.ResolvedAt.IsZero() {
+			t.Fatalf("confirmed amendment drift=%+v fresh=%t err=%v", resolved, fresh, err)
+		}
+		replayed, err := monitorStore.ResolveDrift(ctx, drift.ID, "requirements_amended", confirmed.ID)
+		if err != nil || replayed.Outcome != "requirements_amended" || !sameInstant(replayed.ResolvedAt, resolved.ResolvedAt) {
+			t.Fatalf("replayed resolution=%+v err=%v", replayed, err)
 		}
 		events, err := st.ListEvents(ctx, taskID)
 		if err != nil {
@@ -669,6 +683,8 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("reconciliation event count=%d, want 1", reconciled)
 		}
 	})
+
+	runDriftAmendmentConformance(t, factory)
 
 	t.Run("planning uploads follow the produced entity on finalize", func(t *testing.T) {
 		for _, target := range []string{"requirement", "task"} {

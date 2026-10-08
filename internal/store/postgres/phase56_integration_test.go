@@ -123,17 +123,50 @@ func TestDriftRequirementAmendmentIntegration(t *testing.T) {
 	if err != nil || len(versions) != 2 || versions[1].OriginDriftID != drift.ID || versions[1].Confirmed {
 		t.Fatalf("versions=%+v err=%v", versions, err)
 	}
-	events, err := st.ListEvents(ctx, task.ID)
+	reconciledEvents := func(reader *Store) int {
+		events, eventsErr := reader.ListEvents(ctx, task.ID)
+		if eventsErr != nil {
+			t.Fatal(eventsErr)
+		}
+		reconciled := 0
+		for _, event := range events {
+			if event.Kind == "monitor.drift_reconciled" {
+				reconciled++
+			}
+		}
+		return reconciled
+	}
+	// The proposal leaves the drift open until its linked version is
+	// confirmed (DEC-46; req-delivery-and-forge AC-4.2, AC-4.3).
+	if count := reconciledEvents(st); count != 0 {
+		t.Fatalf("open amendment reconciliation events=%d", count)
+	}
+	// A restarted store reads the durable link and confirmation closes the
+	// drift in the same transaction.
+	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconciled := 0
-	for _, event := range events {
-		if event.Kind == "monitor.drift_reconciled" {
-			reconciled++
-		}
+	defer restarted.Close()
+	status, err := restarted.MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil || status.DriftCount != 1 || status.Drift[0].ID != drift.ID || status.Drift[0].RequirementID != requirement.ID {
+		t.Fatalf("restarted status=%+v err=%v", status.Drift, err)
 	}
-	if reconciled != 1 {
-		t.Fatalf("reconciliation events=%+v", events)
+	if _, _, err = restarted.ConfirmRequirementVersion(ctx, requirement.ID, versions[1].Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = restarted.ConfirmRequirementVersion(ctx, requirement.ID, versions[1].Version); err != nil {
+		t.Fatal(err)
+	}
+	status, err = restarted.MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil || status.DriftCount != 0 {
+		t.Fatalf("confirmed status=%+v err=%v", status.Drift, err)
+	}
+	if count := reconciledEvents(restarted); count != 1 {
+		t.Fatalf("confirmed amendment reconciliation events=%d", count)
+	}
+	resolved, err := restarted.ResolveDrift(ctx, drift.ID, "requirements_amended", "")
+	if err != nil || resolved.Outcome != "requirements_amended" || resolved.ResolvedAt.IsZero() {
+		t.Fatalf("resolved replay=%+v err=%v", resolved, err)
 	}
 }

@@ -147,6 +147,12 @@ func monitorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// requirements_amended proposes a revision and leaves the drift
+			// open until the operator confirms that version (DEC-46).
+			if drift.Outcome == "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "drift %s stays open until the proposed revision of requirement %s is confirmed (task %s)\n", drift.ID, drift.RequirementID, drift.TaskID)
+				return nil
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "resolved drift %s via %s (task %s)\n", drift.ID, drift.Outcome, drift.TaskID)
 			return nil
 		},

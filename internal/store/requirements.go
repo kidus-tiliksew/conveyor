@@ -420,6 +420,7 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_confirmed", Payload: core.JSONPayload(payload)})
 	m.recomputeDecisionSweepsForDocumentLocked(ctx, core.DecisionSweepTierRequirement, requirementID, confirmed.Content)
 	m.activatePendingRequirementContextLocked(ctx, workspace, requirementID, version)
+	m.reconcileConfirmedRequirementDriftLocked(ctx, workspace, requirementID, confirmed, now)
 	return requirement, confirmed, nil
 }
 
