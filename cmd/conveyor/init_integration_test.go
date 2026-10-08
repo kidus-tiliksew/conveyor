@@ -172,7 +172,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if err != nil || len(workspaces) != 1 || workspaces[0].ID != "fresh" {
 		t.Fatalf("workspaces=%+v err=%v", workspaces, err)
 	}
-	deployment, err := config.Load(configPath)
+	deployment, err := config.LoadDeployment(configPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
