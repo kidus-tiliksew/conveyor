@@ -68,7 +68,12 @@ func TestHeartbeatAcceptsClientLocalHarnessProbesWithoutServerRegistry(t *testin
 	now := time.Date(2026, 10, 8, 4, 0, 0, 0, time.UTC)
 	service, st, ctx, worker := heartbeatFixture(t, now)
 	checked := now.Add(-time.Minute)
-	fingerprint := strings.Repeat("ab", 32)
+	// The worker sends HarnessFingerprint of its own local definition; the
+	// server accepts it without knowing that definition.
+	fingerprint := HarnessFingerprint(config.Harness{Name: "local-only-agent", Command: []string{"local-only-agent", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"local-only-agent", "--version"}, ProbeTimeoutText: "5s"})
+	if !validHarnessFingerprint(fingerprint) {
+		t.Fatalf("worker fingerprint %q fails the server shape rule", fingerprint)
+	}
 	probes := []core.HarnessProbe{
 		{Harness: "local-only-agent", Fingerprint: fingerprint, Healthy: true, CheckedAt: checked},
 		{Harness: "another-local-agent", Healthy: false, Message: "probe exited 1", Transition: "healthy_to_unhealthy"},
@@ -122,6 +127,8 @@ func TestHeartbeatBoundsProbeReportShapeWithoutEchoingValues(t *testing.T) {
 		{name: "padded name", probes: []core.HarnessProbe{{Harness: " codex"}}},
 		{name: "control character", probes: []core.HarnessProbe{{Harness: "co\ndex"}}},
 		{name: "invalid utf8", probes: []core.HarnessProbe{{Harness: "co\xffdex"}}},
+		{name: "non-printable format character", probes: []core.HarnessProbe{{Harness: "co\u200bdex"}}},
+		{name: "interior space", probes: []core.HarnessProbe{{Harness: "local agent"}}, ok: true},
 		{name: "short fingerprint", probes: []core.HarnessProbe{{Harness: "codex", Fingerprint: "abc123"}}},
 		{name: "uppercase fingerprint", probes: []core.HarnessProbe{{Harness: "codex", Fingerprint: strings.Repeat("AB", 32)}}},
 		{name: "unknown transition", probes: []core.HarnessProbe{{Harness: "codex", Transition: "sideways"}}},

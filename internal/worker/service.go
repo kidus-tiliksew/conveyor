@@ -385,7 +385,7 @@ func validateHarnessProbe(probe core.HarnessProbe) error {
 		return errors.New("requires a harness name without surrounding whitespace")
 	case len(probe.Harness) > MaxHarnessProbeNameBytes:
 		return fmt.Errorf("harness name exceeds %d bytes", MaxHarnessProbeNameBytes)
-	case !utf8.ValidString(probe.Harness) || strings.IndexFunc(probe.Harness, unicode.IsControl) >= 0:
+	case !utf8.ValidString(probe.Harness) || strings.IndexFunc(probe.Harness, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0:
 		return errors.New("harness name must be printable UTF-8")
 	case probe.Fingerprint != "" && !validHarnessFingerprint(probe.Fingerprint):
 		return fmt.Errorf("fingerprint must be %d lowercase hexadecimal characters", harnessProbeFingerprintLength)
