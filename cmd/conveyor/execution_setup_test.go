@@ -333,7 +333,7 @@ func TestExecutionSetupCommandIsDistinctFromTaskSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.CommandPath() != "config init-execution" || !strings.Contains(resolved.Long, "conveyor task setup") || resolved.Flags().Lookup("defaults") == nil {
+	if resolved.CommandPath() != "config init-execution" || strings.Contains(resolved.Long, "conveyor task setup") || !strings.Contains(resolved.Long, "conveyor run --setup") || resolved.Flags().Lookup("defaults") == nil {
 		t.Fatalf("init command path=%q long=%q", resolved.CommandPath(), resolved.Long)
 	}
 }

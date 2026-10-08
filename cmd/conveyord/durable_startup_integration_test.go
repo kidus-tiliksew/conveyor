@@ -148,6 +148,11 @@ repos:
 				t.Fatalf("startup log missing backend: %s", b)
 			}
 			deprecationWarning := config.DeprecatedGitHubAppKeyEncryptionKeyEnv + " is deprecated; rename it to " + config.GitHubAppKeyEncryptionKeyEnv
+			// The routing-only fixture carries executor models; the deployment
+			// loader ignores and names them (component-runtime).
+			if !strings.Contains(string(b), "ignoring retired execution detail in deployment configuration (DEC-56): routing.stages.implement.execution, routing.stages.implement.model") {
+				t.Fatalf("startup did not load the deployment file through the deployment loader: %s", b)
+			}
 			if strings.Count(string(b), deprecationWarning) != 1 || strings.Contains(string(b), "GitHub App key encryption unavailable") {
 				t.Fatalf("startup log must warn once about the deprecated App key variable and install the key: %s", b)
 			}

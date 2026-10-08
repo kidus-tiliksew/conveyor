@@ -52,10 +52,12 @@ same trust model as `gh` and kubeconfig).
 `conveyor init` initializes an organization and first workspace interactively:
 organization name, first operator identity, workspace id, and the target
 repository. It requires `CONVEYOR_DATABASE_URL` and `CONVEYOR_API_TOKEN` in
-the environment plus `CONVEYOR_LLM_API_KEY` when the generated setup uses
-in-process triage or planning. It registers the repository by name, URL, and
-default branch without requiring a local clone or forge tool, writes
-`conveyor.yaml` (mode 0600), and prints the first operator's sign-in link.
+the environment plus `CONVEYOR_LLM_API_KEY` for in-process triage and
+planning. It registers the repository by name, URL, and default branch without
+requiring a local clone or forge tool, writes a policy-only deployment
+`conveyor.yaml` (mode 0600) with no harnesses or executor models, and prints
+the first operator's sign-in link. `--config` names that server file; create a
+local execution config with `conveyor config init-execution`.
 `--config` picks a different output path.
 
 ## task
@@ -64,7 +66,7 @@ Create and inspect tasks. Titles are always generated from the body.
 
 | Command | What it does |
 |---|---|
-| `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--hold`, `--setup <name>`, `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
+| `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--hold`, `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
 | `conveyor task list` | List tasks: ID, state, repo, source, title. |
 | `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
 | `conveyor task wait <id>` | Block until the task's state, pending gate, next claimable order, or pending proposals change, the task is merged, closed, or parked, or the timeout elapses. `--timeout` (default `5m`, must be positive) and `--json`. See [task wait](#task-wait). |
@@ -72,7 +74,6 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
 | `conveyor task unlink <task> <dependency>` | Remove one blocking dependency edge. `--reason` and `--request-id` required. |
-| `conveyor task setup <id>` | Change a task's frozen execution setup for future work only. Exactly one of `--setup <name>` or `--apply-latest`, plus `--reason` and `--request-id`. |
 | `conveyor task approve <id>` | Approve at a human gate. `--reason` defaults to `approved`; `-m` adds a comment. |
 | `conveyor task request-changes <id>` | Bounce work at the merge gate. `-f/--feedback` is required and goes verbatim to the next implementation order. |
 | `conveyor task reject <id>` | Reject at a human gate. `--reason` required. |
@@ -96,9 +97,9 @@ dismisses its pending document proposals, and attempts to close its open pull
 request. Its branch and worktree are preserved. Server refusals retain the
 server's message and exit non-zero.
 
-Note the naming split: `conveyor task setup` changes a task's frozen
-workspace setup; `conveyor config init-execution` creates your local
-execution settings. They are different objects.
+A task carries no execution setup. `conveyor config init-execution` and
+`conveyor setup` manage your local execution settings, and `conveyor run
+--setup <name>` selects one for a run on your machine.
 
 ### task wait
 

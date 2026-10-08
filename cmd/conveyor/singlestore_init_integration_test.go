@@ -62,12 +62,26 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	if next := signInTokenFromOutput(t, output.String()); next == "" || next == first {
 		t.Fatal("init retry did not rotate sign-in link")
 	}
-	loaded, err := config.Load(path)
+	loaded, err := config.LoadDeployment(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if loaded.Database.Backend != "singlestore" {
 		t.Fatal("init persisted the wrong backend")
+	}
+	// A file in the pre-DEC-56 init shape is accepted on rerun and left
+	// unchanged (component-identity-membership).
+	legacyPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	legacy := legacyExecutorInitConfig(t, cfg.FormatDSN(), answers)
+	if err = os.WriteFile(legacyPath, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err = initializeDeployment(t.Context(), &output, legacyPath, answers); err != nil {
+		t.Fatalf("rerun over a legacy executor config: %v", err)
+	}
+	if after, readErr := os.ReadFile(legacyPath); readErr != nil || string(after) != string(legacy) {
+		t.Fatalf("legacy config was rewritten: %v", readErr)
 	}
 	command := userCmd()
 	output.Reset()

@@ -19,6 +19,12 @@ import (
 
 const maxArtifactBytes = core.MaxArtifactBytes
 
+// maxMultipartTaskIntakeBytes bounds a whole multipart task intake request:
+// room for ten 25 MiB attachments (262,144,000 bytes) plus 6 MiB for the task
+// JSON, the idempotency key, and multipart framing. It adds no attachment-count
+// or body rule (component-artifacts; req-security-boundaries REQ-4).
+const maxMultipartTaskIntakeBytes int64 = 256 << 20
+
 func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	orders, err := s.Store.ListWorkOrders(r.Context())
 	if err != nil {
