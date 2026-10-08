@@ -319,7 +319,7 @@ func TestKitVerifyOrdinaryObligationsAndReplay(t *testing.T) {
 			if (err != nil) != missing {
 				t.Fatalf("missing=%t: %v", missing, err)
 			}
-			// VK-4.2: a missing entrypoint fails toolchain preflight before any
+			// component-verification-runner: a missing entrypoint fails toolchain preflight before any
 			// attempt; the same claim can run again once the tool is configured.
 			wantStarts, wantUploads, wantOutcome := 1, 1, "succeeded"
 			if missing {
@@ -390,7 +390,8 @@ func ordinaryKitVerifyOptions(t *testing.T, f *kitExecutionFixture, discovery st
 	return kitVerifyOptions{configPath: cfgPath, configSource: "flag", coveragePath: coveragePath, attemptRoot: filepath.Join(dir, "attempts")}
 }
 
-// TestKitVerifyPreStartRefusalsPrintCheckpoint covers VK-13.2: refusals an
+// TestKitVerifyPreStartRefusalsPrintCheckpoint covers pre-start admission
+// refusal (component-verification-runner): refusals an
 // operator resolves on the verifier host start no attempt and print the
 // canonical checkpoint call; invalid contracts stay ordinary refusals.
 func TestKitVerifyPreStartRefusalsPrintCheckpoint(t *testing.T) {
@@ -559,7 +560,7 @@ func TestKitRunnerDigestAndMissingGrantAdmission(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "network fixture") || !errors.As(err, &admission) {
 		t.Fatalf("missing action not named: %v", err)
 	}
-	// VK-13.1/VK-13.2: the runner names the grounded checkpoint call.
+	// component-verification-runner: the runner names the grounded checkpoint call.
 	var guidance bytes.Buffer
 	if err = kitCheckpointGuidance(&guidance, "order-1", "context-1", []string{"Verification blocked for observe: " + admission.Error()}, []error{admission}); err == nil || !errors.As(err, &admission) {
 		t.Fatal("unadmitted subjects reported success")
@@ -615,7 +616,7 @@ func TestKitRunnerRejectsParentCredentialInOrdinaryInput(t *testing.T) {
 	}
 }
 
-// VK-4: no child, execution evidence, or provider action exists before launch.
+// component-verification-runner: no child, execution evidence, or provider action exists before launch.
 func TestKitRunnerPrelaunchBlocked(t *testing.T) {
 	for _, name := range []string{"missing", "digest", "report-failure", "authority-loss", "prepared-operation"} {
 		t.Run(name, func(t *testing.T) {

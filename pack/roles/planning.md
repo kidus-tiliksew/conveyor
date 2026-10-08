@@ -95,15 +95,15 @@ DEC-28 makes it a review criterion at confirmation:
   serves stale authority everywhere it governs.
 - Requirements are black-box contracts with one capability per document.
   They prescribe no storage, service, query, queue, or algorithm unless that
-  mechanism is itself a public contract (DEC-34).
+  mechanism is itself a public contract (DEC-57(1)).
 - When confirmed documents disagree, requirements outrank decisions, which
-  outrank System Design documents (DEC-34).
+  outrank System Design documents (DEC-57(2)).
 - Reference documents orient; they never restate acceptance criteria
-  (DEC-34).
+  (DEC-57(3)).
 - A proposal cannot cite a pending decision or design as authority. Confirm
   requirements before decisions that cite them, then decisions before designs
-  that cite both (DEC-34).
-- Recommend DEC-34's baseline-and-overlay pattern when list_system_designs
+  that cite both (DEC-57(4)).
+- Recommend DEC-57(5)'s baseline-and-overlay pattern when list_system_designs
   returns no documents before a first design, delivery already spans several
   design baselines, or the operator asks how to document in-flight work.
   Explain evergreen component baselines and a temporary feature overlay that

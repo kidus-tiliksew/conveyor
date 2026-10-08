@@ -31,7 +31,8 @@ const (
 	CapabilityRecoverWork     Capability = "recover_work"
 	CapabilityManageWorkspace Capability = "manage_workspace"
 	// ManageReferenceDocuments covers uploading, revising, and removing
-	// informative reference documents, which never gate work (DEC-34). It is
+	// informative reference documents, which are never authority and never
+	// gate work (DEC-48). It is
 	// deliberately distinct from confirm_documents, which keeps confirming or
 	// dismissing normative documents operator-only (req-accounts-and-membership
 	// AC-2.6, AC-2.7).

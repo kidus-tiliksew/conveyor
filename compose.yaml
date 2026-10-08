@@ -3,7 +3,7 @@ name: conveyor-test
 # Template for the managed integration-test database. scripts/validation_resources.py
 # creates it under a per-invocation project, seals the container and network
 # IDs in the invocation inventory, and removes only those IDs. The fallbacks
-# below match its default budget (component-verification-strategy).
+# below match its default budget (component-validation-tooling).
 networks:
   default:
     name: ${CONVEYOR_TEST_NETWORK_NAME:-conveyor-test-unmanaged_default}

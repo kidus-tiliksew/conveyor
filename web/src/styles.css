@@ -121,7 +121,7 @@ button, input, textarea, select { font: inherit; }
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
 
-/* Rendered spec markdown (§4.1). The machine-owned fenced blocks are hidden
+/* Rendered spec markdown. The legacy format's machine-owned fenced blocks are hidden
    here and rendered structurally by the acceptance checklist instead. */
 .markdown { font-size: 0.875rem; line-height: 1.7; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }

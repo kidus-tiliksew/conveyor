@@ -23,8 +23,8 @@ import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Input, Textarea } from '../ui/input'
 
-// Operator grant disclosure (component-web-dashboard VK-WEB-5;
-// feature-verification-kit-execution VK-12.1). Opening the task never sends a
+// Operator grant disclosure (component-web-task-surfaces;
+// component-verification-runner). Opening the task never sends a
 // grant: every POST follows an explicit review and Issue grant action, and the
 // locked server mutation stays the admission authority.
 

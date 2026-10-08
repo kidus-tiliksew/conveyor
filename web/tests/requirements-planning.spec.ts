@@ -2090,8 +2090,8 @@ test('planning restores the selected session independently in each workspace', a
   await page.goto('/planning')
   await expect(page.getByRole('button', { name: /Demo session/ })).toHaveAttribute('aria-current', 'true')
   await page.getByRole('button', { name: 'Switch to Beta' }).click()
-  // Planning left the sidebar while its presentation is parked (§21.61 change
-  // 3), so the route is reached directly — exactly as a deep link does. The
+  // Planning left the sidebar while its presentation is parked
+  // (req-document-operating-surfaces AC-4.1), so the route is reached directly — exactly as a deep link does. The
   // reload re-runs the init script above, so the switched workspace is pinned
   // for the new load rather than reset to the seeded one.
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'beta'))
@@ -2594,7 +2594,7 @@ test('session lists label goals and the requirements surface has no freehand edi
   await page.goto('/requirements?requirement=req-retries')
   await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()
   // Freehand editing stays rejected, and with the
-  // assistant column parked (§21.61 change 3) there is no composer either, so
+  // assistant column parked (component-web-document-surfaces) there is no composer either, so
   // this surface carries no editable field at all.
   await expect(page.locator('[contenteditable]')).toHaveCount(0)
   await expect(page.locator('textarea')).toHaveCount(0)

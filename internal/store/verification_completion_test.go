@@ -9,7 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// feature-verification-kit-execution VK-13.5: the work-order ground reference
+// component-verification-service: the work-order ground reference
 // is bounded and reports any omission.
 func TestVerificationGroundReferenceBounds(t *testing.T) {
 	limit := core.WorkOrderVerificationGroundListLimit

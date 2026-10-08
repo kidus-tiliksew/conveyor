@@ -3,7 +3,7 @@ import type { VerificationMetadata, WorkOrderVerificationCheckpointGround } from
 import { cn } from '../../lib/utils'
 import { VerificationEvidenceDisclosure } from './verification-evidence'
 
-// feature-verification-kit-execution VK-13.5; component-web-dashboard VK-WEB-6:
+// component-verification-service; component-web-task-surfaces:
 // each checkpoint ground names its subject, the permissions an operator grants
 // for an unstarted subject, and links the attempt and retained evidence. A
 // ground without an attempt states that its evidence is missing.

@@ -201,8 +201,8 @@ export function proposalIdentity(proposal: Proposal) {
 }
 
 // A task's own unresolved proposals on its own attached documents, and nothing
-// else. Both halves of that scope are load-bearing. Origin is what keeps §21.62
-// a carve-out rather than a second attention surface — this task renders what it
+// else. Both halves of that scope are load-bearing. Origin is what keeps this
+// own-proposal rendering a carve-out rather than a second attention surface — this task renders what it
 // raised, never another task's pending versions. Attachment is what keeps the
 // carve-out inside the task's declared context: the read is the workspace-wide
 // collection, so a proposal this task raised against a document it does not
@@ -255,7 +255,8 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
  * version stops matching the filter, so the card clears itself — no new state,
  * and the timeline already records what happened.
  *
- * §21.61 change 1 is otherwise untouched: the document canvas keeps its
+ * The document surfaces are otherwise untouched (component-web-document-surfaces):
+ * the document canvas keeps its
  * attention surface as the only document-side rendering, and drift and
  * staleness are not rendered here at all.
  */

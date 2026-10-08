@@ -10,7 +10,7 @@ import (
 )
 
 // Context freshness is observational, never authority (req-260802-72fc68
-// REQ-2/REQ-5; component-lineage CF-L1; component-work-orders CF-W1–W3).
+// REQ-2/REQ-5; component-context-freshness).
 const ContextDescriptorLimit = 64
 const ContextEnvelopeBytes = 64 * 1024
 

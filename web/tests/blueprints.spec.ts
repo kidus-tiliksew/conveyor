@@ -323,9 +323,9 @@ test('a blueprint awaiting its spec gate stays in the review inbox', async ({ pa
   await expect(inbox.getByText('Awaiting review')).toBeVisible()
 })
 
-// The §21.58 change 2 history lens outlived its navigation entry: §21.61 change
-// 3 parks the Blueprint-history entry, so the surface is reached by deep link
-// instead of the sidebar (AC-4.1) while still saying plainly that it is history
+// The blueprint history lens outlived its navigation entry: parked planning
+// presentation removes the Blueprint-history entry, so the surface is reached
+// by deep link instead of the sidebar (req-document-operating-surfaces AC-4.1) while still saying plainly that it is history
 // and where live delivery is managed.
 test('the blueprints surface is parked out of navigation and reads as history', async ({ page }) => {
   await initShell(page)

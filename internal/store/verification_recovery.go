@@ -9,7 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
-// req-verification-kits AC-3.2 through AC-3.4 and AC-7.3; feature-verification-kit-execution VK-4.1.
+// req-verification-kits AC-3.2 through AC-3.4 and AC-7.3; component-verification-service.
 
 // VerificationRecoveryDisposition is part of the existing operator recovery
 // request. It is never admitted through agent-facing verification tools.

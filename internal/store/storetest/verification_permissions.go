@@ -145,7 +145,7 @@ func runVerificationPermissions(t *testing.T, x Fixture) {
 			t.Fatalf("effective actions escalate grant: %v", err)
 		}
 	})
-	// VK-12.2 / VK-HTTP-8: an authorized operator receives a stable reason for
+	// component-verification-runner: an authorized operator receives a stable reason for
 	// every claim-window and request refusal, while the sentinel is unchanged.
 	t.Run("GrantRefusalReasons", func(t *testing.T) {
 		v := newVerificationFixture(t, x)

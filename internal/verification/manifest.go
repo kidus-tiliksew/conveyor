@@ -1,5 +1,5 @@
 // Package verification implements the shared kit contract in
-// feature-verification-kit-execution VK-2/VK-3 (req-verification-kits REQ-1/REQ-2).
+// component-verification-kit-contract (req-verification-kits REQ-1/REQ-2).
 package verification
 
 import (
@@ -23,7 +23,7 @@ const MaxManifestBytes = 1 << 20
 const MaxKits = 100
 const MaxExercises = 100
 
-// Description limits in Unicode code points after trimming (VK-3.1).
+// Description limits in Unicode code points after trimming (component-verification-kit-contract).
 const MaxDescription = 1000
 const MaxAssertionDescription = 500
 
@@ -52,7 +52,7 @@ type Kit struct {
 	ID   string `yaml:"id" json:"id"`
 	Name string `yaml:"name" json:"name"`
 	// Description is required by schema 2 and forbidden by schema 1; the
-	// omitted empty value keeps schema-1 digest bytes unchanged (VK-3.1).
+	// omitted empty value keeps schema-1 digest bytes unchanged (component-verification-kit-contract).
 	Description   string        `yaml:"description,omitempty" json:"description,omitempty"`
 	Version       string        `yaml:"version" json:"version"`
 	Path          string        `yaml:"path" json:"path"`
@@ -84,7 +84,7 @@ type Exercise struct {
 }
 
 // Assertion is one required assertion. Schema 1 declares it as a bare ID
-// string; schema 2 as a mapping with id and description (VK-3.1).
+// string; schema 2 as a mapping with id and description (component-verification-kit-contract).
 type Assertion struct {
 	ID          string `yaml:"id" json:"id"`
 	Description string `yaml:"description" json:"description"`
@@ -238,7 +238,7 @@ func Parse(r io.Reader, check PathCheck) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest: anchors are forbidden")
 	}
 	// Kits may precede schema_version, so read the declared schema first; kit
-	// description rules depend on it (VK-3.1).
+	// description rules depend on it (component-verification-kit-contract).
 	schema := declaredSchema(root)
 	// Validate top-level structure separately so a bad kit does not erase siblings.
 	seen := map[string]bool{}
@@ -569,7 +569,7 @@ func validateKit(k Kit, p string, check PathCheck) []Diagnostic {
 	required("id", k.ID)
 	required("name", k.Name)
 	required("version", k.Version)
-	// Schema 2 requires descriptions within VK-3.1 limits; schema 1 forbids them.
+	// Schema 2 requires descriptions within the description limits (component-verification-kit-contract); schema 1 forbids them.
 	schema2 := k.SchemaVersion == 2
 	describe := func(field, s string, limit int) {
 		if !schema2 {

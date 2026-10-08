@@ -98,7 +98,8 @@ func Identity(kind string, args []byte) (workspace, key string, ok bool) {
 	return decoded.WorkspaceID, "", false
 }
 
-// VerificationPublicationArgs names the single VK-9 stream for a PR. The
+// VerificationPublicationArgs names the single typed per-PR publication stream
+// (component-verification-publication) for a PR. The
 // runtime envelope is authoritative; persisted legacy args are handled separately.
 type VerificationPublicationArgs struct {
 	WorkspaceID       string `json:"workspace_id"`

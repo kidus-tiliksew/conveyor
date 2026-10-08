@@ -470,7 +470,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   await expect(page.getByRole('tab', { name: 'System design' })).toBeVisible()
 
   // Assignee travels the same way, as one single-valued member: a task has one
-  // holder, so there is no union to express. DEC-18 bars priority and phase and
+  // holder, so there is no union to express. DEC-55 bars priority and phase and
   // permits assignee as a claim-eligibility constraint, so it belongs here while
   // the barred fields still do not.
   await page.getByRole('tab', { name: 'Assignee' }).click()

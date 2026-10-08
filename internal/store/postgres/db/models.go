@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// VK-9 bounded metadata binding, maintained by hand.
+// Bounded inspection-read metadata binding (component-verification-evidence),
+// maintained by hand.
 type VerificationReadRecord struct {
 	ID, ContextID, RunID, State, At string
 	Metadata                        []byte
@@ -497,14 +498,15 @@ type DocumentOperatorNote struct {
 	DismissedAt   pgtype.Timestamptz
 }
 
-// VerificationRecord is maintained by hand with migration 132 (VK-6).
+// VerificationRecord is maintained by hand with migration 132 (component-verification-evidence).
 type VerificationRecord struct {
 	Table, WorkspaceID, ID, TaskID, ContextID, RunID, LogicalKey, KeyHash, State string
 	Body                                                                         []byte
 	ExpiresAt                                                                    *time.Time
 }
 
-// VerificationPublicationDeliveryRecord is the separate VK-9 delivery projection.
+// VerificationPublicationDeliveryRecord is the separate PR delivery projection
+// (component-verification-publication).
 type VerificationPublicationDeliveryRecord struct {
 	WorkspaceID, ID, TaskID, ContextID, SourcePublicationID, PRKey, State string
 	Generation                                                            int64

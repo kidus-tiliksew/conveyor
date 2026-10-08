@@ -6,9 +6,10 @@ import (
 	"strings"
 )
 
-// req-verification-kits REQ-3 and REQ-7; feature-verification-kit-execution VK-4.1 (DEC-43).
+// req-verification-kits REQ-3 and REQ-7; component-verification-service (DEC-43).
 
-// VerificationOperationTransition is the closed VK-4.1 operation machine.
+// VerificationOperationTransition is the closed external-operation machine
+// (component-verification-service).
 // Receipts do not issue dispatch permission; only a newly committed transition
 // from registered or not_applied can authorize a provider call.
 func VerificationOperationTransition(from, to string) error {
@@ -28,7 +29,7 @@ func VerificationOperationTransition(from, to string) error {
 }
 
 // VerificationOperationSubject deliberately excludes revision and digest:
-// changing the source cannot hide an unresolved external action (VK-4.1).
+// changing the source cannot hide an unresolved external action (component-verification-service).
 func VerificationOperationSubject(s VerificationSubject) string {
 	if s.Kind == "kit" {
 		return "kit:" + s.KitID + ":" + s.ExerciseID
@@ -48,7 +49,7 @@ func SanitizeVerificationProviderReference(reference string) string {
 }
 
 // VerificationBinding retains immutable source authority independently from
-// the execution claim which may be replaced after interruption (VK-2, VK-4.1).
+// the execution claim which may be replaced after interruption (component-verification-service).
 type VerificationBinding struct {
 	ReviewScope        string                 `json:"review_scope"`
 	BaselineSHA        string                 `json:"baseline_sha"`

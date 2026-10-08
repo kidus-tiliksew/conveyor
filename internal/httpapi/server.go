@@ -91,7 +91,7 @@ type Server struct {
 	WorkspaceGitHubApps store.WorkspaceGitHubAppStore
 	GitHubApps          *github.AppClient
 	// verificationKitMemo caches exact-commit kit discovery for the workspace
-	// kit registry (feature-verification-kit-execution VK-11).
+	// kit registry (component-verification-kit-contract).
 	verificationKitMemo   kitRegistryMemo
 	appStates             manifestStates
 	appSetupStates        manifestStates
@@ -172,8 +172,9 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
 		r.With(s.requireWorkerAuth).Get("/worker/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
 		r.With(s.requireWorkerAuth).Post("/worker/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
-		// req-review-gates-evidence REQ-3/AC-3.1; DEC-29: this is an
-		// exact-claim exception, not an agent-reachable role capability.
+		// Legacy claim-bound evidence upload (component-artifacts; DEC-53):
+		// this is an exact-claim exception, not an agent-reachable role
+		// capability.
 		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/verification-evidence", s.uploadWorkerVerificationEvidence)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
@@ -337,7 +338,7 @@ func (s *Server) Handler() http.Handler {
 	r.With(s.requireMCPAuth).HandleFunc("/mcp", s.handleMCP)
 	r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace), s.requireMutationCapability(core.CapabilityOperateGates)).Post("/v1/work-orders/{id}/verification/permissions", s.grantVerificationPermissions)
 	// The operator grant projection is user-only and registered before the
-	// generic MCP-authenticated operation routes (component-http-api VK-HTTP-8).
+	// generic MCP-authenticated operation routes (component-verification-runner).
 	r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace), s.requireWorkspaceCapability(core.CapabilityOperateGates)).Get("/v1/work-orders/{id}/verification/permissions", s.getVerificationPermissions)
 	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/verification/{operation}", s.verificationOrder)
 	r.With(s.requireMCPAuth).Get("/v1/work-orders/{id}/verification/{operation}", s.verificationOrder)

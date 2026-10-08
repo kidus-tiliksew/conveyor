@@ -101,7 +101,7 @@ const (
 )
 
 // ValidWorkOrderStage is the closed executor-stage vocabulary (DEC-43;
-// feature-verification-kit-execution VK-2).
+// component-work-orders).
 func ValidWorkOrderStage(stage Stage) bool {
 	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview
 }
@@ -562,8 +562,8 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 	return order.State == WorkOrderQueued && !order.RetrySuppressed
 }
 
-// HarnessSnapshot is the legacy worker execution contract that pre-DEC-23
-// orders persisted. The control plane no longer creates, resolves, or refreshes
+// HarnessSnapshot is legacy server-pinned execution metadata that older orders
+// persisted. The control plane no longer creates, resolves, or refreshes
 // one: queue re-entry clears it, and the claiming machine's local execution
 // setup supplies harness, model, and effort (req-worker AC-2.2; DEC-56).
 type HarnessSnapshot struct {
@@ -690,7 +690,7 @@ type WorkOrder struct {
 }
 
 // ClearExecutionPins removes every harness, model, and effort pin, including a
-// legacy pre-DEC-23 harness snapshot, from an order re-entering the queue. The
+// legacy server-pinned harness snapshot, from an order re-entering the queue. The
 // local execution setup of the machine that claims it supplies them for the
 // next attempt. Review round and seat are not execution pins and stay
 // unchanged (req-worker AC-2.2, AC-2.3; DEC-56).
@@ -826,7 +826,7 @@ type WorkOrderCheckpoint struct {
 }
 
 // WorkOrderVerificationCheckpoint references the sealed operator checkpoint of
-// feature-verification-kit-execution VK-13.3. It never satisfies review admission.
+// component-verification-service. It never satisfies review admission.
 type WorkOrderVerificationCheckpoint struct {
 	ContextID      string                                  `json:"context_id"`
 	HeadSHA        string                                  `json:"head_sha"`
@@ -838,7 +838,7 @@ type WorkOrderVerificationCheckpoint struct {
 }
 
 // WorkOrderVerificationCheckpointGround is the bounded authenticated view of
-// one sealed ground (VK-13.5): declared permissions for an unstarted subject,
+// one sealed ground (component-verification-service): declared permissions for an unstarted subject,
 // and the attempt, evidence and operation identifiers an operator opens.
 // Lists hold at most WorkOrderVerificationGroundListLimit entries; Truncated
 // reports any omission.
@@ -1145,7 +1145,7 @@ const (
 	// ArtifactRoleVerificationEvidence is implementer-supplied proof of an
 	// exercised change. It is a review aid, never model input or CI authority
 	ArtifactRoleVerificationEvidence ArtifactRole = "verification_evidence"
-	// ArtifactRoleTypedVerificationEvidence stores VK-6 bytes without granting
+	// ArtifactRoleTypedVerificationEvidence stores typed evidence bytes (component-verification-evidence) without granting
 	// model input eligibility or satisfying the legacy visual-only gate.
 	ArtifactRoleTypedVerificationEvidence ArtifactRole = "typed_verification_evidence"
 )
@@ -1274,7 +1274,7 @@ func JSONPayload(value any) json.RawMessage {
 	return data
 }
 
-// VerificationDelivery is the mutable VK-9 projection; source publication rows remain immutable.
+// VerificationDelivery is the mutable PR delivery projection (component-verification-publication); source publication rows remain immutable.
 type VerificationDelivery struct {
 	WorkspaceID, Repository, TaskID, ContextID, SourcePublicationID            string
 	ID, IdempotencyKey, TargetHead, ObservedHead, TargetDigest, ObservedDigest string

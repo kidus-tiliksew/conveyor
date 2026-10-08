@@ -2451,7 +2451,7 @@ func (q *Queries) ListDocumentOperatorNotesForTask(ctx context.Context, workspac
 	return notes, rows.Err()
 }
 
-// VK-6 bindings are hand-maintained; the table allowlist is never caller SQL.
+// Verification record bindings (component-verification-evidence) are hand-maintained; the table allowlist is never caller SQL.
 func verificationTable(table string) bool {
 	switch table {
 	case "verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations":

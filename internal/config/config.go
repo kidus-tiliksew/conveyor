@@ -335,8 +335,9 @@ type Harness struct {
 	MCPTransport  string   `yaml:"mcp_transport" json:"mcp_transport"`
 	MCPAttachment string   `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
 	Command       []string `yaml:"command" json:"command"`
-	// ResumeCommand is an optional client-local argv fragment. AC-2.2 and
-	// DEC-23 keep both its validation and eventual substitution off the server.
+	// ResumeCommand is an optional client-local argv fragment.
+	// req-260818-24dd3a AC-2.2 and DEC-56 keep both its validation and
+	// eventual substitution off the server.
 	ResumeCommand         []string            `yaml:"resume_command,omitempty" json:"resume_command,omitempty"`
 	ModelArgs             []string            `yaml:"model_args,omitempty" json:"model_args,omitempty"`
 	DefaultModelSentinels []string            `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
@@ -645,9 +646,10 @@ type ContextualExecutionSettings struct {
 	Review         ReviewExecutionSettings `yaml:"review" json:"review"`
 }
 
-// ExecutionSetup is one named execution contract. Harness definitions remain
-// workspace-scoped; the settings and review panel are frozen onto a task at
-// intake (component-harness-execution; DEC-7).
+// ExecutionSetup is one named execution contract. Its harness, model, and
+// effort settings are client-local and never freeze onto a task; only the
+// pipeline-policy subset that MarshalJSON persists freezes by value at intake
+// (component-harness-execution; DEC-47, DEC-56).
 type ExecutionSetup struct {
 	VerifyStage       bool                        `yaml:"verify_stage,omitempty" json:"verify_stage,omitempty"`
 	Name              string                      `yaml:"name" json:"name"`
@@ -1931,7 +1933,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 
 // PolicyDocument is the sole live workspace configuration projection. It
 // intentionally contains no setup, harness, model, argv, effort, or routing
-// data (req-execution-configuration REQ-7/REQ-8; DEC-23).
+// data (req-execution-configuration REQ-7/REQ-8; DEC-56).
 func (c *Config) PolicyDocument() WorkspaceDocument {
 	document := c.WorkspaceDocument()
 	document.ExecutionSettings = nil

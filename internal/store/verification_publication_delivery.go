@@ -18,7 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
-// VerificationDeliveryStore owns VK-9 delivery independently of verification
+// VerificationDeliveryStore owns PR delivery (component-verification-publication) independently of verification
 // execution. Every callback holds the same backend lock used by intent creation.
 // Forge failures are saved with a fixed public classification, never raw errors.
 type VerificationDeliveryStore interface {

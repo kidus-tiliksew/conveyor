@@ -13,7 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// VK-4 / AC-7.3: only authenticated workspace operators can grant authority.
+// component-verification-runner; req-verification-kits AC-7.3: only authenticated workspace operators can grant authority.
 // This endpoint is deliberately absent from MCP and worker registrations.
 func (s *Server) grantVerificationPermissions(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("workspace_id") == "" {
@@ -55,7 +55,7 @@ func (s *Server) grantVerificationPermissions(w http.ResponseWriter, r *http.Req
 
 // verificationPermissionError reports a stable reason only when the store
 // produced one after authorizing the operator; every other refusal keeps the
-// generic verification mapping (component-http-api VK-HTTP-8).
+// generic verification mapping (component-verification-runner).
 func verificationPermissionError(w http.ResponseWriter, err error) {
 	reason, message, recovery, ok := store.VerificationRefusalDetail(err)
 	if !ok {
@@ -70,7 +70,7 @@ func verificationPermissionError(w http.ResponseWriter, err error) {
 }
 
 // getVerificationPermissions is the operator grant projection of
-// feature-verification-kit-execution VK-12.1. It reads retained state only and
+// component-verification-runner. It reads retained state only and
 // writes no record or event.
 func (s *Server) getVerificationPermissions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

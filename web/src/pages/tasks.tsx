@@ -270,7 +270,8 @@ export function TasksPage() {
 // One click onto the work that is actually mine and still moving. It is a
 // preset over the existing filter row, not a view of its own: the row shows
 // exactly what it selected, and pressing it again hands the surface back
-// (REQ-4, DEC-18 — routing, never ordering).
+// (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-55 — routing, never
+// ordering).
 function MyTasksPreset({
   me,
   value,
@@ -359,7 +360,8 @@ function TaskRow({
             )}
             {/* Assignment is claim-eligibility routing, never ordering, so it
                 rides the row's identity line rather than claiming a column of
-                its own beside State and Stage (REQ-4, DEC-18). */}
+                its own beside State and Stage (req-task-lifecycle-and-queue
+                AC-2.3, AC-2.7; DEC-55). */}
             <AssigneeChip assignee={task.assignee} />
           </div>
         </div>

@@ -578,7 +578,7 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
       action: 'none',
     }
   }
-  // VK-WEB-6: a verify order released at its operator checkpoint names the
+  // component-web-task-surfaces: a verify order released at its operator checkpoint names the
   // sealed reason and required act; automatic replay stays suppressed.
   const verificationCheckpoint = order.stage === 'verify' ? order.checkpoint?.verification : undefined
   if (verificationCheckpoint && order.state === 'queued') {
@@ -1413,7 +1413,7 @@ export function verificationPermissionText(permission: WorkOrderVerificationChec
 }
 
 // One line per checkpoint ground. A ground without an attempt states that no
-// attempt ran, so absent evidence is never presented as observed (VK-13.5).
+// attempt ran, so absent evidence is never presented as observed (component-verification-service).
 export function verificationGroundText(ground: WorkOrderVerificationCheckpointGround): string {
   const subject =
     ground.subject?.kind === 'kit'

@@ -5309,7 +5309,7 @@ test('shared Markdown renders plan diagrams responsively in both themes and fall
   await expect(page.getByRole('heading', { name: 'Execution plan' }).first()).toBeVisible()
 })
 
-// The anchor lives at its own canonical route (§21.49), and the legacy task
+// The anchor lives at its own canonical route (component-web-task-surfaces), and the legacy task
 // URL is a redirect into it rather than a second door.
 test('blueprint and dependency details remain linked and read only', async ({ page }) => {
   await page.goto('/tasks/blueprint-parent/full')
@@ -6024,7 +6024,7 @@ for (const { waiting, stage } of [
 
 // The read is the workspace-wide collection, so origin alone would carry a
 // proposal onto a task that does not hold the document. Attachment is the other
-// half of the §21.62 scope: 'unattached-proposal' raised this pending version,
+// half of the own-proposal scope: 'unattached-proposal' raised this pending version,
 // but carries a different document, so the decision stays on the document's own
 // attention surface.
 test('task detail renders no proposal card for a document the task does not carry', async ({ page }) => {
@@ -6123,9 +6123,10 @@ type TaskEventFixture = {
   at: string
 }
 
-// REQ-4/AC-1.2: an operator routes the task by picking a workspace co-member,
-// and the audited outcome reads back in the timeline like every other operator
-// act. Assignment constrains who may claim it and nothing else (DEC-18).
+// req-task-lifecycle-and-queue AC-2.4/AC-2.5: an operator routes the task by
+// picking a workspace co-member, and the audited outcome reads back in the
+// timeline like every other operator act. Assignment constrains who may claim
+// it and nothing else (AC-2.3, AC-2.7; DEC-55).
 test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
   await routeAssignment(page, { operator: true })
 

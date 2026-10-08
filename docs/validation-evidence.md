@@ -476,5 +476,6 @@ Local manifests and logs are task-context evidence, not artifacts carrying the
 `verification_evidence` role, whose permitted image/recording types remain
 unchanged. Record fresh exact-head CI independently. Local equivalence never
 makes a prior reviewed-head approval current or replaces independent reviewer
-judgment, mandatory done criteria, or either operator gate (REQ-4/AC-4.1 and
-REQ-7/AC-7.1; `component-verification-strategy`, DEC-29).
+judgment, mandatory done criteria, or either operator gate
+(`req-review-gates-evidence` REQ-4/AC-4.1 and REQ-7/AC-7.1;
+`component-verification-strategy`; DEC-53).

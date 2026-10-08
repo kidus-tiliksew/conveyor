@@ -1,4 +1,4 @@
-# Conveyor deployment/bootstrap config (spec §21.4). CONVEYOR_LLM_API_KEY is
+# Conveyor deployment/bootstrap config (component-runtime). CONVEYOR_LLM_API_KEY is
 # the deployment-owned key used only by in-process triage and planning. The old
 # CONVEYOR_API_KEY name is a deprecated fallback. MCP clients use their own
 # agent subscriptions or API credentials on their own machines.
@@ -16,7 +16,7 @@
 # conveyor run and the worker read. conveyor init writes a policy-only file.
 workspace: demo
 # pack_dir: /path/to/custom/pack  # optional strict override; omitted uses the embedded canonical role pack
-# Review rounds before human check-in (spec §21.17): the window resets after
+# Review rounds before human check-in (component-task-lifecycle): the window resets after
 # each human intervention; hitting it parks the task, it does not fail it.
 max_bounces: 10
 work_order_queue_timeout: 24h
@@ -26,7 +26,7 @@ database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
 
-# Default-setup projection for older clients (spec §21.27). The setup block
+# Default-setup projection for older clients (component-harness-execution). The setup block
 # below is authoritative; this and routing remain readable compatibility data.
 execution_settings:
   control_plane:
@@ -86,7 +86,7 @@ execution:
 harnesses:
   - name: local-agent
     # JSON-file transport is for harnesses such as Claude Code or an operator
-    # wrapper with a real --mcp-config file option (spec §21.20).
+    # wrapper with a real --mcp-config file option (component-harness-execution).
     mcp_transport: json_file
     command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]
     model_args: [--model, "{model}"]
@@ -109,7 +109,7 @@ review:
 
 # Named execution contracts are the authoritative v1.28 shape. The matching
 # top-level execution_settings/review fields above are emitted as the default
-# setup projection for older clients (spec §21.27 change 2).
+# setup projection for older clients (component-harness-execution).
 default_setup: default
 setups:
   - name: default
@@ -149,7 +149,7 @@ repos:
 
 # The monitor is opt-in and limited to configured repositories. It uses the
 # daemon's GitHub credential for read-only observation and always files normal
-# gated tasks; it cannot claim, review, merge, or deploy them (spec §21.45).
+# gated tasks; it cannot claim, review, merge, or deploy them (component-monitor-drift).
 monitor:
   enabled: false
   repositories: [api]

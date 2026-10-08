@@ -18,12 +18,12 @@ Method:
   treat missing context as a successful empty comparison.
 - When the frozen policy enables `verify_stage`, inspect the sealed
   verification result bound to the submitted head, repository scope and
-  governing pins (DEC-43; feature-verification-kit-execution VK-7/VK-8).
+  governing pins (DEC-43; component-verification-service).
   Read its coverage, discovery reasons, latest attempts, required and optional
   assertions, operation history and relied-on evidence/artifacts. No-manifest
   or no-selected-kits dispositions still require ordinary-obligation coverage.
   Historical evidence stays contextual and cannot prove the current attempt.
-- Assess the sealed result's adequacy under DEC-29. Return a
+- Assess the sealed result's adequacy under DEC-53. Return a
   `verification_assessment` naming context IDs, relied-on run/evidence IDs,
   and criterion mappings with document ID, version, AC ID, evidence IDs and
   assessment. Keep tool observations, agent assertions and authenticated
@@ -40,7 +40,7 @@ Method:
   and no served ACs exist, use the task description as the statement of done.
 - When attached testing-strategy System Design documents govern the touched
   scope, judge verification adequacy against their guidance as part of the
-  done-criteria and acceptance-criteria assessment (DEC-29). This judgment
+  done-criteria and acceptance-criteria assessment (DEC-53). This judgment
   creates no execution gate and never requires operator-only deployment-host
   access; accept authenticated-surface or reproducible-fixture evidence.
 - Run repository validation only through Make targets, including `make test`

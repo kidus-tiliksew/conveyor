@@ -12,7 +12,7 @@ func validToolchain() VerificationToolchain {
 	return VerificationToolchain{Server: "https://factory.test", Workspace: "demo", Repository: "repo", SearchPaths: []string{"/opt/homebrew/bin", "/usr/bin"}, Home: "/Users/operator", Settings: map[string]string{"GOPATH": "/Users/operator/go:/srv/go", "GOENV": "off", "GOCACHE": "/srv/cache/go-build"}}
 }
 
-// VK-4.2: an absent section keeps the minimal default; one scoped record is
+// component-verification-runner: an absent section keeps the minimal default; one scoped record is
 // selected by server, workspace and repository.
 func TestVerificationToolchainScope(t *testing.T) {
 	c := &Config{}

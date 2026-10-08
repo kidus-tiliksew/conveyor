@@ -17,7 +17,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// component-harness-execution v6, Native MCP registrations and stored credentials;
+// component-cli-onboarding, "Native MCP registration";
 // req-cli-authentication REQ-4/AC-4.2 and AC-4.3.
 type mcpIdentity struct {
 	server, endpoint, name, tokenEnv, bridge string

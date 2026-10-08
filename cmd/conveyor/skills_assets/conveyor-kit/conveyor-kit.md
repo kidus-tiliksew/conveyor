@@ -6,9 +6,12 @@ claim. Kit outcomes supply evidence; they never grant acceptance or operator
 approval. A manifest's `supports` references route evidence to criteria without
 marking those criteria satisfied.
 
-Authority: `req-verification-kits` v2 REQ-8/AC-8.1, REQ-8/AC-8.4 and REQ-10;
-`feature-verification-kit-execution` v6 VK-2, VK-3, VK-3.1, VK-4, VK-4.1,
-VK-5, VK-5.1, VK-7.1, VK-8 and VK-9; DEC-40 and DEC-43. The shipped parser and
+Authority: `req-verification-kits` REQ-8/AC-8.1, REQ-8/AC-8.4 and REQ-10;
+`component-verification-kit-contract` (manifest, descriptions, digest and
+selection), `component-verification-runner` (execution authority, toolchain
+and the loopback UI), `component-verification-service` (operations, coverage
+and outcome evaluation) and `component-verification-evidence` (the typed
+evidence envelope); DEC-40 and DEC-43. The shipped parser and
 runner live in `internal/verification`, `internal/core/verification.go`, and
 `cmd/conveyor/kit_*.go`. This playbook describes those interfaces.
 
@@ -40,8 +43,8 @@ subset of the work order's authoritative document identities, kinds and
 versions. Additional work-order pins are allowed. An unpinned kit or a
 mismatched pin is ineligible, with reasons in the discovery receipt. Invalid
 or unavailable content is unresolved, never passed. A verified absent manifest
-is `no_manifest`; it does not waive ordinary verification obligations (VK-2,
-VK-5.1). Only tasks whose frozen policy enables `verify_stage` enter this
+is `no_manifest`; it does not waive ordinary verification obligations
+(`req-verification-kits` AC-1.2). Only tasks whose frozen policy enables `verify_stage` enter this
 stage (DEC-43).
 
 The content digest binds the normalized kit contract and the sorted committed
@@ -145,10 +148,12 @@ Missing permission, credentials, service bindings or interaction blocks the
 run with a required action. Never widen a grant on the operator's behalf.
 These checks admit execution into an operator-authorized environment; they do
 not sandbox arbitrary scripts. Block execution if required restrictions cannot
-be enforced there (VK-4, REQ-7/AC-7.3).
+be enforced there (`component-verification-runner`; `req-verification-kits`
+AC-7.3).
 
 The runner builds the child environment from the subject's toolchain snapshot
-(VK-4.2). It passes typed values as JSON in `CONVEYOR_KIT_INPUTS` and network
+(`component-verification-runner`). It passes typed values as JSON in
+`CONVEYOR_KIT_INPUTS` and network
 bindings as `CONVEYOR_KIT_BINDING_<UPPERCASE_BINDING>` with hyphens replaced by
 underscores. Sensitive inputs use approved `CONVEYOR_KIT_SECRET_*` credential
 handles, not the inputs JSON file. Factory, forge and parent-session
@@ -227,7 +232,7 @@ reference. The CLI does not automatically run reconciliation entrypoints.
 steps; `not_applied` can admit a fresh dispatch under the replay checks;
 `unknown` remains blocked. `operator_action_required` needs authenticated
 operator recovery authorization. Changing attempt IDs, context or source SHA
-does not clear an unresolved predecessor (VK-4.1).
+does not clear an unresolved predecessor (`component-verification-service`).
 
 ## Evidence and assertions
 
@@ -249,7 +254,8 @@ revision, subject, governing pins, safe inputs and environment. Kit subjects
 carry kit identity/content digest and exercise ID. Ordinary subjects carry
 obligation ID/contract digest, without invented kit fields. Artifact hashes
 describe retained sanitized bytes. Missing required provenance fails
-validation; optional unavailable context is explicit `unknown` (VK-5).
+validation; optional unavailable context is explicit `unknown`
+(`component-verification-evidence`).
 
 A tool observation records what a tool saw. An agent assertion interprets
 observations and links its basis. An operator observation comes from the
@@ -265,7 +271,7 @@ remain visible but cannot substitute for a required ID. Script/hybrid success
 also needs exit zero and a successful execution report; interactive/hybrid
 success needs an operator observation. Output cardinalities and resolved
 operations remain required. `supports` and output counts do not establish
-assertion success (VK-7.1).
+assertion success (`component-verification-service`).
 
 Children can POST `type: evidence` to the run-local channel with a stable
 `key`, `evidence_type`, UTC `captured_at` and schema-valid `payload`. The runner
@@ -293,7 +299,7 @@ typed outputs instead of argv. A missing demonstrated replay basis defaults
 to `operator_action_required`. Coverage must map governing instructions and
 done criteria to selected exercises or ordinary obligations, including a
 justified empty set when appropriate. See the execution playbook for the
-registration and coverage wire fields (VK-5.1).
+registration and coverage wire fields (`component-verification-service`).
 
 Script-only kits need no UI. An optional `ui` declares argv, a loopback port
 from 1 through 65535 and kit-relative assets. `--ui` launches it alongside the
@@ -308,7 +314,8 @@ controls. Exercise implemented APIs through approved bindings and show their
 observed exchanges. Do not present a requirement-implementation or acceptance
 status dashboard. The loopback relay checks host, origin and nonce; never
 store factory tokens in URLs, assets or browser storage. A button click is
-neither an authenticated operator observation nor proof of API success (VK-9).
+neither an authenticated operator observation nor proof of API success
+(`component-verification-runner`).
 
 ## Validate and deliver
 

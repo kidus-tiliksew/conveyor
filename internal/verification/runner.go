@@ -20,7 +20,7 @@ import (
 )
 
 // OperationChannel is a short-lived loopback transport. Its nonce admits a
-// local client, never an authenticated operator (VK-4.1, VK-9).
+// local client, never an authenticated operator (component-verification-runner).
 type OperationChannel struct {
 	URL, Nonce string
 	server     *http.Server

@@ -5,7 +5,7 @@
 - Task: `260806-9f5495`
 - Out-of-pipeline commit: `ecc0674665ea6653af899d30b85db14d2ce81a4e`
 - Source: <https://github.com/kidus-tiliksew/conveyor/commit/ecc0674665ea6653af899d30b85db14d2ce81a4e>
-- Resolution: retained — accepted by amendment as spec §21.60 (v2.20, August 6, 2026)
+- Resolution: retained — accepted by amendment as section 21.60 of the then-current repository specification (v2.20, August 6, 2026)
 
 The commit added `.claude/skills/conveyor-plan/SKILL.md` and
 `.claude/skills/conveyor-file-tasks/SKILL.md`. It did not add or modify
@@ -23,13 +23,13 @@ The local planning guidance describes an operator-side agent using the REST
 API to propose requirements, System Design revisions, and decisions. The
 accepted design does not currently grant that surface:
 
-- `conveyor-spec.md` §9 makes planning sessions Conveyor-owned and in-process.
+- `conveyor-spec.md` section 9 made planning sessions Conveyor-owned and in-process.
   It names MCP `create_task` plus `submit_spec` as the headless twin; it does
   not name a generic local REST document-planning workflow.
-- §4.2 makes requirements versioned and operator-confirmed, requires drift
+- Section 4.2 made requirements versioned and operator-confirmed, requires drift
   reconciliation to propose rather than silently edit, and permits only
   machinery-created lineage.
-- §21.58 defines the four document tiers and their propose→confirm lifecycle,
+- Section 21.58 defined the four document tiers and their propose→confirm lifecycle,
   but does not by itself define an operator-agent authority, authentication
   contract, REST route set, or lineage behavior for local planning.
 

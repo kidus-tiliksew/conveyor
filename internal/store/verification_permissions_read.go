@@ -11,8 +11,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// Stable grant refusal reasons for an authorized operator (feature-verification-
-// kit-execution VK-12.2; component-http-api VK-HTTP-8). Unauthorized and
+// Stable grant refusal reasons for an authorized operator
+// (component-verification-runner). Unauthorized and
 // foreign callers never receive one.
 const (
 	VerificationRefusalNotClaimed          = "not_claimed"
@@ -128,7 +128,7 @@ type VerificationPermissionGrantView struct {
 }
 
 // VerificationPermissionView is the whitelisted operator projection of
-// component-http-api VK-HTTP-8. It never carries evidence payloads, safe-input
+// component-verification-runner. It never carries evidence payloads, safe-input
 // values, artifact content, tokens or credential values.
 type VerificationPermissionView struct {
 	TaskID             string                              `json:"task_id"`

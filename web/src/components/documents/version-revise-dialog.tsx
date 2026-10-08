@@ -16,7 +16,8 @@ import { VersionDiff } from './version-diff'
 
 export type ReviseTarget = { id: string; title: string; tier: 'requirement' | 'system_design'; version: number }
 
-// component-document-corpus v4; req-260810-23b69f AC-1.2 and AC-1.3.
+// component-web-document-surfaces (presentation) and component-document-corpus
+// (proposal semantics); req-260810-23b69f AC-1.2 and AC-1.3.
 export function VersionReviseDialog({ target, onClose }: { target: ReviseTarget; onClose: () => void }) {
   const { workspace } = useWorkspaceSelection()
   const view = useQuery({

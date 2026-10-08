@@ -28,7 +28,7 @@ type SnapshotAPI interface {
 	CommitDetail(context.Context, string, string) (github.SnapshotCommit, error)
 }
 
-// Manager owns ephemeral session archives; it never executes Git (DEC-32).
+// Manager owns ephemeral session archives; it never executes Git (DEC-49).
 // The mutex orders reads and extraction against terminal cleanup.
 type Manager struct {
 	API      SnapshotAPI

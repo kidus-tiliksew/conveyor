@@ -10,7 +10,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// VerificationStore is the VK-6 transaction boundary (req-verification-evidence
+// VerificationStore is the verification transaction boundary
+// (component-verification-service; req-verification-evidence
 // REQ-1 and REQ-2; req-verification-kits REQ-7). The caller supplies authenticated access separately
 // from submitted evidence. Each command commits its records, artifacts, audit
 // event and publication queue intent together; a replay never repeats a write.
@@ -33,7 +34,7 @@ var (
 	ErrVerificationState    = errors.New("verification transition refused")
 	ErrVerificationInvalid  = errors.New("invalid verification record")
 
-	// feature-verification-kit-execution VK-13.1: the only explicit invalid-input
+	// component-verification-service: the only explicit invalid-input
 	// detail. Remedies are fixed text and never carry context or evidence data.
 	ErrVerificationOutcomeUnsupported   = &VerificationRemedyError{Code: "verification_outcome_unsupported", Remedy: VerificationOutcomeRemedy}
 	ErrVerificationCheckpointIncomplete = &VerificationRemedyError{Code: "verification_checkpoint_incomplete", Remedy: VerificationOutcomeRemedy}
@@ -42,7 +43,7 @@ var (
 // VerificationCheckpointTextLimit bounds checkpoint reason and required action.
 const VerificationCheckpointTextLimit = 4096
 
-// VerificationOutcomeMapping is the canonical VK-13.1 mapping published by the
+// VerificationOutcomeMapping is the canonical outcome mapping (component-verification-service) published by the
 // service, MCP schema, REST remedies, the verify role and the kit-verify skill.
 const VerificationOutcomeMapping = "submit_verification.outcome accepts succeeded, feedback or operator_action_required. " +
 	"Exercise attempt states (blocked, waiting, failed, timed_out, cancelled) belong to report_verification_outcome.state. " +
@@ -193,7 +194,7 @@ type VerificationArtifactInput struct {
 	UploadID, Name, ContentType, SHA256 string
 	SizeBytes                           int64
 	// Binary sanitation remains a capture-time attestation, not a claim that
-	// server text redaction detects sensitive pixels or speech (VK-6).
+	// server text redaction detects sensitive pixels or speech (component-verification-evidence).
 	SanitationRecord, MaskingAttestation string
 }
 type VerificationReceipt struct {
@@ -206,7 +207,7 @@ type VerificationReceipt struct {
 	ArtifactIDs   []string
 	PublicationID string
 	// NextStage and Grounds are set only for an operator checkpoint seal
-	// (component-mcp-protocol VK-MCP-5).
+	// (component-verification-service).
 	NextStage string                         `json:"next_stage,omitempty"`
 	Grounds   []VerificationCheckpointGround `json:"grounds,omitempty"`
 }
@@ -236,10 +237,10 @@ type VerificationCommand struct {
 	// Authority is derived by a trusted caller, never decoded from evidence.
 	Authority core.VerificationEvidenceAuthority
 	// SealedCheckpoint is copied from the sealed result for the lifecycle
-	// adapter (VK-13.3); it is never decoded from a request.
+	// adapter (component-verification-service); it is never decoded from a request.
 	SealedCheckpoint *VerificationCheckpoint
 	// SubmittedHeadSHA is the locked work order's task-repository head, bound
-	// by the backend adapter inside its transaction (VK-13.3). It is never
+	// by the backend adapter inside its transaction (component-verification-service). It is never
 	// decoded from a request.
 	SubmittedHeadSHA string
 }

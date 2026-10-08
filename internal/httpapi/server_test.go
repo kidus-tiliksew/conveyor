@@ -3759,7 +3759,7 @@ func TestUpdatedTaskFilterValidationAndPagination(t *testing.T) {
 }
 
 // Staleness renders from the task-level surface, so the
-// row carries the derived §21.34 reason a task cannot move — "needs operator"
+// row carries the derived staleness reason a task cannot move — "needs operator"
 // alone does not say why. It travels as the list-scoped summary, never the work
 // order the detail surfaces render. A terminal task carries none: there is
 // nothing left to unstick.

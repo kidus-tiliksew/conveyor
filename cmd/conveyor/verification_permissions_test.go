@@ -118,7 +118,7 @@ func runVerificationCLI(t *testing.T, token, stdin string, args ...string) (stri
 	return out.String() + errOut.String(), err
 }
 
-// VK-RUNTIME-2: one grant issued and read back through the real handler.
+// component-verification-runner: one grant issued and read back through the real handler.
 func TestVerificationPermissionsCLIGrantReadBackAndRevoke(t *testing.T) {
 	f := newVerificationCLIFixture(t)
 	out, err := runVerificationCLI(t, f.operatorPAT, "", "inspect", f.orderID)

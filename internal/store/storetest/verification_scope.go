@@ -17,7 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// AC-7.2 / VK-6: a task identity alone does not authorize another context's
+// req-verification-kits AC-7.2 (component-verification-service): a task identity alone does not authorize another context's
 // mutations, and a content address alone does not authorize typed evidence.
 func runVerificationScope(t *testing.T, x Fixture) {
 	t.Run("BoundedReadAndObservation", func(t *testing.T) { RunVerificationRead(t, x) })

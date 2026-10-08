@@ -83,7 +83,7 @@ func verificationJSON(v any) json.RawMessage {
 }
 
 // VerificationEvidenceDigest hashes canonical sanitized JSON, independent of
-// relational JSON formatting or object-key order after restart (VK-6).
+// relational JSON formatting or object-key order after restart (component-verification-evidence).
 func VerificationEvidenceDigest(e core.VerificationEvidence) string {
 	return verificationHash(verificationJSON(e))
 }

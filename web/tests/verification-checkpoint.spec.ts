@@ -1,7 +1,7 @@
 import { expect, type Page, test } from '@playwright/test'
 
-// feature-verification-kit-execution VK-13.5 and component-web-dashboard
-// VK-WEB-6: a verify order released at its operator checkpoint is labelled
+// component-verification-service and component-web-task-surfaces: a verify
+// order released at its operator checkpoint is labelled
 // Verification, names its reason, required act, head and grounds, and offers
 // recovery only within the operator's capability.
 
@@ -380,7 +380,7 @@ test('a historical checkpoint context links grounds from its own records', async
 })
 
 test('a historical checkpoint keeps a retried attempt out of its grounds', async ({ page }) => {
-  // VK-13.2/VK-13.5: login retried from blocked to succeeded, so only the
+  // component-verification-service: login retried from blocked to succeeded, so only the
   // waiting approve attempt is a sealed ground. The attempt pages hold one
   // attempt each, and the ground's attempt is not on the first page, so a
   // superseded attempt cannot stand in for the sealed one.

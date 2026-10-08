@@ -16,7 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-// Workspace kit registry (feature-verification-kit-execution v6 VK-11,
+// Workspace kit registry (component-verification-kit-contract,
 // req-verification-kit-inventory v1 REQ-1). The read reports what each configured
 // repository's base-branch manifest declares and how kit pins compare with the
 // currently confirmed corpus. It is display-only: verify-stage selection keeps
@@ -68,7 +68,7 @@ type kitRegistryPin struct {
 	CurrentVersion int    `json:"current_version,omitempty"`
 }
 
-// kitRegistryExercise is the normalized VK-3 contract with descriptions always
+// kitRegistryExercise is the normalized exercise contract (component-verification-kit-contract) with descriptions always
 // present (empty under schema 1, req-verification-kits AC-10.2) and assertions always in object form.
 type kitRegistryExercise struct {
 	ID                 string                        `json:"id"`
@@ -176,7 +176,8 @@ func (s *Server) readRepositoryKits(ctx context.Context, workspace string, repo 
 	return projectRepositoryKits(repo, sha, d, kitRegistryReason(ctx, d.State))
 }
 
-// kitRegistryReason maps discovery states onto VK-11 unavailable reasons.
+// kitRegistryReason maps discovery states onto the registry's unavailable reasons
+// (component-verification-kit-contract).
 func kitRegistryReason(ctx context.Context, state string) string {
 	if ctx.Err() != nil {
 		return "transport"
@@ -188,7 +189,8 @@ func kitRegistryReason(ctx context.Context, state string) string {
 	return "transport"
 }
 
-// projectRepositoryKits applies the VK-11 state mapping and kit projection.
+// projectRepositoryKits applies the registry state mapping and kit projection
+// (component-verification-kit-contract).
 // Evaluate supplies content digests and invalid-entry diagnostics, including a
 // missing kit root; eligibility is ignored because no work-order pins apply.
 func projectRepositoryKits(repo config.Repo, sha string, d github.VerificationDiscovery, reason string) kitRegistryRepository {
@@ -211,7 +213,7 @@ func projectRepositoryKits(repo config.Repo, sha string, d github.VerificationDi
 	out.SchemaVersion = manifest.SchemaVersion
 	receipt := verification.Evaluate(manifest, verification.SelectionContext{Stage: "verify", ManifestRevision: sha, SourceRevision: sha}, d.Trees)
 	// Discovery reports "malformed" whenever Parse returns an error, which
-	// includes a single invalid entry. VK-11 maps that state to an invalid
+	// includes a single invalid entry. The registry read (component-verification-kit-contract) maps that state to an invalid
 	// repository. Diagnostics stay where they belong (req-verification-kit-inventory AC-1.4): the repository
 	// carries only manifest-level ones, and each kit is invalid only through its
 	// own receipt, which Evaluate also marks for manifest-level diagnostics.
@@ -362,7 +364,8 @@ func versionStatus(confirmed, withdrawn bool) string {
 	return "pending"
 }
 
-// kitStatusOrder is the VK-11 precedence among pin statuses.
+// kitStatusOrder is the registry precedence among pin statuses
+// (component-verification-kit-contract).
 var kitStatusOrder = []string{"unresolved", "behind", "pending", "current"}
 
 func (p *kitPinResolver) apply(ctx context.Context, kit *kitRegistryKit) error {

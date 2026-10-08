@@ -1,7 +1,7 @@
 package core
 
 // WorktreeIdentity is bounded preservation provenance, never a credential
-// (component-git-delivery CP-1; component-work-orders HO-2).
+// (component-attempt-checkpoints).
 type WorktreeIdentity struct {
 	Workspace         string `json:"workspace"`
 	TaskID            string `json:"task_id"`

@@ -222,7 +222,7 @@ func (m *volatileMemory) ReadVerificationDetail(ctx context.Context, a Verificat
 }
 
 // normalizeVerificationObservation executes only inside the existing mutation
-// lock. feature-verification-kit-execution VK-6 / DEC-43: the first capture time participates in canonical replay identity.
+// lock. component-verification-evidence / DEC-43: the first capture time participates in canonical replay identity.
 func normalizeVerificationObservation(ctx context.Context, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationCommand, error) {
 	in := c.OperatorObservation
 	actor := ActorFromContext(ctx)

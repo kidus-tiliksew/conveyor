@@ -12,7 +12,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// ART-HTTP-3 requires an explicit selector even for singleton deployments.
+// Metadata repair requires an explicit selector even for singleton deployments
+// (component-artifacts).
 func requireExplicitArtifactWorkspace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(r.URL.Query().Get("workspace_id")) == "" && strings.TrimSpace(r.Header.Get("X-Workspace-ID")) == "" {

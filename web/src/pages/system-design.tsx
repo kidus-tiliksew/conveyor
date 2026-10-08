@@ -65,7 +65,7 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
  * System Design is a category tree beside a document canvas. The canvas is the
  * ordinary reading surface. Changes and History share its header and the one
  * attention surface carries every signal that needs an operator
- * (component-web-dashboard v6; req-document-operating-surfaces v5 REQ-1/2).
+ * (component-web-document-surfaces; req-document-operating-surfaces REQ-1/REQ-2).
  * The assistant column is withdrawn from presentation while in-product
  * planning is parked — its components and every
  * propose→confirm route stay exactly as they are.

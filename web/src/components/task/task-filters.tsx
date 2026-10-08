@@ -38,7 +38,8 @@ export interface TaskFilterState {
   // Assignee is single-valued, unlike the list members: a task has one
   // assignee, so a union of two people is a question nobody asks. Empty means
   // anyone, UNASSIGNED_ASSIGNEE selects tasks nobody holds, and any other
-  // value is a workspace member's user ID (REQ-4, DEC-18).
+  // value is a workspace member's user ID (req-task-lifecycle-and-queue
+  // AC-2.3; DEC-55).
   assignee: string
 }
 
