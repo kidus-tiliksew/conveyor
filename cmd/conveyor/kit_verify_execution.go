@@ -275,7 +275,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		return err
 	}
 	defer channel.Close()
-	// Register the entire closed operation set before any child starts (component-verification-service).
+	// Register the entire closed operation set before any child starts (component-verification-runner).
 	// A child that exits without signalling must still leave durable uncertainty.
 	for _, op := range e.Operations {
 		if err := v.live(launchCtx, grantID); err != nil {

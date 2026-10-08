@@ -39,7 +39,8 @@ func ValidateVerifyDispatch(task Task, order WorkOrder) error {
 }
 
 // ConflictingExecutorClaims preserves same-stage exclusivity and prevents an
-// implementer and verifier from executing against one task concurrently (component-verification-service).
+// implementer and verifier from executing against one task concurrently
+// (component-task-lifecycle, executor exclusivity).
 func ConflictingExecutorClaims(a, b WorkOrder) bool {
 	if a.ID == b.ID || a.TaskID != b.TaskID || b.State != WorkOrderClaimed {
 		return false

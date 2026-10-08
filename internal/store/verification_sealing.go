@@ -78,7 +78,8 @@ type VerificationCheckpoint struct {
 	// AttemptGrounds lists, in ground order, the attempt IDs of the
 	// attempt_* grounds: the latest attempt of each subject that stopped the
 	// verification. Historical reads link exactly these attempts instead of
-	// reclassifying superseded ones (component-web-task-surfaces).
+	// reclassifying superseded ones (component-verification-service; rendered by
+	// component-web-task-surfaces).
 	AttemptGrounds string `json:"attempt_grounds"`
 	// HeadSHA is the submitted task-repository revision; WorkOrderAttemptID is
 	// the releasing claim attempt (component-verification-service).

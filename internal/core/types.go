@@ -101,7 +101,7 @@ const (
 )
 
 // ValidWorkOrderStage is the closed executor-stage vocabulary (DEC-43;
-// component-verification-service).
+// component-work-orders).
 func ValidWorkOrderStage(stage Stage) bool {
 	return stage == StageSpec || stage == StageImplement || stage == StageVerify || stage == StageReview
 }

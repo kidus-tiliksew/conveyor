@@ -124,7 +124,7 @@ type AssertionResultPayload struct {
 	Actual      string                  `json:"actual"`
 	Outcome     string                  `json:"outcome"`
 	Supporting  []VerificationReference `json:"supporting"`
-	// Required status deliberately has no submitted field (component-verification-service).
+	// Required status deliberately has no submitted field (component-verification-evidence).
 }
 type ExecutionReportPayload struct {
 	Argv            []string `json:"argv"`

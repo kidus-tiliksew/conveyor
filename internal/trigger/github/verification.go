@@ -18,7 +18,7 @@ import (
 )
 
 // VerificationDiscovery contains only exact-revision repository observations.
-// Repository content grants no execution authority (DEC-43, component-verification-service).
+// Repository content grants no execution authority (DEC-43; component-verification-runner).
 type VerificationDiscovery struct {
 	Revision       string                              `json:"revision"`
 	State          string                              `json:"state"`
