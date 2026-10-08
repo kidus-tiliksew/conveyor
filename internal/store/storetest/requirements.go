@@ -2513,6 +2513,7 @@ func sameInstant(got, want time.Time) bool {
 // AC-6.1; component-document-corpus).
 func RunDocumentTitleConformance(t *testing.T, factory RequirementFactory) {
 	t.Helper()
+	runDriftAmendmentTitleConformance(t, factory)
 	for _, tier := range documentTitleTiers() {
 		t.Run(tier.name+" proposal keeps the title and confirmation renames once", func(t *testing.T) {
 			st, ctx, workspace := newRequirementFixture(t, factory)
@@ -2884,5 +2885,91 @@ func assertDocumentTitleEvent(t *testing.T, tier documentTitleTier, event core.E
 	}
 	if event.Kind != tier.kind || !reflect.DeepEqual(payload, want) || event.ActorID != requirementConformanceActor || event.TaskID != "" {
 		t.Fatalf("title event kind=%s actor=%q task=%q payload=%v, want %v", event.Kind, event.ActorID, event.TaskID, payload, want)
+	}
+}
+
+// runDriftAmendmentTitleConformance composes the listed-title update with the
+// requirements_amended drift closure that the same requirement confirmation
+// performs (req-document-operating-surfaces AC-6.1; DEC-46;
+// component-document-corpus; component-monitor-drift). Confirming a
+// drift-amendment version whose heading renames the requirement updates the
+// title once and closes the linked drift once; a replay records neither again.
+func runDriftAmendmentTitleConformance(t *testing.T, factory RequirementFactory) {
+	t.Run("renaming drift amendment confirmation updates the title and closes the drift together", func(t *testing.T) {
+		x := newDriftAmendmentFixture(t, factory)
+		before, err := x.st.GetRequirement(x.ctx, x.requirement.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drift := x.recordDrift(t, true)
+		if _, err = x.monitor.ResolveDrift(x.ctx, drift.ID, "requirements_amended", x.requirement.ID); err != nil {
+			t.Fatal(err)
+		}
+		// The monitor's amendment carries the current heading forward; a
+		// revised amendment for the same drift renames the requirement.
+		renamed := driftVersionFor(x.requirement.ID, "Renamed by drift amendment", x.statements...)
+		renamed.OriginDriftID = drift.ID
+		proposed, err := x.st.ProposeRequirementVersion(x.ctx, renamed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if title, _, _ := documentTitleTiers()[0].get(t, x.ctx, x.st, x.requirement.ID); title != before.Title {
+			t.Fatalf("proposal changed the title to %q", title)
+		}
+		x.assertOpen(t, drift.ID, x.requirement.ID)
+
+		confirmed, _, err := x.st.ConfirmRequirementVersion(x.ctx, x.requirement.ID, proposed.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if confirmed.Title != "Renamed by drift amendment" || confirmed.Slug != before.Slug || confirmed.ID != before.ID {
+			t.Fatalf("confirmed requirement=%+v, want renamed title with slug %q", confirmed, before.Slug)
+		}
+		assertDriftAmendmentTitleEvents(t, x, before.Title, proposed.Version)
+		x.assertClosed(t, drift, "requirements_amended")
+		if count := x.reconciledEvents(t, drift.TaskID); count != 1 {
+			t.Fatalf("reconciliation events=%d, want 1", count)
+		}
+		x.assertReconciledPayload(t, drift.TaskID, proposed.Version)
+		x.assertDocumentResolved(t, drift.SystemDesignID, proposed.Version, 1)
+
+		// Replaying the confirmation records neither effect again.
+		if _, _, err = x.st.ConfirmRequirementVersion(x.ctx, x.requirement.ID, proposed.Version); err != nil {
+			t.Fatal(err)
+		}
+		assertDriftAmendmentTitleEvents(t, x, before.Title, proposed.Version)
+		if count := x.reconciledEvents(t, drift.TaskID); count != 1 {
+			t.Fatalf("replayed reconciliation events=%d, want 1", count)
+		}
+		x.assertDocumentResolved(t, drift.SystemDesignID, proposed.Version, 1)
+	})
+}
+
+// assertDriftAmendmentTitleEvents requires exactly one title event for the
+// amendment version, attributed to the confirming actor.
+func assertDriftAmendmentTitleEvents(t *testing.T, x *driftAmendmentFixture, oldTitle string, version int) {
+	t.Helper()
+	events, err := x.st.ListRequirementEvents(x.ctx, x.requirement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matched []core.Event
+	for _, event := range events {
+		if event.Kind != store.RequirementTitleChangedEvent {
+			continue
+		}
+		var payload map[string]any
+		if err = json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(payload["version"]) == fmt.Sprint(version) {
+			if payload["old_title"] != oldTitle || payload["new_title"] != "Renamed by drift amendment" || payload["confirmed_by"] != requirementConformanceActor {
+				t.Fatalf("drift amendment title event payload=%v", payload)
+			}
+			matched = append(matched, event)
+		}
+	}
+	if len(matched) != 1 {
+		t.Fatalf("title events for version %d=%d, want 1: %+v", version, len(matched), events)
 	}
 }

@@ -6,9 +6,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -244,5 +246,128 @@ func TestSingleStoreConcurrentConfirmationsChainTitlesIntegration(t *testing.T) 
 				t.Fatalf("round %d %s: title=%q chain end=%q", round, tier, title, previous)
 			}
 		}
+	}
+}
+
+// TestSingleStoreDriftAmendmentTitleAndClosureCommitTogetherIntegration
+// composes this task's title update with 261007-8594fb's requirements_amended
+// closure in one requirement confirmation: a failing event write or a failing
+// later drift hook leaves neither effect, and the clean confirmation commits
+// both once (req-document-operating-surfaces AC-6.1; DEC-46;
+// component-monitor-drift).
+func TestSingleStoreDriftAmendmentTitleAndClosureCommitTogetherIntegration(t *testing.T) {
+	st, ctx := newDocumentTitleStore(t)
+	x := newDriftTitleFixture(t, ctx, st)
+	// The event table is written before the drift hook; repository_drift is
+	// read by the drift hook after the title event.
+	for _, fault := range []struct{ name, table string }{{"event write", "events"}, {"later drift hook", "repository_drift"}} {
+		restore := renameTable(t, ctx, st, fault.table, fault.table+"_title_fault")
+		_, _, confirmErr := st.ConfirmRequirementVersion(ctx, x.requirementID, x.version)
+		restore()
+		if confirmErr == nil {
+			t.Fatalf("%s: confirmation succeeded despite the injected fault", fault.name)
+		}
+		x.assertUnchanged(t, ctx, st, fault.name)
+	}
+	if _, _, err := st.ConfirmRequirementVersion(ctx, x.requirementID, x.version); err != nil {
+		t.Fatal(err)
+	}
+	x.assertCommitted(t, ctx, st)
+	if _, _, err := st.ConfirmRequirementVersion(ctx, x.requirementID, x.version); err != nil {
+		t.Fatal(err)
+	}
+	x.assertCommitted(t, ctx, st)
+}
+
+// driftTitleFixture is a requirement whose linked requirements_amended drift
+// has a pending renaming amendment, built through public store methods.
+type driftTitleFixture struct {
+	requirementID, driftID, taskID string
+	version                        int
+}
+
+func newDriftTitleFixture(t *testing.T, ctx context.Context, st *Store) driftTitleFixture {
+	t.Helper()
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	taskID := core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, Title: "Drift title task", State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	statements := []core.RequirementStatement{{ID: "REQ-1", Statement: "External changes remain traceable."}}
+	requirementID := "req-drift-title-" + core.NewTaskID()
+	if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: requirementID, Title: "Drift title " + requirementID}, core.RequirementVersion{Content: "# Drift title " + requirementID, Origin: core.RequirementOriginOperator, Statements: statements}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ConfirmRequirementVersion(ctx, requirementID, 1); err != nil {
+		t.Fatal(err)
+	}
+	drift := monitor.Drift{ID: "drift-" + core.NewTaskID(), WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.ExternalPRMerge,
+		SourceURL: "https://example.test/pull/70", CommitSHA: "abc70db", TaskID: taskID, DetectedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	if _, fresh, err := st.RecordDrift(ctx, drift); err != nil || !fresh {
+		t.Fatalf("record drift fresh=%t err=%v", fresh, err)
+	}
+	if _, err := st.ResolveDrift(ctx, drift.ID, "requirements_amended", requirementID); err != nil {
+		t.Fatal(err)
+	}
+	renamed, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirementID, Content: "# Renamed by drift amendment", Statements: statements,
+		Origin: core.RequirementOriginDriftAmendment, OriginDriftID: drift.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return driftTitleFixture{requirementID: requirementID, driftID: drift.ID, taskID: taskID, version: renamed.Version}
+}
+
+// driftTitleState reports the listed title, current version, whether the
+// drift is still unresolved, and the title-change and reconciliation events.
+func (x driftTitleFixture) state(t *testing.T, ctx context.Context, st *Store) (string, int, bool, int, int) {
+	t.Helper()
+	requirement, err := st.GetRequirement(ctx, x.requirementID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unresolved, err := st.ListUnresolvedDrift(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := false
+	for _, drift := range unresolved {
+		open = open || drift.ID == x.driftID
+	}
+	documentEvents, err := st.ListRequirementEvents(ctx, x.requirementID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	titleEvents := 0
+	for _, event := range documentEvents {
+		if event.Kind == store.RequirementTitleChangedEvent && strings.Contains(string(event.Payload), "Renamed by drift amendment") {
+			titleEvents++
+		}
+	}
+	taskEvents, err := st.ListEvents(ctx, x.taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciled := 0
+	for _, event := range taskEvents {
+		if event.Kind == "monitor.drift_reconciled" {
+			reconciled++
+		}
+	}
+	return requirement.Title, requirement.CurrentVersion, open, titleEvents, reconciled
+}
+
+func (x driftTitleFixture) assertUnchanged(t *testing.T, ctx context.Context, st *Store, fault string) {
+	t.Helper()
+	title, current, open, titleEvents, reconciled := x.state(t, ctx, st)
+	if title != "Drift title "+x.requirementID || current != 1 || !open || titleEvents != 0 || reconciled != 0 {
+		t.Fatalf("%s left partial state: title=%q current=%d open=%t title_events=%d reconciled=%d", fault, title, current, open, titleEvents, reconciled)
+	}
+}
+
+func (x driftTitleFixture) assertCommitted(t *testing.T, ctx context.Context, st *Store) {
+	t.Helper()
+	title, current, open, titleEvents, reconciled := x.state(t, ctx, st)
+	if title != "Renamed by drift amendment" || current != x.version || open || titleEvents != 1 || reconciled != 1 {
+		t.Fatalf("composed confirmation: title=%q current=%d open=%t title_events=%d reconciled=%d", title, current, open, titleEvents, reconciled)
 	}
 }
