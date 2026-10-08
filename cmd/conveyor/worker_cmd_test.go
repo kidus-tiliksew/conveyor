@@ -517,6 +517,7 @@ func testHarnessObservability(t *testing.T, format string) {
 	var transcript *core.WorkOrderAttemptTranscript
 	var failureDetail string
 	checkpointRequests := 0
+	captureRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		if len(parts) != 5 || strings.Join(parts[:3], "/") != "v1/worker/work-orders" {
@@ -552,10 +553,27 @@ func testHarnessObservability(t *testing.T, format string) {
 			}
 			checkpointRequests++
 			if request.Transcript != nil {
-				transcript = request.Transcript
-				panic(http.ErrAbortHandler)
+				// The Git audit never carries this launcher's spool: its
+				// producer may be a predecessor attempt.
+				t.Errorf("checkpoint audit carried a transcript")
 			}
 			_ = json.NewEncoder(w).Encode(map[string]bool{"created": true})
+		case "attempt-observability":
+			var capture core.WorkOrderAttemptCapture
+			if err := json.NewDecoder(r.Body).Decode(&capture); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			captureRequests++
+			transcript = capture.Transcript
+			mu.Unlock()
+			if capture.AttemptID != "attempt-observability" {
+				t.Errorf("capture attempt=%q", capture.AttemptID)
+			}
+			// Capture delivery is best-effort: an aborted response must not
+			// change the ending.
+			panic(http.ErrAbortHandler)
 		case "release":
 			var request struct {
 				FailureDetail string `json:"failure_detail"`
@@ -614,8 +632,8 @@ func testHarnessObservability(t *testing.T, format string) {
 	if format == "opencode" && !strings.Contains(failureDetail, "! agent step ended early · reason unknown") {
 		t.Fatalf("missing flushed final warning: %q", failureDetail)
 	}
-	if checkpointRequests != 2 || !strings.Contains(stderr.String(), "retrying checkpoint without transcript") {
-		t.Fatalf("checkpoint_requests=%d stderr=%q", checkpointRequests, stderr.String())
+	if checkpointRequests != 1 || captureRequests != 1 || !strings.Contains(stderr.String(), "deliver attempt transcript capture") {
+		t.Fatalf("checkpoint_requests=%d capture_requests=%d stderr=%q", checkpointRequests, captureRequests, stderr.String())
 	}
 	if !checkpointReceivedToken {
 		t.Fatal("worker-side checkpoint push did not receive the child-only Git credential environment")

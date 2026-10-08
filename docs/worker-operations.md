@@ -164,7 +164,10 @@ text for other output. Failure details keep the latest 2 KiB of the same
 stdout summaries plus raw stderr diagnostics. Both tails discard oldest
 content first. Renewal retains the last rendered lines when an event has no
 display summary. The transcript remains a separate redacted raw session
-capture, and `--raw` console output is unchanged.
+capture, and `--raw` console output is unchanged. The worker delivers that
+capture once per attempt for every stage after the child stops, through
+`POST /v1/worker/work-orders/{id}/attempt-observability`; a failed delivery
+is only a warning and never changes the attempt's release or result.
 
 - Brief connection refusal, timeout, or retryable server failure produces a
   bounded reconnect delay; the worker stays alive and remains cancellable.

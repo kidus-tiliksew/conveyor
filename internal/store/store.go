@@ -330,6 +330,14 @@ type WorkOrderStore interface {
 	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
 	UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error
 	FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error
+	// RecordWorkOrderAttemptCapture records the observational transcript
+	// capture of one already-ended attempt for any stage, independently of
+	// Git preservation (req-260820-221be8 AC-2.1; DEC-26). It authenticates
+	// against the attempt's immutable claim event, derives the reason from
+	// the attempt's persisted ending, supersedes only that attempt's activity
+	// snapshot, and inserts at most one capture per attempt under the order
+	// row lock. It changes no claim, lease, release, or retry state.
+	RecordWorkOrderAttemptCapture(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error)
 	GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error)
 	ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error)
 	RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error)
@@ -2267,6 +2275,53 @@ func (m *memory) FinalizeWorkOrderAttemptObservability(ctx context.Context, work
 		CapturedAt: time.Now().UTC(),
 	})
 	return nil
+}
+
+func (m *memory) RecordWorkOrderAttemptCapture(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error) {
+	capture = NormalizeAttemptCapture(capture)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok {
+		return core.WorkOrderAttemptCaptureResult{}, ErrWorkOrderClaimUnauthorized
+	}
+	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
+		return core.WorkOrderAttemptCaptureResult{}, ErrWorkOrderClaimUnauthorized
+	}
+	authorized := false
+	for _, event := range m.events[order.TaskID] {
+		if AttemptCaptureClaimEventMatches(event, order, claim, capture) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
+		return core.WorkOrderAttemptCaptureResult{}, ErrWorkOrderClaimUnauthorized
+	}
+	existingReason, existing := "", false
+	for _, prior := range m.workOrderTranscriptCaptures[workOrderID] {
+		if prior.AttemptID == capture.AttemptID {
+			existingReason, existing = prior.TerminationReason, true
+			break
+		}
+	}
+	reason, err := AttemptCaptureReason(order, capture, existingReason, existing)
+	if err != nil {
+		return core.WorkOrderAttemptCaptureResult{}, err
+	}
+	if current, exists := m.workOrderActivitySnapshots[workOrderID]; exists && current.AttemptID == capture.AttemptID {
+		delete(m.workOrderActivitySnapshots, workOrderID)
+	}
+	result := core.WorkOrderAttemptCaptureResult{TerminationReason: reason}
+	if capture.Transcript == nil || existing {
+		return result, nil
+	}
+	m.workOrderTranscriptCaptures[workOrderID] = append(m.workOrderTranscriptCaptures[workOrderID], core.WorkOrderTranscriptCapture{
+		AttemptID: capture.AttemptID, Content: capture.Transcript.Content, TerminationReason: reason,
+		Truncated: capture.Transcript.Truncated, CapturedAt: time.Now().UTC(),
+	})
+	result.Created = true
+	return result, nil
 }
 
 func (m *memory) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {

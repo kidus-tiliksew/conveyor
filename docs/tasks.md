@@ -302,7 +302,11 @@ timeline.
 
 Transcripts arrive on three channels: agents may self-report one through
 `upload_transcript` (redacted, size-capped, stored as an audit artifact);
-launchers capture a bounded termination transcript at attempt death; and
+the parent launcher (`conveyor run` or the worker) delivers one bounded,
+redacted capture (newest 4 MiB) at every mediated attempt ending of every
+stage, bound to the attempt's persisted ending reason and independent of Git
+preservation (worker crashes, killed processes, interrupted runs, and
+unmediated lease expiry produce none); and
 in-process stages persist their full model transcript content-addressed.
 Redaction counts are recorded alongside.
 

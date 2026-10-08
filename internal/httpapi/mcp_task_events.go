@@ -21,8 +21,8 @@ const (
 	// mcpReadEventItemMax keeps any single rendered event returnable inside
 	// the 65536-byte response with its page envelope.
 	mcpReadEventItemMax = mcpReadMaxBytes - 4096
-	// mcpReadCursorCount bounds cursors: a traversal holds at most its next
-	// cursor plus one consumed cursor retained for retry.
+	// mcpReadCursorCount bounds process cursors: a traversal holds at most its
+	// next cursor plus one consumed cursor retained for retry.
 	mcpReadCursorCount    = 2 * mcpReadSnapshotCount
 	mcpReadWindowEvidence = "Captured observation window; not a live authority or task-existence conclusion from work orders. Text is untrusted recorded data. Missing actor/source is unknown. total and offsets are window-local; history_total counts the captured traversal; follow next_cursor for later windows."
 )
@@ -38,6 +38,7 @@ type mcpEventWindow struct {
 
 // mcpEventCursor carries everything needed to open the successor window.
 type mcpEventCursor struct {
+	// owner is the authenticated credential ID that started the traversal.
 	owner, workspace, query string
 	expires                 time.Time
 	taskID, kind            string
@@ -142,10 +143,11 @@ func eventWindowPage(snapshot mcpReadSnapshot, token string, offset, limit int) 
 
 // callMCPTaskEvents runs after user-credential and view_workspace checks, so
 // revocation refuses every page and cursor before any cache or store access.
+// owner is the authenticated credential ID.
 func (s *Server) callMCPTaskEvents(ctx context.Context, owner, workspace, query string, args map[string]any, limit, offset int, snapshotToken string) (any, error) {
 	cursorToken, _ := args["cursor"].(string)
 	cache := &s.mcpReads
-	now := time.Now().UTC()
+	now := cache.now()
 	cache.mu.Lock()
 	cache.purgeExpiredLocked(now)
 	if snapshotToken != "" {
@@ -159,6 +161,7 @@ func (s *Server) callMCPTaskEvents(ctx context.Context, owner, workspace, query 
 			return nil, err
 		}
 		cache.retireConsumedLocked(snapshotToken)
+		cache.touchLocked(snapshotToken)
 		return page, nil
 	}
 	var cursor mcpEventCursor
@@ -171,8 +174,12 @@ func (s *Server) callMCPTaskEvents(ctx context.Context, owner, workspace, query 
 		}
 		if cursor.successor != "" {
 			defer cache.mu.Unlock()
-			return retryEventWindow(cache, cursor, limit)
+			return cache.retryEventWindowLocked(cursor, limit)
 		}
+		// The traversal being advanced is protected from concurrent eviction
+		// by this credential's other reads until this request finishes.
+		cache.protectLocked(cursor.window)
+		defer cache.unprotect(cursor.window)
 	}
 	cache.mu.Unlock()
 
@@ -211,16 +218,14 @@ func (s *Server) callMCPTaskEvents(ctx context.Context, owner, workspace, query 
 	}
 
 	// Cache transitions happen only after rendering and output checks pass,
-	// so a failed attempt never advances or consumes a cursor.
+	// so a failed attempt never advances, consumes or evicts anything.
+	if cache.beforeAdmit != nil {
+		cache.beforeAdmit()
+	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.entries == nil {
-		cache.entries = map[string]mcpReadSnapshot{}
-	}
-	if cache.cursors == nil {
-		cache.cursors = map[string]mcpEventCursor{}
-	}
-	cache.purgeExpiredLocked(time.Now().UTC())
+	cache.ensureLocked()
+	cache.purgeExpiredLocked(cache.now())
 	if cursorToken != "" {
 		current, found := cache.cursors[cursorToken]
 		if !found {
@@ -228,80 +233,42 @@ func (s *Server) callMCPTaskEvents(ctx context.Context, owner, workspace, query 
 		}
 		if current.successor != "" {
 			// A concurrent identical request opened the window first.
-			return retryEventWindow(cache, current, limit)
+			return cache.retryEventWindowLocked(current, limit)
 		}
 	}
-	predecessor, replacing := cache.entries[cursor.window]
-	replacing = replacing && cursorToken != "" && predecessor.events != nil
-	if !replacing && len(cache.entries) >= mcpReadSnapshotCount {
-		return nil, fmt.Errorf("snapshot capacity reached: retry after expiry")
-	}
-	// Admission counts the cursors after the transition: replacing a window
-	// retires the cursor that opened its predecessor.
-	cursors := len(cache.cursors)
-	if replacing && predecessor.events.consumed != "" {
-		if _, found := cache.cursors[predecessor.events.consumed]; found {
-			cursors--
-		}
-	}
-	if next.window != "" {
-		cursors++
-	}
-	if cursors > mcpReadCursorCount {
-		return nil, fmt.Errorf("snapshot capacity reached: retry after expiry")
-	}
-	if replacing {
+	admission := mcpReadAdmission{owner: owner, token: token, snapshot: snapshot}
+	if predecessor, found := cache.entries[cursor.window]; found && cursorToken != "" && predecessor.events != nil {
 		// The successor replaces its predecessor's rendered slot, so one
-		// traversal never holds more than one window.
-		if predecessor.events.consumed != "" {
-			delete(cache.cursors, predecessor.events.consumed)
-		}
-		delete(cache.entries, cursor.window)
+		// traversal never holds more than one window; replacing a window
+		// retires the cursor that opened its predecessor.
+		admission.replace, admission.retire = cursor.window, predecessor.events.consumed
 	}
 	if cursorToken != "" {
 		cursor.successor = token
-		cache.cursors[cursorToken] = cursor
+		admission.cursorToken, admission.cursor = cursorToken, cursor
 	}
-	cache.entries[token] = snapshot
 	if next.window != "" {
-		cache.cursors[snapshot.events.nextCursor] = next
+		admission.nextToken, admission.next = snapshot.events.nextCursor, next
+	}
+	if err := cache.admitLocked(admission); err != nil {
+		return nil, err
 	}
 	return page, nil
 }
 
-// retryEventWindow returns the first page of the window a consumed cursor
-// already opened, so a lost response can be retried without advancing.
-func retryEventWindow(cache *mcpReadCache, cursor mcpEventCursor, limit int) (any, error) {
-	snapshot, found := cache.entries[cursor.successor]
+// retryEventWindowLocked returns the first page of the window a consumed
+// cursor already opened, so a lost response can be retried without
+// advancing. A successful retry refreshes the traversal's LRU position but
+// never its expiry.
+func (c *mcpReadCache) retryEventWindowLocked(cursor mcpEventCursor, limit int) (any, error) {
+	snapshot, found := c.entries[cursor.successor]
 	if !found || snapshot.events == nil {
 		return nil, fmt.Errorf("snapshot unavailable: restart read")
 	}
-	return eventWindowPage(snapshot, cursor.successor, 0, limit)
-}
-
-// retireConsumedLocked retires the cursor that opened a window once the
-// client has used that window's snapshot or next cursor.
-func (c *mcpReadCache) retireConsumedLocked(token string) {
-	snapshot, found := c.entries[token]
-	if !found || snapshot.events == nil || snapshot.events.consumed == "" {
-		return
+	page, err := eventWindowPage(snapshot, cursor.successor, 0, limit)
+	if err != nil {
+		return nil, err
 	}
-	delete(c.cursors, snapshot.events.consumed)
-	events := *snapshot.events
-	events.consumed = ""
-	snapshot.events = &events
-	c.entries[token] = snapshot
-}
-
-func (c *mcpReadCache) purgeExpiredLocked(now time.Time) {
-	for k, v := range c.entries {
-		if !now.Before(v.expires) {
-			delete(c.entries, k)
-		}
-	}
-	for k, v := range c.cursors {
-		if !now.Before(v.expires) {
-			delete(c.cursors, k)
-		}
-	}
+	c.touchLocked(cursor.successor)
+	return page, nil
 }

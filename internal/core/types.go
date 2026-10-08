@@ -964,6 +964,74 @@ type WorkOrderAttemptTranscript struct {
 	Truncated bool   `json:"truncated"`
 }
 
+// WorkOrderAttemptCapture is a parent launcher's observational capture of one
+// already-ended attempt, delivered for every stage independently of Git
+// preservation (req-260820-221be8 AC-2.1; DEC-26; component-work-orders).
+// TerminationReason is the launcher's declaration; Conveyor derives the
+// authoritative reason from the attempt's persisted ending and refuses a
+// conflicting declaration.
+type WorkOrderAttemptCapture struct {
+	SessionID         string                      `json:"session_id"`
+	AttemptID         string                      `json:"attempt_id"`
+	TerminationReason string                      `json:"termination_reason"`
+	Transcript        *WorkOrderAttemptTranscript `json:"transcript,omitempty"`
+}
+
+// WorkOrderAttemptCaptureResult reports whether a capture row was inserted
+// and the persisted ending reason it was bound to.
+type WorkOrderAttemptCaptureResult struct {
+	Created           bool   `json:"created"`
+	TerminationReason string `json:"termination_reason"`
+}
+
+// AttemptHandoffTerminationReason names a terminal stage handoff (submitted
+// or completed) as an attempt ending reason.
+func AttemptHandoffTerminationReason(state WorkOrderState) string {
+	return "work order " + string(state)
+}
+
+// AttemptEndingReason derives the durable ending reason of attemptID from the
+// persisted order row. It reports false while the attempt is still the active
+// claim, after an unmediated lease expiry (req-260820-221be8 AC-2.3), or when
+// the row no longer identifies the attempt's ending.
+//
+// Only transitions that write last_attempt_id together with the outcome and
+// last_failure_message are trusted: worker or agent release (including
+// operator-checkpoint and plan-revision self-release), the verification
+// checkpoint release, and preemption, on every backend. Execution-clock
+// timeout, task cancellation, sibling retirement, and verification head
+// supersession move the order to timed_out or cancelled while leaving the
+// outcome or message from an earlier attempt, and recovery or setup change
+// clears the outcome while keeping the message. Those rows cannot name the
+// attempt's ending, so no reason is derived from them.
+func (w WorkOrder) AttemptEndingReason(attemptID string) (string, bool) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return "", false
+	}
+	if w.AttemptID == attemptID {
+		if w.State == WorkOrderSubmitted || w.State == WorkOrderCompleted {
+			return AttemptHandoffTerminationReason(w.State), true
+		}
+		return "", false
+	}
+	if w.LastAttemptID != attemptID || w.State == WorkOrderTimedOut || w.State == WorkOrderCancelled {
+		return "", false
+	}
+	switch outcome := strings.TrimSpace(w.LastAttemptOutcome); outcome {
+	case WorkOrderOutcomeReleased, WorkOrderOutcomeChildFailure, WorkOrderOutcomeStalled,
+		WorkOrderOutcomeCancelled, WorkOrderOutcomePreempted:
+		if reason := strings.TrimSpace(w.LastFailureMessage); reason != "" {
+			return reason, true
+		}
+		return outcome, true
+	default:
+		// Expired is unmediated recovery; an empty outcome follows recovery
+		// or setup change, which keeps an earlier attempt's message.
+		return "", false
+	}
+}
+
 // WorkOrderActivitySnapshot is the latest-only running-attempt projection.
 type WorkOrderActivitySnapshot struct {
 	AttemptID  string    `json:"attempt_id"`
