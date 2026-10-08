@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -429,32 +430,491 @@ func TestMonitorConfigurationIsExplicitAndRepositoryScoped(t *testing.T) {
 	}
 }
 
-func TestWorkspaceVerificationEvidenceToggleRoundTripsAndDefaultsOff(t *testing.T) {
-	deployment := validConfig()
-	document := deployment.WorkspaceDocument()
-	if document.Execution.RequireVerificationEvidence {
-		t.Fatal("verification evidence unexpectedly required by default")
+// captureRetiredExecutionKeyWarnings replaces the process-scoped warning seam
+// for one test and returns the recorded warnings.
+func captureRetiredExecutionKeyWarnings(t *testing.T) *[]string {
+	t.Helper()
+	previousOnce, previousLogf := retiredExecutionKeyWarning, retiredExecutionKeyLogf
+	warnings := []string{}
+	retiredExecutionKeyWarning = &sync.Once{}
+	retiredExecutionKeyLogf = func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
 	}
-	document.Execution.RequireVerificationEvidence = true
+	t.Cleanup(func() { retiredExecutionKeyWarning, retiredExecutionKeyLogf = previousOnce, previousLogf })
+	return &warnings
+}
+
+// withExecutionKey adds one scalar key to the document's execution block,
+// creating the block when it is absent.
+func withExecutionKey(t *testing.T, data []byte, key, value string) []byte {
+	t.Helper()
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	document := root.Content[0]
+	execution := mappingValue(document, "execution")
+	if execution == nil || execution.Kind != yaml.MappingNode {
+		execution = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		removeDirectMappingKey(document, "execution")
+		document.Content = append(document.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "execution"}, execution)
+	}
+	execution.Content = append(execution.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: value})
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The retired evidence toggle loads ignored on the deployment, workspace, and
+// stored-workspace paths, warns once per process, is never re-emitted, and
+// sets no stored-row rewrite flag (req-review-gates-evidence AC-8.3; DEC-53).
+func TestRetiredVerificationEvidenceKeyLoadsIgnoredAndWarnsOnce(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Load("../../conveyor.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"true", "false"} {
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err = os.WriteFile(path, withExecutionKey(t, example, RetiredEvidenceToggleKey, value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		loaded, loadErr := Load(path)
+		if loadErr != nil {
+			t.Fatalf("deployment file with retired key %s: %v", value, loadErr)
+		}
+		if loaded.Execution != baseline.Execution {
+			t.Fatalf("deployment execution=%+v, want %+v", loaded.Execution, baseline.Execution)
+		}
+	}
+
+	deployment, err := normalize(validConfig(), "retired key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := MarshalWorkspaceDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, document := range []struct {
+		name string
+		data []byte
+	}{{"workspace", full}, {"policy", policy}} {
+		want, parseErr := ParseWorkspaceDocument(document.data, deployment, "retired key baseline")
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		_, wantLegacy, parseErr := ParseStoredWorkspaceDocument(document.data, deployment, "retired key baseline")
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		for _, value := range []string{"true", "false"} {
+			legacyData := withExecutionKey(t, document.data, RetiredEvidenceToggleKey, value)
+			parsed, parseErr := ParseWorkspaceDocument(legacyData, deployment, "retired key workspace")
+			if parseErr != nil {
+				t.Fatalf("%s document with retired key %s: %v", document.name, value, parseErr)
+			}
+			if parsed.Execution != want.Execution {
+				t.Fatalf("%s execution=%+v, want %+v", document.name, parsed.Execution, want.Execution)
+			}
+			stored, legacy, parseErr := ParseStoredWorkspaceDocument(legacyData, deployment, "retired key stored")
+			if parseErr != nil {
+				t.Fatalf("stored %s document with retired key %s: %v", document.name, value, parseErr)
+			}
+			if legacy != wantLegacy || stored.Execution != want.Execution {
+				t.Fatalf("stored %s legacy=%t (want %t) execution=%+v", document.name, legacy, wantLegacy, stored.Execution)
+			}
+			var decoded WorkspaceDocument
+			if decodeErr := decodeKnown(legacyData, &decoded); decodeErr != nil {
+				t.Fatalf("strict stored-row decode of %s document: %v", document.name, decodeErr)
+			}
+			for _, written := range [][]byte{mustMarshalWorkspaceDocument(t, parsed), mustMarshalPolicyDocument(t, stored), mustJSON(t, parsed.WorkspaceDocument()), mustJSON(t, decoded)} {
+				if bytes.Contains(written, []byte(RetiredEvidenceToggleKey)) {
+					t.Fatalf("configuration write re-emitted the retired key: %s", written)
+				}
+			}
+		}
+	}
+	if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "execution."+RetiredEvidenceToggleKey) || !strings.Contains((*warnings)[0], "DEC-53") {
+		t.Fatalf("retired key warnings=%q, want exactly one naming the key and DEC-53", *warnings)
+	}
+}
+
+func mustMarshalWorkspaceDocument(t *testing.T, cfg *Config) []byte {
+	t.Helper()
+	data, err := MarshalWorkspaceDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mustMarshalPolicyDocument(t *testing.T, cfg *Config) []byte {
+	t.Helper()
+	data, err := MarshalPolicyDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// Dropping the retired key does not relax strict decoding: an unrelated
+// unknown execution key still fails with its own line on every load path, and
+// documents without the key never warn.
+func TestExecutionBlockStillRejectsUnrelatedUnknownKeys(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	deployment, err := normalize(validConfig(), "unknown key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{
+		withExecutionKey(t, policy, "require_review_evidence", "true"),
+		withExecutionKey(t, withExecutionKey(t, policy, RetiredEvidenceToggleKey, "true"), "require_review_evidence", "true"),
+	} {
+		if _, err = ParseWorkspaceDocument(data, deployment, "unknown key"); err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found in type config.ExecutionPolicy") || !strings.Contains(err.Error(), "line ") {
+			t.Fatalf("workspace unknown execution key error=%v", err)
+		}
+		if _, _, err = ParseStoredWorkspaceDocument(data, deployment, "unknown key"); err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
+			t.Fatalf("stored unknown execution key error=%v", err)
+		}
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		example, readErr := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if err = os.WriteFile(path, withExecutionKey(t, example, "require_review_evidence", "true"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = Load(path); err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
+			t.Fatalf("deployment unknown execution key error=%v", err)
+		}
+	}
+	if _, err = ParseWorkspaceDocument(policy, deployment, "no retired key"); err != nil {
+		t.Fatal(err)
+	}
+	type aliased struct {
+		Shared    map[string]any  `yaml:"shared"`
+		Execution ExecutionPolicy `yaml:"execution"`
+	}
+	for _, document := range []string{
+		"shared: &policy {spec_approval: true, require_review_evidence: true}\nexecution: *policy\n",
+		"shared: &policy {spec_approval: true, " + RetiredEvidenceToggleKey + ": true}\nexecution: *policy\n",
+	} {
+		var decoded aliased
+		err = decodeKnown([]byte(document), &decoded)
+		if strings.Contains(document, "require_review_evidence") {
+			if err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
+				t.Fatalf("aliased unknown execution key error=%v", err)
+			}
+		} else if err != nil || !decoded.Execution.SpecApproval {
+			t.Fatalf("aliased retired key decode=%+v err=%v", decoded.Execution, err)
+		}
+	}
+	var invalid WorkspaceDocument
+	if err = decodeKnown(withExecutionKey(t, policy, "verify_concurrency", "many"), &invalid); err == nil || !strings.Contains(err.Error(), "cannot unmarshal") {
+		t.Fatalf("invalid execution value error=%v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("warnings=%q, want one process-scoped warning", *warnings)
+	}
+}
+
+// withExecutionBlock replaces the document's execution value with one parsed
+// YAML node, so merge keys, anchors, and aliases inside it survive encoding.
+func withExecutionBlock(t *testing.T, data []byte, block string) []byte {
+	t.Helper()
+	var root, value yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(block), &value); err != nil {
+		t.Fatal(err)
+	}
+	document := root.Content[0]
+	removeDirectMappingKey(document, "execution")
+	document.Content = append(document.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "execution"}, value.Content[0])
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// executionBlockLoaders loads an execution block through each path that
+// decodes it: the deployment file, the workspace document, the stored
+// workspace document, and the strict stored-row decoder the stores use.
+func executionBlockLoaders(t *testing.T, example []byte, deployment *Config, policy []byte) map[string]func(block string) (ExecutionPolicy, error) {
+	t.Helper()
+	return map[string]func(block string) (ExecutionPolicy, error){
+		"deployment": func(block string) (ExecutionPolicy, error) {
+			path := filepath.Join(t.TempDir(), "conveyor.yaml")
+			if err := os.WriteFile(path, withExecutionBlock(t, example, block), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				return ExecutionPolicy{}, err
+			}
+			return cfg.Execution, nil
+		},
+		"workspace": func(block string) (ExecutionPolicy, error) {
+			cfg, err := ParseWorkspaceDocument(withExecutionBlock(t, policy, block), deployment, "merge key workspace")
+			if err != nil {
+				return ExecutionPolicy{}, err
+			}
+			return cfg.Execution, nil
+		},
+		"stored workspace": func(block string) (ExecutionPolicy, error) {
+			cfg, _, err := ParseStoredWorkspaceDocument(withExecutionBlock(t, policy, block), deployment, "merge key stored")
+			if err != nil {
+				return ExecutionPolicy{}, err
+			}
+			return cfg.Execution, nil
+		},
+		"strict stored row": func(block string) (ExecutionPolicy, error) {
+			var document WorkspaceDocument
+			err := decodeKnown(withExecutionBlock(t, policy, block), &document)
+			return document.Execution, err
+		},
+	}
+}
+
+// YAML merge keys inside the execution block keep yaml.v3 semantics on every
+// load path: explicit keys win, earlier sequence entries win, merged fields
+// are checked strictly, and a merged retired key is ignored with the same
+// single warning as a direct one (DEC-53).
+func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := normalize(validConfig(), "merge key deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		spec, merge     bool
+		implement, view int
+	}
+	loaders := executionBlockLoaders(t, example, deployment, policy)
+	accepted := []struct {
+		name, block string
+		want        outcome
+	}{
+		{"inline merge", "{<<: {spec_approval: true, merge_approval: false}, implement_concurrency: 3, review_concurrency: 2}", outcome{true, false, 3, 2}},
+		{"anchored merge list, earlier entry wins", "{<<: [&a {spec_approval: true, merge_approval: false, review_concurrency: 4}, &b {spec_approval: false, merge_approval: true, implement_concurrency: 2}]}", outcome{true, false, 2, 4}},
+		{"explicit key overrides merge", "{<<: {spec_approval: true, merge_approval: true, implement_concurrency: 2, review_concurrency: 2}, merge_approval: false}", outcome{true, false, 2, 2}},
+		{"nested merge", "{<<: {<<: {spec_approval: true, review_concurrency: 3}, merge_approval: true, implement_concurrency: 2}}", outcome{true, true, 2, 3}},
+		{"retired true through merge", "{<<: {spec_approval: true, require_verification_evidence: true, implement_concurrency: 2, review_concurrency: 2}, merge_approval: false}", outcome{true, false, 2, 2}},
+		{"retired false through merge list", "{<<: [{merge_approval: true, implement_concurrency: 2, review_concurrency: 2}, {require_verification_evidence: false, spec_approval: false}]}", outcome{false, true, 2, 2}},
+	}
+	for loaderName, load := range loaders {
+		for _, tc := range accepted {
+			got, loadErr := load(tc.block)
+			if loadErr != nil {
+				t.Fatalf("%s %s: %v", loaderName, tc.name, loadErr)
+			}
+			if got.SpecApproval != tc.want.spec || got.MergeApproval != tc.want.merge || got.ImplementConcurrency != tc.want.implement || got.ReviewConcurrency != tc.want.view {
+				t.Fatalf("%s %s execution=%+v, want %+v", loaderName, tc.name, got, tc.want)
+			}
+		}
+		for _, block := range []string{
+			"{<<: {spec_approval: true, require_review_evidence: true}}",
+			"{<<: [{spec_approval: true}, {require_review_evidence: true}]}",
+			"{<<: {<<: {require_review_evidence: true}}, merge_approval: true}",
+			"{<<: {spec_approval: true, require_verification_evidence: true, require_review_evidence: true}}",
+		} {
+			if _, loadErr := load(block); loadErr == nil || !strings.Contains(loadErr.Error(), "field require_review_evidence not found in type config.ExecutionPolicy") || !strings.Contains(loadErr.Error(), "line ") {
+				t.Fatalf("%s accepted an unknown merged field in %s: %v", loaderName, block, loadErr)
+			}
+		}
+	}
+	if len(*warnings) != 1 || !strings.Contains((*warnings)[0], "DEC-53") {
+		t.Fatalf("merged retired key warnings=%q, want exactly one", *warnings)
+	}
+}
+
+// A recursive merge alias fails with yaml.v3's "contains itself" error and
+// the alias line on every load path, and alias fan-out fails with its
+// excessive-aliasing error. Neither overflows the stack nor expands without
+// bound; a deep or shared acyclic merge still loads.
+func TestExecutionBlockRecursiveMergesFailCleanly(t *testing.T) {
+	captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	// Keep an accidental unbounded recursion a quick test failure instead of
+	// a gigabyte-sized stack overflow.
+	previousMaxStack := debug.SetMaxStack(64 << 20)
+	t.Cleanup(func() { debug.SetMaxStack(previousMaxStack) })
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := normalize(validConfig(), "recursive merge deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deep, fanOut strings.Builder
+	deep.WriteString("{review_concurrency: 2, <<: ")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&deep, "&d%d {<<: ", i)
+	}
+	deep.WriteString("{spec_approval: true, merge_approval: true, implement_concurrency: 2}")
+	deep.WriteString(strings.Repeat("}", 201))
+	fanOut.WriteString("{<<: [&f0 {spec_approval: true}")
+	for level := 1; level <= 8; level++ {
+		fmt.Fprintf(&fanOut, ", &f%d {<<: [%s]}", level, strings.TrimSuffix(strings.Repeat(fmt.Sprintf("*f%d, ", level-1), 10), ", "))
+	}
+	fanOut.WriteString("]}")
+	cycles := map[string]string{
+		"direct self-reference":       "&e {<<: *e, spec_approval: true}",
+		"indirect cycle a->b->a":      "&a {<<: &b {merge_approval: true, <<: *a}, spec_approval: true}",
+		"cycle through a merge list":  "&e {<<: [{merge_approval: true}, *e], spec_approval: true}",
+		"indirect cycle through list": "&a {<<: [&b {<<: [{review_concurrency: 2}, *a]}], spec_approval: true}",
+	}
+	for loaderName, load := range executionBlockLoaders(t, example, deployment, policy) {
+		for name, block := range cycles {
+			done := make(chan error, 1)
+			go func() {
+				_, loadErr := load(block)
+				done <- loadErr
+			}()
+			select {
+			case loadErr := <-done:
+				if loadErr == nil || !strings.Contains(loadErr.Error(), "value contains itself") || !strings.Contains(loadErr.Error(), "line ") {
+					t.Fatalf("%s %s error=%v, want a recursive-anchor error with a line", loaderName, name, loadErr)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s %s did not return", loaderName, name)
+			}
+		}
+		started := time.Now()
+		if _, loadErr := load(fanOut.String()); loadErr == nil || !strings.Contains(loadErr.Error(), "excessive aliasing") {
+			t.Fatalf("%s alias fan-out error=%v", loaderName, loadErr)
+		}
+		if elapsed := time.Since(started); elapsed > 10*time.Second {
+			t.Fatalf("%s alias fan-out took %s", loaderName, elapsed)
+		}
+		for name, block := range map[string]string{
+			"deep acyclic chain":   deep.String(),
+			"shared acyclic alias": "{<<: [&base {spec_approval: true, implement_concurrency: 2}, {<<: *base, merge_approval: true, review_concurrency: 2}]}",
+		} {
+			got, loadErr := load(block)
+			if loadErr != nil {
+				t.Fatalf("%s %s: %v", loaderName, name, loadErr)
+			}
+			if !got.SpecApproval || !got.MergeApproval || got.ImplementConcurrency != 2 || got.ReviewConcurrency != 2 {
+				t.Fatalf("%s %s execution=%+v", loaderName, name, got)
+			}
+		}
+	}
+}
+
+// Aliased merges resolve against their anchors without mutating them: a
+// retired key is ignored for the execution block but stays in the shared
+// anchor that another field decodes (DEC-53).
+func TestExecutionBlockAliasMergesLeaveAnchorsUnchanged(t *testing.T) {
+	warnings := captureRetiredExecutionKeyWarnings(t)
+	type anchored struct {
+		Base      map[string]any  `yaml:"base"`
+		Other     map[string]any  `yaml:"other"`
+		Execution ExecutionPolicy `yaml:"execution"`
+		Shared    map[string]any  `yaml:"shared"`
+	}
+	var decoded anchored
+	err := decodeKnown([]byte("base: &a {spec_approval: true, "+RetiredEvidenceToggleKey+": true}\n"+
+		"other: &b {spec_approval: false, merge_approval: true, review_concurrency: 2}\n"+
+		"execution: {<<: [*a, *b], review_concurrency: 5}\n"+
+		"shared: *a\n"), &decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Execution.SpecApproval || !decoded.Execution.MergeApproval || decoded.Execution.ReviewConcurrency != 5 {
+		t.Fatalf("alias merge execution=%+v", decoded.Execution)
+	}
+	if decoded.Shared[RetiredEvidenceToggleKey] != true || decoded.Base[RetiredEvidenceToggleKey] != true {
+		t.Fatalf("shared anchor was mutated: base=%v shared=%v", decoded.Base, decoded.Shared)
+	}
+	if err = decodeKnown([]byte("base: &a {require_review_evidence: true}\nexecution: {<<: *a}\n"), &decoded); err == nil || !strings.Contains(err.Error(), "line 1: field require_review_evidence not found in type config.ExecutionPolicy") {
+		t.Fatalf("unknown field through alias merge error=%v", err)
+	}
+	if len(*warnings) != 1 {
+		t.Fatalf("warnings=%q, want one", *warnings)
+	}
+}
+
+// An execution block holding only the retired key still means the shipped
+// default: both approval gates on.
+func TestRetiredKeyOnlyExecutionBlockKeepsShippedGateDefaults(t *testing.T) {
+	captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	deployment, err := normalize(validConfig(), "gate defaults deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := deployment.WorkspaceDocument()
+	document.Execution = ExecutionPolicy{}
 	data, err := yaml.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := ParseWorkspaceDocument(data, deployment, "verification evidence test")
+	var root yaml.Node
+	if err = yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	removeDirectMappingKey(root.Content[0], "execution")
+	absent, err := yaml.Marshal(&root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !parsed.Execution.RequireVerificationEvidence || !parsed.WorkspaceDocument().Execution.RequireVerificationEvidence {
-		t.Fatalf("toggle did not round trip: %+v", parsed.Execution)
-	}
-
-	deployment.Execution = ExecutionPolicy{RequireVerificationEvidence: true}
-	normalized, err := normalize(deployment, "verification evidence defaults test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !normalized.Execution.SpecApproval || !normalized.Execution.MergeApproval {
-		t.Fatalf("new toggle suppressed shipped gate defaults: %+v", normalized.Execution)
+	for name, candidate := range map[string][]byte{
+		"absent block":      absent,
+		"retired key only":  withExecutionKey(t, absent, RetiredEvidenceToggleKey, "true"),
+		"retired key false": withExecutionKey(t, absent, RetiredEvidenceToggleKey, "false"),
+	} {
+		parsed, parseErr := ParseWorkspaceDocument(candidate, deployment, name)
+		if parseErr != nil {
+			t.Fatalf("%s: %v", name, parseErr)
+		}
+		if !parsed.Execution.SpecApproval || !parsed.Execution.MergeApproval {
+			t.Fatalf("%s suppressed shipped gate defaults: %+v", name, parsed.Execution)
+		}
 	}
 }
 

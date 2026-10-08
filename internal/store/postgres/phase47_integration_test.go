@@ -92,12 +92,15 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := record.Document
-	document.Execution.RequireVerificationEvidence = true
+	if document.Execution.VerifyStage {
+		t.Fatalf("bootstrapped config unexpectedly enables verify_stage: %+v", document.Execution)
+	}
+	document.Execution.VerifyStage = true
 	raw, err := yaml.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := config.ParseWorkspaceDocument(raw, cfg, "verification evidence integration")
+	next, err := config.ParseWorkspaceDocument(raw, cfg, "verification policy integration")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,13 +108,14 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !receipt.Document.Execution.RequireVerificationEvidence || !containsString(receipt.Sections, "execution") || receipt.ActorID != "phase54-test" {
-		t.Fatalf("verification evidence config receipt=%+v", receipt)
+	if !receipt.Document.Execution.VerifyStage || !containsString(receipt.Sections, "execution") || receipt.ActorID != "phase54-test" {
+		t.Fatalf("verification policy config receipt=%+v", receipt)
 	}
 	reloaded, err := st.WorkspaceConfig(ctx)
-	if err != nil || !reloaded.Document.Execution.RequireVerificationEvidence || reloaded.Version != record.Version+1 {
+	if err != nil || !reloaded.Document.Execution.VerifyStage || reloaded.Version != record.Version+1 {
 		t.Fatalf("reloaded config=%+v err=%v", reloaded, err)
 	}
+	assertRetiredEvidenceToggleRowLoadsWithoutRewrite(t, ctx, st, workspace, cfg, reloaded)
 	feature := core.Feature{ID: "feature-" + core.NewTaskID(), Name: "Exports"}
 	if err = st.CreateFeature(ctx, feature); err != nil {
 		t.Fatal(err)
@@ -584,5 +588,78 @@ func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
 	expired.WorkOrderID = "expired-evidence-task-implement-1"
 	if _, err = st.CreateClaimedVerificationEvidence(ctx, expired, []byte("expired")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
 		t.Fatalf("expired claim error=%v", err)
+	}
+}
+
+// assertRetiredEvidenceToggleRowLoadsWithoutRewrite proves a stored row that
+// still carries the retired evidence toggle loads with the key ignored, is
+// not rewritten by reads, and loses the key only on the next authorized
+// write (req-review-gates-evidence AC-8.3; DEC-53). No migration runs.
+func assertRetiredEvidenceToggleRowLoadsWithoutRewrite(t *testing.T, ctx context.Context, st *Store, workspace string, deployment *config.Config, current config.VersionedDocument) {
+	t.Helper()
+	var stored string
+	if err := st.pool.QueryRow(ctx, `SELECT config_yaml FROM workspaces WHERE id=$1`, workspace).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(stored), &root); err != nil {
+		t.Fatal(err)
+	}
+	mapping := root.Content[0]
+	var execution *yaml.Node
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "execution" {
+			execution = mapping.Content[i+1]
+		}
+	}
+	if execution == nil {
+		t.Fatalf("stored config has no execution block: %s", stored)
+	}
+	execution.Content = append(execution.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: config.RetiredEvidenceToggleKey},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+	legacy, err := yaml.Marshal(&root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.pool.Exec(ctx, `UPDATE workspaces SET config_yaml=$2 WHERE id=$1`, workspace, string(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := st.WorkspaceConfig(ctx)
+	if err != nil || loaded.Version != current.Version || loaded.Document.Execution != current.Document.Execution {
+		t.Fatalf("legacy stored config=%+v err=%v, want execution %+v at version %d", loaded, err, current.Document.Execution, current.Version)
+	}
+	runtime, err := st.RuntimeConfig(ctx, deployment)
+	if err != nil || !runtime.Execution.VerifyStage {
+		t.Fatalf("legacy stored runtime config=%+v err=%v", runtime, err)
+	}
+	var afterReads string
+	if err = st.pool.QueryRow(ctx, `SELECT config_yaml FROM workspaces WHERE id=$1`, workspace).Scan(&afterReads); err != nil {
+		t.Fatal(err)
+	}
+	if afterReads != string(legacy) {
+		t.Fatalf("reads rewrote the stored row:\nbefore=%s\nafter=%s", legacy, afterReads)
+	}
+	raw, err := yaml.Marshal(loaded.Document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), config.RetiredEvidenceToggleKey) {
+		t.Fatalf("loaded document re-emitted the retired key: %s", raw)
+	}
+	next, err := config.ParseWorkspaceDocument(raw, deployment, "retired evidence toggle integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := st.UpdateWorkspaceConfig(store.WithActor(ctx, store.Actor{ID: "phase54-test", Role: core.ActorHuman}), loaded.Version, next)
+	if err != nil || receipt.Version != loaded.Version+1 {
+		t.Fatalf("write after legacy load receipt=%+v err=%v", receipt, err)
+	}
+	var written string
+	if err = st.pool.QueryRow(ctx, `SELECT config_yaml FROM workspaces WHERE id=$1`, workspace).Scan(&written); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(written, config.RetiredEvidenceToggleKey) || !strings.Contains(written, "verify_stage: true") {
+		t.Fatalf("authorized write kept the retired key or lost verify_stage: %s", written)
 	}
 }
