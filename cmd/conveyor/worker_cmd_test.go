@@ -4053,6 +4053,26 @@ func TestFakeClaudeHelper(t *testing.T) {
 		os.Exit(3)
 	case "zero-exit-without-receipt":
 		os.Exit(0)
+	case "overflow-unterminated":
+		// One unterminated 4 MiB line that starts with the child credential,
+		// then the child stays alive until its process group is terminated.
+		grandchild := exec.Command(os.Args[0], "-test.run=^TestFakeClaudeGrandchildHelper$")
+		grandchild.Env = append(os.Environ(), "CONVEYOR_FAKE_CLAUDE_GRANDCHILD=1")
+		if err := grandchild.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := publishTestPID(os.Getenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE"), grandchild.Process.Pid); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprint(os.Stdout, "token="+os.Getenv("CONVEYOR_API_TOKEN")+" ")
+		chunk := []byte(strings.Repeat("a", 64<<10))
+		for written := 0; written < 4<<20; written += len(chunk) {
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				break
+			}
+		}
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(0)
 	case "failed-receipt":
 		grandchild := exec.Command(os.Args[0], "-test.run=^TestFakeClaudeGrandchildHelper$")
 		grandchild.Env = append(os.Environ(), "CONVEYOR_FAKE_CLAUDE_GRANDCHILD=1")
@@ -4466,5 +4486,73 @@ func TestJSONMCPReceiptOnContinuation(t *testing.T) {
 				t.Fatalf("releases = %+v err=%v", result.releases, result.err)
 			}
 		})
+	}
+}
+
+// TestJSONMCPReceiptUnterminatedOverflowThroughRedactor drives the real
+// launcher, including its line-buffering redactor, with a fake claude that
+// writes a 4 MiB line without a newline and then stays alive. A one-hour
+// probe timeout and a deadline hook that fails the test prove the overflow,
+// not the deadline, ends the attempt: the guard trips at 1 MiB, the receipt
+// fails at once, the process group is reaped, and no destination receives
+// more than the bounded, redacted prefix (component-harness-execution;
+// req-security-boundaries AC-2.7). No timer orders the test: the child blocks
+// on a named pipe that only process-group termination ends.
+func TestJSONMCPReceiptUnterminatedOverflowThroughRedactor(t *testing.T) {
+	var guard *claudeReceiptIngressGuard
+	workerJSONMCPReceiptGuardTestHook = func(g *claudeReceiptIngressGuard) { guard = g }
+	workerJSONMCPReceiptDeadlineTestHook = func() { t.Error("the receipt deadline fired; the overflow must end the attempt first") }
+	t.Cleanup(func() { workerJSONMCPReceiptGuardTestHook, workerJSONMCPReceiptDeadlineTestHook = nil, nil })
+	grandchildPID := filepath.Join(t.TempDir(), "grandchild.pid")
+	t.Setenv("CONVEYOR_FAKE_HARNESS_GRANDCHILD_PID_FILE", grandchildPID)
+	result := runFakeClaudeLaunch(t, fakeClaudeLaunch{mode: "overflow-unterminated", stage: core.StageImplement, dispatch: "run", probeTimeout: "1h"})
+	want := "json_file MCP receipt failed: " + errClaudeReceiptLineOverflow.Error()
+	if result.err == nil || result.err.Error() != want {
+		t.Fatalf("err = %v", result.err)
+	}
+	if len(result.releases) != 1 || result.releases[0].Reason != want || result.releases[0].Outcome != core.WorkOrderOutcomeChildFailure {
+		t.Fatalf("releases = %+v", result.releases)
+	}
+	if result.launches != 1 || result.issued != 1 || result.revoked != 1 {
+		t.Fatalf("launches=%d issued=%d revoked=%d", result.launches, result.issued, result.revoked)
+	}
+	if guard == nil {
+		t.Fatal("the launch did not install the receipt ingress guard")
+	}
+	guard.mu.Lock()
+	forwarded, tripped := guard.forwarded, guard.tripped
+	guard.mu.Unlock()
+	if !tripped || forwarded > claudeReceiptLineLimit {
+		t.Fatalf("guard tripped=%v forwarded=%d, want tripped with at most %d bytes", tripped, forwarded, claudeReceiptLineLimit)
+	}
+	// Everything the redactor retained was flushed, redacted, to the
+	// launcher's stdout destination at teardown; it is within the bound.
+	if len(result.stdout) > claudeReceiptLineLimit+len("[REDACTED:exact]") {
+		t.Fatalf("stdout destination received %d bytes", len(result.stdout))
+	}
+	for _, text := range []string{result.stdout, result.stderr, result.err.Error()} {
+		if strings.Contains(text, "run-agent-secret") || strings.Contains(text, "parent-credential") {
+			t.Fatal("output or diagnostic carries a credential")
+		}
+	}
+	if len(result.captures) != 1 || (result.captures[0].Transcript != nil && strings.Contains(result.captures[0].Transcript.Content, "run-agent-secret")) {
+		t.Fatalf("captures = %d", len(result.captures))
+	}
+	data, err := os.ReadFile(grandchildPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syscall.Kill(pid, 0) == nil {
+		var status syscall.WaitStatus
+		if _, waitErr := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); waitErr != nil && syscall.Kill(pid, 0) == nil {
+			t.Fatalf("descendant %d survived the overflow", pid)
+		}
+	}
+	if _, err := os.Stat(filepath.Dir(fmt.Sprint(result.report["config_path"]))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("attempt directory survived the overflow: %v", err)
 	}
 }

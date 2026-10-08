@@ -1546,9 +1546,20 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 	}
 	leaseExpiresAt = handoffLease
 	activityObservedHook := workerActivityObservedTestHook
+	// A JSON-file child's raw stdout passes the receipt ingress guard before
+	// the line-buffering redactor, so an unterminated line cannot grow past
+	// the receipt bound anywhere in the launcher (component-harness-execution).
+	var stdoutIngress io.Writer = redactedStdout
+	if receipt != nil {
+		guard := newClaudeReceiptIngressGuard(redactedStdout, receipt)
+		if hook := workerJSONMCPReceiptGuardTestHook; hook != nil {
+			hook(guard)
+		}
+		stdoutIngress = guard
+	}
 	newCommand := func(commandArgv []string) *exec.Cmd {
 		command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...)
-		command.Stdout = &firstActivityWriter{Destination: redactedStdout, Signal: firstActivity, observed: activityObservedHook}
+		command.Stdout = &firstActivityWriter{Destination: stdoutIngress, Signal: firstActivity, observed: activityObservedHook}
 		command.Stderr = &firstActivityWriter{Destination: redactedStderr, Signal: firstActivity, observed: activityObservedHook}
 		command.Env = childEnv
 		if writer != nil {
@@ -2538,6 +2549,10 @@ var reportWorkerAdapterRefusal = func(item workerservice.DispatchOrder, err erro
 // deadline is selected, before a racing result is checked. Tests use them to
 // order receipt races deterministically.
 var workerJSONMCPReceiptDecidedTestHook func()
+
+// workerJSONMCPReceiptGuardTestHook receives the stdout ingress guard of a
+// JSON-file launch so tests can read how many bytes it forwarded.
+var workerJSONMCPReceiptGuardTestHook func(*claudeReceiptIngressGuard)
 var workerJSONMCPReceiptDeadlineTestHook func()
 
 // workerChildWaitedTestHook runs after the child's exit status is queued for

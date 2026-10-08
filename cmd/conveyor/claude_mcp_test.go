@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -504,5 +505,100 @@ func TestJSONMCPAdapterRefusedBeforeClaim(t *testing.T) {
 			t.Fatalf("claims=%d refusals=%v", claims, refusals)
 		}
 		assertRefusal(t, refusals[0], configPath)
+	})
+}
+
+type recordingWriter struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (w *recordingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.data = append(w.data, p...)
+	return len(p), nil
+}
+
+func (w *recordingWriter) Len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.data)
+}
+
+// TestClaudeReceiptIngressGuard proves the raw-stdout bound ahead of the
+// redactor: an unterminated line of exactly 1 MiB passes, one more byte trips
+// the guard and fails the receipt at once, complete lines before the overflow
+// still pass, nothing passes afterwards, and a confirmed receipt makes the
+// guard a pass-through.
+func TestClaudeReceiptIngressGuard(t *testing.T) {
+	t.Run("exact limit then overflow", func(t *testing.T) {
+		receipt := newClaudeMCPReceipt(core.StageImplement)
+		sink := &recordingWriter{}
+		guard := newClaudeReceiptIngressGuard(sink, receipt)
+		half := bytes.Repeat([]byte("a"), claudeReceiptLineLimit/2)
+		for _, chunk := range [][]byte{half, half} {
+			if n, err := guard.Write(chunk); err != nil || n != len(chunk) {
+				t.Fatalf("write n=%d err=%v", n, err)
+			}
+		}
+		if sink.Len() != claudeReceiptLineLimit || !receipt.pending() {
+			t.Fatalf("exactly 1 MiB: forwarded=%d pending=%v", sink.Len(), receipt.pending())
+		}
+		if n, err := guard.Write([]byte("b")); err != nil || n != 1 {
+			t.Fatalf("overflow write n=%d err=%v", n, err)
+		}
+		select {
+		case err := <-receipt.Result():
+			if !errors.Is(err, errClaudeReceiptLineOverflow) {
+				t.Fatalf("receipt err = %v", err)
+			}
+		default:
+			t.Fatal("overflow did not fail the receipt immediately")
+		}
+		_, _ = guard.Write([]byte("more\n" + strings.Repeat("c", 4096)))
+		if sink.Len() != claudeReceiptLineLimit {
+			t.Fatalf("guard forwarded %d bytes after tripping", sink.Len()-claudeReceiptLineLimit)
+		}
+	})
+	t.Run("complete lines before the overflow pass", func(t *testing.T) {
+		receipt := newClaudeMCPReceipt(core.StageImplement)
+		sink := &recordingWriter{}
+		guard := newClaudeReceiptIngressGuard(sink, receipt)
+		prefix := "{\"type\":\"system\",\"subtype\":\"hook_started\"}\n"
+		chunk := append([]byte(prefix), bytes.Repeat([]byte("z"), claudeReceiptLineLimit+10)...)
+		_, _ = guard.Write(chunk)
+		if sink.Len() != len(prefix)+claudeReceiptLineLimit {
+			t.Fatalf("forwarded %d, want %d", sink.Len(), len(prefix)+claudeReceiptLineLimit)
+		}
+		if err := <-receipt.Result(); !errors.Is(err, errClaudeReceiptLineOverflow) {
+			t.Fatalf("receipt err = %v", err)
+		}
+	})
+	t.Run("newline resets the line length", func(t *testing.T) {
+		receipt := newClaudeMCPReceipt(core.StageImplement)
+		sink := &recordingWriter{}
+		guard := newClaudeReceiptIngressGuard(sink, receipt)
+		line := append(bytes.Repeat([]byte("{"), 0), []byte(strings.Repeat(" ", claudeReceiptLineLimit)+"\n")...)
+		_, _ = guard.Write(line)
+		_, _ = guard.Write(line)
+		if sink.Len() != 2*len(line) || !receipt.pending() {
+			t.Fatalf("forwarded=%d pending=%v", sink.Len(), receipt.pending())
+		}
+	})
+	t.Run("pass-through after a confirmed receipt", func(t *testing.T) {
+		receipt := newClaudeMCPReceipt(core.StageImplement)
+		sink := &recordingWriter{}
+		guard := newClaudeReceiptIngressGuard(io.MultiWriter(receipt, sink), receipt)
+		_, _ = guard.Write([]byte(claudeInitLine(connectedConveyor(), claudeStageToolNames(core.StageImplement)) + "\n"))
+		if err := <-receipt.Result(); err != nil {
+			t.Fatal(err)
+		}
+		before := sink.Len()
+		big := bytes.Repeat([]byte("x"), 2*claudeReceiptLineLimit)
+		_, _ = guard.Write(big)
+		if sink.Len()-before != len(big) {
+			t.Fatalf("confirmed receipt still bounded output: %d", sink.Len()-before)
+		}
 	})
 }

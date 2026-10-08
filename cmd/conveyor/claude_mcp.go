@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -227,14 +228,14 @@ func (r *claudeMCPReceipt) Write(p []byte) (int, error) {
 		newline := bytes.IndexByte(p, '\n')
 		if newline < 0 {
 			if len(r.buffer)+len(p) > claudeReceiptLineLimit {
-				r.decide(errors.New("a stdout line exceeded 1 MiB before the MCP receipt"))
+				r.decide(errClaudeReceiptLineOverflow)
 				break
 			}
 			r.buffer = append(r.buffer, p...)
 			break
 		}
 		if len(r.buffer)+newline > claudeReceiptLineLimit {
-			r.decide(errors.New("a stdout line exceeded 1 MiB before the MCP receipt"))
+			r.decide(errClaudeReceiptLineOverflow)
 			break
 		}
 		line := append(r.buffer, p[:newline]...)
@@ -336,4 +337,88 @@ func jsonMCPReceiptTimeout(harness config.Harness) time.Duration {
 		timeout = defaultJSONMCPReceiptTimeout
 	}
 	return timeout
+}
+
+// errClaudeReceiptLineOverflow is the fixed failure for a stdout line longer
+// than claudeReceiptLineLimit before its newline.
+var errClaudeReceiptLineOverflow = errors.New("a stdout line exceeded 1 MiB before the MCP receipt")
+
+// pending reports whether the receipt is still undecided.
+func (r *claudeMCPReceipt) pending() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.decided
+}
+
+// overflow fails an undecided receipt with the line-limit failure.
+func (r *claudeMCPReceipt) overflow() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.decided {
+		r.decide(errClaudeReceiptLineOverflow)
+	}
+}
+
+// claudeReceiptIngressGuard bounds the child's raw stdout before the
+// launcher's line-buffering redactor, which otherwise retains an unterminated
+// line until its newline. While the receipt is undecided it forwards complete
+// lines and at most claudeReceiptLineLimit bytes of an unterminated line.
+// When a line would pass the limit before its newline it fails the receipt at
+// once and discards every later byte, so no destination ever holds more than
+// the bounded prefix, and nothing unredacted reaches a destination because
+// every forwarded byte still passes through the redactor
+// (component-harness-execution; req-security-boundaries AC-2.7). After a
+// confirmed receipt it passes stdout through unchanged.
+type claudeReceiptIngressGuard struct {
+	mu          sync.Mutex
+	destination io.Writer
+	receipt     *claudeMCPReceipt
+	lineLength  int
+	tripped     bool
+	// forwarded counts bytes passed downstream while the receipt was pending;
+	// tests read it to prove the bound.
+	forwarded int64
+}
+
+func newClaudeReceiptIngressGuard(destination io.Writer, receipt *claudeMCPReceipt) *claudeReceiptIngressGuard {
+	return &claudeReceiptIngressGuard{destination: destination, receipt: receipt}
+}
+
+func (g *claudeReceiptIngressGuard) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.tripped {
+		return len(p), nil
+	}
+	if !g.receipt.pending() {
+		return g.destination.Write(p)
+	}
+	// Find the longest prefix that keeps every unterminated line within the
+	// limit.
+	allowed := len(p)
+	length := g.lineLength
+	for index, value := range p {
+		if value == '\n' {
+			length = 0
+			continue
+		}
+		length++
+		if length > claudeReceiptLineLimit {
+			allowed = index
+			break
+		}
+	}
+	if allowed > 0 {
+		if _, err := g.destination.Write(p[:allowed]); err != nil {
+			return 0, err
+		}
+		g.forwarded += int64(allowed)
+	}
+	if allowed < len(p) {
+		g.tripped = true
+		g.receipt.overflow()
+		return len(p), nil
+	}
+	g.lineLength = length
+	return len(p), nil
 }
