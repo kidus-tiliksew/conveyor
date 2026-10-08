@@ -20,7 +20,7 @@ func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNode
 	if kind == core.LineageSystemDesign {
 		query = systemDesignDocumentEventPageSQL
 	}
-	err := s.pool.QueryRow(ctx, query, workspace(ctx), id, q.SnapshotID, q.Limit, q.Offset).Scan(&page.Total, &page.SnapshotID, &payload)
+	err := s.boundary.QueryRow(ctx, query, workspace(ctx), id, q.SnapshotID, q.Limit, q.Offset).Scan(&page.Total, &page.SnapshotID, &payload)
 	if err != nil {
 		return page, err
 	}

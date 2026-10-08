@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -88,7 +89,7 @@ func readDeliveryMetadataTx(ctx context.Context, tx pgx.Tx, task, contextID, sou
 	var d core.VerificationDelivery
 	var raw []byte
 	err := tx.QueryRow(ctx, `SELECT body - 'Summary' FROM verification_publication_deliveries WHERE workspace_id=$1 AND task_id=$2 AND context_id=$3 AND source_publication_id=$4 ORDER BY generation DESC LIMIT 1`, workspace(ctx), task, contextID, source).Scan(&raw)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return d, false, nil
 	}
 	if err != nil {

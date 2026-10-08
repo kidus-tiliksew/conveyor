@@ -65,7 +65,7 @@ func (s *Store) SupersedeReferenceDocument(ctx context.Context, documentID strin
 }
 
 func (s *Store) ListReferenceDocuments(ctx context.Context, includeDeleted bool) ([]core.ReferenceDocument, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=$1 AND ($2 OR deleted_at IS NULL) ORDER BY name`, workspace(ctx), includeDeleted)
+	rows, err := s.boundary.Query(ctx, `SELECT id,name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=$1 AND ($2 OR deleted_at IS NULL) ORDER BY name`, workspace(ctx), includeDeleted)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (s *Store) ListReferenceDocuments(ctx context.Context, includeDeleted bool)
 func (s *Store) GetReferenceDocument(ctx context.Context, documentID string) (core.ReferenceDocument, error) {
 	item := core.ReferenceDocument{Workspace: workspace(ctx), ID: documentID}
 	var deleted *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID).
+	err := s.boundary.QueryRow(ctx, `SELECT name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=$1 AND id=$2`, workspace(ctx), documentID).
 		Scan(&item.Name, &item.CurrentVersion, &deleted, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: reference document %s", store.ErrNotFound, documentID)
@@ -101,7 +101,7 @@ func (s *Store) GetReferenceDocument(ctx context.Context, documentID string) (co
 }
 
 func (s *Store) ListReferenceDocumentVersions(ctx context.Context, documentID string) ([]core.ReferenceDocumentVersion, error) {
-	rows, err := s.pool.Query(ctx, `SELECT version,filename,content_type,content,coalesce(supersedes_version,0),created_by,created_at FROM reference_document_versions WHERE workspace_id=$1 AND document_id=$2 ORDER BY version`, workspace(ctx), documentID)
+	rows, err := s.boundary.Query(ctx, `SELECT version,filename,content_type,content,coalesce(supersedes_version,0),created_by,created_at FROM reference_document_versions WHERE workspace_id=$1 AND document_id=$2 ORDER BY version`, workspace(ctx), documentID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (s *Store) ListReferenceDocumentVersions(ctx context.Context, documentID st
 func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID string, version int) (core.ReferenceDocumentVersion, error) {
 	item := core.ReferenceDocumentVersion{Workspace: workspace(ctx), DocumentID: documentID}
 	var supersedes *int
-	err := s.pool.QueryRow(ctx, `SELECT version,filename,content_type,content,supersedes_version,created_by,created_at FROM reference_document_versions WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version).Scan(&item.Version, &item.Filename, &item.ContentType, &item.Content, &supersedes, &item.CreatedBy, &item.CreatedAt)
+	err := s.boundary.QueryRow(ctx, `SELECT version,filename,content_type,content,supersedes_version,created_by,created_at FROM reference_document_versions WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), documentID, version).Scan(&item.Version, &item.Filename, &item.ContentType, &item.Content, &supersedes, &item.CreatedBy, &item.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: reference document %s version %d", store.ErrNotFound, documentID, version)
 	}
@@ -134,7 +134,7 @@ func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID stri
 }
 
 func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id
 		FROM events WHERE workspace_id=$1 AND kind LIKE 'reference_document.%' ORDER BY id`, workspace(ctx))
 	if err != nil {
 		return nil, err

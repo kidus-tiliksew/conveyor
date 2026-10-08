@@ -36,19 +36,29 @@ Several reference details are not pinned by those assertions:
   either store. Its five-attempt, fifteen-minute, hashed-email and source-address
   behavior remains covered by HTTP tests in the ordinary local gate.
 
-## Monitor workspace discrepancy and proposed tightening
+## Monitor workspace discrepancy (resolved)
 
-`component-monitor-drift` states that stores refuse a record whose workspace
-is different from the request context. The memory implementation checks the
-record's `WorkspaceID`. PostgreSQL's `Observe` and `RecordDrift` use only
-`workspace(ctx)` in SQL, ignoring the record field. The current Monitor suite
-always supplies matching values and cannot detect that discrepancy.
+This section first recorded that PostgreSQL's `Observe` and `RecordDrift`
+used only the bound workspace in SQL and ignored the record's `WorkspaceID`,
+while memory and SingleStore checked it, and that no suite could detect the
+difference. Task `261007-a6299f` resolved it under component-monitor-drift
+and component-persistence (proposed revisions v10 and v31).
 
-SingleStore rejects an explicitly mismatched record workspace, as the approved
-plan's workspace-consistency rule requires. A future shared case should cover
-matching, missing, and mismatched record workspaces. Enabling that case across
-all backends requires settling the PostgreSQL discrepancy through the existing
-reference-behavior process; this task does not change PostgreSQL to fit it.
+Every backend now applies `store.MonitorRecordWorkspace` before any insert,
+deduplication, lookup, or event. An unbound context refuses with
+`ErrWorkspaceRequired`. An omitted or different record workspace refuses with
+`ErrMonitorWorkspaceMismatch`. Memory no longer falls back to the record
+workspace for an unbound context, and SingleStore no longer accepts an omitted
+record workspace. Every production caller already named the workspace:
+`Service.Process` and `ProcessDesignMerge` normalize the observation into the
+resolved workspace, and both `RecordDrift` calls copy it.
+
+The shared Monitor suite (`aggregate_monitor.go#runMonitorWorkspaceScoping`)
+now covers matching, omitted, and mismatched record workspaces and an unbound
+context with no stored effect. It also covers two workspaces holding the same
+observation identity and drift ID independently: deduplication counts, task
+links, status, activity, unresolved drift, and resolution. It runs on memory,
+PostgreSQL, and SingleStore.
 
 ## Additional conformance proposals
 

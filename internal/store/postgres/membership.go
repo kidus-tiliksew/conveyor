@@ -23,7 +23,7 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 		return false, nil
 	}
 	var allowed bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1
 		FROM users u
 		JOIN workspace_role_bindings b ON b.user_id=u.id
@@ -34,7 +34,7 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 
 func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	var role core.WorkspaceRole
-	err := s.pool.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&role)
+	err := s.boundary.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -45,7 +45,7 @@ func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID stri
 }
 
 func (s *Store) ListWorkspacesForUser(ctx context.Context, userID string) ([]core.Workspace, error) {
-	rows, err := s.pool.Query(ctx, `SELECT w.id,w.name,w.config_version,w.created_at
+	rows, err := s.boundary.Query(ctx, `SELECT w.id,w.name,w.config_version,w.created_at
 		FROM workspaces w JOIN workspace_role_bindings b ON b.workspace_id=w.id
 		WHERE b.user_id=$1 ORDER BY lower(w.name),w.id`, userID)
 	if err != nil {
@@ -68,7 +68,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 	if err != nil || !allowed {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT b.workspace_id,b.user_id,u.email,u.display_name,b.role,b.created_at
+	rows, err := s.boundary.Query(ctx, `SELECT b.workspace_id,b.user_id,u.email,u.display_name,b.role,b.created_at
 		FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id
 		WHERE b.workspace_id=$1 ORDER BY lower(u.display_name),u.id`, workspaceID)
 	if err != nil {
@@ -91,7 +91,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 // invitations only and the read needs no status predicate. The caller is
 // authorized at the HTTP capability boundary, like RevokeWorkspaceInvitation.
 func (s *Store) ListWorkspaceInvitations(ctx context.Context, workspaceID string) ([]core.WorkspaceInvitation, error) {
-	rows, err := s.pool.Query(ctx, `SELECT i.workspace_id,i.email,i.role,i.invited_by,COALESCE(u.display_name,''),i.created_at
+	rows, err := s.boundary.Query(ctx, `SELECT i.workspace_id,i.email,i.role,i.invited_by,COALESCE(u.display_name,''),i.created_at
 		FROM workspace_membership_invitations i LEFT JOIN users u ON u.id=i.invited_by
 		WHERE i.workspace_id=$1 ORDER BY i.created_at DESC,i.email`, workspaceID)
 	if err != nil {

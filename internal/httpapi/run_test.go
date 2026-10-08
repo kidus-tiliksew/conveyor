@@ -77,6 +77,15 @@ func (s *taskRunReadCounter) ListPendingSystemDesignVersionsForTask(ctx context.
 	return s.Store.ListPendingSystemDesignVersionsForTask(ctx, id)
 }
 
+// ListClaimBlockingProposalsForTask is the listing's proposal-wait read; it
+// counts with the pending-design reads it replaced.
+func (s *taskRunReadCounter) ListClaimBlockingProposalsForTask(ctx context.Context, id string) ([]store.ClaimBlockingProposal, error) {
+	s.mu.Lock()
+	s.pendingDesignReads++
+	s.mu.Unlock()
+	return s.Store.ListClaimBlockingProposalsForTask(ctx, id)
+}
+
 func (s *taskRunReadCounter) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

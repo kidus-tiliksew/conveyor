@@ -1,8 +1,12 @@
 package postgres
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -59,9 +63,16 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			eventsBefore, _ := st.ListEvents(ctx, old.ID)
+			// The trigger's message is driver text, so it stays in the server
+			// log and the caller receives the store's backend-operation error
+			// (component-persistence; DEC-38).
+			driverLog := &lockedBuffer{}
+			previousLog := log.Writer()
+			log.SetOutput(driverLog)
 			_, err = taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "failure", Reason: "restart", Note: "dismiss note", CanConfirmDocuments: true})
-			if err == nil || !strings.Contains(err.Error(), "restart injected failure") {
-				t.Fatalf("injection did not run: %v", err)
+			log.SetOutput(previousLog)
+			if !errors.Is(err, store.ErrBackendOperation) || strings.Contains(err.Error(), "restart injected failure") || !strings.Contains(driverLog.String(), "restart injected failure") {
+				t.Fatalf("injection did not run behind the store boundary: err=%v log=%q", err, driverLog.String())
 			}
 			task, err := st.GetTask(ctx, old.ID)
 			if err != nil || task.State != old.State || task.SupersededBy != "" {
@@ -86,4 +97,22 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// lockedBuffer is a log destination safe for concurrent writers.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

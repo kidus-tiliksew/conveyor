@@ -53,7 +53,7 @@ func (s *Store) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindow
 	}
 	// One short snapshot transaction makes the boundary count and the selected
 	// rows a single consistent read view; nothing is held between calls.
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return store.TaskEventWindow{}, err
 	}

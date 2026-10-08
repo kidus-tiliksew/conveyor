@@ -417,7 +417,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	key := store.VerificationDeliveryKey(a.Repository, a.PullRequestNumber)
 	begin := func() error {
 		var err error
-		tx, err = s.pool.Begin(ctx)
+		tx, err = s.begin(ctx)
 		if err != nil {
 			return err
 		}

@@ -217,7 +217,7 @@ func scanPlanningBundle(row pgx.Row) (core.PlanningBundle, error) {
 }
 
 func (s *Store) GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
-	b, err := scanPlanningBundle(s.pool.QueryRow(ctx, planningBundleSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id))
+	b, err := scanPlanningBundle(s.boundary.QueryRow(ctx, planningBundleSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.PlanningBundle{}, fmt.Errorf("planning bundle %s: %w", id, store.ErrNotFound)
 	}
@@ -225,7 +225,7 @@ func (s *Store) GetPlanningBundle(ctx context.Context, id string) (core.Planning
 }
 
 func (s *Store) ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle, error) {
-	rows, err := s.pool.Query(ctx, planningBundleSelect+` WHERE workspace_id=$1 ORDER BY created_at DESC,id`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, planningBundleSelect+` WHERE workspace_id=$1 ORDER BY created_at DESC,id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}

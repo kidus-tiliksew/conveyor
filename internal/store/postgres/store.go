@@ -34,7 +34,11 @@ import (
 )
 
 type Store struct {
-	pool                   *pgxpool.Pool
+	pool *pgxpool.Pool
+	// boundary is the pool behind error translation. Every direct query
+	// goes through it; the raw pool only begins transactions and acquires
+	// lock connections (component-persistence).
+	boundary               boundaryDB
 	queries                *db.Queries
 	queue                  *logDispatchQueue
 	log                    *pglog.Store
@@ -88,7 +92,8 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 // newStore assembles a store over a migrated pool.
 func newStore(pool *pgxpool.Pool) *Store {
 	log := pglog.New(pool)
-	return &Store{pool: pool, queries: db.New(pool), queue: newLogDispatchQueue(pool, log), log: log}
+	boundary := boundaryDB{pool}
+	return &Store{pool: pool, boundary: boundary, queries: db.New(boundary), queue: newLogDispatchQueue(boundary, log), log: log}
 }
 
 func (s *Store) Close() { s.pool.Close() }
@@ -122,7 +127,7 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 // one terminal outcome can win across daemon instances.
 func (s *Store) WithPlanningSessionFinalization(ctx context.Context, sessionID string, fn func(context.Context) error) error {
 	return s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
-		session, err := scanPlanningSession(s.pool.QueryRow(lockedCtx, planningSessionSelect+
+		session, err := scanPlanningSession(s.boundary.QueryRow(lockedCtx, planningSessionSelect+
 			` WHERE workspace_id=$1 AND id=$2`, workspace(lockedCtx), sessionID), sessionID)
 		if err != nil {
 			return err
@@ -139,13 +144,13 @@ func (s *Store) WithPlanningSessionRun(ctx context.Context, sessionID string, fn
 	key := "conveyor:planning-session-run:" + workspace(ctx) + ":" + sessionID
 	pooled, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return err
+		return translateDriverError(err)
 	}
 	conn := pooled.Hijack()
 	var acquired bool
 	if err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtext($1))", key).Scan(&acquired); err != nil {
 		_ = conn.Close(ctx)
-		return err
+		return translateDriverError(err)
 	}
 	if !acquired {
 		_ = conn.Close(ctx)
@@ -170,7 +175,7 @@ func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(contex
 	// using the connection that owns the outer task lock (AC-3.5).
 	if conn, ok := ctx.Value(sideEffectConnKey{}).(*pgxpool.Conn); ok {
 		if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
-			return err
+			return translateDriverError(err)
 		}
 		defer func() {
 			unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -185,11 +190,11 @@ func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(contex
 	}
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return err
+		return translateDriverError(err)
 	}
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
 		conn.Release()
-		return err
+		return translateDriverError(err)
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -214,12 +219,12 @@ func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(contex
 func (s *Store) withDetachedAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
 	pooled, err := s.pool.Acquire(ctx)
 	if err != nil {
-		return err
+		return translateDriverError(err)
 	}
 	conn := pooled.Hijack()
 	if _, err = conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1))", key); err != nil {
 		_ = conn.Close(ctx)
-		return err
+		return translateDriverError(err)
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -320,7 +325,7 @@ func workspace(ctx context.Context) string {
 }
 
 func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,config_version,created_at FROM workspaces ORDER BY lower(name),id`)
+	rows, err := s.boundary.Query(ctx, `SELECT id,name,config_version,created_at FROM workspaces ORDER BY lower(name),id`)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +343,7 @@ func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
 
 func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, error) {
 	var item core.Workspace
-	err := s.pool.QueryRow(ctx, `SELECT id,name,config_version,created_at FROM workspaces WHERE id=$1`, id).
+	err := s.boundary.QueryRow(ctx, `SELECT id,name,config_version,created_at FROM workspaces WHERE id=$1`, id).
 		Scan(&item.ID, &item.Name, &item.ConfigVersion, &item.CreatedAt)
 	if err != nil {
 		return core.Workspace{}, notFound(err, "workspace %s", id)
@@ -844,7 +849,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	for _, plan := range plans {
 		page.Plans[plan.TaskID] = specFromDB(plan)
 	}
-	legacyRows, err := s.pool.Query(ctx, `SELECT task_id,spec_version FROM legacy_spec_gate_versions
+	legacyRows, err := s.boundary.Query(ctx, `SELECT task_id,spec_version FROM legacy_spec_gate_versions
 		WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, filter.WorkspaceID, taskIDs)
 	if err != nil {
 		return store.TaskOperationsPage{}, err
@@ -903,10 +908,10 @@ WHERE t.assignee_user_id=$2
       WHERE child.workspace_id=t.workspace_id AND child.parent_task_id=t.id
   )`
 	var total int64
-	if err := s.pool.QueryRow(ctx, cte+"\nSELECT count(*)::bigint "+filter, workspace(ctx), query.UserID).Scan(&total); err != nil {
+	if err := s.boundary.QueryRow(ctx, cte+"\nSELECT count(*)::bigint "+filter, workspace(ctx), query.UserID).Scan(&total); err != nil {
 		return store.TaskPage{}, err
 	}
-	rows, err := s.pool.Query(ctx, cte+`
+	rows, err := s.boundary.Query(ctx, cte+`
 SELECT t.*
 `+filter+`
 ORDER BY t.created_at DESC,t.id
@@ -977,7 +982,7 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 		return nil, err
 	}
 	if len(referenceNodes) > 0 {
-		rows, queryErr := s.pool.Query(ctx, `SELECT id,name FROM reference_documents WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(referenceNodes))
+		rows, queryErr := s.boundary.Query(ctx, `SELECT id,name FROM reference_documents WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(referenceNodes))
 		if queryErr != nil {
 			return nil, queryErr
 		}
@@ -996,7 +1001,7 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 		}
 	}
 	if len(designNodes) > 0 {
-		rows, queryErr := s.pool.Query(ctx, `SELECT id,title,slug FROM system_designs WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(designNodes))
+		rows, queryErr := s.boundary.Query(ctx, `SELECT id,title,slug FROM system_designs WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(designNodes))
 		if queryErr != nil {
 			return nil, queryErr
 		}
@@ -1015,7 +1020,7 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 		}
 	}
 	if len(decisionNodes) > 0 {
-		rows, queryErr := s.pool.Query(ctx, `SELECT id,statement FROM decisions WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(decisionNodes))
+		rows, queryErr := s.boundary.Query(ctx, `SELECT id,statement FROM decisions WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(decisionNodes))
 		if queryErr != nil {
 			return nil, queryErr
 		}
@@ -1061,7 +1066,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range taskIDs {
 			ids = append(ids, id)
 		}
-		rows, err := s.pool.Query(ctx, `SELECT t.id,t.title,t.state,COALESCE(t.parent_task_id,''),review.payload_json
+		rows, err := s.boundary.Query(ctx, `SELECT t.id,t.title,t.state,COALESCE(t.parent_task_id,''),review.payload_json
 			FROM tasks t
 			LEFT JOIN LATERAL (
 				SELECT e.payload_json FROM events e
@@ -1098,7 +1103,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range requirementIDs {
 			ids = append(ids, id)
 		}
-		rows, err := s.pool.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json
+		rows, err := s.boundary.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json
 			FROM requirements r
 			JOIN requirement_versions v ON v.workspace_id=r.workspace_id
 				AND v.requirement_id=r.id AND v.version=r.current_version AND v.confirmed
@@ -1155,7 +1160,7 @@ func (s *Store) queryLineageTaskRecords(ctx context.Context, nodes map[string][]
 	if len(nodes) == 0 {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,title FROM tasks WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	rows, err := s.boundary.Query(ctx, `SELECT id,title FROM tasks WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
 	if err != nil {
 		return err
 	}
@@ -1176,7 +1181,7 @@ func (s *Store) queryLineageRequirementRecords(ctx context.Context, nodes map[st
 	if len(nodes) == 0 {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,title,slug FROM requirements WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	rows, err := s.boundary.Query(ctx, `SELECT id,title,slug FROM requirements WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
 	if err != nil {
 		return err
 	}
@@ -1197,7 +1202,7 @@ func (s *Store) queryLineageSessionRecords(ctx context.Context, nodes map[string
 	if len(nodes) == 0 {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,title FROM planning_sessions WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	rows, err := s.boundary.Query(ctx, `SELECT id,title FROM planning_sessions WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
 	if err != nil {
 		return err
 	}
@@ -1218,7 +1223,7 @@ func (s *Store) queryLineageOrderRecords(ctx context.Context, nodes map[string][
 	if len(nodes) == 0 {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT id,task_id,stage FROM work_orders WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,stage FROM work_orders WHERE workspace_id=$1 AND id=ANY($2)`, workspace(ctx), lineageRecordIDs(nodes))
 	if err != nil {
 		return err
 	}
@@ -1237,7 +1242,7 @@ func (s *Store) queryLineageOrderRecords(ctx context.Context, nodes map[string][
 }
 
 func (s *Store) hydrateTaskRelations(ctx context.Context, task *core.Task) error {
-	rows, err := s.pool.Query(ctx, `SELECT dependency.id, dependency.title, dependency.state,
+	rows, err := s.boundary.Query(ctx, `SELECT dependency.id, dependency.title, dependency.state,
 		dependency.origin_spec_version, dependency.origin_sub_id
 		FROM task_dependencies edge
 		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
@@ -1261,7 +1266,7 @@ func (s *Store) hydrateTaskRelations(ctx context.Context, task *core.Task) error
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	childRows, err := s.pool.Query(ctx, `SELECT id,title,state,origin_spec_version,origin_sub_id
+	childRows, err := s.boundary.Query(ctx, `SELECT id,title,state,origin_spec_version,origin_sub_id
 		FROM tasks WHERE workspace_id=$1 AND parent_task_id=$2
 		ORDER BY origin_spec_version,origin_sub_id,id`, workspace(ctx), task.ID)
 	if err != nil {
@@ -1284,7 +1289,7 @@ func (s *Store) hydrateTaskRelationsBatch(ctx context.Context, tasks []core.Task
 		byID[tasks[index].ID] = &tasks[index]
 	}
 	if len(dependencyTaskIDs) > 0 {
-		rows, err := s.pool.Query(ctx, `SELECT edge.task_id,dependency.id,dependency.title,dependency.state,
+		rows, err := s.boundary.Query(ctx, `SELECT edge.task_id,dependency.id,dependency.title,dependency.state,
 			dependency.origin_spec_version,dependency.origin_sub_id
 			FROM task_dependencies edge
 			JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
@@ -1317,7 +1322,7 @@ func (s *Store) hydrateTaskRelationsBatch(ctx context.Context, tasks []core.Task
 	if len(parentTaskIDs) == 0 {
 		return nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT parent_task_id,id,title,state,origin_spec_version,origin_sub_id
+	rows, err := s.boundary.Query(ctx, `SELECT parent_task_id,id,title,state,origin_spec_version,origin_sub_id
 		FROM tasks
 		WHERE workspace_id=$1 AND parent_task_id=ANY($2::text[])
 		ORDER BY parent_task_id,origin_spec_version,origin_sub_id,id`, workspace(ctx), parentTaskIDs)
@@ -1373,7 +1378,7 @@ func (s *Store) hydrateGitHubLifecyclesBatch(ctx context.Context, tasks []core.T
 	for i := range tasks {
 		taskIDs[i] = tasks[i].ID
 	}
-	rows, err := s.pool.Query(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY task_id", workspace(ctx), taskIDs)
+	rows, err := s.boundary.Query(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY task_id", workspace(ctx), taskIDs)
 	if err != nil {
 		return err
 	}
@@ -1400,7 +1405,7 @@ func (s *Store) hydrateGitHubLifecyclesBatch(ctx context.Context, tasks []core.T
 
 func (s *Store) hydrateTaskAssignee(ctx context.Context, task *core.Task) error {
 	var assignee core.TaskAssignee
-	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.display_name
+	err := s.boundary.QueryRow(ctx, `SELECT u.id,u.email,u.display_name
 		FROM tasks t JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id
 		JOIN users u ON u.id=b.user_id
 		WHERE t.workspace_id=$1 AND t.id=$2`, workspace(ctx), task.ID).
@@ -1423,7 +1428,7 @@ func (s *Store) hydrateTaskAssignees(ctx context.Context, tasks []core.Task) err
 		ids[i] = tasks[i].ID
 		byID[tasks[i].ID] = &tasks[i]
 	}
-	rows, err := s.pool.Query(ctx, `SELECT t.id,u.id,u.email,u.display_name
+	rows, err := s.boundary.Query(ctx, `SELECT t.id,u.id,u.email,u.display_name
 		FROM tasks t JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id
 		JOIN users u ON u.id=b.user_id WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])`, workspace(ctx), ids)
 	if err != nil {
@@ -1982,7 +1987,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 // parent's lifecycle and row locks so concurrent ticks and commands are
 // exactly-once.
 func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.boundary.Query(ctx, `
 SELECT parent.id
 FROM tasks parent
 WHERE parent.workspace_id=$1
@@ -2135,7 +2140,7 @@ func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.S
 
 func (s *Store) GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error) {
 	var row db.TaskSpec
-	err := s.pool.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
+	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
 	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
@@ -2162,7 +2167,7 @@ WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, versio
 // schema's migration set.
 func (s *Store) GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
 	var row db.TaskSpec
-	err := s.pool.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
+	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
 	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
@@ -2184,7 +2189,7 @@ LIMIT 1`, taskID, workspace(ctx)).Scan(&row.TaskID, &row.Version, &row.Content,
 
 func (s *Store) legacySpecGateVersion(ctx context.Context, taskID string, version int) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM legacy_spec_gate_versions
 		WHERE workspace_id=$1 AND task_id=$2 AND spec_version=$3
 	)`, workspace(ctx), taskID, version).Scan(&exists)
@@ -2369,7 +2374,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 }
 
 func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT dependency.id
+	rows, err := s.boundary.Query(ctx, `SELECT dependency.id
 		FROM task_dependencies edge
 		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
 			AND dependency.id=edge.depends_on_task_id
@@ -2399,7 +2404,7 @@ func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []st
 		}
 		seen[dependencyID] = true
 		var dependencyWorkspace, dependencyState string
-		if err := s.pool.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
+		if err := s.boundary.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
 			Scan(&dependencyWorkspace, &dependencyState); err != nil {
 			return notFound(err, "dependency task %s", dependencyID)
 		}
@@ -2414,7 +2419,7 @@ func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []st
 }
 
 func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT task_id FROM task_dependencies
+	rows, err := s.boundary.Query(ctx, `SELECT task_id FROM task_dependencies
 		WHERE workspace_id=$1 AND depends_on_task_id=$2 ORDER BY task_id`, workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -2435,7 +2440,7 @@ func (s *Store) ListDependencyBlockers(ctx context.Context, taskIDs []string) (m
 	if len(taskIDs) == 0 {
 		return map[string]store.DependencyBlockers{}, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT edge.task_id, dependency.id, dependency.state
+	rows, err := s.boundary.Query(ctx, `SELECT edge.task_id, dependency.id, dependency.state
 		FROM task_dependencies edge
 		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
 			AND dependency.id=edge.depends_on_task_id
@@ -2780,7 +2785,7 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 }
 
 func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
-	lifecycle, err := scanGitHubLifecycle(s.pool.QueryRow(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=$2", workspace(ctx), taskID))
+	lifecycle, err := scanGitHubLifecycle(s.boundary.QueryRow(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=$2", workspace(ctx), taskID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.GitHubLifecycle{}, false, nil
 	}
@@ -2830,7 +2835,7 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 }
 
 func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
+	rows, err := s.boundary.Query(ctx, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
 		WHERE workspace_id=$1 AND state <> 'published' ORDER BY created_at`, workspace(ctx))
 	if err != nil {
 		return 0, err
@@ -2874,7 +2879,7 @@ func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecy
 
 func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
 	var taskID string
-	err := s.pool.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), event.TaskID).Scan(&taskID)
+	err := s.boundary.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), event.TaskID).Scan(&taskID)
 	if err != nil {
 		return notFound(err, "task %s", event.TaskID)
 	}
@@ -2906,7 +2911,7 @@ func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, taskI
 	if len(taskIDs) == 0 {
 		return result, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
+	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
 		FROM events e JOIN tasks t ON t.id=e.task_id
 		WHERE t.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind IN (
 			'merge.confirmed','merge.reconciled','review.round_completed',
@@ -2934,7 +2939,7 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, taskID
 	if len(taskIDs) == 0 {
 		return result, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
+	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id
 		FROM events e
 		WHERE e.workspace_id=$1 AND e.task_id=ANY($2::text[]) AND e.kind='pull_request.opened'
 		ORDER BY e.task_id,e.at,e.id`, workspace(ctx), taskIDs)
@@ -2969,7 +2974,7 @@ func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string)
 }
 
 func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id,
+	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id,
 		e.payload_json->>'requirement_id'
 		FROM events e
 		WHERE e.workspace_id=$1 AND e.task_id IS NULL AND e.payload_json->>'requirement_id' IS NOT NULL
@@ -3012,7 +3017,7 @@ func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (b
 		return false, nil
 	}
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM links WHERE workspace_id=$1 AND src_type=$2 AND src_id=$3
 		UNION ALL
 		SELECT 1 FROM links WHERE workspace_id=$1 AND dst_type=$2 AND dst_id=$3
@@ -3035,7 +3040,7 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 	if len(types) == 0 {
 		return []core.LineageLink{}, nil
 	}
-	rows, err := s.pool.Query(ctx, `WITH RECURSIVE seeds(root_no,node_type,node_id) AS (
+	rows, err := s.boundary.Query(ctx, `WITH RECURSIVE seeds(root_no,node_type,node_id) AS (
 		SELECT ord::int, node_type, node_id FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS r(node_type,node_id,ord)
 	), walk(root_no,node_type,node_id,depth) AS (
 		SELECT root_no,node_type,node_id,0 FROM seeds
@@ -3113,7 +3118,7 @@ func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementI
 	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
 	}
-	rows, err := s.pool.Query(ctx, `WITH RECURSIVE walk(node_type,node_id,depth) AS (
+	rows, err := s.boundary.Query(ctx, `WITH RECURSIVE walk(node_type,node_id,depth) AS (
 		SELECT 'requirement'::text,$2::text,0
 		UNION
 		SELECT l.dst_type,l.dst_id,w.depth+1
@@ -3161,7 +3166,7 @@ func (s *Store) ListRequirementDeliveryLineageByRequirement(ctx context.Context,
 	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires bounded depth, nodes, and links")
 	}
-	rows, err := s.pool.Query(ctx, `WITH RECURSIVE walk(requirement_id,node_type,node_id,depth) AS (
+	rows, err := s.boundary.Query(ctx, `WITH RECURSIVE walk(requirement_id,node_type,node_id,depth) AS (
 		SELECT requirement_id,'requirement'::text,requirement_id,0
 		FROM unnest($2::text[]) AS seed(requirement_id)
 		UNION
@@ -3350,7 +3355,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
 	if afterID != 0 {
 		var exists int
-		err := s.pool.QueryRow(ctx, `SELECT 1 FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id = $3`, taskID, workspace(ctx), afterID).Scan(&exists)
+		err := s.boundary.QueryRow(ctx, `SELECT 1 FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id = $3`, taskID, workspace(ctx), afterID).Scan(&exists)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, store.ErrEventAnchorNotFound
 		}
@@ -3378,7 +3383,7 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 		return store.TaskEventStreamPage{}, err
 	}
 	var exists int
-	if err := s.pool.QueryRow(ctx, `SELECT 1 FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), q.TaskID).Scan(&exists); err != nil {
+	if err := s.boundary.QueryRow(ctx, `SELECT 1 FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), q.TaskID).Scan(&exists); err != nil {
 		return store.TaskEventStreamPage{}, notFound(err, "task %s", q.TaskID)
 	}
 	since := pgtype.Timestamptz{}
@@ -3389,7 +3394,7 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 	if q.After != nil {
 		seek, afterAt, afterID = true, timestamp(q.After.At), q.After.ID
 	}
-	rows, err := s.pool.Query(ctx, `SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
+	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 WHERE e.task_id = $1 AND ($2::timestamptz IS NULL OR e.at >= $2::timestamptz)
 	AND (NOT $3::boolean OR (e.at, e.id) > ($4::timestamptz, $5::bigint))
 ORDER BY e.at, e.id
@@ -3455,7 +3460,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	var selected pgx.Rows
 	var err error
 	if len(taskIDs) == 0 {
-		selected, err = s.pool.Query(ctx, `SELECT t.id,
+		selected, err = s.boundary.Query(ctx, `SELECT t.id,
 			COALESCE(
 				(SELECT w.stage FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=t.id
 					AND w.state='claimed'
@@ -3469,7 +3474,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 			WHERE t.workspace_id=$1
 			ORDER BY t.created_at,t.id`, workspace(ctx))
 	} else {
-		selected, err = s.pool.Query(ctx, `SELECT t.id,
+		selected, err = s.boundary.Query(ctx, `SELECT t.id,
 			COALESCE(
 				(SELECT w.stage FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=t.id
 					AND w.task_id=ANY($2::text[]) AND w.state='claimed'
@@ -3558,7 +3563,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 			)
 		) ORDER BY e.at,e.id`
 	markerArgs := []any{workspace(ctx), emptyIfNil(taskIDs), emptyIfNil(reviewTaskIDs)}
-	markerRows, err := s.pool.Query(ctx, markerQuery, markerArgs...)
+	markerRows, err := s.boundary.Query(ctx, markerQuery, markerArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -3592,7 +3597,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	}
 	taskStates := make(map[string]core.TaskState, len(taskIDsForState))
 	if len(taskIDsForState) > 0 {
-		stateRows, stateErr := s.pool.Query(ctx, `SELECT id,state FROM tasks WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), taskIDsForState)
+		stateRows, stateErr := s.boundary.Query(ctx, `SELECT id,state FROM tasks WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), taskIDsForState)
 		if stateErr != nil {
 			return nil, stateErr
 		}
@@ -4758,7 +4763,7 @@ func reviewRoundOrdersTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID str
 }
 
 func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
-	order, err := scanWorkOrder(s.pool.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
+	order, err := scanWorkOrder(s.boundary.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
 	}
@@ -4771,7 +4776,7 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 }
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
+	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -4805,7 +4810,7 @@ func (s *Store) hydrateWorkOrderAssignees(ctx context.Context, orders []core.Wor
 		}
 		byTask[orders[i].TaskID] = append(byTask[orders[i].TaskID], i)
 	}
-	rows, err := s.pool.Query(ctx, `SELECT t.id,u.id,u.email,u.display_name FROM tasks t
+	rows, err := s.boundary.Query(ctx, `SELECT t.id,u.id,u.email,u.display_name FROM tasks t
 		JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id
 		JOIN users u ON u.id=b.user_id WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])`, workspace(ctx), taskIDs)
 	if err != nil {
@@ -4847,7 +4852,7 @@ func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 	if len(taskIDs) == 0 {
 		return s.ListWorkOrders(ctx)
 	}
-	rows, err := s.pool.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
+	rows, err := s.boundary.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -4864,7 +4869,7 @@ func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 }
 
 func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
+	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -4881,7 +4886,7 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 }
 
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
+	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -5004,26 +5009,14 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		var pendingDocument string
-		var pendingVersion int
-		pendingErr := tx.QueryRow(ctx, `SELECT document_id,version FROM system_design_versions
-			WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed
-			ORDER BY document_id,version LIMIT 1`, workspace(ctx), string(core.SystemDesignOriginImplementation), order.TaskID).Scan(&pendingDocument, &pendingVersion)
-		if pendingErr == nil {
-			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored System Design proposal %s v%d", order.TaskID, pendingDocument, pendingVersion)
+		// The listing's helper, inside the claim's transaction
+		// (req-260810-70ce2f AC-1.1; component-work-orders).
+		blocking, blockingErr := claimBlockingProposalsTx(ctx, tx, workspace(ctx), order.TaskID)
+		if blockingErr != nil {
+			return core.WorkOrder{}, blockingErr
 		}
-		if !errors.Is(pendingErr, pgx.ErrNoRows) {
-			return core.WorkOrder{}, pendingErr
-		}
-		var pendingRequirement string
-		pendingErr = tx.QueryRow(ctx, `SELECT requirement_id,version FROM requirement_versions
-			WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT retired
-			ORDER BY requirement_id,version LIMIT 1`, workspace(ctx), string(core.RequirementOriginImplementation), order.TaskID).Scan(&pendingRequirement, &pendingVersion)
-		if pendingErr == nil {
-			return core.WorkOrder{}, fmt.Errorf("review for task %s is waiting on task-authored requirement proposal %s v%d", order.TaskID, pendingRequirement, pendingVersion)
-		}
-		if !errors.Is(pendingErr, pgx.ErrNoRows) {
-			return core.WorkOrder{}, pendingErr
+		if len(blocking) > 0 {
+			return core.WorkOrder{}, store.ClaimBlockingProposalError(order.TaskID, blocking[0])
 		}
 	}
 	if order.Stage == core.StageReview {
@@ -5512,7 +5505,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT task_id FROM work_orders
+	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT task_id FROM work_orders
 		WHERE workspace_id=$1 AND (
 			(state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline <= $2)
 			OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2)
@@ -6367,7 +6360,7 @@ func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) revi
 }
 
 func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.ReviewPublication, error) {
-	publication, err := scanReviewPublication(s.pool.QueryRow(ctx, "SELECT "+reviewPublicationColumns+" FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2", workspace(ctx), id))
+	publication, err := scanReviewPublication(s.boundary.QueryRow(ctx, "SELECT "+reviewPublicationColumns+" FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2", workspace(ctx), id))
 	if err != nil {
 		return core.ReviewPublication{}, notFound(err, "review publication %s", id)
 	}
@@ -6411,7 +6404,7 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 }
 
 func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
-	rows, err := s.pool.Query(ctx, `SELECT e.task_id, COALESCE(e.job_id,''), e.payload_json
+	rows, err := s.boundary.Query(ctx, `SELECT e.task_id, COALESCE(e.job_id,''), e.payload_json
 		FROM events e
 		JOIN tasks t ON t.id=e.task_id
 		LEFT JOIN review_publications p ON p.workspace_id=t.workspace_id
@@ -6448,7 +6441,7 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	rows.Close()
-	invalidRows, err := s.pool.Query(ctx, "SELECT "+reviewPublicationColumns+` FROM review_publications
+	invalidRows, err := s.boundary.Query(ctx, "SELECT "+reviewPublicationColumns+` FROM review_publications
 		WHERE workspace_id=$1 AND state='published' AND comment_id=0
 		ORDER BY created_at, review_work_order_id`, workspace(ctx))
 	if err != nil {
@@ -6685,19 +6678,19 @@ func (s *Store) CreateFeature(ctx context.Context, feature core.Feature) error {
 	}
 	if feature.ParentID != "" {
 		var belongs bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM features WHERE id=$1 AND workspace_id=$2)`, feature.ParentID, workspace(ctx)).Scan(&belongs); err != nil {
+		if err := s.boundary.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM features WHERE id=$1 AND workspace_id=$2)`, feature.ParentID, workspace(ctx)).Scan(&belongs); err != nil {
 			return err
 		}
 		if !belongs {
 			return fmt.Errorf("parent feature %s not found in workspace %s", feature.ParentID, workspace(ctx))
 		}
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO features (id,workspace_id,parent_id,name,description,created_at) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6)`, feature.ID, workspace(ctx), feature.ParentID, feature.Name, feature.Description, feature.CreatedAt)
+	_, err := s.boundary.Exec(ctx, `INSERT INTO features (id,workspace_id,parent_id,name,description,created_at) VALUES ($1,$2,NULLIF($3,''),$4,$5,$6)`, feature.ID, workspace(ctx), feature.ParentID, feature.Name, feature.Description, feature.CreatedAt)
 	return err
 }
 
 func (s *Store) ListFeatures(ctx context.Context) ([]core.Feature, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,workspace_id,COALESCE(parent_id,''),name,description,created_at FROM features WHERE workspace_id=$1 ORDER BY name,id`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, `SELECT id,workspace_id,COALESCE(parent_id,''),name,description,created_at FROM features WHERE workspace_id=$1 ORDER BY name,id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -6862,7 +6855,7 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request s
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
+	err := s.boundary.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}
@@ -6875,7 +6868,7 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := s.pool.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
+	err := s.boundary.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
 		FROM artifacts a
 		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
 		WHERE a.workspace_id=$1 AND a.id=$2 AND l.planning_session_id=$3
@@ -6891,7 +6884,7 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 }
 
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
-	rows, err := s.pool.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id,l.role`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id,l.role`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -6943,7 +6936,7 @@ func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.Lineag
 	if len(types) == 0 {
 		return []core.Artifact{}, nil
 	}
-	rows, err := s.pool.Query(ctx, listArtifactsForLineageSQL, workspace(ctx), types, ids)
+	rows, err := s.boundary.Query(ctx, listArtifactsForLineageSQL, workspace(ctx), types, ids)
 	if err != nil {
 		return nil, err
 	}

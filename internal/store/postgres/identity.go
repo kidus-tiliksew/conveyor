@@ -38,14 +38,14 @@ type IssuedAgentCredential = store.IssuedAgentCredential
 func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
 	var identity core.CallerIdentity
 	if workspaceID == "" {
-		err := s.pool.QueryRow(ctx, `SELECT id,email,display_name FROM users WHERE id=$1 AND status='active'`, userID).
+		err := s.boundary.QueryRow(ctx, `SELECT id,email,display_name FROM users WHERE id=$1 AND status='active'`, userID).
 			Scan(&identity.ID, &identity.Email, &identity.DisplayName)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.CallerIdentity{}, store.ErrNotFound
 		}
 		return identity, err
 	}
-	err := s.pool.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,b.role
+	err := s.boundary.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,b.role
 		FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id
 		WHERE u.id=$1 AND u.status='active' AND b.workspace_id=$2`, userID, workspaceID).
 		Scan(&identity.ID, &identity.Email, &identity.DisplayName, &identity.Role)
@@ -474,7 +474,7 @@ func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) 
 // authenticated run parent. The kind and owner predicates make human PATs and
 // credentials belonging to another user unaddressable through this boundary.
 func (s *Store) RevokeAgentCredential(ctx context.Context, userID, credentialID string) error {
-	result, err := s.pool.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now())
+	result, err := s.boundary.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now())
 		WHERE id=$1 AND user_id=$2 AND kind=$3`, credentialID, userID, string(core.CredentialAgent))
 	if err != nil {
 		return fmt.Errorf("revoke agent credential: %w", err)
@@ -642,7 +642,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 	var candidateID string
 	if normalizeErr == nil {
 		var stored *string
-		if err := s.pool.QueryRow(ctx, `SELECT id,password_hash FROM users WHERE email=$1 AND status='active'`, normalized).Scan(&candidateID, &stored); err == nil && stored != nil {
+		if err := s.boundary.QueryRow(ctx, `SELECT id,password_hash FROM users WHERE email=$1 AND status='active'`, normalized).Scan(&candidateID, &stored); err == nil && stored != nil {
 			encoded = *stored
 		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return core.DashboardSession{}, core.IdentityUser{}, err
@@ -738,14 +738,14 @@ func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (c
 	var id, userID string
 	var expiresAt time.Time
 	var establishedByLink bool
-	if err := s.pool.QueryRow(ctx, `UPDATE dashboard_sessions s SET last_used_at=now(),expires_at=now()+interval '7 days' FROM users u WHERE s.session_hash=$1 AND s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' RETURNING s.id,s.user_id,s.expires_at,s.established_by_link`, hash[:]).Scan(&id, &userID, &expiresAt, &establishedByLink); err != nil {
+	if err := s.boundary.QueryRow(ctx, `UPDATE dashboard_sessions s SET last_used_at=now(),expires_at=now()+interval '7 days' FROM users u WHERE s.session_hash=$1 AND s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' RETURNING s.id,s.user_id,s.expires_at,s.established_by_link`, hash[:]).Scan(&id, &userID, &expiresAt, &establishedByLink); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 		}
 		return core.AuthenticatedCredential{}, err
 	}
 	var operator bool
-	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=$1 AND role='operator')`, userID).Scan(&operator); err != nil {
+	if err := s.boundary.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=$1 AND role='operator')`, userID).Scan(&operator); err != nil {
 		return core.AuthenticatedCredential{}, err
 	}
 	scope := core.CredentialScopeUser
