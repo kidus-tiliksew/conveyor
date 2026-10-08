@@ -67,7 +67,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	if _, err := st.BootstrapWorkspaceConfig(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{41}, 32))
+	st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{41}, 32))
 	memberships := &membershipFixture{workspaces: []core.Workspace{{ID: "alpha", Name: "Alpha"}}, roles: map[string]map[string]core.WorkspaceRole{"operator": {"alpha": core.WorkspaceRoleOperator}, "maintainer": {"alpha": core.WorkspaceRoleMaintainer}}}
 	server := NewServer(st)
 	server.Workspaces = memberships

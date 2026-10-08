@@ -38,7 +38,7 @@ umask 077
 cat > .env <<EOF
 CONVEYOR_DATABASE_URL=postgres://conveyor:conveyor@127.0.0.1:5432/conveyor?sslmode=disable
 CONVEYOR_API_TOKEN=$(openssl rand -hex 32)
-CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY=$(openssl rand -base64 32)
+CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY=$(openssl rand -base64 32)
 CONVEYOR_LLM_API_KEY=<provider API key>
 CONVEYOR_PUBLIC_URL=http://127.0.0.1:8080
 EOF

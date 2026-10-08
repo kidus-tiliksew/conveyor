@@ -105,7 +105,7 @@ func integrationStore(t *testing.T) *Store {
 	t.Helper()
 	resetSharedDatabase(t)
 	st := sharedDatabase.store
-	st.ConfigureForgeTokenEncryptionKey(nil)
+	st.ConfigureGitHubAppKeyEncryptionKey(nil)
 	return st
 }
 

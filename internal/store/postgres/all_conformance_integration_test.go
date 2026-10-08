@@ -153,7 +153,7 @@ func conformanceStore(t *testing.T) *Store {
 		t.Fatalf("reset conformance schema: %v", err)
 	}
 	st := conformanceSchema.store
-	st.ConfigureForgeTokenEncryptionKey(nil)
+	st.ConfigureGitHubAppKeyEncryptionKey(nil)
 	t.Logf("fixture reset in %s", time.Since(started).Round(time.Millisecond))
 	return st
 }

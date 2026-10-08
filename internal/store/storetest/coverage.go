@@ -57,6 +57,6 @@ var suiteMethods = map[string][]string{
 	"Identity":                   strings.Fields(`BootstrapIdentity GetCallerIdentity ProvisionIdentityUser VerifyCredential VerifyPersonalAccessToken`),
 	"Membership":                 strings.Fields(`AuthorizeDeployment AuthorizeWorkspace BootstrapIdentity GrantWorkspaceRole ListWorkspaceInvitations ListWorkspaceMembers ListWorkspacesForUser ProvisionIdentityUser RecordInvitationDelivery RevokeWorkspaceInvitation RevokeWorkspaceRole VerifyPersonalAccessToken`),
 	"InvitationSessions":         strings.Fields(`BootstrapIdentity GrantWorkspaceRole IssueSignInLink RedeemSignInLink RevokeDashboardSession SetOwnDisplayName SetOwnPassword SignInWithPassword VerifyDashboardSession VerifyPersonalAccessToken`),
-	"GitHubApps":                 strings.Fields(`ConfigureForgeTokenEncryptionKey ListGitHubAppKeysForRedaction StoreWorkspaceGitHubApp RecordWorkspaceGitHubAppInstallation GetWorkspaceGitHubAppStatus GetWorkspaceGitHubAppForUse DeleteWorkspaceGitHubApp`),
+	"GitHubApps":                 strings.Fields(`ConfigureGitHubAppKeyEncryptionKey ListGitHubAppKeysForRedaction StoreWorkspaceGitHubApp RecordWorkspaceGitHubAppInstallation GetWorkspaceGitHubAppStatus GetWorkspaceGitHubAppForUse DeleteWorkspaceGitHubApp`),
 	"Tokens":                     strings.Fields(`BootstrapIdentity IssueAgentCredential IssueOwnPersonalAccessToken ListOwnPersonalAccessTokens RevokeOwnPersonalAccessToken RevokeRunAgentCredential VerifyCredential VerifyPersonalAccessToken`),
 }

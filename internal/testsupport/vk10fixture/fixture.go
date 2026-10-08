@@ -199,7 +199,7 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 	t.Cleanup(f.provider.Close)
 	f.forge = httptest.NewServer(http.HandlerFunc(f.serveForge))
 	t.Cleanup(f.forge.Close)
-	b.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{37}, 32))
+	b.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{37}, 32))
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	must(t, err)
 	private := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))

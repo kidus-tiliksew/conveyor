@@ -12,17 +12,17 @@ import (
 // request a Backend. NewMemory retains its existing Store and fixture behavior.
 type volatileMemory struct {
 	*memory
-	memberships         map[memoryScopedKey]workspaceBinding
-	invitations         map[memoryScopedKey]workspaceInvitation
-	workspaces          map[string]workspaceRecord
-	users               map[string]identityUser
-	credentials         map[string]identityCredential
-	signInLinks         map[string]signInLink
-	sessions            map[string]dashboardSession
-	workspaceGitHubApps map[string]workspaceAppRecord
-	orgName             string
-	forgeTokenKey       []byte
-	log                 eventlog.Store
+	memberships            map[memoryScopedKey]workspaceBinding
+	invitations            map[memoryScopedKey]workspaceInvitation
+	workspaces             map[string]workspaceRecord
+	users                  map[string]identityUser
+	credentials            map[string]identityCredential
+	signInLinks            map[string]signInLink
+	sessions               map[string]dashboardSession
+	workspaceGitHubApps    map[string]workspaceAppRecord
+	orgName                string
+	gitHubAppEncryptionKey []byte
+	log                    eventlog.Store
 }
 
 var _ Backend = (*volatileMemory)(nil)

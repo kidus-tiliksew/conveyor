@@ -97,7 +97,7 @@ their enrolled workers in the same operation.
 
 Connect the workspace GitHub App in Workspace settings and install it on each
 registered repository. The server encrypts the App private key under
-`CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` and mints short-lived installation tokens
+`CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` and mints short-lived installation tokens
 for control-plane GitHub operations. It stores no personal GitHub token.
 
 The executing machine resolves its own Git credential to push and open the
