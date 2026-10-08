@@ -154,6 +154,7 @@ func runVerification(t *testing.T, x Fixture) {
 	runVerificationLimits(t, x)
 	runVerificationTerminalRace(t, x)
 	t.Run("VerifyReviewRoundAdmission", func(t *testing.T) { runVerifyReviewRoundAdmission(t, x) })
+	t.Run("VerificationChunkExpiry", func(t *testing.T) { runVerificationChunkExpiry(t, x) })
 	v := newVerificationFixture(t, x)
 	t.Run("NestedTaskLock", func(t *testing.T) {
 		if !x.Backend.IsDurable() {

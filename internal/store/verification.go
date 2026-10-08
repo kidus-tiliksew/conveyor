@@ -17,6 +17,11 @@ import (
 type VerificationStore interface {
 	VerificationDeliveryStore
 	ReconcileVerificationClaims(context.Context) (int, error)
+	// ExpireVerificationChunks is internal to the daemon reconcile tick. It
+	// admits only the verification-reconciler system actor in an explicit
+	// workspace and deletes at most limit expired staging rows
+	// (component-verification-evidence).
+	ExpireVerificationChunks(ctx context.Context, limit int) (int, error)
 	ApplyVerification(context.Context, VerificationCommand) (VerificationReceipt, error)
 	ReadVerification(context.Context, VerificationAccess, string) (VerificationSnapshot, error)
 	ReadVerificationArtifact(context.Context, VerificationAccess, string, string) (core.Artifact, []byte, error)
