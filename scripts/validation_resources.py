@@ -25,9 +25,11 @@ import platform
 import plistlib
 import re
 import secrets
+import select
 import shutil
 import signal
 import socket
+import stat as stat_module
 import struct
 import subprocess
 import sys
@@ -717,7 +719,7 @@ def _inspection_failure(process, label):
 
 
 def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=None, backend=None,
-                       disregarded=None):
+                       disregarded=None, manager_query=None, clock_ticks=None):
     """Return live or ambiguously inspected processes that may use path.
 
     With uid, only that user's processes are inspected. Callers pass it only
@@ -728,9 +730,14 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
     sessions that could have inherited the path. On Linux an uninspectable
     OpenSSH session process of the invoking user is also dropped when it has
     no readable reference and a live root-owned SSH parent (see
-    _ssh_session); disregarded, when given, is a list that receives one record
-    per such process so callers can report it. The macOS backend inspects only
-    the invoking user's processes and never applies the SSH rule.
+    _ssh_session), and so is the invoking user's systemd manager when the
+    local system manager authenticates it (see _user_manager). disregarded,
+    when given, is a list that receives one record per such process so
+    callers can report it. manager_query and clock_ticks replace the system
+    manager query and CLK_TCK for fixtures; by default the module's
+    query_user_manager and system_clock_ticks are looked up at call time.
+    The macOS backend inspects only the invoking user's processes and
+    applies neither Linux rule.
     """
     path = Path(path).resolve()
     selected = process_backend(proc, backend)
@@ -764,9 +771,16 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
         info = _proc_stat(int(process.name), Path(proc))
         if info is not None and info["state"] in ("Z", "X"):
             continue  # An exited, unreaped process holds no cwd, root, or descriptors.
+        # The user-manager rule takes its first query and reads before the
+        # process's entries are inspected and its second ones after.
+        manager = _user_manager_first(process, owner, info, Path(proc),
+                                      query_user_manager if manager_query is None else manager_query,
+                                      system_clock_ticks if clock_ticks is None else clock_ticks)
         found = _linux_process_users(process, path)
         if found and all(":ambiguous:" in value for value in found):
             session = _ssh_session(process, owner, info, Path(proc))
+            if session is None and manager is not None:
+                session = _user_manager(process, owner, info, Path(proc), manager)
             if session is not None:
                 if disregarded is not None:
                     disregarded.append(session)
@@ -895,8 +909,231 @@ def _ssh_session(process: Path, owner: int, first, proc: Path) -> dict | None:
             "start": first["start"], "reason": SSH_DISREGARD_REASON}
 
 
+# The invoking user's systemd manager (systemd --user) is non-dumpable and
+# lives for the whole login. Its command name and parent prove nothing: a
+# same-user process can rename itself "systemd", make itself non-dumpable, and
+# be orphaned to PID 1 or a subreaper, and the user@<uid>.service cgroup
+# subtree, init.scope included, is delegated to the user. The root-controlled
+# system manager's record of the service's main process, bound to the
+# process's start tick, is what authenticates it (component-validation-tooling).
+USER_MANAGER_KIND = "user-manager"
+USER_MANAGER_COMMAND = "systemd"
+USER_MANAGER_REASON = "same-user-uninspectable-system-manager-reported-mainpid"
+SYSTEMCTL = "/usr/bin/systemctl"
+USER_MANAGER_PROPERTIES = ("MainPID", "ExecMainStartTimestampMonotonic", "ActiveState")
+USER_MANAGER_QUERY_TIMEOUT = 2.0
+USER_MANAGER_OUTPUT_LIMIT = 16 * 1024
+# Only a fixed locale: no inherited bus address, loader, or systemctl variable
+# can redirect the query.
+USER_MANAGER_ENVIRONMENT = {"LC_ALL": "C"}
+
+
+def user_manager_service(uid: int) -> str:
+    return f"user@{uid}.service"
+
+
+def user_manager_argv(uid: int) -> list[str]:
+    """The fixed read-only system-manager query; no shell, PATH lookup, user bus, or remote host."""
+    argv = [SYSTEMCTL, "--system", "--no-pager", "--no-ask-password", "show", user_manager_service(uid)]
+    for name in USER_MANAGER_PROPERTIES:
+        argv += ["-p", name]
+    return argv
+
+
+def root_controlled_executable(path, lstat=os.lstat) -> bool:
+    """True when path is an executable regular file that only root can replace.
+
+    The file and every ancestor directory must not be a symlink, must be
+    owned by uid 0, and must be writable by neither group nor others. Any
+    unreadable component fails.
+    """
+    path = Path(path)
+    if not path.is_absolute() or ".." in path.parts:
+        return False
+    components = [Path(*path.parts[:index]) for index in range(1, len(path.parts) + 1)]
+    for index, component in enumerate(components):
+        try:
+            info = lstat(component)
+        except (OSError, ValueError):
+            return False
+        last = index == len(components) - 1
+        kind = stat_module.S_ISREG(info.st_mode) if last else stat_module.S_ISDIR(info.st_mode)
+        if not kind or info.st_uid != 0 or info.st_mode & 0o022:
+            return False
+        if last and not info.st_mode & 0o111:
+            return False
+    return True
+
+
+def bounded_output(argv, env, timeout, limit, popen=subprocess.Popen, clock=time.monotonic):
+    """Run argv directly; return (status, combined output), or None.
+
+    None means it could not start, outlived timeout seconds, or wrote more
+    than limit bytes to standard output and standard error together. The
+    child is killed and reaped on every path.
+    """
+    deadline = clock() + timeout
+    try:
+        child = popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                      env=env, close_fds=True)
+    except (OSError, ValueError):
+        return None
+    output = bytearray()
+    try:
+        descriptor = child.stdout.fileno()
+        while True:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                return None
+            ready, _, _ = select.select([descriptor], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(descriptor, 4096)
+            if not chunk:
+                break
+            output += chunk
+            if len(output) > limit:
+                return None
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return None
+        status = child.wait(timeout=remaining)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+        child.stdout.close()
+    return status, bytes(output)
+
+
+def _positive_integer(value: str) -> int | None:
+    if not value.isascii() or not value.isdigit() or value != str(int(value)) or int(value) <= 0:
+        return None
+    return int(value)
+
+
+def parse_user_manager(raw: bytes) -> dict | None:
+    """Parse systemctl show output: each property exactly once, nothing else."""
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    if not text.endswith("\n"):
+        return None  # Empty or truncated.
+    values = {}
+    for line in text[:-1].split("\n"):
+        key, separator, value = line.partition("=")
+        if not separator or key not in USER_MANAGER_PROPERTIES or key in values:
+            return None
+        values[key] = value
+    if len(values) != len(USER_MANAGER_PROPERTIES):
+        return None
+    main_pid = _positive_integer(values["MainPID"])
+    monotonic = _positive_integer(values["ExecMainStartTimestampMonotonic"])
+    if main_pid is None or monotonic is None:
+        return None
+    return {"main_pid": main_pid, "monotonic_usec": monotonic, "active_state": values["ActiveState"]}
+
+
+def query_user_manager(uid: int, run=bounded_output, trusted=root_controlled_executable) -> dict | None:
+    """Ask the local system manager for user@<uid>.service; None unless it is active and well formed."""
+    if not trusted(SYSTEMCTL):
+        return None
+    result = run(user_manager_argv(uid), dict(USER_MANAGER_ENVIRONMENT), USER_MANAGER_QUERY_TIMEOUT,
+                 USER_MANAGER_OUTPUT_LIMIT)
+    if result is None or result[0] != 0:
+        return None
+    service = parse_user_manager(result[1])
+    if service is None or service["active_state"] != "active":
+        return None
+    return service
+
+
+def system_clock_ticks(sysconf=os.sysconf) -> int | None:
+    """CLK_TCK as a positive integer, or None."""
+    try:
+        value = sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if type(value) is int and value > 0 else None
+
+
+def start_matches(start_ticks: int, monotonic_usec: int, hz: int) -> bool:
+    """Whether a start tick and a monotonic microsecond timestamp agree within one tick (integers only)."""
+    return abs(start_ticks * 1_000_000 - monotonic_usec * hz) <= 1_000_000
+
+
+def _system_manager(proc: Path):
+    """The live root-owned PID 1 named systemd: (owner, command, start), or None."""
+    try:
+        owner = (proc / "1").stat().st_uid
+    except OSError:
+        return None
+    info = _proc_stat(1, proc)
+    if owner != 0 or info is None or info["command"] != USER_MANAGER_COMMAND or info["state"] in ("Z", "X"):
+        return None
+    return owner, info["command"], info["start"]
+
+
+def _user_manager_first(process: Path, owner: int, first, proc: Path, query, ticks) -> dict | None:
+    """The first proof for a user-manager candidate, taken before its entries are inspected, or None."""
+    if owner != os.getuid() or first is None or first["command"] != USER_MANAGER_COMMAND:
+        return None
+    pid = int(process.name)
+    if pid == 1 or first["state"] in ("Z", "X"):
+        return None
+    system = _system_manager(proc)
+    if system is None:
+        return None
+    hz = ticks()
+    if type(hz) is not int or hz <= 0:
+        return None
+    service = query(owner)
+    if (service is None or service.get("active_state") != "active" or service.get("main_pid") != pid
+            or not start_matches(first["start"], service["monotonic_usec"], hz)):
+        return None
+    return {"system": system, "service": service, "hz": hz, "query": query}
+
+
+def _user_manager(process: Path, owner: int, first, proc: Path, proof: dict) -> dict | None:
+    """Return a disregard record when an uninspectable process is the authenticated user manager.
+
+    The caller has found no readable reference for the process, and
+    _user_manager_first has proved before inspection that the invoking user's
+    process named systemd is the active MainPID of user@<uid>.service as
+    reported by a live root-owned PID 1 systemd, with a start tick within one
+    clock tick of the service's monotonic start. A second, independent query
+    and second reads of both stat files and owners must return the same
+    facts; any unavailable, failed, or changed fact leaves the process
+    ambiguous (component-validation-tooling).
+    """
+    pid = int(process.name)
+    service = proof["query"](owner)
+    if service != proof["service"]:
+        return None
+    again = _proc_stat(pid, proc)
+    try:
+        current_owner = process.stat().st_uid
+    except OSError:
+        return None
+    if (again is None or current_owner != owner or again["state"] in ("Z", "X")
+            or (again["command"], again["start"]) != (first["command"], first["start"])):
+        return None
+    if _system_manager(proc) != proof["system"]:
+        return None
+    return {"kind": USER_MANAGER_KIND, "pid": pid, "start": first["start"], "uid": owner,
+            "service": user_manager_service(owner), "main_pid": service["main_pid"],
+            "monotonic_usec": service["monotonic_usec"], "reason": USER_MANAGER_REASON}
+
+
 def disregard_line(record: dict) -> str:
-    """The retained output line for one disregarded SSH session process."""
+    """The retained output line for one disregarded SSH session or user manager process."""
+    if record.get("kind") == USER_MANAGER_KIND:
+        return (f"Disregarded Linux user manager: pid={record['pid']} uid={record['uid']} "
+                f"service={record['service']} main_pid={record['main_pid']} start={record['start']} "
+                f"monotonic_usec={record['monotonic_usec']} reason={record['reason']}")
     return (f"Disregarded Linux SSH session: pid={record['pid']} parent={record['ppid']} "
             f"command={record['command']} parent_command={record['parent_command']} reason={record['reason']}")
 
@@ -1807,8 +2044,9 @@ def remove_path(identity: dict, references=(), created_after=None, sessions=None
         time.sleep(0.2)
         again = set(scan())
         users = [value for value in users if value in again]
-    # Disregarded SSH session processes are named in the refusal or in the
-    # resource detail, which the inventory and recovery.jsonl retain.
+    # Disregarded SSH session and user manager processes are named in the
+    # refusal or in the resource detail, which the inventory and
+    # recovery.jsonl retain. Every rescan queries the system manager afresh.
     reported = "".join("; " + disregard_line(record) for record in disregards)
     if users:
         raise Refusal(f"recorded path {path} is in use: " + ", ".join(users[:10]) + reported)

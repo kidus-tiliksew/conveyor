@@ -781,7 +781,8 @@ def active_cache_users(path, proc=validation_resources.PROC, backend=None, uid=N
     """Return live or ambiguously inspected processes that may use path.
 
     disregarded, when given, receives the shared inspector's records for
-    uninspectable Linux SSH session processes it did not count.
+    uninspectable Linux SSH session and authenticated user manager processes
+    it did not count.
     """
     try:
         return validation_resources.active_cache_users(path, proc, uid=uid, created_after=created_after,
@@ -1027,8 +1028,9 @@ def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC, 
     """Remove the disposable children of the task cache; return their names.
 
     report, when given, is called with one line per distinct disregarded SSH
-    session process as each child is inspected, before any refusal, so the
-    retained output names every process the guard did not count.
+    session or user manager process as each child is inspected, before any
+    refusal, so the retained output names every process the guard did not
+    count.
     """
     expected = task_cache_root(task, task_cache)
     refs = [Path(value).resolve() for value in references]
@@ -1050,9 +1052,11 @@ def cleanup_cache(task, task_cache, references, proc=validation_resources.PROC, 
         # disregards only an uninspectable process with a known start strictly
         # before that tick; readable references always block. On Linux it
         # also disregards an uninspectable OpenSSH session process of the
-        # invoking user with a live root-owned SSH parent, whatever its start,
-        # and reports it here. Otherwise an uninspectable process that remains
-        # after owner isolation blocks.
+        # invoking user with a live root-owned SSH parent, and the invoking
+        # user's systemd manager when the local system manager reports it as
+        # the active MainPID of user@<uid>.service with a matching start tick,
+        # whatever their start, and reports each here. Otherwise an
+        # uninspectable process that remains after owner isolation blocks.
         uid = os.getuid() if owner_only_ancestor(resolved) is not None else None
         created_after = None
         entry = bounds.get(name)
