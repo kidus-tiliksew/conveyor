@@ -1,4 +1,4 @@
-import { type GroupKey, taskStateLabels } from './contracts'
+import { type GroupKey, stageLabels, taskStateLabels, workOrderStageLabels } from './contracts'
 import type {
   ActivityItem,
   ActivitySummary,
@@ -1233,7 +1233,7 @@ const genericSummaries = new Set([
 // states a job entry cannot carry — waiting for an agent, stale, timed out —
 // become entries of their own.
 function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEntry, { type: 'order' }> | undefined {
-  const stage = order.stage === 'spec' ? 'Plan' : order.stage === 'implement' ? 'Implementation' : 'Review'
+  const stage = workOrderStageLabels[order.stage] ?? stageLabels[order.stage] ?? order.stage
   const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order }
   switch (order.state) {
     case 'queued':

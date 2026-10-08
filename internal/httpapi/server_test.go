@@ -3530,7 +3530,9 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 
 	// Each member narrows to exactly the seeded row that carries it. The
 	// created-at bounds straddle the two creation instants. The later attachment
-	// event must not move ledger-sweep across this boundary.
+	// event must not move ledger-sweep across this boundary. The updated-at
+	// bounds read last activity instead: assignment stamps ledger-sweep with a
+	// current event, while rollout has none and stays at its creation instant.
 	for _, applied := range []struct {
 		name  string
 		query string
@@ -3541,6 +3543,9 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		{"served requirement", "serves_requirement=req-ledger", "ledger-sweep"},
 		{"created from", "created_from=2026-08-01T10:00:30Z", "rollout"},
 		{"created to", "created_to=2026-08-01T10:00:30Z", "ledger-sweep"},
+		{"updated from", "updated_from=2026-08-02T10:00:01Z", "ledger-sweep"},
+		{"updated to", "updated_to=2026-08-02T00:00:00Z", "rollout"},
+		{"updated and created together", "updated_from=2026-08-02T10:00:01Z&created_to=2026-08-01T10:00:30Z", "ledger-sweep"},
 		{"state and repository", "state=running&repository=web", "rollout"},
 		{"assigned user", "assignee=usr-ledger", "ledger-sweep"},
 		{"unassigned", "assignee=unassigned", "rollout"},
@@ -3593,6 +3598,8 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		{"unparseable instant", "created_from=last-tuesday"},
 		{"non-RFC-3339 date", "created_to=2026-08-02"},
 		{"inverted range", "created_from=2026-08-09T00:00:00Z&created_to=2026-08-02T00:00:00Z"},
+		{"unparseable updated instant", "updated_from=yesterday"},
+		{"inverted updated range", "updated_from=2026-08-09T00:00:00Z&updated_to=2026-08-02T00:00:00Z"},
 	} {
 		t.Run("rejects "+rejected.name, func(t *testing.T) {
 			for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
@@ -3604,27 +3611,150 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 		})
 	}
 
-	// The old parameters represented latest activity, so accepting them as
-	// creation bounds would silently change a stale caller's result. The API
-	// replacement is intentionally explicit; browser saved state migrates in
-	// the shared filter component instead.
-	for _, legacy := range []string{
-		"updated_from=2026-08-01T00:00:00Z",
-		"updated_to=2026-08-02T00:00:00Z",
-	} {
-		for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
-			response := get(t, surface+"?workspace_id=demo&"+legacy)
-			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "retired") {
-				t.Fatalf("%s legacy %q status=%d body=%s", surface, legacy, response.Code, response.Body.String())
-			}
-		}
-	}
-
 	// The review inbox is the whole outstanding queue by construction: an
 	// operator narrowing a board must not also narrow what is waiting on them.
 	reviews := get(t, "/v1/reviews?workspace_id=demo&q=nothing-matches-this")
 	if reviews.Code != http.StatusOK {
 		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	}
+}
+
+// TestUpdatedTaskFilterValidationAndPagination proves the Updated bounds on
+// every surface that parses the shared filter (AC-2.4): last activity, not
+// creation, selects a row; either bound may stand alone; offsets in RFC 3339
+// instants are honored; malformed, equal, and inverted ranges answer 400; the
+// Created family stays an independent predicate; and the page and its total
+// share the predicate before paging (AC-2.3).
+func TestUpdatedTaskFilterValidationAndPagination(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(t.Context(), "demo")
+	st := store.NewMemory()
+	get := func(t *testing.T, target string) *httptest.ResponseRecorder {
+		t.Helper()
+		server := NewServer(st)
+		server.Workspace = "demo"
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, target, nil)))
+		return response
+	}
+	at := func(month, day int) time.Time { return time.Date(2026, time.Month(month), day, 12, 0, 0, 0, time.UTC) }
+	// stale-start was created first but is the most recently active; fresh
+	// was created last and never touched; middle sits between them.
+	for _, seed := range []struct {
+		id       string
+		created  time.Time
+		activity []time.Time
+	}{
+		{"stale-start", at(1, 1), []time.Time{at(6, 1), at(2, 1)}},
+		{"middle", at(2, 1), []time.Time{at(4, 1)}},
+		{"fresh", at(3, 1), nil},
+	} {
+		if err := st.CreateTask(ctx, core.Task{ID: seed.id, Workspace: "demo", Title: seed.id, Repo: "conveyor", Source: "operator", State: core.TaskQueued, CreatedAt: seed.created}); err != nil {
+			t.Fatal(err)
+		}
+		for _, when := range seed.activity {
+			if err := st.AppendEvent(ctx, core.Event{TaskID: seed.id, Kind: "task.state_changed", At: when, Payload: core.JSONPayload(map[string]any{"state": "queued"})}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	ids := func(t *testing.T, response *httptest.ResponseRecorder) []string {
+		t.Helper()
+		var rows []struct {
+			Task struct {
+				ID string `json:"id"`
+			} `json:"task"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+			t.Fatalf("decode %s: %v", response.Body.String(), err)
+		}
+		out := make([]string, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, row.Task.ID)
+		}
+		return out
+	}
+	for _, applied := range []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"lower bound only", "updated_from=2026-03-15T00:00:00Z", []string{"middle", "stale-start"}},
+		{"upper bound only", "updated_to=2026-03-15T00:00:00Z", []string{"fresh"}},
+		// stale-start's February event was appended after June; June wins.
+		{"window uses newest activity", "updated_from=2026-05-01T00:00:00Z&updated_to=2026-07-01T00:00:00Z", []string{"stale-start"}},
+		{"older appended event does not count", "updated_from=2026-01-15T00:00:00Z&updated_to=2026-02-15T00:00:00Z", nil},
+		{"lower bound is inclusive", "updated_from=2026-04-01T12:00:00Z&updated_to=2026-04-02T00:00:00Z", []string{"middle"}},
+		{"upper bound is exclusive", "updated_from=2026-03-15T00:00:00Z&updated_to=2026-04-01T12:00:00Z", nil},
+		// 14:00+02:00 is the 12:00Z instant middle's event carries.
+		{"offset instant", "updated_from=2026-04-01T14:00:00%2B02:00&updated_to=2026-04-01T14:00:01%2B02:00", []string{"middle"}},
+		{"created and updated intersect", "updated_from=2026-03-15T00:00:00Z&created_from=2026-01-15T00:00:00Z", []string{"middle"}},
+	} {
+		t.Run(applied.name, func(t *testing.T) {
+			for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
+				response := get(t, surface+"?workspace_id=demo&"+applied.query)
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s status=%d body=%s", surface, response.Code, response.Body.String())
+				}
+				got := ids(t, response)
+				slices.Sort(got)
+				want := slices.Clone(applied.want)
+				slices.Sort(want)
+				if !slices.Equal(got, want) {
+					t.Fatalf("%s rows=%v want %v", surface, got, want)
+				}
+			}
+		})
+	}
+
+	// The page and its total share the predicate, across the 1-200 limit range.
+	for offset, want := range []string{"middle", "stale-start"} {
+		response := get(t, fmt.Sprintf("/v1/task-operations?workspace_id=demo&updated_from=2026-03-15T00:00:00Z&limit=1&offset=%d", offset))
+		if response.Code != http.StatusOK || response.Header().Get("X-Conveyor-Total") != "2" {
+			t.Fatalf("page %d status=%d total=%q body=%s", offset, response.Code, response.Header().Get("X-Conveyor-Total"), response.Body.String())
+		}
+		if got := ids(t, response); len(got) != 1 || got[0] != want {
+			t.Fatalf("page %d rows=%v want [%s]", offset, got, want)
+		}
+	}
+	for _, surface := range []string{"/v1/task-operations", "/v1/activity"} {
+		full := get(t, surface+"?workspace_id=demo&updated_from=2026-03-15T00:00:00Z&limit=200")
+		if full.Code != http.StatusOK || full.Header().Get("X-Conveyor-Total") != "2" {
+			t.Fatalf("%s limit=200 status=%d total=%q body=%s", surface, full.Code, full.Header().Get("X-Conveyor-Total"), full.Body.String())
+		}
+		if over := get(t, surface+"?workspace_id=demo&updated_from=2026-03-15T00:00:00Z&limit=201"); over.Code != http.StatusBadRequest {
+			t.Fatalf("%s limit=201 status=%d body=%s", surface, over.Code, over.Body.String())
+		}
+	}
+
+	// Attention parses the same family; an accepted Updated bound is never
+	// refused as a retired spelling.
+	if accepted := get(t, "/v1/attention/tasks?workspace_id=demo&updated_from=2026-03-15T00:00:00Z&updated_to=2026-07-01T00:00:00Z"); accepted.Code != http.StatusOK {
+		t.Fatalf("attention updated range status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	for _, rejected := range []struct {
+		name  string
+		query string
+	}{
+		{"malformed lower", "updated_from=last-tuesday"},
+		{"date without time", "updated_to=2026-08-02"},
+		{"equal bounds", "updated_from=2026-04-01T12:00:00Z&updated_to=2026-04-01T12:00:00Z"},
+		{"inverted bounds", "updated_from=2026-06-01T00:00:00Z&updated_to=2026-02-01T00:00:00Z"},
+		// Each family is validated on its own: a valid Updated range cannot
+		// rescue an inverted Created range.
+		{"valid updated with inverted created", "updated_from=2026-01-01T00:00:00Z&created_from=2026-06-01T00:00:00Z&created_to=2026-02-01T00:00:00Z"},
+	} {
+		t.Run("rejects "+rejected.name, func(t *testing.T) {
+			for _, surface := range []string{"/v1/task-operations", "/v1/activity", "/v1/attention/tasks"} {
+				response := get(t, surface+"?workspace_id=demo&"+rejected.query)
+				if response.Code != http.StatusBadRequest {
+					t.Fatalf("%s status=%d body=%s", surface, response.Code, response.Body.String())
+				}
+				if strings.Contains(response.Body.String(), "retired") {
+					t.Fatalf("%s refused updated bounds as retired: %s", surface, response.Body.String())
+				}
+			}
+		})
 	}
 }
 
