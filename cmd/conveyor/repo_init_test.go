@@ -244,7 +244,7 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	command.SetArgs([]string{"init"})
 	command.SetOut(io.Discard)
 	command.SetErr(io.Discard)
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "REQ-4/AC-4.6") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "req-agent-guidance-install REQ-2/AC-2.6") {
 		t.Fatalf("outside-checkout error = %v", err)
 	}
 	if len(repoFixtureSnapshot(t, root)) != 0 {

@@ -481,7 +481,7 @@ func documentArchivedTx(ctx context.Context, tx pgx.Tx, table, workspaceID, id s
 }
 
 // validateSupersededByTx locks replacement authority while the
-// archive transition commits (req-document-operating-surfaces REQ-5/AC-5.7).
+// archive transition commits (req-document-archive REQ-1/AC-1.7).
 func validateSupersededByTx(ctx context.Context, tx pgx.Tx, workspaceID, targetID string, ids []string) ([]string, error) {
 	accepted := make([]string, 0, len(ids))
 	seen := make(map[string]bool, len(ids))

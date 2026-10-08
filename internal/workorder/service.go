@@ -1567,7 +1567,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		comparisonTask.BaseBranch = target.Base.SHA
 	}
 	// Diff-derived authority must be complete before the first PR, task-stage,
-	// or review-dispatch side effect (req-260811-228be6 REQ-5/AC-5.1–AC-5.4).
+	// or review-dispatch side effect (req-task-centric-delivery REQ-6/AC-6.1–AC-6.4).
 	governance, err := s.Store.ListGovernanceDesigns(ctx, task.Repo)
 	if err != nil {
 		return nil, fmt.Errorf("resolve submission governance: %w", err)
@@ -1984,7 +1984,8 @@ func (s *Service) recordedPRURL(ctx context.Context, taskID string, workOrderID 
 }
 
 // PullRequestTemplate is the server-composed delivery contract; it contains no
-// forge credential (req-260821-830dbf AC-3.4 and AC-6.1).
+// forge credential (req-delivery-and-forge AC-2.4; req-delivery-and-forge
+// AC-7.1).
 type PullRequestTemplate struct {
 	TaskID        string `json:"task_id"`
 	Repository    string `json:"repository"`

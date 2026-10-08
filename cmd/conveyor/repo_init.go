@@ -38,7 +38,7 @@ func repoInitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := repositoryRoot(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("req-repository-onboarding REQ-4/AC-4.6: conveyor repo init requires a repository checkout")
+				return fmt.Errorf("req-agent-guidance-install REQ-2/AC-2.6: conveyor repo init requires a repository checkout")
 			}
 			root, err = filepath.EvalSymlinks(root)
 			if err != nil {
@@ -53,7 +53,7 @@ func repoInitCmd() *cobra.Command {
 	return cmd
 }
 
-// req-repository-onboarding AC-4.7: all fields come from one authenticated
+// req-agent-guidance-install AC-2.7: all fields come from one authenticated
 // registration, never from a singleton fallback or inferred network target.
 type repoInitContext struct{ Server, Workspace, Name, Base string }
 
@@ -330,8 +330,8 @@ func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, erro
 	return true, nil
 }
 
-// prepareRepository keeps req-repository-onboarding REQ-4/AC-4.1 through
-// AC-4.5 in one preflight and rollback boundary (component-runtime, DEC-40).
+// prepareRepository keeps req-agent-guidance-install REQ-2/AC-2.1 through
+// AC-2.5 in one preflight and rollback boundary (component-runtime, DEC-40).
 // The shared skill installer retains ownership and refresh semantics unchanged.
 type repoSkillInstaller func(string, []skillDestination, string, bool, bool) ([]skillInstallFile, []skillInstallReport, error)
 

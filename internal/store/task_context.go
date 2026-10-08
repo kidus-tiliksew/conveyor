@@ -30,7 +30,7 @@ type TaskContextChange struct {
 }
 
 // SubmissionGovernanceAttribution distinguishes diff-derived attachments on
-// the existing context event kind (req-260811-228be6 REQ-5/AC-5.3).
+// the existing context event kind (req-task-centric-delivery REQ-6/AC-6.3).
 type SubmissionGovernanceAttribution struct {
 	WorkOrderID string
 	SessionID   string

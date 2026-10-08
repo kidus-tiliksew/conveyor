@@ -101,7 +101,7 @@ does, and the agent does not press the pattern again after that choice.
 
 After delivery, the operator proposes the baseline revisions and then archives
 the overlay naming those documents as successors. The archive step ships with
-req-document-operating-surfaces REQ-5 AC-5.7; until then, the operator retires
+req-document-archive REQ-1 AC-1.7; until then, the operator retires
 the overlay by hand.
 
 ## Decisions

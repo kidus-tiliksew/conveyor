@@ -17,7 +17,7 @@ import (
 )
 
 // Workspace kit registry (feature-verification-kit-execution v6 VK-11,
-// req-verification-kits v2 REQ-11). The read reports what each configured
+// req-verification-kit-inventory v1 REQ-1). The read reports what each configured
 // repository's base-branch manifest declares and how kit pins compare with the
 // currently confirmed corpus. It is display-only: verify-stage selection keeps
 // using the frozen work-order snapshot (AC-11.5) and this handler writes nothing.

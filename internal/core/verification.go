@@ -13,7 +13,7 @@ import (
 )
 
 // VerificationEvidence is the schema-1, store-independent VK-5 contract
-// (req-verification-kits REQ-5). Legacy visual artifacts retain their own role
+// (req-verification-evidence REQ-1). Legacy visual artifacts retain their own role
 // and media limits. Stored ownership, reference resolution and batch acyclicity
 // belong to the verification service, not this structural validator.
 const MaxVerificationEvidenceBytes = 256 << 10

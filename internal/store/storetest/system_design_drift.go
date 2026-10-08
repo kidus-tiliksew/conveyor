@@ -492,7 +492,7 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 
 // runSubmissionGovernanceArchiveEligibility proves submission-diff governance
 // resolution skips archived System Designs while preserving pins attached
-// before archive (req-document-operating-surfaces AC-5.2, AC-5.4).
+// before archive (req-document-archive AC-1.2, AC-1.4).
 func runSubmissionGovernanceArchiveEligibility(t *testing.T, factory SystemDesignDriftFactory) {
 	t.Helper()
 	paths := []string{"internal/dispatch/dispatch.go"}

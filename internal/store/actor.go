@@ -46,7 +46,7 @@ func ActorFromContext(ctx context.Context) Actor {
 // WorkOrderOwnerUserID resolves the executing human from durable claim state.
 // Client-supplied claimant text is never treated as authority: run claimants
 // use the server-derived run:<user-id> form and worker claims use durable
-// enrollment ownership (req-260821-830dbf AC-3.1).
+// enrollment ownership (req-delivery-and-forge REQ-6 and REQ-1).
 func WorkOrderOwnerUserID(ctx context.Context, st Store, order core.WorkOrder) (string, error) {
 	if order.WorkerID != "" {
 		workers, err := st.ListWorkers(ctx)

@@ -13,7 +13,7 @@ import { VerificationDiagnostics, VerificationKitRow } from './verification-kit-
 
 // Kits declared in each configured repository's base-branch manifest, and how
 // their pins compare with the confirmed documents (component-web-dashboard
-// VK-WEB-4, req-verification-kits REQ-11). The query has its own cadence:
+// VK-WEB-4, req-verification-kit-inventory REQ-1). The query has its own cadence:
 // activity, SSE and configuration saves never refetch it.
 
 const COUNT_LABEL: Partial<Record<VerificationKitStatus, string>> = {
