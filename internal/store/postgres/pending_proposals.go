@@ -25,7 +25,7 @@ func attentionTasksCTE() string {
 // authority tiers. Confirmation/dismissal changes the source rows, so the
 // projection clears without stored attention state (REQ-1, REQ-3).
 func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.boundary.Query(ctx, `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
 			SELECT v.document_id AS proposal_id,d.title,'system_design' AS tier,v.version,
@@ -75,7 +75,7 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 }
 
 func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.boundary.Query(ctx, `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
 			SELECT v.document_id AS proposal_id,d.title,'system_design' AS tier,v.version,
@@ -122,7 +122,7 @@ func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingPr
 		return store.PendingProposalsProjection{}, err
 	}
 	var count int64
-	err = s.pool.QueryRow(ctx, pendingProposalsAttentionSQL, workspace(ctx)).Scan(&count)
+	err = s.boundary.QueryRow(ctx, pendingProposalsAttentionSQL, workspace(ctx)).Scan(&count)
 	if err != nil {
 		return store.PendingProposalsProjection{}, err
 	}

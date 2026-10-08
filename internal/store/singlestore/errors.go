@@ -31,5 +31,5 @@ func translateBackendConflict(err error) error {
 	case 1205, 1213:
 		return store.ErrRetryable
 	}
-	return fmt.Errorf("SingleStore database operation failed")
+	return fmt.Errorf("SingleStore %w", store.ErrBackendOperation)
 }

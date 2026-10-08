@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
@@ -26,13 +25,13 @@ type exhaustedDispatch struct {
 // context, so a lifecycle command's rows and its job commit together. The reconciliation reads keep their SQL over tasks and
 // fold each candidate's job stream for the queue half of the answer.
 type logDispatchQueue struct {
-	pool *pgxpool.Pool
-	log  *pglog.Store
-	now  func() time.Time
+	boundary boundaryDB
+	log      *pglog.Store
+	now      func() time.Time
 }
 
-func newLogDispatchQueue(pool *pgxpool.Pool, log *pglog.Store) *logDispatchQueue {
-	return &logDispatchQueue{pool: pool, log: log, now: time.Now}
+func newLogDispatchQueue(boundary boundaryDB, log *pglog.Store) *logDispatchQueue {
+	return &logDispatchQueue{boundary: boundary, log: log, now: time.Now}
 }
 
 const publicationMaxAttempts = 5
@@ -112,7 +111,7 @@ ORDER BY t.created_at, t.id`, workspace)
 }
 
 func (q *logDispatchQueue) exhaustedDispatches(ctx context.Context, workspace string) ([]exhaustedDispatch, error) {
-	rows, err := q.pool.Query(ctx, `
+	rows, err := q.boundary.Query(ctx, `
 SELECT t.id, t.next_stage
 FROM tasks t
 WHERE t.workspace_id = $1 AND t.state = 'running'

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -51,14 +50,13 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 		return insertSystemDesignProposalEvent(ctx, q, first)
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			switch pgErr.ConstraintName {
-			case "system_designs_pkey":
-				return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignIDConflict, document.ID)
-			case "system_designs_workspace_id_slug_key":
-				return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
-			}
+		// inTx translates both unique constraints to their sentinels; name
+		// the conflicting ID or slug.
+		switch {
+		case err == store.ErrSystemDesignIDConflict:
+			return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignIDConflict, document.ID)
+		case err == store.ErrSystemDesignSlugConflict:
+			return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
 		}
 	}
 	return document, first, err
@@ -68,7 +66,7 @@ func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesi
 	item := core.SystemDesign{Workspace: workspace(ctx), ID: id}
 	var current *int
 	var archivedAt *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT slug,title,category,current_version,archived_at,archived_by,archive_reason,archive_note,superseded_by,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.ArchiveReason, &item.ArchiveNote, &item.SupersededBy, &item.CreatedAt, &item.UpdatedAt)
+	err := s.boundary.QueryRow(ctx, `SELECT slug,title,category,current_version,archived_at,archived_by,archive_reason,archive_note,superseded_by,created_at,updated_at FROM system_designs WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id).Scan(&item.Slug, &item.Title, &item.Category, &current, &archivedAt, &item.ArchivedBy, &item.ArchiveReason, &item.ArchiveNote, &item.SupersededBy, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, fmt.Errorf("%w: system design %s", store.ErrNotFound, id)
 	}
@@ -82,7 +80,7 @@ func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesi
 }
 
 func (s *Store) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
-	rows, err := s.pool.Query(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY category,title,id`, workspace(ctx), includeArchived)
+	rows, err := s.boundary.Query(ctx, systemDesignSelect+` WHERE workspace_id=$1 AND ($2 OR archived_at IS NULL) ORDER BY category,title,id`, workspace(ctx), includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -537,10 +535,10 @@ func archivalColumnExistsTx(ctx context.Context, tx pgx.Tx, table string) (bool,
 }
 
 func (s *Store) GetSystemDesignVersion(ctx context.Context, id string, version int) (core.SystemDesignVersion, error) {
-	return scanSystemDesignVersion(s.pool.QueryRow(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), id, version), id, version)
+	return scanSystemDesignVersion(s.boundary.QueryRow(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 AND version=$3`, workspace(ctx), id, version), id, version)
 }
 func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
-	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 ORDER BY version`, workspace(ctx), id)
+	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND document_id=$2 ORDER BY version`, workspace(ctx), id)
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +556,7 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 
 func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
 	scope, _ := json.Marshal([]map[string]string{{"repository": repository}})
-	rows, err := s.pool.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
+	rows, err := s.boundary.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
 		WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.governs @> $2::jsonb ORDER BY d.id`, workspace(ctx), scope)
@@ -582,7 +580,7 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 }
 
 func (s *Store) ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
-	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
+	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -599,7 +597,7 @@ func (s *Store) ListPendingSystemDesignVersionsForTask(ctx context.Context, task
 }
 
 func (s *Store) ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
-	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
+	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -616,7 +614,7 @@ func (s *Store) ListSystemDesignProposalVersionsForTask(ctx context.Context, tas
 }
 
 func (s *Store) ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind='system_design.version_proposed' AND payload_json->>'origin_task_id'=$2 ORDER BY id`, workspace(ctx), taskID)
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind='system_design.version_proposed' AND payload_json->>'origin_task_id'=$2 ORDER BY id`, workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -632,7 +630,7 @@ func (s *Store) ListSystemDesignProposalEventsForTask(ctx context.Context, taskI
 	return out, rows.Err()
 }
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
-	rows, err := s.pool.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -648,7 +646,7 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 	return out, rows.Err()
 }
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' AND payload_json->>'document_id'=$2 ORDER BY id`, workspace(ctx), id)
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' AND payload_json->>'document_id'=$2 ORDER BY id`, workspace(ctx), id)
 	if err != nil {
 		return nil, err
 	}
@@ -665,7 +663,7 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 }
 
 func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY id`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -740,14 +738,11 @@ func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (co
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "decision.proposed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "decision_id": decision.ID, "origin": decision.Origin, "origin_session_id": decision.OriginSessionID, "origin_task_id": decision.OriginTaskID, "supersedes": decision.Supersedes})})
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			if pgErr.ConstraintName == "decisions_pkey" {
-				return decision, fmt.Errorf("%w: %s", store.ErrDecisionIDConflict, decision.ID)
-			}
-			if pgErr.ConstraintName == "decisions_confirmed_supersedes_key" {
-				return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
-			}
+		switch {
+		case err == store.ErrDecisionIDConflict:
+			return decision, fmt.Errorf("%w: %s", store.ErrDecisionIDConflict, decision.ID)
+		case err == store.ErrDecisionSupersessionConflict:
+			return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
 		}
 	}
 	return decision, err
@@ -790,8 +785,10 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 		return recomputeDecisionSupersessionSweepTx(ctx, tx, q, decision)
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "decisions_confirmed_supersedes_key" {
+		// Only the translated unique-constraint sentinel itself is the
+		// concurrent-supersession race; callback refusals already carry
+		// their own message.
+		if err == store.ErrDecisionSupersessionConflict {
 			return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
 		}
 	}
@@ -848,7 +845,7 @@ func scanDecision(row pgx.Row, id string) (core.Decision, error) {
 	return item, err
 }
 func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, error) {
-	item, err := scanDecision(s.pool.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
+	item, err := scanDecision(s.boundary.QueryRow(ctx, decisionSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id), id)
 	if err != nil {
 		return item, err
 	}
@@ -857,7 +854,7 @@ func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, erro
 	return item, err
 }
 func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
-	rows, err := s.pool.Query(ctx, decisionSelect+` WHERE workspace_id=$1 ORDER BY substring(id from 5)::integer`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, decisionSelect+` WHERE workspace_id=$1 ORDER BY substring(id from 5)::integer`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}

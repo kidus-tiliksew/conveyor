@@ -53,7 +53,7 @@ func (s *Store) QueuePullRequestClose(ctx context.Context, p core.PullRequestClo
 func (s *Store) GetPullRequestClose(ctx context.Context, id string) (core.PullRequestClose, bool, error) {
 	var raw []byte
 	var p core.PullRequestClose
-	err := s.pool.QueryRow(ctx, `SELECT payload_json FROM pull_request_closes WHERE workspace_id=$1 AND task_id=$2`, workspace(ctx), id).Scan(&raw)
+	err := s.boundary.QueryRow(ctx, `SELECT payload_json FROM pull_request_closes WHERE workspace_id=$1 AND task_id=$2`, workspace(ctx), id).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, false, nil
 	}
@@ -93,7 +93,7 @@ func (s *Store) hydratePullRequestCloses(ctx context.Context, tasks []core.Task)
 	for i := range tasks {
 		ids[i] = tasks[i].ID
 	}
-	rows, err := s.pool.Query(ctx, `SELECT payload_json FROM pull_request_closes WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, workspace(ctx), ids)
+	rows, err := s.boundary.Query(ctx, `SELECT payload_json FROM pull_request_closes WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, workspace(ctx), ids)
 	if err != nil {
 		return err
 	}

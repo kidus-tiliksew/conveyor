@@ -25,7 +25,7 @@ func (s *Store) AuditMonitor(ctx context.Context, kind string, payload map[strin
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = s.boundary.Exec(ctx, `
 INSERT INTO monitor_activity (workspace_id,kind,payload_json)
 VALUES ($1,$2,$3::jsonb)`, workspace(ctx), kind, string(data))
 	return err
@@ -41,7 +41,7 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 		WHERE workspace_id=$1 AND repo_name=$2 AND source=$3 AND state NOT IN ('merged','closed')
 		ORDER BY created_at,id LIMIT 1`
 	var taskID string
-	if err := s.pool.QueryRow(ctx, query, workspace(ctx), repository, "monitor:"+string(kind)).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
+	if err := s.boundary.QueryRow(ctx, query, workspace(ctx), repository, "monitor:"+string(kind)).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	} else if err != nil {
 		return "", false, err
@@ -51,7 +51,7 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 
 func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS (
+	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM requirements WHERE workspace_id=$1 AND id=$2
 	)`, workspace(ctx), id).Scan(&exists)
 	return exists, err
@@ -182,7 +182,7 @@ func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (m
 		hints = string(raw)
 	}
 	identity := observation.Identity()
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := s.boundary.Exec(ctx, `
 INSERT INTO monitor_observations (
  workspace_id,identity,repository,kind,occurrence_id,source_url,commit_sha,
  pull_request_number,check_run_id,requirement_id,changed_paths,causal_event_id,observed_at,context_json,hint_context_json,created_at,updated_at
@@ -196,7 +196,7 @@ ON CONFLICT (workspace_id,identity) DO NOTHING`,
 	}
 	fresh := tag.RowsAffected() == 1
 	if !fresh {
-		if _, err = s.pool.Exec(ctx, `
+		if _, err = s.boundary.Exec(ctx, `
 UPDATE monitor_observations SET deduplicated_count=deduplicated_count+1,
  changed_paths=CASE WHEN cardinality($4::text[])>0 THEN $4 ELSE changed_paths END,
  causal_event_id=COALESCE($5,causal_event_id),
@@ -214,7 +214,7 @@ const observationColumns = `repository,kind,occurrence_id,source_url,commit_sha,
  deduplicated_count,forge_error_category,last_error,created_at,updated_at`
 
 func (s *Store) getObservation(ctx context.Context, identity string) (monitor.ObservationRecord, error) {
-	return scanObservation(s.pool.QueryRow(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=$1 AND identity=$2", workspace(ctx), identity), workspace(ctx))
+	return scanObservation(s.boundary.QueryRow(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=$1 AND identity=$2", workspace(ctx), identity), workspace(ctx))
 }
 
 func scanObservation(row interface{ Scan(...any) error }, ws string) (monitor.ObservationRecord, error) {
@@ -344,7 +344,7 @@ ON CONFLICT (workspace_id,id) DO NOTHING`,
 const driftColumns = `id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome`
 
 func (s *Store) getDrift(ctx context.Context, id string) (monitor.Drift, error) {
-	return scanDrift(s.pool.QueryRow(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND id=$2", workspace(ctx), id), workspace(ctx))
+	return scanDrift(s.boundary.QueryRow(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND id=$2", workspace(ctx), id), workspace(ctx))
 }
 
 func scanDrift(row interface{ Scan(...any) error }, ws string) (monitor.Drift, error) {
@@ -616,7 +616,7 @@ func nullableMonitorEventID(id int64) any {
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {
 	status := monitor.Status{WorkspaceID: workspace(ctx), Enabled: enabled}
 	var lastSuccess, backoff *time.Time
-	err := s.pool.QueryRow(ctx, `
+	err := s.boundary.QueryRow(ctx, `
 SELECT last_successful_at,current_error,forge_error_category,backoff_until
 FROM monitor_status WHERE workspace_id=$1`, workspace(ctx)).
 		Scan(&lastSuccess, &status.CurrentError, &status.ForgeErrorCategory, &backoff)
@@ -629,7 +629,7 @@ FROM monitor_status WHERE workspace_id=$1`, workspace(ctx)).
 	if backoff != nil {
 		status.BackoffUntil = *backoff
 	}
-	activityRows, err := s.pool.Query(ctx, `
+	activityRows, err := s.boundary.Query(ctx, `
 SELECT id,kind,payload_json,at FROM monitor_activity
 WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))
 	if err != nil {
@@ -651,7 +651,7 @@ WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))
 		return monitor.Status{}, err
 	}
 	activityRows.Close()
-	rows, err := s.pool.Query(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=$1 ORDER BY created_at,identity", workspace(ctx))
+	rows, err := s.boundary.Query(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=$1 ORDER BY created_at,identity", workspace(ctx))
 	if err != nil {
 		return monitor.Status{}, err
 	}
@@ -682,7 +682,7 @@ WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))
 }
 
 func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND resolved_at IS NULL ORDER BY detected_at,id", workspace(ctx))
+	rows, err := s.boundary.Query(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND resolved_at IS NULL ORDER BY detected_at,id", workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -699,7 +699,7 @@ func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error
 }
 
 func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
-	rows, err := s.pool.Query(ctx, `SELECT system_design_id,count(*)
+	rows, err := s.boundary.Query(ctx, `SELECT system_design_id,count(*)
 		FROM repository_drift
 		WHERE workspace_id=$1 AND resolved_at IS NULL AND system_design_id IS NOT NULL
 		GROUP BY system_design_id`, workspace(ctx))
@@ -720,7 +720,7 @@ func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[stri
 }
 
 func (s *Store) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.boundary.Exec(ctx, `
 INSERT INTO monitor_status (workspace_id,last_successful_at) VALUES ($1,$2)
 ON CONFLICT (workspace_id) DO UPDATE SET last_successful_at=$2,current_error='',forge_error_category='',backoff_until=NULL`,
 		workspace(ctx), at)
@@ -728,7 +728,7 @@ ON CONFLICT (workspace_id) DO UPDATE SET last_successful_at=$2,current_error='',
 }
 
 func (s *Store) RecordMonitorFailure(ctx context.Context, category, detail string, backoffUntil time.Time) error {
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.boundary.Exec(ctx, `
 INSERT INTO monitor_status (workspace_id,current_error,forge_error_category,backoff_until)
 VALUES ($1,$2,$3,$4)
 ON CONFLICT (workspace_id) DO UPDATE SET current_error=$2,forge_error_category=$3,backoff_until=$4`,
