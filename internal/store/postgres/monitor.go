@@ -160,6 +160,12 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 }
 
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
+	// The record must name the bound workspace before any insert or
+	// deduplication; SQL below predicates on that same value
+	// (component-monitor-drift).
+	if _, err := store.MonitorRecordWorkspace(ctx, observation.WorkspaceID); err != nil {
+		return monitor.ObservationRecord{}, false, err
+	}
 	if observation.ChangedPaths == nil {
 		observation.ChangedPaths = []string{}
 	}
@@ -278,6 +284,9 @@ func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) 
 }
 
 func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	if _, err := store.MonitorRecordWorkspace(ctx, drift.WorkspaceID); err != nil {
+		return monitor.Drift{}, false, err
+	}
 	if drift.MatchingPaths == nil {
 		drift.MatchingPaths = []string{}
 	}
