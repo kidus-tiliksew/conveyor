@@ -1036,8 +1036,6 @@ class HostBackendTests(IsolatedState):
             self.assertEqual(backing, "disk")
 
 
-@unittest.skipUnless(os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1",
-                     "real Docker fixtures run through make test-validation-docker")
 class FixtureProc:
     """A fixture /proc tree for the Linux inspector.
 
@@ -1380,6 +1378,8 @@ class SSHSessionPathRemovalTests(IsolatedState):
         self.assertIn(self.line, [value for value in logged if value["kind"] == "path"][0]["detail"])
 
 
+@unittest.skipUnless(os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1",
+                     "real Docker fixtures run through make test-validation-docker")
 class DockerLifecycleTests(IsolatedState):
     @classmethod
     def setUpClass(cls):
@@ -1575,6 +1575,30 @@ class DockerLifecycleTests(IsolatedState):
         self.assertTrue(database["identity"]["incarnation"])
         self.assertEqual(self.labelled_containers(inventory["invocation"]), [])
         self.assertNotIn("conveyor:conveyor", (path / "inventory.json").read_text())
+
+
+class TestSelectionTests(unittest.TestCase):
+    """Class-level opt-in decorators stay on the classes they select.
+
+    A skip decorator marks the class directly below it, so a helper inserted
+    between a decorator and its class silently takes the decorator over. Only
+    DockerLifecycleTests is opt-in (CONVEYOR_VALIDATION_DOCKER=1, through make
+    test-validation-docker), and HostBackendTests needs a process backend; no
+    other class in this module may carry a class-level skip.
+    """
+
+    def test_only_the_selected_classes_carry_a_class_skip(self):
+        docker = os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1"
+        expected = {"DockerLifecycleTests": not docker, "HostBackendTests": not HAS_BACKEND}
+        classes = {name: value for name, value in globals().items()
+                   if isinstance(value, type) and value.__module__ == __name__}
+        self.assertIn("DockerLifecycleTests", classes)
+        for name, value in sorted(classes.items()):
+            with self.subTest(name):
+                self.assertEqual(value.__dict__.get("__unittest_skip__", False), expected.get(name, False))
+        if not docker:
+            self.assertEqual(DockerLifecycleTests.__unittest_skip_why__,
+                             "real Docker fixtures run through make test-validation-docker")
 
 
 if __name__ == "__main__":
