@@ -135,7 +135,9 @@ func (e *ClaimDeliveryCompensationError) Unwrap() error {
 // TaskRunProposal is the task-scoped, read-only authority projection shown by
 // an attended run. CanConfirm is derived from the invoking user credential;
 // execution credentials never receive this response or gain confirmation
-// authority through it (req-260811-0ee057 AC-2.2, AC-5.8).
+// authority through it (req-accounts-and-membership AC-3.3;
+// req-local-task-runs AC-4.4, AC-4.5; component-mcp-protocol, Run-order
+// plane).
 type TaskRunProposal struct {
 	Kind       string `json:"kind"`
 	DocumentID string `json:"document_id"`

@@ -19,7 +19,7 @@ type signInLinkIssuer interface {
 }
 
 // issueAndPrintSignInLink is the host-local recovery and bootstrap delivery
-// boundary required by req-260811-0ee057 v20 REQ-9/AC-9.3.
+// boundary required by req-invitations-and-sign-in REQ-3/AC-3.1, AC-3.2.
 func issueAndPrintSignInLink(ctx context.Context, output io.Writer, issuer signInLinkIssuer, email, publicURL string) error {
 	ctx = store.WithActor(ctx, store.Actor{ID: hostLocalSignInLinkActorID, Role: core.ActorSystem})
 	issued, err := issuer.IssueSignInLink(ctx, email)

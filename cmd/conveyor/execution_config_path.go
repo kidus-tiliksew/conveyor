@@ -26,9 +26,9 @@ func defaultLocalExecutionConfigPath() string {
 }
 
 func resolveLocalExecutionConfigPath(cmd *cobra.Command, flagValue string) (localExecutionConfigPath, error) {
-	// req-260811-0ee057 REQ-14/AC-14.1-14.3: every executor-side
-	// consumer shares one local-only path and never sends setup content to the
-	// control plane.
+	// req-execution-configuration REQ-9/AC-9.8; component-harness-execution,
+	// The local execution document: every executor-side consumer shares one
+	// local-only path and never sends setup content to the control plane.
 	if cmd != nil && (cmd.Flags().Changed("config") || cmd.InheritedFlags().Changed("config")) {
 		return resolvedLocalExecutionConfigPath(flagValue, "flag")
 	}

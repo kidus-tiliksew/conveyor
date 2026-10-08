@@ -49,7 +49,7 @@ func mcpCmd() *cobra.Command {
 
 // mcpInstallCmd installs every detected editor's native registration while
 // keeping stored credentials out of editor-owned files
-// (req-260811-0ee057 REQ-13/AC-13.5).
+// (req-cli-authentication REQ-4/AC-4.1, AC-4.2).
 func mcpInstallCmd() *cobra.Command { return mcpInstallCmdWithLookPath(exec.LookPath) }
 
 func mcpInstallCmdWithLookPath(lookPath func(string) (string, error)) *cobra.Command {
