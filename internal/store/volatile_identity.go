@@ -69,13 +69,15 @@ type workspaceInvitation struct {
 	CreatedAt time.Time          `json:"created_at"`
 }
 
-// forgeTokenRecord is the sealed credential; Owner is the AEAD's associated
-// data, so a token cannot be replayed under another owner.
-type forgeTokenRecord struct {
+// gitHubAppKeyRecord is a sealed workspace GitHub App private key. Owner is
+// the AEAD's additional data (workspace-app:<workspace_id>), so a key cannot
+// be replayed under another workspace (DEC-59 clause 2). The JSON names are
+// unchanged from the pre-rename record.
+type gitHubAppKeyRecord struct {
 	Owner      string    `json:"owner"`
 	Nonce      []byte    `json:"nonce"`
 	Ciphertext []byte    `json:"ciphertext"`
-	ForgeLogin string    `json:"forge_login"`
+	AppSlug    string    `json:"forge_login"`
 	StoredAt   time.Time `json:"stored_at"`
 }
 
@@ -1105,52 +1107,53 @@ func (m *volatileMemory) revokeOwnedWorkersLocked(ctx context.Context, userID, w
 	}
 }
 
-// ConfigureForgeTokenEncryptionKey installs the process-only AES-256 key. The
-// key is process-only and never returned by metadata reads.
-func (m *volatileMemory) ConfigureForgeTokenEncryptionKey(key []byte) {
+// ConfigureGitHubAppKeyEncryptionKey installs the process-only AES-256 key
+// that seals workspace GitHub App private keys. The key is never returned by
+// metadata reads.
+func (m *volatileMemory) ConfigureGitHubAppKeyEncryptionKey(key []byte) {
 	m.mu.Lock()
 	defer m.unlock()
-	m.forgeTokenKey = append([]byte(nil), key...)
+	m.gitHubAppEncryptionKey = append([]byte(nil), key...)
 }
 
-func (m *volatileMemory) forgeTokenAEAD() (cipher.AEAD, error) {
-	if len(m.forgeTokenKey) != 32 {
-		return nil, ErrForgeTokenKey
+func (m *volatileMemory) gitHubAppKeyAEAD() (cipher.AEAD, error) {
+	if len(m.gitHubAppEncryptionKey) != 32 {
+		return nil, ErrGitHubAppKey
 	}
-	block, err := aes.NewCipher(m.forgeTokenKey)
+	block, err := aes.NewCipher(m.gitHubAppEncryptionKey)
 	if err != nil {
-		return nil, ErrForgeTokenKey
+		return nil, ErrGitHubAppKey
 	}
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, ErrForgeTokenKey
+		return nil, ErrGitHubAppKey
 	}
 	return aead, nil
 }
 
-func (m *volatileMemory) sealForgeToken(owner, token, login string) (forgeTokenRecord, error) {
-	aead, err := m.forgeTokenAEAD()
+func (m *volatileMemory) sealGitHubAppKey(owner, privateKey, appSlug string) (gitHubAppKeyRecord, error) {
+	aead, err := m.gitHubAppKeyAEAD()
 	if err != nil {
-		return forgeTokenRecord{}, err
+		return gitHubAppKeyRecord{}, err
 	}
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return forgeTokenRecord{}, fmt.Errorf("generate forge token nonce: %w", err)
+		return gitHubAppKeyRecord{}, fmt.Errorf("generate GitHub App key nonce: %w", err)
 	}
-	return forgeTokenRecord{Owner: owner, Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, []byte(token), []byte(owner)), ForgeLogin: login, StoredAt: time.Now().UTC()}, nil
+	return gitHubAppKeyRecord{Owner: owner, Nonce: nonce, Ciphertext: aead.Seal(nil, nonce, []byte(privateKey), []byte(owner)), AppSlug: appSlug, StoredAt: time.Now().UTC()}, nil
 }
 
-func (m *volatileMemory) openForgeToken(record forgeTokenRecord) (string, error) {
-	aead, err := m.forgeTokenAEAD()
+func (m *volatileMemory) openGitHubAppKey(record gitHubAppKeyRecord) (string, error) {
+	aead, err := m.gitHubAppKeyAEAD()
 	if err != nil {
 		return "", err
 	}
 	if len(record.Nonce) != aead.NonceSize() {
-		return "", ErrForgeTokenDecrypt
+		return "", ErrGitHubAppKeyDecrypt
 	}
 	plaintext, err := aead.Open(nil, record.Nonce, record.Ciphertext, []byte(record.Owner))
 	if err != nil {
-		return "", ErrForgeTokenDecrypt
+		return "", ErrGitHubAppKeyDecrypt
 	}
 	return string(plaintext), nil
 }
@@ -1160,7 +1163,7 @@ func (m *volatileMemory) ListGitHubAppKeysForRedaction(context.Context) ([]strin
 	defer m.mu.RUnlock()
 	values := make([]string, 0, len(m.workspaceGitHubApps))
 	for _, app := range m.workspaceGitHubApps {
-		value, err := m.openForgeToken(app.sealed)
+		value, err := m.openGitHubAppKey(app.sealed)
 		if err != nil {
 			return nil, err
 		}

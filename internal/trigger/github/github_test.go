@@ -13,28 +13,6 @@ import (
 	"time"
 )
 
-func TestValidateTokenIdentityUsesExplicitHTTPSCredential(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer candidate-forge-secret" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		_, _ = w.Write([]byte(`{"login":"octocat"}`))
-	}))
-	defer server.Close()
-	previousClient, previousURL := defaultRESTHTTPClient, defaultRESTBaseURL
-	defaultRESTHTTPClient, defaultRESTBaseURL = server.Client(), server.URL
-	t.Cleanup(func() { defaultRESTHTTPClient, defaultRESTBaseURL = previousClient, previousURL })
-
-	login, err := ValidateTokenIdentity(t.Context(), "candidate-forge-secret")
-	if err != nil || login != "octocat" {
-		t.Fatalf("login=%q err=%v", login, err)
-	}
-	if _, err = ValidateTokenIdentity(t.Context(), "wrong"); !errors.Is(err, ErrAuthenticatedIdentityRead) || strings.Contains(err.Error(), "wrong") {
-		t.Fatalf("invalid identity err=%v", err)
-	}
-}
-
 func TestCredentialedForgeRequestIgnoresAmbientToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer executor-forge-secret" {

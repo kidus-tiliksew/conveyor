@@ -70,7 +70,7 @@ func runVerificationEdges(t *testing.T, v *verificationFixture) {
 	t.Run("SecretSourceAndArtifactRedaction", func(t *testing.T) {
 		key := bytes.Repeat([]byte{41}, 32)
 		secret := "verification-private-credential-fixture"
-		v.x.Backend.ConfigureForgeTokenEncryptionKey(key)
+		v.x.Backend.ConfigureGitHubAppKeyEncryptionKey(key)
 		_, err := v.x.Backend.StoreWorkspaceGitHubApp(v.ctx, v.x.Workspace, core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{AppID: 41, AppSlug: "fixture", ClientID: "fixture"}, PrivateKey: secret})
 		requireOK(t, err)
 		e := v.envelope("secret-evidence", "secret-batch", secret)
@@ -78,9 +78,9 @@ func runVerificationEdges(t *testing.T, v *verificationFixture) {
 		before := v.snapshot(t)
 		events, err := v.x.Backend.ListEvents(v.ctx, v.access.TaskID)
 		requireOK(t, err)
-		v.x.Backend.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{42}, 32))
+		v.x.Backend.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{42}, 32))
 		_, err = v.x.Backend.ApplyVerification(v.ctx, c)
-		if !errors.Is(err, store.ErrForgeTokenDecrypt) {
+		if !errors.Is(err, store.ErrGitHubAppKeyDecrypt) {
 			t.Fatalf("secret source did not fail closed: %v", err)
 		}
 		if !reflect.DeepEqual(before, v.snapshot(t)) {
@@ -91,7 +91,7 @@ func runVerificationEdges(t *testing.T, v *verificationFixture) {
 		if len(events) != len(after) {
 			t.Fatal("secret failure appended event")
 		}
-		v.x.Backend.ConfigureForgeTokenEncryptionKey(key)
+		v.x.Backend.ConfigureGitHubAppKeyEncryptionKey(key)
 		v.apply(t, c)
 		data := []byte("capture " + secret)
 		v.apply(t, store.VerificationCommand{Kind: store.VerificationStageChunk, Chunk: &store.VerificationUploadChunk{UploadID: "redacted-upload", Content: data}})

@@ -86,9 +86,10 @@ contract.
   operator or user merge decision.
 - `merge_approval: false` sends an approved review directly to the runtime
   auto-merge path. That path checks the approved head and forge mergeability,
-  then issues the ordinary `gh pr merge` request and relies on configured
-  branch protection for any required checks. It has no universal separate
-  CI-status gate and does not promise a later merge gate.
+  then merges through GitHub's REST API as the workspace GitHub App, using the
+  App's cached installation token (DEC-59), and relies on configured branch
+  protection for any required checks. It has no universal separate CI-status
+  gate and does not promise a later merge gate.
 
 A queue that requires one decision per pull request must set
 `merge_approval: true` at intake. A coordinator may require exact-head green CI

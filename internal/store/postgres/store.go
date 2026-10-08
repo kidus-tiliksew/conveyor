@@ -34,12 +34,12 @@ import (
 )
 
 type Store struct {
-	pool          *pgxpool.Pool
-	queries       *db.Queries
-	queue         *logDispatchQueue
-	log           *pglog.Store
-	knownTables   sync.Map // table name -> true once seen to exist
-	forgeTokenKey []byte
+	pool                   *pgxpool.Pool
+	queries                *db.Queries
+	queue                  *logDispatchQueue
+	log                    *pglog.Store
+	knownTables            sync.Map // table name -> true once seen to exist
+	gitHubAppEncryptionKey []byte
 }
 
 type sideEffectConnKey struct{}
@@ -100,11 +100,12 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 func (s *Store) Log() eventlog.Store { return s.log }
 func (s *Store) IsDurable() bool     { return true }
 
-// ConfigureForgeTokenEncryptionKey installs a process-only AES-256 key. The
-// copy prevents later caller mutation and the value never enters persisted
+// ConfigureGitHubAppKeyEncryptionKey installs the process-only AES-256 key
+// that seals workspace GitHub App private keys (DEC-59 clause 2). The copy
+// prevents later caller mutation and the value never enters persisted
 // configuration.
-func (s *Store) ConfigureForgeTokenEncryptionKey(key []byte) {
-	s.forgeTokenKey = append(s.forgeTokenKey[:0], key...)
+func (s *Store) ConfigureGitHubAppKeyEncryptionKey(key []byte) {
+	s.gitHubAppEncryptionKey = append(s.gitHubAppEncryptionKey[:0], key...)
 }
 
 // WithTaskSideEffectLock holds a workspace-scoped Postgres advisory lock across one

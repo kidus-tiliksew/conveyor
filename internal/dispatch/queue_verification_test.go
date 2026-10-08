@@ -75,7 +75,7 @@ func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{42}, 32))
+	st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{42}, 32))
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

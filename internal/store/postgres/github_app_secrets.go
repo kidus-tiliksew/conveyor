@@ -8,17 +8,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-func (s *Store) forgeTokenAEAD() (cipher.AEAD, error) {
-	if len(s.forgeTokenKey) != 32 {
-		return nil, store.ErrForgeTokenKey
+func (s *Store) gitHubAppKeyAEAD() (cipher.AEAD, error) {
+	if len(s.gitHubAppEncryptionKey) != 32 {
+		return nil, store.ErrGitHubAppKey
 	}
-	block, err := aes.NewCipher(s.forgeTokenKey)
+	block, err := aes.NewCipher(s.gitHubAppEncryptionKey)
 	if err != nil {
-		return nil, store.ErrForgeTokenKey
+		return nil, store.ErrGitHubAppKey
 	}
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, store.ErrForgeTokenKey
+		return nil, store.ErrGitHubAppKey
 	}
 	return aead, nil
 }
@@ -36,16 +36,16 @@ func (s *Store) ListGitHubAppKeysForRedaction(ctx context.Context) ([]string, er
 		if err = appRows.Scan(&id, &nonce, &ciphertext); err != nil {
 			return nil, err
 		}
-		a, err := s.forgeTokenAEAD()
+		a, err := s.gitHubAppKeyAEAD()
 		if err != nil {
 			return nil, err
 		}
 		if len(nonce) != a.NonceSize() {
-			return nil, store.ErrForgeTokenDecrypt
+			return nil, store.ErrGitHubAppKeyDecrypt
 		}
 		key, err := a.Open(nil, nonce, ciphertext, []byte("workspace-app:"+id))
 		if err != nil {
-			return nil, store.ErrForgeTokenDecrypt
+			return nil, store.ErrGitHubAppKeyDecrypt
 		}
 		values = append(values, string(key))
 	}

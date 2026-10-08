@@ -9,7 +9,7 @@ import (
 
 type workspaceAppRecord struct {
 	status core.WorkspaceGitHubAppStatus
-	sealed forgeTokenRecord
+	sealed gitHubAppKeyRecord
 }
 
 func (m *volatileMemory) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core.WorkspaceGitHubAppCredential) (core.WorkspaceGitHubAppStatus, error) {
@@ -21,7 +21,7 @@ func (m *volatileMemory) StoreWorkspaceGitHubApp(ctx context.Context, id string,
 	if _, ok := m.workspaces[id]; !ok {
 		return core.WorkspaceGitHubAppStatus{}, ErrNotFound
 	}
-	sealed, err := m.sealForgeToken("workspace-app:"+id, app.PrivateKey, app.AppSlug)
+	sealed, err := m.sealGitHubAppKey("workspace-app:"+id, app.PrivateKey, app.AppSlug)
 	if err != nil {
 		return core.WorkspaceGitHubAppStatus{}, err
 	}
@@ -83,7 +83,7 @@ func (m *volatileMemory) GetWorkspaceGitHubAppForUse(_ context.Context, id strin
 	if !ok {
 		return core.WorkspaceGitHubAppCredential{}, ErrNotFound
 	}
-	pem, err := m.openForgeToken(r.sealed)
+	pem, err := m.openGitHubAppKey(r.sealed)
 	if err != nil {
 		return core.WorkspaceGitHubAppCredential{}, err
 	}

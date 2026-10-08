@@ -38,7 +38,7 @@ func (s *Store) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core
 	if err := store.ValidateWorkspaceGitHubApp(id, app); err != nil {
 		return core.WorkspaceGitHubAppStatus{}, translateBackendConflict(err)
 	}
-	a, err := s.forgeTokenAEAD()
+	a, err := s.gitHubAppKeyAEAD()
 	if err != nil {
 		return core.WorkspaceGitHubAppStatus{}, translateBackendConflict(err)
 	}
@@ -137,16 +137,16 @@ func (s *Store) GetWorkspaceGitHubAppForUse(ctx context.Context, id string) (cor
 	if err != nil {
 		return r, translateBackendConflict(err)
 	}
-	a, err := s.forgeTokenAEAD()
+	a, err := s.gitHubAppKeyAEAD()
 	if err != nil {
 		return core.WorkspaceGitHubAppCredential{}, translateBackendConflict(err)
 	}
 	if len(nonce) != a.NonceSize() {
-		return core.WorkspaceGitHubAppCredential{}, store.ErrForgeTokenDecrypt
+		return core.WorkspaceGitHubAppCredential{}, store.ErrGitHubAppKeyDecrypt
 	}
 	key, err := a.Open(nil, nonce, ciphertext, []byte("workspace-app:"+id))
 	if err != nil {
-		return core.WorkspaceGitHubAppCredential{}, store.ErrForgeTokenDecrypt
+		return core.WorkspaceGitHubAppCredential{}, store.ErrGitHubAppKeyDecrypt
 	}
 	r.PrivateKey = string(key)
 	r.Connected = true

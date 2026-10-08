@@ -21,7 +21,7 @@ CONVEYOR_PUBLIC_URL=https://factory.example.com
 - `CONVEYOR_PUBLIC_URL` is the address users reach the dashboard at. Sign-in
   links are minted against it, and the server checks request origins against
   it, so set it before inviting anyone.
-- `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY`, already part of server setup,
+- `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY`, already part of server setup,
   encrypts the workspace GitHub App private key with AES-256. Generate it
   once and keep it stable so the server can decrypt connected App keys.
 - Optionally configure SMTP (`CONVEYOR_SMTP_HOST`, `CONVEYOR_SMTP_PORT`,

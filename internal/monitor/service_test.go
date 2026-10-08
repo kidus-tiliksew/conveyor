@@ -304,13 +304,20 @@ func TestPostMergeFailureTaskNamesAllFailedChecks(t *testing.T) {
 func TestOutOfPipelineKindsCreateDriftUntilAuditedOutcome(t *testing.T) {
 	for _, kind := range []monitor.SignalKind{monitor.DirectPush, monitor.ExternalPRMerge, monitor.Revert} {
 		t.Run(string(kind), func(t *testing.T) {
-			service, _, ctx := testService(t)
+			service, st, ctx := testService(t)
 			record, err := service.Process(ctx, monitor.Observation{
 				Repository: "conveyor", Kind: kind, OccurrenceID: "sha-1",
 				SourceURL: "https://github.example/commit/sha-1", CommitSHA: "sha-1",
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+			// The drift task asks for a requirement revision; the retired
+			// amendment wording must not return (req-delivery-and-forge AC-4.3;
+			// component-monitor-drift; DEC-48).
+			task, err := st.GetTask(ctx, record.TaskID)
+			if err != nil || !strings.Contains(task.Body, "propose a requirement revision") || strings.Contains(task.Body, "amendment") {
+				t.Fatalf("drift task body=%q err=%v", task.Body, err)
 			}
 			status, err := service.Status(ctx)
 			if err != nil {

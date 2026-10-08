@@ -59,8 +59,8 @@ type InvitationSessionStore interface {
 var (
 	ErrInvalidCurrentPassword = errors.New("invalid current password")
 	ErrInvalidPassword        = errors.New("password must contain between 12 and 1024 bytes")
-	ErrForgeTokenKey          = errors.New("forge token encryption key unavailable")
-	ErrForgeTokenDecrypt      = errors.New("forge token decryption failed")
+	ErrGitHubAppKey           = errors.New("GitHub App key encryption key unavailable")
+	ErrGitHubAppKeyDecrypt    = errors.New("GitHub App key decryption failed")
 )
 
 // PersonalAccessTokenStore is the self-service human-credential boundary. Every

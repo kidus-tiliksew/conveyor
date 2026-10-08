@@ -14,6 +14,9 @@ Memory invokes `RunAll` once in `internal/store/all_conformance_test.go` under
 Factory capability flags describe identity, membership, and token behavior.
 Capability suites skip only when their flags are absent. A production-capable
 factory must report every capability. Both current factories report all three.
+`Factory` has no named-suite skip list: the experimental-backend `Factory.Skip`
+mechanism is removed, so every registered suite runs unless one of its
+capability flags is absent (DEC-38, DEC-39).
 
 `coverage.go` explicitly declares the methods exercised by each named suite and
 its helpers. `RunAll` checks that declarations and registered runners match.

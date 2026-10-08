@@ -40,7 +40,7 @@ func TestStartOverPullRequestCloseForgeEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario != "missing_app" {
-				st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{41}, 32))
+				st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{41}, 32))
 				key, err := rsa.GenerateKey(rand.Reader, 2048)
 				if err != nil {
 					t.Fatal(err)
@@ -374,7 +374,7 @@ func closeOwnershipFixture(t *testing.T, recorded bool) (context.Context, store.
 		t.Fatal(err)
 	}
 	{
-		st.ConfigureForgeTokenEncryptionKey(bytes.Repeat([]byte{41}, 32))
+		st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{41}, 32))
 		key, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
 			t.Fatal(err)

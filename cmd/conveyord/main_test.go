@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -315,5 +318,112 @@ func TestResolveConveyordLLMEnvironmentUsesSharedCompatibilityRules(t *testing.T
 
 	if _, err = resolveConveyordLLMEnvironment(func(string) string { return "" }, warnf); err == nil || !strings.Contains(err.Error(), config.LLMAPIKeyEnv) || !strings.Contains(err.Error(), config.DeprecatedLLMAPIKeyEnv) {
 		t.Fatalf("missing key error=%v", err)
+	}
+}
+
+// DEC-59 clause 2; req-delivery-and-forge AC-1.11: conflicting App key
+// encryption values are fatal, while a missing or malformed key keeps the
+// nonfatal unavailable branch.
+func TestResolveConveyordGitHubAppKeySeparatesFatalConflict(t *testing.T) {
+	first := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32))
+	second := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	conflicting := map[string]string{config.GitHubAppKeyEncryptionKeyEnv: first, config.DeprecatedGitHubAppKeyEncryptionKeyEnv: second}
+	key, err := resolveConveyordGitHubAppKey(func(name string) string { return conflicting[name] }, logf)
+	if !errors.Is(err, config.ErrGitHubAppKeyEncryptionKeyConflict) || key != nil {
+		t.Fatalf("conflict key=%x err=%v", key, err)
+	}
+	if !strings.Contains(err.Error(), config.GitHubAppKeyEncryptionKeyEnv) || !strings.Contains(err.Error(), config.DeprecatedGitHubAppKeyEncryptionKeyEnv) || strings.Contains(err.Error(), first) || strings.Contains(err.Error(), second) {
+		t.Fatalf("conflict error=%q", err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("conflict fell through to the warning branch: %q", lines)
+	}
+
+	for name, environment := range map[string]map[string]string{
+		"missing":   {},
+		"malformed": {config.GitHubAppKeyEncryptionKeyEnv: "not-base64"},
+	} {
+		lines = nil
+		key, err = resolveConveyordGitHubAppKey(func(variable string) string { return environment[variable] }, logf)
+		if err != nil || key != nil {
+			t.Fatalf("%s key=%x err=%v, want nonfatal absence", name, key, err)
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], "GitHub App key encryption unavailable until configured") || !strings.Contains(lines[0], config.GitHubAppKeyEncryptionKeyEnv) {
+			t.Fatalf("%s log=%q", name, lines)
+		}
+	}
+
+	lines = nil
+	canonical := map[string]string{config.GitHubAppKeyEncryptionKeyEnv: first, config.DeprecatedGitHubAppKeyEncryptionKeyEnv: first}
+	key, err = resolveConveyordGitHubAppKey(func(name string) string { return canonical[name] }, logf)
+	if err != nil || !bytes.Equal(key, bytes.Repeat([]byte{3}, 32)) || len(lines) != 0 {
+		t.Fatalf("equal values key=%x err=%v log=%q", key, err, lines)
+	}
+}
+
+// The real daemon entry point refuses to start on conflicting App key
+// encryption values before it opens a store or bootstraps identity, and its
+// log names both variables without either value.
+func TestConveyordRefusesConflictingGitHubAppKeys(t *testing.T) {
+	if path := os.Getenv("CONVEYOR_APP_KEY_CONFLICT_CONFIG"); path != "" {
+		flag.CommandLine = flag.NewFlagSet("conveyord", flag.ExitOnError)
+		os.Args = []string{"conveyord", "-config", path, "-addr", "127.0.0.1:0"}
+		main()
+		t.Fatal("conveyord started with conflicting App key encryption values")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "conveyor.yaml")
+	envPath := filepath.Join(dir, "empty.env")
+	if err := os.WriteFile(envPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(`workspace: startup
+database: {backend: postgres}
+routing:
+  stages:
+    triage: {model: fixture, timeout: 20m, execution: in_process}
+    spec: {model: fixture, timeout: 30m, execution: mcp}
+    implement: {model: fixture, timeout: 4h, execution: mcp}
+    review: {model: fixture, timeout: 1h, execution: mcp}
+repos:
+  - {name: repo, url: https://example.test/repo, base: main}
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
+	second := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32))
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestConveyordRefusesConflictingGitHubAppKeys$")
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "CONVEYOR_") {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	cmd.Env = append(cmd.Env,
+		"CONVEYOR_APP_KEY_CONFLICT_CONFIG="+cfgPath,
+		"CONVEYOR_ENV_FILE="+envPath,
+		// An unreachable database proves the refusal precedes store open.
+		"CONVEYOR_DATABASE_URL=postgres://conveyor@127.0.0.1:1/unreachable?connect_timeout=1",
+		"CONVEYOR_API_TOKEN=startup-fixture-token",
+		"CONVEYOR_LLM_API_KEY=unused-fixture-key",
+		config.GitHubAppKeyEncryptionKeyEnv+"="+first,
+		config.DeprecatedGitHubAppKeyEncryptionKeyEnv+"="+second,
+	)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+		t.Fatalf("conveyord exit err=%v output=%s", err, output)
+	}
+	startupLog := string(output)
+	if !strings.Contains(startupLog, "conflicting GitHub App key encryption keys") || !strings.Contains(startupLog, config.GitHubAppKeyEncryptionKeyEnv) || !strings.Contains(startupLog, config.DeprecatedGitHubAppKeyEncryptionKeyEnv) {
+		t.Fatalf("startup log lacks the conflict: %s", startupLog)
+	}
+	if strings.Contains(startupLog, first) || strings.Contains(startupLog, second) {
+		t.Fatalf("startup log echoes a key value: %s", startupLog)
+	}
+	if strings.Contains(startupLog, "open store") || strings.Contains(startupLog, "using durable") || strings.Contains(startupLog, "unavailable until configured") || strings.Contains(startupLog, "bootstrap") {
+		t.Fatalf("conflict did not stop startup before the store: %s", startupLog)
 	}
 }

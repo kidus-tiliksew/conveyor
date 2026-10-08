@@ -121,7 +121,7 @@ Server (read by `conveyord`):
 | `CONVEYOR_LISTEN_ADDR` | Daemon listen address as `host:port`; used when `-addr` is not explicitly set. |
 | `PORT` | Daemon listen port; resolves to `0.0.0.0:<PORT>` when neither `-addr` nor `CONVEYOR_LISTEN_ADDR` is set. |
 | `CONVEYOR_SHUTDOWN_TIMEOUT` | Total daemon shutdown budget (default `25s`); used when `-shutdown-timeout` is not explicitly set. Must be positive. |
-| `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts workspace GitHub App private keys. Required before connecting an app. |
+| `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts workspace GitHub App private keys. Required before connecting an app. `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` is its deprecated alias: set alone, it supplies the key and `conveyord` logs one startup warning; set to a different value beside the new name, `conveyord` refuses to start. When renaming, move the existing value; a new value cannot decrypt stored App keys. |
 | `CONVEYOR_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | Invitation email delivery. Configured only when host and from are both set; otherwise links are surfaced for manual delivery. |
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |
 | `CONVEYOR_CONTROL_PLANE_MODEL`, `CONVEYOR_TRIAGE_MODEL`, `CONVEYOR_PLANNING_MODEL` | Process-level model overrides for in-process stages; never change stored config. |

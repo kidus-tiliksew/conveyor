@@ -98,22 +98,65 @@ const (
 	PublicURLEnv                = "CONVEYOR_PUBLIC_URL"
 	LLMAPIKeyEnv                = "CONVEYOR_LLM_API_KEY"
 	LLMBaseURLEnv               = "CONVEYOR_LLM_BASE_URL"
-	ForgeTokenEncryptionKeyEnv  = "CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY"
 	DeprecatedLLMAPIKeyEnv      = "CONVEYOR_API_KEY"
 	DeprecatedLLMBaseURLEnv     = "CONVEYOR_API_BASE_URL"
+
+	// GitHubAppKeyEncryptionKeyEnv names the process-only AES-256 key that
+	// encrypts stored workspace GitHub App private keys (DEC-59 clause 2;
+	// req-delivery-and-forge AC-1.11).
+	GitHubAppKeyEncryptionKeyEnv = "CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY"
+	// DeprecatedGitHubAppKeyEncryptionKeyEnv is the pre-rename name of the
+	// same key, accepted as a deprecated alias.
+	DeprecatedGitHubAppKeyEncryptionKeyEnv = "CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY"
 )
 
-// ForgeTokenEncryptionKeyFromEnvironment resolves the process-only key used
-// for recoverable per-user forge credentials. The value is deliberately not a
-// Config field, so it cannot enter deployment or workspace documents.
-func ForgeTokenEncryptionKeyFromEnvironment() ([]byte, error) {
-	value := strings.TrimSpace(os.Getenv(ForgeTokenEncryptionKeyEnv))
-	if value == "" {
-		return nil, fmt.Errorf("%s is required", ForgeTokenEncryptionKeyEnv)
+// ErrGitHubAppKeyEncryptionKeyConflict reports that the canonical and
+// deprecated variables carry different nonempty values. conveyord treats it
+// as fatal, because either choice could strand App keys sealed under the
+// other value.
+var ErrGitHubAppKeyEncryptionKeyConflict = errors.New("conflicting GitHub App key encryption keys")
+
+type gitHubAppKeyEncryptionKeyResolver struct {
+	warnOnce sync.Once
+}
+
+var processGitHubAppKeyEncryptionKeyResolver gitHubAppKeyEncryptionKeyResolver
+
+// GitHubAppKeyEncryptionKeyFromEnvironment resolves the process-only key that
+// encrypts stored workspace GitHub App private keys (DEC-59 clause 2;
+// req-delivery-and-forge AC-1.11). The value is deliberately not a Config
+// field, so it cannot enter deployment or workspace documents.
+//
+// Empty and whitespace-only values count as absent. A canonical value
+// supplies the key. A value only under the deprecated name supplies the key
+// and emits one process-wide warning naming the replacement. Equal values
+// under both names succeed without that warning. Different nonempty values
+// fail with ErrGitHubAppKeyEncryptionKeyConflict before either is decoded.
+// No error or warning includes a value.
+func GitHubAppKeyEncryptionKeyFromEnvironment(getenv func(string) string, warnf func(string, ...any)) ([]byte, error) {
+	return processGitHubAppKeyEncryptionKeyResolver.resolve(getenv, warnf)
+}
+
+func (r *gitHubAppKeyEncryptionKeyResolver) resolve(getenv func(string) string, warnf func(string, ...any)) ([]byte, error) {
+	current := strings.TrimSpace(getenv(GitHubAppKeyEncryptionKeyEnv))
+	deprecated := strings.TrimSpace(getenv(DeprecatedGitHubAppKeyEncryptionKeyEnv))
+	name, value := GitHubAppKeyEncryptionKeyEnv, current
+	switch {
+	case current != "" && deprecated != "" && current != deprecated:
+		return nil, fmt.Errorf("%w: %s and %s are both set to different values; unset %s or give it the same value", ErrGitHubAppKeyEncryptionKeyConflict, GitHubAppKeyEncryptionKeyEnv, DeprecatedGitHubAppKeyEncryptionKeyEnv, DeprecatedGitHubAppKeyEncryptionKeyEnv)
+	case current == "" && deprecated != "":
+		name, value = DeprecatedGitHubAppKeyEncryptionKeyEnv, deprecated
+		if warnf != nil {
+			r.warnOnce.Do(func() {
+				warnf("%s is deprecated; rename it to %s and keep the same value", DeprecatedGitHubAppKeyEncryptionKeyEnv, GitHubAppKeyEncryptionKeyEnv)
+			})
+		}
+	case current == "":
+		return nil, fmt.Errorf("%s is required (%s is a deprecated alias)", GitHubAppKeyEncryptionKeyEnv, DeprecatedGitHubAppKeyEncryptionKeyEnv)
 	}
 	key, err := base64.StdEncoding.DecodeString(value)
 	if err != nil || len(key) != 32 {
-		return nil, fmt.Errorf("%s must be standard base64 encoding exactly 32 bytes", ForgeTokenEncryptionKeyEnv)
+		return nil, fmt.Errorf("%s must be standard base64 encoding exactly 32 bytes", name)
 	}
 	return key, nil
 }
@@ -1336,9 +1379,9 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
 	// An absent execution block means the shipped default: both gates on
-	// (§21.12 change 2; the mode axis itself is removed by §21.31). A block
-	// that carried only the retired evidence key decodes empty and keeps
-	// these defaults (DEC-53).
+	// (DEC-55(1); component-task-lifecycle). There is no mode axis (DEC-55(2)).
+	// A block that carried only the retired evidence key decodes empty and
+	// keeps these defaults (DEC-53).
 	if c.Execution == (ExecutionPolicy{}) {
 		c.Execution.SpecApproval = true
 		c.Execution.MergeApproval = true
