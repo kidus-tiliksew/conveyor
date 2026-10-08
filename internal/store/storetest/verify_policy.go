@@ -61,7 +61,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	// A caller-supplied execution setup or order plan never reaches the store's
 	// derived plan; the replay identity covers only the policy inputs.
 	smuggled := request
-	smuggled.Setup = config.ExecutionSetup{Name: "reassigned", Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "other", Model: "other"}, {Harness: "other", Model: "other"}}}}
+	smuggled.Setup = config.ExecutionSetup{Name: "reassigned", MaxBounces: 9, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "other", Model: "other"}, {Harness: "other", Model: "other"}}}}
 	smuggled.NextStage = core.StageImplement
 	smuggled.SupersedeWorkOrderIDs = []string{ambiguous.ID}
 	smuggled.NewJobs = []core.Job{{ID: task.ID + "-smuggled", TaskID: task.ID, Stage: core.StageReview}}
@@ -71,12 +71,14 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	if !result.Task.SetupContract.VerifyStage || result.Task.NextStage != core.StageVerify || len(result.CreatedWorkOrders) != 1 {
 		t.Fatalf("policy result: %+v", result)
 	}
-	if result.Task.SetupName != "legacy-setup" || result.Task.SetupContract.Name != "legacy-setup" || len(result.Task.SetupContract.Review.Seats) != 1 || len(result.RetainedWorkOrders) != 0 {
+	// Durable backends store only the policy subset of the contract, so the
+	// legacy setup name, seat count, and bounce limit are the comparable fields.
+	if result.Task.SetupName != "legacy-setup" || result.Task.SetupContract.MaxBounces != 3 || len(result.Task.SetupContract.Review.Seats) != 1 || len(result.RetainedWorkOrders) != 0 {
 		t.Fatalf("policy change reassigned the execution setup: %+v", result.Task)
 	}
 	stored, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if stored.SetupName != "legacy-setup" || stored.SetupContract.Name != "legacy-setup" || !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+	if stored.SetupName != "legacy-setup" || stored.SetupContract.MaxBounces != 3 || len(stored.SetupContract.Review.Seats) != 1 || !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
 		t.Fatalf("stored policy: name=%q contract=%+v", stored.SetupName, stored.SetupContract)
 	}
 	if _, err := st.GetWorkOrder(ctx, task.ID+"-smuggled"); err == nil {

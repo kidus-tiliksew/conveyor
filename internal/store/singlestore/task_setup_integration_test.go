@@ -61,7 +61,7 @@ func TestTaskPolicyChangeSingleStoreScopesExclusionToExecutingAttempts(t *testin
 		t.Fatalf("submitted implement attempt should not block: result=%+v err=%v", result, err)
 	}
 	stored, err := st.GetTask(ctx, task.ID)
-	if err != nil || stored.SetupName != legacy.Name || stored.SetupContract.Name != legacy.Name || stored.SetupContract.ExecutionSettings.Implementation.Model != "old" || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "2h" {
+	if err != nil || stored.SetupName != legacy.Name || stored.SetupContract.ExecutionSettings.Implementation.TimeoutText != "1h" || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "2h" {
 		t.Fatalf("stored policy name=%q contract=%+v err=%v", stored.SetupName, stored.SetupContract, err)
 	}
 	untouched, _ := st.GetWorkOrder(ctx, order.ID)
