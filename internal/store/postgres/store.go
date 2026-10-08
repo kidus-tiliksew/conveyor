@@ -750,6 +750,7 @@ func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTask
 		Search:       filter.Query, CreatedFrom: nullableTimestamp(filter.CreatedFrom),
 		CreatedTo: nullableTimestamp(filter.CreatedTo), ServesRequirements: emptyIfNil(filter.ServesRequirementIDs),
 		GoverningDesigns: emptyIfNil(filter.GoverningDesignIDs), Assignee: filter.Assignee,
+		UpdatedFrom: nullableTimestamp(filter.UpdatedFrom), UpdatedTo: nullableTimestamp(filter.UpdatedTo),
 	}
 }
 
@@ -766,7 +767,8 @@ func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limi
 		WorkspaceID: bound.WorkspaceID, TaskStates: bound.TaskStates, Repositories: bound.Repositories,
 		Search: bound.Search, CreatedFrom: bound.CreatedFrom, CreatedTo: bound.CreatedTo,
 		ServesRequirements: bound.ServesRequirements, GoverningDesigns: bound.GoverningDesigns,
-		Assignee:  bound.Assignee,
+		Assignee:    bound.Assignee,
+		UpdatedFrom: bound.UpdatedFrom, UpdatedTo: bound.UpdatedTo,
 		PageLimit: int32(limit), PageOffset: int32(offset),
 	}
 }

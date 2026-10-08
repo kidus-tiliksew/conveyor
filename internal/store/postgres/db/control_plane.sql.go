@@ -1259,6 +1259,14 @@ WHERE t.workspace_id = $1
   AND ($9::text = '' OR
        ($9 = 'unassigned' AND t.assignee_user_id IS NULL) OR
        ($9 <> 'unassigned' AND t.assignee_user_id = $9))
+  AND ($10::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) >= $10)
+  AND ($11::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) < $11)
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1271,6 +1279,8 @@ type CountTaskOperationsTasksParams struct {
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
 	Assignee           string             `json:"assignee"`
+	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
+	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
@@ -1284,6 +1294,8 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
 		arg.Assignee,
+		arg.UpdatedFrom,
+		arg.UpdatedTo,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1429,9 +1441,17 @@ WHERE t.workspace_id = $1
   AND ($9::text = '' OR
        ($9 = 'unassigned' AND t.assignee_user_id IS NULL) OR
        ($9 <> 'unassigned' AND t.assignee_user_id = $9))
+  AND ($10::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) >= $10)
+  AND ($11::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) < $11)
 ORDER BY t.created_at DESC, t.id
-LIMIT NULLIF($11::int, 0)
-OFFSET $10::int
+LIMIT NULLIF($13::int, 0)
+OFFSET $12::int
 `
 
 type ListTaskOperationsTasksParams struct {
@@ -1444,6 +1464,8 @@ type ListTaskOperationsTasksParams struct {
 	ServesRequirements []string           `json:"serves_requirements"`
 	GoverningDesigns   []string           `json:"governing_designs"`
 	Assignee           string             `json:"assignee"`
+	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
+	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
 	PageOffset         int32              `json:"page_offset"`
 	PageLimit          int32              `json:"page_limit"`
 }
@@ -1465,6 +1487,8 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 		arg.ServesRequirements,
 		arg.GoverningDesigns,
 		arg.Assignee,
+		arg.UpdatedFrom,
+		arg.UpdatedTo,
 		arg.PageOffset,
 		arg.PageLimit,
 	)

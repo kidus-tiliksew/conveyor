@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -45,8 +46,13 @@ func runTaskFilter(t *testing.T, x Fixture) {
 			requireOK(t, err)
 		},
 	}
+	foreign := x.Workspace + "-filter-" + core.NewTaskID()[:6]
+	fixture.ForeignWorkspace, fixture.ForeignContext = foreign, store.WithWorkspace(ctx, foreign)
+	_, err = x.Backend.BootstrapWorkspaceConfig(fixture.ForeignContext, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
+	requireOK(t, err)
 	SeedTaskFilterFixture(t, fixture)
 	RunTaskFilterConformance(t, fixture)
+	RunTaskFilterUpdatedConformance(t, fixture)
 }
 
 func runTaskAssigneeMembership(t *testing.T, x Fixture) {

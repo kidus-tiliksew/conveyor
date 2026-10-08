@@ -171,7 +171,12 @@ ORDER BY captured_at, attempt_id;
 -- `strpos(lower(...))` is a literal case-insensitive substring test, so an
 -- operator typing `%` or `_` searches for that character instead of a wildcard.
 -- The created-at bounds compare the task's persisted creation instant directly;
--- later events cannot change whether the task matches. The requirement and design bounds take the latest add or
+-- later events cannot change whether the task matches. The updated-at bounds
+-- read the task's last activity: the newest event's time within the task's
+-- workspace (the maximum (at, id) tuple has the maximum at), or created_at
+-- before any event. That is the same instant listActivityMarkers projects as
+-- last_event_at and the rows label "Updated" (component-persistence). The
+-- requirement and design bounds take the latest add or
 -- remove per listed document, which is the SQL spelling of the
 -- store.ActiveTaskContextReferences fold, over migration 073's
 -- events_task_context_task_idx.
@@ -220,6 +225,14 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.arg(assignee)::text = '' OR
        (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
        (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)))
+  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) >= sqlc.narg(updated_from))
+  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) < sqlc.narg(updated_to))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -259,7 +272,15 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
        ))
   AND (sqlc.arg(assignee)::text = '' OR
        (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
-       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)));
+       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)))
+  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) >= sqlc.narg(updated_from))
+  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) < sqlc.narg(updated_to));
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id
