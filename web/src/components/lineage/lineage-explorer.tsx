@@ -120,12 +120,17 @@ function KnowledgeGroups({
 }
 
 function KnowledgeEntry({ entry, graph, workspace }: { entry: LineageEntry; graph: LineageGraph; workspace: string }) {
+  const versions = entry.versions.map((version) => `v${version}`).join(', ')
   const versionNote =
     entry.versions.length === 0
       ? undefined
       : entry.recordReturned
-        ? `Versions ${entry.versions.map((version) => `v${version}`).join(', ')}`
-        : `Opens v${entry.versions[entry.versions.length - 1]}`
+        ? `Versions ${versions}`
+        : versionSelectable.has(entry.kind)
+          ? `Opens v${entry.versions[entry.versions.length - 1]}`
+          : // The blueprint detail page has no version selector and shows its
+            // governing version, so the entry cannot promise the returned one.
+            `Returned ${versions}; opens the blueprint record without selecting a version`
   const body = (
     <>
       <span className={`block text-[10px] uppercase tracking-wide ${entry.current ? 'text-primary/70' : 'text-faint'}`}>
@@ -333,6 +338,9 @@ type Destination =
   | { type: 'external'; href: string }
   | { type: 'evidence'; artifactId: string }
   | { type: 'unavailable'; reason: string }
+
+// Kinds whose destination surface can select a specific returned version.
+const versionSelectable = new Set<EntryKind>(['requirement', 'system_design', 'reference_document'])
 
 const versionIdentity = /^(.+):v([1-9]\d*)$/
 

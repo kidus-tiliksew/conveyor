@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 
 const requirement = {
   requirement: {
@@ -923,84 +924,89 @@ test('requirement confirmation offers explicit attachment to eligible checkpoint
 })
 
 // The checkpoint-context offer refreshes each selected task's detail under the
-// workspace-scoped key it was opened in. Date.now is fixed, so a cached detail
-// never goes stale by time. The confirmation that opens the offer also
-// invalidates the workspace's task family, so this case proves the end-to-end
-// outcome (the returning task shows its new context) rather than isolating the
-// offer's own key; the recovery-card cases in task-full.spec.ts isolate it.
+// workspace-scoped key it was opened in (taskDetailQueryKey). Confirming the
+// requirement first invalidates the whole ['task', workspace] family, so the
+// selected tasks' detail entries are seeded fresh only after that refresh has
+// run. The offer's own invalidation is then the only thing that can mark them
+// stale. Assertions read the cache state directly: no navigation, SSE, polling,
+// or time-based staleness is involved, and another workspace's entry for the
+// same task ID must stay untouched.
 test('recovery refreshes task detail after success (requirements checkpoint-context offer)', async ({ page }) => {
   await initShell(page)
-  await page.clock.setFixedTime(new Date('2026-08-06T10:00:00Z'))
-  const detailReads: string[] = []
-  let contextWrites = 0
+  await installQueryClientProbe(page)
+  let requirementReads = 0
+  const contextWrites: string[] = []
   await page.route('**/v1/**', async (route) => {
     const shell = shellResponse(route)
     if (shell) return await shell
-    const url = new URL(route.request().url())
-    const path = url.pathname
-    if (path === '/v1/tasks/paused-task/activity') {
-      detailReads.push(url.searchParams.get('workspace_id') ?? '')
-      return route.fulfill({
-        json: {
-          task: {
-            id: 'paused-task',
-            workspace: 'demo',
-            source: 'operator',
-            title: contextWrites > 0 ? 'Paused delivery with context' : 'Paused delivery',
-            body: '',
-            class: 'feature',
-            level: '',
-            spec_approval: false,
-            merge_approval: false,
-            policy_version: 1,
-            repo: 'conveyor',
-            base_branch: 'main',
-            branch: 'conveyor/task-paused-task',
-            state: 'running',
-            created_at: '2026-08-06T09:00:00Z',
-          },
-          jobs: [],
-          events: [],
-          interventions: [],
-          work_orders: [],
-          attachments: [],
-          verification_evidence: [],
-          needs_attention: false,
-        },
-      })
-    }
-    if (path.endsWith('/events/stream')) return route.fulfill({ status: 204 })
+    const path = new URL(route.request().url()).pathname
     if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
-    if (path === '/v1/requirements/req-retries') return route.fulfill({ json: requirement })
+    if (path === '/v1/requirements/req-retries') {
+      requirementReads++
+      return route.fulfill({ json: requirement })
+    }
     if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
     if (path === '/v1/requirements/req-retries/versions/1/confirm')
       return route.fulfill({
         json: { requirement: requirement.requirement, version: requirement.pending_versions[0] },
       })
     if (path === '/v1/requirements/req-retries/checkpoint-context-candidates')
-      return route.fulfill({ json: [{ id: 'paused-task', title: 'Paused delivery', state: 'running' }] })
-    if (path === '/v1/tasks/paused-task/context') {
-      contextWrites++
+      return route.fulfill({
+        json: [
+          { id: 'paused-a', title: 'Paused delivery A', state: 'running' },
+          { id: 'paused-b', title: 'Paused delivery B', state: 'running' },
+          { id: 'paused-c', title: 'Unselected delivery', state: 'running' },
+        ],
+      })
+    const context = /^\/v1\/tasks\/([^/]+)\/context$/.exec(path)
+    if (context) {
+      contextWrites.push(context[1])
       return route.fulfill({ json: { requirements: [{ id: 'req-retries', title: 'Retry behavior', version: 1 }] } })
     }
     return route.fulfill({ json: [] })
   })
 
-  // Prime the task-detail cache, then move to the requirement in-app.
-  await page.goto('/tasks/paused-task/full')
-  await expect(page.getByRole('heading', { name: 'Paused delivery' })).toBeVisible()
-  expect(detailReads).toEqual(['demo'])
-  await page.getByRole('link', { name: 'Requirements' }).first().click()
+  await page.goto('/requirements?requirement=req-retries')
+  await expect.poll(() => requirementReads).toBeGreaterThan(0)
+  const readsBeforeConfirm = requirementReads
   await page.getByRole('button', { name: 'Confirm version 1' }).click()
   const offer = page.getByRole('dialog', { name: 'Attach confirmed requirement' })
-  await offer.getByRole('checkbox').check()
-  await offer.getByRole('button', { name: 'Attach to 1 task' }).click()
-  await expect(offer).toHaveCount(0)
-  expect(contextWrites).toBe(1)
+  await expect(offer).toContainText('Paused delivery A')
+  // The confirmation's settle step refetches the active requirement read; once
+  // that read arrives, its ['task', workspace] invalidation has already run.
+  await expect.poll(() => requirementReads).toBeGreaterThan(readsBeforeConfirm)
 
-  await page.goBack()
-  await expect(page.getByRole('heading', { name: 'Paused delivery with context' })).toBeVisible()
-  expect(detailReads).toEqual(['demo', 'demo'])
+  const keys = {
+    a: ['task', 'demo', 'paused-a'],
+    b: ['task', 'demo', 'paused-b'],
+    c: ['task', 'demo', 'paused-c'],
+    foreign: ['task', 'other', 'paused-a'],
+  }
+  await withQueryClient(
+    page,
+    (client, all) => {
+      for (const key of Object.values(all)) client.setQueryData(key, { task: { id: key[2] } })
+    },
+    keys,
+  )
+  const invalidated = () =>
+    withQueryClient(
+      page,
+      (client, all) =>
+        Object.fromEntries(
+          Object.entries(all).map(([name, key]) => [name, client.getQueryState(key)?.isInvalidated ?? null]),
+        ),
+      keys,
+    )
+  expect(await invalidated()).toEqual({ a: false, b: false, c: false, foreign: false })
+
+  await offer.getByRole('checkbox', { name: /Paused delivery A/ }).check()
+  await offer.getByRole('checkbox', { name: /Paused delivery B/ }).check()
+  await offer.getByRole('button', { name: 'Attach to 2 tasks' }).click()
+  await expect(offer).toHaveCount(0)
+  expect(contextWrites.sort()).toEqual(['paused-a', 'paused-b'])
+  // Exactly the selected tasks' detail in the initiating workspace.
+  await expect.poll(invalidated).toEqual({ a: true, b: true, c: false, foreign: false })
 })
 
 // The parked planning page selects a session named by its `session` search

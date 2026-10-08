@@ -237,6 +237,8 @@ interface Options {
   graph?: (rootType: string, rootId: string) => unknown
   /** Every evidence download, with the workspace it named. */
   downloads?: Array<{ path: string; workspace: string | null }>
+  /** The blueprint projection; empty by default. */
+  blueprints?: unknown[]
 }
 
 async function routeAPI(page: Page, options: Options = {}) {
@@ -304,7 +306,7 @@ async function routeAPI(page: Page, options: Options = {}) {
     if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: [requirement.current_version] })
     if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary] })
     if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (path === '/v1/blueprints') return route.fulfill({ json: [] })
+    if (path === '/v1/blueprints') return route.fulfill({ json: options.blueprints ?? [] })
     if (path.endsWith('/events/stream'))
       return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
     return route.fulfill({ json: [] })
@@ -552,6 +554,65 @@ test('lineage preserves versions peers and bounded notices', async ({ page }) =>
   ).toHaveAttribute('href', '/tasks/task-unlabelled/full')
   // Truncated without omitted counts still says the view is bounded.
   await expect(panel.getByText('This is a bounded view.')).toBeVisible()
+})
+
+// The blueprint detail page has no version selector: it shows the blueprint's
+// governing version. A walk that returned only an older blueprint version must
+// therefore link the record and say the returned version is not selected,
+// rather than promise to open it.
+test('a version-only blueprint links its record without promising the returned version', async ({ page }) => {
+  await initShell(page)
+  const anchorId = 'task-anchor-only'
+  await routeAPI(page, {
+    graph: (rootType, rootId) => ({
+      roots: [{ type: rootType, id: rootId, label: 'Bound the retry loop' }],
+      nodes: [
+        { type: rootType, id: rootId, label: 'Bound the retry loop' },
+        { type: 'blueprint_version', id: `${anchorId}:v2`, label: 'Retry blueprint v2' },
+      ],
+      links: [],
+      truncated: false,
+      omitted_nodes: 0,
+      omitted_links: 0,
+    }),
+    blueprints: [
+      {
+        task: { ...task(anchorId), title: 'Retry blueprint' },
+        spec: {
+          task_id: anchorId,
+          version: 3,
+          content: '## Plan\n\nThe governing plan.',
+          acceptance_count: 0,
+          acceptance: [],
+          decomposition: [],
+          approved: true,
+          created_at: createdAt,
+          approved_at: createdAt,
+        },
+        governing_version: 3,
+        children: [],
+        delivery: { state: 'in_delivery', total: 0, merged: 0, closed: 0, open: 0 },
+        serves: [],
+        events: [],
+        artifacts: [],
+      },
+    ],
+  })
+
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  const entry = panel.getByRole('region', { name: 'Work' }).getByRole('link', { name: /Retry blueprint/ })
+  // The record route, with no version selection.
+  await expect(entry).toHaveAttribute('href', `/blueprints/${anchorId}`)
+  await expect(entry).toContainText('Returned v2; opens the blueprint record without selecting a version')
+  await expect(entry).not.toContainText('Opens v2')
+
+  // The record shows its governing version, which differs from the returned one.
+  await entry.click()
+  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page.getByText('Blueprint v3', { exact: true })).toBeVisible()
+  await expect(page.getByText('Blueprint v2', { exact: true })).toHaveCount(0)
 })
 
 // A record with no related entries says so while retaining its current anchor.
