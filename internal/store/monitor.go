@@ -327,54 +327,7 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome, requirementID st
 	}
 	now := time.Now().UTC()
 	if outcome == "requirements_amended" {
-		if requirementID != "" && drift.RequirementID != "" && requirementID != drift.RequirementID {
-			return monitor.Drift{}, fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, id, drift.RequirementID)
-		}
-		if drift.RequirementID == "" {
-			drift.RequirementID = requirementID
-		}
-		if strings.TrimSpace(drift.RequirementID) == "" {
-			return monitor.Drift{}, fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, id)
-		}
-		requirementKey := memoryScopedKey{workspace: workspace, id: drift.RequirementID}
-		requirement, exists := m.requirements[requirementKey]
-		if !exists {
-			return monitor.Drift{}, fmt.Errorf("%w: %s", monitor.ErrUnknownRequirementID, drift.RequirementID)
-		}
-		if requirement.CurrentVersion == 0 {
-			return monitor.Drift{}, fmt.Errorf("%w: requirement %s has no confirmed current version", monitor.ErrRequirementIDInvalid, drift.RequirementID)
-		}
-		versions := m.requirementVersions[requirementKey]
-		if requirement.CurrentVersion > len(versions) || !versions[requirement.CurrentVersion-1].Confirmed {
-			return monitor.Drift{}, fmt.Errorf("%w: requirement %s current version is not confirmed", monitor.ErrRequirementIDInvalid, drift.RequirementID)
-		}
-		current := versions[requirement.CurrentVersion-1]
-		proposal, err := DriftAmendmentVersion(drift, current)
-		if err != nil {
-			return monitor.Drift{}, err
-		}
-		var issued []string
-		for _, existing := range versions {
-			for _, statement := range existing.Statements {
-				issued = append(issued, core.RequirementStatementIDs(statement)...)
-			}
-			if existing.OriginDriftID == drift.ID {
-				return drift, nil
-			}
-		}
-		if err = core.ValidateRequirementRevision(requirement.StatementHighWaterMark, issued, proposal.Statements); err != nil {
-			return monitor.Drift{}, err
-		}
-		proposal.Workspace, proposal.RequirementID = workspace, requirement.ID
-		proposal.Version, proposal.CreatedAt = len(versions)+1, now
-		m.requirementVersions[requirementKey] = append(versions, proposal)
-		requirement.UpdatedAt = now
-		m.requirements[requirementKey] = requirement
-		m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_proposed", At: now, Payload: core.JSONPayload(map[string]any{
-			"workspace_id": workspace, "requirement_id": requirement.ID,
-			"version": proposal.Version, "origin": proposal.Origin,
-			"origin_drift_id": proposal.OriginDriftID, "statement_count": len(proposal.Statements),
-		})})
+		return m.proposeDriftAmendmentLocked(ctx, workspace, key, drift, requirementID, now)
 	}
 	if outcome == "design_document_updated" {
 		if drift.SystemDesignID == "" {
@@ -401,6 +354,112 @@ func (m *memory) ResolveDrift(ctx context.Context, id, outcome, requirementID st
 		})})
 	}
 	return drift, nil
+}
+
+// proposeDriftAmendmentLocked records the requirements_amended outcome as a
+// requirement proposal and leaves the drift open, linked to the proposed
+// version through its origin_drift_id. Confirming that exact version closes the
+// drift (reconcileConfirmedRequirementDriftLocked); dismissing it leaves the
+// drift open for another proposal or outcome (DEC-46; req-delivery-and-forge
+// AC-4.2, AC-4.3). A retry reuses the live pending amendment.
+func (m *memory) proposeDriftAmendmentLocked(ctx context.Context, workspace, key string, drift monitor.Drift, requirementID string, now time.Time) (monitor.Drift, error) {
+	if requirementID != "" && drift.RequirementID != "" && requirementID != drift.RequirementID {
+		return monitor.Drift{}, fmt.Errorf("%w: drift %s is already linked to requirement %s", monitor.ErrRequirementIDInvalid, drift.ID, drift.RequirementID)
+	}
+	if drift.RequirementID == "" {
+		drift.RequirementID = requirementID
+	}
+	if strings.TrimSpace(drift.RequirementID) == "" {
+		return monitor.Drift{}, fmt.Errorf("%w: drift %s cannot resolve as requirements_amended", monitor.ErrRequirementIDMissing, drift.ID)
+	}
+	requirementKey := memoryScopedKey{workspace: workspace, id: drift.RequirementID}
+	requirement, exists := m.requirements[requirementKey]
+	if !exists {
+		return monitor.Drift{}, fmt.Errorf("%w: %s", monitor.ErrUnknownRequirementID, drift.RequirementID)
+	}
+	if requirement.CurrentVersion == 0 {
+		return monitor.Drift{}, fmt.Errorf("%w: requirement %s has no confirmed current version", monitor.ErrRequirementIDInvalid, drift.RequirementID)
+	}
+	versions := m.requirementVersions[requirementKey]
+	if requirement.CurrentVersion > len(versions) || !versions[requirement.CurrentVersion-1].Confirmed {
+		return monitor.Drift{}, fmt.Errorf("%w: requirement %s current version is not confirmed", monitor.ErrRequirementIDInvalid, drift.RequirementID)
+	}
+	for _, existing := range versions {
+		if existing.OriginDriftID == drift.ID && existing.Origin == core.RequirementOriginDriftAmendment && !existing.Confirmed && !existing.Retired {
+			m.monitorDrift[key] = drift
+			return drift, nil
+		}
+	}
+	current := versions[requirement.CurrentVersion-1]
+	proposal, err := DriftAmendmentVersion(drift, current)
+	if err != nil {
+		return monitor.Drift{}, err
+	}
+	var issued []string
+	for _, existing := range versions {
+		for _, statement := range existing.Statements {
+			issued = append(issued, core.RequirementStatementIDs(statement)...)
+		}
+	}
+	if err = core.ValidateRequirementRevision(requirement.StatementHighWaterMark, issued, proposal.Statements); err != nil {
+		return monitor.Drift{}, err
+	}
+	proposal.Workspace, proposal.RequirementID = workspace, requirement.ID
+	proposal.Version, proposal.CreatedAt = len(versions)+1, now
+	m.requirementVersions[requirementKey] = append(versions, proposal)
+	requirement.UpdatedAt = now
+	m.requirements[requirementKey] = requirement
+	m.monitorDrift[key] = drift
+	m.appendEventLocked(ctx, core.Event{Kind: "requirement.version_proposed", At: now, Payload: core.JSONPayload(map[string]any{
+		"workspace_id": workspace, "requirement_id": requirement.ID,
+		"version": proposal.Version, "origin": proposal.Origin,
+		"origin_drift_id": proposal.OriginDriftID, "statement_count": len(proposal.Statements),
+	})})
+	return drift, nil
+}
+
+// reconcileConfirmedRequirementDriftLocked runs inside requirement
+// confirmation. It closes only the unresolved drift in the same workspace and
+// requirement that the confirmed drift-amendment version names, recording the
+// requirements_amended outcome with the confirmed version and operator
+// (DEC-46; req-delivery-and-forge AC-4.2). A drift another audited outcome
+// already closed stays as recorded.
+func (m *memory) reconcileConfirmedRequirementDriftLocked(ctx context.Context, workspace, requirementID string, confirmed core.RequirementVersion, resolvedAt time.Time) {
+	if confirmed.Origin != core.RequirementOriginDriftAmendment || confirmed.OriginDriftID == "" {
+		return
+	}
+	key := monitorKey(workspace, confirmed.OriginDriftID)
+	drift, ok := m.monitorDrift[key]
+	if !ok || !drift.ResolvedAt.IsZero() || drift.RequirementID != requirementID {
+		return
+	}
+	drift.Outcome, drift.ResolvedAt = "requirements_amended", resolvedAt
+	m.monitorDrift[key] = drift
+	m.appendEventLocked(ctx, core.Event{TaskID: drift.TaskID, Kind: "monitor.drift_reconciled", At: resolvedAt, Payload: core.JSONPayload(
+		RequirementDriftReconciledPayload(drift, confirmed))})
+	if drift.SystemDesignID != "" {
+		m.appendEventLocked(ctx, core.Event{Kind: "system_design.drift_resolved", At: resolvedAt, Payload: core.JSONPayload(
+			RequirementDesignDriftResolvedPayload(workspace, drift, confirmed))})
+	}
+}
+
+// RequirementDriftReconciledPayload is the monitor.drift_reconciled payload
+// that confirmation of a drift amendment records on every backend.
+func RequirementDriftReconciledPayload(drift monitor.Drift, confirmed core.RequirementVersion) map[string]any {
+	return map[string]any{
+		"drift_id": drift.ID, "outcome": "requirements_amended", "resolved_at": drift.ResolvedAt,
+		"requirement_id": drift.RequirementID, "confirmed_version": confirmed.Version, "confirmed_by": confirmed.ConfirmedBy,
+	}
+}
+
+// RequirementDesignDriftResolvedPayload is the system_design.drift_resolved
+// payload for a document drift closed by a confirmed requirement amendment.
+func RequirementDesignDriftResolvedPayload(workspace string, drift monitor.Drift, confirmed core.RequirementVersion) map[string]any {
+	return map[string]any{
+		"workspace_id": workspace, "document_id": drift.SystemDesignID, "drift_id": drift.ID,
+		"outcome": "requirements_amended", "resolved_at": drift.ResolvedAt,
+		"requirement_id": drift.RequirementID, "confirmed_version": confirmed.Version, "confirmed_by": confirmed.ConfirmedBy,
+	}
 }
 
 // DriftAmendmentVersion carries the current confirmed requirement forward and

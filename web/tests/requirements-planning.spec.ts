@@ -498,7 +498,7 @@ test('viewer can read requirement detail without the Attach context control', as
   await expect(canvas.getByText('Attach context', { exact: true })).toHaveCount(0)
 })
 
-test('requirements resolves attributed drift inline and refreshes its pending amendment', async ({ page }) => {
+test('requirements proposes an attributed drift amendment inline and keeps the drift open', async ({ page }) => {
   await initShell(page)
   const confirmedVersion = {
     ...requirement.pending_versions[0],
@@ -532,9 +532,11 @@ test('requirements resolves attributed drift inline and refreshes its pending am
     ...requirement,
     current_version: confirmedVersion,
     pending_versions: resolved ? [amendment] : [],
+    // requirements_amended proposes the amendment and leaves the drift open
+    // until the operator confirms that version (DEC-46).
     staleness: {
       delivery_after_intent: false,
-      active_drift: resolved ? [] : [drift],
+      active_drift: [drift],
     },
   })
   await page.route('**/v1/**', async (route) => {
@@ -564,8 +566,8 @@ test('requirements resolves attributed drift inline and refreshes its pending am
   await form.getByRole('button', { name: 'Resolve' }).click()
 
   await expect.poll(() => resolution).toEqual({ outcome: 'requirements_amended', requirement_id: 'req-retries' })
-  await expect(attention).not.toContainText('Code changed in conveyor without reaching this document')
   await expect(attention).toContainText('Version 2 is waiting for you')
+  await expect(attention).toContainText('Code changed in conveyor without reaching this document')
   await expect(attention).toContainText('Written from a delivery change')
 })
 
