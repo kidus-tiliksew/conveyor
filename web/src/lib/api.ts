@@ -151,7 +151,7 @@ async function verificationGrantRefusal(response: Response) {
   return new VerificationGrantRefusal(apiErrorMessage(text, response.statusText))
 }
 
-// Reads every page of one context projection (component-http-api VK-HTTP-8).
+// Reads every page of one context projection (component-verification-runner).
 export async function fetchVerificationPermissions(
   workspace: string,
   orderId: string,

@@ -8,7 +8,7 @@ import (
 )
 
 // ChangeTaskPolicy admits only the operator's explicit frozen-policy exception
-// (DEC-47, DEC-43; feature-verification-kit-execution VK-10.1). The store
+// (DEC-47, DEC-43; component-task-lifecycle). The store
 // derives the new frozen policy and any verify/review handoff inside its task
 // transaction. Execution-setup reassignment is retired: POST /tasks/{id}/setup
 // answers 410, and harness, model, and effort stay in client-local execution

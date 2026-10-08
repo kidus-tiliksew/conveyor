@@ -1,8 +1,10 @@
 # Authoring a testing-strategy System Design document
 
 A testing-strategy System Design document tells reviewers how to judge
-verification for a defined scope. Confirmed DEC-29 makes that document the
-standard for verification adequacy, while confirmed DEC-28 requires the result
+verification for a defined scope. Confirmed DEC-53 makes reviewers judge
+verification adequacy against that document, and against sealed verify-stage
+evidence when a task's frozen `verify_stage` is on, while confirmed DEC-28
+requires the result
 to be dense, decidable, and tool-neutral. Discover the repository first; a
 strategy inferred from generic testing practice is boilerplate, not authority.
 
@@ -134,9 +136,10 @@ describe an unrun tier as passing.
 ## Preserve the decision boundary
 
 The document guides human and agent reviewer judgment. It is not a mechanical
-gate and must not grow an enforcement grammar. DEC-29 explicitly rejected
-mechanical per-scope enforcement for now; changing that posture requires a new
-confirmed decision, not inventive fields in a testing document.
+gate and must not grow an enforcement grammar. DEC-53 keeps adequacy a
+reviewer judgment and rejects a mandatory evidence gate on every submission;
+changing that posture requires a new confirmed decision, not inventive fields
+in a testing document.
 
 Use DEC-28's house style in this playbook and every document it produces:
 prefer narrow scope, citable and decidable claims, and a dense normative core.

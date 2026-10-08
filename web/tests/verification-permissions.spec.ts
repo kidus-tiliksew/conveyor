@@ -1,7 +1,7 @@
 import { expect, type Page, test } from '@playwright/test'
 
-// Stateful local fixture for the operator grant disclosure (component-web-
-// dashboard VK-WEB-5). The browser proves request composition and
+// Stateful local fixture for the operator grant disclosure
+// (component-web-task-surfaces). The browser proves request composition and
 // presentation; HTTP and store suites own authorization.
 
 const at = '2026-10-01T10:00:00Z'

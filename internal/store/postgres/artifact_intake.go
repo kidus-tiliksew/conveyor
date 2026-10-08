@@ -11,7 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
-// ART-STORE-1 (component-persistence): all intake writes share the queue's tx.
+// component-artifacts; component-persistence: all intake writes share the queue's tx.
 func (s *Store) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids []string, attached store.TaskContextInput, uploads []store.ArtifactUpload) error {
 	if t.Workspace != workspace(ctx) {
 		return fmt.Errorf("task workspace mismatch")

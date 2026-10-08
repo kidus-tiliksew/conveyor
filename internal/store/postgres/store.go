@@ -6646,7 +6646,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 }
 
 // clearExecutionPinsSQL resets every harness, model, and effort pin on an
-// order re-entering the queue, including a legacy pre-DEC-23 harness snapshot.
+// order re-entering the queue, including a legacy server-pinned harness snapshot.
 // Review round and seat stay untouched (req-worker AC-2.2, AC-2.3; DEC-56).
 const clearExecutionPinsSQL = `required_model='',required_harness='',required_effort='',required_harness_config='{}'::jsonb`
 

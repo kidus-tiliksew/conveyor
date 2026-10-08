@@ -27,9 +27,10 @@ agent execution on operator machines, and required human approvals. It changes
 neither executable behavior nor the confirmed document corpus. No requirement
 amendment or intentional change to governed behavior is needed.
 
-`component-monitor-drift v3` governs monitor implementation paths, not README.
-However, `component-runtime v7` explicitly includes `README.md` in its governs
-fence. The changed introduction agrees with that document's control-plane and
+`component-monitor-drift`, as confirmed when this reconciliation was recorded
+(version 3), governed monitor implementation paths, not README. However,
+`component-runtime`, as confirmed at that time (version 7), explicitly
+included `README.md` in its governs fence. The changed introduction agrees with that document's control-plane and
 operator-owned execution model. This is a governed direct push, even though its
 content is consistent with the design. It must not be classified as an
 out-of-scope change or as factory-reviewed delivery.
@@ -64,8 +65,8 @@ intake, provenance, occurrence audits, and persisted redelivery deduplication.
 The fixture's design version is local test data, not a claim to reproduce the
 live corpus version history. Source tests cover comparison validation.
 
-This evidence follows `component-monitor-drift v3` and
-`component-verification-strategy v6`. Fixture tests do not prove the daemon's
+This evidence followed `component-monitor-drift` (version 3 at the time) and
+`component-verification-strategy` (version 6 at the time). Fixture tests do not prove the daemon's
 live GitHub App polling or either database backend. The work-order submission
 records the fresh Make validation results and any environment blocks.
 

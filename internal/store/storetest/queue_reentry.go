@@ -9,8 +9,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// legacyExecutionPins stamps the harness, model, and effort pins that
-// pre-DEC-23 dispatch persisted on an order.
+// legacyExecutionPins stamps the harness, model, and effort pins that legacy
+// server-pinned dispatch persisted on an order; under DEC-56 the claiming
+// machine's local execution setup supplies them instead.
 func legacyExecutionPins(order *core.WorkOrder) {
 	order.RequiredHarness, order.RequiredModel, order.RequiredEffort = "legacy-harness", "legacy-model", "high"
 	order.RequiredHarnessConfig = &core.HarnessSnapshot{Name: "legacy-harness", Command: []string{"legacy", "exec", "{prompt}"}, Effort: "high", EffortArgv: []string{"--effort", "high"}}

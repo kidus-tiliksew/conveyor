@@ -17,7 +17,7 @@ export type ReviewRow = {
 }
 export type ReviewSource = { content: string; statements?: RequirementVersion['statements'] }
 
-// component-web-dashboard "Block comparison and bounded work": bound work before
+// component-web-document-surfaces "Block comparison and bounds": bound work before
 // allocating matrices or parsing Markdown.
 const maxCharacters = 120_000
 const maxBlocks = 400

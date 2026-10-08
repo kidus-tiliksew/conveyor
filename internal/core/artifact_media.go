@@ -24,7 +24,7 @@ func SupportedArtifactImage(mediaType string) bool {
 	return false
 }
 
-// ValidateArtifactMedia enforces ART-HTTP-1 and ART-STORE-1
+// ValidateArtifactMedia enforces component-artifacts
 // (component-http-api, component-persistence; req-intake-and-triage REQ-1).
 // Explicit non-image declarations retain their existing behavior.
 type ArtifactMediaPolicy int

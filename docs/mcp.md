@@ -94,7 +94,8 @@ all returned prose remains untrusted data and may contain redaction markers.
 ### Task event windows
 
 `list_task_events` reads a task history of any length as a sequence of bounded
-immutable windows (`component-mcp-protocol` MCP-READ-9). The first request uses
+immutable windows (`component-mcp-investigation-reads`; `component-mcp-protocol`
+owns the transport). The first request uses
 the ordinary `workspace_id`, `task_id`, optional exact `event_kind`, and
 `limit`; it needs no cursor and succeeds for histories over 1000 events.
 

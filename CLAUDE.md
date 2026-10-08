@@ -2,9 +2,9 @@
 
 The factory's confirmed document corpus is the design authority: Requirements,
 System Design documents, and DEC-n decisions served through the workspace API
-and UI. Authority changes through propose-confirm revisions; decision
-supersession replaces the retired amendment process (DEC-12). Product overview
-and Roadmap reference documents are informative rather than normative. Current
+and UI. Authority changes only through propose-confirm revisions; decision
+supersession replaces the retired amendment process (DEC-48). Product overview
+and Roadmap reference documents are informative and never authority. Current
 and historical phase status lives in the "Roadmap" reference document.
 
 ## Conventions
@@ -60,7 +60,7 @@ operator-only acts.
 ## Scope bars
 
 - Memory-store scope is defined by DEC-9.
-- Task priority, phase, assignment, and queue-order scope is defined by DEC-18.
+- Task priority, phase, assignment, and queue-order scope is defined by DEC-55.
 
 This repository maintains the Conveyor skill sources and uses `AGENTS.md ->
 CLAUDE.md`. Refresh its guidance directly in the task worktree with

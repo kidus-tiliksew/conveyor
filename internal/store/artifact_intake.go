@@ -17,7 +17,7 @@ type ArtifactUpload struct {
 }
 
 // PrepareIntakeArtifacts validates every attachment before any task write
-// (component-persistence ART-STORE-1; req-intake-and-triage REQ-1).
+// (component-artifacts; req-intake-and-triage REQ-1).
 func PrepareIntakeArtifacts(t core.Task, uploads []ArtifactUpload) ([]core.Artifact, error) {
 	result := make([]core.Artifact, len(uploads))
 	for i, u := range uploads {

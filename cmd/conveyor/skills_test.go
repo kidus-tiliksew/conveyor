@@ -53,7 +53,7 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// VK-8: both wrappers and their canonical playbooks must be released.
+	// component-cli-onboarding: both wrappers and their canonical playbooks must be released.
 	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify"} {
 		for _, required := range []string{".claude/skills/" + name + "/SKILL.md", "docs/playbooks/" + name + ".md"} {
 			count := 0

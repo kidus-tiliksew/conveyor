@@ -163,7 +163,7 @@ explicitly without excluding the generated dashboard bundle.
   revision in-session; if no, say no revision is warranted — this steers
   the drift/suppression outcome).
 - When authorities disagree, cite requirements over decisions over System
-  Design documents, per DEC-34, and never cite a pending document as authority.
+  Design documents, per DEC-57(2), and never cite a pending document as authority.
 - Attach the requirements a task serves directly at intake with
   `requirement_ids` (or a planning-bundle task's `context.requirement_ids`).
 

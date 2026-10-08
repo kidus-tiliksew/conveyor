@@ -15,7 +15,7 @@ import (
 )
 
 // req-260811-228be6 AC-4.3; req-delivery-and-forge AC-4.1;
-// component-monitor-drift v3. The fixture records the exact README occurrence
+// component-monitor-drift. The fixture records the exact README occurrence
 // reconciled by task 260915-00ccb2, including its GitHub first parent.
 func TestReadmeDirectPushPreservesGovernedDriftOnRedelivery(t *testing.T) {
 	const sha = "6c76388faf5fe52a8a0421c60ee9d5f407c654b8"

@@ -9,7 +9,7 @@ import (
 
 // VerifyVerificationClaimLoss is only for the internal reconciler. Callers must
 // hold the task/order transaction lock; ordinary claim checks remain unchanged
-// (feature-verification-kit-execution VK-4, req-verification-kits AC-3.3).
+// (component-verification-service; req-verification-kits AC-3.3).
 func VerifyVerificationClaimLoss(ctx context.Context, a VerificationAccess, task core.Task, o core.WorkOrder, now time.Time) error {
 	ws, ok := WorkspaceFromContext(ctx)
 	actor := ActorFromContext(ctx)

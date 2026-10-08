@@ -218,7 +218,7 @@ func TestVerificationPublicationWorkspaceEnvelope(t *testing.T) {
 	}
 }
 
-// VK-7: both producers must freeze the same trusted comparison before claim.
+// component-verification-service: both producers must freeze the same trusted comparison before claim.
 func TestVerificationDispatchReviewBinding(t *testing.T) {
 	for _, scope := range []string{"", config.RefreshReviewDelta, config.RefreshReviewFull} {
 		t.Run(scope, func(t *testing.T) {
@@ -255,7 +255,7 @@ func TestVerificationDispatchReviewBinding(t *testing.T) {
 				t.Fatalf("verify binding: %+v", orders)
 			}
 			// Compare the review producer on an independent toggle-off control.
-			// The end-to-end VK-10 scenario proves the sealed verify-to-review path.
+			// The end-to-end repository-local lifecycle scenario (component-verification-service) proves the sealed verify-to-review path.
 			control := task
 			control.ID = core.NewTaskID()
 			control.NextStage = core.StageReview

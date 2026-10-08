@@ -9,7 +9,7 @@ import (
 
 // Contract JSON and hashes captured on the base commit, before
 // verification.Assertion replaced the []string required-assertion list
-// (feature-verification-kit-execution VK-3.1). Stored obligation and
+// (component-verification-kit-contract). Stored obligation and
 // selection-subject contracts must keep decoding to the same bytes and
 // digests, or in-flight verification contexts would stop matching.
 const (

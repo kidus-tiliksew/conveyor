@@ -438,7 +438,7 @@ func MergePullRequestWithCredential(ctx context.Context, repo string, number int
 // mergeMessageKey carries a typed per-call message without changing the credential boundary.
 type mergeMessageKey struct{}
 
-// WithMergeMessage binds operator attribution to one merge request (DEC-41).
+// WithMergeMessage binds operator attribution to one merge request (DEC-59).
 func WithMergeMessage(ctx context.Context, message string) context.Context {
 	return context.WithValue(ctx, mergeMessageKey{}, message)
 }
@@ -1170,7 +1170,7 @@ func EnsureSubmissionPRWithCredential(ctx context.Context, repo, branch, base, t
 
 // ClosePullRequestWithCredential uses only the caller's workspace App token.
 // It reconciles the exact successor comment before retrying an uncertain write
-// (component-git-delivery; req-task-lifecycle-and-queue AC-7.4; DEC-41).
+// (component-git-delivery; req-task-lifecycle-and-queue AC-7.4; DEC-59).
 func ClosePullRequestWithCredential(ctx context.Context, repo string, number int, comment, token string) error {
 	return closePullRequest(ctx, repo, number, comment, ghWithTokenAndIdentity(token, "workspace GitHub App"))
 }
@@ -1285,7 +1285,8 @@ func closePatchError(err error) error {
 	return mutationUncertainError(categorized)
 }
 
-// VerificationRegionMarkers identifies only the VK-9 region owned by this task.
+// VerificationRegionMarkers identifies only the managed PR-body region
+// (component-verification-publication) owned by this task.
 func VerificationRegionMarkers(workspace, task string) (string, string) {
 	sum := sha256.Sum256([]byte(workspace + "\x00" + task))
 	key := fmt.Sprintf("%x", sum)

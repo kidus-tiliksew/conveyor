@@ -17,7 +17,7 @@ import (
 
 // The OS lock spans the writing child and its final Git/audit operations.
 // The atomic record survives process death but never grants authority alone
-// (component-git-delivery CP-2 and CP-3).
+// (component-attempt-checkpoints).
 type worktreeWriterRecord struct {
 	Writer    core.WorktreeIdentity  `json:"writer"`
 	Producer  *core.WorktreeIdentity `json:"producer,omitempty"`

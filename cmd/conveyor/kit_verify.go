@@ -224,7 +224,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 			if lost || !errors.As(err, &admission) {
 				return err
 			}
-			// VK-13.2: admission refused before start creates no attempt; keep
+			// component-verification-runner: admission refused before start creates no attempt; keep
 			// the subject for the grounded checkpoint and continue the others.
 			refused = append(refused, message)
 			causes = append(causes, err)
@@ -260,8 +260,8 @@ func kitMissingGrantRemedy(orderID, contextID string) string {
 	return fmt.Sprintf("while this claim is live, an operator runs `conveyor verification permissions inspect %[1]s` and grants the missing subject against context %[2]s; if the grant wait ends first, submit_verification with outcome operator_action_required seals context %[2]s and releases the order, and the operator then recovers verify order %[1]s, waits for the successor claim to prepare a new context, runs `conveyor verification permissions inspect %[1]s` again and grants against that new context; a grant on the sealed context does not carry over", orderID, contextID)
 }
 
-// kitCheckpointGuidance prints the exact operator-checkpoint submission of
-// feature-verification-kit-execution VK-13.1 for subjects that never started.
+// kitCheckpointGuidance prints the exact operator-checkpoint submission for
+// subjects that never started (component-verification-service).
 func kitCheckpointGuidance(output io.Writer, orderID, contextID string, refused []string, causes []error) error {
 	_, _ = fmt.Fprintf(output, "Subjects not admitted before start (no attempt ran; their evidence is missing):\n")
 	for _, message := range refused {
@@ -407,7 +407,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 		}
 	}
 	if grant == nil {
-		// VK-12.2: name the exact operator act that opens the grant window.
+		// component-verification-runner: name the exact operator act that opens the grant window.
 		return &kitAdmissionError{fmt.Errorf("blocked: missing work-order authorization for exercise %s; required actions: %s; %s", e.ID, kitRequiredActions(e), kitMissingGrantRemedy(v.order.ID, vc.ID))}
 	}
 	if err := v.live(ctx, grant.ID); err != nil {
@@ -464,8 +464,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	// Toolchain preflight runs before start_verification_attempt and operation
 	// registration. A predictable failure starts no attempt, registers no
 	// operation, launches no child and reports no execution
-	// (feature-verification-kit-execution VK-4.2; component-harness-execution
-	// VK-EXEC-3).
+	// (component-verification-runner).
 	credentials := append(append(append([]string{}, secrets...), kitParentSecrets()...), kitApprovedSecrets()...)
 	credentials = append(credentials, v.rpc.client.token, v.rpc.claimToken)
 	toolchain, err := resolveKitToolchain(v.config, v.configPath, v.configRefusal, v.rpc.client.base, v.rpc.client.workspace, v.task.Repo, credentials)
@@ -477,7 +476,7 @@ func (v *kitVerifier) run(ctx context.Context, subject store.VerificationSubject
 	}
 	tools, err := toolchain.preflight(core.VerificationOperationSubject(subject.Subject), e, cwd, v.ui, v.uiRoot, redact.New(credentials))
 	if err != nil {
-		// VK-13.2: an unavailable entrypoint, executable prerequisite or
+		// component-verification-runner: an unavailable entrypoint, executable prerequisite or
 		// configured location starts no attempt and its remedy is an operator
 		// act on this host, so the subject joins the grounded checkpoint.
 		return kitAdmissionActions(&kitAdmissionError{err}, e)

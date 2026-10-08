@@ -126,7 +126,7 @@ func TestKitValidateInvalidReceipt(t *testing.T) {
 	}
 }
 
-// Schema 2 (feature-verification-kit-execution VK-3.1) validates offline
+// Schema 2 (component-verification-kit-contract) validates offline
 // and reports description diagnostics as invalid entries.
 func TestKitValidateSchema2(t *testing.T) {
 	root, manifest := kitCLIRepo(t)

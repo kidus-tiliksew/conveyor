@@ -36,7 +36,7 @@ export function WorkspaceGitHubAppCard() {
   const connect = useMutation({
     mutationFn: async (org: string) => {
       const response = await createWorkspaceGitHubAppManifest(workspace)
-      // DEC-41: send the public manifest directly to GitHub, never to a query cache or storage.
+      // DEC-59: send the public manifest directly to GitHub, never to a query cache or storage.
       const target = org
         ? `https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new`
         : 'https://github.com/settings/apps/new'

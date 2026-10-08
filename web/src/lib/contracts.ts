@@ -38,7 +38,7 @@ export const interventionActions: ReadonlyArray<{
   { action: 'reject', label: 'Reject', hint: 'Close the task', confirmLabel: 'Reject task' },
 ]
 
-// The API requires a reason code on every decision (§13.2 — the training
+// The API requires a reason code on every decision (the training
 // signal for self-improvement). The operator no longer picks one; it is
 // derived from the action, and the free-text comment carries the nuance.
 export const defaultReasonCode: Record<InterventionAction, string> = {

@@ -184,7 +184,7 @@ function RecoveryState({ item, state }: { item: ActivityItem; state: CurrentExec
   return <WorkOrderRecoveryState item={item} state={state} />
 }
 
-// VK-WEB-6: the sealed verification checkpoint names its reason, required act,
+// component-web-task-surfaces: the sealed verification checkpoint names its reason, required act,
 // submitted head and grounds. Recovery returns the order to verify at that head;
 // unresolved operations need the typed disposition, never free-text direction.
 function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; state: CurrentExecutionState }) {

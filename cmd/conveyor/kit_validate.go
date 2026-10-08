@@ -25,7 +25,7 @@ func kitCmd() *cobra.Command {
 }
 
 // kitValidateCmd uses only local files and Git objects. No client, credentials,
-// network discovery or exercise process participates (VK-3, AC-2.4).
+// network discovery or exercise process participates (component-verification-kit-contract; req-verification-kits AC-2.4).
 func kitValidateCmd() *cobra.Command {
 	var stage string
 	var rawPins []string

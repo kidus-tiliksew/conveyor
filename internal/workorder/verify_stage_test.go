@@ -41,7 +41,7 @@ func TestSubmitRoutesFrozenVerifyAndRendersPinnedContext(t *testing.T) {
 			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{ClaimantID: "tester", SessionID: "implement-session", ClientToken: "implement-token", Lease: time.Minute}); err != nil {
 				t.Fatal(err)
 			}
-			// VK-7: this routing fixture supplies the trusted commit comparison
+			// component-verification-service: this routing fixture supplies the trusted commit comparison
 			// normally recorded by the forge-backed implementation submission.
 			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": "submitted-base", "head_sha": "submitted-head"})}); err != nil {
 				t.Fatal(err)

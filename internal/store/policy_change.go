@@ -9,8 +9,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// TaskPolicyChange contains only the explicit frozen-policy exception admitted
-// by DEC-7 and DEC-43 (feature-verification-kit-execution VK-10.1).
+// TaskPolicyChange contains only the explicit, audited frozen-policy exception
+// admitted by DEC-47 and DEC-43 (component-task-lifecycle).
 type TaskPolicyChange struct {
 	VerifyStage   *bool             `json:"verify_stage,omitempty"`
 	StageTimeouts map[string]string `json:"stage_timeouts,omitempty"`
@@ -92,8 +92,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 			return r, fmt.Errorf("%w: refresh binding is required for policy handoff", ErrSetupChangeConflict)
 		}
 	} else {
-		// VK-7: inherit the trusted current-stage binding, never a branch name
-		// or an approved head from a different review cycle.
+		// Inherit the trusted current-stage binding that sealed review
+		// acceptance checks (component-verification-service), never a branch
+		// name or an approved head from a different review cycle.
 		baseline = ""
 		for _, order := range orders {
 			if order.TaskID != task.ID || order.Stage != task.NextStage || order.HeadSHA != task.ReviewedHeadSHA || order.ReviewScope != task.RefreshReviewScope || order.BaselineSHA == "" || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderCompleted) {

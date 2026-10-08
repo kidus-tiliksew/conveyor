@@ -11,8 +11,8 @@ import (
 )
 
 // Backend is the complete store contract required by daemon and host CLI
-// wiring. PostgreSQL owns its relational schema and transactions (DEC-36;
-// component-persistence). Optional capability discovery is not deployment
+// wiring. Each durable backend owns its own relational schema and
+// transactions (DEC-51; component-persistence). Optional capability discovery is not deployment
 // validation.
 type Backend interface {
 	ContextObservationStore
@@ -44,7 +44,7 @@ type Backend interface {
 }
 
 // WorkspaceGitHubAppStore owns encrypted app identity and secret-free status.
-// Only GetWorkspaceGitHubAppForUse returns the private key (DEC-41).
+// Only GetWorkspaceGitHubAppForUse returns the private key (DEC-59).
 type WorkspaceGitHubAppStore interface {
 	StoreWorkspaceGitHubApp(context.Context, string, core.WorkspaceGitHubAppCredential) (core.WorkspaceGitHubAppStatus, error)
 	RecordWorkspaceGitHubAppInstallation(context.Context, string, int64, int64, string) (core.WorkspaceGitHubAppStatus, error)

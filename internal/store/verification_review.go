@@ -7,7 +7,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// req-verification-kits REQ-7; feature-verification-kit-execution VK-7; independent judgment remains with the reviewer (DEC-29).
+// req-verification-kits REQ-7; component-verification-service (sealed review acceptance); independent adequacy judgment remains with the reviewer (DEC-53).
 
 type VerificationReviewState struct {
 	Rows  []VerificationRow

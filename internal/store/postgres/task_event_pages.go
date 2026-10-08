@@ -17,8 +17,7 @@ import (
 // stored source bytes in order. Only candidates inside both the row limit and
 // the running byte budget return their variable-width columns; the lookahead
 // and every candidate past the budget return fixed-width boundary and size
-// metadata, so the driver never transfers them (component-mcp-protocol v14
-// MCP-READ-9).
+// metadata, so the driver never transfers them (component-mcp-investigation-reads).
 const taskEventWindowSelect = `WITH candidates AS (
 	SELECT e.id, e.at,
 		octet_length(e.payload_json::text) + octet_length(e.kind) + octet_length(e.actor_id) + octet_length(e.actor_role)

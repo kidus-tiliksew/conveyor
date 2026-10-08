@@ -16,8 +16,8 @@ import (
 
 // verificationCmd hosts operator verification acts. Grant and revoke use the
 // invoking user's credential through REST only; no MCP tool, worker route or
-// launcher path reaches them (component-runtime VK-RUNTIME-2;
-// feature-verification-kit-execution VK-12.1; req-verification-kits REQ-7/AC-7.3).
+// launcher path reaches them (component-verification-runner;
+// req-verification-kits REQ-7/AC-7.3).
 func verificationCmd() *cobra.Command {
 	command := &cobra.Command{Use: "verification", Short: "Operator verification acts"}
 	permissions := &cobra.Command{Use: "permissions", Short: "Inspect, grant and revoke claim-bound verification permission grants"}
