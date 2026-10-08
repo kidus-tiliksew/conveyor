@@ -32,8 +32,11 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			return err
 		}
 		if task.SetupContract.VerifyStage {
+			// The same predicate as core.VerifyReviewReady and PostgreSQL: only a
+			// successful seal sets verification_context_id
+			// (component-verification-service; req-verification-kits AC-4.3).
 			var ready bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='verify' AND state='completed' AND head_sha=? AND head_sha<>'')`, documentWorkspace(ctx), id, core.VerifyStageHead(task)).Scan(&ready); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='verify' AND state='completed' AND head_sha=? AND head_sha<>'' AND verification_context_id<>'')`, documentWorkspace(ctx), id, core.VerifyStageHead(task)).Scan(&ready); err != nil {
 				return err
 			}
 			if !ready {
