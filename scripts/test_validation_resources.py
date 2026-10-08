@@ -16,12 +16,14 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 import validation_resources as resources
@@ -1036,6 +1038,48 @@ class HostBackendTests(IsolatedState):
             self.assertEqual(backing, "disk")
 
 
+# The coordinator's observation of a real user manager on the development host
+# (2026-10-08): ExecMainStartTimestampMonotonic microseconds against /proc start
+# ticks at CLK_TCK 100. Fixtures only; no test reads the host's manager.
+MANAGER_PID = 2586874
+MANAGER_START = 1168414290
+MANAGER_USEC = 11684142907759
+MANAGER_HZ = 100
+USER_SERVICE_CGROUP = "0::/user.slice/user-{uid}.slice/user@{uid}.service/init.scope\n"
+
+
+def manager_service(main_pid=MANAGER_PID, monotonic_usec=MANAGER_USEC, active_state="active"):
+    return {"main_pid": main_pid, "monotonic_usec": monotonic_usec, "active_state": active_state}
+
+
+class FixtureManagerQuery:
+    """An injected system-manager query.
+
+    It answers in order and then repeats its last answer, records the uid of
+    every call, and runs between, when given, after the first call and before
+    the second answer, so a case can change a fact between the two reads
+    deterministically.
+    """
+
+    def __init__(self, *answers, between=None):
+        self.answers = list(answers) or [None]
+        self.between = between
+        self.calls = []
+
+    def __call__(self, uid):
+        self.calls.append(uid)
+        if len(self.calls) == 2 and self.between is not None:
+            self.between()
+        answer = self.answers[min(len(self.calls), len(self.answers)) - 1]
+        return None if answer is None else dict(answer)
+
+
+def manager_line(pid=MANAGER_PID, start=MANAGER_START, usec=MANAGER_USEC, uid=None):
+    uid = os.getuid() if uid is None else uid
+    return (f"Disregarded Linux user manager: pid={pid} uid={uid} service=user@{uid}.service main_pid={pid} "
+            f"start={start} monotonic_usec={usec} reason=same-user-uninspectable-system-manager-reported-mainpid")
+
+
 class FixtureProc:
     """A fixture /proc tree for the Linux inspector.
 
@@ -1052,7 +1096,7 @@ class FixtureProc:
         self.owners = {}
 
     def entry(self, pid, *, command="fixture", ppid=1, start=100, state="S", uid=None, raw=None,
-              stat=True, cwd=None, root=None, descriptor=None, environ=None):
+              stat=True, cwd=None, root=None, descriptor=None, environ=None, cgroup=None):
         entry = self.root / str(pid)
         entry.mkdir()
         if raw is not None:
@@ -1071,7 +1115,29 @@ class FixtureProc:
             (entry / "fd" / "3").symlink_to(descriptor)
         if environ is not None:
             (entry / "environ").write_bytes(environ)
+        if cgroup is not None:
+            (entry / "cgroup").write_text(cgroup)
         return entry
+
+    def restat(self, pid, **fields):
+        """Rewrite one entry's stat in place, as a later read would see it."""
+        values = {"command": "fixture", "state": "S", "ppid": 1, "start": 100}
+        info = resources._proc_stat(pid, self.root)
+        if info is not None:
+            values.update({name: info[name] for name in values})
+        values.update(fields)
+        (self.root / str(pid) / "stat").write_text(
+            f"{pid} ({values['command']}) {values['state']} {values['ppid']} {pid} {pid} 0 -1 0 0 0 0 0 0 0 0 0 "
+            f"20 0 1 0 {values['start']} 0 0\n")
+
+    def system_manager(self, *, command="systemd", uid=0, start=1, state="S"):
+        """PID 1: the local system manager, root-owned unless the case says otherwise."""
+        return self.entry(1, command=command, ppid=0, start=start, uid=uid, state=state)
+
+    def manager(self, pid=None, *, start=None, ppid=1, command="systemd", **entry):
+        """The invoking user's systemd manager, uninspectable like the real non-dumpable one."""
+        return self.entry(MANAGER_PID if pid is None else pid, command=command, ppid=ppid,
+                          start=MANAGER_START if start is None else start, **entry)
 
     def ssh(self, pid=4242, parent=100, *, child_command="sshd-session", parent_command="sshd-session",
             parent_uid=0, parent_start=50, start=100, **child):
@@ -1376,6 +1442,600 @@ class SSHSessionPathRemovalTests(IsolatedState):
         self.assertTrue(action["detail"].endswith("; " + self.line), action["detail"])
         logged = [json.loads(line) for line in (orphan.path / "recovery.jsonl").read_text().splitlines()]
         self.assertIn(self.line, [value for value in logged if value["kind"] == "path"][0]["detail"])
+
+
+class LinuxUserManagerTests(unittest.TestCase):
+    """The Linux inspector's user-manager rule over fixture /proc trees.
+
+    The real inspector runs every case with an injected system-manager query
+    and CLK_TCK; only process-entry owners are injected besides, so no case
+    needs root, a running systemd, or the host's manager.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.cache = self.base / "cache"
+        self.cache.mkdir(mode=0o700)
+        self.proc = FixtureProc(self.base / "proc")
+
+    def reset(self):
+        shutil.rmtree(self.proc.root)
+        self.proc = FixtureProc(self.base / "proc")
+
+    def scan(self, query, hz=MANAGER_HZ, isolated=True, **kwargs):
+        found = []
+        with self.proc.owned():
+            users = resources.active_cache_users(self.cache, self.proc.root,
+                                                 uid=os.getuid() if isolated else None, disregarded=found,
+                                                 manager_query=query, clock_ticks=lambda: hz, **kwargs)
+        return users, found
+
+    def record(self, pid=MANAGER_PID, start=MANAGER_START, usec=MANAGER_USEC):
+        return {"kind": resources.USER_MANAGER_KIND, "pid": pid, "start": start, "uid": os.getuid(),
+                "service": f"user@{os.getuid()}.service", "main_pid": pid, "monotonic_usec": usec,
+                "reason": resources.USER_MANAGER_REASON}
+
+    def assert_ambiguous(self, query, pid=MANAGER_PID, **kwargs):
+        users, found = self.scan(query, **kwargs)
+        self.assertIn(f"{pid}:ambiguous:cwd", users)
+        self.assertEqual([record for record in found if record["pid"] == pid], [])
+        return users
+
+    def test_matching_mainpid_and_start_time_disregarded(self):
+        self.proc.system_manager()
+        self.proc.manager()
+        query = FixtureManagerQuery(manager_service())
+        users, found = self.scan(query)
+        self.assertEqual(users, [])
+        self.assertEqual(found, [self.record()])
+        self.assertEqual(resources.disregard_line(found[0]), manager_line())
+        # Two independent queries for the invoking uid, one before and one after inspection.
+        self.assertEqual(query.calls, [os.getuid(), os.getuid()])
+        # Newer than the cache: the rule does not depend on a creation tick.
+        users, found = self.scan(FixtureManagerQuery(manager_service()), created_after=1)
+        self.assertEqual((users, found), ([], [self.record()]))
+        # Unbounded inspection (no owner isolation): PID 1 is inspected as a
+        # process of its own, and the manager still does not count.
+        users, found = self.scan(FixtureManagerQuery(manager_service()), isolated=False)
+        self.assertFalse([value for value in users if value.startswith(f"{MANAGER_PID}:")], users)
+        self.assertEqual(found, [self.record()])
+
+    def test_timestamp_one_tick_boundary(self):
+        self.assertTrue(resources.start_matches(MANAGER_START, MANAGER_USEC, MANAGER_HZ))
+        self.proc.system_manager()
+        self.proc.manager()
+        for hz in (100, 250, 1000):
+            exact = MANAGER_START * 1_000_000 // hz
+            tick = 1_000_000 // hz
+            cases = {"exact": (exact, True), "one tick early": (exact - tick, True),
+                     "one tick late": (exact + tick, True), "just before": (exact - tick - 1, False),
+                     "just after": (exact + tick + 1, False)}
+            for label, (usec, qualifies) in cases.items():
+                with self.subTest(hz=hz, case=label):
+                    self.assertEqual(resources.start_matches(MANAGER_START, usec, hz), qualifies)
+                    query = FixtureManagerQuery(manager_service(monotonic_usec=usec))
+                    if qualifies:
+                        users, found = self.scan(query, hz=hz)
+                        self.assertEqual((users, found), ([], [self.record(usec=usec)]))
+                    else:
+                        self.assert_ambiguous(query, hz=hz)
+
+    def test_renamed_orphan_with_pid1_and_init_scope_refuses(self):
+        """PID-1 ancestry and the manager's init.scope cgroup are forgeable; only the query authenticates."""
+        cgroup = USER_SERVICE_CGROUP.format(uid=os.getuid())
+        impostor = 4242
+        variants = {
+            "orphan of live root PID 1 in init.scope": dict(ppid=1, cgroup=cgroup),
+            "non-PID-1 parent": dict(ppid=4000, cgroup=cgroup),
+            "subreaper parent": dict(ppid=4000, cgroup=cgroup, subreaper=True),
+            "alternate session cgroup": dict(
+                ppid=1, cgroup=f"0::/user.slice/user-{os.getuid()}.slice/session-3.scope\n"),
+            "foreign user's manager cgroup": dict(ppid=1, cgroup=USER_SERVICE_CGROUP.format(uid=os.getuid() + 1)),
+        }
+        answers = {"queried MainPID differs": manager_service(),
+                   "service unavailable": None}
+        for label, variant in variants.items():
+            for answer_label, answer in answers.items():
+                with self.subTest(label, answer=answer_label):
+                    self.reset()
+                    options = dict(variant)
+                    self.proc.system_manager()
+                    if options.pop("subreaper", False):
+                        # A readable same-user subreaper (systemd --user itself is one) adopts the orphan.
+                        self.proc.entry(4000, command="systemd", ppid=1, start=50, environ=b"", cwd=self.base,
+                                        root=Path("/"))
+                    elif options["ppid"] == 4000:
+                        self.proc.entry(4000, command="bash", ppid=1, start=50, environ=b"", cwd=self.base,
+                                        root=Path("/"))
+                    # Same start as the real manager, so only the MainPID binding can tell them apart.
+                    self.proc.manager(impostor, **options)
+                    query = FixtureManagerQuery(answer)
+                    self.assert_ambiguous(query, pid=impostor)
+
+    def test_pid_reuse_start_mismatch_refuses(self):
+        self.proc.system_manager()
+        for start in (MANAGER_START + 2, MANAGER_START - 1, 10**9):
+            with self.subTest(start=start):
+                shutil.rmtree(self.proc.root / str(MANAGER_PID), ignore_errors=True)
+                self.proc.manager(start=start)
+                self.assert_ambiguous(FixtureManagerQuery(manager_service()))
+
+    def test_foreign_uid_never_disregarded(self):
+        self.proc.system_manager()
+        self.proc.manager(uid=os.getuid() + 1)
+        query = FixtureManagerQuery(manager_service())
+        # Without owner isolation the foreign process is inspected and stays ambiguous.
+        self.assert_ambiguous(query, isolated=False)
+        # With owner isolation it is filtered out before any rule, as before.
+        users, found = self.scan(query)
+        self.assertEqual((users, found), ([], []))
+        self.assertEqual(query.calls, [])
+
+    def test_second_read_changes_refuse(self):
+        """A fact that changes between the reads before and after inspection disqualifies the process."""
+        other = os.getuid() + 1
+
+        def candidate(**fields):
+            return lambda: self.proc.restat(MANAGER_PID, **fields)
+
+        def pid1(**fields):
+            return lambda: self.proc.restat(1, **fields)
+
+        def owner(pid, uid):
+            return lambda: self.proc.owners.__setitem__(self.proc.root / str(pid), uid)
+
+        def remove(pid, name="stat"):
+            return lambda: (self.proc.root / str(pid) / name).unlink()
+
+        def second(**fields):
+            return dict(answers=(manager_service(), manager_service(**fields)))
+
+        changes = {
+            "second query MainPID changed": (second(main_pid=MANAGER_PID + 1), None),
+            "second query timestamp changed": (second(monotonic_usec=MANAGER_USEC + 1), None),
+            "second query not active": (second(active_state="deactivating"), None),
+            "second query unavailable": (dict(answers=(manager_service(), None)), None),
+            "candidate start changed (PID reused)": ({}, candidate(start=MANAGER_START + 1)),
+            "candidate renamed": ({}, candidate(command="bash")),
+            "candidate became a zombie": ({}, candidate(state="Z")),
+            "candidate stat unreadable": ({}, remove(MANAGER_PID)),
+            "candidate owner changed": ({}, owner(MANAGER_PID, other)),
+            "PID 1 restarted": ({}, pid1(start=2)),
+            "PID 1 renamed": ({}, pid1(command="init")),
+            "PID 1 became a zombie": ({}, pid1(state="Z")),
+            "PID 1 stat unreadable": ({}, remove(1)),
+            "PID 1 owner changed": ({}, owner(1, os.getuid())),
+        }
+        for label, (options, between) in changes.items():
+            with self.subTest(label):
+                self.reset()
+                self.proc.system_manager()
+                self.proc.manager()
+                answers = options.get("answers", (manager_service(),))
+                query = FixtureManagerQuery(*answers, between=between)
+                users = self.assert_ambiguous(query)
+                self.assertEqual(len(query.calls), 2)
+                # The still-live candidate stays ambiguous; no exit is manufactured.
+                self.assertIn(f"{MANAGER_PID}:ambiguous:environ", users)
+        # A candidate that exits during inspection leaves no manager record.
+        self.reset()
+        self.proc.system_manager()
+        self.proc.manager()
+        query = FixtureManagerQuery(manager_service(),
+                                    between=lambda: shutil.rmtree(self.proc.root / str(MANAGER_PID)))
+        _, found = self.scan(query)
+        self.assertEqual(found, [])
+
+    def test_readable_cache_references_always_block(self):
+        (self.cache / "object").write_text("cached")
+        cases = {
+            "cwd": dict(cwd=self.cache),
+            "root": dict(root=self.cache),
+            "fd:3": dict(descriptor=self.cache / "object"),
+            "env:GOCACHE": dict(cwd=self.base, environ=b"GOCACHE=" + os.fsencode(self.cache) + b"\0"),
+        }
+        for label, references in cases.items():
+            with self.subTest(label):
+                self.reset()
+                self.proc.system_manager()
+                self.proc.manager(**references)
+                users, found = self.scan(FixtureManagerQuery(manager_service()))
+                self.assertIn(f"{MANAGER_PID}:" + label, users)
+                self.assertEqual(found, [])
+        # Mixed: a readable descriptor beside unreadable cwd, root, and environ.
+        self.reset()
+        self.proc.system_manager()
+        self.proc.manager(descriptor=self.cache / "object")
+        users, found = self.scan(FixtureManagerQuery(manager_service()))
+        self.assertIn(f"{MANAGER_PID}:fd:3", users)
+        self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", users)
+        self.assertIn(f"{MANAGER_PID}:ambiguous:environ", users)
+        self.assertEqual(found, [])
+        self.assertTrue((self.cache / "object").is_file())
+
+    def test_namespace_manager_mismatch_refuses(self):
+        """PID 1 must be the live root-owned systemd of the same /proc; nothing else is queried."""
+        cases = {
+            "no PID 1 (namespace without the host's init)": None,
+            "PID 1 is a sandbox init": dict(command="codex"),
+            "PID 1 named init": dict(command="init"),
+            "PID 1 owned by the user": dict(uid=os.getuid()),
+            "PID 1 a zombie": dict(state="Z"),
+            "PID 1 stat unreadable": "unreadable",
+        }
+        for label, pid1 in cases.items():
+            with self.subTest(label):
+                self.reset()
+                if pid1 == "unreadable":
+                    self.proc.entry(1, uid=0, stat=False)
+                elif pid1 is not None:
+                    self.proc.system_manager(**pid1)
+                self.proc.manager()
+                query = FixtureManagerQuery(manager_service())
+                self.assert_ambiguous(query)
+                self.assertEqual(query.calls, [])
+
+    def test_clock_tick_failures_refuse(self):
+        self.proc.system_manager()
+        self.proc.manager()
+        for hz in (None, 0, -100, 100.0, "100"):
+            with self.subTest(hz=hz):
+                self.assert_ambiguous(FixtureManagerQuery(manager_service()), hz=hz)
+
+    def test_macos_never_queries_system_manager(self):
+        table = {301: {"vnode_error": True, "environment": None}}
+        found = []
+        refuse = FixtureManagerQuery(manager_service())
+        with patch.object(resources, "darwin", return_value=FakeDarwin(table)), \
+                patch.object(resources, "_user_manager_first", side_effect=AssertionError("Linux rule on macOS")), \
+                patch.object(resources, "query_user_manager", side_effect=AssertionError("query on macOS")):
+            users = resources.active_cache_users(self.cache, backend=resources.DARWIN_BACKEND, disregarded=found,
+                                                 manager_query=refuse)
+        self.assertEqual(users, ["301:ambiguous:cwd", "301:ambiguous:environ"])
+        self.assertEqual((found, refuse.calls), ([], []))
+
+
+class FakeQueryChild:
+    """A stand-in for the query's child process whose output comes from a file or pipe."""
+
+    def __init__(self, stdout, status=0, hang=False):
+        self.stdout = stdout
+        self.status = status
+        self.hang = hang
+        self.returncode = None
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -signal.SIGKILL
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            if self.hang and timeout is not None:
+                raise subprocess.TimeoutExpired("systemctl", timeout)
+            self.returncode = self.status
+        return self.returncode
+
+
+class UserManagerQueryTests(unittest.TestCase):
+    """The bounded, trusted system-manager query and its parser, through injected process seams only."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.valid = (f"ActiveState=active\nMainPID={MANAGER_PID}\n"
+                      f"ExecMainStartTimestampMonotonic={MANAGER_USEC}\n").encode()
+
+    def output_child(self, data, **options):
+        path = self.base / f"output-{secrets.token_hex(3)}"
+        path.write_bytes(data)
+        return FakeQueryChild(path.open("rb"), **options)
+
+    def test_absolute_system_query_and_clean_environment(self):
+        hostile = {"PATH": str(self.base), "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=" + str(self.base / "bus"),
+                   "LD_PRELOAD": str(self.base / "evil.so"), "LD_LIBRARY_PATH": str(self.base),
+                   "SYSTEMD_PAGER": "evil", "SYSTEMCTL_FORCE_BUS": "1", "LC_ALL": "xx_XX"}
+        calls, trusted = [], []
+
+        def run(argv, env, timeout, limit):
+            calls.append((argv, env, timeout, limit))
+            return 0, self.valid
+        with patch.dict(os.environ, hostile):
+            result = resources.query_user_manager(1000, run=run, trusted=lambda path: trusted.append(path) or True)
+        self.assertEqual(result, manager_service())
+        self.assertEqual(trusted, ["/usr/bin/systemctl"])
+        [(argv, env, timeout, limit)] = calls
+        self.assertEqual(argv, ["/usr/bin/systemctl", "--system", "--no-pager", "--no-ask-password", "show",
+                                "user@1000.service", "-p", "MainPID", "-p", "ExecMainStartTimestampMonotonic",
+                                "-p", "ActiveState"])
+        for option in ("--user", "-H", "--host", "-M", "--machine"):
+            self.assertNotIn(option, argv)
+        self.assertEqual(env, {"LC_ALL": "C"})
+        self.assertEqual((timeout, limit), (2.0, 16 * 1024))
+
+        # The production runner executes the argv list directly with exactly
+        # that environment: no shell, no PATH lookup, nothing inherited. The
+        # recorded child is redirected to an interpreter that prints the
+        # environment it received, so the host's manager is never queried.
+        recorded = []
+
+        def popen(argv, **kwargs):
+            recorded.append((argv, kwargs))
+            program = "import os, sys; sys.stdout.write(' '.join(sorted(os.environ)))"
+            return subprocess.Popen([sys.executable, "-c", program], **kwargs)
+        with patch.dict(os.environ, hostile):
+            status, output = resources.bounded_output(resources.user_manager_argv(1000),
+                                                      dict(resources.USER_MANAGER_ENVIRONMENT), 2.0, 16 * 1024,
+                                                      popen=popen)
+        [(argv, kwargs)] = recorded
+        self.assertIsInstance(argv, list)
+        self.assertEqual(argv[0], "/usr/bin/systemctl")
+        self.assertFalse(kwargs.get("shell", False))
+        self.assertNotIn("executable", kwargs)
+        self.assertEqual(kwargs["env"], {"LC_ALL": "C"})
+        self.assertEqual((kwargs["stdin"], kwargs["stderr"]), (subprocess.DEVNULL, subprocess.STDOUT))
+        self.assertEqual(status, 0)
+        received = output.decode().split()
+        self.assertIn("LC_ALL", received)
+        for name in hostile:
+            if name != "LC_ALL":
+                self.assertNotIn(name, received)
+
+    def test_untrusted_executable_refuses(self):
+        directory = os.stat_result((stat.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        executable = os.stat_result((stat.S_IFREG | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def lstat(overrides):
+            def read(path):
+                value = overrides.get(str(path))
+                if isinstance(value, BaseException):
+                    raise value
+                if value is not None:
+                    return value
+                return executable if str(path) == "/usr/bin/systemctl" else directory
+            return read
+
+        def mode(kind, bits, uid=0):
+            return os.stat_result((kind | bits, 0, 0, 1, uid, 0, 0, 0, 0, 0))
+        self.assertTrue(resources.root_controlled_executable("/usr/bin/systemctl", lstat({})))
+        cases = {
+            "executable is a symlink": {"/usr/bin/systemctl": mode(stat.S_IFLNK, 0o777)},
+            "ancestor is a symlink": {"/usr/bin": mode(stat.S_IFLNK, 0o777)},
+            "executable owned by the user": {"/usr/bin/systemctl": mode(stat.S_IFREG, 0o755, uid=1000)},
+            "ancestor owned by the user": {"/usr": mode(stat.S_IFDIR, 0o755, uid=1000)},
+            "executable group-writable": {"/usr/bin/systemctl": mode(stat.S_IFREG, 0o775)},
+            "ancestor world-writable": {"/usr/bin": mode(stat.S_IFDIR, 0o777)},
+            "root world-writable": {"/": mode(stat.S_IFDIR, 0o1777)},
+            "executable not a regular file": {"/usr/bin/systemctl": mode(stat.S_IFDIR, 0o755)},
+            "executable not executable": {"/usr/bin/systemctl": mode(stat.S_IFREG, 0o644)},
+            "missing executable": {"/usr/bin/systemctl": FileNotFoundError()},
+            "unreadable ancestor": {"/usr": PermissionError()},
+        }
+        for label, overrides in cases.items():
+            with self.subTest(label):
+                self.assertFalse(resources.root_controlled_executable("/usr/bin/systemctl", lstat(overrides)))
+        for path in ("usr/bin/systemctl", "/usr/bin/../bin/systemctl", "systemctl"):
+            with self.subTest(path=path):
+                self.assertFalse(resources.root_controlled_executable(path, lstat({})))
+        # An untrusted executable is never run.
+        run = unittest.mock.Mock(side_effect=AssertionError("untrusted executable ran"))
+        self.assertIsNone(resources.query_user_manager(1000, run=run, trusted=lambda path: False))
+        run.assert_not_called()
+
+    def test_unavailable_error_timeout_and_output_limit_refuse(self):
+        argv, env = resources.user_manager_argv(1000), dict(resources.USER_MANAGER_ENVIRONMENT)
+        limit = resources.USER_MANAGER_OUTPUT_LIMIT
+        # Missing executable or a start failure.
+        for error in (FileNotFoundError(), PermissionError(), OSError(errno.ENOEXEC, "exec format")):
+            with self.subTest(start_failure=type(error).__name__):
+                popen = unittest.mock.Mock(side_effect=error)
+                self.assertIsNone(resources.bounded_output(argv, env, 2.0, limit, popen=popen))
+        # Bus or permission failure, and any nonzero exit, refuse even with well-formed output.
+        for result in (None, (1, b"Failed to connect to bus: Permission denied\n"), (1, self.valid), (-9, self.valid)):
+            with self.subTest(result=result):
+                self.assertIsNone(resources.query_user_manager(1000, run=lambda *args: result, trusted=lambda p: True))
+        # The two-second deadline: a child that never finishes writing is
+        # killed once the injected clock passes the deadline.
+        read, write = os.pipe()
+        self.addCleanup(os.close, write)
+        child = FakeQueryChild(os.fdopen(read, "rb"))
+        clock = iter((100.0, 102.0))
+        self.assertIsNone(resources.bounded_output(argv, env, 2.0, limit, popen=lambda *a, **k: child,
+                                                   clock=lambda: next(clock)))
+        self.assertTrue(child.killed)
+        self.assertTrue(child.stdout.closed)
+        # Output arrives in time but the deadline passes before the next read.
+        child = self.output_child(b"ActiveState=active\n")
+        clock = iter((100.0, 100.5, 102.5))
+        self.assertIsNone(resources.bounded_output(argv, env, 2.0, limit, popen=lambda *a, **k: child,
+                                                   clock=lambda: next(clock)))
+        # Output complete but the child does not exit within the remaining deadline.
+        child = self.output_child(self.valid, hang=True)
+        self.assertIsNone(resources.bounded_output(argv, env, 2.0, limit, popen=lambda *a, **k: child,
+                                                   clock=lambda: 100.0))
+        self.assertTrue(child.killed)
+        # 16 KiB of combined output is accepted; one byte more stops the query.
+        child = self.output_child(b"x" * limit)
+        self.assertEqual(resources.bounded_output(argv, env, 2.0, limit, popen=lambda *a, **k: child,
+                                                  clock=lambda: 100.0), (0, b"x" * limit))
+        self.assertFalse(child.killed)
+        child = self.output_child(b"x" * (limit + 1))
+        self.assertIsNone(resources.bounded_output(argv, env, 2.0, limit, popen=lambda *a, **k: child,
+                                                   clock=lambda: 100.0))
+        self.assertTrue(child.killed)
+        self.assertTrue(child.stdout.closed)
+
+    def test_malformed_duplicate_missing_properties_refuse(self):
+        valid = self.valid.decode()
+        cases = {
+            "empty": b"",
+            "undecodable": b"\xff\xfe",
+            "truncated": valid.encode()[:-1],
+            "missing MainPID": b"ActiveState=active\nExecMainStartTimestampMonotonic=1\n",
+            "missing timestamp": f"ActiveState=active\nMainPID={MANAGER_PID}\n".encode(),
+            "missing state": f"MainPID={MANAGER_PID}\nExecMainStartTimestampMonotonic=1\n".encode(),
+            "duplicate MainPID": (valid + f"MainPID={MANAGER_PID}\n").encode(),
+            "duplicate state": (valid + "ActiveState=active\n").encode(),
+            "unexpected property": (valid + "SubState=running\n").encode(),
+            "line without separator": (valid + "MainPID\n").encode(),
+            "blank line": (valid + "\n").encode(),
+            "carriage returns": valid.replace("\n", "\r\n").encode(),
+        }
+        for value in ("0", "-5", "+5", "05", "1.5", "abc", " 5", "", "٥"):
+            cases[f"MainPID={value!r}"] = valid.replace(f"MainPID={MANAGER_PID}", "MainPID=" + value).encode()
+            cases[f"timestamp={value!r}"] = valid.replace(f"={MANAGER_USEC}", "=" + value).encode()
+        self.assertEqual(resources.parse_user_manager(self.valid), manager_service())
+        for label, raw in cases.items():
+            with self.subTest(label):
+                self.assertIsNone(resources.parse_user_manager(raw))
+                self.assertIsNone(resources.query_user_manager(1000, run=lambda *args: (0, raw), trusted=lambda p: True))
+        # An invalid tick frequency is no frequency.
+        def failing(error):
+            def sysconf(name):
+                raise error
+            return sysconf
+        self.assertEqual(resources.system_clock_ticks(lambda name: 100), 100)
+        for sysconf in (failing(ValueError()), failing(OSError()), lambda name: 0, lambda name: -100,
+                        lambda name: 100.0, lambda name: None, lambda name: True):
+            with self.subTest(sysconf=sysconf):
+                self.assertIsNone(resources.system_clock_ticks(sysconf))
+
+    def test_non_active_service_refuses(self):
+        for state in ("inactive", "activating", "deactivating", "failed", "reloading", "maintenance", "",
+                      "Active", "active "):
+            with self.subTest(state=state):
+                raw = self.valid.replace(b"ActiveState=active\n", f"ActiveState={state}\n".encode())
+                self.assertIsNone(resources.query_user_manager(1000, run=lambda *args: (0, raw), trusted=lambda p: True))
+        self.assertEqual(resources.query_user_manager(1000, run=lambda *args: (0, self.valid), trusted=lambda p: True),
+                         manager_service())
+
+
+class UserManagerPathRemovalTests(IsolatedState):
+    """Temporary-path teardown and recovery retain the disregarded user manager.
+
+    The fixture manager starts far later than any real temporary path, so no
+    creation bound can disregard it in place of the rule.
+    """
+
+    START = 10**10
+    USEC = START * (1_000_000 // MANAGER_HZ)
+
+    def setUp(self):
+        super().setUp()
+        self.proc = FixtureProc(self.base / "proc")
+        self.proc.system_manager()
+        self.proc.manager(start=self.START)
+        self.line = manager_line(start=self.START, usec=self.USEC)
+        inspector = functools.partial(resources.active_cache_users, proc=self.proc.root)
+        for name, value in (("active_cache_users", inspector), ("system_clock_ticks", lambda: MANAGER_HZ)):
+            patcher = patch.object(resources, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.query = self.answer(manager_service(monotonic_usec=self.USEC))
+        owned = self.proc.owned()
+        owned.start()
+        self.addCleanup(owned.stop)
+        self.ssh_line = ("Disregarded Linux SSH session: pid=4242 parent=100 command=sshd-session "
+                         "parent_command=sshd-session reason=" + resources.SSH_DISREGARD_REASON)
+
+    def answer(self, *answers):
+        query = FixtureManagerQuery(*answers)
+        patcher = patch.object(resources, "query_user_manager", query)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return query
+
+    def path_identity(self, name="disposable"):
+        path = self.base / name
+        path.mkdir(mode=0o700)
+        info = path.lstat()
+        return {"path": str(path), "device": info.st_dev, "inode": info.st_ino}
+
+    def orphan(self, task, cross_boot=False):
+        """An invocation whose owner is gone. cross_boot records its path on another boot, so
+        neither its creation tick nor its sessions narrow live-use inspection."""
+        orphan = resources.Invocation.create(task, self.checkout, ["true"])
+        os.close(orphan._owner_lock)
+        orphan._owner_lock = None
+        value = json.loads((orphan.path / "inventory.json").read_text())
+        value["owner"]["birth"] = {"start_ticks": -1, "boot_id": "another-boot"}
+        if cross_boot:
+            for entry in value["resources"]:
+                if entry["kind"] == "path":
+                    entry["identity"]["boot_id"] = "another-boot"
+        resources.write_json(orphan.path / "inventory.json", value)
+        return orphan
+
+    def test_verified_manager_path_removal_retains_detail(self):
+        identity = self.path_identity()
+        state, detail = resources.remove_path(identity)
+        self.assertEqual(state, "removed")
+        self.assertEqual(detail, "removed disposable path " + identity["path"] + "; " + self.line)
+        self.assertFalse(Path(identity["path"]).exists())
+        self.assertEqual(len(self.query.calls), 2)
+
+    def test_later_refusal_retains_manager_and_ssh_lines_once(self):
+        identity = self.path_identity()
+        self.proc.ssh()
+        # An unrelated uninspectable process still blocks, through every rescan.
+        self.proc.entry(4343, command="bash", ppid=100)
+        with patch.object(resources.time, "sleep"), self.assertRaises(resources.Refusal) as refused:
+            resources.remove_path(identity)
+        message = str(refused.exception)
+        self.assertIn("is in use: 4343:ambiguous:cwd", message)
+        self.assertEqual(message.count(self.line), 1)
+        self.assertEqual(message.count(self.ssh_line), 1)
+        self.assertLess(message.index(self.ssh_line), message.index(self.line))
+        self.assertTrue(Path(identity["path"]).is_dir())
+        # Every rescan queried the system manager afresh: two queries per scan.
+        self.assertEqual(len(self.query.calls), 8)
+
+    def test_recovery_retains_manager_report(self):
+        owner = resources.Invocation.create("manager-owner", self.checkout, ["true"])
+        self.assertEqual(owner.finish(outcome="success"), [])
+        [entry] = [value for value in resources.load_inventory(owner.path)["resources"] if value["kind"] == "path"]
+        self.assertEqual(entry["state"], "removed")
+        self.assertTrue(entry["detail"].endswith("; " + self.line), entry["detail"])
+
+        orphan = self.orphan("manager-orphan")
+        complete, actions = resources.recover(orphan.path)
+        self.assertTrue(complete)
+        [action] = [value for value in actions if value["kind"] == "path"]
+        self.assertTrue(action["detail"].endswith("; " + self.line), action["detail"])
+        logged = [json.loads(line) for line in (orphan.path / "recovery.jsonl").read_text().splitlines()]
+        self.assertIn(self.line, [value for value in logged if value["kind"] == "path"][0]["detail"])
+
+    def test_unverified_manager_keeps_path_and_recovery_refusal(self):
+        self.answer(manager_service(main_pid=MANAGER_PID + 1, monotonic_usec=self.USEC))
+        identity = self.path_identity()
+        with patch.object(resources.time, "sleep"), self.assertRaises(resources.Refusal) as refused:
+            resources.remove_path(identity)
+        message = str(refused.exception)
+        self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", message)
+        self.assertNotIn("Disregarded Linux user manager", message)
+        self.assertTrue(Path(identity["path"]).is_dir())
+
+        orphan = self.orphan("manager-unverified", cross_boot=True)
+        [path_entry] = [value for value in resources.load_inventory(orphan.path)["resources"]
+                        if value["kind"] == "path"]
+        with patch.object(resources.time, "sleep"):
+            complete, actions = resources.recover(orphan.path)
+        self.assertFalse(complete)
+        [action] = [value for value in actions if value["kind"] == "path"]
+        self.assertEqual(action["action"], "refused")
+        self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", action["detail"])
+        self.assertNotIn("Disregarded Linux user manager", action["detail"])
+        self.assertTrue(Path(path_entry["identity"]["path"]).is_dir())
+        logged = [json.loads(line) for line in (orphan.path / "recovery.jsonl").read_text().splitlines()]
+        refused_paths = [value for value in logged if value["kind"] == "path"]
+        self.assertEqual(refused_paths[0]["action"], "refused")
+        self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", refused_paths[0]["detail"])
 
 
 @unittest.skipUnless(os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1",

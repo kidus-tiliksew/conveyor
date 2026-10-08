@@ -73,8 +73,9 @@ established and cleanup refuses.
 
 A process whose working directory, root, open files, or cache variables can be
 read and point into a child always blocks cleanup. A process that cannot be
-inspected blocks it too, unless owner isolation, a creation bound, or the Linux
-SSH session rule below rules it out. When the child
+inspected blocks it too, unless owner isolation, a creation bound, the Linux
+SSH session rule, or the Linux user-manager rule below rules it out. When the
+child
 or one of its canonical ancestors is a directory owned by the invoking user
 with neither group nor other execute permission, such as a mode 0700
 `$XDG_CACHE_HOME`, other unprivileged users cannot reach the child, so only the
@@ -146,14 +147,53 @@ A missing, unreadable, malformed, exited, or changed fact leaves the process
 ambiguous. A same-user process can rename itself, but it cannot acquire a
 root-owned SSH parent, and a session process reparented to init fails the
 parent check. Shells and builds started under SSH are separate processes and
-are inspected individually. No other process class is disregarded, and the
-macOS backend does not apply this rule.
+are inspected individually. Apart from the user-manager rule below, no other
+process class is disregarded, and the macOS backend applies neither rule.
+
+On Linux the invoking user's systemd manager (`systemd --user`) does not block
+cleanup either, whatever its start tick, when the local system manager vouches
+for it. The manager is non-dumpable and runs for the whole login, so without a
+creation bound it would block every cleanup. Its command name, its PID 1
+parent, and its `user@<uid>.service/init.scope` cgroup prove nothing on their
+own: a same-user process can rename itself `systemd`, make itself
+non-dumpable, and be orphaned to PID 1 or a subreaper, and the manager's
+cgroup subtree is delegated to the user. The guard therefore disregards such a
+process only when all of these hold:
+
+- the process runs as the invoking user, its `stat` is readable, it is not a
+  zombie, and its command name is exactly `systemd`;
+- `/proc/1` is live, owned by uid 0, and named `systemd`, so a PID namespace
+  with another init (a sandbox, for example) never qualifies;
+- `/usr/bin/systemctl --system --no-pager --no-ask-password show
+  user@<uid>.service -p MainPID -p ExecMainStartTimestampMonotonic -p
+  ActiveState`, for the invoking uid, reports each property exactly once,
+  `ActiveState=active`, the process's PID as `MainPID`, and a positive
+  integer timestamp;
+- the process's `stat` start tick S matches the timestamp M (microseconds)
+  within one clock tick at `CLK_TCK` H, computed in integers as
+  `|S * 1000000 - M * H| <= 1000000`;
+- none of its cwd, root, descriptors, or cache variables can be read into the
+  child;
+- a second query and second reads of both `stat` files and owners, after the
+  process's entries were inspected, return the same facts as the first ones,
+  which were taken before.
+
+The query runs that fixed executable directly, with no shell, `PATH` lookup,
+user bus, remote host, or privilege, and an environment holding only
+`LC_ALL=C`. The executable must be a root-owned executable regular file under
+root-owned directories, none of them a symlink or writable by group or
+others. Each query has a two-second deadline and a 16 KiB output limit. Any
+unavailable, failed, malformed, mismatched, or changed fact leaves the
+process ambiguous, and cleanup keeps refusing. On a host that suspended
+before the manager started, `/proc` start ticks (which count boot time) and
+the monotonic timestamp (which does not) disagree, and the rule refuses.
 
 Cleanup prints one line per disregarded process to standard output as it
 inspects each child, before any later refusal, and then the usual summary:
 
 ```text
 Disregarded Linux SSH session: pid=666814 parent=666711 command=sshd-session parent_command=sshd-session reason=same-user-uninspectable-with-live-root-owned-ssh-parent
+Disregarded Linux user manager: pid=2586874 uid=1000 service=user@1000.service main_pid=2586874 start=1168414290 monotonic_usec=11684142907759 reason=same-user-uninspectable-system-manager-reported-mainpid
 Removed disposable cache children: go-build, go-tmp, tmp, playwright, npm
 ```
 
@@ -309,9 +349,9 @@ incarnation, a symlink or substituted path, a path in use, a path that
 contains or is named by a recorded or `--reference` retained reference, a
 malformed reference list, and an unknown resource kind. A temporary path
 uses the same live-use inspector as cache cleanup, including the Linux SSH
-session rule; the removal detail or refusal message names each disregarded
-session process with the same line, and the inventory and `recovery.jsonl`
-retain it. Pending and ambiguous entries have no sealed identity and are never
+session and user-manager rules; the removal detail or refusal message names
+each disregarded process with the same line, and the inventory and
+`recovery.jsonl` retain it. Pending and ambiguous entries have no sealed identity and are never
 removed. Recovery is
 idempotent, appends every action and refusal to `recovery.jsonl`, and never
 edits an evidence manifest or log: an interrupted attempt stays incomplete and
