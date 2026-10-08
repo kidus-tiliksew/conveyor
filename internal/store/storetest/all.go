@@ -155,6 +155,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"ArtifactRepair", true, runArtifactRepair},
 		{"Verification", true, runVerification},
 		{"ArtifactIntake", true, runArtifactIntake},
+		{"LegacyVerificationEvidence", true, runLegacyVerificationEvidence},
 		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
 		{"WorktreeHandoff", true, runWorktreeHandoff},

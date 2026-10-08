@@ -6780,7 +6780,7 @@ func (s *Store) createArtifactTx(ctx context.Context, tx pgx.Tx, artifact core.A
 		if artifact.TaskID == "" {
 			return core.Artifact{}, fmt.Errorf("verification evidence must be attached directly to one task")
 		}
-		normalized, err := core.NormalizeVerificationEvidenceContentType(artifact.ContentType, artifact.SizeBytes)
+		normalized, err := core.ValidateVerificationEvidenceArtifact(artifact.ContentType, content)
 		if err != nil {
 			return core.Artifact{}, err
 		}
