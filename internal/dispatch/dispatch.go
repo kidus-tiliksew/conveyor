@@ -382,9 +382,9 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
 	// Newly dispatched specs are always MCP work orders, even when a stale
-	// pre-§21.33 route snapshot still says in_process. The remaining StageSpec
-	// handling in runInProcess is only for completion of calls that were already
-	// in flight when the execution contract changed (component-work-orders).
+	// route snapshot still says in_process. The remaining StageSpec handling in
+	// runInProcess is only for completion of calls that were already in flight
+	// when the execution contract changed (component-work-orders).
 	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec || task.NextStage == core.StageVerify {
 		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
@@ -2441,7 +2441,9 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		approvedHead = current.ReviewedHeadSHA
 	}
 	if approvedHead == "" && pr.HeadSHA != "" {
-		// One-time compatibility binding for tasks approved before §21.30.
+		// One-time compatibility binding for a task approved before it recorded
+		// an approved head: approval binds to the reviewed head (DEC-59(6);
+		// component-submission-merge).
 		approvedHead = pr.HeadSHA
 		if err = d.Store.BindTaskApproval(ctx, current.ID, approvedHead); err != nil {
 			return err
@@ -2929,7 +2931,9 @@ func sourceIssueNumber(repository, source string) (int, error) {
 	return number, nil
 }
 
-// ComposeReviewOutput keeps the §4.1 validator authoritative for MCP input.
+// ComposeReviewOutput renders an MCP review verdict as the conveyor:review
+// fence, so pipeline.ParseReview stays the one validator for MCP verdict input
+// (component-work-orders).
 func ComposeReviewOutput(review pipeline.Review) string {
 	data, _ := json.Marshal(review)
 	return "```conveyor:review\n" + string(data) + "\n```"

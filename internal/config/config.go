@@ -1273,7 +1273,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
 	// An absent execution block means the shipped default: both gates on
-	// (§21.12 change 2; the mode axis itself is removed by §21.31).
+	// (DEC-55(1); component-task-lifecycle). There is no mode axis (DEC-55(2)).
 	executionDefaultsProbe := c.Execution
 	executionDefaultsProbe.RequireVerificationEvidence = false
 	if executionDefaultsProbe == (ExecutionPolicy{}) {

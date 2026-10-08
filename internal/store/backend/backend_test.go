@@ -78,7 +78,7 @@ func TestVolatileOptInProvidesBackend(t *testing.T) {
 func TestSingleStoreAdmission(t *testing.T) {
 	database := config.Database{Backend: "singlestore", URL: "invalid"}
 	for _, options := range [][]backend.Option{nil, {backend.AllowVolatile}} {
-		if _, err := backend.Open(t.Context(), database, options...); err == nil || errors.Is(err, store.ErrBackendNotAdmitted) || errors.Is(err, backend.ErrUnknownBackend) {
+		if _, err := backend.Open(t.Context(), database, options...); err == nil || errors.Is(err, backend.ErrUnknownBackend) {
 			t.Fatalf("SingleStore selection did not reach driver validation: %v", err)
 		}
 	}

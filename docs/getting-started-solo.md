@@ -6,9 +6,10 @@ is the whole path as one command list. Each step links to the fuller guide
 when you need the detail; [Server setup](server-setup.md) covers the first
 half and [Client setup](client-setup.md) the second.
 
-You need Docker (or a PostgreSQL 15+ you already run), Git, the GitHub CLI,
-an API key for an OpenAI-compatible model endpoint, and an authenticated
-agent CLI such as Claude Code.
+You need Docker (or a PostgreSQL 15+ you already run), Git with a credential
+for your repository host, an API key for an OpenAI-compatible model endpoint,
+and an authenticated agent CLI such as Claude Code. Conveyor itself never runs
+the GitHub CLI; it is one optional way to configure the Git credential.
 
 The server and the client keep separate directories even on one machine:
 `~/.conveyor/server` holds the daemon's config and secrets,
@@ -76,13 +77,13 @@ Open a new shell outside the server directory:
 export CONVEYOR_ADDR=http://127.0.0.1:8080/mcp
 conveyor auth login
 conveyor config set workspace <workspace-id>
-gh auth login
-gh auth setup-git
 git clone <repository-url> ~/src/<repo>
 ```
 
 Add the `CONVEYOR_ADDR` line to your shell startup file. `auth login`
-prompts for the personal access token.
+prompts for the personal access token. The clone needs a Git credential for
+the repository host, such as SSH or, if you have the GitHub CLI installed,
+`gh auth login` followed by `gh auth setup-git`.
 Detail: [Client setup, steps 2 and 3](client-setup.md#2-sign-in-and-select-the-server-and-workspace).
 
 After cloning, run `conveyor repo init` in the checkout as described in [Prepare the repository](client-setup.md#4-prepare-the-repository).

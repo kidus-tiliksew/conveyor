@@ -42,12 +42,12 @@ func HarnessTemplates() []HarnessTemplate {
 				Name:         "claude",
 				MCPTransport: MCPTransportJSONFile,
 				// stream-json keeps stdout flowing from the first event; plain -p
-				// buffers until completion and trips first_activity_timeout (§21.42)
-				// on any run longer than the liveness window. Headless -p has no
-				// interactive approver, so writes need bypassPermissions (the
-				// §21.29 grok precedent), and --add-dir .. reaches the §21.8
-				// sibling worktrees outside the primary checkout the child
-				// starts in.
+				// buffers until completion and trips first_activity_timeout
+				// (component-local-launchers) on any run longer than the liveness
+				// window. Headless -p has no interactive approver, so writes need
+				// bypassPermissions, and --add-dir .. reaches the sibling task
+				// worktrees outside the primary checkout the child starts in
+				// (component-harness-execution).
 				Command:       []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
 				ResumeCommand: []string{"--resume", "{session_id}"},
 				ModelArgs:     []string{"--model", "{model}"},

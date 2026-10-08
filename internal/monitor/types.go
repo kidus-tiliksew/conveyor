@@ -579,7 +579,7 @@ func compactStrings(values []string) []string {
 func taskBody(o Observation) string {
 	purpose := "Investigate and repair the post-merge failure through Conveyor's normal pipeline."
 	if o.Kind.Drift() {
-		purpose = "Reconcile this out-of-pipeline repository change: propose a requirements amendment if intentional, or surface the requirement/code conflict for human decision. Do not silently rewrite approved requirements."
+		purpose = "Reconcile this out-of-pipeline repository change: propose a requirement revision if intentional, or surface the requirement/code conflict for human decision. Do not silently rewrite approved requirements."
 	}
 	body := fmt.Sprintf("Monitor signal: %s\nRepository: %s\nOccurrence: %s\nSource: %s\nCommit: %s\n\n%s",
 		o.Kind, o.Repository, o.OccurrenceID, o.SourceURL, o.CommitSHA, purpose)

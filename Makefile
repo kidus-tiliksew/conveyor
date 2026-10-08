@@ -122,7 +122,7 @@ test-image:
 	@version="$$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$(IMAGE)")"; \
 		test -n "$$version"; \
 		test "$$(docker run --rm "$(IMAGE)" version)" = "conveyord $$version"
-	docker run --rm --entrypoint /bin/sh "$(IMAGE)" -c 'command -v conveyor >/dev/null && command -v git >/dev/null && command -v gh >/dev/null'
+	docker run --rm --entrypoint /bin/sh "$(IMAGE)" -c 'command -v conveyor >/dev/null && command -v git >/dev/null && ! command -v gh >/dev/null'
 
 RELEASE_DIR ?= dist
 RELEASE_TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64

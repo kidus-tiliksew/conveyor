@@ -128,8 +128,9 @@ Use these outcomes when reporting queue progress:
   green-CI admission rule remains an additional queue procedure.
 - **Automatic merge:** a task with `merge_approval: false` sends an approved
   review directly through the runtime auto-merge path. The runtime checks the
-  approved head and forge mergeability, then issues the ordinary `gh pr merge`
-  request and relies on configured branch protection for any required checks;
+  approved head and forge mergeability, then merges through GitHub's REST API
+  as the workspace GitHub App, using the App's cached installation token
+  (DEC-59), and relies on configured branch protection for any required checks;
   it does not enforce a universal separate CI-status gate. Do not hold the task
   while asking for a decision its frozen policy does not require.
 - **Duplicate reply:** derive a stable idempotency key from the task, pull

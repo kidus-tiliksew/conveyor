@@ -67,8 +67,9 @@ the repositories Conveyor will use. The App reads pull requests and publishes
 issues, review results, and merges. Conveyor records the approving operator
 in merge events and in the merge commit's `Approved-by` trailer.
 
-Git on your machine needs credentials separately. The quickest route is the
-GitHub CLI, which configures the HTTPS credential helper:
+Git on your machine needs credentials separately. Conveyor does not require
+the GitHub CLI, but if you have it installed it can configure the HTTPS
+credential helper:
 
 ```sh
 gh auth login

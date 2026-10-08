@@ -695,8 +695,10 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	return s.WorkOrders.Claim(ctx, id, claim)
 }
 
-// ClaimForWorkerDelivery preserves stored-token presence eligibility without
-// resolving its value for outbound use (req-260821-830dbf REQ-2, AC-6.1).
+// ClaimForWorkerDelivery claims through ClaimForWorker's eligibility checks and
+// returns the order with its task as delivery metadata, carrying no forge
+// credential. A failed or incomplete post-claim task read releases the claim and
+// reports the compensation (DEC-59(3); component-work-orders).
 func (s *Service) ClaimForWorkerDelivery(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (ClaimDelivery, error) {
 	order, err := s.ClaimForWorker(ctx, worker, id, claim)
 	if err != nil {
