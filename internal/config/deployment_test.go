@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -444,4 +445,164 @@ func TestDeploymentLoadsAnnotatedExample(t *testing.T) {
 	if _, err := Load(path); err != nil {
 		t.Fatalf("client loader refused the annotated example: %v", err)
 	}
+}
+
+// deploymentPolicyView is the policy and control-plane state a deployment
+// value contributes at runtime: the workspace policy it seeds, parsed the way
+// RuntimeConfig parses a stored document, plus the in-process stage settings.
+type deploymentPolicyView struct {
+	MaxBounces     int
+	QueueTimeout   string
+	StageTimeouts  map[string]string
+	ReviewSeats    int
+	Execution      ExecutionPolicy
+	Repos          []Repo
+	Monitor        MonitorConfig
+	Triage         StageRoute
+	Planning       PlanningSettings
+	PlanningModels []string
+}
+
+func policyView(t *testing.T, cfg *Config) deploymentPolicyView {
+	t.Helper()
+	stored, err := MarshalPolicyDocument(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, _, err := ParseStoredWorkspaceDocument(stored, cfg, "policy view")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := deploymentPolicyView{
+		MaxBounces: runtime.MaxBounces, QueueTimeout: runtime.WorkOrderQueueTimeoutText,
+		StageTimeouts: map[string]string{}, ReviewSeats: len(runtime.Review.Seats),
+		Execution: runtime.Execution, Repos: runtime.Repos, Monitor: runtime.Monitor,
+		PlanningModels: cfg.PlanningModels,
+	}
+	for _, stage := range []string{"spec", "implement", "review", "verify"} {
+		view.StageTimeouts[stage] = runtime.Routing.Stages[stage].TimeoutText
+	}
+	triage := runtime.Routing.Stages["triage"]
+	view.Triage = StageRoute{Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText}
+	if cfg.ExecutionSettings != nil {
+		view.Planning = cfg.ExecutionSettings.ControlPlane.Planning
+	}
+	return view
+}
+
+// legacySetupDeployment renders a pre-DEC-56 file whose authoritative
+// settings live in the named default setup. withProjection adds a stale
+// top-level projection and routing that disagree with that setup.
+func legacySetupDeployment(t *testing.T, withProjection bool) []byte {
+	t.Helper()
+	harness := HarnessTemplates()[0].Harness
+	stage := func(model, timeout string) ImplementationSettings {
+		return ImplementationSettings{Harness: harness.Name, Model: model, ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: timeout}
+	}
+	fast := ContextualExecutionSettings{
+		ControlPlane: ControlPlaneSettings{
+			Triage:   ModelTimeoutSettings{Model: "setup-triage-model", Effort: "medium", TimeoutText: "25m"},
+			Planning: PlanningSettings{Model: "setup-planning-model", Effort: "low", TimeoutText: "35m", ExplorationOutputTokens: 4000},
+		},
+		Spec:           stage("setup-spec-model", "45m"),
+		Implementation: stage("setup-implement-model", "5h"),
+		Verify:         stage("setup-verify-model", "90m"),
+		Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "2h", FallbackHarness: harness.Name, FallbackModel: "setup-fallback-model"},
+	}
+	fastReview := ReviewPanel{Seats: []ReviewSeat{{Model: "seat-a"}, {Model: "seat-b", Harness: harness.Name}, {Model: "seat-c", Effort: "high"}}}
+	other := ContextualExecutionSettings{
+		ControlPlane:   ControlPlaneSettings{Triage: ModelTimeoutSettings{Model: "other-triage-model", TimeoutText: "5m"}},
+		Spec:           stage("other-spec-model", "11m"),
+		Implementation: stage("other-implement-model", "12m"),
+		Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "13m"},
+	}
+	document := Config{
+		Workspace: "default", MaxBounces: 6,
+		Database:     DatabaseForURL("postgres://conveyor@db.invalid/conveyor"),
+		Harnesses:    []Harness{harness},
+		Setups:       []ExecutionSetup{{Name: "other", ExecutionSettings: other, Review: ReviewPanel{Seats: []ReviewSeat{{Model: "other-seat"}}}}, {Name: "fast", ExecutionSettings: fast, Review: fastReview, RefreshReview: RefreshReviewFull}},
+		DefaultSetup: "fast",
+		Execution:    ExecutionPolicy{SpecApproval: false, MergeApproval: true, VerifyStage: true, ImplementConcurrency: 3, ReviewConcurrency: 2},
+		Repos:        []Repo{{Name: "conveyor", URL: "https://github.com/acme/conveyor.git", Base: "main"}},
+	}
+	if withProjection {
+		stale := ContextualExecutionSettings{
+			ControlPlane:   ControlPlaneSettings{Triage: ModelTimeoutSettings{Model: "stale-triage-model", TimeoutText: "7m"}, Planning: PlanningSettings{Model: "stale-triage-model", TimeoutText: "7m"}},
+			Spec:           stage("stale-spec-model", "10m"),
+			Implementation: stage("stale-implement-model", "1h"),
+			Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "20m"},
+		}
+		document.ExecutionSettings = &stale
+		document.Review = ReviewPanel{Seats: []ReviewSeat{{Model: "stale-seat"}}}
+		document.Routing = Routing{Stages: map[string]StageRoute{
+			"triage":    {Model: "stale-routing-model", TimeoutText: "3m", Execution: ExecutionInProcess},
+			"implement": {Model: "stale-routing-implement", Harness: harness.Name, TimeoutText: "9m", Execution: ExecutionMCP},
+		}}
+	}
+	data, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// component-runtime "Configuration scopes": a pre-DEC-56 file keeps every
+// policy and control-plane value the client loader resolved from it,
+// including values held only in its named default setup, while all executor
+// detail is dropped and the warning names fields without values.
+func TestDeploymentLoadKeepsLegacyDefaultSetupPolicy(t *testing.T) {
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[string][]byte{
+		"setup-only default setup":                   legacySetupDeployment(t, false),
+		"default setup overriding a stale projection": legacySetupDeployment(t, true),
+		"earlier init output":                        legacyInitShapedDeployment(t),
+		"annotated example":                          example,
+	}
+	for name, data := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			path := writeDeploymentFixture(t, data)
+			local, err := Load(path)
+			if err != nil {
+				t.Fatalf("fixture is not a valid pre-DEC-56 file: %v", err)
+			}
+			var warnings warningLog
+			deployment, err := LoadDeployment(path, warnings.logf)
+			if err != nil {
+				t.Fatalf("deployment loader refused a previously valid file: %v", err)
+			}
+			assertNoExecutorDetail(t, deployment)
+			want, got := policyView(t, local), policyView(t, deployment)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("policy changed:\n got %+v\nwant %+v", got, want)
+			}
+			lines := warnings.all()
+			if len(lines) != 1 || !strings.Contains(lines[0], "setups") || !strings.Contains(lines[0], "default_setup") {
+				t.Fatalf("warnings = %q", lines)
+			}
+			for _, value := range []string{"setup-spec-model", "setup-fallback-model", "seat-a", "stale-spec-model", "fast", "codex", "gpt-5.6-sol"} {
+				if strings.Contains(strings.TrimPrefix(lines[0], "config: "+path+":"), value) {
+					t.Fatalf("warning %q echoes value %q", lines[0], value)
+				}
+			}
+		})
+	}
+	t.Run("default setup values are the ones kept", func(t *testing.T) {
+		deployment, err := ParseDeployment(legacySetupDeployment(t, true), "fast.yaml", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view := policyView(t, deployment)
+		if view.StageTimeouts["spec"] != "45m" || view.StageTimeouts["implement"] != "5h" || view.StageTimeouts["review"] != "2h" || view.StageTimeouts["verify"] != "90m" || view.ReviewSeats != 3 {
+			t.Fatalf("default setup timeouts or seat count lost: %+v", view)
+		}
+		if view.Triage.Model != "setup-triage-model" || view.Triage.Effort != "medium" || view.Triage.TimeoutText != "25m" || view.Planning.Model != "setup-planning-model" || view.Planning.ExplorationOutputTokens != 4000 {
+			t.Fatalf("default setup control-plane settings lost: triage=%+v planning=%+v", view.Triage, view.Planning)
+		}
+		if view.MaxBounces != 6 || view.Execution.SpecApproval || !view.Execution.MergeApproval || !view.Execution.VerifyStage || view.Execution.ImplementConcurrency != 3 || view.Execution.ReviewConcurrency != 2 {
+			t.Fatalf("top-level gates or bounce limit changed: %+v", view)
+		}
+	})
 }

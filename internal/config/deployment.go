@@ -109,6 +109,7 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 			}
 		}
 	}
+	promoteLegacyDefaultSetup(root)
 	drop(root, "", "harnesses", "setups", "default_setup")
 	if settings, ok := root["execution_settings"].(map[string]any); ok {
 		for _, stage := range []string{"spec", "implementation", "verify"} {
@@ -166,6 +167,44 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 		return nil, nil, false, err
 	}
 	return stripped, ignored, packDirSet, nil
+}
+
+// promoteLegacyDefaultSetup makes the setup that default_setup names
+// authoritative, as the pre-DEC-56 loader did: its execution_settings and
+// review replace the top-level projection, and routing, which that loader
+// ignored once setups existed, is removed. Its stage timeouts, review seat
+// count, and control-plane settings therefore survive; the executor values
+// it carries are stripped afterwards like any other. The setup's
+// max_bounces, verify_stage, and refresh_review never reached the workspace
+// policy a deployment file seeds, so they stay unread (component-runtime).
+func promoteLegacyDefaultSetup(root map[string]any) {
+	name, _ := root["default_setup"].(string)
+	name = strings.TrimSpace(name)
+	setups, _ := root["setups"].([]any)
+	if name == "" || len(setups) == 0 {
+		return
+	}
+	for _, entry := range setups {
+		setup, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if setupName, _ := setup["name"].(string); strings.TrimSpace(setupName) != name {
+			continue
+		}
+		if settings, ok := setup["execution_settings"]; ok {
+			root["execution_settings"] = settings
+		} else {
+			delete(root, "execution_settings")
+		}
+		if review, ok := setup["review"]; ok {
+			root["review"] = review
+		} else {
+			delete(root, "review")
+		}
+		delete(root, "routing")
+		return
+	}
 }
 
 // normalizeDeployment validates a stripped deployment file. It shares the

@@ -66,7 +66,10 @@ A deployment file written before DEC-56 may still carry `harnesses`,
 `setups`, `default_setup`, `routing` models, stage `harness`, `model`,
 `model_policy`, or `effort`, review fallbacks, or seat models. `conveyord`
 and `conveyor init` ignore those keys, never validate them, and log one line
-naming each ignored field without its value. Other unknown keys still fail
+naming each ignored field without its value. When `default_setup` names one of
+the file's `setups`, that setup's stage timeouts, review seat count, and
+control-plane settings apply, as they did before, and its executor detail is
+dropped. Other unknown keys still fail
 the load. Move execution detail into a local execution config.
 
 ### Database selection
