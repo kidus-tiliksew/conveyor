@@ -18,7 +18,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 type initAnswers struct {
@@ -161,7 +160,9 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	temporaryPath := ""
 	var validated *config.Config
 	if configExists {
-		validated, err = config.Load(absoluteConfig)
+		// A file written before DEC-56 still loads; the deployment loader
+		// ignores and names its execution keys (component-runtime).
+		validated, err = config.LoadDeployment(absoluteConfig, log.Printf)
 		if err != nil {
 			return fmt.Errorf("load existing deployment config: %w", err)
 		}
@@ -179,7 +180,7 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 		if err = requireInitAPIKey(candidate); err != nil {
 			return err
 		}
-		data, marshalErr := yaml.Marshal(candidate)
+		data, marshalErr := config.MarshalDeployment(&candidate)
 		if marshalErr != nil {
 			return fmt.Errorf("render deployment config: %w", marshalErr)
 		}
@@ -203,7 +204,7 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 		if err = temporary.Close(); err != nil {
 			return fmt.Errorf("stage deployment config: %w", err)
 		}
-		validated, err = config.Load(temporaryPath)
+		validated, err = config.LoadDeployment(temporaryPath, log.Printf)
 		if err != nil {
 			return fmt.Errorf("validate generated deployment config: %w", err)
 		}
@@ -261,28 +262,28 @@ func requireInitAPIKey(candidate config.Config) error {
 	return nil
 }
 
+// defaultInitConfig is the generated deployment configuration: pipeline
+// policy and the in-process control-plane settings only (DEC-56(1), DEC-56(3)).
+// Harnesses, setups, and executor models belong to client-local execution
+// setups, which `conveyor config init-execution` creates on an executing
+// machine (component-harness-execution).
 func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, error) {
-	harness := config.HarnessTemplates()[0].Harness
 	settings := config.ContextualExecutionSettings{
 		ControlPlane: config.ControlPlaneSettings{
 			Triage:   config.ModelTimeoutSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 			Planning: config.PlanningSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 		},
-		Spec:           config.ImplementationSettings{Harness: harness.Name, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "30m"},
-		Implementation: config.ImplementationSettings{Harness: harness.Name, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "4h"},
-		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
+		Spec:           config.ImplementationSettings{TimeoutText: "30m"},
+		Implementation: config.ImplementationSettings{TimeoutText: "4h"},
+		Review:         config.ReviewExecutionSettings{TimeoutText: "1h"},
 	}
-	review := config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness.Name, Effort: "high"}}}
 	return config.Config{
 		Workspace: answers.WorkspaceID, MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,
 		Database:                  config.DatabaseForURL(databaseURL),
 		ExecutionSettings:         &settings,
-		Harnesses:                 []config.Harness{harness},
-		Review:                    review,
-		Setups:                    []config.ExecutionSetup{{Name: "default", ExecutionSettings: settings, Review: review, RefreshReview: config.RefreshReviewDelta}},
-		DefaultSetup:              "default",
-		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
+		Review:                    config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1},
 		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: gitx.GitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, InstallConveyor: config.InstallSwitch(true)}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	}, nil

@@ -5,15 +5,18 @@ treating them as one. The deployment config describes a server. The local
 execution config describes a machine that runs agents. The credentials file
 remembers who you are per server. The setup guides keep the server and
 client files separate, including on a solo machine. A combined
-`conveyor.yaml` is supported, but select the intended file explicitly when a
-host also runs agents. See [Server setup](server-setup.md) and
+`conveyor.yaml` still loads on both sides, because `conveyord` ignores its
+execution keys, but select the intended file explicitly when a host also runs
+agents. See [Server setup](server-setup.md) and
 [Client setup](client-setup.md).
 
 ## Deployment config (server)
 
-Read by `conveyord` (and written by `conveyor init`). The annotated
-[conveyor.example.yaml](../conveyor.example.yaml) documents every field
-inline; the shape:
+Read by `conveyord` (and written by `conveyor init`). It holds pipeline
+policy and the settings of the stages that run inside `conveyord` (triage,
+title generation, and planning), never harnesses or executor models (DEC-56).
+The annotated [conveyor.example.yaml](../conveyor.example.yaml) documents
+every field inline; the shape:
 
 ```yaml
 workspace: demo                  # optional bootstrap workspace
@@ -25,12 +28,22 @@ work_order_queue_timeout: 24h    # unclaimed orders go stale after this
 database:
   url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
 
+execution_settings:
+  control_plane:                 # in-process stages; the server configuring itself
+    triage: {model: gpt-5.6-luna, effort: high, timeout: 20m}
+    planning: {model: gpt-5.6-luna, effort: high, timeout: 20m}
+  spec: {timeout: 30m}           # stage timeouts are pipeline policy
+  implementation: {timeout: 4h}
+  review: {timeout: 1h}
+
+review:
+  seats: [{}]                    # seat count only; seat models are client-local
+
 execution:
   spec_approval: true            # workspace default for the plan gate
   merge_approval: true           # workspace default for the merge gate
   implement_concurrency: 1
   review_concurrency: 1
-  first_activity_timeout: 2m
 
 repos:
   - name: api
@@ -45,10 +58,19 @@ monitor:
   startup_window: 24h
 ```
 
-Plus `harnesses`, `execution_settings`, `review.seats`, and named `setups`,
-which have the same shape as the local execution config below. The
-`workspace:` and `repos:` entries are optional; leave them out to create the
-workspace from the dashboard's first-run prompt instead.
+`planning_models` optionally lists the planning models the dashboard may
+select. The `workspace:` and `repos:` entries are optional; leave them out to
+create the workspace from the dashboard's first-run prompt instead.
+
+A deployment file written before DEC-56 may still carry `harnesses`,
+`setups`, `default_setup`, `routing` models, stage `harness`, `model`,
+`model_policy`, or `effort`, review fallbacks, or seat models. `conveyord`
+and `conveyor init` ignore those keys, never validate them, and log one line
+naming each ignored field without its value. When `default_setup` names one of
+the file's `setups`, that setup's stage timeouts, review seat count, and
+control-plane settings apply, as they did before, and its executor detail is
+dropped. Other unknown keys still fail
+the load. Move execution detail into a local execution config.
 
 ### Database selection
 
@@ -159,8 +181,8 @@ These are set by the launcher; you never set them yourself.
 
 ## Workspace config over the API
 
-The server-side workspace configuration (repos, harness catalog entries,
-review seats, setups, execution defaults, monitor) is also editable at
+The server-side workspace configuration (repos, stage timeouts, review seat
+count, gates, bounce limits, monitor) is also editable at
 runtime: through the Workspace page, or round-tripped as YAML with
 `conveyor config export` and `conveyor config import`, which uses optimistic
 concurrency and rejects unknown keys.

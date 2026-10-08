@@ -52,6 +52,9 @@ type Server struct {
 	passwordLimiter          *passwordAttemptLimiter
 	// Repos is the set of valid repo names; nil skips validation.
 	Repos []string
+	// multipartTaskIntakeLimit overrides maxMultipartTaskIntakeBytes in tests;
+	// zero selects the production bound.
+	multipartTaskIntakeLimit int64
 	// OnCreate is invoked with each created task's ID (the dispatcher's
 	// Enqueue). Nil means tasks queue without dispatch (tests).
 	OnCreate func(context.Context, string)
@@ -1126,11 +1129,44 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Request) {
+	limit := s.multipartTaskIntakeLimit
+	if limit <= 0 {
+		limit = maxMultipartTaskIntakeBytes
+	}
+	tooLarge := fmt.Sprintf("attachment task request exceeds the %d-byte multipart intake limit", limit)
+	// The whole request is bounded before parsing; every refusal precedes
+	// opening, validating, titling, or persisting an attachment
+	// (component-artifacts "Atomic multipart intake").
+	if r.ContentLength > limit {
+		http.Error(w, tooLarge, http.StatusRequestEntityTooLarge)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := r.ParseMultipartForm(maxArtifactBytes); err != nil {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+		var overflow *http.MaxBytesError
+		if errors.As(err, &overflow) {
+			http.Error(w, tooLarge, http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid attachment task form: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
+	// The parser stops at the closing boundary. Drain any epilogue through
+	// the same bounded reader so trailing bytes cannot exceed the limit
+	// unnoticed.
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		var overflow *http.MaxBytesError
+		if errors.As(err, &overflow) {
+			http.Error(w, tooLarge, http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid attachment task form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	var req createTaskReq
 	if err := json.Unmarshal([]byte(r.FormValue("task")), &req); err != nil {
 		http.Error(w, "invalid task metadata: "+err.Error(), http.StatusBadRequest)

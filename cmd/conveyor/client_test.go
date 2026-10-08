@@ -30,9 +30,6 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 		if input["body"] != "fix it" {
 			t.Fatalf("body = %#v", input)
 		}
-		if input["setup"] != "backend" {
-			t.Fatalf("setup = %#v", input)
-		}
 		if _, supplied := input["title"]; supplied {
 			t.Fatalf("CLI still sends title: %#v", input)
 		}
@@ -41,8 +38,45 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 	defer srv.Close()
 
 	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
-	if _, err := c.createTaskWithSetup("fix it", "api", "main", false, nil, nil, "backend"); err != nil {
+	if _, err := c.createTask("fix it", "api", "main"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// DEC-56(2): task creation sends gates, hold, and dependencies, and never a
+// setup selection or execution detail.
+func TestTaskCreatePayloadIsPolicyOnly(t *testing.T) {
+	var input map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1"})
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
+	specApproval, mergeApproval := false, true
+	if _, err := c.createTaskWithDependencies("fix it", "api", "trunk", true, &specApproval, &mergeApproval, []string{"task-0"}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"body": "fix it", "repo": "api", "base_branch": "trunk", "source": "cli", "hold": true, "spec_approval": false, "merge_approval": true, "depends_on": []any{"task-0"}}
+	if len(input) != len(want) {
+		t.Fatalf("payload = %#v, want exactly %#v", input, want)
+	}
+	for key, value := range want {
+		got, _ := json.Marshal(input[key])
+		expected, _ := json.Marshal(value)
+		if string(got) != string(expected) {
+			t.Fatalf("payload[%s] = %s, want %s", key, got, expected)
+		}
+	}
+	for _, retired := range []string{"setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv"} {
+		if _, ok := input[retired]; ok {
+			t.Fatalf("payload carries retired %s: %#v", retired, input)
+		}
 	}
 }
 

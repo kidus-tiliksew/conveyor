@@ -243,7 +243,7 @@ func configCmd() *cobra.Command {
 	}
 	initExecution := &cobra.Command{
 		Use: "init-execution", Short: "Create local execution settings", Args: cobra.NoArgs,
-		Long: "Create local execution settings interactively, or pass --defaults for the non-interactive detected defaults. The name is deliberately distinct from `conveyor task setup`, which changes a task's frozen workspace setup.",
+		Long: "Create local execution settings interactively, or pass --defaults for the non-interactive detected defaults. Execution settings stay on this machine; `conveyor run --setup` and the worker select a named setup when they claim work.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
@@ -321,7 +321,7 @@ func configCmd() *cobra.Command {
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
-	var repo, base, body, setup, specGate, mergeGate string
+	var repo, base, body, specGate, mergeGate string
 	var dependsOn []string
 	var hold bool
 	newCmd := &cobra.Command{
@@ -337,7 +337,7 @@ func taskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			t, err := newClient().createTaskWithDependencies(body, repo, base, hold, specApproval, mergeApproval, setup, dependsOn)
+			t, err := newClient().createTaskWithDependencies(body, repo, base, hold, specApproval, mergeApproval, dependsOn)
 			if err != nil {
 				return err
 			}
@@ -349,7 +349,6 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
 	newCmd.Flags().BoolVar(&hold, "hold", false, "hold the task so workers cannot claim its orders; claim them yourself (DEC-55(3))")
-	newCmd.Flags().StringVar(&setup, "setup", "", "named execution setup (defaults to workspace default)")
 	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
 	newCmd.Flags().StringSliceVar(&dependsOn, "depends-on", nil, "open task ID that must merge first (repeatable)")
@@ -407,7 +406,6 @@ func taskCmd() *cobra.Command {
 		closeTaskCmd(),
 		addTaskDependencyCmd(),
 		removeTaskDependencyCmd(),
-		changeTaskSetupCmd(),
 		requestTaskChangesCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
@@ -502,33 +500,6 @@ func closeTaskCmd() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&reason, "reason", "", "cancellation reason")
-	return command
-}
-
-func changeTaskSetupCmd() *cobra.Command {
-	var setup, reason, requestID string
-	var applyLatest bool
-	command := &cobra.Command{
-		Use: "setup <id>", Short: "Change a task's frozen setup for future work only", Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if strings.TrimSpace(requestID) == "" {
-				return fmt.Errorf("--request-id is required")
-			}
-			if applyLatest == (strings.TrimSpace(setup) != "") {
-				return fmt.Errorf("exactly one of --setup or --apply-latest is required")
-			}
-			result, err := newClient().changeTaskSetup(args[0], setup, reason, requestID, applyLatest)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "task %s now freezes setup %s; affects future work only (%s)\n", result.Task.ID, result.Task.SetupName, result.ReviewTransition)
-			return nil
-		},
-	}
-	command.Flags().StringVar(&setup, "setup", "", "currently defined named workspace setup")
-	command.Flags().BoolVar(&applyLatest, "apply-latest", false, "re-freeze the latest definition of the task's current setup")
-	command.Flags().StringVarP(&reason, "reason", "r", "", "optional operator reason")
-	command.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
 	return command
 }
 

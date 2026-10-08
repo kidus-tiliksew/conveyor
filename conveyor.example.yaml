@@ -6,6 +6,14 @@
 # invocation. CONVEYOR_TRIAGE_MODEL and CONVEYOR_PLANNING_MODEL override the
 # general value for their stages. Empty values are ignored; these deployment
 # overrides never change the stored workspace configuration or MCP work orders.
+#
+# This annotated file is a combined example. conveyord reads it through the
+# deployment loader, which keeps pipeline policy, stage timeouts, the review
+# seat count, and the in-process control-plane models, and ignores and logs
+# by name every execution key: harnesses, setups, default_setup, stage
+# harness/model/model_policy/effort, review fallbacks, and seat contents
+# (DEC-56). Those sections belong in a client's local execution config, which
+# conveyor run and the worker read. conveyor init writes a policy-only file.
 workspace: demo
 # pack_dir: /path/to/custom/pack  # optional strict override; omitted uses the embedded canonical role pack
 # Review rounds before human check-in (spec §21.17): the window resets after
