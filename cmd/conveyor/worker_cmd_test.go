@@ -3383,7 +3383,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	for _, arg := range os.Args {
 		switch arg {
 		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability", "env-branch",
-			"capture-await-exit", "capture-output-await-exit", "capture-output-await-emit-exit", "capture-flood":
+			"capture-await-exit", "capture-output-await-exit", "capture-output-await-emit-exit", "capture-flood", "crash-child":
 			mode = arg
 		}
 	}
@@ -3466,6 +3466,19 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 		fmt.Fprintln(os.Stdout, "deadline activity")
 		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO_2"))
 		os.Exit(captureHelperExitCode())
+	case "crash-child":
+		// The harness of a launcher the test will SIGKILL: it produces output,
+		// reports its PID (its process group) on the readiness pipe, and then
+		// blocks until the test kills it.
+		fmt.Fprintln(os.Stdout, "crash child activity")
+		ready, err := os.OpenFile(os.Getenv("CONVEYOR_CRASH_READY"), os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(ready, "%d\n", os.Getpid())
+		_ = ready.Close()
+		awaitCaptureFIFO(t, os.Getenv("CONVEYOR_CAPTURE_FIFO"))
+		os.Exit(0)
 	case "capture-flood":
 		line := strings.Repeat("a", 1023) + "\n"
 		for written := 0; written < 5*1024*1024; written += len(line) {

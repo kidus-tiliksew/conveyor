@@ -42,6 +42,93 @@ func runAttemptObservability(t *testing.T, x Fixture) {
 	}
 	t.Run("RunPlaneIdentity", func(t *testing.T) { runRunPlaneAttemptCapture(t, x) })
 	t.Run("PlanRevisionRelease", func(t *testing.T) { runPlanRevisionAttemptCapture(t, x) })
+	t.Run("CrashedLauncherLeaseRecovery", func(t *testing.T) { runCrashedLauncherLeaseRecovery(t, x) })
+}
+
+// runCrashedLauncherLeaseRecovery models a launcher killed abruptly mid
+// attempt: it renewed with an activity snapshot and then never released or
+// captured. Ordinary lease-expiry recovery must treat that attempt exactly
+// like an attempt that never had a launcher (same recovered row, same
+// recoverability and fresh claim), and no capture may exist or be accepted for
+// it afterwards (req-260820-221be8 AC-2.3; component-work-orders).
+func runCrashedLauncherLeaseRecovery(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	for _, plane := range []struct {
+		name     string
+		claim    func(session string) core.WorkOrderClaim
+		identity func(session string) core.WorkOrderClaimIdentity
+	}{
+		{name: "worker", claim: func(session string) core.WorkOrderClaim {
+			return core.WorkOrderClaim{WorkerID: captureWorker, ClaimantID: captureWorker, SessionID: session, ClientToken: session, Lease: time.Nanosecond, ExecutionTimeout: 24 * time.Hour}
+		}, identity: workerCaptureIdentity},
+		{name: "run", claim: func(session string) core.WorkOrderClaim {
+			return core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("usr-crash"), OwnerUserID: "usr-crash", SessionID: session, ClientToken: session, Lease: time.Nanosecond, ExecutionTimeout: 24 * time.Hour}
+		}, identity: func(session string) core.WorkOrderClaimIdentity {
+			return core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("usr-crash"), SessionID: session}
+		}},
+	} {
+		t.Run(plane.name, func(t *testing.T) {
+			control := newCaptureOrder(t, x, core.StageImplement)
+			crashed := newCaptureOrder(t, x, core.StageImplement)
+			controlClaim, err := ClaimWorkOrder(ctx, st, control.ID, plane.claim("control-"+core.NewTaskID()))
+			requireOK(t, err)
+			crashedClaim, err := ClaimWorkOrder(ctx, st, crashed.ID, plane.claim("crashed-"+core.NewTaskID()))
+			requireOK(t, err)
+			// The crashed launcher's last observable act was an activity
+			// snapshot; it then died without release or capture.
+			if err = st.UpsertWorkOrderActivitySnapshot(ctx, crashed.ID, plane.identity(crashedClaim.SessionID), "tail before crash"); err != nil && !errors.Is(err, store.ErrWorkOrderClaimLost) {
+				t.Fatal(err)
+			}
+			_, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
+			requireOK(t, err)
+			recoveredControl, err := st.GetWorkOrder(ctx, control.ID)
+			requireOK(t, err)
+			recoveredCrash, err := st.GetWorkOrder(ctx, crashed.ID)
+			requireOK(t, err)
+			type recoveredShape struct {
+				State                  core.WorkOrderState
+				Claimable              bool
+				RetrySuppressed        bool
+				RetrySuppressionReason string
+				LastAttemptOutcome     string
+				LastFailureMessage     string
+				AutomaticRetryCount    int
+				NextRetryZero          bool
+				ActiveAttempt          string
+				Session                string
+			}
+			shape := func(o core.WorkOrder) recoveredShape {
+				return recoveredShape{o.State, o.Claimable, o.RetrySuppressed, o.RetrySuppressionReason, o.LastAttemptOutcome, o.LastFailureMessage, o.AutomaticRetryCount, o.NextRetryAt.IsZero(), o.AttemptID, o.SessionID}
+			}
+			if shape(recoveredCrash) != shape(recoveredControl) || recoveredCrash.LastAttemptOutcome != core.WorkOrderOutcomeExpired ||
+				recoveredCrash.LastAttemptID != crashedClaim.AttemptID || recoveredControl.LastAttemptID != controlClaim.AttemptID {
+				t.Fatalf("crashed recovery %+v differs from control %+v", recoveredCrash, recoveredControl)
+			}
+			requireAttemptCaptures(t, x, crashed.ID)
+			requireAttemptCaptures(t, x, control.ID)
+			// A late capture for the crashed attempt is never accepted.
+			_, err = st.RecordWorkOrderAttemptCapture(ctx, crashed.ID, plane.identity(crashedClaim.SessionID), captureOf(crashedClaim, "", "fabricated after crash"))
+			requireCaptureError(t, "crashed attempt after expiry", err, store.ErrAttemptCaptureUnverified)
+			// Operator recovery and a fresh claim behave exactly as for the
+			// control order, and still fabricate no capture.
+			for _, order := range []struct {
+				id      string
+				attempt string
+			}{{control.ID, controlClaim.AttemptID}, {crashed.ID, crashedClaim.AttemptID}} {
+				recovered, err := RecoverWorkOrder(ctx, st, order.id, "crash-recover-"+core.NewTaskID(), time.Hour)
+				requireOK(t, err)
+				if recovered.State != core.WorkOrderQueued {
+					t.Fatalf("recovery state=%s", recovered.State)
+				}
+				fresh, err := ClaimWorkOrder(ctx, st, order.id, core.WorkOrderClaim{WorkerID: captureWorker, ClaimantID: captureWorker, SessionID: "fresh-" + core.NewTaskID(), ClientToken: "fresh", Lease: time.Hour, ExecutionTimeout: time.Hour})
+				requireOK(t, err)
+				if fresh.AttemptID == "" || fresh.AttemptID == order.attempt {
+					t.Fatalf("fresh claim attempt=%q (crashed %q)", fresh.AttemptID, order.attempt)
+				}
+				requireAttemptCaptures(t, x, order.id)
+			}
+		})
+	}
 }
 
 func attemptEndings(stage core.Stage) []attemptEnding {

@@ -595,6 +595,7 @@ func TestUnmediatedEndingHasNoSyntheticCapture(t *testing.T) {
 			t.Fatalf("releases=%+v captures=%+v", releases, captures)
 		}
 	})
+	t.Run("launcher killed then lease recovery", runLauncherCrashLeavesNoSyntheticCaptureAndRecoversLease)
 	t.Run("missing attempt identity", func(t *testing.T) {
 		calls := 0
 		finalizer := newAttemptCaptureFinalizer("session", "", func(context.Context, core.WorkOrderAttemptCapture) error {
