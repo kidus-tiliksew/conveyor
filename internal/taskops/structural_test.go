@@ -21,14 +21,14 @@ func TestProductionLifecycleWritersEnterTaskOps(t *testing.T) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	legacy := map[string]bool{
-		"CancelTask": true, "AcceptReviewDecision": true, "ChangeTaskSetup": true,
+		"CancelTask": true, "AcceptReviewDecision": true, "ChangeTaskPolicy": true,
 		"CreateWorkOrder": true, "CreateStageWorkOrder": true, "CreateReviewRound": true,
 		"RetryReviewRound": true, "RecoverInterruptedReviewRound": true,
 		"ClaimWorkOrder": true, "RedispatchWorkOrder": true, "RecoverWorkOrder": true, "UpdateWorkOrder": true,
 		"RenewWorkerClaim": true, "ReleaseWorkerClaim": true,
 	}
 	guarded := map[string]bool{
-		"CancelTaskCommand": true, "AcceptReviewDecisionCommand": true, "ChangeTaskSetupCommand": true,
+		"CancelTaskCommand": true, "AcceptReviewDecisionCommand": true, "ChangeTaskPolicyCommand": true,
 		"CreateWorkOrderCommand": true, "CreateStageWorkOrderCommand": true, "CreateReviewRoundCommand": true,
 		"RetryReviewRoundCommand": true, "RecoverInterruptedReviewRoundCommand": true,
 		"ClaimWorkOrderCommand": true, "RedispatchWorkOrderCommand": true, "RecoverWorkOrderCommand": true, "UpdateWorkOrderCommand": true,

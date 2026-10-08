@@ -11,24 +11,33 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// DEC-43 / VK-2: the same policy handoff and claim lifecycle runs against all stores.
+// DEC-43 / VK-2: the same policy handoff and claim lifecycle runs against all
+// stores. ChangeTaskPolicyCommand is policy-only: it refuses a request without
+// a policy, ignores caller-supplied execution setups and order plans, and
+// leaves the task's legacy setup name untouched (DEC-56).
 func runVerifyPolicy(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC()}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "1h"}}}
+	task.SetupName = "legacy-setup"
+	task.SetupContract = config.ExecutionSetup{Name: "legacy-setup", MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "1h"}}}
 	requireOK(t, st.CreateTask(ctx, task))
 	enabled := true
 	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "enable verification", Policy: &store.TaskPolicyChange{VerifyStage: &enabled, StageTimeouts: map[string]string{"verify": "45m"}}}
 	change := func(r store.SetupChangeRequest) (store.SetupChangeResult, error) {
 		return taskops.ExecuteSetupChange(ctx, st, task.ID, func(l taskops.TaskLease) (store.SetupChangeResult, error) {
-			return st.ChangeTaskSetupCommand(ctx, l, r)
+			return st.ChangeTaskPolicyCommand(ctx, l, r)
 		})
 	}
 	bad := request
 	bad.Reason = " "
 	if _, err := change(bad); err == nil {
 		t.Fatal("policy change accepted blank reason")
+	}
+	noPolicy := request
+	noPolicy.Policy = nil
+	if _, err := change(noPolicy); err == nil {
+		t.Fatal("policy command accepted a request without a policy")
 	}
 	if _, err := change(request); err == nil {
 		t.Fatal("policy handoff accepted missing source binding")
@@ -49,10 +58,31 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	ambiguous.State = core.WorkOrderCancelled
 	requireOK(t, UpdateWorkOrder(ctx, st, ambiguous, core.WorkOrderCmdCancel))
-	result, err := change(request)
+	// A caller-supplied execution setup or order plan never reaches the store's
+	// derived plan; the replay identity covers only the policy inputs.
+	smuggled := request
+	smuggled.Setup = config.ExecutionSetup{Name: "reassigned", MaxBounces: 9, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "other", Model: "other"}, {Harness: "other", Model: "other"}}}}
+	smuggled.NextStage = core.StageImplement
+	smuggled.SupersedeWorkOrderIDs = []string{ambiguous.ID}
+	smuggled.NewJobs = []core.Job{{ID: task.ID + "-smuggled", TaskID: task.ID, Stage: core.StageReview}}
+	smuggled.NewWorkOrders = []core.WorkOrder{{ID: task.ID + "-smuggled", TaskID: task.ID, JobID: task.ID + "-smuggled", Stage: core.StageReview}}
+	result, err := change(smuggled)
 	requireOK(t, err)
 	if !result.Task.SetupContract.VerifyStage || result.Task.NextStage != core.StageVerify || len(result.CreatedWorkOrders) != 1 {
 		t.Fatalf("policy result: %+v", result)
+	}
+	// Durable backends store only the policy subset of the contract, so the
+	// legacy setup name, seat count, and bounce limit are the comparable fields.
+	if result.Task.SetupName != "legacy-setup" || result.Task.SetupContract.MaxBounces != 3 || len(result.Task.SetupContract.Review.Seats) != 1 || len(result.RetainedWorkOrders) != 0 {
+		t.Fatalf("policy change reassigned the execution setup: %+v", result.Task)
+	}
+	stored, err := st.GetTask(ctx, task.ID)
+	requireOK(t, err)
+	if stored.SetupName != "legacy-setup" || stored.SetupContract.MaxBounces != 3 || len(stored.SetupContract.Review.Seats) != 1 || !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+		t.Fatalf("stored policy: name=%q contract=%+v", stored.SetupName, stored.SetupContract)
+	}
+	if _, err := st.GetWorkOrder(ctx, task.ID+"-smuggled"); err == nil {
+		t.Fatal("caller-supplied order plan was persisted")
 	}
 	verify, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
 	requireOK(t, err)
@@ -73,7 +103,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	}
 	foreignActor := store.WithActor(ctx, store.Actor{ID: "different-operator", Role: core.ActorHuman})
 	_, actorErr := taskops.ExecuteSetupChange(foreignActor, st, task.ID, func(l taskops.TaskLease) (store.SetupChangeResult, error) {
-		return st.ChangeTaskSetupCommand(foreignActor, l, request)
+		return st.ChangeTaskPolicyCommand(foreignActor, l, request)
 	})
 	if actorErr == nil {
 		t.Fatal("policy replay accepted a different actor")

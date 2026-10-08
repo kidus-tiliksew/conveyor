@@ -25,7 +25,8 @@ func runCommandRefusals(t *testing.T, x Fixture) {
 	}
 	lease := taskops.TaskLease{}
 	refused(st.ApplyTaskCommand(ctx, lease, order.TaskID, taskops.Command{Kind: core.TaskCancel}))
-	refused(st.ChangeTaskSetupCommand(ctx, lease, store.SetupChangeRequest{TaskID: order.TaskID, RequestID: "setup", Reason: "fixture"}))
+	enabled := true
+	refused(st.ChangeTaskPolicyCommand(ctx, lease, store.SetupChangeRequest{TaskID: order.TaskID, RequestID: "policy", Reason: "fixture", Policy: &store.TaskPolicyChange{VerifyStage: &enabled}}))
 	refused(st.CreateConflictFixCommand(ctx, lease, store.ConflictFixRequest{TaskID: order.TaskID}))
 	refused(st.RequestChangesCommand(ctx, lease, taskops.RequestChanges{TaskID: order.TaskID, Feedback: "fixture"}))
 	refused(st.CancelPlanRevisionWorkOrderCommand(ctx, lease, order.ID, "absent-attempt"))

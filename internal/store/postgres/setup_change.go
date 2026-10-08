@@ -17,13 +17,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
+// ChangeTaskPolicyCommand commits the operator's frozen-policy exception in one
+// transaction: replay identity, claim exclusion, the derived policy and
+// verify/review handoff, audit events, and the task_setup_changes replay record
+// (DEC-47, DEC-43; component-task-lifecycle, component-persistence).
+func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
 	request, validationErr := store.PrepareSetupChangeRequest(raw)
-	if request.Policy != nil {
-		request.PolicyActor = store.ActorFromContext(ctx)
-	}
+	request.PolicyActor = store.ActorFromContext(ctx)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
-		return store.SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize setup change for task %s", request.TaskID)
+		return store.SetupChangeResult{}, fmt.Errorf("taskops lease does not authorize policy change for task %s", request.TaskID)
 	}
 	if validationErr != nil {
 		return store.SetupChangeResult{}, validationErr
@@ -57,7 +59,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return store.SetupChangeResult{}, err
 	}
-	// Claim and setup change share this lock, closing the claim-versus-change
+	// Claim and policy change share this lock, closing the claim-versus-change
 	// race across control-plane instances.
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", fmt.Sprintf("conveyor:work-order-claim:%s:%s", workspaceID, request.TaskID)); err != nil {
 		return store.SetupChangeResult{}, err
@@ -69,7 +71,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 	}
 	task := taskFromDB(row)
 	if core.TaskTerminal(task.State) {
-		return store.SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change setup", store.ErrSetupChangeConflict, task.ID)
+		return store.SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change policy", store.ErrSetupChangeConflict, task.ID)
 	}
 	// Submitted spec/implement attempts are delivered, not executing; only
 	// claimed attempts and in-flight review verdicts block.
@@ -85,29 +87,27 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 	if inFlightVerdict {
 		return store.SetupChangeResult{}, fmt.Errorf("%w: task %s has an in-flight review verdict", store.ErrSetupChangeConflict, task.ID)
 	}
-	if request.Policy != nil {
-		rows, listErr := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspaceID, task.ID)
-		if listErr != nil {
-			return store.SetupChangeResult{}, listErr
+	rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspaceID, task.ID)
+	if err != nil {
+		return store.SetupChangeResult{}, err
+	}
+	var orders []core.WorkOrder
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			rows.Close()
+			return store.SetupChangeResult{}, scanErr
 		}
-		var orders []core.WorkOrder
-		for rows.Next() {
-			order, scanErr := scanWorkOrder(rows)
-			if scanErr != nil {
-				rows.Close()
-				return store.SetupChangeResult{}, scanErr
-			}
-			orders = append(orders, order)
-		}
-		listErr = rows.Err()
-		rows.Close()
-		if listErr != nil {
-			return store.SetupChangeResult{}, listErr
-		}
-		request, err = store.PlanTaskPolicyChange(task, orders, request)
-		if err != nil {
-			return store.SetupChangeResult{}, err
-		}
+		orders = append(orders, order)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return store.SetupChangeResult{}, err
+	}
+	request, err = store.PlanTaskPolicyChange(task, orders, request)
+	if err != nil {
+		return store.SetupChangeResult{}, err
 	}
 	for _, desired := range request.WorkOrderUpdates {
 		var valid bool
@@ -120,18 +120,13 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 	}
 	fromStage := task.NextStage
 	priorSetup := task.SetupContract
-	if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_name=$1,setup_contract=$2,updated_at=now() WHERE workspace_id=$3 AND id=$4`, request.Setup.Name, setupContractJSON(request.Setup), workspaceID, task.ID); err != nil {
+	// The frozen policy changes; the task's legacy setup_name is left as is.
+	if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_contract=$1,next_stage=$2,updated_at=now() WHERE workspace_id=$3 AND id=$4`, setupContractJSON(request.Setup), request.NextStage, workspaceID, task.ID); err != nil {
 		return store.SetupChangeResult{}, err
 	}
-	task.SetupName, task.SetupContract = request.Setup.Name, request.Setup
-	if request.Policy != nil {
-		task.NextStage = request.NextStage
-		if _, err = tx.Exec(ctx, `UPDATE tasks SET next_stage=$1 WHERE workspace_id=$2 AND id=$3`, request.NextStage, workspaceID, task.ID); err != nil {
-			return store.SetupChangeResult{}, err
-		}
-	}
+	task.SetupContract, task.NextStage = request.Setup, request.NextStage
 	result := store.SetupChangeResult{RequestID: request.RequestID, Task: task, ReviewTransition: request.ReviewTransition,
-		UpdatedWorkOrders: []string{}, CreatedWorkOrders: []string{}, RetainedWorkOrders: append([]string{}, request.RetainedWorkOrderIDs...), SupersededWorkOrders: append([]string{}, request.SupersedeWorkOrderIDs...)}
+		UpdatedWorkOrders: []string{}, CreatedWorkOrders: []string{}, RetainedWorkOrders: []string{}, SupersededWorkOrders: append([]string{}, request.SupersedeWorkOrderIDs...)}
 	now := time.Now().UTC()
 	actor := store.ActorFromContext(ctx)
 	if fromStage != task.NextStage {
@@ -203,7 +198,7 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		}
 		order.State = createdState
 		if job.TaskID != task.ID || order.TaskID != task.ID || order.JobID != job.ID || order.Stage != job.Stage {
-			return store.SetupChangeResult{}, fmt.Errorf("invalid setup-change review member %d", i)
+			return store.SetupChangeResult{}, fmt.Errorf("invalid policy-change handoff member %d", i)
 		}
 		if _, err = q.InsertJob(ctx, jobInsertParams(job)); err != nil {
 			return store.SetupChangeResult{}, err
@@ -242,12 +237,6 @@ func (s *Store) ChangeTaskSetupCommand(ctx context.Context, lease taskops.TaskLe
 		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.seat.setup_rebuilt", ActorID: actor.ID, ActorRole: actor.Role,
 			Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "request_id": request.RequestID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "work_order_id": order.ID, "outcome": "created_under_new_setup", "previous_setup": priorSetup, "new_setup": request.Setup}), At: now}); err != nil {
-			return store.SetupChangeResult{}, err
-		}
-	}
-	for _, id := range result.RetainedWorkOrders {
-		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "review.seat.setup_retained", ActorID: actor.ID, ActorRole: actor.Role,
-			Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "request_id": request.RequestID, "work_order_id": id, "outcome": "retained_compatible_verdict", "previous_setup": priorSetup, "new_setup": request.Setup}), At: now}); err != nil {
 			return store.SetupChangeResult{}, err
 		}
 	}

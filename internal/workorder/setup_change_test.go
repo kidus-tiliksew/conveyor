@@ -3,127 +3,40 @@ package workorder
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-func setupChangeFixture(t *testing.T, nextSeats []config.ReviewSeat) (*Service, store.Store, context.Context, core.Task, config.ExecutionSetup, config.ExecutionSetup) {
+// policyChangeFixture is a task whose implementation was submitted at "head"
+// and handed to a queued verify order bound to baseline "base". Its frozen
+// policy names a two-seat review panel.
+func policyChangeFixture(t *testing.T) (*Service, store.Store, context.Context, core.Task, core.WorkOrder, core.WorkOrder) {
 	t.Helper()
-	settings := func(harness, model string) config.ContextualExecutionSettings {
-		return config.ContextualExecutionSettings{
-			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}},
-			Spec:           config.ImplementationSettings{Harness: harness, Model: model, ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "30m"},
-			Implementation: config.ImplementationSettings{Harness: harness, Model: model, ModelPolicy: config.ModelPolicyExplicit, Effort: "medium", TimeoutText: "2h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "45m", FallbackHarness: harness},
-		}
-	}
-	harness := func(name string) config.Harness {
-		return config.Harness{Name: name, Command: []string{name, "{prompt}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"medium": {"--effort", "medium"}, "high": {"--effort", "high"}}, ProbeCommand: []string{name, "--version"}, ProbeTimeoutText: "5s"}
-	}
-	old := config.ExecutionSetup{Name: "old", ExecutionSettings: settings("codex", "gpt-old"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "old-seat", Harness: "codex"}}}, RefreshReview: config.RefreshReviewDelta}
-	next := config.ExecutionSetup{Name: "next", ExecutionSettings: settings("claude", "claude-next"), Review: config.ReviewPanel{Seats: nextSeats}, RefreshReview: config.RefreshReviewDelta}
-	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness("codex"), harness("claude")}, Setups: []config.ExecutionSetup{old, next}, DefaultSetup: old.Name}).WithSetup(old)
-	cfg.Setups, cfg.DefaultSetup = []config.ExecutionSetup{old, next}, old.Name
 	ctx := store.WithActor(store.WithWorkspace(context.Background(), "demo"), store.Actor{ID: "operator", Role: core.ActorHuman})
 	st := store.NewMemory()
-	task := core.Task{ID: "setup-change", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, SetupName: old.Name, SetupContract: old, CreatedAt: time.Now().UTC()}
+	contract := config.ExecutionSetup{Name: "legacy", VerifyStage: true, MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
+		ExecutionSettings: config.ContextualExecutionSettings{Verify: config.ImplementationSettings{TimeoutText: "1h"}, Review: config.ReviewExecutionSettings{TimeoutText: "45m"}}}
+	now := time.Now().UTC()
+	task := core.Task{ID: "policy-change", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupName: "legacy", SetupContract: contract, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	jobs, orders, err := dispatch.BuildReviewRound(cfg, task, cfg.WithSetup(old).Routing.Stages["review"], 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = storetest.For(st).CreateReviewRound(ctx, task.ID, jobs, orders); err != nil {
-		t.Fatal(err)
-	}
-	completed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	completed.State = core.WorkOrderCompleted
-	if err = storetest.For(st).UpdateWorkOrder(ctx, completed); err != nil {
-		t.Fatal(err)
-	}
-	interrupted := orders[1]
-	interrupted.RetrySuppressed, interrupted.LastAttemptOutcome = true, core.WorkOrderOutcomeExpired
-	if err = storetest.For(st).UpdateWorkOrder(ctx, interrupted); err != nil {
-		t.Fatal(err)
-	}
-	return &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}, st, ctx, task, old, next
-}
-
-func TestChangeTaskSetupAcceptsOptionalReasonAndRequiresSetupAndRequestID(t *testing.T) {
-	t.Run("whitespace reason is normalized and accepted", func(t *testing.T) {
-		service, _, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
-		result, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, " \t ", "reasonless-request")
-		if err != nil || result.Task.SetupName != next.Name {
-			t.Fatalf("result=%+v err=%v", result, err)
+	implement := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, JobID: task.ID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	verify := core.WorkOrder{ID: task.ID + "-verify-1", TaskID: task.ID, JobID: task.ID + "-verify-1", Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head", BaselineSHA: "base", ExecutionTimeoutText: "1h", QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+	for _, order := range []core.WorkOrder{implement, verify} {
+		if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
 		}
-	})
-
-	for _, tc := range []struct {
-		name      string
-		setup     string
-		requestID string
-	}{
-		{name: "blank setup", setup: " \t ", requestID: "valid-request"},
-		{name: "blank request id", setup: "next", requestID: " \t "},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			service, _, ctx, task, _, _ := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
-			if _, err := service.ChangeTaskSetup(ctx, task.ID, tc.setup, "", tc.requestID); err == nil || !strings.Contains(err.Error(), "setup and request_id are required") {
-				t.Fatalf("err=%v", err)
-			}
-		})
-	}
-}
-
-func TestChangeTaskSetupCreatesWholeRoundWhenPanelSizeChanges(t *testing.T) {
-	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "one", Harness: "claude"}, {Model: "two", Harness: "claude"}, {Model: "three", Harness: "claude"}})
-	result, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "expand panel", "setup-request-panel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.ReviewTransition != "new_full_round" || len(result.SupersededWorkOrders) != 2 || len(result.CreatedWorkOrders) != 3 {
-		t.Fatalf("result=%+v", result)
-	}
-	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	var roundTwo int
-	for _, order := range orders {
-		if order.ReviewRound == 2 {
-			roundTwo++
-		}
-		if order.ReviewRound == 1 && order.State == core.WorkOrderQueued {
-			t.Fatalf("superseded round remained claimable: %+v", order)
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if roundTwo != 3 {
-		t.Fatalf("round two seats=%d orders=%+v", roundTwo, orders)
-	}
-	if cancelled, countErr := st.CountEvents(ctx, task.ID, "work_order.cancelled"); countErr != nil || cancelled != 1 {
-		t.Fatalf("canonical setup-change cancellations=%d err=%v", cancelled, countErr)
-	}
-}
-
-func TestChangeTaskSetupAllowsSubmittedImplementAttempt(t *testing.T) {
-	service, st, ctx, task, _, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude", Effort: "high"}})
-	if err := st.CreateJob(ctx, core.Job{ID: "setup-change-implement-1", TaskID: task.ID, Stage: core.StageImplement, Harness: "external-mcp", ModelTier: "gpt-old", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending}); err != nil {
-		t.Fatal(err)
-	}
-	submitted := core.WorkOrder{ID: "setup-change-implement-1", TaskID: task.ID, JobID: "setup-change-implement-1", Stage: core.StageImplement,
-		State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)}
-	if err := storetest.For(st).CreateWorkOrder(ctx, submitted); err != nil {
-		t.Fatal(err)
-	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, submitted.ID, core.WorkOrderClaim{SessionID: "delivered", ClientToken: "delivered-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, implement.ID, core.WorkOrderClaim{SessionID: "delivered", ClientToken: "delivered-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,68 +44,112 @@ func TestChangeTaskSetupAllowsSubmittedImplementAttempt(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
-	result, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "reroute review while held", "setup-submitted")
+	return &Service{Store: st}, st, ctx, task, claimed, verify
+}
+
+func TestChangeTaskPolicyHandsSubmittedImplementationToEveryReviewSeat(t *testing.T) {
+	service, st, ctx, task, implement, verify := policyChangeFixture(t)
+	disabled := false
+	result, err := service.ChangeTaskPolicy(ctx, task.ID, "skip verification", "policy-disable", store.TaskPolicyChange{VerifyStage: &disabled})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Task.SetupName != next.Name || result.ReviewTransition != "same_round_reconciled" {
+	if result.ReviewTransition != "policy_handoff" || result.Task.NextStage != core.StageReview || result.Task.SetupContract.VerifyStage ||
+		len(result.CreatedWorkOrders) != 2 || len(result.SupersededWorkOrders) != 1 || result.SupersededWorkOrders[0] != verify.ID {
 		t.Fatalf("result=%+v", result)
 	}
-	untouched, _ := st.GetWorkOrder(ctx, submitted.ID)
+	if result.Task.SetupName != "legacy" || result.Task.SetupContract.Name != "legacy" {
+		t.Fatalf("policy change selected an execution setup: %+v", result.Task)
+	}
+	for seat, id := range result.CreatedWorkOrders {
+		order, getErr := st.GetWorkOrder(ctx, id)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if order.Stage != core.StageReview || order.ReviewRound != 1 || order.ReviewSeat != seat+1 || order.HeadSHA != "head" || order.BaselineSHA != "base" ||
+			order.ExecutionTimeoutText != "45m" || order.State != core.WorkOrderQueued || order.RequiredHarness != "" || order.RequiredModel != "" {
+			t.Fatalf("review seat %d=%+v", seat+1, order)
+		}
+	}
+	retired, _ := st.GetWorkOrder(ctx, verify.ID)
+	if retired.State != core.WorkOrderCancelled {
+		t.Fatalf("superseded verify order=%+v", retired)
+	}
+	untouched, _ := st.GetWorkOrder(ctx, implement.ID)
 	if untouched.State != core.WorkOrderSubmitted {
-		t.Fatalf("delivered attempt mutated=%+v", untouched)
+		t.Fatalf("delivered implementation mutated=%+v", untouched)
+	}
+	for kind, want := range map[string]int{"task.setup.changed": 1, "review.seat.setup_rebuilt": 2, "work_order.cancelled": 1, "pipeline.transition_decided": 1} {
+		if count, countErr := st.CountEvents(ctx, task.ID, kind); countErr != nil || count != want {
+			t.Fatalf("%s events=%d want %d err=%v", kind, count, want, countErr)
+		}
+	}
+	// A same-input replay returns the recorded result without new writes.
+	before, _ := st.ListEvents(ctx, task.ID)
+	replay, err := service.ChangeTaskPolicy(ctx, task.ID, "skip verification", "policy-disable", store.TaskPolicyChange{VerifyStage: &disabled})
+	if err != nil || len(replay.CreatedWorkOrders) != 2 || replay.CreatedWorkOrders[0] != result.CreatedWorkOrders[0] {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	if after, _ := st.ListEvents(ctx, task.ID); len(after) != len(before) {
+		t.Fatalf("replay appended %d events", len(after)-len(before))
 	}
 }
 
-func TestChangeTaskSetupRejectsInFlightReviewVerdict(t *testing.T) {
-	service, st, ctx, task, old, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
-	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	for _, order := range orders {
-		if order.Stage == core.StageReview && order.State == core.WorkOrderQueued {
-			order.RetrySuppressed, order.LastAttemptOutcome = false, ""
-			if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
-				t.Fatal(err)
-			}
-			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verdict", ClientToken: "verdict-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
-			if err != nil {
-				t.Fatal(err)
-			}
-			claimed.State = core.WorkOrderSubmitted
-			if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
+func TestChangeTaskPolicyUpdatesQueuedVerifyTimeoutOnly(t *testing.T) {
+	service, st, ctx, task, _, verify := policyChangeFixture(t)
+	result, err := service.ChangeTaskPolicy(ctx, task.ID, "longer verification", "policy-timeout", store.TaskPolicyChange{StageTimeouts: map[string]string{"verify": "2h"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "verdict in flight", "setup-verdict"); !errors.Is(err, store.ErrSetupChangeConflict) {
+	if result.ReviewTransition != "policy_only" || result.Task.NextStage != core.StageVerify || len(result.CreatedWorkOrders) != 0 ||
+		len(result.UpdatedWorkOrders) != 1 || result.UpdatedWorkOrders[0] != verify.ID || result.Task.SetupContract.ExecutionSettings.Verify.TimeoutText != "2h" {
+		t.Fatalf("result=%+v", result)
+	}
+	updated, _ := st.GetWorkOrder(ctx, verify.ID)
+	if updated.State != core.WorkOrderQueued || updated.ExecutionTimeoutText != "2h" || updated.HeadSHA != "head" || updated.BaselineSHA != "base" || updated.RedispatchCount != 1 {
+		t.Fatalf("verify order=%+v", updated)
+	}
+}
+
+func TestChangeTaskPolicyRejectsClaimedAttemptWithoutMutation(t *testing.T) {
+	service, st, ctx, task, _, verify := policyChangeFixture(t)
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, verify.ID, core.WorkOrderClaim{SessionID: "active", ClientToken: "secret", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if _, err := service.ChangeTaskPolicy(ctx, task.ID, "too late", "policy-active", store.TaskPolicyChange{VerifyStage: &disabled}); !errors.Is(err, store.ErrSetupChangeConflict) {
 		t.Fatalf("err=%v", err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
-	if current.SetupName != old.Name {
+	if !current.SetupContract.VerifyStage || current.NextStage != core.StageVerify {
 		t.Fatalf("task mutated=%+v", current)
 	}
+	if count, _ := st.CountEvents(ctx, task.ID, "task.setup.changed"); count != 0 {
+		t.Fatalf("refused change appended %d audit events", count)
+	}
 }
 
-func TestChangeTaskSetupRejectsClaimedAttemptWithoutMutation(t *testing.T) {
-	service, st, ctx, task, old, next := setupChangeFixture(t, []config.ReviewSeat{{Model: "stable", Harness: "codex"}, {Model: "new-seat", Harness: "claude"}})
-	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	for _, order := range orders {
-		if order.State == core.WorkOrderQueued {
-			order.RetrySuppressed, order.LastAttemptOutcome = false, ""
-			if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "active", ClientToken: "secret", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
+func TestChangeTaskPolicyRejectsInFlightReviewVerdict(t *testing.T) {
+	service, st, ctx, task, _, _ := policyChangeFixture(t)
+	disabled := false
+	result, err := service.ChangeTaskPolicy(ctx, task.ID, "skip verification", "policy-to-review", store.TaskPolicyChange{VerifyStage: &disabled})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := service.ChangeTaskSetup(ctx, task.ID, next.Name, "too late", "setup-active"); !errors.Is(err, store.ErrSetupChangeConflict) {
+	seat, err := storetest.For(st).ClaimWorkOrder(ctx, result.CreatedWorkOrders[0], core.WorkOrderClaim{SessionID: "verdict", ClientToken: "verdict-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat.State = core.WorkOrderSubmitted
+	if err = storetest.For(st).UpdateWorkOrder(ctx, seat); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if _, err = service.ChangeTaskPolicy(ctx, task.ID, "verdict in flight", "policy-verdict", store.TaskPolicyChange{VerifyStage: &enabled}); !errors.Is(err, store.ErrSetupChangeConflict) {
 		t.Fatalf("err=%v", err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
-	if current.SetupName != old.Name {
+	if current.SetupContract.VerifyStage || current.NextStage != core.StageReview {
 		t.Fatalf("task mutated=%+v", current)
 	}
 }
