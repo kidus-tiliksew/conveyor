@@ -427,3 +427,21 @@ func assertDeploymentYAMLHasNoExecutorDetail(t *testing.T, data []byte) {
 	}
 	walk("", root)
 }
+
+// The annotated combined example loads on both sides: the client loader keeps
+// its setups and the deployment loader ignores them.
+func TestDeploymentLoadsAnnotatedExample(t *testing.T) {
+	path := filepath.Join("..", "..", "conveyor.example.yaml")
+	var warnings warningLog
+	cfg, err := LoadDeployment(path, warnings.logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoExecutorDetail(t, cfg)
+	if lines := warnings.all(); len(lines) != 1 || !strings.Contains(lines[0], "harnesses") || !strings.Contains(lines[0], "setups") {
+		t.Fatalf("warnings = %q", lines)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("client loader refused the annotated example: %v", err)
+	}
+}
