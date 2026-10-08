@@ -244,7 +244,9 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 // task. The store read is already workspace-scoped; the origin filter prevents
 // proposals from another task in that workspace reaching the run response.
 // Capability flags are server-derived and grant no new mutation surface
-// (req-260811-0ee057 AC-1.5, AC-2.2, AC-5.8; component-mcp-protocol).
+// (req-accounts-and-membership AC-2.3, AC-2.4, AC-3.3, AC-4.4;
+// req-local-task-runs AC-4.4, AC-4.5; component-mcp-protocol, Run-order
+// plane).
 func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([]workerservice.TaskRunProposal, error) {
 	items, err := s.Store.ListPendingAuthorityProposalsForTask(ctx, task.ID)
 	if err != nil {
