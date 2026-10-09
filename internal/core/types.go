@@ -181,48 +181,45 @@ type Task struct {
 
 	RepositoryInstallAttempt int `json:"repository_install_attempt,omitempty"`
 
-	ID                 string                `json:"id"`
-	Workspace          string                `json:"workspace"`
-	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
-	IntakeKey          string                `json:"-"`      // workspace-scoped MCP retry key
-	Title              string                `json:"title"`
-	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
-	Class              string                `json:"class"` // bug | feature | chore
-	Level              EscalationLevel       `json:"level"`
-	Mode               TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
-	Hold               bool                  `json:"hold,omitempty"`     // reservation from the worker daemon
-	Assignee           *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
-	SpecApproval       bool                  `json:"spec_approval"`
-	MergeApproval      bool                  `json:"merge_approval"`
-	PolicyVersion      int                   `json:"policy_version"`
-	SetupName          string                `json:"-"` // retired live selector; retained for legacy row decoding
-	SetupContract      config.ExecutionSetup `json:"policy_contract"`
-	ReviewedHeadSHA    string                `json:"reviewed_head_sha,omitempty"`
-	ApprovedHeadSHA    string                `json:"approved_head_sha,omitempty"`
-	ApprovalStale      bool                  `json:"approval_stale,omitempty"`
-	RefreshBaselineSHA string                `json:"refresh_baseline_sha,omitempty"`
-	RefreshHeadSHA     string                `json:"refresh_head_sha,omitempty"`
-	RefreshReviewScope string                `json:"refresh_review_scope,omitempty"`
-	Repo               string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
-	BaseBranch         string                `json:"base_branch"`
-	Branch             string                `json:"branch"` // current assigned branch; intake default is conveyor/task-<id>
-	State              TaskState             `json:"state"`
-	NextStage          Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
-	RecoveryStage      Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID       string                `json:"parent_task_id,omitempty"` // blueprint parent
-	OriginSpecVersion  int                   `json:"origin_spec_version,omitempty"`
-	OriginSubID        string                `json:"origin_sub_id,omitempty"`
-	Dependencies       []TaskRelation        `json:"dependencies,omitempty"`
-	BlockingTaskIDs    []string              `json:"blocking_task_ids,omitempty"`
-	Children           []TaskRelation        `json:"children,omitempty"`
-	Context            TaskContext           `json:"context,omitempty"`
-	// FeatureID is deprecated migration history. Live task context and child
-	// materialization use requirement/lineage records instead.
-	FeatureID             string            `json:"feature_id,omitempty"`
-	PullRequestClose      *PullRequestClose `json:"pull_request_close,omitempty"`
-	PullRequestCloseState string            `json:"pull_request_close_state,omitempty"`
-	GitHub                *GitHubLifecycle  `json:"github,omitempty"` // durable forge projection
-	CreatedAt             time.Time         `json:"created_at"`
+	ID                    string                `json:"id"`
+	Workspace             string                `json:"workspace"`
+	Source                string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
+	IntakeKey             string                `json:"-"`      // workspace-scoped MCP retry key
+	Title                 string                `json:"title"`
+	Body                  string                `json:"body"`  // free-form description; becomes part of the prompt
+	Class                 string                `json:"class"` // bug | feature | chore
+	Level                 EscalationLevel       `json:"level"`
+	Mode                  TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
+	Hold                  bool                  `json:"hold,omitempty"`     // reservation from the worker daemon
+	Assignee              *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
+	SpecApproval          bool                  `json:"spec_approval"`
+	MergeApproval         bool                  `json:"merge_approval"`
+	PolicyVersion         int                   `json:"policy_version"`
+	SetupName             string                `json:"-"` // retired live selector; retained for legacy row decoding
+	SetupContract         config.ExecutionSetup `json:"policy_contract"`
+	ReviewedHeadSHA       string                `json:"reviewed_head_sha,omitempty"`
+	ApprovedHeadSHA       string                `json:"approved_head_sha,omitempty"`
+	ApprovalStale         bool                  `json:"approval_stale,omitempty"`
+	RefreshBaselineSHA    string                `json:"refresh_baseline_sha,omitempty"`
+	RefreshHeadSHA        string                `json:"refresh_head_sha,omitempty"`
+	RefreshReviewScope    string                `json:"refresh_review_scope,omitempty"`
+	Repo                  string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
+	BaseBranch            string                `json:"base_branch"`
+	Branch                string                `json:"branch"` // current assigned branch; intake default is conveyor/task-<id>
+	State                 TaskState             `json:"state"`
+	NextStage             Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
+	RecoveryStage         Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
+	ParentTaskID          string                `json:"parent_task_id,omitempty"` // blueprint parent
+	OriginSpecVersion     int                   `json:"origin_spec_version,omitempty"`
+	OriginSubID           string                `json:"origin_sub_id,omitempty"`
+	Dependencies          []TaskRelation        `json:"dependencies,omitempty"`
+	BlockingTaskIDs       []string              `json:"blocking_task_ids,omitempty"`
+	Children              []TaskRelation        `json:"children,omitempty"`
+	Context               TaskContext           `json:"context,omitempty"`
+	PullRequestClose      *PullRequestClose     `json:"pull_request_close,omitempty"`
+	PullRequestCloseState string                `json:"pull_request_close_state,omitempty"`
+	GitHub                *GitHubLifecycle      `json:"github,omitempty"` // durable forge projection
+	CreatedAt             time.Time             `json:"created_at"`
 }
 
 // TaskAssignee is the member-safe identity rendered on task and work-order
@@ -1189,15 +1186,6 @@ type ReviewDecision struct {
 	MaxBounces             int
 }
 
-type Feature struct {
-	ID          string    `json:"id"`
-	Workspace   string    `json:"workspace"`
-	ParentID    string    `json:"parent_id,omitempty"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-}
-
 type ArtifactRole string
 
 const (
@@ -1264,7 +1252,7 @@ func NormalizeVerificationEvidenceContentType(contentType string, sizeBytes int6
 }
 
 func (a Artifact) EligibleVerificationEvidence() bool {
-	if a.Role != ArtifactRoleVerificationEvidence || a.TaskID == "" || a.FeatureID != "" {
+	if a.Role != ArtifactRoleVerificationEvidence || a.TaskID == "" {
 		return false
 	}
 	_, err := NormalizeVerificationEvidenceContentType(a.ContentType, a.SizeBytes)
@@ -1279,14 +1267,9 @@ type Artifact struct {
 	SizeBytes   int64        `json:"size_bytes"`
 	Role        ArtifactRole `json:"role"`
 	TaskID      string       `json:"task_id,omitempty"`
-	// FeatureID remains readable only for pre-retirement persistence
-	// compatibility; live attachment creation targets tasks or requirements.
-	FeatureID string `json:"feature_id,omitempty"`
-	// RequirementID is the attachment target that replaces FeatureID as the
-	// feature tree retires. It is how a finalized
-	// planning transcript attaches to the requirement it produced, and
-	// where migration 046 re-homes feature-scoped attachments. Exactly one of
-	// TaskID, FeatureID, RequirementID, and PlanningSessionID may be set.
+	// RequirementID is how a finalized planning transcript attaches to the
+	// requirement it produced. At most one of TaskID, RequirementID, and
+	// PlanningSessionID may be set (component-artifacts).
 	RequirementID string `json:"requirement_id,omitempty"`
 	// PlanningSessionID owns files uploaded while a planning conversation is
 	// still active, including sessions that do not yet have requirement context.
@@ -1300,13 +1283,13 @@ type Artifact struct {
 // but it never claims two owners.
 func (a Artifact) ValidateAttachmentTarget() error {
 	targets := 0
-	for _, id := range []string{a.TaskID, a.FeatureID, a.RequirementID, a.PlanningSessionID} {
+	for _, id := range []string{a.TaskID, a.RequirementID, a.PlanningSessionID} {
 		if id != "" {
 			targets++
 		}
 	}
 	if targets > 1 {
-		return fmt.Errorf("artifact attaches to one of a task, feature, requirement, or planning session, not %d of them", targets)
+		return fmt.Errorf("artifact attaches to one of a task, requirement, or planning session, not %d of them", targets)
 	}
 	return nil
 }

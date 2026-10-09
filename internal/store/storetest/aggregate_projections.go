@@ -32,7 +32,6 @@ func runEmptyProjections(t *testing.T, x Fixture) {
 	empty(st.ListActivityMarkersForTasks(ctx, []string{"absent"}))
 	empty(st.ListCheckpointContextCandidates(ctx, "absent"))
 	empty(st.ListDependentTaskIDs(ctx, "absent"))
-	empty(st.ListFeatures(ctx))
 	empty(st.ListGovernanceDesigns(ctx, "conveyor"))
 	empty(st.ListJobs(ctx, "absent"))
 	empty(st.ListPlanningBundles(ctx))
@@ -143,14 +142,6 @@ func runProjectionReads(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if len(contextRecords.Tasks) != 1 {
 		t.Fatal("selected task context missing")
-	}
-	feature := core.Feature{ID: "feature", Workspace: x.Workspace, Name: "Historical feature"}
-	requireOK(t, st.CreateFeature(ctx, feature))
-	requireOK(t, st.AssignTaskFeature(ctx, order.TaskID, feature.ID))
-	features, err := st.ListFeatures(ctx)
-	requireOK(t, err)
-	if len(features) != 1 || features[0].ID != feature.ID {
-		t.Fatal("historical feature missing")
 	}
 	callbackError := errors.New("fixture callback")
 	for range 2 {

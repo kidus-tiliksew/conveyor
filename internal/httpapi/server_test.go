@@ -1013,13 +1013,6 @@ func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T)
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	feature := core.Feature{ID: "feature-visible", Workspace: "demo", Name: "Lifecycle"}
-	if err := st.CreateFeature(ctx, feature); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.AssignTaskFeature(ctx, task.ID, feature.ID); err != nil {
-		t.Fatal(err)
-	}
 	lifecycle := core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/api", SpecVersion: 1}
 	if err := st.QueueGitHubLifecycle(ctx, lifecycle); err != nil {
 		t.Fatal(err)
@@ -1042,8 +1035,8 @@ func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T)
 			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
 	}
-	// The Requirements read model no longer leaks task.feature_id or the
-	// retired feature hierarchy. Requirement/blueprint lineage is deposited by
+	// The Requirements read model carries no retired feature hierarchy, and
+	// tasks no longer carry a feature field (task 261007-9d50e0). Requirement/blueprint lineage is deposited by
 	// planning and rendered from living documents instead.
 	request := httptest.NewRequest(http.MethodGet, "/v1/requirements", nil)
 	authenticatedMemoryRead(server, request)

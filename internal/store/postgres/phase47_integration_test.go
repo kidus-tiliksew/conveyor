@@ -116,10 +116,6 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 		t.Fatalf("reloaded config=%+v err=%v", reloaded, err)
 	}
 	assertRetiredEvidenceToggleRowLoadsWithoutRewrite(t, ctx, st, workspace, cfg, reloaded)
-	feature := core.Feature{ID: "feature-" + core.NewTaskID(), Name: "Exports"}
-	if err = st.CreateFeature(ctx, feature); err != nil {
-		t.Fatal(err)
-	}
 	taskID := core.NewTaskID()
 	task := core.Task{ID: taskID, Workspace: workspace, Repo: "api", Title: "Audit export", Source: "test", IntakeKey: "issue-42", BaseBranch: "main", Branch: "conveyor/integration-" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err = st.CreateTask(ctx, task); err != nil {
@@ -196,9 +192,6 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	duplicate.Branch = task.Branch + "-duplicate"
 	if err = st.CreateTask(ctx, duplicate); err == nil {
 		t.Fatal("duplicate workspace intake key succeeded")
-	}
-	if err = st.AssignTaskFeature(ctx, task.ID, feature.ID); err != nil {
-		t.Fatal(err)
 	}
 	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "brief.txt", ContentType: "text/plain", TaskID: task.ID}, []byte("brief"))
 	if err != nil {

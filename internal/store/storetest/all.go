@@ -18,12 +18,18 @@ type Capabilities struct {
 }
 
 type Fixture struct {
-	ReopenVerification   func(*testing.T) store.Backend
-	Backend              store.Backend
-	Context              context.Context
-	Workspace            string
-	Config               *config.Config
-	SeedLegacy           func(*testing.T, string) (int, func(*testing.T))
+	ReopenVerification func(*testing.T) store.Backend
+	Backend            store.Backend
+	Context            context.Context
+	Workspace          string
+	Config             *config.Config
+	SeedLegacy         func(*testing.T, string) (int, func(*testing.T))
+	// SeedHistoricalLink inserts one retained, non-projector-owned link row
+	// exactly as historical migrations left it, such as migration 046's
+	// historical_feature_assignment with legacy feature.migrated provenance.
+	// No public writer accepts a link (component-lineage), so each backend
+	// seeds it directly in its test binary.
+	SeedHistoricalLink   func(*testing.T, context.Context, core.LineageLink)
 	SeedArtifact         func(*testing.T, context.Context, core.Artifact, []byte)
 	ArtifactRepairEvents func(context.Context) ([]core.Event, error)
 	// WorkspaceEvents returns the bound workspace's events without a task
@@ -103,6 +109,7 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
+	run("FeatureRetirement", func(t *testing.T) { RunFeatureRetirementConformance(t, factory.fresh(t, nil)) })
 	run("Requirements", func(t *testing.T) { RunRequirementConformance(t, requirements) })
 	run("VersionDismissal", func(t *testing.T) { RunVersionDismissalConformance(t, requirements) })
 	run("Lineage", func(t *testing.T) {
@@ -113,7 +120,7 @@ func RunAll(t *testing.T, factory Factory) {
 			if _, err := x.Backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: foreign, Repos: repos}); err != nil {
 				t.Fatal(err)
 			}
-			return LineageFixture{Store: x.Backend, Context: x.Context, ForeignContext: ctx, Workspace: x.Workspace, SeedLegacy: x.SeedLegacy}
+			return LineageFixture{Store: x.Backend, Context: x.Context, ForeignContext: ctx, Workspace: x.Workspace, SeedLegacy: x.SeedLegacy, SeedHistoricalLink: x.SeedHistoricalLink}
 		})
 	})
 	for _, suite := range []struct {

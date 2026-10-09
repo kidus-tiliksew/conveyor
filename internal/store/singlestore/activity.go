@@ -14,72 +14,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-func (s *Store) CreateFeature(ctx context.Context, f core.Feature) error {
-	if f.CreatedAt.IsZero() {
-		f.CreatedAt = time.Now().UTC()
-	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		ws, err := workspace(ctx)
-		if err != nil {
-			return err
-		}
-		if err = workerWorkspaceExists(ctx, tx, ws); err != nil {
-			return err
-		}
-		if f.ParentID != "" {
-			var found int
-			if err = tx.QueryRowContext(ctx, `SELECT 1 FROM features WHERE workspace_id=? AND id=?`, ws, f.ParentID).Scan(&found); err != nil {
-				return notFound(err, "parent feature %s", f.ParentID)
-			}
-		}
-		if err = lockKey(ctx, tx, "feature-id:"+f.ID); err != nil {
-			return err
-		}
-		var exists bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM features WHERE id=?)`, f.ID).Scan(&exists); err != nil {
-			return err
-		}
-		if exists {
-			return fmt.Errorf("feature %s already exists", f.ID)
-		}
-
-		_, err = tx.ExecContext(ctx, `INSERT INTO features(id,workspace_id,parent_id,name,description,created_at) VALUES(?,?,?,?,?,?)`, f.ID, ws, nullString(f.ParentID), f.Name, f.Description, f.CreatedAt)
-		return err
-	})
-}
-func (s *Store) ListFeatures(ctx context.Context) ([]core.Feature, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT id,workspace_id,COALESCE(parent_id,''),name,description,created_at FROM features WHERE workspace_id=? ORDER BY name,id`, documentWorkspace(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []core.Feature
-	for rows.Next() {
-		var f core.Feature
-		if err = rows.Scan(&f.ID, &f.Workspace, &f.ParentID, &f.Name, &f.Description, &f.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
-}
-func (s *Store) AssignTaskFeature(ctx context.Context, id, feature string) error {
-	return s.taskTx(ctx, id, func(tx *sql.Tx) error {
-		if _, err := getTaskRow(ctx, tx, id); err != nil {
-			return err
-		}
-		if feature != "" {
-			var found int
-			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM features WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), feature).Scan(&found); err != nil {
-				return notFound(err, "feature %s", feature)
-			}
-		}
-		if err := taskWrite(ctx, tx, id, map[string]any{"feature_id": nullString(feature)}); err != nil {
-			return err
-		}
-		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "task.feature_assigned", Payload: core.JSONPayload(map[string]string{"feature_id": feature})})
-	})
-}
 func (s *Store) UpsertTranscript(ctx context.Context, t core.Transcript) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
@@ -169,7 +103,7 @@ func insertArtifactTx(ctx context.Context, tx *sql.Tx, a core.Artifact, content 
 	if err := lockKey(ctx, tx, "artifact:"+a.Workspace+":"+a.ID); err != nil {
 		return err
 	}
-	for _, p := range []struct{ table, id string }{{"tasks", a.TaskID}, {"features", a.FeatureID}, {"requirements", a.RequirementID}, {"planning_sessions", a.PlanningSessionID}} {
+	for _, p := range []struct{ table, id string }{{"tasks", a.TaskID}, {"requirements", a.RequirementID}, {"planning_sessions", a.PlanningSessionID}} {
 		if p.id == "" {
 			continue
 		}
@@ -181,17 +115,17 @@ func insertArtifactTx(ctx context.Context, tx *sql.Tx, a core.Artifact, content 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts(id,workspace_id,name,content_type,size_bytes,content,created_at) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id=VALUES(id)`, a.ID, a.Workspace, a.Name, a.ContentType, a.SizeBytes, content, a.CreatedAt); err != nil {
 		return err
 	}
-	if a.TaskID == "" && a.FeatureID == "" && a.RequirementID == "" && a.PlanningSessionID == "" {
+	if a.TaskID == "" && a.RequirementID == "" && a.PlanningSessionID == "" {
 		return nil
 	}
 	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artifact_links WHERE workspace_id=? AND artifact_id=? AND COALESCE(task_id,'')=? AND COALESCE(feature_id,'')=? AND COALESCE(requirement_id,'')=? AND COALESCE(planning_session_id,'')=? AND role=?)`, a.Workspace, a.ID, a.TaskID, a.FeatureID, a.RequirementID, a.PlanningSessionID, a.Role).Scan(&exists); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artifact_links WHERE workspace_id=? AND artifact_id=? AND COALESCE(task_id,'')=? AND COALESCE(requirement_id,'')=? AND COALESCE(planning_session_id,'')=? AND role=?)`, a.Workspace, a.ID, a.TaskID, a.RequirementID, a.PlanningSessionID, a.Role).Scan(&exists); err != nil {
 		return err
 	}
 	if exists {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO artifact_links(workspace_id,artifact_id,task_id,feature_id,requirement_id,planning_session_id,role) VALUES(?,?,?,?,?,?,?)`, a.Workspace, a.ID, nullString(a.TaskID), nullString(a.FeatureID), nullString(a.RequirementID), nullString(a.PlanningSessionID), a.Role)
+	_, err := tx.ExecContext(ctx, `INSERT INTO artifact_links(workspace_id,artifact_id,task_id,requirement_id,planning_session_id,role) VALUES(?,?,?,?,?,?)`, a.Workspace, a.ID, nullString(a.TaskID), nullString(a.RequirementID), nullString(a.PlanningSessionID), a.Role)
 	return err
 }
 func (s *Store) CreateArtifact(ctx context.Context, a core.Artifact, content []byte) (core.Artifact, error) {
@@ -246,7 +180,7 @@ func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, r store.C
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? AND a.id=? ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID)
+	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? AND a.id=? ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
 	}
@@ -259,14 +193,14 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
-	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
+	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
 		FROM artifacts a
 		JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
 		WHERE a.workspace_id=? AND a.id=? AND l.planning_session_id=?
 		ORDER BY l.role LIMIT 1`, documentWorkspace(ctx), id, sessionID).Scan(
 		&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType,
 		&artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role,
-		&artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID,
+		&artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID,
 	)
 	if err != nil {
 		return core.Artifact{}, nil, notFound(err, "artifact %s", id)
@@ -275,7 +209,7 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 }
 
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.feature_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? ORDER BY a.created_at,a.id,l.role`, documentWorkspace(ctx))
+	rows, err := documentRows(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? ORDER BY a.created_at,a.id,l.role`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +217,7 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	var result []core.Artifact
 	for rows.Next() {
 		var artifact core.Artifact
-		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.FeatureID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
+		if err := rows.Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID); err != nil {
 			return nil, err
 		}
 		result = append(result, artifact)

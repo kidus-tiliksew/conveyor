@@ -1817,6 +1817,8 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		body   string
 	}{
 		{http.MethodPost, "/v1/features", `{"name":"retired"}`},
+		{http.MethodGet, "/v1/features", ""},
+		{http.MethodGet, "/v1/features/retired", ""},
 		{http.MethodPut, "/v1/tasks/" + task.ID + "/feature", `{"feature_id":"retired"}`},
 	} {
 		request := httptest.NewRequest(legacy.method, legacy.path, strings.NewReader(legacy.body))
@@ -1825,6 +1827,12 @@ func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutati
 		handler.ServeHTTP(result, request)
 		if result.Code != http.StatusNotFound && result.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s %s status=%d body=%s", legacy.method, legacy.path, result.Code, result.Body.String())
+		}
+	}
+	// The retired features entity has no MCP tool either (task 261007-9d50e0).
+	for _, tool := range mcpTools() {
+		if name, _ := tool["name"].(string); strings.Contains(name, "feature") {
+			t.Fatalf("retired feature MCP tool %q is still registered", name)
 		}
 	}
 }

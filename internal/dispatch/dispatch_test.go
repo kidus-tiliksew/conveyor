@@ -368,10 +368,7 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()
-	if err := st.CreateFeature(ctx, core.Feature{ID: "retired-feature", Workspace: "demo", Name: "Retired"}); err != nil {
-		t.Fatal(err)
-	}
-	task := core.Task{ID: "artifact-context", Workspace: "demo", Repo: "api", Title: "Use attachments", FeatureID: "retired-feature", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	task := core.Task{ID: "artifact-context", Workspace: "demo", Repo: "api", Title: "Use attachments", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -389,10 +386,20 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.CreateArtifact(ctx, core.Artifact{
-		Name: "retired-feature.txt", ContentType: "text/plain", FeatureID: "retired-feature",
-	}, []byte("must not enter live model context")); err != nil {
+	// Negative context: a workspace-unattached upload (the shape a retired
+	// feature attachment takes after migration 142/0018) and another task's
+	// attachment never enter this task's model input (component-artifacts).
+	unrelated := core.Task{ID: "unrelated-context", Workspace: "demo", Repo: "api", Title: "Other work", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, unrelated); err != nil {
 		t.Fatal(err)
+	}
+	for _, negative := range []core.Artifact{
+		{Name: "unattached.txt", ContentType: "text/plain"},
+		{Name: "unrelated-task.txt", ContentType: "text/plain", TaskID: unrelated.ID},
+	} {
+		if _, err := st.CreateArtifact(ctx, negative, []byte("must not enter live model context: "+negative.Name)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
@@ -412,8 +419,8 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	foundLargeText := false
 	for _, attachment := range agent.input.Attachments {
 		kinds[attachment.Kind]++
-		if attachment.Name == "retired-feature.txt" {
-			t.Fatal("retired feature-scoped artifact entered live model context")
+		if attachment.Name == "unattached.txt" || attachment.Name == "unrelated-task.txt" {
+			t.Fatalf("%s entered this task's live model context", attachment.Name)
 		}
 		if attachment.Name == "large.txt" {
 			foundLargeText = len(attachment.Content) == len(largeText)

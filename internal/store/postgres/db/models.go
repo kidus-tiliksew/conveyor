@@ -27,11 +27,12 @@ type Artifact struct {
 }
 
 type ArtifactLink struct {
-	WorkspaceID string      `json:"workspace_id"`
-	ArtifactID  string      `json:"artifact_id"`
-	TaskID      pgtype.Text `json:"task_id"`
-	FeatureID   pgtype.Text `json:"feature_id"`
-	Role        string      `json:"role"`
+	WorkspaceID       string      `json:"workspace_id"`
+	ArtifactID        string      `json:"artifact_id"`
+	TaskID            pgtype.Text `json:"task_id"`
+	Role              string      `json:"role"`
+	RequirementID     pgtype.Text `json:"requirement_id"`
+	PlanningSessionID pgtype.Text `json:"planning_session_id"`
 }
 
 type Event struct {
@@ -57,15 +58,6 @@ type DecisionSupersessionSweep struct {
 	DetectedAt           pgtype.Timestamptz `json:"detected_at"`
 	ResolvedBy           string             `json:"resolved_by"`
 	ResolvedAt           pgtype.Timestamptz `json:"resolved_at"`
-}
-
-type Feature struct {
-	ID          string             `json:"id"`
-	WorkspaceID string             `json:"workspace_id"`
-	ParentID    pgtype.Text        `json:"parent_id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type GithubLifecycle struct {
@@ -171,7 +163,7 @@ type MonitorObservation struct {
 	CommitSha          string             `json:"commit_sha"`
 	PullRequestNumber  int32              `json:"pull_request_number"`
 	CheckRunID         string             `json:"check_run_id"`
-	FeatureID          string             `json:"feature_id"`
+	RequirementID      string             `json:"requirement_id"`
 	ObservedAt         pgtype.Timestamptz `json:"observed_at"`
 	ContextJson        []byte             `json:"context_json"`
 	HintContextJson    []byte             `json:"hint_context_json"`
@@ -205,17 +197,17 @@ type Repo struct {
 }
 
 type RepositoryDrift struct {
-	WorkspaceID string             `json:"workspace_id"`
-	ID          string             `json:"id"`
-	Repository  string             `json:"repository"`
-	Kind        string             `json:"kind"`
-	SourceUrl   string             `json:"source_url"`
-	CommitSha   string             `json:"commit_sha"`
-	FeatureID   string             `json:"feature_id"`
-	TaskID      string             `json:"task_id"`
-	DetectedAt  pgtype.Timestamptz `json:"detected_at"`
-	ResolvedAt  pgtype.Timestamptz `json:"resolved_at"`
-	Outcome     string             `json:"outcome"`
+	WorkspaceID   string             `json:"workspace_id"`
+	ID            string             `json:"id"`
+	Repository    string             `json:"repository"`
+	Kind          string             `json:"kind"`
+	SourceUrl     string             `json:"source_url"`
+	CommitSha     string             `json:"commit_sha"`
+	RequirementID string             `json:"requirement_id"`
+	TaskID        string             `json:"task_id"`
+	DetectedAt    pgtype.Timestamptz `json:"detected_at"`
+	ResolvedAt    pgtype.Timestamptz `json:"resolved_at"`
+	Outcome       string             `json:"outcome"`
 }
 
 type ReviewPublication struct {
@@ -281,7 +273,6 @@ type Task struct {
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
 	NextStage               string             `json:"next_stage"`
 	RecoveryStage           string             `json:"recovery_stage"`
-	FeatureID               pgtype.Text        `json:"feature_id"`
 	IntakeKey               pgtype.Text        `json:"intake_key"`
 	Mode                    string             `json:"mode"`
 	SpecApproval            bool               `json:"spec_approval"`

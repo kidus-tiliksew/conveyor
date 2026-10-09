@@ -370,11 +370,8 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(context.Background(), "demo")
 	st := store.NewMemory()
-	if err := st.CreateFeature(ctx, core.Feature{ID: "feature-a", Name: "Feature A", CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
 	for _, task := range []core.Task{
-		{ID: "task-a", Workspace: "demo", FeatureID: "feature-a", State: core.TaskRunning, CreatedAt: time.Now()},
+		{ID: "task-a", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()},
 		{ID: "task-b", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()},
 	} {
 		if err := st.CreateTask(ctx, task); err != nil {
@@ -419,12 +416,14 @@ func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", artifactB.ID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("cross-task read error=%v", err)
 	}
-	featureArtifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "feature.md", ContentType: "text/markdown", FeatureID: "feature-a"}, []byte("feature context"))
+	// A workspace-unattached upload, the shape a retired feature attachment
+	// takes after migration 142/0018, is outside every work order's context.
+	unattached, err := st.CreateArtifact(ctx, core.Artifact{Name: "unattached.md", ContentType: "text/markdown"}, []byte("unattached context"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", featureArtifact.ID); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Fatalf("retired feature-scoped artifact entered work-order context: %v", err)
+	if _, err = service.ReadArtifact(ctx, "order-a", "order-a-session", unattached.ID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("workspace-unattached artifact entered work-order context: %v", err)
 	}
 	if _, err = service.ReadArtifact(ctx, "order-a", "wrong-session", artifactA.ID); err == nil || !strings.Contains(err.Error(), "another session") {
 		t.Fatalf("wrong-session read error=%v", err)

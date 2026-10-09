@@ -906,7 +906,7 @@ func TestMemoryVerificationEvidenceEnforcesRoleMediaLimitsAndOwnership(t *testin
 	}
 	for _, invalid := range []core.Artifact{
 		{Name: "wrong.gif", ContentType: "image/gif", Role: core.ArtifactRoleVerificationEvidence, TaskID: "task-a"},
-		{Name: "feature.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, FeatureID: "feature-a"},
+		{Name: "unattached.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence},
 		{Name: "missing.png", ContentType: "image/png", Role: core.ArtifactRoleVerificationEvidence, TaskID: "missing"},
 	} {
 		if _, err = st.CreateArtifact(ctx, invalid, []byte("bytes")); err == nil {

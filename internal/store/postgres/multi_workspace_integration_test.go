@@ -74,13 +74,6 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 	if events, err := st.ListEvents(ctxB, taskA.ID); err != nil || len(events) != 0 {
 		t.Fatalf("cross-workspace events=%+v err=%v", events, err)
 	}
-	feature := core.Feature{ID: "feature-" + suffix, Name: "Only A"}
-	if err := st.CreateFeature(ctxA, feature); err != nil {
-		t.Fatal(err)
-	}
-	if features, err := st.ListFeatures(ctxB); err != nil || len(features) != 0 {
-		t.Fatalf("cross-workspace features=%+v err=%v", features, err)
-	}
 	artifact, err := st.CreateArtifact(ctxA, core.Artifact{Name: "a.txt", ContentType: "text/plain", TaskID: taskA.ID}, []byte("a"))
 	if err != nil {
 		t.Fatal(err)
