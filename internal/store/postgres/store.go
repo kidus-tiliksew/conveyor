@@ -625,7 +625,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	_, err = insertEventWithID(ctx, q, core.Event{
 		TaskID:  task.ID,
 		Kind:    "task.created",
-		Payload: core.JSONPayload(task),
+		Payload: store.TaskCreatedPayload(ctx, task),
 		At:      task.CreatedAt,
 	})
 	if err != nil {

@@ -77,7 +77,8 @@ export function TasksPage() {
   const { task: selectedId, create } = useSearch({ strict: false }) as { task?: string; create?: boolean }
   const [filter, setFilter] = useTaskFilters('tasks')
   const [offset, setOffset] = useState(0)
-  const canOperate = useWorkspaceCapability('operate_gates')
+  // Intake follows its own capability (DEC-60), which the server checks again.
+  const canCreateTasks = useWorkspaceCapability('create_tasks')
   // Who "my" is. Without an identity the preset has no referent, so it is not
   // offered rather than guessing (REQ-2).
   const { data: me } = useQuery({
@@ -127,7 +128,7 @@ export function TasksPage() {
             </div>
             {/* Intake belongs to the surface where delivery is managed
                 (AC-2.1); it opens over this list, which stays behind it. */}
-            {canOperate && (
+            {canCreateTasks && (
               <Link to="/tasks" search={{ create: true }}>
                 <Button size="sm" tabIndex={-1}>
                   <Plus />
@@ -246,13 +247,13 @@ export function TasksPage() {
       </div>
 
       {/* Task intake, opened over the list it files into (AC-2.1). */}
-      {create && canOperate && <TaskCreateSheet />}
+      {create && canCreateTasks && <TaskCreateSheet />}
 
       {/* The task's own detail composition, mounted as this surface's panel
           rather than reimplemented on it (AC-2.2). A blueprint anchor opened
           here still redirects to its canonical route — that rule belongs to the
           composition, so hosting it here inherits it. */}
-      {(!create || !canOperate) && selectedId && (
+      {(!create || !canCreateTasks) && selectedId && (
         <TaskSheet
           taskId={selectedId}
           panel={{

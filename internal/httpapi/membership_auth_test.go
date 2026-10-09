@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -460,6 +461,18 @@ func TestMutationRoutesNameCapabilitiesExplicitly(t *testing.T) {
 	}
 	if got := mcpCapability("attach_task_branch"); got != core.CapabilityOperateGates {
 		t.Fatalf("MCP attach capability=%q", got)
+	}
+	if got := mcpCapability("create_task"); got != core.CapabilityCreateTasks {
+		t.Fatalf("MCP create_task capability=%q", got)
+	}
+
+	fixture.capabilityCalls = nil
+	request = httptest.NewRequest(http.MethodPost, "/v1/tasks?workspace_id=alpha", strings.NewReader(`{"body":"capability probe"}`))
+	request.Header.Set("Authorization", "Bearer operator-token")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityCreateTasks {
+		t.Fatalf("task intake capability calls=%v", fixture.capabilityCalls)
 	}
 
 	fixture.capabilityCalls = nil
@@ -1073,4 +1086,106 @@ func canonicalWorkspaceNotFoundBody() string {
 	response := httptest.NewRecorder()
 	writeWorkspaceNotFound(response)
 	return response.Body.String()
+}
+
+// TestHumanTaskCreationCapabilityParity proves that moving intake to
+// create_tasks leaves human task creation unchanged for every role on REST
+// JSON, REST multipart, and MCP, including human gate-off and legacy-level
+// inputs and the dashboard session's CSRF and origin proof (DEC-60;
+// req-accounts-and-membership AC-2.5).
+func TestHumanTaskCreationCapabilityParity(t *testing.T) {
+	f := newAgentIntakeFixture(t)
+	f.server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+		ID: "session_maintainer", OwnerUserID: intakeOwner(core.WorkspaceRoleMaintainer), Kind: core.CredentialUser,
+		Scope: core.CredentialScopeUser, Method: core.CredentialMethodSession,
+	}}
+	f.handler = f.server.Handler()
+	rest := func(token, contentType, body string, mutate func(*http.Request)) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/v1/tasks?workspace_id=alpha", strings.NewReader(body))
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+		request.Header.Set("Content-Type", contentType)
+		if mutate != nil {
+			mutate(request)
+		}
+		response := httptest.NewRecorder()
+		f.handler.ServeHTTP(response, request)
+		return response
+	}
+	decode := func(response *httptest.ResponseRecorder) core.Task {
+		t.Helper()
+		var task core.Task
+		if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
+			t.Fatalf("decode %s: %v", response.Body.String(), err)
+		}
+		return task
+	}
+	for _, role := range agentIntakeRoles {
+		allowed := core.RoleAllows(role, core.CapabilityCreateTasks)
+		token := humanIntakeToken(role)
+		tasks := f.taskCount(t)
+
+		jsonResponse := rest(token, "application/json", `{"body":"human json intake","repo":"api"}`, nil)
+		multipart := newMultipartIntakeBody("human-multipart-"+string(role), nil, "padding", 0, "")
+		multipartResponse := rest(token, "multipart/form-data; boundary="+intakeBoundary, multipart.prefix+multipart.suffix, nil)
+		mcpResult := f.callMCP(t, token, "create_task", intakeArgs("human-mcp-"+string(role), nil))
+		if got := f.members.lastCapability(); got != core.CapabilityCreateTasks {
+			t.Fatalf("%s authorized capability=%q", role, got)
+		}
+		if !allowed {
+			for name, response := range map[string]*httptest.ResponseRecorder{"json": jsonResponse, "multipart": multipartResponse} {
+				if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "workspace_not_found") {
+					t.Fatalf("%s %s status=%d body=%s", role, name, response.Code, response.Body.String())
+				}
+			}
+			if !strings.Contains(mcpResult.errText, "workspace_not_found") || f.taskCount(t) != tasks {
+				t.Fatalf("%s mcp err=%q tasks=%d", role, mcpResult.errText, f.taskCount(t))
+			}
+			continue
+		}
+		if jsonResponse.Code != http.StatusCreated || multipartResponse.Code != http.StatusCreated || mcpResult.errText != "" || f.taskCount(t) != tasks+3 {
+			t.Fatalf("%s json=%d %s multipart=%d %s mcp=%q", role, jsonResponse.Code, jsonResponse.Body.String(), multipartResponse.Code, multipartResponse.Body.String(), mcpResult.errText)
+		}
+		for name, task := range map[string]core.Task{"json": decode(jsonResponse), "multipart": decode(multipartResponse), "mcp": mcpResult.task} {
+			events := f.createdEvents(t, task.ID)
+			if len(events) != 1 || events[0].ActorID != store.UserActorID(intakeOwner(role)) || events[0].ActorRole != core.ActorUser {
+				t.Fatalf("%s %s events=%+v", role, name, events)
+			}
+			if _, ok, err := store.TaskCreatedProvenance(events[0].Payload); err != nil || ok {
+				t.Fatalf("%s %s human creation gained agent provenance", role, name)
+			}
+		}
+	}
+
+	// Human gate-off and legacy-level inputs keep their meaning.
+	maintainer := humanIntakeToken(core.WorkspaceRoleMaintainer)
+	off := decode(rest(maintainer, "application/json", `{"body":"gates off","repo":"api","spec_approval":false,"merge_approval":false}`, nil))
+	if off.SpecApproval || off.MergeApproval {
+		t.Fatalf("human gate-off ignored: %+v", off)
+	}
+	legacy := decode(rest(maintainer, "application/json", `{"body":"legacy","repo":"api","level":"L0"}`, nil))
+	if legacy.SpecApproval || legacy.MergeApproval || legacy.Level != core.L0 {
+		t.Fatalf("human L0 changed: %+v", legacy)
+	}
+	if result := f.callMCP(t, maintainer, "create_task", intakeArgs("human-mcp-off", map[string]any{"spec_approval": false, "level": "L1"})); result.errText != "" || result.task.SpecApproval || !result.task.MergeApproval {
+		t.Fatalf("human MCP gate-off: err=%q task=%+v", result.errText, result.task)
+	}
+
+	// A dashboard session still needs CSRF and origin proof to file a task.
+	session := func(request *http.Request) {
+		request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+	}
+	if response := rest("", "application/json", `{"body":"session without proof","repo":"api"}`, session); response.Code != http.StatusForbidden {
+		t.Fatalf("session without CSRF status=%d body=%s", response.Code, response.Body.String())
+	}
+	withProof := func(request *http.Request) {
+		session(request)
+		request.Header.Set("X-Conveyor-CSRF", "1")
+		request.Header.Set("Origin", "http://example.com")
+	}
+	if response := rest("", "application/json", `{"body":"session with proof","repo":"api"}`, withProof); response.Code != http.StatusCreated || f.members.lastCapability() != core.CapabilityCreateTasks {
+		t.Fatalf("session with proof status=%d body=%s", response.Code, response.Body.String())
+	}
 }

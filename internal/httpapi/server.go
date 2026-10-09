@@ -306,7 +306,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/lifecycle-diagram", s.getLifecycleDiagram)
 			r.Get("/workspace/config", s.getWorkspaceConfig)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Put("/workspace/config", s.putWorkspaceConfig)
-			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks", s.createTask)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/tasks", s.createTask)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/observations", s.observeMonitorSignal)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/redispatch", s.redispatchTask)

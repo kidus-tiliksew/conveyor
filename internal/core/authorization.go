@@ -24,6 +24,12 @@ const (
 	CapabilityConfirmDocuments Capability = "confirm_documents"
 	CapabilityManageMembership Capability = "manage_membership"
 	CapabilitySetAssignee      Capability = "set_assignee"
+	// CreateTasks covers task intake (REST POST /v1/tasks and MCP
+	// create_task). It names the same roles that filed tasks under
+	// operate_gates, and it is the one maintainer capability an execution
+	// credential may exercise (req-accounts-and-membership AC-2.5, AC-3.4;
+	// DEC-60; component-identity-membership).
+	CapabilityCreateTasks Capability = "create_tasks"
 	// OperateGates is the maintainer's factory-floor bundle: gate decisions
 	// and task operations. Corpus authority and control-plane administration
 	// remain separately named operator-only capabilities below.
@@ -61,6 +67,7 @@ var roleCapabilities = map[WorkspaceRole]map[Capability]bool{
 		CapabilityClaimWork:                true,
 		CapabilityRequestChanges:           true,
 		CapabilityProposeDocuments:         true,
+		CapabilityCreateTasks:              true,
 		CapabilitySetAssignee:              true,
 		CapabilityOperateGates:             true,
 		CapabilityRecoverWork:              true,
@@ -73,6 +80,7 @@ var roleCapabilities = map[WorkspaceRole]map[Capability]bool{
 		CapabilityProposeDocuments:         true,
 		CapabilityConfirmDocuments:         true,
 		CapabilityManageMembership:         true,
+		CapabilityCreateTasks:              true,
 		CapabilitySetAssignee:              true,
 		CapabilityOperateGates:             true,
 		CapabilityRecoverWork:              true,

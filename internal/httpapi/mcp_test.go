@@ -1116,6 +1116,9 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 				t.Fatalf("%s description=%q", name, description)
 			}
 		}
+		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "agent_gate_disable_forbidden") {
+			t.Fatalf("create_task description omits the agent gate rule: %q", envelope.Result.Tools[i].Description)
+		}
 		if name == "claim_work_order" {
 			description := envelope.Result.Tools[i].Description
 			if !strings.Contains(description, "claimant_id") || !strings.Contains(description, "ignored") || !strings.Contains(description, "authenticated credential") {
@@ -1141,6 +1144,21 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 		if _, err := server.callMCPTool(request, name, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
 			t.Fatalf("%s error=%v", name, err)
 		}
+	}
+	// Independent literal inventory: DEC-60 moves only create_task out of the
+	// reserved set; every other lifecycle tool and investigation read stays
+	// human-reserved.
+	for _, name := range []string{
+		"add_task_dependency", "set_assignee", "redispatch_work_order", "attach_task_branch", "report_continuation",
+		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context",
+		"list_documents", "get_document", "list_document_events", "list_decisions", "get_decision",
+	} {
+		if !humanReservedMCPTool(name) {
+			t.Fatalf("%s left the human-reserved set", name)
+		}
+	}
+	if humanReservedMCPTool("create_task") {
+		t.Fatal("create_task is still human-reserved")
 	}
 }
 
@@ -1235,16 +1253,28 @@ func TestMCPAttachTaskBranchRefusals(t *testing.T) {
 
 func TestMCPHumanReservedClassificationRejectsOmittedReservedTool(t *testing.T) {
 	mutated := maps.Clone(mcpAgentSafeReasons)
-	// Reclassifying create_task as agent-safe removes it from the reserved set
-	// derived by exclusion. The independent production guard must reject that
-	// mutation, proving this test does not share production's literal list.
-	mutated["create_task"] = "mutation: agent may create durable operator work"
-	if err := validateMCPAgentSafety(mutated); err == nil || !strings.Contains(err.Error(), "create_task") {
+	// Reclassifying add_task_dependency as agent-safe removes it from the
+	// reserved set derived by exclusion. The independent production guard must
+	// reject that mutation, proving this test does not share production's
+	// literal list. create_task is the one justified agent-safe exception
+	// (DEC-60), so it can no longer serve as the mutation probe.
+	mutated["add_task_dependency"] = "mutation: agent may reorder durable operator work"
+	if err := validateMCPAgentSafety(mutated); err == nil || !strings.Contains(err.Error(), "add_task_dependency") {
 		t.Fatalf("reserved-set mutation error=%v", err)
+	}
+	// Dropping create_task's justification must fail too: an agent-reachable
+	// tool always carries a recorded security reason.
+	omitted := maps.Clone(mcpAgentSafeReasons)
+	delete(omitted, "create_task")
+	if err := validateMCPAgentSafety(omitted); err == nil || !strings.Contains(err.Error(), "create_task") {
+		t.Fatalf("omitted justification error=%v", err)
 	}
 }
 
 var mcpAgentSafeReasons = map[string]string{
+	// The one maintainer act an agent credential may perform (DEC-60;
+	// req-accounts-and-membership AC-3.4; req-intake-and-triage AC-4.2, AC-4.3).
+	"create_task":                      "files a task only when the credential owner's live binding grants create_tasks; agent gate input may only turn gates on (explicit false, L0, and L1 are refused by name before any lookup or write); provenance names the agent and owner from the verified credential; the task enters ordinary triage; and the agent gains no right over it",
 	"refresh_work_order_context":       "Exact live-claim bounded observation; no authority or lifecycle mutation.",
 	"prepare_verification_operation":   "requires the exact live verify claim and retains one-use dispatch receipts",
 	"reconcile_verification_operation": "requires the exact live verify claim and cannot issue operator recovery authorization",
@@ -1288,6 +1318,11 @@ func TestEveryRegisteredMCPToolHasExplicitCapability(t *testing.T) {
 			t.Fatalf("registered MCP tool %q lacks an explicit capability", name)
 		}
 		seen[name] = true
+	}
+	// Task intake is gated by its dedicated capability on REST and MCP alike
+	// (DEC-60; component-identity-membership).
+	if got := mcpCapabilities["create_task"]; got != core.CapabilityCreateTasks {
+		t.Fatalf("create_task capability = %q, want %q", got, core.CapabilityCreateTasks)
 	}
 	for name := range mcpCapabilities {
 		if !seen[name] {
@@ -2176,6 +2211,60 @@ func TestMCPSubmitSpecNameIsRetiredWithPlanRedirect(t *testing.T) {
 // A nil Go slice marshals to `"required": null`, which the official MCP
 // SDK's validation rejects — taking every tool down with it as a
 // "tools fetch failed" at connection time.
+// TestMCPCreateTaskToolDescribesAgentRules keeps the published description in
+// step with DEC-60's agent rules and the DEC-55(3) hold rule, and keeps the
+// schema title-less with the retired execution fields absent.
+func TestMCPCreateTaskToolDescribesAgentRules(t *testing.T) {
+	t.Parallel()
+	var tool map[string]any
+	for _, candidate := range mcpTools() {
+		if candidate["name"] == "create_task" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatal("create_task is not registered")
+	}
+	description, _ := tool["description"].(string)
+	for _, phrase := range []string{
+		"idempotency_key is required",
+		"create_tasks",
+		"An agent credential may call this tool only when its owning user's role in the workspace grants create_tasks",
+		"records the agent and its owning user as provenance",
+		"enters triage like any other task",
+		"grants the agent no further capability",
+		"take the workspace defaults",
+		"true turns a gate on",
+		"agent_gate_disable_forbidden",
+		"L0 or L1",
+		"invalid_agent_gate_override",
+		"DEC-60",
+	} {
+		if !strings.Contains(description, phrase) {
+			t.Fatalf("create_task description lacks %q: %s", phrase, description)
+		}
+	}
+	if strings.Contains(description, "DEC-5)") || strings.Contains(description, "DEC-5 ") {
+		t.Fatalf("create_task description cites the retired DEC-5: %s", description)
+	}
+	schema := tool["inputSchema"].(map[string]any)
+	properties := schema["properties"].(map[string]any)
+	hold, _ := properties["hold"].(map[string]any)
+	if holdText, _ := hold["description"].(string); !strings.Contains(holdText, "DEC-55(3)") {
+		t.Fatalf("hold description = %q", holdText)
+	}
+	for _, field := range []string{"title", "mode", "setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv", "verify_stage"} {
+		if _, present := properties[field]; present {
+			t.Fatalf("create_task publishes %s", field)
+		}
+	}
+	for _, gate := range []string{"spec_approval", "merge_approval"} {
+		if spec, _ := properties[gate].(map[string]string); spec["type"] != "boolean" {
+			t.Fatalf("%s schema = %#v", gate, properties[gate])
+		}
+	}
+}
+
 func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 	t.Parallel()
 	for _, tool := range mcpTools() {
@@ -2198,6 +2287,9 @@ func TestMCPToolSchemasNeverEmitNullRequired(t *testing.T) {
 			bodyRequired := false
 			for _, field := range schema["required"].([]string) {
 				bodyRequired = bodyRequired || field == "body"
+			}
+			if required := schema["required"].([]string); !slices.Equal(required, []string{"body", "repo", "idempotency_key"}) {
+				t.Fatalf("create_task required = %v", required)
 			}
 			if !bodyRequired {
 				t.Fatalf("create_task does not require body: %s", data)

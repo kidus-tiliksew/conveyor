@@ -18,8 +18,9 @@ investigation tools below always require an explicit `workspace_id`. Worker
 credentials are pinned to their own workspace automatically.
 
 The operator investigation tools below admit user credentials only. These
-lifecycle tools also reserve their human operations: `create_task`, `add_task_dependency`, `set_assignee`,
-`redispatch_work_order`, and `report_continuation`.
+lifecycle tools also reserve their human operations: `add_task_dependency`, `set_assignee`,
+`attach_task_branch`, `redispatch_work_order`, and `report_continuation`. `create_task` is the one
+maintainer act an agent credential may perform, under the rules in its row below (DEC-60).
 
 The agent-facing discipline for using these tools well is the
 [work playbook](playbooks/conveyor-work.md); this page is the tool
@@ -244,7 +245,7 @@ operator alone confirms, and confirmation never blocks implementation.
 
 | Tool | What it does |
 |---|---|
-| `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, `hold`, and gate overrides. The title is generated; supplying one is an error. Human credentials only. |
+| `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, `hold`, and gate overrides. The title is generated; supplying one is an error. Requires `create_tasks`. An agent credential may call it when its owning user holds `create_tasks` in the workspace; for an agent, omitted gates take the workspace defaults, `true` turns a gate on, and `false` or a legacy level `L0` or `L1` is refused with `agent_gate_disable_forbidden` (a null or non-boolean gate is `invalid_agent_gate_override`). The task's `task.created` event records `trigger_provenance` naming the agent and its owning user. Worker credentials are refused. |
 | `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Human credentials with `operate_gates` only. |
 | `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Human credentials only. |
 | `redispatch_work_order` | Return a stale queued order to the queue with a fresh deadline. Active and execution-timed-out orders are rejected. Human credentials only. |

@@ -194,6 +194,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if workerAuth {
 			return nil, fmt.Errorf("worker credentials cannot create tasks")
 		}
+		if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent {
+			// boolArg and stringArg drop a mistyped value, which would let a
+			// null or string gate fall back to an off workspace default. An
+			// agent's policy inputs are therefore type-checked here, before
+			// the shared intake applies the gate-on-only rule (DEC-60).
+			if err := agentCreateTaskArgTypeError(args); err != nil {
+				return nil, fmt.Errorf("%s: %s", err.Code, err.Message)
+			}
+		}
 		if _, supplied := args["title"]; supplied {
 			return nil, fmt.Errorf("title is generated and must not be supplied")
 		}
@@ -511,12 +520,37 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 }
 
+// agentCreateTaskArgTypeError refuses an agent's create_task policy input
+// whose JSON type would otherwise be silently dropped by boolArg or stringArg.
+func agentCreateTaskArgTypeError(args map[string]any) *taskCreateError {
+	for _, field := range []string{"spec_approval", "merge_approval"} {
+		value, supplied := args[field]
+		if !supplied {
+			continue
+		}
+		if _, ok := value.(bool); !ok {
+			return &taskCreateError{Status: http.StatusBadRequest, Code: agentGateOverrideInvalid, Message: field + " must be a boolean; omit it to take the workspace default"}
+		}
+	}
+	if value, supplied := args["level"]; supplied {
+		if _, ok := value.(string); !ok {
+			return &taskCreateError{Status: http.StatusBadRequest, Code: agentGateOverrideInvalid, Message: "level must be L2 or L3 for an agent credential"}
+		}
+	}
+	return nil
+}
+
 func humanReservedMCPTool(name string) bool {
 	if isMCPRead(name) {
 		return true
 	}
 	switch name {
-	case "create_task", "add_task_dependency", "redispatch_work_order", "set_assignee", "attach_task_branch", "report_continuation":
+	// create_task is deliberately absent: it is the one maintainer act an
+	// agent credential may perform, authorized by its owner's create_tasks
+	// binding and limited to gate-on-only overrides (req-accounts-and-membership
+	// AC-3.3, AC-3.4; req-intake-and-triage AC-4.2, AC-4.3; DEC-60;
+	// component-mcp-protocol).
+	case "add_task_dependency", "redispatch_work_order", "set_assignee", "attach_task_branch", "report_continuation":
 		return true
 	default:
 		return false
@@ -549,7 +583,7 @@ var mcpCapabilities = map[string]core.Capability{
 	"list_tasks":                     core.CapabilityViewWorkspace,
 	"list_repositories":              core.CapabilityViewWorkspace,
 	"list_workspaces":                core.CapabilityViewWorkspace,
-	"create_task":                    core.CapabilityOperateGates,
+	"create_task":                    core.CapabilityCreateTasks,
 	"add_task_dependency":            core.CapabilityOperateGates,
 	"set_assignee":                   core.CapabilitySetAssignee,
 	"attach_task_branch":             core.CapabilityOperateGates,
@@ -867,7 +901,7 @@ func mcpTools() []map[string]any {
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return append(append(mcpReadTools(), verificationMCPTools()...), []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. Reusing the same idempotency key returns the original task.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Hold the task so workers cannot claim its orders; claim them yourself. A hold neither assigns the task nor changes queue order (DEC-55(3))."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. A user credential needs create_tasks in the workspace. An agent credential may call this tool only when its owning user's role in the workspace grants create_tasks; the task records the agent and its owning user as provenance, enters triage like any other task, and grants the agent no further capability. For an agent, omitted spec_approval and merge_approval take the workspace defaults, true turns a gate on, and false is refused with agent_gate_disable_forbidden; a legacy level L0 or L1 is refused the same way, and a null or non-boolean gate fails with invalid_agent_gate_override (DEC-60).", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Hold the task so workers cannot claim its orders; claim them yourself. A hold neither assigns the task nor changes queue order (DEC-55(3))."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},

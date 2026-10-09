@@ -159,6 +159,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
 		{"TaskBranchAttach", true, runTaskBranchAttach},
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
+		{"TaskCreationProvenance", true, runTaskCreationProvenance},
 		{"ArtifactRepair", true, runArtifactRepair},
 		{"Verification", true, runVerification},
 		{"ArtifactIntake", true, runArtifactIntake},

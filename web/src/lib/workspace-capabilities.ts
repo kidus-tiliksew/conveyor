@@ -8,6 +8,7 @@ export type WorkspaceCapability =
   | 'propose_documents'
   | 'confirm_documents'
   | 'manage_membership'
+  | 'create_tasks'
   | 'set_assignee'
   | 'operate_gates'
   | 'recover_work'
