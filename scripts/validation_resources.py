@@ -731,13 +731,14 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
     OpenSSH session process of the invoking user is also dropped when it has
     no readable reference and a live root-owned SSH parent (see
     _ssh_session), and so is the invoking user's systemd manager when the
-    local system manager authenticates it (see _user_manager). disregarded,
+    local system manager authenticates it (see _user_manager), and that
+    manager's (sd-pam) PAM helper (see _user_manager_helper). disregarded,
     when given, is a list that receives one record per such process so
     callers can report it. manager_query and clock_ticks replace the system
     manager query and CLK_TCK for fixtures; by default the module's
     query_user_manager and system_clock_ticks are looked up at call time.
     The macOS backend inspects only the invoking user's processes and
-    applies neither Linux rule.
+    applies none of the Linux rules.
     """
     path = Path(path).resolve()
     selected = process_backend(proc, backend)
@@ -756,6 +757,7 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
         processes = list(Path(proc).iterdir())
     except OSError as exc:
         raise Refusal("active cache ownership inspection is ambiguous: /proc") from exc
+    managers, helpers = [], []
     for process in processes:
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
@@ -771,21 +773,44 @@ def active_cache_users(path, proc=PROC, uid=None, created_after=None, sessions=N
         info = _proc_stat(int(process.name), Path(proc))
         if info is not None and info["state"] in ("Z", "X"):
             continue  # An exited, unreaped process holds no cwd, root, or descriptors.
-        # The user-manager rule takes its first query and reads before the
-        # process's entries are inspected and its second ones after.
+        # The user-manager and helper rules take their first query and reads
+        # before the process's entries are inspected and their second ones
+        # after every process in this scan has been inspected.
         manager = _user_manager_first(process, owner, info, Path(proc),
                                       query_user_manager if manager_query is None else manager_query,
                                       system_clock_ticks if clock_ticks is None else clock_ticks)
+        helper = _user_manager_helper_first(process, owner, info, Path(proc))
         found = _linux_process_users(process, path)
         if found and all(":ambiguous:" in value for value in found):
             session = _ssh_session(process, owner, info, Path(proc))
-            if session is None and manager is not None:
-                session = _user_manager(process, owner, info, Path(proc), manager)
             if session is not None:
                 if disregarded is not None:
                     disregarded.append(session)
                 continue
+            if manager is not None:
+                managers.append((process, owner, info, manager, found))
+                continue
+            if helper is not None:
+                helpers.append((process, owner, info, helper, found))
+                continue
         users += found
+    # Managers are resolved before helpers, so a helper is judged against the
+    # completed proof of this scan whatever order /proc listed them in.
+    authenticated = {}
+    for process, owner, info, manager, found in managers:
+        record = _user_manager(process, owner, info, Path(proc), manager)
+        if record is None:
+            users += found
+            continue
+        authenticated[record["pid"]] = (record, manager)
+        if disregarded is not None:
+            disregarded.append(record)
+    for process, owner, info, helper, found in helpers:
+        record = _user_manager_helper(process, owner, info, Path(proc), helper, authenticated)
+        if record is None:
+            users += found
+        elif disregarded is not None:
+            disregarded.append(record)
 
     def started(pid):
         info = _proc_stat(int(pid), Path(proc))
@@ -1128,8 +1153,101 @@ def _user_manager(process: Path, owner: int, first, proc: Path, proof: dict) -> 
             "monotonic_usec": service["monotonic_usec"], "reason": USER_MANAGER_REASON}
 
 
+# Before it executes the manager binary for user@<uid>.service, systemd forks
+# a child that runs as the user, renames itself "(sd-pam)", and waits to close
+# the PAM session at logout. It is non-dumpable and lives as long as the
+# manager. A same-user process cannot make itself a child of the authenticated
+# manager, because an orphan is reparented only to PID 1 or a subreaper, but
+# the manager forks every user service it starts. The start window therefore
+# excludes services started later; a service started within one second of the
+# manager that renames itself "(sd-pam)" and becomes non-dumpable would still
+# qualify. The operator accepted that residual risk on task 261009-227582: the
+# guard prevents accidental deletion of a cache in use, and a same-user
+# process can already delete the cache directly (component-validation-tooling).
+USER_MANAGER_HELPER_KIND = "user-manager-helper"
+USER_MANAGER_HELPER_COMMAND = "(sd-pam)"
+USER_MANAGER_HELPER_REASON = "same-user-uninspectable-sd-pam-child-of-authenticated-user-manager-within-one-second"
+
+
+def helper_start_in_window(helper_start: int, manager_start: int, hz) -> bool:
+    """Whether a helper started no earlier than its manager and at most one second (hz ticks) after it."""
+    if type(hz) is not int or hz <= 0 or type(helper_start) is not int or type(manager_start) is not int:
+        return False
+    return manager_start <= helper_start <= manager_start + hz
+
+
+def _user_manager_helper_first(process: Path, owner: int, first, proc: Path) -> dict | None:
+    """The first reads for a helper candidate and its parent, taken before its entries are inspected, or None."""
+    if owner != os.getuid() or first is None or first["command"] != USER_MANAGER_HELPER_COMMAND:
+        return None
+    pid, ppid = int(process.name), first["ppid"]
+    if pid == 1 or ppid <= 1 or ppid == pid or first["state"] in ("Z", "X"):
+        return None
+    try:
+        parent_owner = (proc / str(ppid)).stat().st_uid
+    except OSError:
+        return None
+    parent = _proc_stat(ppid, proc)
+    if parent is None or parent["state"] in ("Z", "X"):
+        return None
+    return {"ppid": ppid, "parent_owner": parent_owner, "parent_command": parent["command"],
+            "parent_start": parent["start"]}
+
+
+def _user_manager_helper(process: Path, owner: int, first, proc: Path, helper: dict,
+                         authenticated: dict) -> dict | None:
+    """Return a disregard record when an uninspectable process is the authenticated manager's PAM helper.
+
+    The caller has found no readable reference for the process, and
+    authenticated maps each user manager that _user_manager disregarded in
+    this scan, after every process was inspected, to its record and proof.
+    The process must run as the invoking user with the stat command exactly
+    "(sd-pam)", its stat parent must be one of those managers with the same
+    owner, command, and start tick that _user_manager_helper_first read before
+    inspection, and its start tick S_h must satisfy S_m <= S_h <= S_m + H for
+    the manager's start tick S_m and the proof's CLK_TCK H. Second reads of
+    both stat files and owners and of PID 1 must return the same facts; any
+    unavailable, failed, or changed fact leaves the process ambiguous
+    (component-validation-tooling).
+    """
+    pid, ppid = int(process.name), helper["ppid"]
+    entry = authenticated.get(ppid)
+    if entry is None or first is None or first["ppid"] != ppid:
+        return None
+    manager, proof = entry
+    if (manager["uid"] != owner
+            or (helper["parent_owner"], helper["parent_command"], helper["parent_start"])
+            != (owner, USER_MANAGER_COMMAND, manager["start"])
+            or not helper_start_in_window(first["start"], manager["start"], proof["hz"])):
+        return None
+    # Read every fact again: an exit, reparenting, or PID reuse during
+    # inspection changes the start tick, parent, or owner.
+    again = _proc_stat(pid, proc)
+    parent_again = _proc_stat(ppid, proc)
+    try:
+        owners = (process.stat().st_uid, (proc / str(ppid)).stat().st_uid)
+    except OSError:
+        return None
+    if again is None or parent_again is None or owners != (owner, owner):
+        return None
+    if again["state"] in ("Z", "X") or parent_again["state"] in ("Z", "X"):
+        return None
+    if ((again["command"], again["ppid"], again["start"]) != (first["command"], ppid, first["start"])
+            or (parent_again["command"], parent_again["start"]) != (USER_MANAGER_COMMAND, manager["start"])):
+        return None
+    if _system_manager(proc) != proof["system"]:
+        return None
+    return {"kind": USER_MANAGER_HELPER_KIND, "pid": pid, "ppid": ppid, "uid": owner, "command": first["command"],
+            "start": first["start"], "parent_start": manager["start"], "clk_tck": proof["hz"],
+            "reason": USER_MANAGER_HELPER_REASON}
+
+
 def disregard_line(record: dict) -> str:
-    """The retained output line for one disregarded SSH session or user manager process."""
+    """The retained output line for one disregarded SSH session, user manager, or manager helper process."""
+    if record.get("kind") == USER_MANAGER_HELPER_KIND:
+        return (f"Disregarded Linux user manager helper: pid={record['pid']} parent={record['ppid']} "
+                f"uid={record['uid']} command={record['command']} start={record['start']} "
+                f"parent_start={record['parent_start']} clk_tck={record['clk_tck']} reason={record['reason']}")
     if record.get("kind") == USER_MANAGER_KIND:
         return (f"Disregarded Linux user manager: pid={record['pid']} uid={record['uid']} "
                 f"service={record['service']} main_pid={record['main_pid']} start={record['start']} "
@@ -2044,8 +2162,8 @@ def remove_path(identity: dict, references=(), created_after=None, sessions=None
         time.sleep(0.2)
         again = set(scan())
         users = [value for value in users if value in again]
-    # Disregarded SSH session and user manager processes are named in the
-    # refusal or in the resource detail, which the inventory and
+    # Disregarded SSH session, user manager, and manager helper processes are
+    # named in the refusal or in the resource detail, which the inventory and
     # recovery.jsonl retain. Every rescan queries the system manager afresh.
     reported = "".join("; " + disregard_line(record) for record in disregards)
     if users:

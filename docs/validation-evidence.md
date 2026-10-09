@@ -74,7 +74,8 @@ established and cleanup refuses.
 A process whose working directory, root, open files, or cache variables can be
 read and point into a child always blocks cleanup. A process that cannot be
 inspected blocks it too, unless owner isolation, a creation bound, the Linux
-SSH session rule, or the Linux user-manager rule below rules it out. When the
+SSH session rule, the Linux user-manager rule, or the Linux manager helper
+rule below rules it out. When the
 child
 or one of its canonical ancestors is a directory owned by the invoking user
 with neither group nor other execute permission, such as a mode 0700
@@ -147,8 +148,9 @@ A missing, unreadable, malformed, exited, or changed fact leaves the process
 ambiguous. A same-user process can rename itself, but it cannot acquire a
 root-owned SSH parent, and a session process reparented to init fails the
 parent check. Shells and builds started under SSH are separate processes and
-are inspected individually. Apart from the user-manager rule below, no other
-process class is disregarded, and the macOS backend applies neither rule.
+are inspected individually. Apart from the user-manager and helper rules
+below, no other process class is disregarded, and the macOS backend applies
+none of the three rules.
 
 On Linux the invoking user's systemd manager (`systemd --user`) does not block
 cleanup either, whatever its start tick, when the local system manager vouches
@@ -174,9 +176,9 @@ process only when all of these hold:
   `|S * 1000000 - M * H| <= 1000000`;
 - none of its cwd, root, descriptors, or cache variables can be read into the
   child;
-- a second query and second reads of both `stat` files and owners, after the
-  process's entries were inspected, return the same facts as the first ones,
-  which were taken before.
+- a second query and second reads of both `stat` files and owners, after
+  every process in the scan was inspected, return the same facts as the first
+  ones, which were taken before the process's entries were inspected.
 
 The query runs that fixed executable directly, with no shell, `PATH` lookup,
 user bus, remote host, or privilege, and an environment holding only
@@ -188,12 +190,52 @@ process ambiguous, and cleanup keeps refusing. On a host that suspended
 before the manager started, `/proc` start ticks (which count boot time) and
 the monotonic timestamp (which does not) disagree, and the rule refuses.
 
+On Linux the authenticated manager's PAM helper does not block cleanup
+either, whatever its start tick. Before systemd executes the manager binary
+for `user@<uid>.service`, it forks a child that runs as the user, renames
+itself `(sd-pam)`, and waits to close the PAM session at logout. The helper is
+non-dumpable and lives as long as the manager, so without this rule every
+cleanup on a host with a login session would still refuse. The guard
+disregards such a process only when all of these hold:
+
+- the process runs as the invoking user, its `stat` is readable, it is not a
+  zombie, and its command name is exactly `(sd-pam)`, parentheses included;
+- its `stat` parent PID names the manager that the user-manager rule
+  disregarded in the same scan, through that rule's own two queries and second
+  reads, so a parent of PID 1, a subreaper, or a different `systemd` never
+  qualifies;
+- with the manager's start tick S_m, the helper's start tick S_h, and the
+  `CLK_TCK` H of the manager's proof, `S_m <= S_h <= S_m + H` in integer
+  ticks: the helper started no earlier than the manager and at most one
+  second after it;
+- none of its cwd, root, descriptors, or cache variables can be read into the
+  child;
+- a second read of both `stat` files, both owners, and PID 1, after every
+  process in the scan was inspected and the manager's second query, returns
+  the same facts as the first reads, which were taken before the helper's
+  entries were inspected.
+
+Any unavailable, malformed, changed, or out-of-window fact, or an
+unauthenticated parent, leaves the process ambiguous, and cleanup keeps
+refusing. The helper adds no query. The window is a heuristic, not identity
+proof. A same-user process cannot become a child of the authenticated
+manager, because an orphan is reparented only to PID 1 or a subreaper, but
+the manager forks every user service it starts. A user service started within
+one second of the manager's own start that renames itself `(sd-pam)` and
+makes itself non-dumpable is therefore disregarded when it exposes no readable
+reference. The operator accepted this residual risk: the guard prevents
+accidental deletion of a cache in use, and a same-user process can already
+delete the cache directly. On the development host observed on 2026-10-09 the
+manager started at tick 1168414290, its helper at 1168414292, and the
+manager's earliest other child at 1200011223.
+
 Cleanup prints one line per disregarded process to standard output as it
 inspects each child, before any later refusal, and then the usual summary:
 
 ```text
 Disregarded Linux SSH session: pid=666814 parent=666711 command=sshd-session parent_command=sshd-session reason=same-user-uninspectable-with-live-root-owned-ssh-parent
 Disregarded Linux user manager: pid=2586874 uid=1000 service=user@1000.service main_pid=2586874 start=1168414290 monotonic_usec=11684142907759 reason=same-user-uninspectable-system-manager-reported-mainpid
+Disregarded Linux user manager helper: pid=2586876 parent=2586874 uid=1000 command=(sd-pam) start=1168414292 parent_start=1168414290 clk_tck=100 reason=same-user-uninspectable-sd-pam-child-of-authenticated-user-manager-within-one-second
 Removed disposable cache children: go-build, go-tmp, tmp, playwright, npm
 ```
 
@@ -349,7 +391,7 @@ incarnation, a symlink or substituted path, a path in use, a path that
 contains or is named by a recorded or `--reference` retained reference, a
 malformed reference list, and an unknown resource kind. A temporary path
 uses the same live-use inspector as cache cleanup, including the Linux SSH
-session and user-manager rules; the removal detail or refusal message names
+session, user-manager, and manager helper rules; the removal detail or refusal message names
 each disregarded process with the same line, and the inventory and
 `recovery.jsonl` retain it. Pending and ambiguous entries have no sealed identity and are never
 removed. Recovery is
