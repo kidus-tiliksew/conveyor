@@ -634,11 +634,22 @@ func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorAc
 			t.Fatalf("agent operator route %s status=%d body=%s", route.path, response.Code, response.Body.String())
 		}
 	}
-	for _, tool := range []string{"create_task", "set_assignee", "redispatch_work_order", "report_continuation"} {
+	for _, tool := range []string{"add_task_dependency", "set_assignee", "attach_task_branch", "redispatch_work_order", "report_continuation"} {
 		result := mcpCall(reviewAgent, tool, map[string]any{"workspace_id": workspace})
 		if !result.Result.IsError || len(result.Result.Content) == 0 || !strings.Contains(result.Result.Content[0].Text, "operator-scoped user credential") {
 			t.Fatalf("human-reserved MCP tool %s result=%+v", tool, result)
 		}
+	}
+	// create_task is the one maintainer act an issued agent credential may
+	// perform (DEC-60). It passes the reserved-tool boundary under the owner's
+	// create_tasks binding, and the gate-on-only rule still refuses turning a
+	// gate off before any lookup or write.
+	result := mcpCall(reviewAgent, "create_task", map[string]any{"workspace_id": workspace, "body": "agent intake", "repo": "conveyor", "idempotency_key": "issued-agent-gate-off", "spec_approval": false})
+	if !result.Result.IsError || len(result.Result.Content) == 0 || !strings.HasPrefix(result.Result.Content[0].Text, "agent_gate_disable_forbidden: spec_approval") {
+		t.Fatalf("issued agent create_task gate-off result=%+v", result)
+	}
+	if _, found, lookupErr := st.GetTaskByIntakeKey(ctx, "issued-agent-gate-off"); lookupErr != nil || found {
+		t.Fatalf("refused agent creation left a task found=%t err=%v", found, lookupErr)
 	}
 }
 

@@ -189,7 +189,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if _, err = st.GrantWorkspaceRole(grantCtx, maintainer.Email, workspaceA, core.WorkspaceRoleMaintainer); err != nil {
 		t.Fatal(err)
 	}
-	for _, capability := range []core.Capability{core.CapabilityOperateGates, core.CapabilitySetAssignee, core.CapabilityRecoverWork} {
+	for _, capability := range []core.Capability{core.CapabilityOperateGates, core.CapabilityCreateTasks, core.CapabilitySetAssignee, core.CapabilityRecoverWork} {
 		if allowed, authErr := st.AuthorizeWorkspace(t.Context(), maintainer.ID, workspaceA, capability); authErr != nil || !allowed {
 			t.Fatalf("maintainer capability %q allowed=%t err=%v", capability, allowed, authErr)
 		}
