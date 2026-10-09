@@ -19,7 +19,8 @@ from unittest.mock import patch
 
 import validation_evidence as evidence
 import validation_resources
-from test_validation_resources import FixtureManagerQuery, FixtureProc, MANAGER_HZ, MANAGER_PID, manager_line, manager_service
+from test_validation_resources import (FixtureManagerQuery, FixtureProc, HELPER_PID, MANAGER_HZ, MANAGER_PID, helper_line,
+                                       manager_line, manager_service)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -2160,6 +2161,174 @@ class CacheCleanupUserManagerTests(unittest.TestCase):
         self.assertEqual(self.cleanup(), list(evidence.DISPOSABLE_CACHE_CHILDREN))
         self.assertEqual(self.lines, [self.ssh_line(), self.manager_line()])
         self.assertEqual(len(set(self.lines)), 2)
+
+
+class CacheCleanupUserManagerHelperTests(unittest.TestCase):
+    """Cache cleanup with the authenticated user manager and its uninspectable "(sd-pam)" helper.
+
+    The fixture /proc tree is the shared one from the validation_resources
+    suite. The system-manager query and CLK_TCK are injected into the shared
+    module, so the real inspector runs every case without the host's manager,
+    under owner isolation (TemporaryDirectory is 0700).
+    """
+
+    HZ = MANAGER_HZ
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        environment = patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.base / "cache-home")})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.task_cache = self.base / "cache-home" / "conveyor" / "fixture-task"
+        self.proc = FixtureProc(self.base / "proc")
+        (self.proc.root / "sys" / "kernel" / "random").mkdir(parents=True)
+        (self.proc.root / "sys" / "kernel" / "random" / "boot_id").write_text("boot-a\n")
+        (self.proc.root / "uptime").write_text("1000.00 0\n")
+        self.tick = 1000 * os.sysconf("SC_CLK_TCK")
+        # The manager and its helper start after every child's creation tick,
+        # so the creation bound cannot disregard them in place of the rules.
+        self.start = self.tick + 7
+        self.helper_start = self.start + 2
+        self.usec = self.start * (1_000_000 // self.HZ)
+        self.proc.system_manager()
+        self.proc.manager(start=self.start)
+        self.proc.helper(start=self.helper_start)
+        ticks = patch.object(validation_resources, "system_clock_ticks", lambda: self.HZ)
+        ticks.start()
+        self.addCleanup(ticks.stop)
+        self.query = self.answer(self.service())
+        self.lines = []
+
+    def service(self, **fields):
+        return {**manager_service(monotonic_usec=self.usec), **fields}
+
+    def answer(self, *answers):
+        query = FixtureManagerQuery(*answers)
+        patcher = patch.object(validation_resources, "query_user_manager", query)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return query
+
+    def manager_line(self):
+        return manager_line(start=self.start, usec=self.usec)
+
+    def helper_line(self):
+        return helper_line(start=self.helper_start, parent_start=self.start, hz=self.HZ)
+
+    def prepare(self):
+        return evidence.prepare_cache("fixture-task", self.task_cache, self.proc.root)
+
+    def cleanup(self, references=()):
+        with self.proc.owned():
+            return evidence.cleanup_cache("fixture-task", self.task_cache, list(references), self.proc.root,
+                                          report=self.lines.append)
+
+    def main(self, *references):
+        stdout, stderr = StringIO(), StringIO()
+        argv = ["validation_evidence.py", "cleanup", "--task", "fixture-task", "--task-cache", str(self.task_cache)]
+        for reference in references:
+            argv += ["--reference", str(reference)]
+        with patch.object(sys, "argv", argv), self.proc.owned(), \
+                patch.object(evidence, "cleanup_cache", functools.partial(evidence.cleanup_cache, proc=self.proc.root)), \
+                patch("sys.stdout", stdout), patch("sys.stderr", stderr):
+            status = evidence.main()
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_removes_known_children_and_reports_once(self):
+        children = list(evidence.DISPOSABLE_CACHE_CHILDREN)
+        durable = self.base / "state" / "conveyor" / "fixture-task" / "command.log"
+        durable.parent.mkdir(parents=True)
+        durable.write_text("evidence")
+        for marker_state in ("valid", "missing", "invalid"):
+            with self.subTest(marker=marker_state):
+                self.lines.clear()
+                self.query.calls.clear()
+                self.prepare()
+                marker_path = self.task_cache / evidence.CACHE_MARKER
+                if marker_state == "missing":
+                    marker_path.unlink()
+                elif marker_state == "invalid":
+                    marker_path.write_text("{}")
+                marker = marker_path.read_bytes() if marker_path.exists() else None
+                unknown = self.task_cache / "retained-unknown-child"
+                unknown.mkdir(exist_ok=True)
+                self.assertEqual(self.cleanup([durable]), children)
+                self.assertEqual(self.lines, [self.manager_line(), self.helper_line()])
+                # Each child authenticates the manager with two fresh queries; the helper adds none.
+                self.assertEqual(len(self.query.calls), 2 * len(children))
+                for name in children:
+                    self.assertFalse((self.task_cache / name).exists())
+                self.assertTrue(unknown.is_dir())
+                self.assertEqual(marker_path.read_bytes() if marker_path.exists() else None, marker)
+                self.assertEqual(durable.read_text(), "evidence")
+                if marker_path.exists():
+                    marker_path.unlink()
+
+    def test_cli_helper_line_before_summary(self):
+        self.prepare()
+        self.proc.ssh(4242, 100, start=self.tick + 5, parent_start=self.tick + 4)
+        status, stdout, stderr = self.main()
+        self.assertEqual((status, stderr), (0, ""))
+        ssh = ("Disregarded Linux SSH session: pid=4242 parent=100 command=sshd-session "
+               "parent_command=sshd-session reason=same-user-uninspectable-with-live-root-owned-ssh-parent")
+        self.assertEqual(stdout.splitlines(), [
+            ssh, self.manager_line(), self.helper_line(),
+            "Removed disposable cache children: " + ", ".join(evidence.DISPOSABLE_CACHE_CHILDREN)])
+        self.assertTrue(self.helper_line().startswith(
+            f"Disregarded Linux user manager helper: pid={HELPER_PID} parent={MANAGER_PID} uid={os.getuid()} "))
+
+    def test_helper_report_survives_later_refusal(self):
+        self.prepare()
+        (self.task_cache / "tmp" / "object").write_text("cached")
+        # A readable build process holds a descriptor in tmp, which is inspected after go-build.
+        self.proc.entry(4545, command="go", ppid=MANAGER_PID, start=self.tick + 8, cwd=self.base, root=Path("/"),
+                        descriptor=self.task_cache / "tmp" / "object", environ=b"")
+        with self.assertRaisesRegex(evidence.Refused, r"active: tmp \(4545:fd:3\)"):
+            self.cleanup()
+        self.assertEqual(self.lines, [self.manager_line(), self.helper_line()])
+        status, stdout, stderr = self.main()
+        self.assertEqual(status, 2)
+        self.assertEqual(stdout.splitlines(), [self.manager_line(), self.helper_line()])
+        self.assertIn("disposable cache child is active: tmp (4545:fd:3)", stderr)
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertTrue((self.task_cache / name).is_dir())
+
+    def test_unproven_helper_refuses_before_removal(self):
+        self.prepare()
+        marker = (self.task_cache / evidence.CACHE_MARKER).read_bytes()
+        (self.task_cache / "go-build" / "object").write_text("cached")
+        cases = {
+            "outside the window": (dict(start=self.start + self.HZ + 1), (self.service(),), True),
+            "before the manager": (dict(start=self.start - 1), (self.service(),), True),
+            "reparented to PID 1": (dict(ppid=1), (self.service(),), True),
+            "other command": (dict(command="sd-pam"), (self.service(),), True),
+            "manager unauthenticated": ({}, (None,), False),
+            "manager second query differs": ({}, (self.service(), self.service(main_pid=MANAGER_PID + 1)), False),
+        }
+        for label, (helper, answers, manager_disregarded) in cases.items():
+            with self.subTest(label):
+                self.lines.clear()
+                shutil.rmtree(self.proc.root / str(HELPER_PID))
+                self.proc.helper(**{"start": self.helper_start, **helper})
+                self.answer(*answers)
+                with self.assertRaisesRegex(evidence.Refused, rf"active: go-build \(.*{HELPER_PID}:ambiguous:cwd"):
+                    self.cleanup()
+                self.assertEqual(self.lines, [self.manager_line()] if manager_disregarded else [])
+        # Proven for go-build and go-tmp, unproven at tmp: the preflight
+        # refuses before any child is removed, and the earlier lines are kept.
+        shutil.rmtree(self.proc.root / str(HELPER_PID))
+        self.proc.helper(start=self.helper_start)
+        self.lines.clear()
+        self.answer(*([self.service()] * 4 + [None]))
+        with self.assertRaisesRegex(evidence.Refused, rf"active: tmp \(.*{HELPER_PID}:ambiguous:cwd"):
+            self.cleanup()
+        self.assertEqual(self.lines, [self.manager_line(), self.helper_line()])
+        for name in evidence.DISPOSABLE_CACHE_CHILDREN:
+            self.assertTrue((self.task_cache / name).is_dir())
+        self.assertTrue((self.task_cache / "go-build" / "object").is_file())
+        self.assertEqual((self.task_cache / evidence.CACHE_MARKER).read_bytes(), marker)
 
 
 class MakeGraphTests(unittest.TestCase):
