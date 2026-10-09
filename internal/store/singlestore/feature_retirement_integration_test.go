@@ -64,12 +64,20 @@ func restorePreFeatureDrop(t *testing.T, st *Store) {
 func assertSingleStoreFeatureSchemaRetired(t *testing.T, st *Store) {
 	t.Helper()
 	ctx := t.Context()
+	// SingleStore refuses one distributed query that joins information_schema
+	// with a user table (error 1749), so each count is a separate query.
 	var tables, columns, ledger int
-	if err := st.db.QueryRowContext(ctx, `SELECT
-		(SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='features'),
-		(SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND column_name='feature_id' AND table_name IN ('tasks','artifact_links')),
-		(SELECT COUNT(*) FROM conveyor_singlestore_migrations WHERE version=18 AND name='0018_drop_features.sql')`).Scan(&tables, &columns, &ledger); err != nil {
-		t.Fatal(err)
+	for _, count := range []struct {
+		query string
+		into  *int
+	}{
+		{`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='features'`, &tables},
+		{`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND column_name='feature_id' AND table_name IN ('tasks','artifact_links')`, &columns},
+		{`SELECT COUNT(*) FROM conveyor_singlestore_migrations WHERE version=18 AND name='0018_drop_features.sql'`, &ledger},
+	} {
+		if err := st.db.QueryRowContext(ctx, count.query).Scan(count.into); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if tables != 0 || columns != 0 || ledger != 1 {
 		t.Fatalf("feature schema tables=%d columns=%d ledger rows=%d", tables, columns, ledger)
