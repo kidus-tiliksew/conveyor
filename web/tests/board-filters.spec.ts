@@ -125,6 +125,11 @@ async function routeBoard(page: Page, seen: string[]) {
   )
   await page.route('**/v1/requirements**', (route) => route.fulfill({ json: requirementCorpus }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCorpus }))
+  // The Board's New task button follows create_tasks (DEC-60), so the board
+  // signs in a maintainer, the lowest role that may file tasks.
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: { id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' } }),
+  )
   await page.route('**/v1/pending-proposals**', (route) =>
     route.fulfill({ json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } } }),
   )

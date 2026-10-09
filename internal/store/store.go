@@ -5278,6 +5278,17 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	if _, exists := m.tasks[t.ID]; exists {
 		return fmt.Errorf("task %s already exists", t.ID)
 	}
+	// The workspace-scoped intake key is unique, as PostgreSQL's
+	// tasks_workspace_intake_key_idx and SingleStore's in-transaction check
+	// enforce. A concurrent retry that loses the race therefore resolves to
+	// the winner's task and provenance on every backend (DEC-39).
+	if t.IntakeKey != "" {
+		for _, existing := range m.tasks {
+			if existing.Workspace == t.Workspace && existing.IntakeKey == t.IntakeKey {
+				return fmt.Errorf("task intake key already exists")
+			}
+		}
+	}
 	if other := openTaskHoldingBranch(m.tasks, t.Workspace, t.Repo, t.Branch, t.ID); other != "" {
 		return TaskBranchInUseError(t.Branch, other)
 	}
@@ -5334,7 +5345,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 			m.dependencies[t.ID][dependencyID] = struct{}{}
 		}
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt})
+	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: TaskCreatedPayload(ctx, t), At: t.CreatedAt})
 	for dependencyID := range seen {
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt,
 			Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": dependencyID})})

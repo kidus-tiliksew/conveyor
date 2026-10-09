@@ -42,6 +42,7 @@ var suiteMethods = map[string][]string{
 	"TaskLifecycle":              strings.Fields(`CancelTaskCommand CreateTask GetTask ListEvents ListInterventions SetTaskHold UpdateTaskClassification`),
 	"TaskBranchUniqueness":       strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents`),
 	"TaskBranchAttach":           strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents AppendEvent CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand`),
+	"TaskCreationProvenance":     strings.Fields(`ConfirmSystemDesignVersion CreateSystemDesign CreateTaskWithDependenciesAndContext GetTask GetTaskByIntakeKey ListEvents Log IsDurable`),
 	"TaskEventAtomicity":         strings.Fields(`ApplyTaskCommand CreateTask CreateWorkspace GetTask ListEvents SetTaskHold WithTaskSideEffectLock`),
 	"Workers":                    strings.Fields(`AuthenticateWorker ConsumeWorkerPairing CreateWorker CreateWorkerPairing HeartbeatWorker ListEvents ListHarnessModelFailures ListWorkers RevokeWorker`),
 	"ContextFreshness":           strings.Fields(`RecordContextObservation RecordInProcessContextObservation ListEvents GetWorkOrder`),

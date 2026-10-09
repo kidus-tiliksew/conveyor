@@ -76,7 +76,7 @@ just bundles of capabilities, each strictly containing the previous:
 | `viewer` | `view_workspace` |
 | `executor` | `claim_work`, `request_changes` |
 | `contributor` | `propose_documents` |
-| `maintainer` | `set_assignee`, `operate_gates`, `recover_work`, `manage_reference_documents` |
+| `maintainer` | `create_tasks`, `set_assignee`, `operate_gates`, `recover_work`, `manage_reference_documents` |
 | `operator` | `confirm_documents`, `manage_membership`, `manage_workspace` |
 
 Two boundaries are worth internalizing. Confirming documents is operator-only,
@@ -86,6 +86,11 @@ factory considers confirmed intent. Reference documents are informative, so
 maintainers upload, revise, and remove them through
 `manage_reference_documents` without gaining confirmation authority. And a
 workspace can never lose its last operator; the server refuses the demotion.
+
+Filing a task needs `create_tasks`, which maintainers and operators hold. It
+is named apart from `operate_gates` because it is the one maintainer
+capability an agent credential may exercise (DEC-60), as described under
+[What an agent session gets](#what-an-agent-session-gets).
 
 Requests against a workspace you are not a member of return 404, not 403, so
 membership existence is not disclosed.
@@ -121,8 +126,8 @@ Worker credentials are valid on the worker plane
 (heartbeat, claim, release) and the MCP plane only, never for workspace REST
 reads. That is why dispatched agents receive their task assignment through
 environment variables rather than fetching the task themselves, and why the
-human-reserved MCP tools (`create_task`, `set_assignee`,
-`redispatch_work_order`, `report_continuation`) refuse worker credentials.
+`create_task` and the human-reserved `set_assignee` and
+`redispatch_work_order` MCP tools refuse worker credentials.
 
 Revoke a worker with `conveyor worker revoke <worker-id>`; revoked
 credentials terminate the worker with an actionable error instead of
@@ -156,6 +161,15 @@ bounded to what the work order's lineage selection actually served, and
 document content injected into prompts is labeled untrusted data. Agent
 credentials are rejected by operator-only REST routes and by human-reserved
 MCP tools; renewal on the attended run path remains a parent-owned REST act.
+
+Filing a task is the one exception. An agent may call the `create_task` MCP
+tool when its owning user's role in that workspace grants `create_tasks`.
+The task records the agent and its owning user as provenance and enters
+triage like any other task. An omitted plan or merge gate takes the workspace
+default, and the agent may turn a gate on but never off: an explicit `false`,
+or a legacy level `L0` or `L1`, is refused with `agent_gate_disable_forbidden`.
+Filing the task gives the agent no right over it; every other reserved tool
+and REST route still refuses the agent credential (DEC-60).
 
 ## Workspace context
 

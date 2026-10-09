@@ -147,7 +147,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 			return err
 		}
 	}
-	if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: core.JSONPayload(t), At: t.CreatedAt}); err != nil {
+	if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, t), At: t.CreatedAt}); err != nil {
 		return err
 	}
 	for _, id := range ids {

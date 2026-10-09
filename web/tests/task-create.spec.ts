@@ -9,6 +9,7 @@ async function mockTaskCreateAPIs(
     createDependencyError?: boolean
     candidates?: Array<Record<string, unknown>>
     pullOnly?: boolean
+    role?: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
   } = {},
 ) {
   let submitted = ''
@@ -29,7 +30,8 @@ async function mockTaskCreateAPIs(
       return
     }
     if (url.pathname === '/v1/me') {
-      await route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+      const role = options.role ?? 'operator'
+      await route.fulfill({ json: { id: `usr_${role}`, role } })
       return
     }
     if (url.pathname === '/v1/workspace') {
@@ -211,6 +213,38 @@ async function mockTaskCreateAPIs(
     taskListRequests: () => taskListRequests,
     releaseTaskList,
   }
+}
+
+// DEC-60: intake follows create_tasks, which only maintainers and operators
+// hold. Every opener and the sheet itself follow the caller's role bundle;
+// the server authorizes the request again.
+for (const [role, allowed] of [
+  ['viewer', false],
+  ['executor', false],
+  ['contributor', false],
+  ['maintainer', true],
+  ['operator', true],
+] as const) {
+  test(`task creation capability follows every workspace role ${role}`, async ({ page }) => {
+    await mockTaskCreateAPIs(page, { role })
+    const count = allowed ? 1 : 0
+
+    await page.goto('/tasks')
+    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(count)
+
+    await page.goto('/tasks?create=true')
+    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(count)
+
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(count)
+    if (allowed) {
+      await page.getByRole('button', { name: 'New task' }).click()
+      await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+    }
+  })
 }
 
 test('new task removes title input and submits description for AI title generation', async ({ page }) => {

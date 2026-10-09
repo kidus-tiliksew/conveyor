@@ -28,6 +28,8 @@ import { BoardColumn } from './board-column'
 export function Board() {
   const navigate = useNavigate()
   const [creating, setCreating] = useState(false)
+  // Intake follows its own capability (DEC-60); the server checks it again.
+  const canCreateTasks = useWorkspaceCapability('create_tasks')
   // The board opens on the last month of activity and remembers whatever the
   // operator changes it to, per workspace (AC-2.4).
   const [filter, setFilter] = useTaskFilters('board', boardDefaultTaskFilter)
@@ -85,10 +87,12 @@ export function Board() {
           className="ml-auto"
         />
         <MCPSetup />
-        <Button size="sm" onClick={() => setCreating(true)}>
-          <Plus />
-          New task
-        </Button>
+        {canCreateTasks && (
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus />
+            New task
+          </Button>
+        )}
       </header>
       <div className="mx-4 lg:mx-6">
         <EmptyRepositoryNotice />
@@ -135,7 +139,7 @@ export function Board() {
               />
             ))}
       </section>
-      {creating && (
+      {creating && canCreateTasks && (
         <TaskCreateSheet
           onClose={() => setCreating(false)}
           onCreated={(taskId) => {

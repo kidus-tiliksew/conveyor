@@ -22,6 +22,7 @@ func main() {
 		core.CapabilityProposeDocuments,
 		core.CapabilityConfirmDocuments,
 		core.CapabilityManageMembership,
+		core.CapabilityCreateTasks,
 		core.CapabilitySetAssignee,
 		core.CapabilityOperateGates,
 		core.CapabilityRecoverWork,

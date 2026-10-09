@@ -12,7 +12,7 @@ func TestRoleCapabilitiesAreBundles(t *testing.T) {
 	if !RoleAllows(WorkspaceRoleContributor, CapabilityProposeDocuments) || RoleAllows(WorkspaceRoleContributor, CapabilityOperateGates) {
 		t.Fatal("contributor capability bundle is incorrect")
 	}
-	if !RoleAllows(WorkspaceRoleMaintainer, CapabilityOperateGates) || !RoleAllows(WorkspaceRoleMaintainer, CapabilitySetAssignee) || RoleAllows(WorkspaceRoleMaintainer, CapabilityConfirmDocuments) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageMembership) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageWorkspace) {
+	if !RoleAllows(WorkspaceRoleMaintainer, CapabilityOperateGates) || !RoleAllows(WorkspaceRoleMaintainer, CapabilityCreateTasks) || !RoleAllows(WorkspaceRoleMaintainer, CapabilitySetAssignee) || RoleAllows(WorkspaceRoleMaintainer, CapabilityConfirmDocuments) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageMembership) || RoleAllows(WorkspaceRoleMaintainer, CapabilityManageWorkspace) {
 		t.Fatal("maintainer capability bundle is incorrect")
 	}
 	// Reference documents are informative: maintainers manage them without
@@ -38,6 +38,34 @@ func TestRoleCapabilitiesAreBundles(t *testing.T) {
 	}
 	if !roleAllows(changedBundles, WorkspaceRoleContributor, CapabilityManageWorkspace) {
 		t.Fatal("bundle edit did not alter the centralized decision")
+	}
+}
+
+// TestRoleCreateTasksCapabilityMatrix pins task intake to exactly the roles
+// that filed tasks under operate_gates, so human intake is unchanged while
+// create_tasks stays a separately named capability an execution credential may
+// exercise (req-accounts-and-membership AC-2.5, AC-3.4; DEC-60).
+func TestRoleCreateTasksCapabilityMatrix(t *testing.T) {
+	want := map[WorkspaceRole]bool{
+		WorkspaceRoleViewer:      false,
+		WorkspaceRoleExecutor:    false,
+		WorkspaceRoleContributor: false,
+		WorkspaceRoleMaintainer:  true,
+		WorkspaceRoleOperator:    true,
+	}
+	for role, allowed := range want {
+		if got := RoleAllows(role, CapabilityCreateTasks); got != allowed {
+			t.Fatalf("role %q create_tasks = %v, want %v", role, got, allowed)
+		}
+		if RoleAllows(role, CapabilityCreateTasks) != RoleAllows(role, CapabilityOperateGates) {
+			t.Fatalf("role %q create_tasks diverges from the roles that file tasks today", role)
+		}
+	}
+	if RoleAllows(WorkspaceRole("unknown"), CapabilityCreateTasks) {
+		t.Fatal("unknown role holds create_tasks")
+	}
+	if CapabilityCreateTasks != "create_tasks" {
+		t.Fatalf("create_tasks wire name = %q", CapabilityCreateTasks)
 	}
 }
 

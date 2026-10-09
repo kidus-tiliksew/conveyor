@@ -33,8 +33,9 @@ The routes:
 - The `create_task` MCP tool, which requires `body`, `repo`, and a
   caller-stable `idempotency_key`. Reusing the key with an identical request
   returns the original task; reusing it with a different request is a
-  conflict. The tool is reserved for human credentials; a dispatched agent
-  cannot file tasks.
+  conflict. A dispatched agent may file a task when its owning user's role
+  grants `create_tasks`; it may turn the plan and merge gates on but never
+  off, and the task records the agent and its owner (DEC-60).
 - The monitor and staleness follow-ups, which file ordinary gated tasks; see
   [Misalignment](misalignment.md).
 
