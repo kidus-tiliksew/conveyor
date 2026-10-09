@@ -522,9 +522,26 @@ func loadConveyordPack(deployment *config.Config) (*pack.Bundle, error) {
 	return pack.Load(deployment.PackDir)
 }
 
+// logControlPlaneModelOverrides reports each active process-level model
+// override with the in-process consumers it can reach. A line names an active
+// variable, not the effective model: stage-specific overrides take precedence
+// over the general one (component-runtime; component-triage).
 func logControlPlaneModelOverrides(logf func(string, ...any)) {
 	for _, override := range config.ActiveControlPlaneModelOverrides() {
-		logf("control-plane model override active: %s=%s", override.Variable, override.Model)
+		logf("control-plane model override active: %s=%s (%s)", override.Variable, override.Model, controlPlaneModelOverrideScope(override.Variable))
+	}
+}
+
+func controlPlaneModelOverrideScope(variable string) string {
+	switch variable {
+	case config.TriageModelEnv:
+		return "applies to triage and title generation"
+	case config.PlanningModelEnv:
+		return "applies to planning"
+	case config.ControlPlaneModelEnv:
+		return "fallback for in-process stages, title generation, and planning without a stage-specific override"
+	default:
+		return "in-process control-plane model"
 	}
 }
 
