@@ -273,6 +273,22 @@ func (f *agentIntakeFixture) createdEvents(t *testing.T, taskID string) []core.E
 	return created
 }
 
+// allCreatedEvents counts task.created events across every task in the
+// workspace, so a refusal that left an orphaned creation event is visible.
+func (f *agentIntakeFixture) allCreatedEvents(t *testing.T) int {
+	t.Helper()
+	ctx := store.WithWorkspace(t.Context(), "alpha")
+	tasks, err := f.store.ListTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, task := range tasks {
+		count += len(f.createdEvents(t, task.ID))
+	}
+	return count
+}
+
 // requireNoSideEffects asserts a refused call reached no title generation,
 // task write, creation event, or triage notification.
 func (f *agentIntakeFixture) requireNoSideEffects(t *testing.T, label string, tasks int, titles, notified int32) {
@@ -491,6 +507,25 @@ func TestMCPAgentCreationPreservesIntakeValidation(t *testing.T) {
 	// Context references are validated inside the creation transaction, so
 	// the refusal leaves no task, event, or triage notification.
 	refuse("invalid context", intakeArgs("bad-context", map[string]any{"requirement_ids": []any{"req-missing"}}), "invalid_context_reference")
+
+	// No title generator configured: an agent's creation fails closed exactly
+	// as human intake does, before any task, creation event, or triage intent
+	// exists (req-intake-and-triage AC-1.1; DEC-8).
+	generator := f.server.GenerateTaskTitle
+	f.server.GenerateTaskTitle = nil
+	tasksBefore, eventsBefore, notifiedBefore := f.taskCount(t), f.allCreatedEvents(t), f.notified.Load()
+	absent := f.callMCP(t, token, "create_task", intakeArgs("no-title-generator", nil))
+	if absent.errText != "task title generation is unavailable" {
+		t.Fatalf("absent title generator err=%q", absent.errText)
+	}
+	if f.taskCount(t) != tasksBefore || f.allCreatedEvents(t) != eventsBefore || f.notified.Load() != notifiedBefore {
+		t.Fatalf("absent title generator wrote: tasks=%d/%d created events=%d/%d notified=%d/%d",
+			f.taskCount(t), tasksBefore, f.allCreatedEvents(t), eventsBefore, f.notified.Load(), notifiedBefore)
+	}
+	if _, found, err := f.store.GetTaskByIntakeKey(store.WithWorkspace(t.Context(), "alpha"), "no-title-generator"); err != nil || found {
+		t.Fatalf("absent title generator recorded the intake key found=%t err=%v", found, err)
+	}
+	f.server.GenerateTaskTitle = generator
 
 	exact := strings.Repeat("T", 200)
 	for label, hook := range map[string]struct {
