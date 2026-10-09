@@ -40,10 +40,11 @@ func (agent *runtimeControlPlaneAgent) Run(ctx context.Context, model string, in
 	return inprocess.Result{Output: "```conveyor:triage\n{\"class\":\"chore\",\"route\":\"proceed\",\"summary\":\"runtime route\"}\n```"}, nil
 }
 
-// TestPolicyOnlyRuntimePreservesTriageAndTitle pins the already-working
-// readers: a policy-only workspace read through RuntimeConfig keeps the
-// deployment's triage route for triage and title generation, and a frozen
-// task policy cannot replace it (component-triage; component-runtime).
+// TestPolicyOnlyRuntimePreservesTriageAndTitle pins the readers: a
+// policy-only workspace read through RuntimeConfig keeps the deployment's
+// triage route for triage and title generation, a frozen task policy cannot
+// replace it, and title generation follows CONVEYOR_TRIAGE_MODEL like triage
+// does (component-triage; component-runtime).
 func TestPolicyOnlyRuntimePreservesTriageAndTitle(t *testing.T) {
 	t.Setenv(config.ControlPlaneModelEnv, "")
 	t.Setenv(config.TriageModelEnv, "")
@@ -121,11 +122,17 @@ repos: []
 		t.Fatalf("title call = %+v", generated)
 	}
 
-	// The current title semantics stay: invalid output and provider failures
-	// refuse, and no process override applies to title generation.
+	// Title generation honors the triage override through the shared resolver
+	// while keeping the deployment route's deadline, and invalid output and
+	// provider failures still refuse.
 	t.Setenv(config.TriageModelEnv, "triage-override")
-	if _, err = d.GenerateTaskTitle(ctx, task); err != nil || agent.calls[len(agent.calls)-1].model != "deploy-triage" {
-		t.Fatalf("title model under a triage override = %q err=%v", agent.calls[len(agent.calls)-1].model, err)
+	started = time.Now()
+	_, err = d.GenerateTaskTitle(ctx, task)
+	finished = time.Now()
+	overridden := agent.calls[len(agent.calls)-1]
+	if err != nil || !overridden.title || overridden.model != "triage-override" ||
+		overridden.deadline.Before(started.Add(7*time.Minute)) || overridden.deadline.After(finished.Add(7*time.Minute)) {
+		t.Fatalf("title call under a triage override = %+v err=%v", overridden, err)
 	}
 	agent.title = inprocess.Result{Output: "Title\nCommentary"}
 	if _, err = d.GenerateTaskTitle(ctx, task); err == nil || !strings.Contains(err.Error(), "invalid title") {

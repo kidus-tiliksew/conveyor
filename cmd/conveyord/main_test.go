@@ -264,21 +264,61 @@ func TestLoadConveyordPackUsesEmbeddedDefaultAndStrictOverride(t *testing.T) {
 	}
 }
 
+// TestLogControlPlaneModelOverrides pins the startup override lines: each
+// active variable is logged with the in-process consumers it can reach, title
+// generation included under the triage and general overrides, and no line
+// claims a resolved model (component-runtime; component-triage).
 func TestLogControlPlaneModelOverrides(t *testing.T) {
-	t.Setenv(config.ControlPlaneModelEnv, "general")
-	t.Setenv(config.TriageModelEnv, "triage")
-	t.Setenv(config.PlanningModelEnv, "planning")
-	var lines []string
-	logControlPlaneModelOverrides(func(format string, args ...any) {
-		lines = append(lines, fmt.Sprintf(format, args...))
-	})
-	want := []string{
-		"control-plane model override active: CONVEYOR_CONTROL_PLANE_MODEL=general",
-		"control-plane model override active: CONVEYOR_TRIAGE_MODEL=triage",
-		"control-plane model override active: CONVEYOR_PLANNING_MODEL=planning",
-	}
-	if !slices.Equal(lines, want) {
-		t.Fatalf("startup override logs=%v, want %v", lines, want)
+	const (
+		generalScope  = "fallback for in-process stages, title generation, and planning without a stage-specific override"
+		triageScope   = "applies to triage and title generation"
+		planningScope = "applies to planning"
+	)
+	for _, test := range []struct {
+		name                      string
+		general, triage, planning string
+		want                      []string
+	}{
+		{
+			name: "all", general: "general", triage: "triage", planning: "planning",
+			want: []string{
+				"control-plane model override active: CONVEYOR_CONTROL_PLANE_MODEL=general (" + generalScope + ")",
+				"control-plane model override active: CONVEYOR_TRIAGE_MODEL=triage (" + triageScope + ")",
+				"control-plane model override active: CONVEYOR_PLANNING_MODEL=planning (" + planningScope + ")",
+			},
+		},
+		{
+			name: "triage only", triage: " triage-only ",
+			want: []string{"control-plane model override active: CONVEYOR_TRIAGE_MODEL=triage-only (" + triageScope + ")"},
+		},
+		{
+			name: "general only", general: "general-only",
+			want: []string{"control-plane model override active: CONVEYOR_CONTROL_PLANE_MODEL=general-only (" + generalScope + ")"},
+		},
+		{
+			name: "planning only", planning: "planner",
+			want: []string{"control-plane model override active: CONVEYOR_PLANNING_MODEL=planner (" + planningScope + ")"},
+		},
+		{name: "whitespace only", general: " \t", triage: "  ", planning: "\n"},
+		{name: "unset"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(config.ControlPlaneModelEnv, test.general)
+			t.Setenv(config.TriageModelEnv, test.triage)
+			t.Setenv(config.PlanningModelEnv, test.planning)
+			var lines []string
+			logControlPlaneModelOverrides(func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			})
+			if !slices.Equal(lines, test.want) {
+				t.Fatalf("startup override logs=%q, want %q", lines, test.want)
+			}
+			for _, line := range lines {
+				if strings.Contains(line, "effective") || strings.Contains(line, "resolved") {
+					t.Fatalf("override line claims a resolved model: %q", line)
+				}
+			}
+		})
 	}
 }
 

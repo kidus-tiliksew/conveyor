@@ -1046,6 +1046,12 @@ MANAGER_START = 1168414290
 MANAGER_USEC = 11684142907759
 MANAGER_HZ = 100
 USER_SERVICE_CGROUP = "0::/user.slice/user-{uid}.slice/user@{uid}.service/init.scope\n"
+# The same observation of the manager's "(sd-pam)" PAM helper (2026-10-09): two
+# ticks after the manager. The earliest other child of that manager started at
+# tick 1200011223.
+HELPER_PID = 2586876
+HELPER_START = 1168414292
+LATER_SERVICE_START = 1200011223
 
 
 def manager_service(main_pid=MANAGER_PID, monotonic_usec=MANAGER_USEC, active_state="active"):
@@ -1078,6 +1084,14 @@ def manager_line(pid=MANAGER_PID, start=MANAGER_START, usec=MANAGER_USEC, uid=No
     uid = os.getuid() if uid is None else uid
     return (f"Disregarded Linux user manager: pid={pid} uid={uid} service=user@{uid}.service main_pid={pid} "
             f"start={start} monotonic_usec={usec} reason=same-user-uninspectable-system-manager-reported-mainpid")
+
+
+def helper_line(pid=HELPER_PID, start=HELPER_START, parent=MANAGER_PID, parent_start=MANAGER_START, hz=MANAGER_HZ,
+                uid=None):
+    uid = os.getuid() if uid is None else uid
+    return (f"Disregarded Linux user manager helper: pid={pid} parent={parent} uid={uid} command=(sd-pam) "
+            f"start={start} parent_start={parent_start} clk_tck={hz} "
+            "reason=same-user-uninspectable-sd-pam-child-of-authenticated-user-manager-within-one-second")
 
 
 class FixtureProc:
@@ -1138,6 +1152,11 @@ class FixtureProc:
         """The invoking user's systemd manager, uninspectable like the real non-dumpable one."""
         return self.entry(MANAGER_PID if pid is None else pid, command=command, ppid=ppid,
                           start=MANAGER_START if start is None else start, **entry)
+
+    def helper(self, pid=None, *, start=None, ppid=MANAGER_PID, command="(sd-pam)", **entry):
+        """The manager's uninspectable "(sd-pam)" PAM helper; the stat line reads "<pid> ((sd-pam)) ..."."""
+        return self.entry(HELPER_PID if pid is None else pid, command=command, ppid=ppid,
+                          start=HELPER_START if start is None else start, **entry)
 
     def ssh(self, pid=4242, parent=100, *, child_command="sshd-session", parent_command="sshd-session",
             parent_uid=0, parent_start=50, start=100, **child):
@@ -2036,6 +2055,548 @@ class UserManagerPathRemovalTests(IsolatedState):
         refused_paths = [value for value in logged if value["kind"] == "path"]
         self.assertEqual(refused_paths[0]["action"], "refused")
         self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", refused_paths[0]["detail"])
+
+
+class LinuxUserManagerHelperTests(unittest.TestCase):
+    """The Linux inspector's rule for the authenticated user manager's "(sd-pam)" helper.
+
+    The real inspector runs every case over fixture /proc trees with an
+    injected system-manager query and CLK_TCK; only process-entry owners are
+    injected besides, so no case needs root, a running systemd, a user
+    service, or the host's manager. Changes between reads are made through
+    deterministic hooks, never by waiting.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name).resolve()
+        self.cache = self.base / "cache"
+        self.cache.mkdir(mode=0o700)
+        self.proc = FixtureProc(self.base / "proc")
+
+    def reset(self):
+        shutil.rmtree(self.proc.root)
+        self.proc = FixtureProc(self.base / "proc")
+
+    def host(self, manager_start=MANAGER_START, **helper):
+        """PID 1, the user manager, and its helper, as on the observed host."""
+        self.reset()
+        self.proc.system_manager()
+        self.proc.manager(start=manager_start)
+        return self.proc.helper(**helper)
+
+    def scan(self, query=None, hz=MANAGER_HZ, isolated=True, **kwargs):
+        query = FixtureManagerQuery(manager_service()) if query is None else query
+        found = []
+        with self.proc.owned():
+            users = resources.active_cache_users(self.cache, self.proc.root,
+                                                 uid=os.getuid() if isolated else None, disregarded=found,
+                                                 manager_query=query, clock_ticks=lambda: hz, **kwargs)
+        return users, found
+
+    def helper_record(self, pid=HELPER_PID, start=HELPER_START, parent_start=MANAGER_START, hz=MANAGER_HZ):
+        return {"kind": resources.USER_MANAGER_HELPER_KIND, "pid": pid, "ppid": MANAGER_PID, "uid": os.getuid(),
+                "command": "(sd-pam)", "start": start, "parent_start": parent_start, "clk_tck": hz,
+                "reason": resources.USER_MANAGER_HELPER_REASON}
+
+    def kinds(self, found):
+        """Each record's kind and PID, independent of the order /proc listed the processes in."""
+        return sorted((record.get("kind"), record["pid"]) for record in found)
+
+    def assert_helper_ambiguous(self, query=None, pid=HELPER_PID, **kwargs):
+        users, found = self.scan(query, **kwargs)
+        self.assertIn(f"{pid}:ambiguous:cwd", users)
+        self.assertEqual([record for record in found if record["pid"] == pid], [])
+        return users, found
+
+    def test_matching_helper_and_inclusive_window(self):
+        self.host()
+        query = FixtureManagerQuery(manager_service())
+        users, found = self.scan(query)
+        self.assertEqual(users, [])
+        self.assertEqual(found[1], self.helper_record())
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID),
+                                             (resources.USER_MANAGER_HELPER_KIND, HELPER_PID)])
+        self.assertEqual(resources.disregard_line(found[1]), helper_line())
+        # The stat line carries the parenthesized command inside the kernel's own parentheses.
+        self.assertTrue((self.proc.root / str(HELPER_PID) / "stat").read_text()
+                        .startswith(f"{HELPER_PID} ((sd-pam)) S {MANAGER_PID} "))
+        # The helper adds no query: only the manager's two.
+        self.assertEqual(query.calls, [os.getuid(), os.getuid()])
+        for start, qualifies in ((MANAGER_START, True), (MANAGER_START + MANAGER_HZ, True),
+                                 (MANAGER_START - 1, False), (MANAGER_START + MANAGER_HZ + 1, False)):
+            with self.subTest(start=start - MANAGER_START):
+                self.host(start=start)
+                if qualifies:
+                    users, found = self.scan()
+                    self.assertEqual((users, found[1:]), ([], [self.helper_record(start=start)]))
+                else:
+                    users, found = self.assert_helper_ambiguous()
+                    # The manager itself is still disregarded; only the helper refuses.
+                    self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID)])
+
+    def test_integer_window_and_invalid_clock_ticks(self):
+        large = 10**15 + 7
+        for hz in (100, 250, 1000):
+            usec = large * (1_000_000 // hz)
+            for offset, qualifies in ((0, True), (hz, True), (hz + 1, False), (-1, False)):
+                with self.subTest(hz=hz, offset=offset):
+                    self.assertEqual(resources.helper_start_in_window(large + offset, large, hz), qualifies)
+                    self.host(manager_start=large, start=large + offset)
+                    query = FixtureManagerQuery(manager_service(monotonic_usec=usec))
+                    if qualifies:
+                        users, found = self.scan(query, hz=hz)
+                        self.assertEqual((users, found[1:]),
+                                         ([], [self.helper_record(start=large + offset, parent_start=large, hz=hz)]))
+                    else:
+                        self.assert_helper_ambiguous(query, hz=hz)
+        for hz in (None, 0, -100, 100.0, "100", True):
+            with self.subTest(clock_ticks=hz):
+                self.assertFalse(resources.helper_start_in_window(HELPER_START, MANAGER_START, hz))
+                self.host()
+                users, found = self.assert_helper_ambiguous(hz=hz)
+                self.assertEqual(found, [])
+        for start in (float(HELPER_START), str(HELPER_START), None):
+            with self.subTest(helper_start=start):
+                self.assertFalse(resources.helper_start_in_window(start, MANAGER_START, MANAGER_HZ))
+
+    def test_later_named_user_service_refused(self):
+        """A user service the manager started later and renamed "(sd-pam)" falls outside the window."""
+        self.host()
+        self.proc.helper(4242, start=LATER_SERVICE_START)
+        users, found = self.scan()
+        self.assertIn("4242:ambiguous:cwd", users)
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID),
+                                             (resources.USER_MANAGER_HELPER_KIND, HELPER_PID)])
+
+    def test_early_service_impostor_documents_accepted_risk(self):
+        """The accepted residual risk: a renamed non-dumpable service started within one second qualifies.
+
+        Its /proc facts are indistinguishable from the real helper's, so the
+        rule disregards it when it exposes no readable reference. The
+        operator accepted this on task 261009-227582; a readable reference
+        still blocks it.
+        """
+        self.host()
+        self.proc.helper(4242, start=MANAGER_START + MANAGER_HZ)
+        users, found = self.scan()
+        self.assertEqual(users, [])
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID),
+                                             (resources.USER_MANAGER_HELPER_KIND, 4242),
+                                             (resources.USER_MANAGER_HELPER_KIND, HELPER_PID)])
+        (self.cache / "object").write_text("cached")
+        self.host()
+        self.proc.helper(4242, start=MANAGER_START + MANAGER_HZ, descriptor=self.cache / "object")
+        users, found = self.scan()
+        self.assertIn("4242:fd:3", users)
+        self.assertNotIn(4242, [record["pid"] for record in found])
+
+    def test_unauthenticated_or_different_systemd_parent(self):
+        answers = {"service unavailable": None,
+                   "MainPID differs": manager_service(main_pid=MANAGER_PID + 1),
+                   "service not active": manager_service(active_state="inactive")}
+        for label, answer in answers.items():
+            with self.subTest(label):
+                self.host()
+                users, found = self.assert_helper_ambiguous(FixtureManagerQuery(answer))
+                self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", users)
+                self.assertEqual(found, [])
+        # A different same-user systemd, not the queried MainPID, as the parent.
+        other = 4000
+        self.host(ppid=other)
+        self.proc.manager(other, start=MANAGER_START)
+        users, found = self.assert_helper_ambiguous()
+        self.assertIn(f"{other}:ambiguous:cwd", users)
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID)])
+        # Parents the manager rule never considers: root-owned systemd, user-owned bash, an exited parent.
+        for label, parent in {"root-owned systemd": dict(command="systemd", uid=0),
+                              "user-owned shell": dict(command="bash"),
+                              "exited parent": None}.items():
+            with self.subTest(label):
+                self.host(ppid=other)
+                if parent is not None:
+                    self.proc.entry(other, ppid=1, start=MANAGER_START, **parent)
+                self.assert_helper_ambiguous()
+
+    def test_pid1_reparenting(self):
+        for ppid in (1, 0, HELPER_PID):
+            with self.subTest(ppid=ppid):
+                self.host(ppid=ppid)
+                users, found = self.assert_helper_ambiguous()
+                self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID)])
+
+    def test_foreign_uid_without_owner_isolation(self):
+        self.host(uid=os.getuid() + 1)
+        users, found = self.assert_helper_ambiguous(isolated=False)
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID)])
+
+    def test_wrong_command(self):
+        for command in ("sd-pam", "(sd-pam", "sd-pam)", "(sd-pam) ", " (sd-pam)", "(sd-pamx)", "((sd-pam))",
+                        "systemd", "(SD-PAM)"):
+            with self.subTest(command=command):
+                self.host(command=command)
+                self.assert_helper_ambiguous()
+
+    def changed_after_manager(self, change):
+        """Run change after the manager rule completed its second reads, before the helper's second reads."""
+        real = resources._user_manager
+
+        def manager(*args, **kwargs):
+            record = real(*args, **kwargs)
+            change()
+            return record
+        return patch.object(resources, "_user_manager", manager)
+
+    def test_changed_parent_start_command_or_owner_during_inspection(self):
+        other = os.getuid() + 1
+
+        def helper(**fields):
+            return lambda: self.proc.restat(HELPER_PID, **fields)
+
+        def parent(**fields):
+            return lambda: self.proc.restat(MANAGER_PID, **fields)
+
+        def owner(pid, uid):
+            return lambda: self.proc.owners.__setitem__(self.proc.root / str(pid), uid)
+
+        changes = {
+            "helper start changed (PID reused)": helper(start=HELPER_START + 1),
+            "helper reparented": helper(ppid=1),
+            "helper renamed": helper(command="bash"),
+            "helper became a zombie": helper(state="Z"),
+            "helper owner changed": owner(HELPER_PID, other),
+            "parent start changed (PID reused)": parent(start=MANAGER_START + 1),
+            "parent renamed": parent(command="bash"),
+            "parent became a zombie": parent(state="Z"),
+            "parent owner changed": owner(MANAGER_PID, other),
+            "PID 1 restarted": lambda: self.proc.restat(1, start=2),
+        }
+        for label, change in changes.items():
+            # Between the manager's two queries: the manager's own second reads may also notice.
+            with self.subTest(label, when="during inspection"):
+                self.host()
+                self.assert_helper_ambiguous(FixtureManagerQuery(manager_service(), between=change))
+            # After the manager's second reads: only the helper's second reads can notice.
+            with self.subTest(label, when="after the manager proof"):
+                self.host()
+                with self.changed_after_manager(change):
+                    users, found = self.assert_helper_ambiguous()
+                self.assertIn(f"{HELPER_PID}:ambiguous:environ", users)
+        # The parent's first read, taken before the helper's inspection, must
+        # match the manager's: a parent that differs then never qualifies.
+        real = resources._proc_stat
+
+        def first_parent_read_differs(pid, proc=resources.PROC):
+            info = real(pid, proc)
+            if pid == MANAGER_PID and info is not None and first_parent_read_differs.armed:
+                first_parent_read_differs.armed = False
+                return {**info, "start": info["start"] + 1}
+            return info
+        original = resources._user_manager_helper_first
+
+        def arm(*args, **kwargs):
+            first_parent_read_differs.armed = True
+            try:
+                return original(*args, **kwargs)
+            finally:
+                first_parent_read_differs.armed = False
+        self.host()
+        with patch.object(resources, "_proc_stat", first_parent_read_differs), \
+                patch.object(resources, "_user_manager_helper_first", arm):
+            first_parent_read_differs.armed = False
+            users, found = self.assert_helper_ambiguous()
+        # Only the helper's own first read of its parent differed; the manager is still authenticated.
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID)])
+
+    def test_missing_malformed_unreadable_or_exited_identity(self):
+        raws = {"missing": None, "no closing parenthesis": f"{HELPER_PID} ((sd-pam S {MANAGER_PID}\n",
+                "truncated": f"{HELPER_PID} ((sd-pam)) S {MANAGER_PID}\n", "not text": b"\xff\xfe",
+                "non-numeric start": (f"{HELPER_PID} ((sd-pam)) S {MANAGER_PID} 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 "
+                                      "x 0 0\n")}
+        for label, raw in raws.items():
+            with self.subTest(label):
+                self.host()
+                entry = self.proc.root / str(HELPER_PID)
+                (entry / "stat").unlink()
+                if isinstance(raw, bytes):
+                    (entry / "stat").write_bytes(raw)
+                elif raw is not None:
+                    (entry / "stat").write_text(raw)
+                self.assert_helper_ambiguous()
+        # The parent's stat is unreadable: the manager is never authenticated.
+        self.host()
+        (self.proc.root / str(MANAGER_PID) / "stat").unlink()
+        users, found = self.assert_helper_ambiguous()
+        self.assertEqual(found, [])
+        # A helper stat or owner that becomes unreadable after inspection: the still-live helper stays ambiguous.
+        for label, change in {"helper stat unreadable": lambda: (self.proc.root / str(HELPER_PID) / "stat").unlink(),
+                              "parent stat unreadable": lambda: (self.proc.root / str(MANAGER_PID) / "stat").unlink()
+                              }.items():
+            with self.subTest(label):
+                self.host()
+                with self.changed_after_manager(change):
+                    users, found = self.assert_helper_ambiguous()
+                self.assertIn(f"{HELPER_PID}:ambiguous:environ", users)
+        real_stat = Path.stat
+        helper_entry = self.proc.root / str(HELPER_PID)
+        reads = []
+
+        def unreadable_owner(path, *args, **kwargs):
+            if Path(path) == helper_entry:
+                reads.append(path)
+                if len(reads) > 1:
+                    raise PermissionError(errno.EACCES, "denied", str(path))
+            return real_stat(path, *args, **kwargs)
+        self.host()
+        with patch.object(Path, "stat", unreadable_owner):
+            found = []
+            users = resources.active_cache_users(self.cache, self.proc.root, uid=os.getuid(), disregarded=found,
+                                                 manager_query=FixtureManagerQuery(manager_service()),
+                                                 clock_ticks=lambda: MANAGER_HZ)
+        self.assertNotIn(HELPER_PID, [record["pid"] for record in found])
+        self.assertTrue([value for value in users if value.startswith(f"{HELPER_PID}:ambiguous:")], users)
+        # A helper that exits during inspection leaves no helper record.
+        self.host()
+        with self.changed_after_manager(lambda: shutil.rmtree(self.proc.root / str(HELPER_PID))):
+            _, found = self.scan()
+        self.assertEqual(self.kinds(found), [(resources.USER_MANAGER_KIND, MANAGER_PID)])
+
+    def test_parent_proof_changes_or_query_fails(self):
+        def second(**fields):
+            return FixtureManagerQuery(manager_service(), manager_service(**fields))
+
+        cases = {
+            "second query MainPID changed": second(main_pid=MANAGER_PID + 1),
+            "second query timestamp changed": second(monotonic_usec=MANAGER_USEC + 1),
+            "second query not active": second(active_state="deactivating"),
+            "second query failed": FixtureManagerQuery(manager_service(), None),
+            "first query failed": FixtureManagerQuery(None, manager_service()),
+            "PID 1 changed between queries": FixtureManagerQuery(
+                manager_service(), between=lambda: self.proc.restat(1, start=2)),
+            "PID 1 owner changed between queries": FixtureManagerQuery(
+                manager_service(), between=lambda: self.proc.owners.__setitem__(self.proc.root / "1", os.getuid())),
+        }
+        for label, query in cases.items():
+            with self.subTest(label):
+                self.host()
+                users, found = self.assert_helper_ambiguous(query)
+                self.assertIn(f"{MANAGER_PID}:ambiguous:cwd", users)
+                self.assertEqual(found, [])
+
+    def test_readable_cache_reference_blocks(self):
+        (self.cache / "object").write_text("cached")
+        cases = {
+            "cwd": dict(cwd=self.cache),
+            "root": dict(root=self.cache),
+            "fd:3": dict(descriptor=self.cache / "object"),
+        }
+        for variable in sorted(resources.CACHE_ENVIRONMENT):
+            cases["env:" + variable] = dict(cwd=self.base,
+                                            environ=os.fsencode(variable) + b"=" + os.fsencode(self.cache) + b"\0")
+        for label, references in cases.items():
+            with self.subTest(label):
+                self.host(**references)
+                users, found = self.scan()
+                self.assertIn(f"{HELPER_PID}:" + label, users)
+                self.assertNotIn(HELPER_PID, [record["pid"] for record in found])
+        # Mixed: a readable descriptor beside unreadable cwd, root, and environ.
+        self.host(descriptor=self.cache / "object")
+        users, found = self.scan()
+        self.assertIn(f"{HELPER_PID}:fd:3", users)
+        self.assertIn(f"{HELPER_PID}:ambiguous:cwd", users)
+        self.assertIn(f"{HELPER_PID}:ambiguous:environ", users)
+        self.assertNotIn(HELPER_PID, [record["pid"] for record in found])
+        # A parent with a readable reference fails the manager rule and cannot qualify its child.
+        self.reset()
+        self.proc.system_manager()
+        self.proc.manager(descriptor=self.cache / "object")
+        self.proc.helper()
+        users, found = self.assert_helper_ambiguous()
+        self.assertIn(f"{MANAGER_PID}:fd:3", users)
+        self.assertEqual(found, [])
+        self.assertTrue((self.cache / "object").is_file())
+
+    def test_scan_order_independent(self):
+        real = Path.iterdir
+
+        def ordered(first):
+            def iterdir(path):
+                entries = list(real(path))
+                if Path(path) != self.proc.root:
+                    return iter(entries)
+                return iter(sorted(entries, key=lambda entry: (entry.name != str(first), entry.name)))
+            return patch.object(Path, "iterdir", iterdir)
+
+        results = {}
+        for first in (HELPER_PID, MANAGER_PID):
+            with self.subTest(first=first):
+                self.host()
+                with ordered(first):
+                    users, found = self.scan()
+                self.assertEqual(users, [])
+                results[first] = sorted(found, key=lambda record: record["pid"])
+        self.assertEqual(results[HELPER_PID], results[MANAGER_PID])
+        self.assertEqual(results[HELPER_PID][1], self.helper_record())
+
+    def test_proof_not_reused_across_scans_or_children(self):
+        self.host()
+        _, found = self.scan()
+        self.assertEqual(self.kinds(found)[1], (resources.USER_MANAGER_HELPER_KIND, HELPER_PID))
+        # A later scan whose authentication fails gets no helper record from the earlier success.
+        for query in (FixtureManagerQuery(None), FixtureManagerQuery(manager_service(), None)):
+            with self.subTest(calls=len(query.answers)):
+                users, found = self.assert_helper_ambiguous(query)
+                self.assertEqual(found, [])
+        # A second child in the same cleanup scans afresh: its manager proof is queried again.
+        query = FixtureManagerQuery(manager_service(), manager_service(), None)
+        _, first = self.scan(query)
+        users, second = self.scan(query)
+        self.assertEqual(len(first), 2)
+        self.assertIn(f"{HELPER_PID}:ambiguous:cwd", users)
+        self.assertEqual(second, [])
+
+    def test_macos_unchanged(self):
+        table = {301: {"vnode_error": True, "environment": None}}
+        found = []
+        refuse = FixtureManagerQuery(manager_service())
+        with patch.object(resources, "darwin", return_value=FakeDarwin(table)), \
+                patch.object(resources, "_user_manager_helper_first",
+                             side_effect=AssertionError("Linux helper rule on macOS")), \
+                patch.object(resources, "_user_manager_helper", side_effect=AssertionError("Linux helper rule on macOS")), \
+                patch.object(resources, "query_user_manager", side_effect=AssertionError("query on macOS")):
+            users = resources.active_cache_users(self.cache, backend=resources.DARWIN_BACKEND, disregarded=found,
+                                                 manager_query=refuse)
+        self.assertEqual(users, ["301:ambiguous:cwd", "301:ambiguous:environ"])
+        self.assertEqual((found, refuse.calls), ([], []))
+
+
+class UserManagerHelperPathRemovalTests(IsolatedState):
+    """Temporary-path teardown and recovery retain the disregarded manager helper.
+
+    The fixture manager and helper start far later than any real temporary
+    path, so no creation bound can disregard them in place of the rules.
+    """
+
+    START = 10**10
+    USEC = START * (1_000_000 // MANAGER_HZ)
+    HELPER_START = START + 2
+
+    def setUp(self):
+        super().setUp()
+        self.proc = FixtureProc(self.base / "proc")
+        self.proc.system_manager()
+        self.proc.manager(start=self.START)
+        self.proc.helper(start=self.HELPER_START)
+        self.manager_line = manager_line(start=self.START, usec=self.USEC)
+        self.line = helper_line(start=self.HELPER_START, parent_start=self.START)
+        inspector = functools.partial(resources.active_cache_users, proc=self.proc.root)
+        for name, value in (("active_cache_users", inspector), ("system_clock_ticks", lambda: MANAGER_HZ)):
+            patcher = patch.object(resources, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.query = self.answer(manager_service(monotonic_usec=self.USEC))
+        owned = self.proc.owned()
+        owned.start()
+        self.addCleanup(owned.stop)
+        self.ssh_line = ("Disregarded Linux SSH session: pid=4242 parent=100 command=sshd-session "
+                         "parent_command=sshd-session reason=" + resources.SSH_DISREGARD_REASON)
+
+    def answer(self, *answers):
+        query = FixtureManagerQuery(*answers)
+        patcher = patch.object(resources, "query_user_manager", query)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return query
+
+    def path_identity(self, name="disposable"):
+        path = self.base / name
+        path.mkdir(mode=0o700)
+        info = path.lstat()
+        return {"path": str(path), "device": info.st_dev, "inode": info.st_ino}
+
+    def orphan(self, task, cross_boot=False):
+        """An invocation whose owner is gone; cross_boot keeps its creation tick and sessions from applying."""
+        orphan = resources.Invocation.create(task, self.checkout, ["true"])
+        os.close(orphan._owner_lock)
+        orphan._owner_lock = None
+        value = json.loads((orphan.path / "inventory.json").read_text())
+        value["owner"]["birth"] = {"start_ticks": -1, "boot_id": "another-boot"}
+        if cross_boot:
+            for entry in value["resources"]:
+                if entry["kind"] == "path":
+                    entry["identity"]["boot_id"] = "another-boot"
+        resources.write_json(orphan.path / "inventory.json", value)
+        return orphan
+
+    def test_removal_detail_and_owner_cleanup(self):
+        identity = self.path_identity()
+        state, detail = resources.remove_path(identity)
+        self.assertEqual(state, "removed")
+        self.assertEqual(detail, "removed disposable path " + identity["path"] + "; " + self.manager_line
+                         + "; " + self.line)
+        self.assertFalse(Path(identity["path"]).exists())
+        self.assertEqual(len(self.query.calls), 2)
+        owner = resources.Invocation.create("helper-owner", self.checkout, ["true"])
+        self.assertEqual(owner.finish(outcome="success"), [])
+        [entry] = [value for value in resources.load_inventory(owner.path)["resources"] if value["kind"] == "path"]
+        self.assertEqual(entry["state"], "removed")
+        self.assertTrue(entry["detail"].endswith("; " + self.manager_line + "; " + self.line), entry["detail"])
+
+    def test_recovery_retains_helper_report(self):
+        orphan = self.orphan("helper-orphan")
+        complete, actions = resources.recover(orphan.path)
+        self.assertTrue(complete)
+        [action] = [value for value in actions if value["kind"] == "path"]
+        self.assertTrue(action["detail"].endswith("; " + self.line), action["detail"])
+        logged = [json.loads(line) for line in (orphan.path / "recovery.jsonl").read_text().splitlines()]
+        detail = [value for value in logged if value["kind"] == "path"][0]["detail"]
+        self.assertIn(self.manager_line, detail)
+        self.assertIn(self.line, detail)
+
+    def test_refusal_retains_reports_once(self):
+        identity = self.path_identity()
+        self.proc.ssh()
+        # An unrelated uninspectable process still blocks, through every rescan.
+        self.proc.entry(4343, command="bash", ppid=100)
+        with patch.object(resources.time, "sleep"), self.assertRaises(resources.Refusal) as refused:
+            resources.remove_path(identity)
+        message = str(refused.exception)
+        self.assertIn("is in use: 4343:ambiguous:cwd", message)
+        for line in (self.ssh_line, self.manager_line, self.line):
+            self.assertEqual(message.count(line), 1, line)
+        self.assertLess(message.index(self.ssh_line), message.index(self.manager_line))
+        self.assertLess(message.index(self.manager_line), message.index(self.line))
+        self.assertTrue(Path(identity["path"]).is_dir())
+        # Every rescan authenticated the manager afresh; the helper added no query.
+        self.assertEqual(len(self.query.calls), 8)
+
+    def test_unproven_helper_keeps_path_and_recovery_refusal(self):
+        shutil.rmtree(self.proc.root / str(HELPER_PID))
+        self.proc.helper(start=self.START + MANAGER_HZ + 1)
+        identity = self.path_identity()
+        with patch.object(resources.time, "sleep"), self.assertRaises(resources.Refusal) as refused:
+            resources.remove_path(identity)
+        message = str(refused.exception)
+        self.assertIn(f"{HELPER_PID}:ambiguous:cwd", message)
+        self.assertNotIn("Disregarded Linux user manager helper", message)
+        self.assertTrue(Path(identity["path"]).is_dir())
+
+        orphan = self.orphan("helper-unproven", cross_boot=True)
+        [path_entry] = [value for value in resources.load_inventory(orphan.path)["resources"]
+                        if value["kind"] == "path"]
+        with patch.object(resources.time, "sleep"):
+            complete, actions = resources.recover(orphan.path)
+        self.assertFalse(complete)
+        [action] = [value for value in actions if value["kind"] == "path"]
+        self.assertEqual(action["action"], "refused")
+        self.assertIn(f"{HELPER_PID}:ambiguous:cwd", action["detail"])
+        self.assertNotIn("Disregarded Linux user manager helper", action["detail"])
+        self.assertTrue(Path(path_entry["identity"]["path"]).is_dir())
+        logged = [json.loads(line) for line in (orphan.path / "recovery.jsonl").read_text().splitlines()]
+        refused_paths = [value for value in logged if value["kind"] == "path"]
+        self.assertEqual(refused_paths[0]["action"], "refused")
+        self.assertIn(f"{HELPER_PID}:ambiguous:cwd", refused_paths[0]["detail"])
 
 
 @unittest.skipUnless(os.environ.get("CONVEYOR_VALIDATION_DOCKER") == "1",
