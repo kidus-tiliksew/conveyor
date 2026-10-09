@@ -2149,11 +2149,11 @@ test('task metadata presents stored spec versions as plan versions', async ({ pa
   await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
 
-// The agent prompt the checkout group copies: title, optional excerpt, and the
-// conveyor-work instruction, one blank line apart.
-function expectedAgentPrompt(origin: string, taskID: string, title: string, excerpt?: string) {
+// The agent prompt the checkout group copies: title, optional full body, and
+// the conveyor-work instruction, one blank line apart.
+function expectedAgentPrompt(origin: string, taskID: string, title: string, body?: string) {
   const instruction = `Use the conveyor-work skill to work Conveyor task ${taskID} in workspace \`demo\` on ${origin}.`
-  return [title, excerpt, instruction].filter((part) => part !== undefined).join('\n\n')
+  return [title, body, instruction].filter((part) => part !== undefined).join('\n\n')
 }
 
 // Serves one task's detail with overridden task fields or checkout projection.
@@ -2209,7 +2209,13 @@ async function checkoutBounds(group: Locator) {
       cap: 32 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       viewportWidth: document.documentElement.clientWidth,
       overflows: [element, row, code].some((part) => part.scrollWidth > part.clientWidth),
-      lines: Math.round(code.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)),
+      pageOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      // Lines count the whole prompt, including any part scrolled out of view.
+      lines: Math.round(
+        (code.scrollHeight - Number.parseFloat(style.paddingTop) - Number.parseFloat(style.paddingBottom)) /
+          Number.parseFloat(style.lineHeight),
+      ),
+      scrollable: code.scrollHeight > code.clientHeight,
       whiteSpace: style.whiteSpace,
     }
   })
@@ -2220,6 +2226,7 @@ async function checkoutBounds(group: Locator) {
 async function expectCheckoutFits(group: Locator) {
   await expect.poll(async () => (await checkoutBounds(group)).overflows).toBe(false)
   const bounds = await checkoutBounds(group)
+  expect(bounds.pageOverflows).toBe(false)
   expect(bounds.left).toBeGreaterThanOrEqual(bounds.parentLeft - 0.5)
   expect(bounds.right).toBeLessThanOrEqual(bounds.parentRight + 0.5)
   expect(bounds.right).toBeLessThanOrEqual(bounds.viewportWidth + 0.5)
@@ -2271,10 +2278,43 @@ test('Prompt for AI Agents shows the full agent prompt and copies the same text'
   expect(await promptText(group)).toBe(expectedPrompt)
 })
 
-// A long title, a body with an unbroken token, and a long task ID must wrap at
-// phone widths on both the full page and the task sheet.
+// A long title, a long multi-paragraph body with an unbroken token, and a long
+// task ID must wrap at phone widths on both the full page and the task sheet.
 const longToken = `https://example.test/${'unbroken-segment-'.repeat(8)}end`
 const longTitle = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()}`
+const longBody = [
+  '## Context',
+  '',
+  `The prompt carries the whole body. See ${longToken} for the original report.`,
+  '',
+  '1. First step with `code` and **bold** text.',
+  '2. Second step:',
+  '   - a nested item keeps its indentation;',
+  '   - another nested item.',
+  '',
+  ...Array.from(
+    { length: 6 },
+    (_, index) => `Paragraph ${index + 1}. ${'Every sentence of this body must survive. '.repeat(3).trim()}`,
+  ).flatMap((paragraph) => [paragraph, '']),
+  'Final paragraph ends here.',
+].join('\n')
+
+// Scrolls the prompt to its end and reports whether the scroll reached it with
+// the final line inside the prompt's visible box.
+function scrollPromptToEnd(group: Locator) {
+  return group.locator('code').evaluate((node) => {
+    node.scrollTop = node.scrollHeight
+    const box = node.getBoundingClientRect()
+    const range = document.createRange()
+    range.selectNodeContents(node)
+    const rects = range.getClientRects()
+    const last = rects[rects.length - 1]
+    return {
+      atEnd: Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 1,
+      lastLineVisible: last.bottom <= box.bottom + 0.5 && last.top >= box.top - 0.5,
+    }
+  })
+}
 
 for (const route of ['full', 'sheet'] as const) {
   test(`Prompt for AI Agents wraps a long prompt without overflow on the ${route} task view`, async ({
@@ -2283,11 +2323,11 @@ for (const route of ['full', 'sheet'] as const) {
   }) => {
     const taskID = `work-on-this-long-prompt-${route}-${'x'.repeat(48)}`
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await routeCheckoutTask(page, taskID, { title: longTitle, body: `See ${longToken} for details.` })
+    await routeCheckoutTask(page, taskID, { title: longTitle, body: longBody })
 
     await page.goto(route === 'full' ? `/tasks/${taskID}/full` : `/tasks/${taskID}`)
     const origin = await page.evaluate(() => window.location.origin)
-    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle, `See ${longToken} for details.`)
+    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle, longBody)
     const sheet = page.getByRole('dialog', { name: 'Task detail' })
     const scope = route === 'full' ? page : sheet
     const group = checkoutGroup(scope)
@@ -2298,12 +2338,17 @@ for (const route of ['full', 'sheet'] as const) {
 
     const desktop = await expectCheckoutFits(group)
     expect(desktop.width).toBeLessThanOrEqual(desktop.cap + 0.5)
+    // The long prompt is taller than its 16rem bound and scrolls to its end.
+    expect(desktop.scrollable).toBe(true)
+    expect(await scrollPromptToEnd(group)).toEqual({ atEnd: true, lastLineVisible: true })
 
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 720 })
       if (route === 'sheet') await waitForSheetSettled(sheet)
       const phone = await expectCheckoutFits(group)
       expect(phone.lines).toBeGreaterThan(desktop.lines)
+      expect(phone.scrollable).toBe(true)
+      expect(await scrollPromptToEnd(group)).toEqual({ atEnd: true, lastLineVisible: true })
       expect(await promptText(group)).toBe(expectedPrompt)
     }
 
@@ -2327,63 +2372,43 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
-const promptExcerptCases: { name: string; body: string; excerpt?: string }[] = [
+// The prompt carries the stored body with only its outer whitespace trimmed;
+// a body with nothing left after trimming is omitted.
+const promptBodyCases: { name: string; body: string; expected?: string }[] = [
   {
-    name: 'skips headings, joins a multiline paragraph, and keeps inline Markdown',
+    name: 'keeps a multi-paragraph body over 280 characters exactly',
+    body: `\n\n  ${longBody}  \n\n`,
+    expected: longBody,
+  },
+  {
+    name: 'keeps a leading heading and the paragraphs after it',
     body: '# Heading\n\n## Section\nFirst line with `code`\nand **bold** text.\n\nSecond paragraph.',
-    excerpt: 'First line with `code` and **bold** text.',
+    expected: '# Heading\n\n## Section\nFirst line with `code`\nand **bold** text.\n\nSecond paragraph.',
   },
+  { name: 'keeps a heading-only body', body: '# Only a heading', expected: '# Only a heading' },
   {
-    name: 'keeps a paragraph of exactly 280 characters',
-    body: `${'x'.repeat(279)}.`,
-    excerpt: `${'x'.repeat(279)}.`,
+    name: 'trims only outer whitespace',
+    body: '\n \t First line\n    indented line\n\n\nAfter two blank lines.\t \n',
+    expected: 'First line\n    indented line\n\n\nAfter two blank lines.',
   },
-  {
-    name: 'cuts after the last sentence that ends within 280 characters',
-    body: `${'a'.repeat(100)} one. ${'b'.repeat(150)} two. ${'c'.repeat(100)} three.`,
-    excerpt: `${'a'.repeat(100)} one. ${'b'.repeat(150)} two.…`,
-  },
-  {
-    name: 'falls back to the last word boundary when no sentence ends in time',
-    body: Array.from({ length: 40 }, () => 'v1.2-build').join(' '),
-    excerpt: `${Array.from({ length: 25 }, () => 'v1.2-build').join(' ')}…`,
-  },
-  { name: 'omits the excerpt for a heading-only body', body: '# Only a heading' },
-  { name: 'omits the excerpt for an empty body', body: '' },
+  { name: 'omits an empty body', body: '' },
+  { name: 'omits a whitespace-only body', body: ' \n\n\t \n ' },
 ]
 
-for (const [index, { name, body, excerpt }] of promptExcerptCases.entries()) {
-  test(`Prompt for AI Agents excerpt ${name}`, async ({ page }) => {
-    const taskID = `work-on-this-excerpt-${index}`
+for (const [index, { name, body, expected }] of promptBodyCases.entries()) {
+  test(`Prompt for AI Agents body ${name}`, async ({ page, context }) => {
+    const taskID = `work-on-this-body-${index}`
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     await routeCheckoutTask(page, taskID, { body })
     await page.goto(`/tasks/${taskID}/full`)
     const origin = await page.evaluate(() => window.location.origin)
+    const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', expected)
     const group = checkoutGroup(page)
     await expect(group).toBeVisible()
-    expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task', excerpt))
-  })
-}
-
-// A sentence that ends inside closing Markdown delimiters or a typographic
-// quote is complete; the excerpt keeps the closers and drops the unfinished
-// sentence after it.
-const continuation = `${Array(70).fill('continuation').join(' ')}.`
-const closingSentenceCases = [
-  { name: 'closing Markdown delimiters', sentence: 'Keep **this sentence intact.**' },
-  { name: 'a typographic closing quote', sentence: 'Keep this sentence intact.”' },
-]
-
-for (const [index, { name, sentence }] of closingSentenceCases.entries()) {
-  test(`Prompt for AI Agents excerpt ends a sentence after ${name}`, async ({ page, context }) => {
-    const taskID = `work-on-this-closing-${index}`
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await routeCheckoutTask(page, taskID, { body: `${sentence} ${continuation}` })
-    await page.goto(`/tasks/${taskID}/full`)
-    const origin = await page.evaluate(() => window.location.origin)
-    const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', `${sentence}…`)
-    await page.getByRole('button', { name: 'Copy agent prompt' }).click()
+    expect(await promptText(group)).toBe(expectedPrompt)
+    await group.getByRole('button', { name: 'Copy agent prompt' }).click()
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
-    expect(await promptText(checkoutGroup(page))).toBe(expectedPrompt)
+    expect(expectedPrompt).not.toContain('…')
   })
 }
 
