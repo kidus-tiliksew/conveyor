@@ -154,10 +154,30 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 			t.Fatal(err)
 		}
 	}
-	historical := core.LineageLink{Workspace: fixture.Workspace, SrcType: core.LineageRequirement, SrcID: "req-feat-retired",
-		DstType: core.LineageTask, DstID: task.ID, Kind: "historical_feature_assignment", LegacyCreatedByEvent: "feature.migrated",
-		CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
-	fixture.SeedHistoricalLink(t, ctx, historical)
+	// A retained historical-link graph as migration 046 left it, rooted at the
+	// task: req-feat-retired (depth 1) assigned the task and three more tasks
+	// (depth 2), and req-feat-chain (depth 3) shares one of them and reaches a
+	// tail task (depth 4). Seven nodes and six links, all legacy provenance.
+	seededAt := time.Now().UTC().Truncate(time.Microsecond)
+	retained := func(requirementID, taskID string, offset int) core.LineageLink {
+		return core.LineageLink{Workspace: fixture.Workspace, SrcType: core.LineageRequirement, SrcID: requirementID,
+			DstType: core.LineageTask, DstID: taskID, Kind: "historical_feature_assignment", LegacyCreatedByEvent: "feature.migrated",
+			CreatedAt: seededAt.Add(time.Duration(offset) * time.Millisecond)}
+	}
+	chainTask, tailTask := task.ID+"-chain", task.ID+"-tail"
+	fanTasks := []string{task.ID + "-fan-1", task.ID + "-fan-2"}
+	historical := retained("req-feat-retired", task.ID, 0)
+	retainedLinks := []core.LineageLink{
+		historical,
+		retained("req-feat-retired", chainTask, 1),
+		retained("req-feat-retired", fanTasks[0], 2),
+		retained("req-feat-retired", fanTasks[1], 3),
+		retained("req-feat-chain", chainTask, 4),
+		retained("req-feat-chain", tailTask, 5),
+	}
+	for _, link := range retainedLinks {
+		fixture.SeedHistoricalLink(t, ctx, link)
+	}
 
 	type recordedEvent struct {
 		id      int64
@@ -193,21 +213,25 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		found := 0
+		found := map[string]int{}
 		for _, link := range links {
 			if ids[link.CreatedByEventID] {
 				t.Fatalf("retired feature event projected a link: %+v", link)
 			}
-			if link.Kind == historical.Kind && link.SrcID == historical.SrcID && link.DstID == task.ID {
-				found++
-				if link.SrcType != historical.SrcType || link.DstType != historical.DstType ||
-					link.LegacyCreatedByEvent != "feature.migrated" || link.CreatedByEventID != 0 || link.Workspace != fixture.Workspace {
-					t.Fatalf("historical link provenance changed: %+v", link)
+			for _, want := range retainedLinks {
+				if link.Kind == want.Kind && link.SrcID == want.SrcID && link.DstID == want.DstID {
+					found[want.SrcID+"->"+want.DstID]++
+					if link.SrcType != want.SrcType || link.DstType != want.DstType ||
+						link.LegacyCreatedByEvent != "feature.migrated" || link.CreatedByEventID != 0 || link.Workspace != fixture.Workspace {
+						t.Fatalf("historical link provenance changed: %+v", link)
+					}
 				}
 			}
 		}
-		if found != 1 {
-			t.Fatalf("historical feature link count=%d in %+v", found, links)
+		for _, want := range retainedLinks {
+			if found[want.SrcID+"->"+want.DstID] != 1 {
+				t.Fatalf("historical feature link %s->%s count=%d in %+v", want.SrcID, want.DstID, found[want.SrcID+"->"+want.DstID], links)
+			}
 		}
 	}
 	before := featureEvents(t)
@@ -228,9 +252,20 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 
 	root := core.LineageNode{Type: core.LineageTask, ID: task.ID}
 	historicalNode := core.LineageNode{Type: core.LineageRequirement, ID: historical.SrcID}
+	chainRequirement := core.LineageNode{Type: core.LineageRequirement, ID: "req-feat-chain"}
+	taskNode := func(id string) core.LineageNode { return core.LineageNode{Type: core.LineageTask, ID: id} }
+	// walk reads the bounded neighborhood with every axis one beyond the
+	// budget, as callers do (component-lineage "Traversal under a budget"),
+	// and traverses with the real budget so Truncated reflects what lies
+	// beyond it.
 	walk := func(t *testing.T, ctx context.Context, budget core.LineageTraversalBudget) core.LineageTraversal {
 		t.Helper()
-		links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+		fetch := budget
+		fetch.MaxDepth, fetch.MaxNodes = budget.MaxDepth+1, budget.MaxNodes+1
+		if budget.MaxLinks > 0 {
+			fetch.MaxLinks = budget.MaxLinks + 1
+		}
+		links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, fetch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,17 +275,78 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 		}
 		return graph
 	}
-	full := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, Workspace: fixture.Workspace})
-	if full.Depths[historicalNode] != 1 || full.Truncated {
-		t.Fatalf("historical node not reached at depth 1: %+v", full)
+	nodeSet := func(graph core.LineageTraversal) map[core.LineageNode]bool {
+		out := map[core.LineageNode]bool{}
+		for _, node := range graph.Nodes {
+			out[node] = true
+		}
+		return out
 	}
+	assertNodes := func(t *testing.T, name string, graph core.LineageTraversal, want ...core.LineageNode) {
+		t.Helper()
+		got := nodeSet(graph)
+		if len(got) != len(want) || len(graph.Nodes) != len(want) {
+			t.Fatalf("%s nodes=%v want %v", name, graph.Nodes, want)
+		}
+		for _, node := range want {
+			if !got[node] {
+				t.Fatalf("%s missing node %v in %v", name, node, graph.Nodes)
+			}
+		}
+	}
+	assertLinksWithin := func(t *testing.T, name string, graph core.LineageTraversal) {
+		t.Helper()
+		reached := nodeSet(graph)
+		for _, link := range graph.Links {
+			if link.Kind != "historical_feature_assignment" || link.LegacyCreatedByEvent != "feature.migrated" ||
+				!reached[core.LineageNode{Type: link.SrcType, ID: link.SrcID}] || !reached[core.LineageNode{Type: link.DstType, ID: link.DstID}] {
+				t.Fatalf("%s selected a link outside its reached history: %+v", name, link)
+			}
+		}
+	}
+	allNodes := []core.LineageNode{root, historicalNode, taskNode(chainTask), taskNode(fanTasks[0]), taskNode(fanTasks[1]), chainRequirement, taskNode(tailTask)}
+
+	// Unbounded within the default budget: the whole retained graph.
+	full := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, Workspace: fixture.Workspace})
+	assertNodes(t, "full walk", full, allNodes...)
+	assertLinksWithin(t, "full walk", full)
+	if full.Depths[historicalNode] != 1 || full.Depths[taskNode(chainTask)] != 2 || full.Depths[chainRequirement] != 3 || full.Depths[taskNode(tailTask)] != 4 ||
+		full.Truncated || len(full.Links) != len(retainedLinks) || full.OmittedNodes != 0 || full.OmittedLinks != 0 || len(full.ExhaustionReasons) != 0 {
+		t.Fatalf("full walk over retained history: %+v", full)
+	}
+
+	// Depth limit: depth 2 reaches the requirement and its three tasks; the
+	// chain requirement one hop beyond is omitted and the tail stays unseen.
+	depth := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 2, MaxNodes: 32, Workspace: fixture.Workspace})
+	assertNodes(t, "depth limit", depth, root, historicalNode, taskNode(chainTask), taskNode(fanTasks[0]), taskNode(fanTasks[1]))
+	assertLinksWithin(t, "depth limit", depth)
+	if !depth.Truncated || depth.OmittedNodes != 1 || depth.OmittedLinks != 0 || len(depth.Links) != 4 ||
+		!reflect.DeepEqual(depth.ExhaustionReasons, []string{"depth"}) {
+		t.Fatalf("depth budget not honored: %+v", depth)
+	}
+
+	// Link limit: every node is within depth and node budgets, but only three
+	// of the six reached links are kept.
+	linkLimited := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, MaxLinks: 3, Workspace: fixture.Workspace})
+	assertNodes(t, "link limit", linkLimited, allNodes...)
+	assertLinksWithin(t, "link limit", linkLimited)
+	if !linkLimited.Truncated || len(linkLimited.Links) != 3 || linkLimited.OmittedLinks != len(retainedLinks)-3 || linkLimited.OmittedNodes != 0 ||
+		!reflect.DeepEqual(linkLimited.ExhaustionReasons, []string{"links"}) {
+		t.Fatalf("link budget not honored: %+v", linkLimited)
+	}
+
+	// Node limit: only the root fits; its one historical neighbor is omitted.
 	bounded := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 1, Workspace: fixture.Workspace})
-	if len(bounded.Nodes) != 1 || bounded.Nodes[0] != root || !bounded.Truncated || bounded.OmittedNodes < 1 {
+	assertNodes(t, "node limit", bounded, root)
+	if !bounded.Truncated || bounded.OmittedNodes != 1 || len(bounded.Links) != 0 ||
+		!reflect.DeepEqual(bounded.ExhaustionReasons, []string{"nodes"}) {
 		t.Fatalf("node budget not honored: %+v", bounded)
 	}
+
 	foreignWorkspace, _ := store.WorkspaceFromContext(fixture.ForeignContext)
 	foreign := walk(t, fixture.ForeignContext, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, Workspace: foreignWorkspace})
-	if _, ok := foreign.Depths[historicalNode]; ok || len(foreign.Links) != 0 {
+	assertNodes(t, "foreign walk", foreign, root)
+	if len(foreign.Links) != 0 || foreign.Truncated {
 		t.Fatalf("foreign workspace reached retired feature history: %+v", foreign)
 	}
 }
