@@ -62,6 +62,15 @@ monitor:
 select. The `workspace:` and `repos:` entries are optional; leave them out to
 create the workspace from the dashboard's first-run prompt instead.
 
+Every workspace uses these control-plane settings, including a workspace whose
+stored configuration is policy only: `conveyord` composes `triage`,
+`planning`, and `planning_models` from this file into each workspace's runtime
+configuration and never stores them in a workspace document. If planning
+refuses with "planning control-plane settings are unavailable" or "planning
+model is not configured", set `execution_settings.control_plane.planning.model`
+(and `planning_models` for alternate models) in this file and restart
+`conveyord`.
+
 A deployment file written before DEC-56 may still carry `harnesses`,
 `setups`, `default_setup`, `routing` models, stage `harness`, `model`,
 `model_policy`, or `effort`, review fallbacks, or seat models. `conveyord`

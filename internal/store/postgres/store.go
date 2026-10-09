@@ -425,10 +425,14 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	return config.VersionedDocument{Document: document, Version: row.ConfigVersion}, nil
 }
 
-// RuntimeConfig overlays the latest database document onto immutable
-// deployment settings. Callers take one value per dispatch so running jobs do
-// not observe mid-flight policy changes.
+// RuntimeConfig composes the latest database policy document with the
+// deployment's control-plane settings through the shared runtime helper
+// (component-runtime; component-persistence). Callers take one value per
+// dispatch so running jobs do not observe mid-flight policy changes.
 func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
+	if deployment == nil {
+		return nil, fmt.Errorf("deployment configuration is required")
+	}
 	id := workspace(ctx)
 	row, err := s.queries.GetWorkspaceConfig(ctx, id)
 	if err != nil {
@@ -436,8 +440,7 @@ func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*
 	}
 	base := *deployment
 	base.Workspace = id
-	cfg, _, err := config.ParseStoredWorkspaceDocument([]byte(row.ConfigYaml), &base, "database workspace config")
-	return cfg, err
+	return config.ParseRuntimeWorkspaceDocument([]byte(row.ConfigYaml), &base, "database workspace config")
 }
 
 func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {

@@ -169,10 +169,14 @@ func (m *volatileMemory) WorkspaceConfig(ctx context.Context) (config.VersionedD
 	return config.VersionedDocument{Document: document, Version: record.ConfigVersion}, nil
 }
 
-// RuntimeConfig overlays the stored document onto the immutable deployment
-// settings. Callers take one value per dispatch so a running job never
-// observes a mid-flight policy change.
+// RuntimeConfig composes the stored policy document with the deployment's
+// control-plane settings through the shared runtime helper
+// (component-runtime; component-persistence). Callers take one value per
+// dispatch so a running job never observes a mid-flight policy change.
 func (m *volatileMemory) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
+	if deployment == nil {
+		return nil, fmt.Errorf("deployment configuration is required")
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	id := workspaceOrDefault(ctx, "")
@@ -182,8 +186,7 @@ func (m *volatileMemory) RuntimeConfig(ctx context.Context, deployment *config.C
 	}
 	base := *deployment
 	base.Workspace = id
-	cfg, _, err := config.ParseStoredWorkspaceDocument([]byte(record.ConfigYAML), &base, "stored workspace config")
-	return cfg, err
+	return config.ParseRuntimeWorkspaceDocument([]byte(record.ConfigYAML), &base, "stored workspace config")
 }
 
 // UpdateWorkspaceConfig implements WorkspaceConfigStore as a compare-and-set

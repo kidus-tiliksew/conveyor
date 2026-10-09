@@ -170,13 +170,19 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	if err != nil {
 		return core.PlanningSession{}, err
 	}
-	if cfg.ExecutionSettings == nil {
-		return core.PlanningSession{}, fmt.Errorf("planning execution settings are unavailable")
+	// Planning settings are the deployment's own control-plane configuration,
+	// composed into every runtime value (component-planning; DEC-56(3)). An
+	// override may replace the model but never supplies absent settings.
+	if cfg == nil || cfg.ExecutionSettings == nil {
+		return core.PlanningSession{}, fmt.Errorf("planning control-plane settings are unavailable: %s", config.PlanningControlPlaneRemedy)
 	}
 	settings := cfg.ExecutionSettings.ControlPlane.Planning
 	model := strings.TrimSpace(input.ModelOverride)
 	if model == "" {
-		model = config.ResolveControlPlaneModel("planning", settings.Model)
+		model = strings.TrimSpace(config.ResolveControlPlaneModel("planning", settings.Model))
+	}
+	if model == "" {
+		return core.PlanningSession{}, fmt.Errorf("planning model is not configured: %s", config.PlanningControlPlaneRemedy)
 	}
 	planningOverride, overrideActive := config.ControlPlaneModelOverride("planning")
 	allowed := false
@@ -829,13 +835,13 @@ func (s *Service) modelSettings(ctx context.Context, session core.PlanningSessio
 		settings.Effort = session.Effort
 	}
 	if strings.TrimSpace(settings.Model) == "" {
-		return "", "", 0, fmt.Errorf("planning model is not configured")
+		return "", "", 0, fmt.Errorf("planning model is not configured: %s", config.PlanningControlPlaneRemedy)
 	}
 	var timeout time.Duration
 	if settings.TimeoutText != "" {
 		timeout, err = time.ParseDuration(settings.TimeoutText)
 		if err != nil {
-			return "", "", 0, fmt.Errorf("planning model timeout: %w", err)
+			return "", "", 0, fmt.Errorf("execution_settings.control_plane.planning.timeout: %w", err)
 		}
 	}
 	return settings.Model, settings.Effort, timeout, nil
