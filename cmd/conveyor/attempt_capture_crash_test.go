@@ -38,7 +38,7 @@ func TestCrashLauncherHelper(t *testing.T) {
 	item := workerservice.DispatchOrder{
 		Order: core.WorkOrder{ID: os.Getenv("CONVEYOR_CRASH_ORDER"), Stage: core.StageImplement},
 		Harness: config.Harness{
-			Name: "helper", Command: []string{os.Args[0], "-test.run=^TestWorkerLifecycleHelper$", "--", "crash-child"},
+			MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=^TestWorkerLifecycleHelper$", "--", "crash-child"},
 		},
 	}
 	_ = runHarnessChildWithFirstActivityTimeoutAndOutput(context.Background(), &client{base: address, workspace: "demo"}, "crash-worker-credential", item, time.Minute, os.Stdout, os.Stderr)

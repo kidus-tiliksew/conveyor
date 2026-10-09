@@ -191,7 +191,7 @@ harnesses:
   - name: claude
     mcp_transport: json_file
     command:
-      [claude, -p, "{prompt}", --mcp-config, "{mcp_config}",
+      [claude, -p, "{prompt}", --mcp-config, "{mcp_config}", --strict-mcp-config,
        --allowedTools, "mcp__conveyor__*", --output-format, stream-json,
        --verbose, --permission-mode, bypassPermissions, --add-dir, ..]
     model_args: [--model, "{model}"]
@@ -213,6 +213,31 @@ the review panel: one independent review order per seat, in order, so a
 second seat with a different model buys a second opinion on every delivery.
 The file stays on this machine; the server only learns whether a serviceable
 harness is present.
+
+The generated MCP config for `json_file` harnesses holds no credential. It
+names one `conveyor` HTTP server whose header is the reference
+`Authorization: Bearer ${CONVEYOR_API_TOKEN}`, and the launcher supplies the
+scoped token only in the child's environment. Claude Code expands `${VAR}` in
+remote MCP headers loaded through `--mcp-config`
+([Claude Code MCP](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json)).
+Before trusting the child, the launcher requires Claude's stream-json
+initialization event to report that `conveyor` server `connected` with the
+stage's lifecycle tools, within the harness `probe_timeout`. A missing or
+failed receipt stops the child and releases the claim; it never falls back to
+a literal token or another configuration source.
+
+| Harness definition | `json_file` support |
+| --- | --- |
+| Built-in `claude` template, the example above, and the harness in `conveyor.example.yaml` | Supported |
+| A renamed definition whose command runs `claude` with `-p`, one `--mcp-config "{mcp_config}"`, `--output-format stream-json`, and `--verbose` | Supported; `--strict-mcp-config` is added at launch when missing |
+| Any definition that omits `mcp_transport` | Treated as `json_file` and checked the same way |
+| A wrapper script or another agent CLI on `json_file`, including Codex, Grok, Cursor, or OpenCode | Refused before claiming, naming the harness |
+| Built-in Codex (`toml_override`), Grok, Cursor, and OpenCode (`environment`) | Not `json_file`; unchanged |
+
+To fix a refused harness, recreate it from the built-in `claude` template with
+`conveyor config init-execution`, or switch the stage to the Codex
+`toml_override` setup or a Grok, Cursor, or OpenCode environment setup. Never
+put a token into a harness definition or your harness's own configuration.
 
 Add the repository entry to this file, preserving the wizard's other settings:
 

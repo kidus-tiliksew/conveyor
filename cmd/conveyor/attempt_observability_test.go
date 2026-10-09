@@ -30,6 +30,9 @@ type captureFixture struct {
 	reconcile  func(call int) (workerservice.ClaimReconciliation, int, string)
 	captureErr int
 	specOrigin string
+	// claim, when set, adjusts the claimed order (for example continuation
+	// metadata) before it is returned.
+	claim func(*core.WorkOrder)
 	// gate, when set, holds renewal at "claimed" until the child's first
 	// output, so terminal and authority-loss responses can never reach the
 	// pre-start renewal (deterministic ordering, no timers).
@@ -42,6 +45,8 @@ type captureFixture struct {
 	releases   []core.WorkOrderRelease
 	captures   []core.WorkOrderAttemptCapture
 	capturePth []string
+	issued     int
+	revoked    int
 }
 
 const captureFixtureAttempt = "attempt-current"
@@ -54,8 +59,14 @@ func (f *captureFixture) server() *httptest.Server {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/agent-credential"):
+			f.mu.Lock()
+			f.issued++
+			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "run-agent", "credential": "run-agent-secret"})
 		case r.Method == http.MethodDelete && strings.HasSuffix(path, "/agent-credential"):
+			f.mu.Lock()
+			f.revoked++
+			f.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(path, "/claim"):
 			var request struct {
@@ -67,6 +78,9 @@ func (f *captureFixture) server() *httptest.Server {
 			f.mu.Unlock()
 			order := core.WorkOrder{ID: "capture-order", TaskID: "capture-task", Stage: f.stage, State: core.WorkOrderClaimed,
 				AttemptID: captureFixtureAttempt, LastAttemptID: "attempt-predecessor", LeaseExpiresAt: time.Now().Add(time.Minute)}
+			if f.claim != nil {
+				f.claim(&order)
+			}
 			if f.dispatch == "run" {
 				_ = json.NewEncoder(w).Encode(order)
 				return
@@ -156,7 +170,7 @@ func (f *captureFixture) item(mode, stall string) workerservice.DispatchOrder {
 		Order:    core.WorkOrder{ID: "capture-order", TaskID: "capture-task", Stage: f.stage},
 		Dispatch: f.dispatch,
 		Harness: config.Harness{
-			Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode},
+			MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=TestWorkerLifecycleHelper", "--", mode},
 			StallTimeoutText: stall,
 		},
 	}

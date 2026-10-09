@@ -278,6 +278,14 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			}
 			return localExecutionSetupRemedy(configPath, selectErr)
 		}
+		// An unsupported JSON-file harness claims nothing: it would need a
+		// literal credential or could not confirm its receipt
+		// (component-harness-execution; req-security-boundaries AC-2.7).
+		if adapterErr := admitJSONMCPHarness(selected.Harness); adapterErr != nil {
+			stopApp()
+			_ = presentPendingRunOrderStyled(output, *item, outputTerminal)
+			return localExecutionSetupRemedy(configPath, adapterErr)
+		}
 		preflightErr, checked := preflights[selected.Repository.URL]
 		if !checked {
 			preflightErr = c.preflightLocalGitCredential(contextWithLocalExecutionConfig(ctx, local), selected)

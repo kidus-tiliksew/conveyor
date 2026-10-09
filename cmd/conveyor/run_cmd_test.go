@@ -229,8 +229,8 @@ func runTaskScenario(t *testing.T, input string, step, terminal bool, commandFla
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := `command: ["` + strings.ReplaceAll(os.Args[0], `"`, `\"`) + `", "-test.run=TestTaskRunHarnessHelper", "--", "{prompt}", "{mcp_config}"]`
-	localConfig := strings.Replace(string(template), `command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]`, command, 1)
+	command := fakeClaudeCommandYAML(t, "TestTaskRunHarnessHelper")
+	localConfig := strings.Replace(string(template), exampleHarnessCommand, command, 1)
 	localConfig = strings.ReplaceAll(localConfig, "effort: high", `effort: ""`)
 	localConfig = withHealthyRunProbe(t, localConfig)
 	if localConfig == string(template) {
@@ -394,8 +394,8 @@ func runSpecTaskScenarioAfter(t *testing.T, input string, step, terminal bool, a
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := `command: ["` + strings.ReplaceAll(os.Args[0], `"`, `\"`) + `", "-test.run=TestTaskRunHarnessHelper", "--", "{prompt}", "{mcp_config}"]`
-	localConfig := withHealthyRunProbe(t, strings.Replace(string(template), `command: [agent-cli, --prompt, "{prompt}", --mcp-config, "{mcp_config}"]`, command, 1))
+	command := fakeClaudeCommandYAML(t, "TestTaskRunHarnessHelper")
+	localConfig := withHealthyRunProbe(t, strings.Replace(string(template), exampleHarnessCommand, command, 1))
 	configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
 	if err = os.WriteFile(configPath, []byte(localConfig), 0o600); err != nil {
 		t.Fatal(err)
@@ -1337,6 +1337,7 @@ func TestTaskRunHarnessHelper(t *testing.T) {
 	if configPath == "" {
 		t.Fatal("MCP config argument not found")
 	}
+	emitFakeClaudeReceipt("", "")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1359,7 +1360,7 @@ func TestTaskRunHarnessHelper(t *testing.T) {
 		if requestErr != nil {
 			t.Fatal(requestErr)
 		}
-		request.Header.Set("Authorization", server.Headers["Authorization"])
+		request.Header.Set("Authorization", os.Expand(server.Headers["Authorization"], os.Getenv))
 		response, requestErr := http.DefaultClient.Do(request)
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -1653,13 +1654,27 @@ func TestContextFreshnessSummaryDoesNotAcknowledgeOrPoll(t *testing.T) {
 	}
 }
 
-// withHealthyRunProbe replaces the example harness's absent agent-cli probe
-// with a present, healthy one: every run, with or without a named setup,
-// probes its setup before the first claim (req-execution-configuration
-// AC-10.4).
+// exampleHarnessCommand is the Claude Code command line of the example
+// harness, which end-to-end run tests replace with a fake claude child.
+const exampleHarnessCommand = `command: [claude, -p, "{prompt}", --mcp-config, "{mcp_config}", --strict-mcp-config, --allowedTools, "mcp__conveyor__*", --output-format, stream-json, --verbose, --permission-mode, bypassPermissions, --add-dir, ..]`
+
+// fakeClaudeCommandYAML renders fakeClaudeCommand as the example harness's
+// YAML command line.
+func fakeClaudeCommandYAML(t *testing.T, helper string) string {
+	t.Helper()
+	encoded, err := json.Marshal(fakeClaudeCommand(t, helper))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "command: " + string(encoded)
+}
+
+// withHealthyRunProbe replaces the example harness's claude probe with a
+// present, healthy one: every run, with or without a named setup, probes its
+// setup before the first claim (req-execution-configuration AC-10.4).
 func withHealthyRunProbe(t *testing.T, value string) string {
 	t.Helper()
-	const probe = "probe_command: [agent-cli, --version]"
+	const probe = "probe_command: [claude, --version]"
 	if !strings.Contains(value, probe) {
 		t.Fatal("example harness probe fixture was not found")
 	}
@@ -1859,7 +1874,7 @@ func writeRunProbeSetupConfig(t *testing.T, probes, timeouts map[string]string) 
 		if !ok {
 			timeout = "10s"
 		}
-		fmt.Fprintf(&harnesses, "  - name: %s\n    mcp_transport: json_file\n    command: [agent-cli, --prompt, \"{prompt}\", --mcp-config, \"{mcp_config}\"]\n    model_args: [--model, \"{model}\"]\n    effort_args:\n      high: [--effort, high]\n    probe_command: %s\n    probe_timeout: %s\n", name, probe, timeout)
+		fmt.Fprintf(&harnesses, "  - name: %s\n    mcp_transport: toml_override\n    command: [agent-cli, --prompt, \"{prompt}\", --mcp-config, \"{mcp_config}\"]\n    model_args: [--model, \"{model}\"]\n    effort_args:\n      high: [--effort, high]\n    probe_command: %s\n    probe_timeout: %s\n", name, probe, timeout)
 	}
 	value = value[:start] + strings.TrimSuffix(harnesses.String(), "\n") + value[end:]
 	for _, replacement := range [][2]string{
