@@ -89,22 +89,22 @@ INSERT INTO tasks (
     setup_name, setup_contract, reviewed_head_sha, approved_head_sha, approval_stale,
     refresh_baseline_sha, refresh_head_sha, refresh_review_scope,
     repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id,
-    origin_spec_version, origin_sub_id, feature_id, intake_key, created_at
+    origin_spec_version, origin_sub_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     $13, $14, $15, $16, $17, $18, $19, $20,
     $21, $22, $23, $24, $25, $26, sqlc.narg(parent_task_id),
     sqlc.arg(origin_spec_version), sqlc.arg(origin_sub_id),
-    sqlc.arg(feature_id), sqlc.arg(intake_key), sqlc.arg(created_at)
+    sqlc.arg(intake_key), sqlc.arg(created_at)
 )
 RETURNING *;
 
 -- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 FROM tasks WHERE id = $1 AND workspace_id = $2;
 
 -- name: GetTaskByIntakeKey :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 FROM tasks WHERE workspace_id = $1 AND intake_key = $2;
 
 -- name: ListTasks :many

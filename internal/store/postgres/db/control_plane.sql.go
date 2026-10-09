@@ -174,7 +174,7 @@ SET reviewed_head_sha = $1,
     refresh_baseline_sha = '', refresh_head_sha = '', refresh_review_scope = '',
     updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type BindTaskApprovalParams struct {
@@ -203,7 +203,6 @@ func (q *Queries) BindTaskApproval(ctx context.Context, arg BindTaskApprovalPara
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -374,7 +373,7 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction FROM tasks WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction FROM tasks WHERE id = $1 AND workspace_id = $2
 `
 
 type GetTaskParams struct {
@@ -402,7 +401,6 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -424,7 +422,7 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 }
 
 const getTaskByIntakeKey = `-- name: GetTaskByIntakeKey :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction FROM tasks WHERE workspace_id = $1 AND intake_key = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction FROM tasks WHERE workspace_id = $1 AND intake_key = $2
 `
 
 type GetTaskByIntakeKeyParams struct {
@@ -452,7 +450,6 @@ func (q *Queries) GetTaskByIntakeKey(ctx context.Context, arg GetTaskByIntakeKey
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -764,15 +761,15 @@ INSERT INTO tasks (
     setup_name, setup_contract, reviewed_head_sha, approved_head_sha, approval_stale,
     refresh_baseline_sha, refresh_head_sha, refresh_review_scope,
     repo_name, base_branch, branch, state, next_stage, recovery_stage, parent_task_id,
-    origin_spec_version, origin_sub_id, feature_id, intake_key, created_at
+    origin_spec_version, origin_sub_id, intake_key, created_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
     $13, $14, $15, $16, $17, $18, $19, $20,
     $21, $22, $23, $24, $25, $26, $27,
     $28, $29,
-    $30, $31, $32
+    $30, $31
 )
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id
 `
 
 type InsertTaskParams struct {
@@ -805,7 +802,6 @@ type InsertTaskParams struct {
 	ParentTaskID       pgtype.Text        `json:"parent_task_id"`
 	OriginSpecVersion  int32              `json:"origin_spec_version"`
 	OriginSubID        string             `json:"origin_sub_id"`
-	FeatureID          pgtype.Text        `json:"feature_id"`
 	IntakeKey          pgtype.Text        `json:"intake_key"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
@@ -841,7 +837,6 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		arg.ParentTaskID,
 		arg.OriginSpecVersion,
 		arg.OriginSubID,
-		arg.FeatureID,
 		arg.IntakeKey,
 		arg.CreatedAt,
 	)
@@ -863,7 +858,6 @@ func (q *Queries) InsertTask(ctx context.Context, arg InsertTaskParams) (Task, e
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -1398,7 +1392,7 @@ func (q *Queries) ListTaskOperationsLatestPlans(ctx context.Context, arg ListTas
 }
 
 const listTaskOperationsTasks = `-- name: ListTaskOperationsTasks :many
-SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.feature_id, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction,
+SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction,
        EXISTS (
            SELECT 1 FROM task_dependencies edge
            WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
@@ -1516,7 +1510,6 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 			&i.Task.UpdatedAt,
 			&i.Task.NextStage,
 			&i.Task.RecoveryStage,
-			&i.Task.FeatureID,
 			&i.Task.IntakeKey,
 			&i.Task.Mode,
 			&i.Task.SpecApproval,
@@ -1547,7 +1540,7 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.feature_id, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction,
+SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction,
        EXISTS (
            SELECT 1 FROM task_dependencies edge
            WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
@@ -1593,7 +1586,6 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]ListTask
 			&i.Task.UpdatedAt,
 			&i.Task.NextStage,
 			&i.Task.RecoveryStage,
-			&i.Task.FeatureID,
 			&i.Task.IntakeKey,
 			&i.Task.Mode,
 			&i.Task.SpecApproval,
@@ -1633,7 +1625,7 @@ WHERE id = $4 AND workspace_id = $5
   AND NOT (approval_stale
     AND refresh_baseline_sha = $1
     AND refresh_head_sha = $2)
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type MarkTaskApprovalStaleParams struct {
@@ -1670,7 +1662,6 @@ func (q *Queries) MarkTaskApprovalStale(ctx context.Context, arg MarkTaskApprova
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -1697,7 +1688,7 @@ SET reviewed_head_sha = $1, approved_head_sha = $1,
     approval_stale = false, refresh_baseline_sha = '', refresh_head_sha = '',
     refresh_review_scope = '', updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type SkipTaskRefreshParams struct {
@@ -1726,7 +1717,6 @@ func (q *Queries) SkipTaskRefresh(ctx context.Context, arg SkipTaskRefreshParams
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -1834,7 +1824,7 @@ UPDATE tasks
 SET class = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type UpdateTaskClassificationParams struct {
@@ -1863,7 +1853,6 @@ func (q *Queries) UpdateTaskClassification(ctx context.Context, arg UpdateTaskCl
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -1889,7 +1878,7 @@ UPDATE tasks
 SET hold = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type UpdateTaskHoldParams struct {
@@ -1903,7 +1892,7 @@ UPDATE tasks
 SET assignee_user_id = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, assignee_user_id
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, assignee_user_id
 `
 
 type UpdateTaskAssigneeParams struct {
@@ -1919,7 +1908,7 @@ func (q *Queries) UpdateTaskAssignee(ctx context.Context, arg UpdateTaskAssignee
 		&i.ID, &i.WorkspaceID, &i.Source, &i.Title, &i.Body, &i.Class,
 		&i.EscalationLevel, &i.RepoName, &i.BaseBranch, &i.Branch, &i.State,
 		&i.ParentTaskID, &i.CreatedAt, &i.UpdatedAt, &i.NextStage,
-		&i.RecoveryStage, &i.FeatureID, &i.IntakeKey, &i.Mode,
+		&i.RecoveryStage, &i.IntakeKey, &i.Mode,
 		&i.SpecApproval, &i.MergeApproval, &i.PolicyVersion, &i.SetupName,
 		&i.SetupContract, &i.Hold, &i.ReviewedHeadSha, &i.ApprovedHeadSha,
 		&i.ApprovalStale, &i.RefreshBaselineSha, &i.RefreshHeadSha,
@@ -1949,7 +1938,6 @@ func (q *Queries) UpdateTaskHold(ctx context.Context, arg UpdateTaskHoldParams) 
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -1975,7 +1963,7 @@ UPDATE tasks
 SET state = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type UpdateTaskStateParams struct {
@@ -2004,7 +1992,6 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,
@@ -2033,7 +2020,7 @@ SET state = $1,
     updated_at = now()
 WHERE id = $4
   AND workspace_id = $5
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, feature_id, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction
 `
 
 type UpdateTaskTransitionParams struct {
@@ -2070,7 +2057,6 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 		&i.UpdatedAt,
 		&i.NextStage,
 		&i.RecoveryStage,
-		&i.FeatureID,
 		&i.IntakeKey,
 		&i.Mode,
 		&i.SpecApproval,

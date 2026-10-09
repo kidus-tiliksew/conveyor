@@ -423,12 +423,12 @@ func TestArtifactValidateAttachmentTargetKeepsOwnerExclusive(t *testing.T) {
 		// An artifact may float at workspace scope with no owner at all.
 		{name: "unattached", artifact: Artifact{}},
 		{name: "task only", artifact: Artifact{TaskID: "task-1"}},
-		{name: "feature only", artifact: Artifact{FeatureID: "feature-1"}},
 		{name: "requirement only", artifact: Artifact{RequirementID: "req-1"}},
-		{name: "task and feature", artifact: Artifact{TaskID: "task-1", FeatureID: "feature-1"}, wantErr: true},
+		{name: "planning session only", artifact: Artifact{PlanningSessionID: "session-1"}},
 		{name: "task and requirement", artifact: Artifact{TaskID: "task-1", RequirementID: "req-1"}, wantErr: true},
-		{name: "feature and requirement", artifact: Artifact{FeatureID: "feature-1", RequirementID: "req-1"}, wantErr: true},
-		{name: "all three", artifact: Artifact{TaskID: "task-1", FeatureID: "feature-1", RequirementID: "req-1"}, wantErr: true},
+		{name: "task and planning session", artifact: Artifact{TaskID: "task-1", PlanningSessionID: "session-1"}, wantErr: true},
+		{name: "requirement and planning session", artifact: Artifact{RequirementID: "req-1", PlanningSessionID: "session-1"}, wantErr: true},
+		{name: "all three", artifact: Artifact{TaskID: "task-1", RequirementID: "req-1", PlanningSessionID: "session-1"}, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

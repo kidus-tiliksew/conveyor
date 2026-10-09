@@ -86,15 +86,25 @@ func (f *phase62Fixture) feature(t *testing.T, id, name, description, parentID s
 	}
 }
 
+// task inserts through the live binding, which no longer names feature_id
+// (migration 142), and then writes a historical assignment with raw SQL on the
+// bounded pre-142 schema that still has the column.
 func (f *phase62Fixture) task(t *testing.T, featureID, parentTaskID string) string {
 	t.Helper()
 	id := core.NewTaskID()
 	if _, err := f.store.queries.InsertTask(f.ctx, taskInsertParams(core.Task{
 		ID: id, Workspace: f.workspace, Repo: "repo", Branch: "conveyor/task-" + id,
-		State: core.TaskQueued, FeatureID: featureID, ParentTaskID: parentTaskID,
+		State: core.TaskQueued, ParentTaskID: parentTaskID,
 		CreatedAt: f.seeded,
 	})); err != nil {
 		t.Fatalf("seed task: %v", err)
+	}
+	if featureID != "" {
+		if _, err := f.pool.Exec(f.ctx,
+			`UPDATE tasks SET feature_id=$1 WHERE workspace_id=$2 AND id=$3`,
+			featureID, f.workspace, id); err != nil {
+			t.Fatalf("seed historical feature assignment: %v", err)
+		}
 	}
 	return id
 }

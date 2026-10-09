@@ -41,13 +41,7 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 		}
 		fixture := factory(t, repos)
 		st, ctx := fixture.Store, fixture.Context
-		featureID := "feature-" + core.NewTaskID()
-		if err := st.CreateFeature(ctx, core.Feature{
-			ID: featureID, Workspace: fixture.Workspace, Name: "Blueprint feature",
-		}); err != nil {
-			t.Fatal(err)
-		}
-		parent := blueprintParent(fixture.Workspace, featureID)
+		parent := blueprintParent(fixture.Workspace)
 		if err := st.CreateTask(ctx, parent); err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +130,7 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 	t.Run("configured repository validation and empty decomposition", func(t *testing.T) {
 		fixture := factory(t, []config.Repo{{Name: "primary", URL: "https://example.test/primary", Base: "main"}})
 		st, ctx := fixture.Store, fixture.Context
-		parent := blueprintParent(fixture.Workspace, "")
+		parent := blueprintParent(fixture.Workspace)
 		if err := st.CreateTask(ctx, parent); err != nil {
 			t.Fatal(err)
 		}
@@ -166,7 +160,7 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 	t.Run("ordinary approval materializes", func(t *testing.T) {
 		fixture := factory(t, []config.Repo{{Name: "primary", URL: "https://example.test/primary", Base: "main"}})
 		st, ctx := fixture.Store, fixture.Context
-		parent := blueprintParent(fixture.Workspace, "")
+		parent := blueprintParent(fixture.Workspace)
 		if err := st.CreateTask(ctx, parent); err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +175,7 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 	})
 }
 
-func blueprintParent(workspace, featureID string) core.Task {
+func blueprintParent(workspace string) core.Task {
 	id := core.NewTaskID()
 	return core.Task{
 		ID: id, Workspace: workspace, Source: "test:blueprint", Title: "Blueprint",
@@ -189,7 +183,7 @@ func blueprintParent(workspace, featureID string) core.Task {
 		SpecApproval: true, MergeApproval: true, PolicyVersion: 7,
 		SetupName: "default", Repo: "primary", BaseBranch: "main",
 		Branch: "conveyor/task-" + id, State: core.TaskQueued,
-		NextStage: core.StageImplement, FeatureID: featureID, CreatedAt: time.Now().UTC(),
+		NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
 	}
 }
 
@@ -233,7 +227,7 @@ func assertMaterializedChild(t *testing.T, child, parent core.Task, version int,
 		child.Repo != repo || child.BaseBranch != base || child.Branch == "" ||
 		child.State != core.TaskQueued || child.NextStage != core.StageImplement ||
 		child.ParentTaskID != parent.ID || child.OriginSpecVersion != version ||
-		child.OriginSubID == "" || child.FeatureID != "" || child.CreatedAt.IsZero() {
+		child.OriginSubID == "" || child.CreatedAt.IsZero() {
 		t.Fatalf("partially populated or invalid child: %+v", child)
 	}
 }

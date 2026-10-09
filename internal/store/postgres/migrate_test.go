@@ -514,3 +514,79 @@ func TestConfigDiffReportsReviewPanelChanges(t *testing.T) {
 		t.Fatalf("review config diff=%v", sections)
 	}
 }
+
+// TestPending046OverlayOnlyRunsForHistoricalVersion pins the guard that keeps
+// the historical feature reads valid after migration 142 drops the table
+// (task 261007-9d50e0; component-persistence "Migration runners and
+// ledgers"). The runner skips every recorded version before it prepares an
+// overlay, so the 046 overlay and the 046 file run only on a database below
+// 046, and numeric order applies them before the drop on that same start. No
+// other version receives an overlay that reads features, and no migration
+// after 046 other than the drop names the table at all.
+func TestPending046OverlayOnlyRunsForHistoricalVersion(t *testing.T) {
+	t.Parallel()
+	names, err := fs.Glob(migrationFiles, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readsFeatures := regexp.MustCompile(`(?i)\b(?:FROM|JOIN|INTO|UPDATE)\s+features\b`)
+	namesFeatures := regexp.MustCompile(`(?i)\bfeatures\b`)
+	dropVersion := 0
+	for _, name := range names {
+		version, err := migrationVersion(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := migrationFiles.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(name, "_drop_features.sql") {
+			if dropVersion != 0 {
+				t.Fatalf("two feature drop migrations: %d and %s", dropVersion, name)
+			}
+			dropVersion = version
+			if !regexp.MustCompile(`(?m)^DROP TABLE features;$`).Match(raw) || regexp.MustCompile(`(?i)\bCASCADE\b`).Match(raw) {
+				t.Fatalf("%s must drop features exactly, without CASCADE", name)
+			}
+		}
+		repaired, err := repairPendingMigration(version, raw)
+		if err != nil {
+			t.Fatalf("prepare %s: %v", name, err)
+		}
+		switch version {
+		case 46:
+			if !readsFeatures.Match(repaired) || migrationChecksum(repaired) == migrationChecksum(raw) {
+				t.Fatalf("pending-046 overlay missing its historical feature reads")
+			}
+		case 54, 55:
+			if readsFeatures.Match(repaired) {
+				t.Fatalf("pending-%03d overlay reads features", version)
+			}
+		default:
+			if string(repaired) != string(raw) {
+				t.Fatalf("migration %s received an overlay", name)
+			}
+		}
+		if version > 46 && !strings.HasSuffix(name, "_drop_features.sql") {
+			for _, line := range strings.Split(string(raw), "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "--") {
+					continue
+				}
+				if namesFeatures.MatchString(line) {
+					t.Fatalf("migration %s names the features table after 046: %q", name, line)
+				}
+			}
+		}
+	}
+	if dropVersion <= 50 {
+		t.Fatalf("feature drop migration version=%d, want one after the 046-050 repairs", dropVersion)
+	}
+	latest, err := latestMigrationVersion(names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropVersion > latest {
+		t.Fatalf("drop version %d beyond latest %d", dropVersion, latest)
+	}
+}

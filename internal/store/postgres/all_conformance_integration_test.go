@@ -213,7 +213,12 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					result = append(result, e)
 				}
 				return result, rows.Err()
-			}, SeedLegacy: postgresConformanceLegacySeed(st, ctx, workspace), SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
+			}, SeedLegacy: postgresConformanceLegacySeed(st, ctx, workspace), SeedHistoricalLink: func(t *testing.T, ctx context.Context, link core.LineageLink) {
+				if _, err := st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+					link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind, link.LegacyCreatedByEvent, link.CreatedAt); err != nil {
+					t.Fatal(err)
+				}
+			}, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
 				_, err := st.pool.Exec(ctx, `UPDATE artifacts SET content_type=$3,size_bytes=$4,content=$5 WHERE workspace_id=$1 AND id=$2`, a.Workspace, a.ID, a.ContentType, a.SizeBytes, b)
 				if err != nil {
 					t.Fatal(err)

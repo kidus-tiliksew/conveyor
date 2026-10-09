@@ -659,26 +659,26 @@ func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.Lineag
 	}
 	args = append(args, ws, ws, ws, ws)
 	rows, err := documentRows(ctx, s.db, "WITH wanted AS ("+strings.Join(seeds, " UNION ALL ")+`), matched AS (
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.feature_id,l.requirement_id,l.planning_session_id
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
 	FROM wanted w JOIN artifact_links l ON w.node_type='task' AND l.workspace_id=? AND l.task_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.feature_id,l.requirement_id,l.planning_session_id
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
 	FROM wanted w JOIN artifact_links l ON w.node_type='requirement' AND l.workspace_id=? AND l.requirement_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.feature_id,l.requirement_id,l.planning_session_id
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
 	FROM wanted w JOIN artifact_links l ON w.node_type='planning_session' AND l.workspace_id=? AND l.planning_session_id=w.node_id JOIN artifacts a ON a.workspace_id=l.workspace_id AND a.id=l.artifact_id
 	UNION ALL
-	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.feature_id,l.requirement_id,l.planning_session_id
+	SELECT w.ord,a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,l.role,l.task_id,l.requirement_id,l.planning_session_id
 	FROM wanted w JOIN artifacts a ON w.node_type='evidence' AND a.workspace_id=? AND a.id=w.node_id JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id
-		AND l.role='verification_evidence' AND l.task_id IS NOT NULL AND l.feature_id IS NULL
+		AND l.role='verification_evidence' AND l.task_id IS NOT NULL
 		AND ((a.content_type IN ('image/png','image/jpeg','image/webp') AND a.size_bytes BETWEEN 1 AND 10485760)
 			OR (a.content_type IN ('video/mp4','video/webm') AND a.size_bytes BETWEEN 1 AND 26214400))
 ), dedup AS (
-	SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,feature_id,requirement_id,planning_session_id,min(ord) AS ord
-	FROM matched GROUP BY id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,feature_id,requirement_id,planning_session_id
+	SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,requirement_id,planning_session_id,min(ord) AS ord
+	FROM matched GROUP BY id,workspace_id,name,content_type,size_bytes,created_at,role,task_id,requirement_id,planning_session_id
 )
 SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,
-	COALESCE(task_id,''),COALESCE(feature_id,''),COALESCE(requirement_id,''),COALESCE(planning_session_id,'')
+	COALESCE(task_id,''),COALESCE(requirement_id,''),COALESCE(planning_session_id,'')
 FROM dedup ORDER BY ord,created_at,id,role`, args...)
 	if err != nil {
 		return nil, err
@@ -687,7 +687,7 @@ FROM dedup ORDER BY ord,created_at,id,role`, args...)
 	out := []core.Artifact{}
 	for rows.Next() {
 		var a core.Artifact
-		if err = rows.Scan(&a.ID, &a.Workspace, &a.Name, &a.ContentType, &a.SizeBytes, &a.CreatedAt, &a.Role, &a.TaskID, &a.FeatureID, &a.RequirementID, &a.PlanningSessionID); err != nil {
+		if err = rows.Scan(&a.ID, &a.Workspace, &a.Name, &a.ContentType, &a.SizeBytes, &a.CreatedAt, &a.Role, &a.TaskID, &a.RequirementID, &a.PlanningSessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, a)

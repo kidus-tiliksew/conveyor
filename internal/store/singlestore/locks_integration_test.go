@@ -217,18 +217,6 @@ func TestMigrationRefusalsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestImplementedFeatureProjectionIntegration(t *testing.T) {
-	st := integrationStore(t)
-	ctx := store.WithWorkspace(t.Context(), "partial")
-	if _, err := st.db.ExecContext(ctx, `INSERT INTO features(workspace_id,id,name) VALUES('partial','feature','existing')`); err != nil {
-		t.Fatal(err)
-	}
-	features, err := st.ListFeatures(ctx)
-	if err != nil || len(features) != 1 || features[0].ID != "feature" || features[0].Name != "existing" {
-		t.Fatalf("populated feature projection: %+v, %v", features, err)
-	}
-}
-
 func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 	st := integrationStore(t)
 	// Pin nonzero nanoseconds so macOS clocks cannot conceal Linux write failures.
@@ -286,15 +274,26 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 }
 func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 	st := openOwnedStore(t)
+	// Both starts begin below the feature drop (task 261007-9d50e0) with
+	// residual feature links; they converge on one applied 0018.
+	restorePreFeatureDrop(t, st)
+	f := seedFeatureFixture(t, st)
+	before := f.snapshot(t, st)
+	start := make(chan struct{})
 	results := make(chan error, 2)
 	for range 2 {
-		go func() { results <- st.migrate(t.Context()) }()
+		go func() {
+			<-start
+			results <- st.migrate(t.Context())
+		}()
 	}
+	close(start)
 	for range 2 {
 		if err := <-results; err != nil {
 			t.Fatal(err)
 		}
 	}
+	f.assertConverged(t, st, before)
 	var zone, mode string
 	if err := st.db.QueryRowContext(t.Context(), `SELECT @@system_time_zone,@@sql_mode`).Scan(&zone, &mode); err != nil {
 		t.Fatal(err)

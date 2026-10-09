@@ -104,8 +104,9 @@ checks inside their command transaction.
 Aggregate commands enforce the following rules where SingleStore cannot
 express the PostgreSQL constraints:
 
-- Artifact-link uniqueness for task, feature, requirement, planning session,
-  and workspace-level ownership, plus ownership exclusivity.
+- Artifact-link uniqueness for task, requirement, planning session, and
+  workspace-level ownership, plus ownership exclusivity. Migration 0018 and its
+  version-18 hook retired the feature owner and the `features` table.
 - One confirmed successor per superseded decision.
 - One dependency-unsatisfiable event per edge outcome.
 - Positive GitHub issue-number uniqueness within a repository and workspace.

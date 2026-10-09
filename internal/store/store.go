@@ -270,11 +270,6 @@ type TaskStore interface {
 	// dispatch audit. A returned existing order is an idempotent success.
 	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
-	// Feature methods remain only for migration and historical conformance.
-	// Live control-plane surfaces do not expose retired feature-tree mutation.
-	CreateFeature(ctx context.Context, feature core.Feature) error
-	ListFeatures(ctx context.Context) ([]core.Feature, error)
-	AssignTaskFeature(ctx context.Context, taskID, featureID string) error
 	// CreateClaimedVerificationEvidence atomically derives evidence ownership
 	// from an exact live implement claim (component-artifacts; DEC-53).
 	CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error)
@@ -1535,7 +1530,6 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		workOrderTranscriptCaptures: map[string][]core.WorkOrderTranscriptCapture{},
 		publications:                map[string]core.ReviewPublication{},
 		github:                      map[string]core.GitHubLifecycle{},
-		features:                    map[string]core.Feature{},
 		requirements:                map[memoryScopedKey]core.Requirement{},
 		requirementVersions:         map[memoryScopedKey][]core.RequirementVersion{},
 		taskContextProposals:        map[string]core.TaskContextProposal{},
@@ -1623,7 +1617,6 @@ type memory struct {
 	publications                map[string]core.ReviewPublication
 	pullRequestCloses           map[string]core.PullRequestClose
 	github                      map[string]core.GitHubLifecycle
-	features                    map[string]core.Feature
 	requirements                map[memoryScopedKey]core.Requirement
 	requirementVersions         map[memoryScopedKey][]core.RequirementVersion
 	taskContextProposals        map[string]core.TaskContextProposal
@@ -4531,53 +4524,6 @@ func publicationCommand(to, retrying, published, failed string) string {
 	}
 }
 
-func (m *memory) CreateFeature(ctx context.Context, feature core.Feature) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.features[feature.ID]; ok {
-		return fmt.Errorf("feature %s already exists", feature.ID)
-	}
-	if feature.ParentID != "" {
-		if _, ok := m.features[feature.ParentID]; !ok {
-			return fmt.Errorf("parent feature %s not found", feature.ParentID)
-		}
-	}
-	if feature.CreatedAt.IsZero() {
-		feature.CreatedAt = time.Now().UTC()
-	}
-	m.features[feature.ID] = feature
-	return nil
-}
-
-func (m *memory) ListFeatures(_ context.Context) ([]core.Feature, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]core.Feature, 0, len(m.features))
-	for _, feature := range m.features {
-		out = append(out, feature)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
-}
-
-func (m *memory) AssignTaskFeature(ctx context.Context, taskID, featureID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	task, ok := m.tasks[taskID]
-	if !ok {
-		return fmt.Errorf("task %s not found", taskID)
-	}
-	if featureID != "" {
-		if _, ok := m.features[featureID]; !ok {
-			return fmt.Errorf("feature %s not found", featureID)
-		}
-	}
-	task.FeatureID = featureID
-	m.tasks[taskID] = task
-	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "task.feature_assigned", Payload: core.JSONPayload(map[string]string{"feature_id": featureID})})
-	return nil
-}
-
 func (m *memory) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
 	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
 		return core.Artifact{}, ErrVerificationAccess
@@ -4648,7 +4594,7 @@ func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifac
 	if existing, ok := m.artifacts[key]; ok {
 		artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.CreatedAt = existing.meta.Name, existing.meta.ContentType, existing.meta.SizeBytes, existing.meta.CreatedAt
 		for _, link := range existing.links {
-			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.FeatureID == artifact.FeatureID && link.RequirementID == artifact.RequirementID && link.PlanningSessionID == artifact.PlanningSessionID && link.Role == artifact.Role {
+			if link.Workspace == artifact.Workspace && link.TaskID == artifact.TaskID && link.RequirementID == artifact.RequirementID && link.PlanningSessionID == artifact.PlanningSessionID && link.Role == artifact.Role {
 				return link, nil
 			}
 		}
@@ -4814,7 +4760,7 @@ func (m *memory) ListArtifactsForLineage(ctx context.Context, nodes []core.Linea
 }
 
 func artifactLineageLinkKey(artifact core.Artifact) string {
-	return strings.Join([]string{artifact.ID, string(artifact.Role), artifact.TaskID, artifact.FeatureID, artifact.RequirementID, artifact.PlanningSessionID}, "\x00")
+	return strings.Join([]string{artifact.ID, string(artifact.Role), artifact.TaskID, artifact.RequirementID, artifact.PlanningSessionID}, "\x00")
 }
 
 func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {

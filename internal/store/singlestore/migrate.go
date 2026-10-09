@@ -148,6 +148,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 18 {
+			if err := s.migrateFeatureRetirement(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -221,4 +226,97 @@ func (s *Store) migrateOpenTaskBranchUnique(ctx context.Context) error {
 	}
 	_, err := s.db.ExecContext(ctx, `ALTER TABLE tasks DROP INDEX tasks_branch_key`)
 	return err
+}
+
+// migrateFeatureRetirement retires the features entity before file 0018 drops
+// its table (task 261007-9d50e0; component-persistence, component-artifacts).
+// DDL and autocommitted DML cannot roll back together, so every step is
+// guarded by information_schema and restart-safe under the startup lock: a
+// retry after any committed step converges without a duplicate link. A
+// residual feature-owned attachment link becomes one workspace-unattached link
+// per workspace, artifact, and role, matching PostgreSQL migration 142, and
+// artifact rows, bytes, and every other link stay untouched.
+func (s *Store) migrateFeatureRetirement(ctx context.Context) error {
+	for _, step := range s.featureRetirementSteps() {
+		if err := step(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// featureRetirementSteps lists the committed steps in order. Each one checks
+// information_schema first, so a start that stopped after any of them
+// resumes with the next.
+func (s *Store) featureRetirementSteps() []func(context.Context) error {
+	whileColumn := func(table string, step func(context.Context) error) func(context.Context) error {
+		return func(ctx context.Context) error {
+			exists, err := s.columnExists(ctx, table, "feature_id")
+			if err != nil || !exists {
+				return err
+			}
+			return step(ctx)
+		}
+	}
+	return []func(context.Context) error{
+		whileColumn("artifact_links", s.insertDetachedFeatureLinks),
+		whileColumn("artifact_links", func(ctx context.Context) error {
+			_, err := s.db.ExecContext(ctx, `DELETE FROM artifact_links WHERE feature_id IS NOT NULL`)
+			return err
+		}),
+		whileColumn("artifact_links", func(ctx context.Context) error {
+			_, err := s.db.ExecContext(ctx, `ALTER TABLE artifact_links DROP COLUMN feature_id`)
+			return err
+		}),
+		whileColumn("tasks", func(ctx context.Context) error {
+			_, err := s.db.ExecContext(ctx, `ALTER TABLE tasks DROP COLUMN feature_id`)
+			return err
+		}),
+	}
+}
+
+func (s *Store) columnExists(ctx context.Context, table, column string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, table, column).Scan(&count); err != nil {
+		return false, err
+	}
+	return count != 0, nil
+}
+
+// insertDetachedFeatureLinks inserts one unattached link per distinct
+// workspace, artifact, and role that a feature owns and that lacks one. A
+// retry finds each unattached link already present and inserts nothing twice.
+func (s *Store) insertDetachedFeatureLinks(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT workspace_id,artifact_id,role FROM artifact_links WHERE feature_id IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	type residualLink struct{ workspace, artifact, role string }
+	var residual []residualLink
+	for rows.Next() {
+		var link residualLink
+		if err = rows.Scan(&link.workspace, &link.artifact, &link.role); err != nil {
+			rows.Close()
+			return err
+		}
+		residual = append(residual, link)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, link := range residual {
+		var unattached int
+		if err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifact_links WHERE workspace_id=? AND artifact_id=? AND role=? AND task_id IS NULL AND feature_id IS NULL AND requirement_id IS NULL AND planning_session_id IS NULL`, link.workspace, link.artifact, link.role).Scan(&unattached); err != nil {
+			return err
+		}
+		if unattached != 0 {
+			continue
+		}
+		if _, err = s.db.ExecContext(ctx, `INSERT INTO artifact_links(workspace_id,artifact_id,role) VALUES(?,?,?)`, link.workspace, link.artifact, link.role); err != nil {
+			return err
+		}
+	}
+	return nil
 }

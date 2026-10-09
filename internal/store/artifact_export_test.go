@@ -63,3 +63,13 @@ func SeedArtifactMetadataForTest(t *testing.T, st Backend, ctx context.Context, 
 	}
 	m.artifacts[key] = existing
 }
+
+// SeedLineageLinkForTest inserts one retained link row as historical
+// migrations left it; no public writer accepts a link (component-lineage).
+func SeedLineageLinkForTest(t *testing.T, st Backend, link core.LineageLink) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lineage[lineageLinkKey(link)] = link
+}

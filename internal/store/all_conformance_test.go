@@ -36,6 +36,8 @@ func TestMemoryConformance(t *testing.T) {
 					}
 				}
 				return out, err
+			}, SeedHistoricalLink: func(t *testing.T, _ context.Context, link core.LineageLink) {
+				store.SeedLineageLinkForTest(t, st, link)
 			}, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
 				store.SeedArtifactMetadataForTest(t, st, ctx, a, b)
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {

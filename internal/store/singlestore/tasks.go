@@ -45,13 +45,13 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,COALESCE(feature_id,''),created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.FeatureID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection)
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -103,12 +103,6 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	if t.ParentTaskID != "" {
 		if err := documentParent(ctx, tx, "tasks", t.ParentTaskID); err != nil {
 			return err
-		}
-	}
-	if t.FeatureID != "" {
-		var found int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM features WHERE workspace_id=? AND id=?`, ws, t.FeatureID).Scan(&found); err != nil {
-			return notFound(err, "feature %s", t.FeatureID)
 		}
 	}
 	if len(ids) > 0 {
@@ -250,7 +244,6 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"parent_task_id":       nullString(t.ParentTaskID),
 		"origin_spec_version":  t.OriginSpecVersion,
 		"origin_sub_id":        t.OriginSubID,
-		"feature_id":           nullString(t.FeatureID),
 		"created_at":           t.CreatedAt,
 	}})
 	return err

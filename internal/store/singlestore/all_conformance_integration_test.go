@@ -193,6 +193,11 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 					result = append(result, e)
 				}
 				return result, rows.Err()
+			}, SeedHistoricalLink: func(t *testing.T, ctx context.Context, link core.LineageLink) {
+				if _, err := st.db.ExecContext(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at) VALUES (?,?,?,?,?,?,?,?)`,
+					link.Workspace, string(link.SrcType), link.SrcID, string(link.DstType), link.DstID, link.Kind, link.LegacyCreatedByEvent, link.CreatedAt); err != nil {
+					t.Fatal(err)
+				}
 			}, SeedArtifact: func(t *testing.T, ctx context.Context, a core.Artifact, b []byte) {
 				_, err := st.db.ExecContext(ctx, `UPDATE artifacts SET content_type=?,size_bytes=?,content=? WHERE workspace_id=? AND id=?`, a.ContentType, a.SizeBytes, b, a.Workspace, a.ID)
 				if err != nil {

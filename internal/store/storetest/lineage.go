@@ -22,6 +22,9 @@ type LineageFixture struct {
 	ForeignContext context.Context
 	Workspace      string
 	SeedLegacy     func(*testing.T, string) (int, func(*testing.T))
+	// SeedHistoricalLink inserts a retained, non-projector-owned link row; see
+	// Fixture.SeedHistoricalLink.
+	SeedHistoricalLink func(*testing.T, context.Context, core.LineageLink)
 }
 
 type LineageFactory func(*testing.T, []config.Repo) LineageFixture
@@ -117,6 +120,139 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 		}
 	}
 	assertTaskContext(t)
+	t.Run("retired feature history survives replay and bounded traversal", func(t *testing.T) {
+		assertRetiredFeatureHistory(t, fixture)
+	})
+}
+
+// assertRetiredFeatureHistory proves that removing the features entity
+// (task 261007-9d50e0; component-lineage) leaves its recorded history
+// readable: feature events keep their IDs and payloads and project nothing,
+// a retained historical_feature_assignment link keeps its legacy provenance
+// across two rebuilds, traversal honors its budget, and another workspace's
+// walk never reaches it.
+func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	if fixture.SeedHistoricalLink == nil {
+		t.Fatal("lineage fixture must seed retained historical links")
+	}
+	st, ctx := fixture.Store, fixture.Context
+	task := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+	task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	featureKinds := map[string]bool{"task.feature_assigned": true, "feature.migrated": true, "migration.feature_node_dropped": true}
+	for _, event := range []core.Event{
+		{TaskID: task.ID, Kind: "task.feature_assigned", Payload: core.JSONPayload(map[string]string{"feature_id": "feat-retired"})},
+		{TaskID: task.ID, Kind: "feature.migrated", Payload: core.JSONPayload(map[string]string{"feature_id": "feat-retired", "requirement_id": "req-feat-retired"})},
+		// Malformed and unknown-shaped historical payloads still project nothing.
+		{TaskID: task.ID, Kind: "task.feature_assigned", Payload: core.JSONPayload([]any{"feat-retired", 7})},
+		{TaskID: task.ID, Kind: "migration.feature_node_dropped", Payload: core.JSONPayload(map[string]any{"feature_id": 7})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	historical := core.LineageLink{Workspace: fixture.Workspace, SrcType: core.LineageRequirement, SrcID: "req-feat-retired",
+		DstType: core.LineageTask, DstID: task.ID, Kind: "historical_feature_assignment", LegacyCreatedByEvent: "feature.migrated",
+		CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	fixture.SeedHistoricalLink(t, ctx, historical)
+
+	type recordedEvent struct {
+		id      int64
+		kind    string
+		payload string
+	}
+	featureEvents := func(t *testing.T) []recordedEvent {
+		t.Helper()
+		events, err := st.ListEvents(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []recordedEvent
+		for _, event := range events {
+			if featureKinds[event.Kind] {
+				var payload any
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatalf("historical payload unreadable: %s: %v", event.Payload, err)
+				}
+				canonical, _ := json.Marshal(payload)
+				out = append(out, recordedEvent{event.ID, event.Kind, string(canonical)})
+			}
+		}
+		return out
+	}
+	assertHistory := func(t *testing.T, events []recordedEvent) {
+		t.Helper()
+		ids := map[int64]bool{}
+		for _, event := range events {
+			ids[event.id] = true
+		}
+		links, err := st.ListLineageLinks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := 0
+		for _, link := range links {
+			if ids[link.CreatedByEventID] {
+				t.Fatalf("retired feature event projected a link: %+v", link)
+			}
+			if link.Kind == historical.Kind && link.SrcID == historical.SrcID && link.DstID == task.ID {
+				found++
+				if link.SrcType != historical.SrcType || link.DstType != historical.DstType ||
+					link.LegacyCreatedByEvent != "feature.migrated" || link.CreatedByEventID != 0 || link.Workspace != fixture.Workspace {
+					t.Fatalf("historical link provenance changed: %+v", link)
+				}
+			}
+		}
+		if found != 1 {
+			t.Fatalf("historical feature link count=%d in %+v", found, links)
+		}
+	}
+	before := featureEvents(t)
+	if len(before) != 4 {
+		t.Fatalf("recorded feature events=%+v", before)
+	}
+	assertHistory(t, before)
+	for range 2 {
+		if _, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "retired feature history", RequestID: core.NewTaskID()}); err != nil {
+			t.Fatal(err)
+		}
+		after := featureEvents(t)
+		if !reflect.DeepEqual(before, after) {
+			t.Fatalf("recorded feature events changed across rebuild: before=%+v after=%+v", before, after)
+		}
+		assertHistory(t, after)
+	}
+
+	root := core.LineageNode{Type: core.LineageTask, ID: task.ID}
+	historicalNode := core.LineageNode{Type: core.LineageRequirement, ID: historical.SrcID}
+	walk := func(t *testing.T, ctx context.Context, budget core.LineageTraversalBudget) core.LineageTraversal {
+		t.Helper()
+		links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return graph
+	}
+	full := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, Workspace: fixture.Workspace})
+	if full.Depths[historicalNode] != 1 || full.Truncated {
+		t.Fatalf("historical node not reached at depth 1: %+v", full)
+	}
+	bounded := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 1, Workspace: fixture.Workspace})
+	if len(bounded.Nodes) != 1 || bounded.Nodes[0] != root || !bounded.Truncated || bounded.OmittedNodes < 1 {
+		t.Fatalf("node budget not honored: %+v", bounded)
+	}
+	foreignWorkspace, _ := store.WorkspaceFromContext(fixture.ForeignContext)
+	foreign := walk(t, fixture.ForeignContext, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, Workspace: foreignWorkspace})
+	if _, ok := foreign.Depths[historicalNode]; ok || len(foreign.Links) != 0 {
+		t.Fatalf("foreign workspace reached retired feature history: %+v", foreign)
+	}
 }
 
 func assertRequirementDeliveryLineage(t *testing.T, st store.Store, ctx, foreignCtx context.Context, workspace string) {

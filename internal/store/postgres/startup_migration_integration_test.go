@@ -70,4 +70,7 @@ func TestConcurrentStartupMigrationConvergesIntegration(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("migration 087 rows=%d, want 1", count)
 	}
+	// The concurrent starts began below the feature drop (task 261007-9d50e0)
+	// and converge on one applied drop with the table gone.
+	assertFeatureSchemaRetired(t, t.Context(), store.pool)
 }
