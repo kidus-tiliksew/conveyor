@@ -882,48 +882,16 @@ function Fact({ label, value, startRow }: { label: React.ReactNode; value: React
   )
 }
 
-// The excerpt is the body's first paragraph, a block separated by a blank line
-// with any leading heading lines dropped. A paragraph longer than the limit is
-// cut after its last complete sentence within the limit, or else at its last
-// word boundary, and marked with an ellipsis. A sentence ends at `.`, `!`, or
-// `?` plus any closing quotes, brackets, or inline Markdown delimiters, which
-// the excerpt keeps.
-const promptExcerptLimit = 280
-
-function promptExcerpt(body: string): string {
-  const paragraph = body
-    .split(/\n\s*\n/)
-    .map((block) => {
-      const lines = block
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line !== '')
-      while (lines.length > 0 && /^#{1,6}(\s|$)/.test(lines[0])) lines.shift()
-      return lines.join(' ')
-    })
-    .find((text) => text !== '')
-  if (!paragraph || paragraph.length <= promptExcerptLimit) return paragraph ?? ''
-  let cut = 0
-  for (const match of paragraph.matchAll(/[.!?]["'’”»)\]*_~`]*(?=\s)/g)) {
-    const end = match.index + match[0].length
-    if (end > promptExcerptLimit) break
-    cut = end
-  }
-  if (cut === 0) {
-    cut = paragraph.lastIndexOf(' ', promptExcerptLimit)
-    if (cut <= 0) cut = promptExcerptLimit
-  }
-  return `${paragraph.slice(0, cut).trimEnd()}…`
-}
-
 // The agent prompt for the conveyor-work skill (req-agent-skills REQ-3) is the
-// task title, a short body excerpt, and the instruction, one blank line apart.
-// The instruction carries only what an agent cannot infer: the task, the
-// selected workspace, and this dashboard's origin as the server.
+// task title, the full task body, and the instruction, one blank line apart.
+// The body keeps every line, blank line, and Markdown mark as stored; only its
+// outer whitespace is trimmed, and an empty body is left out. The instruction
+// carries only what an agent cannot infer: the task, the selected workspace,
+// and this dashboard's origin as the server.
 function agentPrompt(item: ActivityItem, workspace: string): string {
   return [
     item.task.title,
-    promptExcerpt(item.task.body ?? ''),
+    (item.task.body ?? '').trim(),
     `Use the conveyor-work skill to work Conveyor task ${item.task.id} in workspace \`${workspace}\` on ${window.location.origin}.`,
   ]
     .filter((part) => part !== '')
@@ -932,7 +900,8 @@ function agentPrompt(item: ActivityItem, workspace: string): string {
 
 // One group, as wide as its parent up to 32rem, shows the whole prompt the copy
 // button copies. The prompt wraps with its blank lines kept, and a long
-// unbroken token breaks anywhere rather than widening the group. It renders
+// unbroken token breaks anywhere rather than widening the group. A prompt
+// taller than 16rem scrolls inside the group rather than being cut. It renders
 // nothing until the workspace selection resolves.
 function Checkout({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
@@ -944,7 +913,7 @@ function Checkout({ item }: { item: ActivityItem }) {
         <p className="border-b border-border px-2.5 py-1 text-[11px] text-faint">Prompt for AI Agents</p>
         <div className="flex min-w-0 items-start gap-2 py-0.5 pl-2.5 pr-0.5">
           <Bot className="mt-2 size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <code className="min-w-0 flex-1 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted">
+          <code className="max-h-64 min-w-0 flex-1 overflow-y-auto py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted">
             {prompt}
           </code>
           <CopyButton value={prompt} label="Copy agent prompt" />
