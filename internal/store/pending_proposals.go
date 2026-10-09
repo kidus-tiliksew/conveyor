@@ -194,3 +194,11 @@ func sortPendingProposals(items []core.PendingProposal) {
 		return items[i].Version < items[j].Version
 	})
 }
+
+// PendingProposalsProjection is the bounded store read used by the workspace
+// attention badge. Age remains an HTTP concern so the store returns durable
+// proposal timestamps unchanged.
+type PendingProposalsProjection struct {
+	Items     []core.PendingProposal
+	TaskCount int
+}

@@ -178,3 +178,13 @@ func (m *memory) ReadVerificationReview(ctx context.Context, taskID, orderID str
 	}
 	return m.verificationReviewStateLocked(task, orderID), nil
 }
+
+func (m *memory) verifyReviewReadyLocked(task core.Task) bool {
+	var orders []core.WorkOrder
+	for _, order := range m.workOrders {
+		if order.TaskID == task.ID {
+			orders = append(orders, order)
+		}
+	}
+	return core.VerifyReviewReady(task, orders)
+}
