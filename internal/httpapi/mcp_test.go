@@ -1129,7 +1129,14 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 }
 
 func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
-	server := NewServer(store.NewMemory())
+	st := store.NewMemory()
+	server := NewServer(st)
+	// The launcher-only report_continuation refusal lives in its handler, past
+	// workspace resolution, the owner's capability check, and the work-order
+	// service availability check, so the owner holds an operator binding.
+	server.WorkOrders = &workorder.Service{Store: st}
+	membership := &membershipFixture{workspaces: []core.Workspace{{ID: "demo"}}, roles: map[string]map[string]core.WorkspaceRole{"usr_1": {"demo": core.WorkspaceRoleOperator}}}
+	server.Workspaces, server.Memberships = membership, membership
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	credential := core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
 	request = request.WithContext(store.WithCredential(request.Context(), credential))
@@ -1147,19 +1154,46 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 	}
 	// Independent literal inventory: DEC-60 moves only create_task out of the
 	// reserved set; every other lifecycle tool and investigation read stays
-	// human-reserved.
-	for _, name := range []string{
+	// human-reserved. The capability-derived ceiling, the investigation-read
+	// rule, and the launcher-only continuation rule together must refuse
+	// exactly this set.
+	literal := []string{
 		"add_task_dependency", "set_assignee", "redispatch_work_order", "attach_task_branch", "report_continuation",
 		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context",
 		"list_documents", "get_document", "list_document_events", "list_decisions", "get_decision",
-	} {
-		if !humanReservedMCPTool(name) {
+	}
+	for _, name := range literal {
+		if !agentRefusedMCPTool(name) {
 			t.Fatalf("%s left the human-reserved set", name)
 		}
 	}
-	if humanReservedMCPTool("create_task") {
+	var derived []string
+	for _, tool := range mcpTools() {
+		if name, _ := tool["name"].(string); agentRefusedMCPTool(name) {
+			derived = append(derived, name)
+		}
+	}
+	if !slices.Equal(slices.Sorted(slices.Values(derived)), slices.Sorted(slices.Values(literal))) {
+		t.Fatalf("agent-refused tools=%v, want %v", slices.Sorted(slices.Values(derived)), slices.Sorted(slices.Values(literal)))
+	}
+	if agentRefusedMCPTool("create_task") {
 		t.Fatal("create_task is still human-reserved")
 	}
+}
+
+// agentRefusedMCPTool classifies a registered tool by the three independent
+// agent-credential rules: investigation reads are user-only, report_continuation
+// is launcher-only, and every other tool is refused exactly when its mapped
+// capability is outside the capability-derived agent ceiling
+// (req-accounts-and-membership AC-3.4, AC-5.1; component-mcp-protocol). An
+// unmapped tool classifies as refused, matching production's fail-closed
+// unknown-tool answer.
+func agentRefusedMCPTool(name string) bool {
+	if isMCPRead(name) || name == "report_continuation" {
+		return true
+	}
+	capability, mapped := mcpCapabilities[name]
+	return !mapped || !agentMayExerciseCapability(capability)
 }
 
 func TestMCPAddTaskDependencyRequiresHumanCredential(t *testing.T) {
@@ -1503,7 +1537,7 @@ func validateMCPAgentSafety(agentSafe map[string]string) error {
 		name, _ := tool["name"].(string)
 		seen[name] = true
 		reason, safe := agentSafe[name]
-		reserved := humanReservedMCPTool(name)
+		reserved := agentRefusedMCPTool(name)
 		switch {
 		case safe && strings.TrimSpace(reason) == "":
 			return fmt.Errorf("agent-safe MCP tool %s lacks a security justification", name)
@@ -1979,7 +2013,7 @@ func TestMCPWorkerDispatchedExecutorClaimGovernance(t *testing.T) {
 				if _, err := server.callMCPTool(request, tool, argsFor(tool, ownOrder, "session-a", documentID)); err != nil {
 					t.Fatal(err)
 				}
-				if len(membership.capabilityCalls) != 1 || membership.capabilityCalls[0] != core.CapabilityViewWorkspace {
+				if len(membership.capabilityCalls) != 1 || membership.capabilityCalls[0] != core.CapabilityClaimWork {
 					t.Fatalf("membership capabilities=%v", membership.capabilityCalls)
 				}
 			})
@@ -2147,7 +2181,7 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 					if !test.wantErr && err != nil {
 						t.Fatal(err)
 					}
-					if len(membership.capabilityCalls) != 1 || membership.capabilityCalls[0] != core.CapabilityViewWorkspace {
+					if len(membership.capabilityCalls) != 1 || membership.capabilityCalls[0] != core.CapabilityClaimWork {
 						t.Fatalf("membership capabilities=%v", membership.capabilityCalls)
 					}
 				})
