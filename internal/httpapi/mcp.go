@@ -491,12 +491,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return s.WorkOrders.SubmitPlan(ctx, stringArg("work_order_id"), session, value)
 	case "submit_for_review":
 		// A missing head is an argument error, classified only after the
-		// workspace and claimant admission above so it never bypasses
-		// authorization (component-http-api).
+		// workspace and claimantBoundMCPTools admission above, so it never
+		// bypasses authorization (component-http-api).
 		if strings.TrimSpace(stringArg("head_sha")) == "" {
-			if _, err := s.authorizeClaimantSession(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
-				return nil, err
-			}
 			return nil, invalidToolArgument(errors.New("head_sha is required"))
 		}
 		return s.WorkOrders.SubmitForReview(ctx, stringArg("work_order_id"), session, stringArg("head_sha"))
