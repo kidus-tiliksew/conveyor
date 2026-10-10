@@ -965,6 +965,11 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 }
 
 func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string, reasons ...string) (core.PlanningSession, error) {
+	// The abandonment event records the caller's actor, so a missing actor is
+	// refused before the session changes (component-persistence, Actor context).
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningSession{}, err
+	}
 	var abandoned core.PlanningSession
 	err := m.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
 		m.mu.Lock()

@@ -211,6 +211,12 @@ func revokeOwnedWorkersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, userID,
 }
 
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
+	// The renewal and its lease_renewed event are separate statements, so the
+	// event actor (the worker, or the caller for a run claim) is checked before
+	// the lease changes (component-persistence, Actor context).
+	if _, err := store.RequireActor(workerClaimActorContext(ctx, claim.WorkerID)); err != nil {
+		return core.WorkOrder{}, err
+	}
 	current, err := s.GetWorkOrder(ctx, workOrderID)
 	if err != nil {
 		return core.WorkOrder{}, err
