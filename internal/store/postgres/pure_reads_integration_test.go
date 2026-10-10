@@ -201,8 +201,9 @@ func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Bind the assignee explicitly. Bootstrap binds only the oldest user in
-	// the shared database, which other tests' fixture owners may precede.
+	// Bind the assignee explicitly: startup seeding binds nobody in a
+	// populated registry (DEC-63(4)), and both tasks made this binding
+	// explicit.
 	if _, err := st.pool.Exec(otherContext, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor') ON CONFLICT(workspace_id,user_id) DO NOTHING`, otherWorkspace, userID); err != nil {
 		t.Fatal(err)
 	}

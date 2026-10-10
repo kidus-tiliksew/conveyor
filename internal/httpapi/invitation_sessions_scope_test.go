@@ -77,6 +77,13 @@ func newScopedInvitationHarness(t *testing.T) *scopedInvitationHarness {
 	}
 	ownerCtx := store.WithActor(store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "owner", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}),
 		store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	for _, workspace := range []string{"alpha", "beta"} {
+		if _, err := st.GrantWorkspaceRole(ownerCtx, owner.Email, workspace, core.WorkspaceRoleOperator); err != nil {
+			t.Fatal(err)
+		}
+	}
 	server := NewServer(st)
 	server.Workspaces = st
 	sessions := &countingInvitationSessions{InvitationSessionStore: st}

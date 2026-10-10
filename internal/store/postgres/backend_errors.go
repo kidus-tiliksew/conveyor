@@ -35,6 +35,9 @@ var uniqueConstraintErrors = map[string]error{
 	"system_designs_workspace_id_slug_key": store.ErrSystemDesignSlugConflict,
 	"decisions_pkey":                       store.ErrDecisionIDConflict,
 	"decisions_confirmed_supersedes_key":   store.ErrDecisionSupersessionConflict,
+	// A case- and space-normalized workspace name collision is the same
+	// generic creation conflict as an ID collision (DEC-63(7)).
+	"workspaces_name_lower_unique": store.ErrWorkspaceConflict,
 }
 
 // errBackendOperation is the generic PostgreSQL failure. It wraps

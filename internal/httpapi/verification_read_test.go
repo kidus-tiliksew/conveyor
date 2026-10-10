@@ -48,6 +48,11 @@ func TestTaskVerificationReadAndObservationBoundary(t *testing.T) {
 		return store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "test", OwnerUserID: id, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}), store.Actor{ID: store.UserActorID(id), Role: core.ActorUser})
 	}
 	operator := user(owner.ID)
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	if _, err = b.GrantWorkspaceRole(operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	viewer, err := b.ProvisionIdentityUser(operator, "viewer@example.test", "Viewer")
 	if err != nil {
 		t.Fatal(err)

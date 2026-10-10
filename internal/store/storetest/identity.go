@@ -29,7 +29,15 @@ func bootstrapOwner(t *testing.T, x Fixture) (context.Context, core.IdentityUser
 	owner, err := x.Backend.VerifyPersonalAccessToken(x.Context, "conformance-bootstrap")
 	requireOK(t, err)
 	ctx := store.WithCredential(x.Context, core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
-	return store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser}), owner
+	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never writes bindings (DEC-63(4)), and the fixture workspace
+	// exists before the deployment owner. The fixture therefore grants the
+	// owner's operator binding explicitly instead of relying on healing.
+	if caller, err := x.Backend.GetCallerIdentity(ctx, owner.ID, x.Workspace); err != nil || caller.Role != core.WorkspaceRoleOperator {
+		_, err = x.Backend.GrantWorkspaceRole(ctx, owner.Email, x.Workspace, core.WorkspaceRoleOperator)
+		requireOK(t, err)
+	}
+	return ctx, owner
 }
 
 func runIdentity(t *testing.T, x Fixture) {
@@ -69,6 +77,12 @@ func runIdentity(t *testing.T, x Fixture) {
 	}
 	t.Run("MixedCaseEmailDedup", func(t *testing.T) { runMixedCaseEmailDedup(t, x, ctx, owner, identity) })
 	t.Run("MixedCaseConcurrentDedup", func(t *testing.T) { runMixedCaseConcurrentDedup(t, x, ctx, owner) })
+	// These cases rotate the deployment token and restore the conformance
+	// token when they finish, so they run after the mixed-case cases.
+	t.Run("BootstrapPreservesMembershipDecisions", func(t *testing.T) { runBootstrapPreservesMembershipDecisions(t, x) })
+	t.Run("BootstrapWorkspaceUsesDeploymentOwner", func(t *testing.T) { runBootstrapWorkspaceUsesDeploymentOwner(t, x) })
+	t.Run("BootstrapOwnershipStable", func(t *testing.T) { runBootstrapOwnershipStable(t, x) })
+	t.Run("BootstrapMembershipSerialization", func(t *testing.T) { runBootstrapMembershipSerialization(t, x) })
 }
 
 func runMembership(t *testing.T, x Fixture) {
@@ -127,6 +141,7 @@ func runMembership(t *testing.T, x Fixture) {
 		t.Fatal("revoked invitation remains listed")
 	}
 	t.Run("MembershipAuditEvents", func(t *testing.T) { runMembershipAuditEvents(t, x, ctx, owner) })
+	t.Run("InstanceAdministrationOwnerOnly", func(t *testing.T) { runInstanceAdministrationOwnerOnly(t, x) })
 }
 
 func runInvitationSessions(t *testing.T, x Fixture) {
@@ -818,4 +833,410 @@ func runMixedCaseConcurrentDedup(t *testing.T, x Fixture, ctx context.Context, o
 	if _, err := st.IssueInvitationSignInLink(ctx, x.Workspace, "race.user@example.test", store.SignInLinkResend); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("scoped issuance after consumption error=%v", err)
 	}
+}
+
+// Instance administration and membership preservation (DEC-63;
+// component-identity-membership, Verification). The shared fixture keeps one
+// deployment marker per backend binary, so these cases work against the
+// existing marker and restore the conformance token before they return.
+
+const conformanceBootstrapToken = "conformance-bootstrap"
+
+func conformanceIdentity() config.FirstOperatorIdentity {
+	return config.FirstOperatorIdentity{OrganizationName: "Conformance", Email: "owner@example.test", DisplayName: "Owner"}
+}
+
+func userContext(base context.Context, userID string) context.Context {
+	ctx := store.WithCredential(base, core.AuthenticatedCredential{ID: "conformance-" + userID, OwnerUserID: userID, Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
+	return store.WithActor(ctx, store.Actor{ID: store.UserActorID(userID), Role: core.ActorUser})
+}
+
+// systemContext carries the explicit system actor and no credential, so a
+// workspace it creates binds nobody (DEC-63(4)).
+func systemContext(base context.Context) context.Context {
+	return store.WithActor(base, store.Actor{ID: "system", Role: core.ActorSystem})
+}
+
+func roleIn(t *testing.T, st store.Backend, ctx context.Context, userID, workspaceID string) core.WorkspaceRole {
+	t.Helper()
+	caller, err := st.GetCallerIdentity(ctx, userID, workspaceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return ""
+	}
+	requireOK(t, err)
+	return caller.Role
+}
+
+func memberWith(t *testing.T, st store.Backend, ctx context.Context, email, workspaceID string, role core.WorkspaceRole) core.IdentityUser {
+	t.Helper()
+	user, err := st.ProvisionIdentityUser(ctx, email, "Member "+string(role))
+	requireOK(t, err)
+	_, err = st.GrantWorkspaceRole(ctx, user.Email, workspaceID, role)
+	requireOK(t, err)
+	return user
+}
+
+// runInstanceAdministrationOwnerOnly proves that only the marker owner is the
+// instance-administration principal and that no workspace role confers it
+// (DEC-63(1)).
+func runInstanceAdministrationOwnerOnly(t *testing.T, x Fixture) {
+	st := x.Backend
+	ctx, owner := bootstrapOwner(t, x)
+	if allowed, err := st.AuthorizeInstanceAdministration(ctx, owner.ID); err != nil || !allowed {
+		t.Fatalf("marker owner admitted=%t err=%v", allowed, err)
+	}
+	foreign := newForeignWorkspace(t, x, "instance-admin")
+	foreignOperator := memberWith(t, st, ctx, "foreign-operator-"+x.Workspace+"@example.test", foreign, core.WorkspaceRoleOperator)
+	if allowed, err := st.AuthorizeInstanceAdministration(ctx, foreignOperator.ID); err != nil || allowed {
+		t.Fatalf("operator of another workspace admitted=%t err=%v", allowed, err)
+	}
+	for _, role := range []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleExecutor, core.WorkspaceRoleContributor, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator} {
+		member := memberWith(t, st, ctx, "instance-"+string(role)+"-"+x.Workspace+"@example.test", x.Workspace, role)
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, member.ID); err != nil || allowed {
+			t.Fatalf("%s admitted=%t err=%v", role, allowed, err)
+		}
+		// The role table is unchanged: workspace authority still follows it.
+		for _, capability := range []core.Capability{core.CapabilityViewWorkspace, core.CapabilityManageWorkspace, core.CapabilityManageMembership} {
+			allowed, err := st.AuthorizeWorkspace(ctx, member.ID, x.Workspace, capability)
+			requireOK(t, err)
+			if allowed != core.RoleAllows(role, capability) {
+				t.Fatalf("%s %s allowed=%t want %t", role, capability, allowed, !allowed)
+			}
+		}
+	}
+	for _, unknown := range []string{"", "usr_unknown_" + x.Workspace} {
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, unknown); err != nil || allowed {
+			t.Fatalf("unknown account %q admitted=%t err=%v", unknown, allowed, err)
+		}
+	}
+}
+
+// runBootstrapPreservesMembershipDecisions proves that an unchanged restart
+// and a rotation keep a demotion, a missing binding, and an exclusion
+// (DEC-63(3), DEC-63(4)).
+func runBootstrapPreservesMembershipDecisions(t *testing.T, x Fixture) {
+	st := x.Backend
+	ctx, owner := bootstrapOwner(t, x)
+	t.Cleanup(func() {
+		_, _ = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	})
+	second := memberWith(t, st, ctx, "preserve-second-"+x.Workspace+"@example.test", x.Workspace, core.WorkspaceRoleOperator)
+	secondCtx := userContext(x.Context, second.ID)
+	_, err := st.GrantWorkspaceRole(secondCtx, owner.Email, x.Workspace, core.WorkspaceRoleViewer)
+	requireOK(t, err)
+	excluded := x.Workspace + "-excluded"
+	_, err = st.CreateWorkspace(systemContext(store.WithWorkspace(x.Context, excluded)), excluded, excluded, &config.Config{Workspace: excluded, Repos: x.Config.Repos})
+	requireOK(t, err)
+	missing := newForeignWorkspace(t, x, "missing")
+	check := func(step string) {
+		t.Helper()
+		if role := roleIn(t, st, ctx, owner.ID, x.Workspace); role != core.WorkspaceRoleViewer {
+			t.Fatalf("%s: demoted owner role=%q", step, role)
+		}
+		for _, workspace := range []string{excluded, missing} {
+			if role := roleIn(t, st, ctx, owner.ID, workspace); role != "" {
+				t.Fatalf("%s: owner gained %s in %s", step, role, workspace)
+			}
+		}
+		listed, err := st.ListWorkspacesForUser(ctx, owner.ID)
+		requireOK(t, err)
+		for _, item := range listed {
+			if item.ID == excluded || item.ID == missing {
+				t.Fatalf("%s: owner lists excluded workspace %s", step, item.ID)
+			}
+		}
+	}
+	check("before restart")
+	changed, err := st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	requireOK(t, err)
+	if changed {
+		t.Fatal("unchanged restart reported a change")
+	}
+	check("unchanged restart")
+	changed, err = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), "conformance-preserve-rotated")
+	requireOK(t, err)
+	if !changed {
+		t.Fatal("rotation reported no change")
+	}
+	check("rotation")
+	if _, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(x.Context, x.Workspace), x.Config); err != nil {
+		t.Fatal(err)
+	}
+	check("repeated workspace initialization")
+}
+
+// runBootstrapWorkspaceUsesDeploymentOwner proves the populated-registry half
+// of DEC-63(4): a later configured workspace binds nobody, and repeated
+// initialization never rewrites a binding. The empty-registry half runs in
+// RunFreshDeploymentBootstrap.
+func runBootstrapWorkspaceUsesDeploymentOwner(t *testing.T, x Fixture) {
+	st := x.Backend
+	ctx, owner := bootstrapOwner(t, x)
+	later := x.Workspace + "-later"
+	seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(x.Context, later), &config.Config{Workspace: later, Repos: x.Config.Repos})
+	requireOK(t, err)
+	if !seeded {
+		t.Fatal("later workspace was not seeded")
+	}
+	if role := roleIn(t, st, ctx, owner.ID, later); role != "" {
+		t.Fatalf("populated registry bound the owner as %s", role)
+	}
+	members, err := st.ListWorkspaceMembers(ctx, owner.ID, later)
+	if err == nil && len(members) != 0 {
+		t.Fatalf("populated registry seeded members=%+v", members)
+	}
+}
+
+// runBootstrapOwnershipStable proves that a changed configured identity and a
+// rotation keep the marker owner and that an unchanged start is a no-op
+// (DEC-63(3)).
+func runBootstrapOwnershipStable(t *testing.T, x Fixture) {
+	st := x.Backend
+	_, owner := bootstrapOwner(t, x)
+	t.Cleanup(func() {
+		_, _ = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	})
+	changedIdentity := config.FirstOperatorIdentity{OrganizationName: "Renamed", Email: "renamed-" + x.Workspace + "@example.test", DisplayName: "Renamed"}
+	changed, err := st.BootstrapIdentity(systemContext(x.Context), changedIdentity, "conformance-stable-rotated")
+	requireOK(t, err)
+	if !changed {
+		t.Fatal("rotation under a changed identity reported no change")
+	}
+	current, err := st.VerifyPersonalAccessToken(x.Context, "conformance-stable-rotated")
+	requireOK(t, err)
+	if current.ID != owner.ID || current.Email != owner.Email {
+		t.Fatalf("changed configuration replaced the owner: %+v want %s", current, owner.ID)
+	}
+	if allowed, err := st.AuthorizeInstanceAdministration(x.Context, owner.ID); err != nil || !allowed {
+		t.Fatalf("owner lost instance administration allowed=%t err=%v", allowed, err)
+	}
+	changed, err = st.BootstrapIdentity(systemContext(x.Context), changedIdentity, "conformance-stable-rotated")
+	requireOK(t, err)
+	if changed {
+		t.Fatal("unchanged start reported a change")
+	}
+}
+
+// runBootstrapMembershipSerialization holds bootstrap at its locked and
+// before-commit stages with channels while a demotion and an exclusion are
+// issued, in both orders, and proves no binding is restored. An error
+// injected before commit rolls back a rotation (DEC-63(4)).
+func runBootstrapMembershipSerialization(t *testing.T, x Fixture) {
+	st := x.Backend
+	ctx, owner := bootstrapOwner(t, x)
+	t.Cleanup(func() {
+		_, _ = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	})
+	second := memberWith(t, st, ctx, "serial-second-"+x.Workspace+"@example.test", x.Workspace, core.WorkspaceRoleOperator)
+	secondCtx := userContext(x.Context, second.ID)
+	exclusion := newForeignWorkspace(t, x, "serial")
+	_, err := st.GrantWorkspaceRole(ctx, owner.Email, exclusion, core.WorkspaceRoleOperator)
+	requireOK(t, err)
+	_, err = st.GrantWorkspaceRole(ctx, second.Email, exclusion, core.WorkspaceRoleOperator)
+	requireOK(t, err)
+
+	for _, test := range []struct {
+		stage  string
+		token  string
+		change func() error
+		check  func() bool
+	}{
+		{store.IdentityHookBootstrapLocked, "conformance-serial-one", func() error {
+			_, err := st.GrantWorkspaceRole(secondCtx, owner.Email, x.Workspace, core.WorkspaceRoleViewer)
+			return err
+		}, func() bool { return roleIn(t, st, ctx, owner.ID, x.Workspace) == core.WorkspaceRoleViewer }},
+		{store.IdentityHookBootstrapBeforeCommit, "conformance-serial-two", func() error {
+			return st.RevokeWorkspaceRole(store.WithWorkspace(secondCtx, exclusion), owner.ID, exclusion)
+		}, func() bool { return roleIn(t, st, ctx, owner.ID, exclusion) == "" }},
+	} {
+		reached, release := make(chan struct{}), make(chan struct{})
+		hooked := store.WithIdentityTestHook(systemContext(x.Context), func(stage string) error {
+			if stage == test.stage {
+				close(reached)
+				<-release
+			}
+			return nil
+		})
+		bootstrapDone := make(chan error, 1)
+		go func() {
+			_, err := st.BootstrapIdentity(hooked, conformanceIdentity(), test.token)
+			bootstrapDone <- err
+		}()
+		<-reached
+		// The membership change is issued while bootstrap holds its
+		// serialization; backends that share the lock queue it behind
+		// bootstrap, and the outcome must be the same either way.
+		changeDone := make(chan error, 1)
+		go func() { changeDone <- test.change() }()
+		close(release)
+		requireOK(t, <-bootstrapDone)
+		requireOK(t, <-changeDone)
+		if !test.check() {
+			t.Fatalf("%s: bootstrap restored a membership change", test.stage)
+		}
+		// The opposite order: the change has committed and a later
+		// bootstrap still leaves it in place.
+		_, err := st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), test.token+"-after")
+		requireOK(t, err)
+		if !test.check() {
+			t.Fatalf("%s: later bootstrap restored a membership change", test.stage)
+		}
+	}
+
+	// An error injected after the rotation writes rolls them back.
+	_, err = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	requireOK(t, err)
+	injected := errors.New("injected bootstrap failure")
+	failing := store.WithIdentityTestHook(systemContext(x.Context), func(stage string) error {
+		if stage == store.IdentityHookBootstrapBeforeCommit {
+			return injected
+		}
+		return nil
+	})
+	if _, err := st.BootstrapIdentity(failing, conformanceIdentity(), "conformance-serial-rolled-back"); !errors.Is(err, injected) {
+		t.Fatalf("injected failure err=%v", err)
+	}
+	if _, err := st.VerifyPersonalAccessToken(x.Context, "conformance-serial-rolled-back"); err == nil {
+		t.Fatal("rolled-back rotation authenticates")
+	}
+	if current, err := st.VerifyPersonalAccessToken(x.Context, conformanceBootstrapToken); err != nil || current.ID != owner.ID {
+		t.Fatalf("rollback lost the previous deployment token: %+v err=%v", current, err)
+	}
+}
+
+// FreshDeployment opens an empty backend: no organization, account, marker,
+// or workspace. Deactivate marks an account deactivated through the
+// backend's native seam, because deactivation is not part of store.Backend.
+type FreshDeployment struct {
+	Open       func(*testing.T) store.Backend
+	Deactivate func(*testing.T, store.Backend, string)
+	// DeploymentEvents counts deployment ledger rows of one kind, when the
+	// backend exposes them to its test binary.
+	DeploymentEvents func(*testing.T, store.Backend, string) int
+}
+
+// RunFreshDeploymentBootstrap proves the empty-deployment rules of DEC-63 on
+// one backend: the configured identity becomes the owner without a marker,
+// neither account age nor an operator binding selects it, the first workspace
+// of an empty registry binds only the owner, an owner without bindings is
+// the principal, a revoked deployment token fails while a new one is reissued
+// to the same owner, and a deactivated owner fails closed.
+func RunFreshDeploymentBootstrap(t *testing.T, fresh FreshDeployment) {
+	t.Run("NoMarkerUsesConfiguredIdentity", func(t *testing.T) {
+		st := fresh.Open(t)
+		ctx := systemContext(t.Context())
+		older, err := st.ProvisionIdentityUser(ctx, "older@example.test", "Older Account")
+		requireOK(t, err)
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, older.ID); err != nil || allowed {
+			t.Fatalf("deployment without a marker admitted=%t err=%v", allowed, err)
+		}
+		identity := config.FirstOperatorIdentity{OrganizationName: "Fresh", Email: "Configured@Example.test", DisplayName: "Configured"}
+		changed, err := st.BootstrapIdentity(ctx, identity, "fresh-token")
+		requireOK(t, err)
+		if !changed {
+			t.Fatal("first bootstrap reported no change")
+		}
+		owner, err := st.VerifyPersonalAccessToken(ctx, "fresh-token")
+		requireOK(t, err)
+		if owner.Email != "configured@example.test" || owner.ID == older.ID {
+			t.Fatalf("owner=%+v older=%s", owner, older.ID)
+		}
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, owner.ID); err != nil || !allowed {
+			t.Fatalf("owner without bindings admitted=%t err=%v", allowed, err)
+		}
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, older.ID); err != nil || allowed {
+			t.Fatalf("older account admitted=%t err=%v", allowed, err)
+		}
+		listed, err := st.ListWorkspacesForUser(ctx, owner.ID)
+		requireOK(t, err)
+		if len(listed) != 0 {
+			t.Fatalf("bootstrap bound the owner before any workspace: %+v", listed)
+		}
+
+		first := "fresh-first"
+		firstCtx := store.WithWorkspace(ctx, first)
+		seeded, err := st.BootstrapWorkspaceConfig(firstCtx, &config.Config{Workspace: first})
+		requireOK(t, err)
+		if !seeded {
+			t.Fatal("first workspace not seeded")
+		}
+		if role := roleIn(t, st, ctx, owner.ID, first); role != core.WorkspaceRoleOperator {
+			t.Fatalf("first workspace owner role=%q", role)
+		}
+		if role := roleIn(t, st, ctx, older.ID, first); role != "" {
+			t.Fatalf("older account bound as %s", role)
+		}
+		ownerCtx := userContext(ctx, owner.ID)
+		second := memberWith(t, st, ownerCtx, "fresh-second@example.test", first, core.WorkspaceRoleOperator)
+		_, err = st.GrantWorkspaceRole(userContext(ctx, second.ID), owner.Email, first, core.WorkspaceRoleViewer)
+		requireOK(t, err)
+		if _, err := st.BootstrapWorkspaceConfig(firstCtx, &config.Config{Workspace: first}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.BootstrapIdentity(ctx, identity, "fresh-token"); err != nil {
+			t.Fatal(err)
+		}
+		if role := roleIn(t, st, ctx, owner.ID, first); role != core.WorkspaceRoleViewer {
+			t.Fatalf("repeated initialization rewrote the demotion: %q", role)
+		}
+		later := "fresh-later"
+		if _, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(ctx, later), &config.Config{Workspace: later}); err != nil {
+			t.Fatal(err)
+		}
+		if role := roleIn(t, st, ctx, owner.ID, later); role != "" {
+			t.Fatalf("populated registry bound the owner as %s", role)
+		}
+	})
+	t.Run("RevokedAndDeactivatedOwner", func(t *testing.T) {
+		st := fresh.Open(t)
+		ctx := systemContext(t.Context())
+		identity := config.FirstOperatorIdentity{OrganizationName: "Fresh", Email: "owner@example.test", DisplayName: "Owner"}
+		_, err := st.BootstrapIdentity(ctx, identity, "fresh-one")
+		requireOK(t, err)
+		owner, err := st.VerifyPersonalAccessToken(ctx, "fresh-one")
+		requireOK(t, err)
+		tokens, err := st.ListOwnPersonalAccessTokens(ctx, owner.ID)
+		requireOK(t, err)
+		markerID := ""
+		for _, token := range tokens {
+			if token.DeploymentCredential {
+				markerID = token.ID
+			}
+		}
+		if markerID == "" {
+			t.Fatalf("no deployment marker among %+v", tokens)
+		}
+		_, err = st.RevokeOwnPersonalAccessToken(userContext(ctx, owner.ID), owner.ID, markerID)
+		requireOK(t, err)
+		if _, err := st.BootstrapIdentity(ctx, identity, "fresh-one"); err == nil || !strings.Contains(err.Error(), "legacy token revoked") {
+			t.Fatalf("revoked deployment token restart err=%v", err)
+		}
+		if _, err := st.VerifyPersonalAccessToken(ctx, "fresh-one"); err == nil {
+			t.Fatal("revoked deployment token authenticates")
+		}
+		other := config.FirstOperatorIdentity{OrganizationName: "Other", Email: "other@example.test", DisplayName: "Other"}
+		if _, err := st.BootstrapIdentity(ctx, other, "fresh-two"); err != nil {
+			t.Fatal(err)
+		}
+		reissued, err := st.VerifyPersonalAccessToken(ctx, "fresh-two")
+		requireOK(t, err)
+		if reissued.ID != owner.ID {
+			t.Fatalf("reissue selected %s, want owner %s", reissued.ID, owner.ID)
+		}
+		if fresh.DeploymentEvents != nil {
+			if healed := fresh.DeploymentEvents(t, st, "identity.legacy_bindings_healed"); healed != 0 {
+				t.Fatalf("healing events=%d", healed)
+			}
+		}
+		fresh.Deactivate(t, st, owner.ID)
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, owner.ID); err != nil || allowed {
+			t.Fatalf("deactivated owner admitted=%t err=%v", allowed, err)
+		}
+		if _, err := st.BootstrapIdentity(ctx, other, "fresh-two"); err == nil || !strings.Contains(err.Error(), "deactivated") {
+			t.Fatalf("deactivated owner restart err=%v", err)
+		}
+		if _, err := st.VerifyPersonalAccessToken(ctx, "fresh-two"); err == nil {
+			t.Fatal("deactivated owner's deployment token authenticates")
+		}
+	})
 }

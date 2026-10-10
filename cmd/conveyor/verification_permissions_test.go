@@ -78,6 +78,11 @@ func newVerificationCLIFixture(t *testing.T) verificationCLIFixture {
 		t.Fatal(err)
 	}
 	operator := store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser, OwnerUserID: owner.ID}), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	if _, err = b.GrantWorkspaceRole(operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	viewer, err := b.ProvisionIdentityUser(operator, "viewer@example.test", "Viewer")
 	if err != nil {
 		t.Fatal(err)

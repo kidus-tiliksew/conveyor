@@ -153,6 +153,12 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 	owner, err := b.VerifyPersonalAccessToken(f.ctx, f.token)
 	must(t, err)
 	f.ctx = store.WithActor(store.WithCredential(f.ctx, core.AuthenticatedCredential{ID: "fixture-pat", Kind: core.CredentialUser, Scope: core.CredentialScopeUser, OwnerUserID: owner.ID}), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never heals bindings (DEC-63(4)) and the fixture workspace
+	// may predate the deployment owner, so the owner is granted explicitly.
+	if caller, callerErr := b.GetCallerIdentity(f.ctx, owner.ID, f.ws); callerErr != nil || caller.Role != core.WorkspaceRoleOperator {
+		_, err = b.GrantWorkspaceRole(f.ctx, owner.Email, f.ws, core.WorkspaceRoleOperator)
+		must(t, err)
+	}
 	_, rv, err := b.CreateRequirement(f.ctx, core.Requirement{ID: "req-verification-kits", Title: "Fixture verification contract"}, core.RequirementVersion{Content: "# Disposable fixture contract", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-3", Statement: "Observe the disposable API.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-3.1", Statement: "Retain the API observation."}}}}})
 	must(t, err)
 	_, _, err = b.ConfirmRequirementVersion(f.ctx, "req-verification-kits", rv.Version)

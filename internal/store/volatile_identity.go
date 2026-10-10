@@ -231,9 +231,12 @@ func (m *volatileMemory) sessionLive(sessionID, userID string, now time.Time) bo
 	return ok && session.UserID == userID && session.RevokedAt == nil && session.ExpiresAt.After(now)
 }
 
-// BootstrapIdentity makes the configured deployment token map to a usable
-// operator: it heals or rotates the mapping when one exists, and otherwise
-// seeds the first operator and maps the token to that account.
+// BootstrapIdentity maps the configured deployment token to the
+// instance-administration principal: the owner of the sole
+// deployment_credential marker. A live marker keeps its owner across restart,
+// configuration change, and rotation; a deployment without a marker takes the
+// configured first operator. It never writes a workspace binding, so
+// membership decisions survive every restart (DEC-63(3), DEC-63(4)).
 func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -250,6 +253,12 @@ func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.
 	}
 	m.lock()
 	defer m.unlock()
+	if err := RunIdentityTestHook(ctx, IdentityHookBootstrapLocked); err != nil {
+		return false, err
+	}
+	// The volatile backend commits by mutating maps, so every write is staged
+	// and applied only after the before-commit hook succeeds.
+	var apply []func()
 	hash := sha256.Sum256([]byte(legacyToken))
 	var legacy *identityCredential
 	for id := range m.credentials {
@@ -263,96 +272,78 @@ func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.
 	if legacy != nil && legacy.RevokedAt != nil && sameHash {
 		return false, errors.New("legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT")
 	}
-	legacyActive := legacy != nil && legacy.RevokedAt == nil && m.userActive(legacy.UserID)
-	if legacy != nil {
-		coversWorkspaces := true
-		for workspaceID := range m.workspaces {
-			if m.memberships[memoryScopedKey{workspace: workspaceID, id: legacy.UserID}].Role != core.WorkspaceRoleOperator {
-				coversWorkspaces = false
-			}
-		}
-		if coversWorkspaces && sameHash && legacyActive && legacy.Scope == core.CredentialScopeOperator {
-			return false, nil
-		}
+	audit := func(credentialID string) {
+		apply = append(apply, func() {
+			m.recordEventLocked(SystemActor("system"), "", core.Event{Kind: "identity.legacy_token_rotated", ActorID: "system", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: time.Now().UTC()})
+		})
 	}
-	if legacyActive {
+	switch {
+	case legacy != nil && !m.userActive(legacy.UserID):
+		return false, errors.New("deployment owner account is deactivated; reactivate it before startup")
+	case legacy != nil && legacy.RevokedAt == nil:
+		if sameHash && legacy.Kind == core.CredentialUser && legacy.Scope == core.CredentialScopeOperator {
+			return false, RunIdentityTestHook(ctx, IdentityHookBootstrapBeforeCommit)
+		}
 		credential := *legacy
 		credential.Kind, credential.Scope = core.CredentialUser, core.CredentialScopeOperator
-		auditKind := "identity.legacy_bindings_healed"
 		if !sameHash {
 			credential.TokenHash, credential.LastUsedAt = hash[:], nil
-			auditKind = "identity.legacy_token_rotated"
 		}
-		m.credentials[credential.ID] = credential
-		m.seedOperatorBindingsLocked(credential.UserID)
-		m.recordEventLocked(SystemActor("system"), "", core.Event{Kind: auditKind, ActorID: "system", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"credential_id": credential.ID}), At: time.Now().UTC()})
-		return true, nil
-	}
-
-	var owner identityUser
-	if usable, ok := m.usableOperatorLocked(); ok {
-		owner = usable
-	} else {
-		owner, err = m.provisionUserLocked(ctx, identity.Email, identity.DisplayName, false)
-		if err != nil {
-			return false, fmt.Errorf("seed first operator: %w", err)
+		apply = append(apply, func() { m.credentials[credential.ID] = credential })
+		audit(credential.ID)
+	default:
+		ownerID := ""
+		if legacy != nil {
+			// A revoked marker keeps its owner: a new deployment token is
+			// reissued to the same account (DEC-63(3)).
+			ownerID = legacy.UserID
+			retired := *legacy
+			retired.Label, retired.DeploymentCredential = "retired legacy API token", false
+			apply = append(apply, func() { m.credentials[retired.ID] = retired })
+		} else {
+			if existing, ok := m.userByEmail(identity.Email); ok && existing.Status != "active" {
+				return false, errors.New("configured first operator account is deactivated")
+			}
+			owner, provisionErr := m.provisionUserLocked(ctx, identity.Email, identity.DisplayName, false)
+			if provisionErr != nil {
+				return false, fmt.Errorf("seed first operator: %w", provisionErr)
+			}
+			ownerID = owner.ID
+			if m.orgName == "Conveyor" {
+				apply = append(apply, func() { m.orgName = identity.OrganizationName })
+			}
 		}
-		if m.orgName == "Conveyor" {
-			m.orgName = identity.OrganizationName
+		tokenID, idErr := randomIdentityID("pat", 12)
+		if idErr != nil {
+			return false, idErr
+		}
+		apply = append(apply, func() {
+			m.credentials[tokenID] = identityCredential{
+				ID: tokenID, UserID: ownerID, Label: "legacy API token", TokenHash: hash[:],
+				Kind: core.CredentialUser, Scope: core.CredentialScopeOperator, DeploymentCredential: true, CreatedAt: time.Now().UTC(),
+			}
+		})
+		if legacy != nil {
+			audit(tokenID)
 		}
 	}
-	if legacy != nil {
-		retired := *legacy
-		retired.Label, retired.DeploymentCredential = "retired legacy API token", false
-		m.credentials[retired.ID] = retired
-	}
-	tokenID, err := randomIdentityID("pat", 12)
-	if err != nil {
+	if err := RunIdentityTestHook(ctx, IdentityHookBootstrapBeforeCommit); err != nil {
 		return false, err
 	}
-	m.credentials[tokenID] = identityCredential{
-		ID: tokenID, UserID: owner.ID, Label: "legacy API token", TokenHash: hash[:],
-		Kind: core.CredentialUser, Scope: core.CredentialScopeOperator, DeploymentCredential: true, CreatedAt: time.Now().UTC(),
+	for _, write := range apply {
+		write()
 	}
-	if legacy != nil {
-		m.recordEventLocked(SystemActor("system"), "", core.Event{Kind: "identity.legacy_token_rotated", ActorID: "system", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"credential_id": tokenID}), At: time.Now().UTC()})
-	}
-	m.seedOperatorBindingsLocked(owner.ID)
 	return true, nil
 }
 
-// usableOperatorLocked returns the active user behind the oldest live
-// operator-scoped credential who holds an operator binding somewhere.
-func (m *volatileMemory) usableOperatorLocked() (identityUser, bool) {
-	var candidates []identityCredential
+// deploymentOwnerLocked returns the active owner of the deployment marker.
+func (m *volatileMemory) deploymentOwnerLocked() (string, bool) {
 	for _, credential := range m.credentials {
-		if credential.Kind == core.CredentialUser && credential.Scope == core.CredentialScopeOperator && credential.RevokedAt == nil &&
-			m.userActive(credential.UserID) && m.hasOperatorBinding(credential.UserID) {
-			candidates = append(candidates, credential)
+		if credential.DeploymentCredential {
+			return credential.UserID, m.userActive(credential.UserID)
 		}
 	}
-	if len(candidates) == 0 {
-		return identityUser{}, false
-	}
-	sort.Slice(candidates, func(i, j int) bool {
-		if !candidates[i].CreatedAt.Equal(candidates[j].CreatedAt) {
-			return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
-		}
-		return candidates[i].ID < candidates[j].ID
-	})
-	return m.users[candidates[0].UserID], true
-}
-
-func (m *volatileMemory) seedOperatorBindingsLocked(userID string) {
-	for workspaceID := range m.workspaces {
-		key := memoryScopedKey{workspace: workspaceID, id: userID}
-		binding, ok := m.memberships[key]
-		if !ok {
-			binding.CreatedAt = time.Now().UTC()
-		}
-		binding.Role = core.WorkspaceRoleOperator
-		m.memberships[key] = binding
-	}
+	return "", false
 }
 
 // ProvisionIdentityUser implements IdentityProvisioner.
@@ -950,6 +941,16 @@ func personalAccessToken(credential identityCredential) core.PersonalAccessToken
 		ID: credential.ID, UserID: credential.UserID, Label: credential.Label, DeploymentCredential: credential.DeploymentCredential,
 		LastUsedAt: credential.LastUsedAt, RevokedAt: credential.RevokedAt, CreatedAt: credential.CreatedAt,
 	}
+}
+
+// AuthorizeInstanceAdministration implements MembershipStore: only the active
+// owner of the deployment marker is the instance-administration principal
+// (DEC-63(1)).
+func (m *volatileMemory) AuthorizeInstanceAdministration(_ context.Context, userID string) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	owner, active := m.deploymentOwnerLocked()
+	return active && userID != "" && owner == userID, nil
 }
 
 // AuthorizeDeployment implements MembershipStore: deployment authority is

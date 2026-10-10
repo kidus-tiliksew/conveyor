@@ -74,6 +74,43 @@ creates the organization and first operator (identity from
 operator's personal access token. `conveyor init` drives the same bootstrap
 interactively and prints the first sign-in link.
 
+That token row is the deployment marker, and its owner is the deployment
+owner (DEC-63). Later starts keep the same owner even if the first-operator
+variables change; changing `CONVEYOR_API_TOKEN` rotates the token for that
+owner. A revoked deployment token is refused at startup, and a deactivated
+owner stops startup rather than being replaced by another operator.
+
+Bootstrap never writes workspace memberships. When the deployment file names a
+workspace and the database has no workspaces yet, that first workspace is
+created with the owner as its operator. Otherwise startup leaves memberships
+alone, so demotions and removals survive restarts and token rotation. Without
+a configured workspace, the owner creates the first workspace with
+`POST /v1/workspaces` and becomes its operator.
+
+## Instance administration
+
+Two acts are deployment-wide rather than per workspace: provisioning an
+account (`POST /v1/users`) and creating a workspace (`POST /v1/workspaces`).
+Only the deployment owner may perform them, with their own personal access
+token (any scope) or dashboard session. No workspace role grants them, not even
+`operator`, and an agent or worker credential is refused even when the owner
+holds it. Owning the deployment grants nothing inside workspaces: the owner
+reads and manages a workspace only through a membership there, like anyone
+else.
+
+Any other signed-in person gets the same `404 workspace_not_found` from both
+routes, whatever they send, before anything is created or looked up. A missing
+or invalid credential, or an agent or worker credential, gets `401`.
+
+For the owner, `POST /v1/users` answers `200` with exactly `{"accepted":true}`
+for a new account, an existing active account, and a deactivated account. It
+returns no account details. A deactivated account stays deactivated and its
+pending invitations stay pending. `POST /v1/workspaces` answers `201` with the
+new workspace, or `409` with
+`{"error":"workspace_conflict","message":"workspace could not be created"}`
+when the ID or the case- and space-insensitive name is taken. The response
+does not say which.
+
 ## Roles and capabilities
 
 Authorization is per workspace. Every check names a capability, and roles are

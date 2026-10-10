@@ -58,14 +58,12 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	provision := func(email, displayName string) core.IdentityUser {
 		t.Helper()
 		response := call(http.MethodPost, "/v1/users", `{"email":"`+email+`","display_name":"`+displayName+`"}`)
-		if response.Code != http.StatusCreated {
+		// The acknowledgement carries no account fields (DEC-63(6)); the
+		// stored row is read directly.
+		if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
 			t.Fatalf("provision user status=%d body=%s", response.Code, response.Body.String())
 		}
-		var user core.IdentityUser
-		if err := json.Unmarshal(response.Body.Bytes(), &user); err != nil {
-			t.Fatalf("decode provisioned user: %v", err)
-		}
-		return user
+		return provisionedIdentityRow(t, st, email)
 	}
 	provisioned := provision("  REDEEM@example.test ", "Redeemed User")
 	repeated := provision(invitedEmail, "Ignored on retry")
@@ -340,7 +338,7 @@ func TestPendingInvitationListingIsOperatorScopedAndPendingOnlyIntegration(t *te
 
 	// Redemption and revocation both remove the row, so the listing is pending
 	// by construction rather than by a status filter.
-	if response := call(http.MethodPost, "/v1/users", legacy, `{"email":"`+redeemed+`","display_name":"Redeemed"}`); response.Code != http.StatusCreated {
+	if response := call(http.MethodPost, "/v1/users", legacy, `{"email":"`+redeemed+`","display_name":"Redeemed"}`); response.Code != http.StatusOK {
 		t.Fatalf("provision status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := call(http.MethodDelete, "/v1/workspaces/"+workspaceID+"/invitations/"+revoked, legacy, ""); response.Code != http.StatusNoContent {
@@ -370,4 +368,16 @@ func redeemedMemberID(t *testing.T, st *Store, email string) string {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// provisionedIdentityRow reads the stored account for a normalized email. The
+// provisioning route returns only an acknowledgement (DEC-63(6)).
+func provisionedIdentityRow(t *testing.T, st *Store, email string) core.IdentityUser {
+	t.Helper()
+	var user core.IdentityUser
+	if err := st.pool.QueryRow(t.Context(), `SELECT id,email,display_name,status FROM users WHERE email=$1`, strings.ToLower(strings.TrimSpace(email))).
+		Scan(&user.ID, &user.Email, &user.DisplayName, &user.Status); err != nil {
+		t.Fatalf("read provisioned account %s: %v", email, err)
+	}
+	return user
 }
