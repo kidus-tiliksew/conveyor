@@ -531,12 +531,12 @@ func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
 		if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{WorkerID: "worker-a", ClaimantID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{WorkerID: "phase47-worker-a", ClaimantID: "phase47-worker-a", SessionID: "session-a", ClientToken: "token-a", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	createClaim("claimed-evidence-task", "claimed-evidence-task-implement-1", time.Minute)
-	request := store.ClaimedVerificationEvidenceRequest{WorkOrderID: "claimed-evidence-task-implement-1", WorkerID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Name: "proof.bin", ContentType: "IMAGE/PNG; charset=binary"}
+	request := store.ClaimedVerificationEvidenceRequest{WorkOrderID: "claimed-evidence-task-implement-1", WorkerID: "phase47-worker-a", SessionID: "session-a", ClientToken: "token-a", Name: "proof.bin", ContentType: "IMAGE/PNG; charset=binary"}
 	content := testimage.PNG("concurrent")
 
 	var wg sync.WaitGroup

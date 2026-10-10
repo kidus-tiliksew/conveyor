@@ -152,7 +152,12 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{ReopenVerification: func(t *testing.T) store.Backend {
+			return storetest.Fixture{DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+				t.Helper()
+				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
+					t.Fatal(err)
+				}
+			}, ReopenVerification: func(t *testing.T) store.Backend {
 				reopened, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
 				if err != nil {
 					t.Fatal(err)

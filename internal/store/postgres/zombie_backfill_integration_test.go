@@ -227,7 +227,7 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplementOne, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
-	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "zombie-worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

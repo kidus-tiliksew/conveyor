@@ -80,8 +80,10 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	}); !errors.Is(err, store.ErrWorkerUnauthorized) {
 		t.Fatalf("durable claim after preliminary auth and binding revocation error=%v", err)
 	}
-	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
-		t.Fatalf("ownerless legacy worker authentication: %v", err)
+	// An ownerless legacy row stays listable but is refused at use
+	// (component-work-orders, Workers: Admission).
+	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("ownerless legacy worker authentication error=%v", err)
 	}
 	demotedMember, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: "usr_demoted_" + core.NewTaskID(), Email: "demoted-member-" + core.NewTaskID() + "@example.test", DisplayName: "Demoted Worker Member",
@@ -118,14 +120,14 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 		 AND payload_json->>'worker_id'=$1 AND payload_json->>'reason'='workspace_membership_demoted')`, demotedWorker.ID, workspace).Scan(&demotionRevoked, &demotionAudited); err != nil || demotionRevoked != 1 || demotionAudited != 1 {
 		t.Fatalf("demotion cascade revoked=%d audited=%d err=%v", demotionRevoked, demotionAudited, err)
 	}
-	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
-		t.Fatalf("ownerless legacy worker changed by demotion: %v", err)
+	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("ownerless legacy worker authentication after demotion error=%v", err)
 	}
 	legacyOrder := createClaimable("legacy-unassigned")
 	if _, err := storetest.For(st).ClaimWorkOrder(ctx, legacyOrder.ID, core.WorkOrderClaim{
 		SessionID: "legacy-unassigned", ClientToken: "legacy-unassigned", WorkerID: legacyWorker.ID, OwnerUserID: "forged", Lease: time.Minute,
-	}); err != nil {
-		t.Fatalf("ownerless legacy worker unassigned claim: %v", err)
+	}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("ownerless legacy worker claim with forged owner error=%v", err)
 	}
 	if _, err := st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleContributor); err != nil {
 		t.Fatal(err)
@@ -163,7 +165,15 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 		 AND payload_json->>'worker_id'=$1 AND payload_json->>'reason'='identity_user_deactivated')`, owned2.ID, workspace).Scan(&revoked, &audited); err != nil || revoked != 1 || audited != 1 {
 		t.Fatalf("deactivation cascade revoked=%d audited=%d err=%v", revoked, audited, err)
 	}
-	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
-		t.Fatalf("ownerless legacy worker changed by user deactivation: %v", err)
+	workers, err := st.ListWorkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, worker := range workers {
+		listed = listed || worker.ID == legacyWorker.ID && worker.OwnerUserID == "" && worker.RevokedAt.IsZero()
+	}
+	if !listed {
+		t.Fatalf("ownerless legacy worker is not listed unchanged: %+v", workers)
 	}
 }

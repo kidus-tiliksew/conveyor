@@ -158,6 +158,22 @@ func listedWorker(t *testing.T, x Fixture, ctx context.Context, id string) core.
 	return core.Worker{}
 }
 
+// deactivateUser marks an account inactive through the backend's deactivation
+// operation, or through the fixture's hook where the backend has none.
+func deactivateUser(t *testing.T, x Fixture, ctx context.Context, userID string) {
+	t.Helper()
+	if x.DeactivateUser != nil {
+		x.DeactivateUser(t, ctx, userID)
+		return
+	}
+	deactivator, ok := x.Backend.(identityDeactivator)
+	if !ok {
+		t.Fatal("backend cannot deactivate identities and the fixture supplies no hook")
+	}
+	_, err := deactivator.DeactivateIdentityUser(ctx, userID)
+	requireOK(t, err)
+}
+
 func runWorkers(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -233,13 +249,8 @@ func runWorkers(t *testing.T, x Fixture) {
 		}
 	})
 	t.Run("DeactivatedOwner", func(t *testing.T) {
-		deactivator, ok := st.(identityDeactivator)
-		if !ok {
-			t.Fatal("backend cannot deactivate identities")
-		}
 		owned := enrollOwnedWorker(t, x, operatorCtx, "deactivated")
-		_, err := deactivator.DeactivateIdentityUser(operatorCtx, owned.owner.ID)
-		requireOK(t, err)
+		deactivateUser(t, x, operatorCtx, owned.owner.ID)
 		// A retained, unrevoked worker of an already-deactivated account proves
 		// owner status is judged at use, independently of the revocation cascade.
 		retained := core.Worker{ID: "worker-retained-" + core.NewTaskID(), Workspace: x.Workspace, OwnerUserID: owned.owner.ID, Name: "retained", CredentialHash: "retained-" + core.NewTaskID(), CreatedAt: now}
@@ -277,16 +288,11 @@ func runWorkers(t *testing.T, x Fixture) {
 		}
 	})
 	t.Run("ClaimAfterOwnerDeactivation", func(t *testing.T) {
-		deactivator, ok := st.(identityDeactivator)
-		if !ok {
-			t.Fatal("backend cannot deactivate identities")
-		}
 		owned := enrollOwnedWorker(t, x, operatorCtx, "stale")
 		stale, err := st.AuthenticateWorker(ctx, owned.worker.CredentialHash)
 		requireOK(t, err)
 		order := queuedWorkerOrder(t, x, ctx, "stale")
-		_, err = deactivator.DeactivateIdentityUser(operatorCtx, owned.owner.ID)
-		requireOK(t, err)
+		deactivateUser(t, x, operatorCtx, owned.owner.ID)
 		if _, err := For(st).ClaimWorkOrder(ctx, order.ID, workerClaim(stale, "stale-session", owned.owner.ID)); !errors.Is(err, store.ErrWorkerUnauthorized) {
 			t.Fatalf("stale caller claim error=%v", err)
 		}

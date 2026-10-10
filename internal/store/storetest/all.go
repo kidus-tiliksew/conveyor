@@ -44,6 +44,10 @@ type Fixture struct {
 	// ID. An empty TaskID seeds a workspace-level event such as a proposal.
 	// The stored events are returned. Committed rows are never rewritten.
 	SeedEvents func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event
+	// DeactivateUser marks one account inactive for backends that expose no
+	// deactivation operation, such as SingleStore. Others use their
+	// DeactivateIdentityUser method (component-work-orders, Workers).
+	DeactivateUser func(t *testing.T, ctx context.Context, userID string)
 }
 
 // Factory creates an isolated backend and workspace on every call. Cleanup
