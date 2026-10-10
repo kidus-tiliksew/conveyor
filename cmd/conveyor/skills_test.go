@@ -360,7 +360,8 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"A session that `conveyor run` or a worker launched reports and exits, and never polls `await_review`",
 		"continues the playbook's self-claimed delivery loop after implementation submission",
 		"awaits the verdict with `await_review`",
-		"At a pending human gate it summarizes the decision with a dashboard link, offers to record it, and otherwise waits with `conveyor task wait`",
+		"At a pending human gate it summarizes the decision with a dashboard link and offers to record it",
+		"reads the gate again before recording a selection, and otherwise waits with `conveyor task wait`",
 		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-45)",
 		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
 		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
@@ -1217,6 +1218,61 @@ func TestConveyorWorkSkillShipsApproveThenMergeSequence(t *testing.T) {
 		for _, fragment := range required {
 			if !strings.Contains(normalized, fragment) {
 				t.Errorf("%s playbook lacks %q", destination.root, fragment)
+			}
+		}
+	}
+}
+
+// The installed conveyor-work skill offers gate replies through the harness's
+// structured question tool when one is listed, and as text otherwise, without
+// changing who records a decision (req-agent-skills AC-3.7, AC-3.9, AC-3.10,
+// AC-3.11; DEC-45; component-cli-onboarding).
+func TestConveyorWorkSkillShipsStructuredGateChoices(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+	playbookRequired := []string{
+		"offered as **Structured choices** describes",
+		"When the session's harness lists a structured question tool for the current turn, offer the replies through it instead of as text: `AskUserQuestion` in Claude Code, `request_user_input` in Codex, or `question` in OpenCode",
+		"Use the tool only when it is listed for the current turn; when no such tool is listed, list the replies as text",
+		"Never write the replies as a text multiple-choice question while the tool is available",
+		"Put summary items 1–3 in the question text, including the dashboard link",
+		"| Plan approval | Approve · Request changes · Reject · Wait |",
+		"| Merge approval | Approve and merge · Approve only · Request changes · Wait |",
+		"| Pending merge act | Merge · Wait |",
+		"| Plan-revision decision | Approve · Decline · Reject · Wait |",
+		"| Proposal | Confirm · Dismiss · Wait |",
+		"within the tool's option limit",
+		"Never preselect, rank, or mark an option as recommended",
+		"When the operator gave none, ask for it in plain text; never write it for the operator",
+		"A selected option is the operator's direct instruction in this conversation, exactly like a typed reply",
+		"`Wait` records nothing and continues as **Wait otherwise** describes",
+		"Before recording a selection, read the task again, or `pending_gate` for the pending merge act",
+		"When the gate is no longer pending, or its kind or reviewed head changed, record nothing",
+		"A planner, verifier, or reviewer that the session started never asks a gate question",
+		"When the conversation holds no answer, or the operator selected `Wait`, wait for the decision",
+	}
+	wrapperRequired := []string{
+		"through the harness's structured question tool when one is listed for the turn (`AskUserQuestion`, `request_user_input`, `question`) and as text otherwise",
+		"It never preselects or recommends a gate option, reads the gate again before recording a selection",
+	}
+	for _, destination := range destinations {
+		for file, required := range map[string][]string{
+			"conveyor-work.md": playbookRequired,
+			"SKILL.md":         wrapperRequired,
+		} {
+			content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized := strings.Join(strings.Fields(string(content)), " ")
+			for _, fragment := range required {
+				if !strings.Contains(normalized, fragment) {
+					t.Errorf("%s %s lacks %q", destination.root, file, fragment)
+				}
 			}
 		}
 	}
