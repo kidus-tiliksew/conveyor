@@ -328,7 +328,7 @@ Operator decisions (2026-10-10), detail in [skills-review.md §7](skills-review.
 
 First batch, ahead of every other item.
 This is a correctness fix, not a UX change.
-Source: live report on task 260928-4144ee, workspace `funnelflux-pro`, CLI v0.37.
+Source: two live reports in workspace `funnelflux-pro`, CLI v0.37: task 260928-4144ee (below) and task 260928-76f357 (§10.1).
 Verify order `260928-4144ee-verify-8` timed out.
 The operator recovered it from the dashboard and it went to `queued`.
 Every claim was then refused with `verify order ... does not match task policy, stage, or submitted head`, even though the order head, the task's `reviewed_head_sha` and the PR head were all `0686652ac`, `next_stage` was `verify`, and `policy_version` was 1.
@@ -351,7 +351,23 @@ Root cause in code: operator recover rewrites the task's frozen contract from th
   The per-task policy change path reconciles `next_stage` when it toggles verification; the refreeze does not.
 - `policy_version` stays 1, which is why the report saw nothing wrong with the policy.
 
-Proof needed from the live system (the code shows the mechanism, not that it fired for this task):
+Second live case, 260928-76f357 (PR #1568), observed by the coordinator.
+The operator recovered `260928-76f357-verify-1` at about 08:47Z.
+The order went to `queued`, `claimable: true`, `retry_suppressed: false`, with head `63abdcf6e`, equal to the task's reviewed head and the PR head.
+`claim_work_order` refused it with the same error.
+The task's frozen contract (v1) has no `verify_stage` key: `{max_bounces: 10, stage_timeouts: {…, verify: 1h}, review: {seats: [{}]}, refresh_review: delta}`.
+That matches the mechanism above:
+- `ExecutionSetup.MarshalJSON` writes `verify_stage` with `omitempty` and always writes `stage_timeouts.verify` (`internal/config/config.go:665-689`), so a missing key means false and the verify timeout tells you nothing.
+- A task reaches `next_stage = verify` only while its contract has `verify_stage` true: `verifyReviewReadyTx` returns ready when it is false (`internal/store/postgres/verify_stage.go:10-13`), and only a not-ready task is routed from review to verify (`internal/store/postgres/lifecycle_store.go:38-51`).
+  So verify-1 was created while the contract had verify on, and the key disappeared afterwards; the recover at 08:47Z is the only contract writer in the observed sequence.
+- For 260928-4144ee, eight verify orders ran before verify-8 was refused, so verify was on before that recover too.
+  Its post-recover contract was not in the report; the task-row query below settles it.
+  This checkout has no access to the live system.
+
+The underlying defect is that recover and claim disagree: recover accepts an order and reports success, and the claim check then rejects it.
+The fix below makes them agree in both directions.
+
+Proof needed from the live system (the code shows the mechanism, not that it fired for either task; run each query for both task IDs):
 - Event: `SELECT at, actor_id, payload_json FROM events WHERE workspace_id='funnelflux-pro' AND task_id='260928-4144ee' AND kind='task.setup.refrozen' ORDER BY at;` A row at about 06:10Z with `prior.verify_stage=true` and no `verify_stage` in `new` confirms the cause; the event is written only when the contract changed (`work_orders_store.go:1496-1502`).
 - Task row: `SELECT setup_contract->'verify_stage', next_stage, approval_stale, refresh_head_sha, reviewed_head_sha FROM tasks WHERE workspace_id='funnelflux-pro' AND id='260928-4144ee';` A null `verify_stage` confirms it.
   `approval_stale=true` with a different `refresh_head_sha` would point to the head corner instead.
@@ -367,6 +383,11 @@ Fix:
    Recovery must never report success while leaving an order that nothing can claim.
 3. `ValidateVerifyDispatch` names the failing condition (`verify stage disabled in task policy`, `next_stage is review`, `order head X != verify head Y (refresh head)`), so a refused claim says what is wrong.
 4. Repair for tasks already affected: an operator command or one-off migration that restores `verify_stage` from the last `task.setup.refrozen` event's `prior`, recorded as an audited operator act.
+   If no `prior` with verify on exists, route the task back to review instead (`next_stage = review`, cancelling the stranded verify order), so it is never left at a stage its policy cannot run.
+5. Recover and claim share one predicate.
+   A single `ClaimableAfter(task, order)` check, the same one the claim path runs, decides whether the dashboard and CLI offer "Recover" at all.
+   When it would fail, the order's page shows the failing condition and offers what would work: restore the task policy, change the task policy (which moves the task to review), or restart.
+   The recover endpoint runs the same check after its writes (fix 2), so a stale page cannot recover a stranded order either.
 
 ### 10.2 Restart returns 500
 
@@ -417,4 +438,6 @@ Each test runs in the storetest conformance suite against memory, PostgreSQL and
   The current behavior (500) changes to either success with a dropped-context event (fix 2) or a 4xx naming the document; it is never 500.
 - Restart with each other mapped error (`ErrRetryable`, branch in use, supersedes conflict) returns its 4xx or 503, not 500.
 - Invariant property test: from every non-terminal task state with one queued, stale or timed-out order of each stage, recover followed by claim either succeeds or is refused at recover, never at claim.
+- Recover is offered only when the order would be claimable: for a task whose contract has `verify_stage` false and a queued, stale or timed-out verify order, the task view and the CLI do not offer recover. They show the failing condition, and a direct POST to the recover endpoint returns 409.
+- Repair of a stranded task: with no `prior` that has verify on, the repair moves the task to review and cancels the verify order, and the next review order is claimable.
 Mutation targets: each conjunct in `ValidateVerifyDispatch`, the refreeze field copy, and each case in the restart error switch.
