@@ -72,15 +72,33 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		if err = checkWorkspaceName(ctx, tx, cfg.Workspace); err != nil {
 			return err
 		}
+		var existingWorkspaces int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspaces`).Scan(&existingWorkspaces); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO workspaces(id,name,config_yaml) VALUES(?,?,?)`, cfg.Workspace, cfg.Workspace, string(data)); err != nil {
 			return err
 		}
 		if err = upsertRepos(ctx, tx, cfg.Workspace, cfg.Repos); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) SELECT ?,id,'operator' FROM users ORDER BY created_at,id LIMIT 1`, cfg.Workspace)
-		seeded = err == nil
-		return err
+		// Only the first workspace of an empty registry binds the active
+		// owner of the deployment marker. The workspace-registry lock row,
+		// which BootstrapIdentity also takes first, serializes the check
+		// with identity bootstrap (DEC-63(4)).
+		if existingWorkspaces == 0 {
+			owner, found, ownerErr := deploymentOwner(ctx, tx)
+			if ownerErr != nil {
+				return ownerErr
+			}
+			if found {
+				if _, err = tx.ExecContext(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES(?,?,'operator')`, cfg.Workspace, owner); err != nil {
+					return err
+				}
+			}
+		}
+		seeded = true
+		return nil
 	})
 	return seeded && err == nil, err
 }

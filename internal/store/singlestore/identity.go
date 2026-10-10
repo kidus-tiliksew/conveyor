@@ -186,17 +186,12 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, name string) (
 	})
 	return u, translateBackendConflict(err)
 }
-func seedOperatorBindings(ctx context.Context, tx *sql.Tx, userID string) error {
-	var invalid int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM workspaces WHERE org_id<>'deployment'").Scan(&invalid); err != nil {
-		return translateBackendConflict(err)
-	}
-	if invalid != 0 {
-		return errors.New("workspace organization differs from deployment")
-	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO workspace_role_bindings(workspace_id,user_id,role) SELECT id,?,'operator' FROM workspaces ON DUPLICATE KEY UPDATE role='operator',updated_at=CURRENT_TIMESTAMP(6)", userID)
-	return translateBackendConflict(err)
-}
+// BootstrapIdentity maps the configured deployment token to the
+// instance-administration principal, the owner of the sole
+// deployment_credential marker. A live marker keeps its owner across restart,
+// configuration change, and rotation; without a marker the configured first
+// operator becomes the owner. It never writes a workspace binding, so
+// demotions and exclusions survive every restart (DEC-63(3), DEC-63(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	email, err := normalizeIdentityEmail(identity.Email)
 	if err != nil {
@@ -211,7 +206,11 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	}
 	hash := sha256.Sum256([]byte(legacyToken))
 	changed := false
+	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
 	err = s.identityTx(ctx, func(tx *sql.Tx) error {
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapLocked); err != nil {
+			return err
+		}
 		orgCreated, err := ensureOrganization(ctx, tx, org)
 		if err != nil {
 			return translateBackendConflict(err)
@@ -224,17 +223,18 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		if legacyErr != nil && !errors.Is(legacyErr, sql.ErrNoRows) {
 			return legacyErr
 		}
-		same := legacyErr == nil && subtle.ConstantTimeCompare(oldHash, hash[:]) == 1
+		marked := legacyErr == nil
+		same := marked && subtle.ConstantTimeCompare(oldHash, hash[:]) == 1
 		if same && revoked.Valid {
 			return errors.New("legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT")
 		}
-		if legacyErr == nil && status == "active" && !revoked.Valid {
-			var uncovered int
-			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM workspaces w WHERE NOT EXISTS(SELECT 1 FROM workspace_role_bindings b WHERE b.workspace_id=w.id AND b.user_id=? AND b.role='operator')", userID).Scan(&uncovered); err != nil {
-				return translateBackendConflict(err)
-			}
-			if same && kind == "user" && scope == "operator" && uncovered == 0 {
-				return nil
+		if marked && status != "active" {
+			// An inactive owner fails closed; no other operator replaces it.
+			return errors.New("deployment owner account is deactivated; reactivate it before startup")
+		}
+		if marked && !revoked.Valid {
+			if same && kind == "user" && scope == "operator" {
+				return store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit)
 			}
 			if err := checkTokenHash(ctx, tx, hash[:], id); err != nil {
 				return translateBackendConflict(err)
@@ -246,28 +246,29 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 			if _, err := writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "UPDATE", values: values, where: map[string]any{"id": id}}); err != nil {
 				return translateBackendConflict(err)
 			}
-			if err := seedOperatorBindings(ctx, tx, userID); err != nil {
+			changed = true
+			if err := appendDeploymentEvent(systemCtx, tx, "identity.legacy_token_rotated", map[string]any{"credential_id": id}); err != nil {
 				return translateBackendConflict(err)
 			}
-			auditKind := "identity.legacy_token_rotated"
-			if same {
-				auditKind = "identity.legacy_bindings_healed"
-			}
-			changed = true
-			return appendDeploymentEvent(store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem}), tx, auditKind, map[string]any{"credential_id": id})
+			return store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit)
 		}
-		u, err := scanIdentity(tx.QueryRowContext(ctx, "SELECT u.id,u.email,u.display_name,u.status,u.created_at FROM users u JOIN user_tokens t ON t.user_id=u.id WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active' AND EXISTS(SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=u.id AND b.role='operator') ORDER BY t.created_at,t.id LIMIT 1"))
-		if errors.Is(err, store.ErrNotFound) {
-			u, err = provisionIdentity(ctx, tx, email, name, false)
-			if err == nil {
-				_, err = tx.ExecContext(ctx, "UPDATE orgs SET name=? WHERE id='deployment' AND name='Conveyor'", org)
-			}
-		}
-		if err != nil {
-			return translateBackendConflict(err)
-		}
-		if legacyErr == nil {
+		ownerID := userID
+		if marked {
+			// A revoked marker keeps its owner; the new deployment token is
+			// reissued to the same account (DEC-63(3)).
 			if _, err = writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "UPDATE", values: map[string]any{"label": "retired legacy API token", "deployment_credential": false}, where: map[string]any{"id": id}}); err != nil {
+				return translateBackendConflict(err)
+			}
+		} else {
+			u, err := provisionIdentity(ctx, tx, email, name, false)
+			if err != nil {
+				if err.Error() == "provisioned account is deactivated" {
+					return errors.New("configured first operator account is deactivated")
+				}
+				return translateBackendConflict(err)
+			}
+			ownerID = u.ID
+			if _, err = tx.ExecContext(ctx, "UPDATE orgs SET name=? WHERE id='deployment' AND name='Conveyor'", org); err != nil {
 				return translateBackendConflict(err)
 			}
 		}
@@ -278,18 +279,32 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		if err = checkTokenHash(ctx, tx, hash[:], ""); err != nil {
 			return translateBackendConflict(err)
 		}
-		if _, err = writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": tokenID, "user_id": u.ID, "label": "legacy API token", "token_hash": hash[:], "kind": "user", "scope": "operator", "deployment_credential": true}}); err != nil {
+		if _, err = writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": tokenID, "user_id": ownerID, "label": "legacy API token", "token_hash": hash[:], "kind": "user", "scope": "operator", "deployment_credential": true}}); err != nil {
 			return translateBackendConflict(err)
 		}
-		if legacyErr == nil {
-			if err = appendDeploymentEvent(store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem}), tx, "identity.legacy_token_rotated", map[string]any{"credential_id": tokenID}); err != nil {
+		if marked {
+			if err = appendDeploymentEvent(systemCtx, tx, "identity.legacy_token_rotated", map[string]any{"credential_id": tokenID}); err != nil {
 				return translateBackendConflict(err)
 			}
 		}
 		changed = true
-		return seedOperatorBindings(ctx, tx, u.ID)
+		return store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit)
 	})
 	return changed && err == nil, translateBackendConflict(err)
+}
+
+// deploymentOwner returns the active owner of the deployment marker inside a
+// transaction that already holds the registry locks.
+func deploymentOwner(ctx context.Context, tx *sql.Tx) (string, bool, error) {
+	var owner string
+	err := tx.QueryRowContext(ctx, "SELECT u.id FROM user_tokens t JOIN users u ON u.id=t.user_id WHERE t.deployment_credential=TRUE AND u.status='active'").Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, translateBackendConflict(err)
+	}
+	return owner, true, nil
 }
 func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
 	var r core.CallerIdentity

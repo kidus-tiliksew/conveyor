@@ -10,8 +10,9 @@ import (
 )
 
 // IdentityProvisioner is the deployment-administration account boundary.
-// It must only be mounted behind a human operator-scoped credential; workspace
-// capabilities do not authorize account creation (REQ-1/AC-1.2-AC-1.3).
+// It must only be mounted behind the instance-administration principal's own
+// user credential; workspace capabilities do not authorize account creation
+// (REQ-1/AC-1.2-AC-1.3; DEC-63(2)).
 type IdentityProvisioner interface {
 	ProvisionIdentityUser(context.Context, string, string) (core.IdentityUser, error)
 }
@@ -32,8 +33,15 @@ type OwnProfileStore interface {
 
 // MembershipStore is the only workspace authorization boundary. Callers name
 // capabilities and never inspect persisted roles directly (REQ-8/AC-8.1).
+//
+// AuthorizeInstanceAdministration answers whether the active user owns the
+// sole deployment_credential marker. It is independent of every role,
+// binding, workspace selection, and credential scope, and it is the only
+// authority for provisioning accounts and creating workspaces
+// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-63(1), DEC-63(2)).
 type MembershipStore interface {
 	AuthorizeDeployment(context.Context, string, core.Capability) (bool, error)
+	AuthorizeInstanceAdministration(context.Context, string) (bool, error)
 	AuthorizeWorkspace(context.Context, string, string, core.Capability) (bool, error)
 	ListWorkspacesForUser(context.Context, string) ([]core.Workspace, error)
 	ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error)
@@ -89,6 +97,12 @@ const (
 	IdentityHookInvitationResentAudit  = "invitation_resent_audit"
 	IdentityHookInvitationRevokeLocked = "invitation_revoke_locked"
 	IdentityHookSignInRedeemLocked     = "signin_redeem_locked"
+	// IdentityHookBootstrapLocked runs after BootstrapIdentity holds its
+	// serialization and before it reads the deployment marker.
+	IdentityHookBootstrapLocked = "bootstrap_locked"
+	// IdentityHookBootstrapBeforeCommit runs after every BootstrapIdentity
+	// write, including rotation and its audit, and before the commit.
+	IdentityHookBootstrapBeforeCommit = "bootstrap_before_commit"
 )
 
 type identityTestHookKey struct{}

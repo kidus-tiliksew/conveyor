@@ -154,6 +154,12 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	userctx := store.WithActor(f.ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	grantCtx := store.WithCredential(userctx, core.AuthenticatedCredential{ID: "owner", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	if _, err = f.b.GrantWorkspaceRole(grantCtx, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	raw := core.JSONPayload(VerificationContextRequest{ContextID: vc.ID})
 	for _, name := range []string{"get_verification_context", "get_verification_publication"} {
 		if _, err = f.s.Verification(userctx, f.o.ID, "", "", name, raw); err != nil {

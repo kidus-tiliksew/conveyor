@@ -82,9 +82,14 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displa
 	return identity, err
 }
 
-// BootstrapIdentity ensures that the configured deployment token maps to a
-// usable operator. The advisory lock makes upgrade recovery and rotation
-// idempotent; the durable marker makes the display label irrelevant.
+// BootstrapIdentity maps the configured deployment token to the
+// instance-administration principal, the owner of the sole
+// deployment_credential marker. The advisory lock makes rotation idempotent
+// and serializes first-workspace seeding. A live marker keeps its owner
+// across restart, configuration change, and rotation; without a marker the
+// configured first operator becomes the owner. Bootstrap never writes a
+// workspace binding, so demotions and exclusions survive every restart
+// (DEC-63(3), DEC-63(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -107,6 +112,9 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('conveyor:identity-bootstrap'))"); err != nil {
 		return false, fmt.Errorf("lock identity bootstrap: %w", err)
 	}
+	if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapLocked); err != nil {
+		return false, err
+	}
 	q := s.queries.WithTx(tx)
 	hash := sha256.Sum256([]byte(legacyToken))
 	var legacy struct {
@@ -116,45 +124,40 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	}
 	legacyErr := tx.QueryRow(ctx, `SELECT t.id,t.user_id,t.token_hash,t.kind,t.scope,t.revoked_at,u.status
 		FROM user_tokens t JOIN users u ON u.id=t.user_id
-		WHERE t.deployment_credential`).Scan(
+		WHERE t.deployment_credential FOR UPDATE OF t`).Scan(
 		&legacy.id, &legacy.userID, &legacy.tokenHash, &legacy.kind, &legacy.scope, &legacy.revoked, &legacy.status,
 	)
 	if legacyErr != nil && !errors.Is(legacyErr, pgx.ErrNoRows) {
 		return false, fmt.Errorf("read legacy API token mapping: %w", legacyErr)
 	}
-	if legacyErr == nil && legacy.revoked.Valid && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1 {
+	marked := legacyErr == nil
+	sameHash := marked && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1
+	if marked && legacy.revoked.Valid && sameHash {
 		return false, errors.New("legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT")
 	}
-	var legacyCoversWorkspaces bool
-	if legacyErr == nil {
-		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (
-			SELECT 1 FROM workspaces w
-			WHERE NOT EXISTS (
-				SELECT 1 FROM workspace_role_bindings b
-				WHERE b.workspace_id=w.id AND b.user_id=$1 AND b.role='operator'
-			)
-		)`, legacy.userID).Scan(&legacyCoversWorkspaces); err != nil {
-			return false, fmt.Errorf("check legacy operator workspace bindings: %w", err)
-		}
+	if marked && legacy.status != "active" {
+		// An inactive owner fails closed; no other operator replaces it.
+		return false, errors.New("deployment owner account is deactivated; reactivate it before startup")
 	}
-	var usableOperator bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM user_tokens t JOIN users u ON u.id=t.user_id
-		WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active'
-		  AND EXISTS (SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=t.user_id AND b.role='operator')
-	)`).Scan(&usableOperator); err != nil {
-		return false, fmt.Errorf("check usable operator credential: %w", err)
-	}
-	if legacyCoversWorkspaces && legacyErr == nil && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1 &&
-		legacy.status == "active" && !legacy.revoked.Valid && legacy.scope == string(core.CredentialScopeOperator) {
-		if err := tx.Commit(ctx); err != nil {
+	commit := func() (bool, error) {
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit); err != nil {
 			return false, err
 		}
-		return false, nil
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("commit identity bootstrap: %w", err)
+		}
+		return true, nil
 	}
-
-	if legacyErr == nil && legacy.status == "active" && !legacy.revoked.Valid {
-		sameHash := subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1
+	if marked && !legacy.revoked.Valid {
+		if sameHash && legacy.kind == string(core.CredentialUser) && legacy.scope == string(core.CredentialScopeOperator) {
+			if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit); err != nil {
+				return false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 		if sameHash {
 			if _, err := tx.Exec(ctx, `UPDATE user_tokens
 				SET kind='user',scope='operator'
@@ -166,53 +169,32 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 			WHERE id=$2 AND revoked_at IS NULL`, hash[:], legacy.id); err != nil {
 			return false, fmt.Errorf("rotate legacy API token mapping: %w", err)
 		}
-		if err := seedOperatorBindings(ctx, tx, legacy.userID); err != nil {
+		if err := auditLegacyTokenLifecycle(ctx, q, legacy.id, "identity.legacy_token_rotated"); err != nil {
 			return false, err
 		}
-		auditKind := "identity.legacy_token_rotated"
-		if sameHash {
-			auditKind = "identity.legacy_bindings_healed"
-		}
-		if err := auditLegacyTokenLifecycle(ctx, q, legacy.id, auditKind); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return false, fmt.Errorf("commit legacy API token rotation: %w", err)
-		}
-		return true, nil
+		return commit()
 	}
 
-	var owner IdentityUser
-	if usableOperator {
-		row := tx.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,u.status,u.created_at
-			FROM users u JOIN user_tokens t ON t.user_id=u.id
-			WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active'
-			  AND EXISTS (SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=u.id AND b.role='operator')
-			ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF u`)
-		var createdAt time.Time
-		if err := row.Scan(&owner.ID, &owner.Email, &owner.DisplayName, &owner.Status, &createdAt); err != nil {
-			return false, fmt.Errorf("select usable operator: %w", err)
-		}
-		owner.CreatedAt = createdAt
-	} else {
-		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName, false)
-		if err != nil {
-			return false, fmt.Errorf("seed first operator: %w", err)
-		}
-		owner = identityUser(row)
-		if owner.Status != "active" {
-			return false, errors.New("configured first operator account is deactivated")
-		}
-		if _, err := tx.Exec(ctx, `UPDATE orgs SET name=$1 WHERE singleton=true AND name='Conveyor'`, identity.OrganizationName); err != nil {
-			return false, fmt.Errorf("configure deployment organization: %w", err)
-		}
-	}
-
-	if legacyErr == nil {
+	ownerID := legacy.userID
+	if marked {
+		// A revoked marker keeps its owner; the new deployment token is
+		// reissued to the same account (DEC-63(3)).
 		if _, err := tx.Exec(ctx, `UPDATE user_tokens
 			SET label='retired legacy API token',deployment_credential=false
 			WHERE id=$1`, legacy.id); err != nil {
-			return false, fmt.Errorf("retire unusable legacy API token mapping: %w", err)
+			return false, fmt.Errorf("retire revoked legacy API token mapping: %w", err)
+		}
+	} else {
+		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName, false)
+		if err != nil {
+			if err.Error() == "provisioned account is deactivated" {
+				return false, errors.New("configured first operator account is deactivated")
+			}
+			return false, fmt.Errorf("seed first operator: %w", err)
+		}
+		ownerID = row.ID
+		if _, err := tx.Exec(ctx, `UPDATE orgs SET name=$1 WHERE singleton=true AND name='Conveyor'`, identity.OrganizationName); err != nil {
+			return false, fmt.Errorf("configure deployment organization: %w", err)
 		}
 	}
 	tokenID, err := randomIdentityID("pat", 12)
@@ -220,23 +202,17 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		return false, err
 	}
 	if _, err := q.InsertDeploymentCredential(ctx, db.InsertDeploymentCredentialParams{
-		ID: tokenID, UserID: owner.ID, Label: "legacy API token", TokenHash: hash[:],
+		ID: tokenID, UserID: ownerID, Label: "legacy API token", TokenHash: hash[:],
 		Kind: string(core.CredentialUser), Scope: string(core.CredentialScopeOperator),
 	}); err != nil {
 		return false, fmt.Errorf("map legacy API token: %w", err)
 	}
-	if legacyErr == nil {
+	if marked {
 		if err := auditLegacyTokenLifecycle(ctx, q, tokenID, "identity.legacy_token_rotated"); err != nil {
 			return false, err
 		}
 	}
-	if err := seedOperatorBindings(ctx, tx, owner.ID); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit identity bootstrap: %w", err)
-	}
-	return true, nil
+	return commit()
 }
 
 // ProvisionIdentityUser creates or resolves one normalized account and redeems
@@ -362,15 +338,6 @@ func normalizeIdentityEmail(value string) (string, error) {
 func lockIdentityEmail(ctx context.Context, tx pgx.Tx, email string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('conveyor:identity-email:' || $1))`, email); err != nil {
 		return fmt.Errorf("lock identity email: %w", err)
-	}
-	return nil
-}
-
-func seedOperatorBindings(ctx context.Context, tx pgx.Tx, userID string) error {
-	if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
-		SELECT id,$1,'operator' FROM workspaces
-		ON CONFLICT(workspace_id,user_id) DO UPDATE SET role='operator',updated_at=now()`, userID); err != nil {
-		return fmt.Errorf("seed legacy workspace memberships: %w", err)
 	}
 	return nil
 }

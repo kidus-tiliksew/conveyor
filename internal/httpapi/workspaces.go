@@ -43,6 +43,52 @@ type createWorkspaceDocument struct {
 	Monitor                   *config.MonitorConfig   `json:"monitor,omitempty"`
 }
 
+// requireInstanceAdministration admits only the instance-administration
+// principal: the active owner of the deployment marker, presenting its own
+// user credential of any scope. Credential-class refusals keep 401 and
+// session proof keeps 403; every other authenticated human receives the
+// uniform 404 before the handler parses a subject or writes anything, and a
+// deployment without a membership authority fails closed
+// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-63(2), DEC-63(5)).
+func (s *Server) requireInstanceAdministration(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credential, err := s.authenticateHumanCredential(w, r)
+		if err != nil {
+			writeCredentialVerificationError(w, err)
+			return
+		}
+		if credential.Kind != core.CredentialUser {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if !s.requireSessionMutationProof(w, r, credential) {
+			return
+		}
+		if s.Memberships == nil {
+			writeWorkspaceNotFound(w)
+			return
+		}
+		ctx := store.WithCredential(r.Context(), credential)
+		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
+		allowed, err := s.Memberships.AuthorizeInstanceAdministration(ctx, credential.OwnerUserID)
+		if err != nil {
+			log.Printf("authorize instance administration: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !allowed {
+			writeWorkspaceNotFound(w)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// provisionIdentityUser answers the same acknowledgement for a new, an
+// existing active, and an existing deactivated account. It never returns
+// stored account fields, and the deactivated case is a no-op: the store
+// refuses it before redeeming any invitation (DEC-63(6)).
 func (s *Server) provisionIdentityUser(w http.ResponseWriter, r *http.Request) {
 	if s.IdentityProvisioner == nil {
 		http.Error(w, "user provisioning unavailable", http.StatusNotFound)
@@ -68,21 +114,16 @@ func (s *Server) provisionIdentityUser(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, "display_name", errors.New("is required"))
 		return
 	}
-	user, err := s.IdentityProvisioner.ProvisionIdentityUser(r.Context(), request.Email, request.DisplayName)
-	if err != nil {
-		if err.Error() == provisionedAccountDeactivatedError {
-			writeJSON(w, http.StatusConflict, map[string]string{
-				"error":   "account_deactivated",
-				"message": "reactivate the account before provisioning",
-			})
-			return
-		}
+	if _, err := s.IdentityProvisioner.ProvisionIdentityUser(r.Context(), request.Email, request.DisplayName); err != nil && err.Error() != provisionedAccountDeactivatedError {
 		log.Printf("provision identity user: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusCreated, user)
+	writeJSON(w, http.StatusOK, provisioningAcknowledgement)
 }
+
+// provisioningAcknowledgement is the only provisioning success body.
+var provisioningAcknowledgement = map[string]bool{"accepted": true}
 
 func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if s.Workspaces == nil {
@@ -336,7 +377,9 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := s.Workspaces.CreateWorkspace(r.Context(), request.ID, request.Name, next)
 	if errors.Is(err, store.ErrWorkspaceConflict) {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "workspace_conflict", "message": "workspace id or name already exists"})
+		// One answer for an ID or normalized-name collision; it names neither
+		// field nor the hidden workspace (DEC-63(7)).
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "workspace_conflict", "message": "workspace could not be created"})
 		return
 	}
 	if err != nil {

@@ -190,6 +190,15 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	// Seeding serializes with BootstrapIdentity so the empty-registry check,
+	// the marker-owner lookup, and the insertion are atomic (DEC-63(4)).
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('conveyor:identity-bootstrap'))"); err != nil {
+		return false, err
+	}
+	var emptyRegistry bool
+	if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM workspaces WHERE id<>$1)`, cfg.Workspace).Scan(&emptyRegistry); err != nil {
+		return false, err
+	}
 	q := s.queries.WithTx(tx)
 	seeded := true
 	if _, err := q.InsertWorkspace(ctx, db.InsertWorkspaceParams{
@@ -234,17 +243,21 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 				return false, err
 			}
 		}
-		// Startup bootstraps identity before the configured singleton
-		// workspace. Bind that seeded operator without requiring request
-		// credential context so the legacy shared token remains zero-config.
-		// Historical migration tests intentionally stop before migration 084.
+		// Startup bootstraps identity before the configured workspace. Only
+		// the first workspace of an empty registry binds the active owner of
+		// the deployment marker; an established registry, or a deployment
+		// without a marker, binds nobody (DEC-63(4)). Historical migration
+		// tests intentionally stop before the bindings table (084) or the
+		// marker column, so both are probed first.
 		var membershipSchema bool
-		if err := tx.QueryRow(ctx, `SELECT to_regclass('workspace_role_bindings') IS NOT NULL`).Scan(&membershipSchema); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT to_regclass('workspace_role_bindings') IS NOT NULL
+			AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='user_tokens' AND column_name='deployment_credential')`).Scan(&membershipSchema); err != nil {
 			return false, err
 		}
-		if membershipSchema {
+		if membershipSchema && emptyRegistry {
 			if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
-				SELECT $1,id,'operator' FROM users ORDER BY created_at,id LIMIT 1
+				SELECT $1,u.id,'operator' FROM user_tokens t JOIN users u ON u.id=t.user_id
+				WHERE t.deployment_credential AND u.status='active'
 				ON CONFLICT(workspace_id,user_id) DO NOTHING`, cfg.Workspace); err != nil {
 				return false, err
 			}

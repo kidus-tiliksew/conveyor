@@ -28,6 +28,11 @@ type membershipFixture struct {
 	invitations     []core.WorkspaceInvitation
 	invitationList  []string
 	invitationsErr  error
+	// instanceAdmins names the deployment marker owners; instanceAdminErr
+	// fails the instance-administration authority (DEC-63).
+	instanceAdmins   map[string]bool
+	instanceAdminErr error
+	instanceCalls    int
 }
 
 type identityProvisioningFixture struct {
@@ -87,6 +92,13 @@ func (f *membershipFixture) AuthorizeDeployment(_ context.Context, userID string
 	}
 	return false, nil
 }
+func (f *membershipFixture) AuthorizeInstanceAdministration(_ context.Context, userID string) (bool, error) {
+	f.instanceCalls++
+	if f.instanceAdminErr != nil {
+		return false, f.instanceAdminErr
+	}
+	return f.instanceAdmins[userID], nil
+}
 func (f *membershipFixture) ListWorkspacesForUser(_ context.Context, userID string) ([]core.Workspace, error) {
 	var result []core.Workspace
 	for _, item := range f.workspaces {
@@ -114,9 +126,13 @@ func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string)
 	return f.revokeErr
 }
 
+// DEC-63(2), DEC-63(5), DEC-63(6): only the deployment owner's own user
+// credential provisions; a nonowner human gets the uniform 404 and execution
+// credentials keep the 401 credential-class refusal.
 func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
 	server := NewServer(fixture)
+	server.Memberships = &membershipFixture{instanceAdmins: map[string]bool{"operator": true}}
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 		"agent-token":    {ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
@@ -132,13 +148,16 @@ func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 		server.Handler().ServeHTTP(response, request)
 		return response
 	}
-	for _, token := range []string{"", "agent-token", "user-token"} {
+	for _, token := range []string{"", "agent-token"} {
 		if response := call(token); response.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q status=%d body=%s", token, response.Code, response.Body.String())
 		}
 	}
+	if response := call("user-token"); response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"workspace_not_found"`) || fixture.calls != 0 {
+		t.Fatalf("nonowner status=%d body=%s calls=%d", response.Code, response.Body.String(), fixture.calls)
+	}
 	response := call("operator-token")
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"id":"usr_provisioned"`) || fixture.calls != 1 {
+	if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" || fixture.calls != 1 {
 		t.Fatalf("operator status=%d body=%s calls=%d", response.Code, response.Body.String(), fixture.calls)
 	}
 }
@@ -172,6 +191,7 @@ func TestAgentCredentialCannotReachRepresentativeOperatorRESTRoutes(t *testing.T
 func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T) {
 	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
 	server := NewServer(fixture)
+	server.Memberships = &membershipFixture{instanceAdmins: map[string]bool{"operator": true}}
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 	}
@@ -203,7 +223,8 @@ func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T)
 
 	fixture.provisionErr = errors.New(provisionedAccountDeactivatedError)
 	response := call(`{"email":"user@example.test","display_name":"User"}`)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"account_deactivated"`) || !strings.Contains(response.Body.String(), "reactivate") {
+	// A deactivated account is an acknowledged no-op (DEC-63(6)).
+	if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
 		t.Fatalf("deactivated status=%d body=%q", response.Code, response.Body.String())
 	}
 
@@ -333,9 +354,13 @@ func TestAuthorizationStoreFailuresDoNotLeakErrorText(t *testing.T) {
 		}
 	}
 
-	// Deployment-scoped mutation: requireMutationCapability's AuthorizeDeployment branch.
+	// Instance administration: requireInstanceAdministration's authority.
+	fixture.instanceAdminErr = errors.New(rawError)
+	assertGeneric("instance administration", call(http.MethodPost, "/v1/users"))
+	fixture.instanceAdminErr = nil
+
+	// Workspace-scoped mutation authority failures.
 	fixture.authorizeErrs = map[core.Capability]error{core.CapabilityManageWorkspace: errors.New(rawError)}
-	assertGeneric("deployment mutation", call(http.MethodPost, "/v1/users"))
 
 	// Workspace-scoped mutation: requireMutationCapability's AuthorizeWorkspace branch.
 	assertGeneric("workspace mutation", call(http.MethodPost, "/v1/lineage/rebuild"))

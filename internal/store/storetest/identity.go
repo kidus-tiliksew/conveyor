@@ -29,7 +29,15 @@ func bootstrapOwner(t *testing.T, x Fixture) (context.Context, core.IdentityUser
 	owner, err := x.Backend.VerifyPersonalAccessToken(x.Context, "conformance-bootstrap")
 	requireOK(t, err)
 	ctx := store.WithCredential(x.Context, core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
-	return store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser}), owner
+	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never writes bindings (DEC-63(4)), and the fixture workspace
+	// exists before the deployment owner. The fixture therefore grants the
+	// owner's operator binding explicitly instead of relying on healing.
+	if caller, err := x.Backend.GetCallerIdentity(ctx, owner.ID, x.Workspace); err != nil || caller.Role != core.WorkspaceRoleOperator {
+		_, err = x.Backend.GrantWorkspaceRole(ctx, owner.Email, x.Workspace, core.WorkspaceRoleOperator)
+		requireOK(t, err)
+	}
+	return ctx, owner
 }
 
 func runIdentity(t *testing.T, x Fixture) {
