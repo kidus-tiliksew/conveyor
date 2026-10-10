@@ -235,24 +235,37 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			case runGateRequestChanges:
 				statusPoller.observe(true)
 				err = c.requestTaskRunGateChangesContext(ctx, c.token, *item, feedback)
+			case runGateMerge:
+				statusPoller.observe(true)
+				err = c.mergeTaskRunGateContext(ctx, c.token, *item)
 			}
 			if err != nil {
 				var response *workerHTTPError
 				if errors.As(err, &response) && response.StatusCode == http.StatusConflict {
+					notice := "Gate state changed; refreshing task state."
+					if decision == runGateMerge {
+						// A refused merge shows the server's reason and refreshes
+						// the projection without resending (component-local-launchers).
+						notice = "Merge refused: " + strings.TrimSpace(response.Message) + "; refreshing task state."
+					}
 					if app != nil {
-						app.Notice("Gate state changed; refreshing task state.")
+						app.Notice(notice)
 					} else {
-						_, _ = fmt.Fprintln(output, "Gate state changed; refreshing task state.")
+						_, _ = fmt.Fprintln(output, notice)
 					}
 					continue
 				}
 				stopApp()
 				return err
 			}
+			notice := "Gate decision recorded; refreshing task state."
+			if decision == runGateMerge {
+				notice = "Merge recorded; refreshing task state."
+			}
 			if app != nil {
-				app.Notice("Gate decision recorded; refreshing task state.")
+				app.Notice(notice)
 			} else {
-				_, _ = fmt.Fprintln(output, "Gate decision recorded; refreshing task state.")
+				_, _ = fmt.Fprintln(output, notice)
 			}
 			continue
 		}
@@ -629,6 +642,7 @@ const (
 	runGateStop
 	runConfirmStage
 	runConfirmProposal
+	runGateMerge
 )
 
 func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.Writer, item workerservice.DispatchOrder, styled bool, pollDelay time.Duration) (runGateDecision, string, error) {
@@ -638,6 +652,9 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 	}
 	if err := presentTaskRunGateStyled(output, item.Task, *gate, styled); err != nil {
 		return runGateStop, "", err
+	}
+	if gate.Kind == workerservice.TaskRunGateMergeExecution {
+		return waitAtTaskRunMergeExecutionGate(ctx, answers, output, *gate, styled, pollDelay)
 	}
 	if !gate.CanOperate && !gate.CanRequestChanges {
 		_, _ = fmt.Fprintln(output, "A maintainer or operator can resolve this gate; waiting without a claim.")
@@ -691,6 +708,49 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 			}
 		}
 		_, _ = fmt.Fprintf(output, "Type one of: %s. Approval requires the full word approve.\n", actions)
+	}
+}
+
+// waitAtTaskRunMergeExecutionGate offers only Merge and Wait at an approved
+// merge-gated task. Merge needs operate_gates and MERGEABLE readiness, and the
+// raw prompt requires the full word merge; approve never merges
+// (req-local-task-runs AC-4.1, AC-4.4; component-local-launchers).
+func waitAtTaskRunMergeExecutionGate(ctx context.Context, answers *runInputSource, output io.Writer, gate workerservice.TaskRunGate, styled bool, pollDelay time.Duration) (runGateDecision, string, error) {
+	if !gate.MergeActionAvailable() {
+		message := "A maintainer or operator can merge this task; waiting without a claim."
+		if gate.CanOperate {
+			message = "Merge is offered only when merge readiness is MERGEABLE; waiting without a claim."
+		}
+		_, _ = fmt.Fprintln(output, message)
+		select {
+		case <-ctx.Done():
+			return runGateStop, "", nil
+		case <-time.After(pollDelay):
+			return runGatePoll, "", nil
+		}
+	}
+	for {
+		answer, polled, err := readRunPromptOrPoll(ctx, answers, output, "Gate action [merge/wait]: ", styled, pollDelay)
+		if err != nil {
+			return runGateStop, "", err
+		}
+		if polled {
+			return runGatePoll, "", nil
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "":
+			return runGateStop, "", nil
+		case "wait":
+			select {
+			case <-ctx.Done():
+				return runGateStop, "", nil
+			case <-time.After(pollDelay):
+				return runGatePoll, "", nil
+			}
+		case "merge":
+			return runGateMerge, "", nil
+		}
+		_, _ = fmt.Fprintln(output, "Type one of: merge/wait. Merging requires the full word merge.")
 	}
 }
 

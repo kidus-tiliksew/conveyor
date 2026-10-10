@@ -75,6 +75,7 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
 | `conveyor task unlink <task> <dependency>` | Remove one blocking dependency edge. `--reason` and `--request-id` required. |
 | `conveyor task approve <id>` | Approve at a human gate. `--reason` defaults to `approved`; `-m` adds a comment. |
+| `conveyor task merge <id>` | Merge an approved task's pull request: the separate merge act at the merge gate (`POST /v1/tasks/{id}/merge`). `approve` never merges. Prints the task ID and `merged` only when the server reports `merged`; a refusal prints the server's message and exits non-zero. |
 | `conveyor task request-changes <id>` | Bounce work at the merge gate. `-f/--feedback` is required and goes verbatim to the next implementation order. |
 | `conveyor task reject <id>` | Reject at a human gate. `--reason` required. |
 | `conveyor task redirect <id>` | Redirect at a human gate. `--reason` and `--message` required. |
@@ -118,15 +119,16 @@ holds these fields:
 |---|---|
 | `task_id` | The task ID. |
 | `state` | The task state from the run-order read. |
-| `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. |
+| `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `merge_execution`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. `merge_execution` is an approved task behind the merge gate waiting for `conveyor task merge`; its `merge_readiness` is the pull request's readiness state (`MERGEABLE`, `STALE`, `CONFLICTING`, or `UNKNOWN`), absent when the server could not read it. |
 | `next_order` | The next claimable work order `id` and `stage`, or `null`. |
 | `pending_proposals` | Pending task-authored proposals as `kind`, `document_id`, and `version`, sorted; `[]` when none. |
 | `observed_at` | The time of the observation. It is not compared. |
 
 The first successful observation is the baseline. The command re-reads with
 the jittered backoff `conveyor run` uses, from 250ms to a 2s ceiling, and
-returns when any compared field differs from the baseline. Titles, labels,
-capability flags, and progress text are not compared. A merged, closed, or
+returns when any compared field differs from the baseline. A readiness change
+on a `merge_execution` gate counts. Titles, labels, summaries, capability
+flags, and progress text are not compared. A merged, closed, or
 parked task returns at once, whether it is terminal at start or becomes
 terminal during the wait.
 
@@ -158,7 +160,10 @@ Explicitly claim and execute one task on this machine. Claimable stages chain
 without per-stage prompts by default; plan and merge gates still apply. In a
 terminal it runs a full-screen view with the stage output, and surfaces
 operator gates and pending document proposals inline so you can approve,
-request changes, or confirm without leaving the run. Task-authored requirement
+request changes, or confirm without leaving the run. An approved task behind
+the merge gate offers Merge, a separate Yes/No choice that starts on No, only
+when you can operate gates and the pull request is `MERGEABLE`; `--raw`
+requires the full word `merge`. Task-authored requirement
 proposals appear alongside design proposals and use the same operator
 confirmation capability. If a proposal arrives just before a review claim,
 the run refreshes the proposals and waits without holding a claim.

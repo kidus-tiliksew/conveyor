@@ -943,3 +943,174 @@ func TestTaskRunHTTPSelectsVerify(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func createApprovedTaskRunTask(t *testing.T, st store.Store, id string, mergeGate bool) {
+	t.Helper()
+	task := core.Task{
+		ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id,
+		State: core.TaskApproved, MergeApproval: mergeGate, ApprovedHeadSHA: "0123456789abcdef0123", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateTask(store.WithWorkspace(t.Context(), "demo"), task); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func taskRunProjection(t *testing.T, handler http.Handler, taskID string) workerservice.DispatchOrder {
+	t.Helper()
+	response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/"+taskID+"/run-order", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var projection workerservice.DispatchOrder
+	if err := json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	return projection
+}
+
+func TestTaskRunHTTPProjectsMergeExecutionGateWithReadiness(t *testing.T) {
+	cases := []struct {
+		state, remedy string
+		role          core.WorkspaceRole
+		canOperate    bool
+		mergeAction   bool
+	}{
+		{"MERGEABLE", "ready to merge", core.WorkspaceRoleOperator, true, true},
+		{"MERGEABLE", "ready to merge", core.WorkspaceRoleViewer, false, false},
+		{"STALE", "refresh review replaces this merge", core.WorkspaceRoleOperator, true, false},
+		{"CONFLICTING", "/v1/tasks/approved/merge-conflict-fix", core.WorkspaceRoleOperator, true, false},
+		{"UNKNOWN", "has not settled mergeability", core.WorkspaceRoleOperator, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.state+"/"+string(tc.role), func(t *testing.T) {
+			server, st, _ := taskRunHTTPFixture(t)
+			server.Memberships = &membershipFixture{roles: map[string]map[string]core.WorkspaceRole{"local-operator": {"demo": tc.role}}}
+			createApprovedTaskRunTask(t, st, "approved", true)
+			reads := 0
+			server.OnMergeReadiness = func(_ context.Context, task core.Task) (dispatch.MergeReadiness, error) {
+				reads++
+				if task.ID != "approved" {
+					t.Fatalf("readiness task = %s", task.ID)
+				}
+				return dispatch.MergeReadiness{State: tc.state, HeadSHA: "0123456789abcdef0123", URL: "https://github.test/pr/7", Number: 7}, nil
+			}
+			projection := taskRunProjection(t, server.Handler(), "approved")
+			gate := projection.Gate
+			if projection.Order.ID != "" || gate == nil || gate.Kind != workerservice.TaskRunGateMergeExecution || gate.Label != "merge execution pending" {
+				t.Fatalf("projection = %+v", projection)
+			}
+			if gate.CanOperate != tc.canOperate || gate.CanRequestChanges || gate.MergeActionAvailable() != tc.mergeAction {
+				t.Fatalf("gate capabilities = %+v", gate)
+			}
+			want := workerservice.TaskRunMergeReadiness{State: tc.state, HeadSHA: "0123456789abcdef0123", URL: "https://github.test/pr/7", Number: 7}
+			if gate.MergeReadiness == nil || *gate.MergeReadiness != want {
+				t.Fatalf("readiness = %+v", gate.MergeReadiness)
+			}
+			for _, part := range []string{"conveyor/task-approved into main", "approved head 0123456789ab", "pull request #7 https://github.test/pr/7", "readiness " + tc.state, tc.remedy} {
+				if !strings.Contains(gate.Summary, part) {
+					t.Fatalf("summary %q lacks %q", gate.Summary, part)
+				}
+			}
+			if reads != 1 {
+				t.Fatalf("readiness reads = %d", reads)
+			}
+		})
+	}
+}
+
+func TestTaskRunHTTPApprovedTaskWithMergeGateOffProjectsNoGate(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	createApprovedTaskRunTask(t, st, "auto-merge", false)
+	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		t.Fatal("gate-off approved task read merge readiness")
+		return dispatch.MergeReadiness{}, nil
+	}
+	projection := taskRunProjection(t, handler, "auto-merge")
+	if projection.Gate != nil || projection.Order.ID != "" || projection.Task.State != core.TaskApproved {
+		t.Fatalf("projection = %+v", projection)
+	}
+}
+
+func TestTaskRunHTTPMergeExecutionRecomputesAfterReadinessRefresh(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	createApprovedTaskRunTask(t, st, "moved", true)
+	var refresh core.WorkOrder
+	server.OnMergeReadiness = func(ctx context.Context, task core.Task) (dispatch.MergeReadiness, error) {
+		// A moved head starts a refresh review under the readiness read
+		// (component-submission-merge); the projection must follow it.
+		if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskRefreshReview, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		refresh = createTaskRunOrderAtStage(t, st, task.ID, core.StageReview, time.Now().UTC())
+		return dispatch.MergeReadiness{State: "STALE", HeadSHA: "fedcba9876543210"}, nil
+	}
+	projection := taskRunProjection(t, handler, "moved")
+	if projection.Gate != nil || projection.Order.ID != refresh.ID || projection.Task.State == core.TaskApproved {
+		t.Fatalf("projection after refresh = gate %+v order %q state %s", projection.Gate, projection.Order.ID, projection.Task.State)
+	}
+}
+
+func TestTaskRunHTTPMergeExecutionFailsClosedWithoutReadiness(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	createApprovedTaskRunTask(t, st, "unread", true)
+
+	projection := taskRunProjection(t, handler, "unread")
+	if gate := projection.Gate; gate == nil || gate.Kind != workerservice.TaskRunGateMergeExecution || gate.MergeReadiness != nil || gate.MergeActionAvailable() || !strings.Contains(gate.Summary, "not configured") {
+		t.Fatalf("missing hook gate = %+v", projection.Gate)
+	}
+
+	reads := 0
+	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		reads++
+		return dispatch.MergeReadiness{}, fmt.Errorf("forge unavailable")
+	}
+	for range 2 {
+		projection = taskRunProjection(t, handler, "unread")
+		if gate := projection.Gate; gate == nil || gate.MergeReadiness != nil || gate.MergeActionAvailable() || !strings.Contains(gate.Summary, "could not be read") || strings.Contains(gate.Summary, "forge unavailable") {
+			t.Fatalf("failed read gate = %+v", projection.Gate)
+		}
+	}
+	if reads != 2 {
+		t.Fatalf("failed readiness was reused: reads = %d", reads)
+	}
+}
+
+func TestTaskRunHTTPMergeExecutionReturnsActiveConflictFixOrder(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	createApprovedTaskRunTask(t, st, "conflicted", true)
+	fix := createTaskRunOrderAtStage(t, st, "conflicted", core.StageImplement, time.Now().UTC())
+	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		t.Fatal("an active conflict-fix order must be returned without a readiness read")
+		return dispatch.MergeReadiness{}, nil
+	}
+	projection := taskRunProjection(t, handler, "conflicted")
+	if projection.Order.ID != fix.ID || projection.Gate != nil {
+		t.Fatalf("projection = order %q gate %+v", projection.Order.ID, projection.Gate)
+	}
+}
+
+func TestTaskRunHTTPMergeReadinessReuseBoundsForgeReads(t *testing.T) {
+	server, st, handler := taskRunHTTPFixture(t)
+	createApprovedTaskRunTask(t, st, "polled", true)
+	now := time.Date(2026, 10, 10, 6, 0, 0, 0, time.UTC)
+	server.taskRunReadiness.clock = func() time.Time { return now }
+	reads := 0
+	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		reads++
+		return dispatch.MergeReadiness{State: "MERGEABLE", HeadSHA: "0123456789abcdef0123"}, nil
+	}
+	for range 3 {
+		taskRunProjection(t, handler, "polled")
+		now = now.Add(3 * time.Second)
+	}
+	if reads != 1 {
+		t.Fatalf("reads within the reuse window = %d", reads)
+	}
+	now = now.Add(taskRunMergeReadinessReuse)
+	if projection := taskRunProjection(t, handler, "polled"); !projection.Gate.MergeActionAvailable() {
+		t.Fatalf("projection = %+v", projection.Gate)
+	}
+	if reads != 2 {
+		t.Fatalf("reads after the reuse window = %d", reads)
+	}
+}

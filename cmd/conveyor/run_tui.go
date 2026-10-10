@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -360,6 +361,8 @@ func (m *runTUIModel) selectInteractiveAction() {
 		m.status = "Waiting; factory state continues to refresh."
 	case runGateApprove:
 		m.confirmation, m.inputAction, m.confirmYes = "Approve this action?", item.key, false
+	case runGateMerge:
+		m.confirmation, m.inputAction, m.confirmYes = "Merge this pull request?", item.key, false
 	case runGateRequestChanges:
 		m.feedback, m.inputAction, m.input = true, item.key, ""
 	case runConfirmProposal:
@@ -402,8 +405,8 @@ func (m *runTUIModel) submitInteractiveConfirmation() {
 		m.status = "That action is no longer available; choose from the refreshed list."
 		return
 	}
-	if item.decision == runGateApprove {
-		m.sendAction(runTUIAction{decision: runGateApprove})
+	if item.decision == runGateApprove || item.decision == runGateMerge {
+		m.sendAction(runTUIAction{decision: item.decision})
 		m.resetInteractiveInput()
 		return
 	}
@@ -468,10 +471,17 @@ func (m *runTUIModel) rebuildActionList(selected string) {
 		}
 		items = append(items, runTUIActionItem{key: "proposal:" + taskRunProposalKey(proposal), label: label, decision: runConfirmProposal, proposal: &proposal, available: proposal.CanConfirm})
 	}
-	if m.gate != nil && m.gate.gate.CanOperate {
+	mergeExecution := m.gate != nil && m.gate.gate.Kind == workerservice.TaskRunGateMergeExecution
+	if mergeExecution && m.gate.gate.MergeActionAvailable() {
+		// The merge act is its own confirmation, keyed to the approved head and
+		// readiness; an approval never stands in for it (req-local-task-runs
+		// AC-4.1; component-local-launchers).
+		items = append(items, runTUIActionItem{key: m.gateActionKey("merge"), label: "Merge", decision: runGateMerge, available: true})
+	}
+	if !mergeExecution && m.gate != nil && m.gate.gate.CanOperate {
 		items = append(items, runTUIActionItem{key: m.gateActionKey("approve"), label: "Approve", decision: runGateApprove, available: true})
 	}
-	if m.gate != nil && (m.gate.gate.CanOperate || m.gate.gate.CanRequestChanges) {
+	if !mergeExecution && m.gate != nil && (m.gate.gate.CanOperate || m.gate.gate.CanRequestChanges) {
 		items = append(items, runTUIActionItem{key: m.gateActionKey("changes"), label: "Request changes", decision: runGateRequestChanges, available: true})
 	}
 	items = append(items, runTUIActionItem{key: "wait", label: "Wait", decision: runGateStop, available: true})
@@ -499,7 +509,11 @@ func (m runTUIModel) gateActionKey(action string) string {
 		return ""
 	}
 	gate := m.gate.gate
-	return fmt.Sprintf("gate:%s:%s:%d:%d:%s:%s:%s:%s", m.gate.task.ID, gate.Kind, gate.SpecVersion, gate.PlanVersion, gate.Label, gate.Summary, gate.Rationale, action)
+	readiness := ""
+	if gate.MergeReadiness != nil {
+		readiness = gate.MergeReadiness.State + "@" + gate.MergeReadiness.HeadSHA
+	}
+	return fmt.Sprintf("gate:%s:%s:%d:%d:%s:%s:%s:%s:%s", m.gate.task.ID, gate.Kind, gate.SpecVersion, gate.PlanVersion, gate.Label, gate.Summary, gate.Rationale, readiness, action)
 }
 
 func taskRunProposalKey(proposal workerservice.TaskRunProposal) string {
@@ -766,7 +780,8 @@ func sameRunTUIGate(left, right runTUIGate) bool {
 		left.gate.Kind == right.gate.Kind && left.gate.Label == right.gate.Label &&
 		left.gate.Summary == right.gate.Summary && left.gate.Rationale == right.gate.Rationale &&
 		left.gate.SpecVersion == right.gate.SpecVersion && left.gate.PlanVersion == right.gate.PlanVersion &&
-		left.gate.CanOperate == right.gate.CanOperate && left.gate.CanRequestChanges == right.gate.CanRequestChanges
+		left.gate.CanOperate == right.gate.CanOperate && left.gate.CanRequestChanges == right.gate.CanRequestChanges &&
+		reflect.DeepEqual(left.gate.MergeReadiness, right.gate.MergeReadiness)
 }
 
 type runTUIController struct {

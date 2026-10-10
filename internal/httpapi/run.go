@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -212,32 +213,43 @@ func (s *Server) getTaskRunOrder(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	dispatch, found, err := s.nextTaskRunOrder(r.Context(), task)
-	if errors.Is(err, errTaskRunConfigUnavailable) {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	if errors.Is(err, errTaskRepositoryUnconfigured) {
-		http.Error(w, errTaskRepositoryUnconfigured.Error(), http.StatusConflict)
-		return
-	}
-	if err != nil {
-		log.Printf("get task run order: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		gate, gateErr := s.taskRunGate(r.Context(), task)
+	// The merge-readiness read can change the task, for example when a moved
+	// head starts a refresh review. The projection is then computed once more
+	// from the refreshed task, so it never returns an obsolete merge gate
+	// (component-mcp-protocol, Run-order plane).
+	for readReadiness := true; ; readReadiness = false {
+		dispatch, found, err := s.nextTaskRunOrder(r.Context(), task)
+		if errors.Is(err, errTaskRunConfigUnavailable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, errTaskRepositoryUnconfigured) {
+			http.Error(w, errTaskRepositoryUnconfigured.Error(), http.StatusConflict)
+			return
+		}
+		if err != nil {
+			log.Printf("get task run order: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if found {
+			dispatch.PendingProposals = proposals
+			writeJSON(w, http.StatusOK, dispatch)
+			return
+		}
+		gate, refreshed, gateErr := s.taskRunGate(r.Context(), task, readReadiness)
 		if gateErr != nil {
 			log.Printf("get task run gate: %v", gateErr)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+		if refreshed != nil && readReadiness {
+			task = *refreshed
+			continue
+		}
 		writeJSON(w, http.StatusOK, workerservice.DispatchOrder{Task: task, Gate: gate, PendingProposals: proposals, Dispatch: "run", Auth: "user"})
 		return
 	}
-	dispatch.PendingProposals = proposals
-	writeJSON(w, http.StatusOK, dispatch)
 }
 
 // taskRunPendingProposals projects only unresolved authority authored by this
@@ -310,11 +322,21 @@ func (s *Server) taskRunPendingProposals(ctx context.Context, task core.Task) ([
 }
 
 // taskRunGate derives presentation state from the same audited transitions the
-// dispatcher and dashboard use. It never creates or touches a claim.
-func (s *Server) taskRunGate(ctx context.Context, task core.Task) (*workerservice.TaskRunGate, error) {
-	if task.State != core.TaskAwaiting {
-		return nil, nil
+// dispatcher and dashboard use. It never creates or touches a claim. When the
+// merge-readiness read of an approved task changed that task, it returns the
+// refreshed task instead of a gate so the caller can project again.
+func (s *Server) taskRunGate(ctx context.Context, task core.Task, readReadiness bool) (*workerservice.TaskRunGate, *core.Task, error) {
+	if task.State == core.TaskApproved && task.MergeApproval {
+		return s.taskRunMergeExecutionGate(ctx, task, readReadiness)
 	}
+	if task.State != core.TaskAwaiting {
+		return nil, nil, nil
+	}
+	gate, err := s.taskRunAwaitingGate(ctx, task)
+	return gate, nil, err
+}
+
+func (s *Server) taskRunAwaitingGate(ctx context.Context, task core.Task) (*workerservice.TaskRunGate, error) {
 	canOperate, err := s.taskRunCapability(ctx, core.CapabilityOperateGates)
 	if err != nil {
 		return nil, err
@@ -373,6 +395,156 @@ func (s *Server) taskRunGate(ctx context.Context, task core.Task) (*workerservic
 	default:
 		return &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: fmt.Sprintf("task is %s after %s", task.State, task.NextStage), CanOperate: canOperate, CanRequestChanges: canOperate}, nil
 	}
+}
+
+// taskRunMergeReadinessReuse bounds forge reads from polling runs and waits:
+// a successful readiness result is reused for this long per task, task state,
+// and approved head. The merge route always rechecks readiness itself.
+const taskRunMergeReadinessReuse = 10 * time.Second
+
+// taskRunMergeExecutionGate projects the remaining merge act of an approved
+// task behind the merge gate (req-review-gates-evidence AC-1.1;
+// component-mcp-protocol, Run-order plane). A gate-off approved task never
+// reaches here: the runtime's merge path owns it. The readiness read is the
+// task detail's ReadMergeReadiness (component-submission-merge); this
+// projection never requests a merge. A missing hook or failed read yields a
+// gate without readiness, which no client treats as mergeable.
+func (s *Server) taskRunMergeExecutionGate(ctx context.Context, task core.Task, readReadiness bool) (*workerservice.TaskRunGate, *core.Task, error) {
+	canOperate, err := s.taskRunCapability(ctx, core.CapabilityOperateGates)
+	if err != nil {
+		return nil, nil, err
+	}
+	approvedHead := task.ApprovedHeadSHA
+	if approvedHead == "" {
+		approvedHead = task.ReviewedHeadSHA
+	}
+	gate := &workerservice.TaskRunGate{Kind: workerservice.TaskRunGateMergeExecution, Label: "merge execution pending", CanOperate: canOperate}
+	parts := []string{"reviewed task branch"}
+	if task.Branch != "" {
+		parts[0] = task.Branch
+		if task.BaseBranch != "" {
+			parts[0] += " into " + task.BaseBranch
+		}
+	}
+	if approvedHead != "" {
+		parts = append(parts, "approved head "+shortTaskRunHead(approvedHead))
+	}
+	switch {
+	case s.OnMergeReadiness == nil:
+		parts = append(parts, "merge readiness is not configured on this server")
+	case !readReadiness:
+		parts = append(parts, "merge readiness changed during this read; the next read checks it again")
+	default:
+		readiness, readErr := s.taskRunReadiness.read(ctx, task, approvedHead, s.OnMergeReadiness)
+		if readErr != nil {
+			log.Printf("task run merge readiness for %s: %v", task.ID, readErr)
+			parts = append(parts, "merge readiness could not be read; the next read retries")
+			break
+		}
+		refreshed, getErr := s.Store.GetTask(ctx, task.ID)
+		if getErr != nil {
+			return nil, nil, getErr
+		}
+		if refreshed.State != task.State || refreshed.MergeApproval != task.MergeApproval ||
+			refreshed.ApprovedHeadSHA != task.ApprovedHeadSHA || refreshed.ReviewedHeadSHA != task.ReviewedHeadSHA {
+			s.taskRunReadiness.forget(ctx, task.ID)
+			return nil, &refreshed, nil
+		}
+		gate.MergeReadiness = &workerservice.TaskRunMergeReadiness{State: readiness.State, HeadSHA: readiness.HeadSHA, URL: readiness.URL, Number: readiness.Number}
+		if readiness.Number > 0 {
+			pull := fmt.Sprintf("pull request #%d", readiness.Number)
+			if readiness.URL != "" {
+				pull += " " + readiness.URL
+			}
+			parts = append(parts, pull)
+		}
+		parts = append(parts, taskRunMergeReadinessRemedy(readiness.State, task))
+	}
+	gate.Summary = strings.Join(parts, "; ")
+	return gate, nil, nil
+}
+
+func taskRunMergeReadinessRemedy(state string, task core.Task) string {
+	switch state {
+	case workerservice.TaskRunMergeReadinessMergeable:
+		return "readiness MERGEABLE; ready to merge"
+	case "STALE":
+		return "readiness STALE; the branch head moved after approval, so a refresh review replaces this merge"
+	case "CONFLICTING":
+		return "readiness CONFLICTING; the pull request conflicts with its base, and an operator with recover_work starts the conflict fix (dashboard Fix merge conflict, or POST /v1/tasks/" + task.ID + "/merge-conflict-fix)"
+	case "UNKNOWN":
+		return "readiness UNKNOWN; GitHub has not settled mergeability, or a conflict fix is in progress"
+	default:
+		return "readiness " + state + "; merge is not offered"
+	}
+}
+
+func shortTaskRunHead(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// taskRunReadinessCache reuses successful merge-readiness reads for
+// taskRunMergeReadinessReuse. Failed reads are never cached, and a key covers
+// the task state and approved head so a transition or new approval reads again.
+type taskRunReadinessCache struct {
+	mu      sync.Mutex
+	entries map[string]taskRunReadinessEntry
+	clock   func() time.Time
+}
+
+type taskRunReadinessEntry struct {
+	key       string
+	readiness dispatch.MergeReadiness
+	readAt    time.Time
+}
+
+func (c *taskRunReadinessCache) now() time.Time {
+	if c.clock != nil {
+		return c.clock()
+	}
+	return time.Now()
+}
+
+func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, approvedHead string, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error)) (dispatch.MergeReadiness, error) {
+	id := taskRunReadinessID(ctx, task.ID)
+	key := string(task.State) + "\x00" + approvedHead
+	c.mu.Lock()
+	if entry, ok := c.entries[id]; ok && entry.key == key && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
+		c.mu.Unlock()
+		return entry.readiness, nil
+	}
+	c.mu.Unlock()
+	readiness, err := hook(ctx, task)
+	if err != nil {
+		return readiness, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	if c.entries == nil {
+		c.entries = map[string]taskRunReadinessEntry{}
+	}
+	for cached, entry := range c.entries {
+		if now.Sub(entry.readAt) >= taskRunMergeReadinessReuse {
+			delete(c.entries, cached)
+		}
+	}
+	c.entries[id] = taskRunReadinessEntry{key: key, readiness: readiness, readAt: now}
+	return readiness, nil
+}
+
+func (c *taskRunReadinessCache) forget(ctx context.Context, taskID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, taskRunReadinessID(ctx, taskID))
+}
+
+func taskRunReadinessID(ctx context.Context, taskID string) string {
+	workspaceID, _ := store.WorkspaceFromContext(ctx)
+	return workspaceID + "\x00" + taskID
 }
 
 func (s *Server) taskRunCapability(ctx context.Context, capability core.Capability) (bool, error) {

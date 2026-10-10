@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -475,5 +476,163 @@ func TestRunTUIRequirementWithoutCapabilityShowsActorAndCannotConfirm(t *testing
 	}
 	if !strings.Contains(model.View(), "an operator can confirm") || !strings.Contains(model.View(), "unavailable for this credential") {
 		t.Fatalf("actor guidance missing: %q", model.View())
+	}
+}
+
+func testRunTUIMergeGate(state string, canOperate bool) runTUIGate {
+	return runTUIGate{
+		task: core.Task{ID: "target", Title: "Ship target", State: core.TaskApproved},
+		gate: workerservice.TaskRunGate{
+			Kind: workerservice.TaskRunGateMergeExecution, Label: "merge execution pending",
+			Summary:        "conveyor/task-target into main; approved head 0123456789ab; readiness " + state,
+			CanOperate:     canOperate,
+			MergeReadiness: &workerservice.TaskRunMergeReadiness{State: state, HeadSHA: "0123456789abcdef"},
+		},
+	}
+}
+
+func runTUIActionDecisions(model runTUIModel) []runGateDecision {
+	var decisions []runGateDecision
+	for _, raw := range model.actionList.Items() {
+		decisions = append(decisions, raw.(runTUIActionItem).decision)
+	}
+	return decisions
+}
+
+func TestRunTUIMergeConfirmationDefaultsToNo(t *testing.T) {
+	actions := make(chan runTUIAction, 2)
+	gate := testRunTUIMergeGate("MERGEABLE", true)
+	model := newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
+	if got := runTUIActionDecisions(model); len(got) != 2 || got[0] != runGateMerge || got[1] != runGateStop {
+		t.Fatalf("merge-execution actions = %v, want Merge and Wait only", got)
+	}
+	if strings.Contains(model.View(), "Approve") || strings.Contains(model.View(), "Request changes") {
+		t.Fatalf("merge-execution gate offered approval or changes: %q", model.View())
+	}
+	send := func(keys ...tea.KeyMsg) {
+		for _, key := range keys {
+			updated, _ := model.Update(key)
+			model = updated.(runTUIModel)
+		}
+	}
+	noAction := func(step string) {
+		select {
+		case action := <-actions:
+			t.Fatalf("%s produced mutation action: %+v", step, action)
+		default:
+		}
+	}
+
+	send(tea.KeyMsg{Type: tea.KeyEnter})
+	if model.confirmYes || !strings.Contains(model.View(), "Merge this pull request?") || !strings.Contains(model.View(), "> No") {
+		t.Fatalf("merge did not open with No selected: %q", model.View())
+	}
+	send(tea.KeyMsg{Type: tea.KeyEnter})
+	noAction("Enter on No")
+	send(tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyUp}, tea.KeyMsg{Type: tea.KeyEsc})
+	if model.confirmation != "" {
+		t.Fatalf("Esc retained confirmation state: %q", model.confirmation)
+	}
+	noAction("Esc")
+	send(tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyUp}, tea.KeyMsg{Type: tea.KeyEnter})
+	if action := <-actions; action.decision != runGateMerge {
+		t.Fatalf("merge action = %+v", action)
+	}
+	noAction("a single confirmed merge")
+}
+
+func TestRunTUIMergeActionRequiresCapabilityAndMergeableReadiness(t *testing.T) {
+	cases := []struct {
+		name       string
+		gate       runTUIGate
+		offerMerge bool
+	}{
+		{"mergeable operator", testRunTUIMergeGate("MERGEABLE", true), true},
+		{"mergeable without capability", testRunTUIMergeGate("MERGEABLE", false), false},
+		{"stale", testRunTUIMergeGate("STALE", true), false},
+		{"conflicting", testRunTUIMergeGate("CONFLICTING", true), false},
+		{"unknown", testRunTUIMergeGate("UNKNOWN", true), false},
+	}
+	unread := testRunTUIMergeGate("MERGEABLE", true)
+	unread.gate.MergeReadiness = nil
+	cases = append(cases, struct {
+		name       string
+		gate       runTUIGate
+		offerMerge bool
+	}{"readiness unread", unread, false})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := tc.gate
+			model := newRunTUIModel(runTUIStage{}, &gate, make(chan runTUIAction, 1), make(chan struct{}, 1))
+			got := runTUIActionDecisions(model)
+			want := []runGateDecision{runGateStop}
+			if tc.offerMerge {
+				want = []runGateDecision{runGateMerge, runGateStop}
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("actions = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestRunTUIMergeConfirmationDroppedWhenHeadOrReadinessChanges(t *testing.T) {
+	open := func(gate runTUIGate) (runTUIModel, chan runTUIAction) {
+		actions := make(chan runTUIAction, 2)
+		model := newRunTUIModel(runTUIStage{}, &gate, actions, make(chan struct{}, 1))
+		for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyUp}} {
+			updated, _ := model.Update(key)
+			model = updated.(runTUIModel)
+		}
+		if model.confirmation == "" || !model.confirmYes {
+			t.Fatalf("confirmation was not armed: %q", model.View())
+		}
+		return model, actions
+	}
+	moved := testRunTUIMergeGate("MERGEABLE", true)
+	moved.gate.MergeReadiness.HeadSHA = "fedcba9876543210"
+	conflicting := testRunTUIMergeGate("CONFLICTING", true)
+	revoked := testRunTUIMergeGate("MERGEABLE", false)
+	for name, next := range map[string]runTUIGate{"head moved": moved, "readiness changed": conflicting, "capability removed": revoked} {
+		t.Run(name, func(t *testing.T) {
+			model, actions := open(testRunTUIMergeGate("MERGEABLE", true))
+			updated, _ := model.Update(runTUIGateMsg(next))
+			model = updated.(runTUIModel)
+			if model.confirmation != "" || model.confirmYes {
+				t.Fatalf("pending merge confirmation survived %s: %q", name, model.View())
+			}
+			updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			model = updated.(runTUIModel)
+			select {
+			case action := <-actions:
+				t.Fatalf("stale confirmation produced %+v", action)
+			default:
+			}
+		})
+	}
+
+	// An armed approval confirmation never becomes a merge confirmation.
+	actions := make(chan runTUIAction, 2)
+	approval := testRunTUIGate()
+	approval.gate.Kind, approval.gate.Label = "merge", "merge approval gate"
+	model := newRunTUIModel(runTUIStage{}, &approval, actions, make(chan struct{}, 1))
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, {Type: tea.KeyUp}} {
+		updated, _ := model.Update(key)
+		model = updated.(runTUIModel)
+	}
+	updated, _ := model.Update(runTUIGateMsg(testRunTUIMergeGate("MERGEABLE", true)))
+	model = updated.(runTUIModel)
+	if model.confirmation != "" {
+		t.Fatalf("approval confirmation carried over to the merge gate: %q", model.View())
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(runTUIModel)
+	select {
+	case action := <-actions:
+		t.Fatalf("carried-over approval produced %+v", action)
+	default:
+	}
+	if model.confirmation != "Merge this pull request?" || model.confirmYes {
+		t.Fatalf("Enter after the gate change did not open a fresh No-default merge confirmation: %q", model.View())
 	}
 }

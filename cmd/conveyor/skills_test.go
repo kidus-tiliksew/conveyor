@@ -1184,3 +1184,40 @@ func assertStatuses(t *testing.T, items []skillInstallFile, wanted string) {
 		}
 	}
 }
+
+// The installed conveyor-work playbook carries the two separate acts of the
+// merge gate: approval, then an explicit merge (req-agent-skills AC-3.7,
+// AC-3.9, AC-3.11; req-review-gates-evidence AC-1.1;
+// component-cli-onboarding).
+func TestConveyorWorkSkillShipsApproveThenMergeSequence(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+	required := []string{
+		"| Merge approval | approve and merge | `conveyor task approve <task-id>`, then `conveyor task merge <task-id>` |",
+		"| Pending merge act | merge | `conveyor task merge <task-id>` |",
+		"With the merge gate on, `conveyor task approve` binds the reviewed head and moves the task to `approved`. It never merges",
+		"When the operator directly instructs the session to approve and merge, run `conveyor task approve <task-id>` and then `conveyor task merge <task-id>`",
+		"For a task already `approved` with the merge gate on, a direct merge instruction runs only `conveyor task merge <task-id>`",
+		"Without that instruction, summarize the pending merge act with the task's dashboard link and wait",
+		"(kind `merge_execution` with its `merge_readiness` for the pending merge act)",
+		"report that state and the remedy the gate summary names instead of merging",
+		"never repeat the merge blindly. Report a merge only after the session observes `merged`",
+		"merge approval moves the task to `approved`, and the merge act (`conveyor task merge`) lands it",
+	}
+	for _, destination := range destinations {
+		playbook, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized := strings.Join(strings.Fields(string(playbook)), " ")
+		for _, fragment := range required {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s playbook lacks %q", destination.root, fragment)
+			}
+		}
+	}
+}

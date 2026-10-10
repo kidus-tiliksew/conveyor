@@ -623,3 +623,83 @@ func taskWaitChildEnvironment() []string {
 	}
 	return environment
 }
+
+func taskWaitMergeExecutionGate(state, summary string) *workerservice.TaskRunGate {
+	gate := &workerservice.TaskRunGate{Kind: workerservice.TaskRunGateMergeExecution, Label: "merge execution pending", Summary: summary, CanOperate: true}
+	if state != "" {
+		gate.MergeReadiness = &workerservice.TaskRunMergeReadiness{State: state, HeadSHA: "0123456789abcdef", URL: "https://github.test/pr/" + summary}
+	}
+	return gate
+}
+
+// After approval a merge-gated task reports the pending merge act, and the
+// wait returns on the move to merged (req-agent-skills AC-4.1, AC-4.2;
+// component-cli-onboarding).
+func TestTaskWaitReportsPendingMergeExecutionUntilMerged(t *testing.T) {
+	approval := &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", CanOperate: true}
+	execution := taskWaitMergeExecutionGate("MERGEABLE", "1")
+	steps := []taskWaitStep{
+		{state: core.TaskAwaiting, gate: approval},
+		{state: core.TaskApproved, gate: execution},
+	}
+	result, err := runTaskWaitJSON(t, newTaskWaitFixture(t, steps...), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := taskWaitGate{Kind: workerservice.TaskRunGateMergeExecution, MergeReadiness: "MERGEABLE"}
+	if result.Reason != taskWaitReasonChanged || result.State != core.TaskApproved || result.PendingGate == nil || *result.PendingGate != want || result.NextOrder != nil {
+		t.Fatalf("result = %+v gate %+v", result, result.PendingGate)
+	}
+	var raw bytes.Buffer
+	if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &raw, taskWaitTestTaskID, true, taskWaitTestOptions(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw.String(), `"pending_gate":{"kind":"merge_execution","merge_readiness":"MERGEABLE"}`) {
+		t.Fatalf("JSON pending gate = %s", raw.String())
+	}
+	var human bytes.Buffer
+	if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &human, taskWaitTestTaskID, false, taskWaitTestOptions(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"state:             approved", "pending gate:      merge_execution (readiness MERGEABLE)", "wait ended:        changed"} {
+		if !strings.Contains(human.String(), line+"\n") {
+			t.Errorf("human output lacks %q:\n%s", line, human.String())
+		}
+	}
+
+	merged := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskApproved, gate: execution},
+		taskWaitStep{state: core.TaskApproved, gate: execution},
+		taskWaitStep{state: core.TaskMerged},
+	)
+	result, err = runTaskWaitJSON(t, merged, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != taskWaitReasonTerminal || result.State != core.TaskMerged || result.PendingGate != nil || merged.taskReads() != 3 {
+		t.Fatalf("result = %+v reads=%d", result, merged.taskReads())
+	}
+}
+
+func TestTaskWaitMergeReadinessChangeEndsWait(t *testing.T) {
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskApproved, gate: taskWaitMergeExecutionGate("UNKNOWN", "1")},
+		// Summary and readiness URL churn is presentation and never ends a wait.
+		taskWaitStep{state: core.TaskApproved, gate: taskWaitMergeExecutionGate("UNKNOWN", "2")},
+		taskWaitStep{state: core.TaskApproved, gate: taskWaitMergeExecutionGate("MERGEABLE", "2")},
+	)
+	result, err := runTaskWaitJSON(t, f, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reason != taskWaitReasonChanged || result.PendingGate == nil || result.PendingGate.MergeReadiness != "MERGEABLE" || f.taskReads() != 3 {
+		t.Fatalf("result = %+v reads=%d", result, f.taskReads())
+	}
+
+	var human bytes.Buffer
+	err = runTaskWait(t.Context(), newTaskWaitFixture(t, taskWaitStep{state: core.TaskApproved, gate: taskWaitMergeExecutionGate("", "unread")}).client(), &human, taskWaitTestTaskID, false, taskWaitTestOptions(20*time.Millisecond))
+	var timedOut *taskWaitTimeoutError
+	if !errors.As(err, &timedOut) || !strings.Contains(human.String(), "pending gate:      merge_execution (readiness unavailable)\n") {
+		t.Fatalf("err=%v output:\n%s", err, human.String())
+	}
+}

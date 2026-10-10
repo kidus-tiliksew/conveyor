@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/spf13/cobra"
 )
 
@@ -35,7 +36,8 @@ const taskWaitLong = `Block until a task's observed state changes, the task reac
 state, or the timeout elapses.
 
 Each observation holds the task state, the pending human gate (plan, merge,
-plan revision, or human recovery, with the plan version when one applies),
+merge execution, plan revision, or human recovery, with the plan version when
+one applies and the merge readiness state for merge execution),
 the next claimable work order ID and stage, and the pending task-authored
 proposals (kind, document ID, and version). The command reads
 GET /v1/tasks/{id} and GET /v1/tasks/{id}/run-order with the ordinary server,
@@ -69,6 +71,10 @@ func (*taskWaitTimeoutError) Error() string { return "task wait timed out" }
 type taskWaitGate struct {
 	Kind        string `json:"kind"`
 	PlanVersion int    `json:"plan_version,omitempty"`
+	// MergeReadiness is the readiness state of a merge_execution gate, empty
+	// when the server could not read readiness. A change ends the wait
+	// (req-agent-skills AC-4.1; component-cli-onboarding).
+	MergeReadiness string `json:"merge_readiness,omitempty"`
 }
 
 type taskWaitOrder struct {
@@ -248,8 +254,13 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 	observation := taskWaitObservation{TaskID: task.ID, State: state, PendingProposals: []taskWaitProposal{}, ObservedAt: now().UTC()}
 	if gate := run.Gate; gate != nil && strings.TrimSpace(gate.Kind) != "" {
 		normalized := taskWaitGate{Kind: gate.Kind, PlanVersion: gate.PlanVersion}
-		if gate.Kind == "spec" {
+		switch gate.Kind {
+		case "spec":
 			normalized = taskWaitGate{Kind: "plan", PlanVersion: gate.SpecVersion}
+		case workerservice.TaskRunGateMergeExecution:
+			if gate.MergeReadiness != nil {
+				normalized.MergeReadiness = gate.MergeReadiness.State
+			}
 		}
 		observation.PendingGate = &normalized
 	}
@@ -324,6 +335,13 @@ func writeTaskWaitResult(w io.Writer, result taskWaitResult, timeout time.Durati
 		gate = result.PendingGate.Kind
 		if result.PendingGate.PlanVersion > 0 {
 			gate += fmt.Sprintf(" v%d", result.PendingGate.PlanVersion)
+		}
+		if result.PendingGate.Kind == workerservice.TaskRunGateMergeExecution {
+			readiness := result.PendingGate.MergeReadiness
+			if readiness == "" {
+				readiness = "unavailable"
+			}
+			gate += " (readiness " + readiness + ")"
 		}
 	}
 	order := "none"
