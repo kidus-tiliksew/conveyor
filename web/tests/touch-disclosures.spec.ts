@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const timestamp = '2026-09-14T11:00:00Z'
 const reason = 'automatic retry is suppressed'
@@ -73,7 +74,7 @@ async function mockAPI(page: Page) {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
-      return route.fulfill({ json: { id: 'viewer', email: 'viewer@example.test', role: 'viewer' } })
+      return route.fulfill({ json: callerIdentity({ id: 'viewer', email: 'viewer@example.test', role: 'viewer' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
     if (path === '/v1/pending-proposals')
       return route.fulfill({ json: { items: [], attention: { total: 1, task_count: 1, pending_proposal_count: 0 } } })

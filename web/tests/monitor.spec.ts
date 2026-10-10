@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 test('monitor page renders health, deduplication, task links, and drift age', async ({ page }) => {
   let resolution: Record<string, string> | undefined
@@ -8,7 +9,9 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   await page.route('**/v1/workspaces', (route) =>
     route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),
   )
-  await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_operator', role: 'operator' } }))
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) }),
+  )
   await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/requirements?**', (route) =>

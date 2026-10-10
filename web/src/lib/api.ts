@@ -504,11 +504,13 @@ function membershipErrorCode(body: string) {
   }
 }
 
-// Who the caller is. The workspace travels with the request so the response
-// carries the caller's role in it — the one surface that answers "may I do
-// operator things here?" without the browser guessing (REQ-2, DEC-19).
-export async function fetchCallerIdentity() {
-  const response = await fetch(workspaceURL('/v1/me'), { headers: mutationHeaders() })
+// Who the caller is in one workspace. The response carries the caller's role,
+// served capability list, and role chain for that workspace, so the browser
+// never derives a capability itself (REQ-5, DEC-19). The workspace is the one
+// captured by the caller's query key, never a later stored selection, so a
+// delayed response cannot fill another workspace's cache entry.
+export async function fetchCallerIdentity(workspace: string) {
+  const response = await fetch(workspaceURL('/v1/me', workspace), { headers: mutationHeaders() })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return (await response.json()) as import('./types').CallerIdentity
 }

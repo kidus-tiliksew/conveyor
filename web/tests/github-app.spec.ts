@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import type { WorkspaceGitHubAppStatus } from '../src/lib/types'
+import { callerIdentity } from './helpers/caller-identity'
 
 const disconnected: WorkspaceGitHubAppStatus = {
   connected: false,
@@ -45,7 +46,9 @@ async function mockApp(page: Page, role = 'operator') {
         ],
       })
     if (path === '/v1/me')
-      return route.fulfill({ json: { id: 'usr_owner', display_name: 'Ada', email: 'ada@example.test', role } })
+      return route.fulfill({
+        json: callerIdentity({ id: 'usr_owner', display_name: 'Ada', email: 'ada@example.test', role }),
+      })
     if (path.endsWith('/github-app/manifest')) {
       state.posts++
       expect(request.method()).toBe('POST')

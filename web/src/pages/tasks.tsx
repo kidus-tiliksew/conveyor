@@ -83,7 +83,7 @@ export function TasksPage() {
   // offered rather than guessing (REQ-2).
   const { data: me } = useQuery({
     queryKey: ['caller-identity', workspace],
-    queryFn: () => fetchCallerIdentity(),
+    queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
     retry: false,
   })

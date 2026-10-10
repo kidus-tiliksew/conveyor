@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 // UI coverage for the list-first Tasks view. The projection is mocked so each
 // assertion reads the rendering of durable authority rather than a live pipeline.
@@ -207,7 +208,12 @@ async function routeTasksSurface(page: Page) {
   // The signed-in user, which is what "My tasks" resolves "my" against.
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: { id: 'usr-assigned', email: 'assigned@example.test', display_name: 'Assigned User', role: 'operator' },
+      json: callerIdentity({
+        id: 'usr-assigned',
+        email: 'assigned@example.test',
+        display_name: 'Assigned User',
+        role: 'operator',
+      }),
     }),
   )
   await page.route('**/v1/workspaces/*/members**', (route) =>

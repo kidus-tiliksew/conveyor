@@ -27,7 +27,7 @@ import {
   signOutDashboardSession,
 } from '../lib/api'
 import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
-import { roleCapabilities, type WorkspaceCapability } from '../lib/workspace-capabilities'
+import type { WorkspaceCapability, WorkspaceRole } from '../lib/types'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
@@ -43,18 +43,41 @@ export function useWorkspaceSelection() {
   return useContext(WorkspaceContext)
 }
 
-// Dashboard affordances consume the same fixed role bundles as the server.
-// This is presentation only: every request still crosses the server capability
-// boundary, while a viewer never sees a control that can only be refused.
-export function useWorkspaceCapability(capability: WorkspaceCapability) {
+// The caller's identity in the selected workspace. The workspace captured in
+// the query key is the one the request names, so every entry holds exactly
+// that workspace's projection (component-web-dashboard).
+function useCallerIdentity() {
   const { workspace } = useWorkspaceSelection()
-  const identity = useQuery({
+  return useQuery({
     queryKey: ['caller-identity', workspace],
-    queryFn: () => fetchCallerIdentity(),
+    queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
     retry: false,
   })
-  return Boolean(identity.data?.role && roleCapabilities[identity.data.role]?.includes(capability))
+}
+
+// Dashboard affordances follow the capability list the server serves for the
+// selected workspace; the browser holds no role-to-capability table
+// (req-accounts-and-membership AC-5.1). This is presentation only: every
+// request still crosses the server capability boundary, while a viewer never
+// sees a control that can only be refused. No workspace, a pending or failed
+// read, and a missing or empty list all deny, including a failed refetch over
+// an earlier successful projection.
+export function useWorkspaceCapability(capability: WorkspaceCapability) {
+  const { workspace } = useWorkspaceSelection()
+  const identity = useCallerIdentity()
+  if (!workspace || identity.status !== 'success') return false
+  return identity.data.capabilities?.includes(capability) ?? false
+}
+
+// The server's ascending role chain for the selected workspace, used for the
+// membership picker's options and highest-role emphasis. Empty until a
+// successful read serves it.
+export function useWorkspaceRoles(): WorkspaceRole[] {
+  const { workspace } = useWorkspaceSelection()
+  const identity = useCallerIdentity()
+  if (!workspace || identity.status !== 'success') return []
+  return identity.data.roles ?? []
 }
 
 type ActivityFilter = Record<string, string | string[] | undefined>

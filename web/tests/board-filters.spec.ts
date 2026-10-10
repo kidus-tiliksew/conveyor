@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
@@ -128,7 +129,9 @@ async function routeBoard(page: Page, seen: string[]) {
   // The Board's New task button follows create_tasks (DEC-60), so the board
   // signs in a maintainer, the lowest role that may file tasks.
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: { id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' } }),
+    route.fulfill({
+      json: callerIdentity({ id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' }),
+    }),
   )
   await page.route('**/v1/pending-proposals**', (route) =>
     route.fulfill({ json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } } }),

@@ -587,15 +587,24 @@ export interface WorkspaceRecord {
   created_at: string
 }
 
-export type WorkspaceRole = 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
+// Roles and capabilities are server-defined strings. The dashboard keeps no
+// role-to-capability table: GET /v1/me serves the caller's capability list and
+// the ordered role chain, both derived from the Go bundle table, so a role or
+// capability added on the server needs no client edit
+// (req-accounts-and-membership AC-5.1; component-web-dashboard).
+export type WorkspaceRole = string
+export type WorkspaceCapability = string
 
 // The self-identity projection behind GET /v1/me: deliberately narrow, and
-// carrying a role only when the request supplied authorized workspace context.
+// carrying role, capabilities, and the ascending role chain only when the
+// request supplied authorized workspace context.
 export interface CallerIdentity {
   id: string
   email: string
   display_name: string
   role?: WorkspaceRole
+  capabilities?: WorkspaceCapability[]
+  roles?: WorkspaceRole[]
 }
 
 export interface WorkspaceMembership {

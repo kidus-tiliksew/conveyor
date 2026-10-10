@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { MailPlus, RotateCw, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   fetchWorkspaceInvitations,
   inviteWorkspaceMember,
@@ -12,7 +12,7 @@ import {
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
-import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceRoles, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -24,7 +24,26 @@ function formatTimestamp(value: string) {
 }
 
 function roleLabel(role: WorkspaceRole) {
-  return role.charAt(0).toUpperCase() + role.slice(1)
+  return role
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
+const preferredInitialRole = 'contributor'
+
+// The picker's initial and reset choice: contributor when the served chain
+// holds it, otherwise the chain's first (lowest) role, or none for an empty
+// chain. The chain is server-defined (component-identity-membership).
+function initialRole(chain: readonly WorkspaceRole[]): WorkspaceRole {
+  return chain.includes(preferredInitialRole) ? preferredInitialRole : (chain[0] ?? '')
+}
+
+// The served chain ascends, so its last role is the highest and carries the
+// emphasized badge. A role outside the chain renders neutrally with its label.
+function roleBadgeVariant(role: WorkspaceRole, chain: readonly WorkspaceRole[]) {
+  return chain.length > 0 && role === chain[chain.length - 1] ? 'accent' : 'default'
 }
 
 // An invitation carries a delivery outcome. A grant to an existing account
@@ -47,6 +66,8 @@ type DeliveryNotice = {
 export function MembersSection() {
   const { workspace } = useWorkspaceSelection()
   const canManage = useWorkspaceCapability('manage_membership')
+  const roleChain = useWorkspaceRoles()
+  const roleChainKey = roleChain.join('\n')
   const queryClient = useQueryClient()
   const enabled = Boolean(workspace && canManage)
 
@@ -68,7 +89,14 @@ export function MembersSection() {
   }
 
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<WorkspaceRole>('contributor')
+  const [role, setRole] = useState<WorkspaceRole>(() => initialRole(roleChain))
+  // A workspace switch or a refreshed chain reconciles the selection: a role
+  // the served chain no longer holds resets to the served default, so a
+  // removed role cannot be submitted.
+  useEffect(() => {
+    setRole((current) => (current && roleChain.includes(current) ? current : initialRole(roleChain)))
+  }, [workspace, roleChainKey])
+  const roleSelectable = role !== '' && roleChain.includes(role)
   const [delivery, setDelivery] = useState<DeliveryNotice | null>(null)
   const normalizedEmail = email.trim().toLowerCase()
   const existingMember = members.data?.find((member) => member.email?.trim().toLowerCase() === normalizedEmail)
@@ -83,7 +111,7 @@ export function MembersSection() {
         previousRole: request.existingRole,
       })
       setEmail('')
-      setRole('contributor')
+      setRole(initialRole(roleChain))
       await refresh()
     },
   })
@@ -121,6 +149,7 @@ export function MembersSection() {
               aria-label="Invite a member"
               onSubmit={(event) => {
                 event.preventDefault()
+                if (!roleSelectable) return
                 invite.mutate({ email: email.trim(), role, existingRole: roleChange?.role })
               }}
             >
@@ -137,15 +166,16 @@ export function MembersSection() {
                 aria-label="Role"
                 className="max-w-36"
                 value={role}
-                onChange={(event) => setRole(event.target.value as WorkspaceRole)}
+                disabled={roleChain.length === 0}
+                onChange={(event) => setRole(event.target.value)}
               >
-                <option value="viewer">Viewer</option>
-                <option value="executor">Executor</option>
-                <option value="contributor">Contributor</option>
-                <option value="maintainer">Maintainer</option>
-                <option value="operator">Operator</option>
+                {roleChain.map((option) => (
+                  <option key={option} value={option}>
+                    {roleLabel(option)}
+                  </option>
+                ))}
               </Select>
-              <Button type="submit" disabled={!email.trim() || invite.isPending}>
+              <Button type="submit" disabled={!email.trim() || !roleSelectable || invite.isPending}>
                 <MailPlus />
                 {invite.isPending
                   ? roleChange
@@ -221,7 +251,7 @@ export function MembersSection() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Badge variant={member.role === 'operator' ? 'accent' : 'default'}>{roleLabel(member.role)}</Badge>
+                <Badge variant={roleBadgeVariant(member.role, roleChain)}>{roleLabel(member.role)}</Badge>
                 {canManage && (
                   <Button
                     size="icon"
@@ -278,9 +308,7 @@ export function MembersSection() {
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Badge variant={invitation.role === 'operator' ? 'accent' : 'default'}>
-                    {roleLabel(invitation.role)}
-                  </Badge>
+                  <Badge variant={roleBadgeVariant(invitation.role, roleChain)}>{roleLabel(invitation.role)}</Badge>
                   <Button
                     size="sm"
                     variant="secondary"

@@ -1,4 +1,12 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
+
+// No production role holds confirm_documents without propose_documents. The
+// server serves whatever list its bundle table yields, so these cases serve
+// that combination directly to exercise the independent capability checks.
+const confirmOnlyCapabilities = capabilitiesForRole('operator').filter(
+  (capability) => capability !== 'propose_documents',
+)
 
 const proposedAt = '2026-08-10T10:00:00Z'
 
@@ -16,7 +24,7 @@ test('pending proposal label and attention badge stay on one line at the narrow 
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals')
@@ -85,7 +93,7 @@ test('pending proposal queue covers every document tier, resolves rows, updates 
     const url = new URL(request.url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity')
       return route.fulfill({
@@ -274,7 +282,7 @@ test('pending proposals keeps task context suggestions off the workspace queue a
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {
@@ -328,7 +336,7 @@ test('attention navigation omits requirement and pending proposal badges when pr
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {
@@ -358,7 +366,7 @@ test('maintainer can read pending decisions without corpus-authority controls', 
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_maintainer', role: 'maintainer' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals')
@@ -408,7 +416,7 @@ test('pending proposal consumers share one active query and hidden documents sto
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/activity' || path === '/v1/blueprints') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') {
@@ -465,7 +473,7 @@ for (const tier of ['requirement', 'system_design'] as const) {
         const request = route.request()
         const path = new URL(request.url()).pathname
         if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-        if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+        if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'operator', role: 'operator' }) })
         if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
         if (path === '/v1/tasks/origin-task/activity')
           return route.fulfill({
@@ -620,23 +628,16 @@ for (const tier of ['requirement', 'system_design'] as const) {
 for (const access of ['both', 'confirm-only', 'propose-only', 'neither'] as const) {
   test(`Revise capability gate requires both capabilities: ${access}`, async ({ page }) => {
     await initialize(page)
-    if (access === 'confirm-only') {
-      // Fixed production roles have no confirm-only bundle. Remove propose from
-      // the served client bundle to exercise this independent capability check.
-      await page.route('**/src/lib/workspace-capabilities.json*', async (route) => {
-        const response = await route.fetch()
-        await route.fulfill({ response, body: (await response.text()).replace(/"propose_documents",?/g, '') })
-      })
-    }
     await page.route('**/v1/**', async (route) => {
       const path = new URL(route.request().url()).pathname
       if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
       if (path === '/v1/me')
         return route.fulfill({
-          json: {
+          json: callerIdentity({
             id: 'caller',
             role: access === 'neither' ? 'viewer' : access === 'propose-only' ? 'contributor' : 'operator',
-          },
+            capabilities: access === 'confirm-only' ? confirmOnlyCapabilities : undefined,
+          }),
         })
       if (path === '/v1/pending-proposals')
         return route.fulfill({
@@ -674,7 +675,7 @@ for (const tier of ['requirement', 'system_design']) {
       await page.route('**/v1/**', async (route) => {
         const path = new URL(route.request().url()).pathname
         if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-        if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+        if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'operator', role: 'operator' }) })
         if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
         if (path === '/v1/pending-proposals')
           return route.fulfill({

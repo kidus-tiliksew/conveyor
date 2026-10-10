@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // WorkspaceRole is a persisted membership label. Authorization call sites use
 // Capability instead, so changing a bundle never requires editing enforcement.
@@ -97,6 +100,52 @@ func roleAllows(bundles map[WorkspaceRole]map[Capability]bool, role WorkspaceRol
 	return bundles[role][capability]
 }
 
+// RoleCapabilities enumerates a role's enabled bundle from roleCapabilities
+// for presentation, in lexical order. It returns a fresh slice, so a caller
+// cannot alter policy through it, and an unknown role holds nothing. The list
+// is derived from the table rather than retyped, so a bundle edit reaches
+// every served list at once (req-accounts-and-membership AC-5.1;
+// component-identity-membership).
+func RoleCapabilities(role WorkspaceRole) []Capability {
+	return roleCapabilityList(roleCapabilities, role)
+}
+
+func roleCapabilityList(bundles map[WorkspaceRole]map[Capability]bool, role WorkspaceRole) []Capability {
+	capabilities := make([]Capability, 0, len(bundles[role]))
+	for capability := range bundles[role] {
+		if roleAllows(bundles, role, capability) {
+			capabilities = append(capabilities, capability)
+		}
+	}
+	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i] < capabilities[j] })
+	return capabilities
+}
+
+// WorkspaceRoles enumerates the table's roles as the ascending role chain.
+// Each role strictly subsumes the one below it (req-accounts-and-membership
+// REQ-2), so ordering by enabled-bundle size yields the chain; lexical order
+// only breaks ties deterministically. The slice is fresh on every call and no
+// second list of roles exists (component-identity-membership).
+func WorkspaceRoles() []WorkspaceRole {
+	return workspaceRoleChain(roleCapabilities)
+}
+
+func workspaceRoleChain(bundles map[WorkspaceRole]map[Capability]bool) []WorkspaceRole {
+	roles := make([]WorkspaceRole, 0, len(bundles))
+	sizes := make(map[WorkspaceRole]int, len(bundles))
+	for role := range bundles {
+		roles = append(roles, role)
+		sizes[role] = len(roleCapabilityList(bundles, role))
+	}
+	sort.Slice(roles, func(i, j int) bool {
+		if sizes[roles[i]] != sizes[roles[j]] {
+			return sizes[roles[i]] < sizes[roles[j]]
+		}
+		return roles[i] < roles[j]
+	})
+	return roles
+}
+
 type WorkspaceMembership struct {
 	WorkspaceID string        `json:"workspace_id"`
 	UserID      string        `json:"user_id"`
@@ -117,13 +166,18 @@ type IdentityUser struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// CallerIdentity is the deliberately narrow self-identity projection. Role is
-// present only when the caller supplied an authorized workspace context.
+// CallerIdentity is the deliberately narrow self-identity projection. Role,
+// Capabilities, and Roles are present only when the caller supplied an
+// authorized workspace context. Capabilities and Roles are presentation for
+// the dashboard, derived from roleCapabilities; they never authorize a later
+// request (req-accounts-and-membership AC-5.1; component-identity-membership).
 type CallerIdentity struct {
-	ID          string        `json:"id"`
-	Email       string        `json:"email"`
-	DisplayName string        `json:"display_name"`
-	Role        WorkspaceRole `json:"role,omitempty"`
+	ID           string          `json:"id"`
+	Email        string          `json:"email"`
+	DisplayName  string          `json:"display_name"`
+	Role         WorkspaceRole   `json:"role,omitempty"`
+	Capabilities []Capability    `json:"capabilities,omitempty"`
+	Roles        []WorkspaceRole `json:"roles,omitempty"`
 }
 
 type MembershipGrant struct {
