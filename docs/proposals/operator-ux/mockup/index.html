@@ -1,0 +1,1571 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conveyor · Operator UX mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* Conveyor tokens, copied from web/src/styles.css (light theme). Amber is the single alarm colour. */
+:root{
+  --bg:#ffffff;--surface:#f7f8fa;--card:#ffffff;--raised:#eef0f3;--border:#e6e8ec;--edge:#d4d7dd;
+  --fg:#16181d;--muted:#5c616b;--faint:#9aa0aa;--md:#363a42;--sel:#dbe3fe;
+  --primary:#3355f5;--primary-fg:#ffffff;--primary-soft:#eef1fe;
+  --att:#b45309;--att-soft:#fdf1e2;--att-dot:#f59e0b;
+  --pos:#1a7f37;--pos-soft:#e9f7ee;--fail:#b3261e;--fail-soft:#fdeeed;
+  --rail:#f7f8fa;
+  --sans:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  /* Proposed type scale: five steps, nothing in between. */
+  --fs-page:24px;   /* page title, 600 */
+  --fs-title:16px;  /* card / section title, 600 */
+  --fs-body:14px;   /* body, 400 */
+  --fs-meta:12px;   /* meta, timestamps, IDs */
+  --fs-label:11px;  /* uppercase labels and badges */
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{font-family:var(--sans);color:var(--fg);background:var(--bg);font-size:var(--fs-body);line-height:1.55;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;font-synthesis:none}
+::selection{background:var(--sel)}
+button{font:inherit;color:inherit;cursor:pointer}
+a{color:var(--primary);text-decoration:none}
+a:hover{text-decoration:underline}
+p{margin:0}
+h1,h2,h3{margin:0}
+:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.faint{color:var(--faint)}
+.meta{font-size:var(--fs-meta);color:var(--muted)}
+.label{font-size:var(--fs-label);font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* ---------- shell ---------- */
+.app{display:flex;min-height:100vh}
+.rail{width:256px;flex-shrink:0;border-right:1px solid var(--border);background:var(--rail);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.ws{padding:16px}
+.ws .name{font-size:var(--fs-body);font-weight:600;letter-spacing:-.01em}
+.ws .sub{margin-top:2px;font-size:var(--fs-label);color:var(--faint)}
+.navlist{flex:1;padding:0 8px;display:flex;flex-direction:column;gap:2px}
+.nav{display:flex;align-items:center;gap:10px;border-radius:8px;padding:8px 10px;font-size:var(--fs-body);color:var(--muted);border:0;background:none;width:100%;text-align:left;transition:background .15s,color .15s}
+.nav:hover{background:rgba(238,240,243,.6);color:var(--fg);text-decoration:none}
+.nav.active{background:var(--raised);color:var(--fg);font-weight:500}
+.nav svg{width:16px;height:16px;flex-shrink:0}
+.nav span.l{flex:1}
+.nav .new{font-size:10px;font-weight:600;color:var(--primary);background:var(--primary-soft);border-radius:4px;padding:0 5px;line-height:16px;letter-spacing:.02em}
+.signout{margin:8px;padding:8px 10px;border:0;background:none;color:var(--muted);text-align:left;border-radius:6px;font-size:var(--fs-body)}
+.signout:hover{background:var(--surface)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.mockbar{display:flex;align-items:center;gap:12px;padding:8px 40px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.92);backdrop-filter:blur(6px);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.mockbar .tag{font-size:var(--fs-label);font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.mockbar .hint{margin-left:auto;font-size:var(--fs-meta);color:var(--faint)}
+.tabs{display:flex;gap:2px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:2px}
+.tab{border:0;background:none;padding:4px 10px;border-radius:6px;font-size:var(--fs-meta);font-weight:500;color:var(--muted)}
+.tab:hover{color:var(--fg);text-decoration:none}
+.tab.on{background:var(--card);color:var(--fg);box-shadow:0 1px 2px rgba(22,24,29,.08)}
+.page{padding:32px 40px 64px;width:100%;max-width:1160px}
+.page.narrow{max-width:1000px}
+.page.wide{max-width:none;padding-right:0}
+.view{display:none}
+.view.on{display:block}
+
+/* ---------- primitives (badge.tsx / button.tsx) ---------- */
+.badge{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border-radius:6px;padding:2px 8px;font-size:var(--fs-label);font-weight:500;line-height:16px}
+.b-default{border:1px solid var(--border);background:var(--surface);color:var(--muted)}
+.b-att{background:var(--att-soft);color:var(--att);font-weight:600}
+.b-att::before{content:"";width:6px;height:6px;border-radius:999px;background:var(--att-dot)}
+.b-accent{background:var(--primary-soft);color:var(--primary)}
+.b-pos{background:var(--pos-soft);color:var(--pos)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;border-radius:6px;font-size:var(--fs-body);font-weight:500;height:36px;padding:0 14px;border:1px solid transparent;transition:background .15s,color .15s}
+.btn:hover{text-decoration:none}
+.btn-sm{height:32px;padding:0 12px;font-size:13px}
+.btn svg{width:15px;height:15px;flex-shrink:0}
+.btn-primary{background:var(--primary);color:var(--primary-fg);box-shadow:0 1px 2px rgba(22,24,29,.12)}
+.btn-primary:hover{background:#4766f6}
+.btn-secondary{background:var(--surface);border-color:var(--border);color:var(--fg)}
+.btn-secondary:hover{background:var(--raised)}
+.btn-outline{background:var(--bg);border-color:var(--edge);color:var(--fg)}
+.btn-outline:hover{background:var(--surface)}
+.btn-ghost{background:none;color:var(--muted)}
+.btn-ghost:hover{background:var(--surface);color:var(--fg)}
+.btn-destructive{background:var(--fail-soft);color:var(--fail)}
+.btn-destructive:hover{background:#f9dcda}
+.chip-req{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--edge);border-radius:6px;padding:1px 8px;font-size:var(--fs-meta);line-height:18px;color:var(--fg);background:var(--bg);max-width:100%;min-width:0}
+.chip-req b{font-family:var(--mono);font-weight:500;color:var(--primary);flex-shrink:0}
+.chip-req span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details>summary{cursor:pointer;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+.disclose{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-meta);color:var(--muted)}
+.disclose:hover{color:var(--fg)}
+.disclose::before{content:"";width:0;height:0;border-left:4px solid currentColor;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;transition:transform .15s}
+details[open]>summary.disclose::before{transform:rotate(90deg)}
+.kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 16px;font-size:var(--fs-meta);margin:12px 0 0;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px}
+.kv dt{color:var(--faint)}
+.kv dd{margin:0;font-family:var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.linkbtn{border:0;background:none;padding:0;color:var(--primary);font-size:var(--fs-meta);font-weight:500;display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.linkbtn:hover{text-decoration:underline}
+
+/* who acts next */
+.who{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px 2px 3px;font-size:var(--fs-meta);font-weight:500;line-height:20px;white-space:nowrap}
+.who i{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:999px;font-style:normal;font-size:9.5px;font-weight:600;letter-spacing:.02em}
+.who-agent{background:var(--primary-soft);color:var(--primary)}
+.who-agent i{background:var(--primary);color:#fff}
+.who-auto{background:var(--surface);color:var(--muted);box-shadow:inset 0 0 0 1px var(--border)}
+.who-auto i{background:var(--raised);color:var(--muted)}
+.who-you{background:var(--att-soft);color:var(--att);font-weight:600}
+.who-you i{background:var(--att-dot);color:#fff}
+.whoset{display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap}
+.whoset .who.off{background:none;box-shadow:none;color:var(--faint);font-weight:400}
+.whoset .who.off i{background:var(--raised);color:var(--faint)}
+
+/* live indicator: only where an agent is working right now */
+@keyframes live{0%{box-shadow:0 0 0 0 rgba(51,85,245,.45)}70%{box-shadow:0 0 0 6px rgba(51,85,245,0)}100%{box-shadow:0 0 0 0 rgba(51,85,245,0)}}
+.livedot{display:inline-block;width:7px;height:7px;border-radius:999px;background:var(--primary);animation:live 2s ease-out infinite;flex-shrink:0}
+
+/* ---------- inbox ---------- */
+.main:has(#v-inbox.on){background:var(--surface)}
+.pagehead h1{font-size:var(--fs-page);font-weight:600;letter-spacing:-.015em;line-height:1.25}
+.pagehead p{font-size:var(--fs-body);color:var(--muted);margin-top:6px;max-width:66ch}
+.filters{display:flex;gap:8px;margin-top:24px;flex-wrap:wrap;align-items:center}
+.fchip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);background:var(--bg);color:var(--muted);border-radius:999px;padding:4px 12px;font-size:var(--fs-meta);font-weight:500}
+.fchip:hover{border-color:var(--edge);color:var(--fg);text-decoration:none}
+.fchip.on{background:var(--fg);border-color:var(--fg);color:#fff}
+.fchip .n{opacity:.7;font-variant-numeric:tabular-nums}
+.sortnote{margin-left:auto;font-size:var(--fs-meta);color:var(--faint)}
+.band{margin-top:40px}
+.band[hidden]{display:none}
+.bandhead{margin-bottom:14px}
+.bandhead .row{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.bandhead h2{font-size:var(--fs-title);font-weight:600}
+.bandhead .sub{font-size:var(--fs-meta);color:var(--faint)}
+.bandhead .explain{margin-top:4px;font-size:var(--fs-body);color:var(--muted);max-width:72ch}
+/* decision card: raised white surface on the tinted page, no side stripe */
+.decision{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:0 1px 2px rgba(22,24,29,.05),0 8px 20px -10px rgba(22,24,29,.12);overflow:hidden}
+.decision+.decision{margin-top:20px}
+.dbody{padding:20px 24px}
+.dhead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.kind{font-size:var(--fs-label);font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--att)}
+.age{margin-left:auto;font-size:var(--fs-meta);color:var(--faint);white-space:nowrap}
+.dtitle{font-size:var(--fs-title);font-weight:600;line-height:1.35;margin-top:8px}
+.dtitle a{color:var(--fg)}
+.dsub{display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap;font-size:var(--fs-meta);color:var(--muted)}
+.lead{font-size:var(--fs-body);font-weight:500;color:var(--fg);margin-top:16px;max-width:72ch}
+.quote{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.quote>div{border-left:2px solid var(--edge);padding:2px 0 2px 12px;font-size:13px;line-height:1.5;color:var(--md)}
+.quote .src{font-size:var(--fs-meta);color:var(--muted);margin-bottom:2px}
+.facts{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;font-size:var(--fs-meta);color:var(--muted)}
+.facts span{display:inline-flex;align-items:center;gap:5px}
+.ok{color:var(--pos)}
+.rec{margin-top:16px;display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:8px;background:var(--primary-soft);flex-wrap:wrap}
+.rec.auto{background:var(--surface)}
+.rec .who{margin-top:1px}
+.rec .rtxt{flex:1;min-width:240px;font-size:13px;color:var(--md)}
+.rec .rtxt b{font-weight:600;color:var(--fg)}
+.rec .rtxt span{display:block;font-size:var(--fs-meta);color:var(--muted);margin-top:2px}
+.rec .linkbtn{align-self:center}
+.ctxrow{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;margin-top:14px}
+.choices{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.dactions{background:var(--surface);border-top:1px solid var(--border);padding:14px 24px 12px}
+.dactions .choices{margin-top:0}
+.ifnot{display:flex;align-items:baseline;gap:4px 16px;flex-wrap:wrap;margin-top:10px;font-size:var(--fs-meta);color:var(--muted)}
+.ifnot>span{flex:1;min-width:240px}
+.ifnot b{color:var(--fg);font-weight:500}
+.deadline{color:var(--att);font-weight:600}
+.ids-d[open]{flex-basis:100%}
+.ids-d:not([open])>.kv{display:none}
+/* blocked by other tasks */
+.blocked{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--card);box-shadow:0 1px 2px rgba(22,24,29,.04)}
+.brow{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:16px;align-items:center;padding:14px 20px;background:var(--card)}
+.brow+.brow{border-top:1px solid var(--border)}
+.brow .t b{font-weight:500}
+.brow .t p{font-size:var(--fs-meta);color:var(--muted);margin-top:2px}
+.waitsfor{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-label);font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);white-space:nowrap}
+.waitsfor svg{width:16px;height:16px}
+.blocker{border:1px dashed var(--edge);border-radius:6px;padding:8px 12px;min-width:0}
+.blocker b{font-weight:500}
+.blocker p{font-size:var(--fs-meta);color:var(--muted);margin-top:2px}
+.blocker .you{color:var(--att);font-weight:500}
+/* handled automatically */
+.autobox{border:1px solid var(--border);border-radius:12px;background:var(--card)}
+.autobox>summary{display:flex;align-items:center;gap:10px;padding:12px 20px;flex-wrap:wrap}
+.alog{list-style:none;margin:0;padding:0 20px 8px}
+.alog li{display:grid;grid-template-columns:48px minmax(0,1fr);gap:12px;padding:9px 0;border-top:1px solid var(--border);color:var(--md)}
+.alog time{font-family:var(--mono);font-size:var(--fs-meta);color:var(--faint);padding-top:2px}
+.alog .res{color:var(--muted)}
+.escal{display:flex;align-items:center;gap:16px;margin-bottom:12px;padding:14px 20px;border:1px solid var(--border);border-radius:12px;background:var(--card);flex-wrap:wrap}
+.escal .t{flex:1;min-width:280px}
+.escal .t p{font-size:var(--fs-meta);color:var(--muted);margin-top:2px}
+.nojudg{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border:1px dashed var(--edge);border-radius:4px;padding:0 6px;line-height:18px;white-space:nowrap}
+
+/* ---------- task page ---------- */
+.crumbs{font-size:var(--fs-meta);color:var(--faint);display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.crumbs a{color:var(--muted)}
+.crumbs .cur{max-width:36ch}
+.scen{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto;align-items:center}
+.thead{margin-top:16px}
+.thead h1{font-size:var(--fs-page);font-weight:600;letter-spacing:-.015em;line-height:1.25}
+.thead .prl{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:var(--fs-meta);color:var(--muted)}
+.status{margin-top:20px;display:flex;gap:12px 32px;align-items:center;flex-wrap:wrap;padding:16px 20px;border-radius:8px;border:1px solid rgba(51,85,245,.25);background:rgba(238,241,254,.35)}
+.status.you{border-color:rgba(180,83,9,.4);background:var(--att-soft)}
+.status .txt{flex:1;min-width:300px}
+.status .txt p{font-size:var(--fs-title);line-height:1.45;color:var(--fg);margin-top:4px;max-width:64ch}
+.status .whowrap{display:flex;flex-direction:column;gap:6px}
+.flowcard{margin-top:24px;border:1px solid var(--border);border-radius:8px;background:var(--card)}
+.flowhead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.legend{display:flex;gap:6px 16px;flex-wrap:wrap;font-size:var(--fs-label);color:var(--muted);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.flowwrap{padding:16px 20px 4px}
+svg.flow{display:block;width:100%;max-width:760px;height:auto;margin:0 auto}
+svg.flow .n{cursor:pointer}
+svg.flow .n:focus{outline:none}
+svg.flow .n:hover .shape,svg.flow .n:focus-visible .shape{stroke-width:2.25}
+svg.flow .n:focus-visible .shape{stroke:#16181d}
+svg.flow .n.sel .shape{stroke-width:2.5}
+svg.flow text{font-family:var(--sans)}
+.pulse{animation:pulse 2s ease-out infinite;transform-box:fill-box;transform-origin:center}
+@keyframes pulse{0%{opacity:.55;transform:scale(1)}100%{opacity:0;transform:scale(1.12,1.35)}}
+.flowfoot{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 20px 14px;font-size:var(--fs-meta);color:var(--faint);flex-wrap:wrap}
+.pending{margin-top:24px;border-radius:8px;border:1px solid var(--border);padding:20px 24px;background:var(--card)}
+.pending.you{border-color:rgba(180,83,9,.45);background:var(--att-soft)}
+.pending.calm{background:var(--surface)}
+.pending .label.you{color:var(--att)}
+.pending h3{font-size:var(--fs-title);font-weight:600;margin-top:6px}
+.pending dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 24px;margin:16px 0 0}
+.pending dt{font-size:var(--fs-meta);font-weight:500;color:var(--muted)}
+.pending dd{margin:2px 0 0;color:var(--md)}
+.pending .choices{margin-top:16px}
+.rawtog{display:inline-flex;align-items:center;gap:8px;margin-top:24px;font-size:var(--fs-meta);color:var(--muted);cursor:pointer;user-select:none;border:0;background:none;padding:0}
+.switch{width:28px;height:16px;border-radius:999px;background:var(--edge);position:relative;transition:background .15s;flex-shrink:0}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:999px;background:#fff;transition:transform .15s;box-shadow:0 1px 1px rgba(0,0,0,.15)}
+.rawtog[aria-pressed="true"] .switch{background:var(--primary)}
+.rawtog[aria-pressed="true"] .switch::after{transform:translateX(12px)}
+pre.raw,pre.oplog{margin:10px 0 0;padding:12px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-family:var(--mono);font-size:var(--fs-meta);line-height:1.7;color:var(--md);white-space:pre-wrap;overflow-wrap:anywhere}
+pre.raw[hidden]{display:none}
+
+/* ---------- side sheet ---------- */
+.scrim{position:fixed;inset:0;background:rgba(22,24,29,.16);opacity:0;pointer-events:none;transition:opacity .15s;z-index:40}
+.scrim.on{opacity:1;pointer-events:auto}
+.sheet{position:fixed;top:0;right:0;bottom:0;width:480px;max-width:92vw;background:var(--bg);border-left:1px solid var(--border);box-shadow:-8px 0 24px rgba(22,24,29,.08);transform:translateX(100%);visibility:hidden;transition:transform .2s cubic-bezier(.32,.72,0,1),visibility 0s .2s;z-index:50;display:flex;flex-direction:column}
+.sheet.on{transform:translateX(0);visibility:visible;transition:transform .2s cubic-bezier(.32,.72,0,1)}
+.sheethead{display:flex;align-items:flex-start;gap:8px;padding:20px 24px 16px;border-bottom:1px solid var(--border)}
+.sheethead .grow{flex:1;min-width:0}
+.sheethead .ctxline{font-size:var(--fs-meta);color:var(--faint);margin-bottom:6px}
+.sheethead h2{font-size:var(--fs-title);font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sheethead .desc{color:var(--muted);font-size:13px;line-height:1.5;margin-top:4px}
+.st{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:1px 9px;font-size:var(--fs-label);font-weight:600;line-height:18px;white-space:nowrap}
+.st-progress{background:var(--primary-soft);color:var(--primary)}
+.st-you{background:var(--att-soft);color:var(--att)}
+.st-done{background:var(--surface);color:var(--md);box-shadow:inset 0 0 0 1px var(--border)}
+.st-waiting{background:var(--surface);color:var(--muted);box-shadow:inset 0 0 0 1px var(--edge)}
+.st-skip,.st-up{background:none;color:var(--faint);box-shadow:inset 0 0 0 1px var(--border)}
+.xbtn{border:0;background:none;width:30px;height:30px;border-radius:6px;color:var(--muted);display:grid;place-items:center;flex-shrink:0}
+.xbtn:hover{background:var(--surface);color:var(--fg)}
+.sheetbody{flex:1;overflow-y:auto;padding:20px 24px 32px}
+.sheetfoot{border-top:1px solid var(--border);padding:12px 24px;display:flex;gap:8px;flex-wrap:wrap;background:var(--bg)}
+.sheetfoot[hidden]{display:none}
+.sheetfoot .choices{margin:0}
+.sec+.sec{margin-top:28px}
+.sec>.label{margin-bottom:10px;display:block}
+.sec p+p{margin-top:8px}
+.prose{color:var(--md)}
+.prose ol,.prose ul{margin:0;padding-left:20px}
+.prose li+li{margin-top:4px}
+.files{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:8px}
+.files li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:8px 12px;font-size:13px}
+.files li+li{border-top:1px solid var(--border)}
+.files code{font-family:var(--mono);font-size:var(--fs-meta);color:var(--fg);overflow-wrap:anywhere}
+.files .chg{font-family:var(--mono);font-size:var(--fs-meta);color:var(--faint)}
+.files .why{grid-column:1/3;color:var(--muted);font-size:var(--fs-meta)}
+.excerpt{border:1px solid var(--border);border-radius:8px;padding:12px 14px}
+.excerpt+.excerpt{margin-top:10px}
+.excerpt .src{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--fs-meta);color:var(--muted);margin-bottom:6px}
+.excerpt .src b{color:var(--fg);font-weight:600}
+.excerpt p{color:var(--md)}
+.excerpt mark{background:var(--att-soft);color:inherit;border-radius:2px;padding:0 2px}
+.excerpt.pending-prop{background:var(--surface);border-style:dashed}
+/* current attempt status */
+.now{border:1px solid rgba(51,85,245,.28);border-radius:8px;background:rgba(238,241,254,.35);padding:14px 16px}
+.now.static{border-color:var(--border);background:var(--surface)}
+.now.you{border-color:rgba(180,83,9,.4);background:var(--att-soft)}
+.runner{display:flex;align-items:center;gap:8px;font-weight:600}
+.runner .by{font-weight:400;color:var(--muted)}
+.ids{display:grid;grid-template-columns:72px minmax(0,1fr) auto;gap:2px 10px;align-items:center;margin-top:10px;font-size:var(--fs-meta)}
+.ids dt{color:var(--faint)}
+.ids dd{margin:0;font-family:var(--mono);color:var(--md);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.copy{border:0;background:none;color:var(--faint);width:24px;height:22px;border-radius:4px;display:grid;place-items:center}
+.copy:hover{background:var(--raised);color:var(--fg)}
+.copy svg{width:13px;height:13px}
+.nowgrid{display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px 10px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(51,85,245,.15);font-size:13px}
+.now.static .nowgrid{border-top-color:var(--border)}
+.nowgrid dt{color:var(--faint);font-size:var(--fs-meta);padding-top:1px}
+.nowgrid dd{margin:0;color:var(--md);min-width:0}
+.hb{display:inline-flex;align-items:center;gap:6px}
+.hb i{width:7px;height:7px;border-radius:999px;background:var(--pos);flex-shrink:0}
+.hb.warn i{background:var(--att-dot)}
+.softnote{margin-top:4px;font-size:var(--fs-meta);color:var(--muted)}
+.softnote.warn{color:var(--att)}
+.timing{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.timing b{font-weight:600;font-variant-numeric:tabular-nums}
+.tbar{position:relative;height:6px;border-radius:999px;background:var(--raised);margin-top:6px;overflow:visible}
+.tbar i{display:block;height:100%;border-radius:999px;background:var(--primary)}
+.tbar.slow i{background:repeating-linear-gradient(90deg,var(--primary) 0 70%,transparent 70% 100%);background:var(--primary)}
+.tbar .typ{position:absolute;top:-3px;width:2px;height:12px;background:var(--md);border-radius:1px}
+/* attempt history: heading and rows share one left edge */
+.atts{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.att{display:grid;grid-template-columns:84px minmax(0,1fr) auto;gap:2px 12px;padding:10px 12px;align-items:baseline}
+.att+.att{border-top:1px solid var(--border)}
+.att .num{font-size:var(--fs-meta);color:var(--faint);font-variant-numeric:tabular-nums}
+.att time{font-size:var(--fs-meta);color:var(--faint);font-family:var(--mono);white-space:nowrap}
+.att .why{grid-column:2/4;font-size:var(--fs-meta);color:var(--muted)}
+.att.cur{background:var(--primary-soft)}
+.att.cur .num{color:var(--primary);font-weight:600}
+.att .out-fail{color:var(--fail)}
+.att .out-auto{color:var(--muted)}
+.supers{border-top:1px solid var(--border)}
+.supers>summary{padding:9px 12px;background:var(--surface)}
+.supers[open]>summary{border-bottom:1px solid var(--border)}
+.empty{color:var(--muted);padding:12px 14px;border:1px dashed var(--edge);border-radius:6px}
+
+/* ---------- board ---------- */
+.boardhead{display:flex;align-items:flex-end;gap:16px 32px;flex-wrap:wrap;padding-right:40px}
+.boardhead .pagehead{flex:1;min-width:320px}
+.slegend{display:flex;gap:6px 14px;flex-wrap:wrap;font-size:var(--fs-label);color:var(--muted);align-items:center}
+.slegend span{display:inline-flex;align-items:center;gap:6px}
+.slegend i{display:inline-block;width:16px;height:6px;border-radius:2px;background:var(--raised)}
+.boardscroll{margin-top:24px;overflow-x:auto;padding:0 40px 16px 0}
+.lanes{display:flex;gap:16px;align-items:flex-start;width:max-content}
+.lane{width:24rem;flex-shrink:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px}
+.lane.done{width:20rem;background:rgba(247,248,250,.5)}
+.lanehead{display:flex;align-items:center;gap:8px;padding:2px 4px 12px}
+.lanehead .label{color:var(--md)}
+.lanehead .n{font-size:var(--fs-meta);color:var(--faint);font-variant-numeric:tabular-nums}
+.lanebadge{margin-left:auto}
+.bcard{position:relative;border:1px solid var(--border);border-radius:8px;background:var(--card);padding:14px 16px 12px;transition:border-color .15s,box-shadow .15s}
+.bcard:hover{border-color:var(--edge)}
+.bcard+.bcard{margin-top:10px}
+/* needs you: amber ring instead of a side stripe */
+.bcard.yours{border-color:rgba(245,158,11,.55);box-shadow:0 0 0 1px rgba(245,158,11,.22),0 2px 8px -4px rgba(180,83,9,.18)}
+.bcard.yours:hover{border-color:var(--att-dot)}
+.cardopen{display:block;width:calc(100% - 28px);text-align:left;border:0;background:none;padding:0;margin:0;color:inherit;font:inherit;border-radius:4px;cursor:pointer}
+.cardopen:focus-visible{outline:2px solid var(--primary);outline-offset:4px}
+.cardopen>span{display:block}
+.bcard .title{font-size:var(--fs-body);font-weight:600;line-height:1.4;color:var(--fg)}
+.cardopen:hover .title{color:var(--primary)}
+.bcard .sub{margin-top:2px;font-size:var(--fs-meta);color:var(--faint)}
+.bcard .sent{margin-top:8px;font-size:13px;line-height:1.5;color:var(--md)}
+.flowbtn{position:absolute;top:10px;right:10px;width:28px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--faint);border:1px solid transparent}
+.flowbtn svg{width:16px;height:16px}
+.flowbtn:hover{color:var(--primary);background:var(--primary-soft);border-color:#d5ddfd;text-decoration:none}
+.flowbtn:focus-visible{outline:2px solid var(--primary);outline-offset:1px;color:var(--primary)}
+.bcard .foot{margin-top:12px;display:flex;align-items:center;gap:10px}
+.bcard .foot .cap{font-size:var(--fs-meta);color:var(--muted);margin-left:auto;white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+/* task detail sheet */
+.sechead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.sechead .meta{margin-left:auto}
+.planoff{margin:-2px 0 10px}
+.psecs{border:1px solid var(--border);border-radius:8px}
+.psec+.psec{border-top:1px solid var(--border)}
+.psec>summary.disclose{display:flex;padding:10px 12px;font-size:13px;font-weight:500;color:var(--fg)}
+.psec>summary .n{margin-left:auto;font-size:var(--fs-meta);font-weight:400;color:var(--faint);font-variant-numeric:tabular-nums}
+.psec>summary:hover{background:var(--surface)}
+.pbody{padding:0 12px 12px 22px;font-size:13px;line-height:1.55}
+.pbody .files li{padding:6px 10px}
+.reqs,.acs,.related{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:8px}
+.reqs li,.acs li{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:4px 12px;align-items:baseline;padding:9px 12px;font-size:13px;color:var(--md)}
+.reqs li{grid-template-columns:64px minmax(0,1fr)}
+.reqs li+li,.acs li+li,.related li+li{border-top:1px solid var(--border)}
+.reqs b,.acs b{font-family:var(--mono);font-size:var(--fs-meta);font-weight:500;color:var(--primary)}
+.acs .badge{align-self:center}
+.b-prog{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.b-none{color:var(--faint);box-shadow:inset 0 0 0 1px var(--border)}
+.related a,.related button{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:0;background:none;text-align:left;font:inherit;font-size:13px;color:var(--fg);cursor:pointer}
+.related a:hover,.related button:hover{background:var(--surface);text-decoration:none}
+.related a:hover .rl,.related button:hover .rl{color:var(--primary)}
+.related .rtag{flex:0 0 72px;font-size:var(--fs-label);font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.related .rl{flex:1;min-width:0}
+.related svg{width:14px;height:14px;color:var(--faint);flex-shrink:0}
+.stripe{display:flex;align-items:center;gap:3px;margin-top:10px}
+.seg{flex:1;height:20px;border:0;padding:0;background:none;position:relative;border-radius:3px}
+.seg::before{content:"";position:absolute;left:0;right:0;top:7px;height:6px;border-radius:2px;background:var(--raised);transition:transform .12s}
+.seg:hover::before{transform:scaleY(1.5)}
+.seg.g{flex:0 0 14px}
+.seg.g::before{left:2px;right:auto;top:5px;width:10px;height:10px;transform:rotate(45deg);border-radius:2px;background:#fff;box-shadow:inset 0 0 0 1.5px var(--edge)}
+.seg.g:hover::before{transform:rotate(45deg) scale(1.2)}
+.seg.d::before{background:var(--primary)}
+.seg.g.d::before{background:var(--primary);box-shadow:none}
+.seg.s::before{background:repeating-linear-gradient(135deg,var(--edge) 0 1px,transparent 1px 3px)}
+.seg.g.s::before{background:var(--surface);box-shadow:inset 0 0 0 1px var(--border)}
+.seg.p::before{background:var(--primary);box-shadow:0 0 0 1.5px #fff,0 0 0 3px var(--primary)}
+.seg.p::after{content:"";position:absolute;right:-1px;top:6px;width:8px;height:8px;border-radius:999px;background:var(--primary);box-shadow:0 0 0 1.5px #fff;animation:live 2s ease-out infinite}
+.seg.w::before{background:#fff;box-shadow:inset 0 0 0 1.5px var(--primary)}
+.seg.y::before{background:var(--att-dot);box-shadow:0 0 0 1.5px #fff,0 0 0 3px var(--att-dot)}
+.seg.sel::before{outline:2px solid var(--fg);outline-offset:2px}
+.scale{margin-top:40px;max-width:820px;border-top:1px solid var(--border);padding-top:16px}
+.scale ol{list-style:none;margin:12px 0 0;padding:0}
+.scale li{display:grid;grid-template-columns:180px minmax(0,1fr);gap:16px;align-items:baseline;padding:8px 0;border-top:1px solid var(--border)}
+.scale li:first-child{border-top:0}
+.scale .spec{font-size:var(--fs-meta);color:var(--faint);font-family:var(--mono)}
+/* superseded attempts: the toggle bar spans the list width */
+.supers>summary.disclose{display:flex}
+
+/* toast */
+.toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,16px);background:var(--fg);color:#fff;font-size:13px;padding:10px 16px;border-radius:8px;box-shadow:0 6px 20px rgba(22,24,29,.2);opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;z-index:60;max-width:min(560px,90vw)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+@media (prefers-reduced-motion:reduce){
+  .pulse{animation:none;opacity:.3}
+  .livedot,.seg.p::after{animation:none}
+  .sheet,.scrim,.toast{transition:none}
+}
+@media (max-width:1180px){
+  .page{padding:28px 28px 56px}
+  .page.wide{padding-right:0}
+  .boardhead{padding-right:28px}
+  .boardscroll{padding-right:28px}
+  .mockbar{padding:8px 28px}
+  .quote{grid-template-columns:1fr}
+  .pending dl{grid-template-columns:1fr}
+  .brow{grid-template-columns:minmax(0,1fr);gap:8px}
+  .waitsfor svg{transform:rotate(90deg)}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Primary">
+    <div class="ws">
+      <p class="name">FunnelFlux Pro</p>
+      <p class="sub">Conveyor · software factory</p>
+    </div>
+    <div class="navlist">
+      <a class="nav" data-nav="board" href="#board"><svg data-i="kanban"></svg><span class="l">Board</span></a>
+      <a class="nav" data-nav="tasks" href="#task-1575"><svg data-i="list"></svg><span class="l">Tasks</span></a>
+      <a class="nav" data-nav="inbox" href="#inbox"><svg data-i="inbox"></svg><span class="l">Inbox</span><span class="new">New</span><span class="badge b-att" title="5 decisions need you">5</span></a>
+      <button class="nav" type="button" data-toast="Workspace isn't part of this mockup."><svg data-i="folder"></svg><span class="l">Workspace</span></button>
+      <button class="nav" type="button" data-toast="Requirements isn't part of this mockup."><svg data-i="workflow"></svg><span class="l">Requirements</span></button>
+      <button class="nav" type="button" data-toast="System Design isn't part of this mockup."><svg data-i="file"></svg><span class="l">System Design</span></button>
+      <button class="nav" type="button" data-toast="Pending proposals isn't part of this mockup."><svg data-i="bell"></svg><span class="l">Pending proposals</span><span class="badge b-att">1</span></button>
+      <button class="nav" type="button" data-toast="Monitor isn't part of this mockup."><svg data-i="activity"></svg><span class="l">Monitor</span></button>
+      <button class="nav" type="button" data-toast="Settings isn't part of this mockup."><svg data-i="settings"></svg><span class="l">Settings</span></button>
+    </div>
+    <button class="signout" type="button" data-toast="Mockup only.">Sign out</button>
+  </nav>
+
+  <div class="main">
+    <div class="mockbar">
+      <span class="tag">Mockup · operator UX proposal</span>
+      <div class="tabs" role="tablist" aria-label="Mockup views">
+        <a class="tab" role="tab" data-tab="inbox" href="#inbox">1 · Operator inbox</a>
+        <a class="tab" role="tab" data-tab="task" href="#task-1575">2 · Task flowchart</a>
+        <a class="tab" role="tab" data-tab="board" href="#board">3 · Board</a>
+      </div>
+      <span class="hint">Static mockup · buttons don't change data</span>
+    </div>
+
+    <!-- ===================== 1. INBOX ===================== -->
+    <section class="page narrow view" id="v-inbox" aria-labelledby="inbox-title">
+      <div class="pagehead">
+        <h1 id="inbox-title">Inbox</h1>
+        <p>Only the calls that need your judgment. Below them: tasks held up by other tasks, and what Conveyor already handled.</p>
+      </div>
+      <div class="filters" role="group" aria-label="Filter inbox">
+        <button class="fchip on" type="button" data-filter="all">All</button>
+        <button class="fchip" type="button" data-filter="decisions">Decisions <span class="n">5</span></button>
+        <button class="fchip" type="button" data-filter="blocked">Blocked by tasks <span class="n">4</span></button>
+        <button class="fchip" type="button" data-filter="auto">Auto <span class="n">8</span></button>
+        <span class="sortnote">Blockers first, then nearest deadline</span>
+      </div>
+
+      <!-- Decisions -->
+      <div class="band" data-band="decisions">
+        <div class="bandhead"><div class="row"><h2>Decisions</h2><span class="sub">5 need you</span></div></div>
+
+        <article class="decision" id="d-drift">
+          <div class="dbody">
+            <div class="dhead"><span class="kind">Approve plan</span><span class="badge b-att">Blocks 2 tasks</span><span class="age">38 min</span></div>
+            <h3 class="dtitle"><a href="#task-drift">Fix protobuf generation drift</a></h3>
+            <div class="dsub"><span>No PR yet</span><span class="chip-req"><b>REQ-2</b><span>Reproducible builds</span></span></div>
+            <p class="lead">Is plan v1 the right way to fix the drift? Approving starts implementation.</p>
+            <div class="rec"><span class="who who-agent"><i>AI</i>Plan agent</span><p class="rtxt"><b>Recommends approving.</b><span>Build tooling only; 5 done criteria cover REQ-2.</span></p><button class="linkbtn" type="button" data-ctx="plan">View plan v1 →</button></div>
+          </div>
+          <div class="dactions">
+            <div class="choices">
+              <button class="btn btn-primary btn-sm" data-toast="Would approve plan v1 → Conveyor queues implementation now and publishes the plan as a GitHub issue.">Approve plan</button>
+              <button class="btn btn-outline btn-sm" data-toast="Would open a note box → the plan agent revises and you see plan v2 here.">Ask for changes…</button>
+              <button class="btn btn-ghost btn-sm" data-toast="Would reject → the task closes and its 2 dependents are flagged to you.">Reject</button>
+            </div>
+            <div class="ifnot"><span>If you do nothing: <b>#1568 and #1564 stay blocked.</b> No deadline.</span>
+              <details class="ids-d"><summary class="disclose">IDs</summary>
+                <dl class="kv"><dt>Task</dt><dd>261009-477f9a</dd><dt>Work order</dt><dd>261009-477f9a-spec-1 (completed)</dd><dt>Attempt</dt><dd>att_01JA1X9F2C</dd><dt>Gate</dt><dd>spec · plan_version=1</dd><dt>Dependents</dt><dd>261003-5d21e0, 260927-0c44b9</dd></dl>
+              </details></div>
+          </div>
+        </article>
+
+        <article class="decision" id="d-deploy">
+          <div class="dbody">
+            <div class="dhead"><span class="kind">Confirm an outcome</span><span class="badge b-att">Due 18:40</span><span class="age">32 min</span></div>
+            <h3 class="dtitle">Rotate staging database credentials</h3>
+            <div class="dsub"><span>PR #1566</span><span class="chip-req"><b>REQ-11</b><span>Credential rotation</span></span></div>
+            <p class="lead">Did the staging deploy apply? The agent can't see the result from its sandbox.</p>
+            <div class="rec"><span class="who who-agent"><i>AI</i>Verify agent</span><p class="rtxt"><b>Thinks it applied.</b><span>New secret version printed; only the health check was unreachable.</span></p><button class="linkbtn" type="button" data-ctx="deploy">View operation log →</button></div>
+          </div>
+          <div class="dactions">
+            <div class="choices">
+              <button class="btn btn-primary btn-sm" data-toast="Would record “applied” → verify finishes its remaining checks, then review starts.">Yes, it applied</button>
+              <button class="btn btn-outline btn-sm" data-toast="Would record “not applied” → the implementer gets this as feedback and fixes the deploy.">No, it didn't</button>
+            </div>
+            <div class="ifnot"><span>If you do nothing: verify holds until <span class="deadline">18:40</span>, then runs the deploy again.</span>
+              <details class="ids-d"><summary class="disclose">IDs</summary>
+                <dl class="kv"><dt>Task</dt><dd>261004-c71e02</dd><dt>Work order</dt><dd>261004-c71e02-verify-1 (claimed)</dd><dt>Attempt</dt><dd>att_01JA2M0R8T</dd><dt>Obligation</dt><dd>external_operation · staging_deploy</dd><dt>Reason codes</dt><dd>operator_action_required, outcome_unconfirmed</dd></dl>
+              </details></div>
+          </div>
+        </article>
+
+        <article class="decision" id="d-question">
+          <div class="dbody">
+            <div class="dhead"><span class="kind">Agent question</span><span class="badge b-default">Agent paused</span><span class="age">38 min</span></div>
+            <h3 class="dtitle">Deduplicate click events at ingestion</h3>
+            <div class="dsub"><span>PR #1577</span><span class="chip-req"><b>REQ-7</b><span>Click deduplication</span></span></div>
+            <p class="lead">A requirement and a design disagree. Which one wins?</p>
+            <div class="quote">
+              <div><p class="src">REQ-7 · Click deduplication</p>Repeat clicks from one visitor within 30 s count once.</div>
+              <div><p class="src">Event ingestion v3</p>Deduplicate per session, with no time window.</div>
+            </div>
+            <div class="rec"><span class="who who-agent"><i>AI</i>Implementer</span><p class="rtxt"><b>Suggests REQ-7.</b><span>Requirements outrank design; pending Event ingestion v4 already agrees.</span></p><button class="linkbtn" type="button" data-ctx="question">View cited text →</button></div>
+          </div>
+          <div class="dactions">
+            <div class="choices">
+              <button class="btn btn-primary btn-sm" data-toast="Would answer “REQ-7 wins” → the agent resumes with a 30-second window; the design proposal stays for you to confirm.">REQ-7 wins</button>
+              <button class="btn btn-outline btn-sm" data-toast="Would answer “Design wins” → the agent resumes per-session and proposes a REQ-7 revision.">Design v3 wins</button>
+              <button class="btn btn-ghost btn-sm" data-toast="Would open a reply box; your words go to the agent verbatim.">Answer in my own words…</button>
+            </div>
+            <div class="ifnot"><span>If you do nothing: the agent stays paused. No deadline.</span>
+              <details class="ids-d"><summary class="disclose">IDs</summary>
+                <dl class="kv"><dt>Task</dt><dd>261005-8e2d10</dd><dt>Work order</dt><dd>261005-8e2d10-implement-2 (released)</dd><dt>Checkpoint</dt><dd>decision_request · conflict=requirement_vs_design</dd><dt>Cited</dt><dd>REQ-7 AC-7.2 · event-ingestion@v3 · event-ingestion@v4 (pending)</dd></dl>
+              </details></div>
+          </div>
+        </article>
+
+        <article class="decision" id="d-merge">
+          <div class="dbody">
+            <div class="dhead"><span class="kind">Merge</span><span class="age">2 h 10 min</span></div>
+            <h3 class="dtitle">Webhook signature check for partner callbacks</h3>
+            <div class="dsub"><span>PR #1572</span><span class="chip-req"><b>REQ-9</b><span>Partner callbacks are authenticated</span></span></div>
+            <p class="lead">Ship it? Everything automatic has passed.</p>
+            <div class="facts"><span><span class="ok">✓</span> 2 of 2 reviewers approve</span><span><span class="ok">✓</span> Checks green</span><span><span class="ok">✓</span> 0 behind main</span><span><span class="ok">✓</span> Verify passed</span></div>
+            <div class="ctxrow">
+              <a class="btn btn-outline btn-sm" href="https://github.com/funnelflux/flux-saas-runtime/pull/1572" target="_blank" rel="noopener noreferrer"><svg data-i="github"></svg>Open PR #1572 on GitHub<svg data-i="ext"></svg></a>
+              <button class="linkbtn" type="button" data-ctx="merge">View review summary →</button>
+            </div>
+          </div>
+          <div class="dactions">
+            <div class="choices">
+              <button class="btn btn-primary btn-sm" data-toast="Would merge PR #1572 → task moves to Merged; its worktree is cleaned up.">Merge PR</button>
+              <button class="btn btn-outline btn-sm" data-toast="Would open a note box → a new implement run gets your note as feedback.">Send back with a note…</button>
+              <button class="btn btn-ghost btn-sm" data-toast="Would close the task without merging; the PR stays open on GitHub.">Close without merging</button>
+            </div>
+            <div class="ifnot"><span>If you do nothing: the PR stays open and “Partner webhook retries” keeps waiting.</span>
+              <details class="ids-d"><summary class="disclose">IDs</summary>
+                <dl class="kv"><dt>Task</dt><dd>260930-17ab5c</dd><dt>Work order</dt><dd>260930-17ab5c-review-3 (completed)</dd><dt>Verdicts</dt><dd>seat-1 approve · seat-2 approve</dd><dt>Head</dt><dd>9f3e1c2</dd></dl>
+              </details></div>
+          </div>
+        </article>
+
+        <article class="decision" id="d-loop">
+          <div class="dbody">
+            <div class="dhead"><span class="kind">Review stalemate</span><span class="badge b-default">Sent back 10 times</span><span class="age">2 h</span></div>
+            <h3 class="dtitle">Bulk edit for campaign rules</h3>
+            <div class="dsub"><span>PR #1561</span><span class="chip-req"><b>REQ-12</b><span>Bulk rule editing</span></span></div>
+            <p class="lead">Must a bulk edit be all-or-nothing? Reviewers and the implementer can't agree.</p>
+            <div class="quote">
+              <div><p class="src">Reviewers, rounds 4–10</p>Partial failure leaves rules half-updated. Use one transaction.</div>
+              <div><p class="src">Implementer</p>No batch endpoint exists. Per-rule writes with rollback is the best available.</div>
+            </div>
+            <div class="rec auto"><span class="who who-auto"><i>C</i>Conveyor</span><p class="rtxt"><b>Suggests a ruling.</b><span>Everything else in the PR passes review.</span></p><button class="linkbtn" type="button" data-ctx="loop">View the last exchange →</button></div>
+          </div>
+          <div class="dactions">
+            <div class="choices">
+              <button class="btn btn-primary btn-sm" data-toast="Would open a guidance box → your ruling goes to the next implement run and to both reviewers.">Redirect with guidance…</button>
+              <button class="btn btn-outline btn-sm" data-toast="Would restart the task from planning with a fresh branch.">Restart</button>
+              <button class="btn btn-destructive btn-sm" data-toast="Would close the task; the PR stays open on GitHub.">Close</button>
+            </div>
+            <div class="ifnot"><span>If you do nothing: the task stays parked. No deadline.</span>
+              <details class="ids-d"><summary class="disclose">IDs</summary>
+                <dl class="kv"><dt>Task</dt><dd>260921-5a90f3</dd><dt>Work order</dt><dd>260921-5a90f3-review-10 (completed)</dd><dt>Bounces</dt><dd>10 / max_bounces=10 since last human action</dd></dl>
+              </details></div>
+          </div>
+        </article>
+      </div>
+
+<!-- Blocked by other tasks -->
+      <div class="band" data-band="blocked">
+        <div class="bandhead">
+          <div class="row"><h2>Blocked by other tasks: nothing for you to do</h2><span class="sub">4 tasks</span></div>
+          <p class="explain">These agents are waiting on another task's work. Conveyor resumes each one by itself when its blocker merges. Anything waiting on <em>you</em> is in Decisions above.</p>
+        </div>
+        <div class="blocked">
+          <div class="brow">
+            <div class="t"><b>Meta empty arrays</b> <span class="meta">· PR #1568</span><p>Paused at Verify. Lint fails until the drift fix lands.</p></div>
+            <span class="waitsfor">waits for <svg data-i="arrow"></svg></span>
+            <div class="blocker"><b>Fix protobuf generation drift</b><p><a class="you" href="#inbox/d-drift">Needs your plan approval: Decisions ↑</a></p></div>
+          </div>
+          <div class="brow">
+            <div class="t"><b>Campaign export streaming</b> <span class="meta">· PR #1564</span><p>Paused at Verify. Same lint failure; retries used up.</p></div>
+            <span class="waitsfor">waits for <svg data-i="arrow"></svg></span>
+            <div class="blocker"><b>Fix protobuf generation drift</b><p><a class="you" href="#inbox/d-drift">Needs your plan approval: Decisions ↑</a></p></div>
+          </div>
+          <div class="brow">
+            <div class="t"><b>Partner webhook retries</b> <span class="meta">· no PR yet</span><p>Paused before Implement. Builds on the signature check.</p></div>
+            <span class="waitsfor">waits for <svg data-i="arrow"></svg></span>
+            <div class="blocker"><b>Webhook signature check</b> <span class="meta">· PR #1572</span><p><a class="you" href="#inbox/d-merge">Ready for your merge: Decisions ↑</a></p></div>
+          </div>
+          <div class="brow">
+            <div class="t"><b>Rule editor keyboard shortcuts</b> <span class="meta">· no PR yet</span><p>Paused before Implement. Needs the new rule API.</p></div>
+            <span class="waitsfor">waits for <svg data-i="arrow"></svg></span>
+            <div class="blocker"><b>Rule engine API v2</b> <span class="meta">· PR #1570</span><p><span class="livedot" style="margin-right:6px;vertical-align:1px"></span>In review, agent working</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Auto -->
+      <div class="band" data-band="auto">
+        <div class="bandhead"><div class="row"><h2>Handled automatically</h2><span class="sub">Conveyor recovered these without you</span></div></div>
+        <div class="escal">
+          <span class="nojudg">No judgment needed</span>
+          <div class="t">Verify retries ran out on <b>Campaign export streaming</b> · PR #1564 (3 of 3, same failure).
+            <p>Cause: protoc writes into the checkout, which the drift fix addresses. Retrying earlier will likely fail again.</p></div>
+          <button class="btn btn-secondary btn-sm" data-toast="Would grant one more verify attempt (4th) → Conveyor re-queues it now.">Retry once more</button>
+        </div>
+        <details class="autobox">
+          <summary><span class="disclose">Show log</span><span class="badge b-default">7 in last 24 h</span></summary>
+          <ol class="alog">
+            <li><time>17:14</time><span>Verify for PR #1575 timed out <span class="res">· re-queued (attempt 2 of 3)</span></span></li>
+            <li><time>15:02</time><span>Queued plan for “Audit log retention” sat 24 h unclaimed <span class="res">· redispatched</span></span></li>
+            <li><time>13:40</time><span>Lint failed identically twice on PR #1568 <span class="res">· retries paused until its blocker merges</span></span></li>
+            <li><time>12:20</time><span>Agent on PR #1570 exited before claiming its review seat <span class="res">· seat re-offered, picked up 40 s later</span></span></li>
+            <li><time>10:05</time><span>Reviewer seat 2 on PR #1572 was never claimed <span class="res">· another reviewer took it</span></span></li>
+            <li><time>08:31</time><span>Main moved under PR #1561 <span class="res">· rebased cleanly, checks re-run</span></span></li>
+            <li><time>06:12</time><span>Verify on PR #1564 failed a 3rd time, same error <span class="res">· retries stopped; one-click retry above</span></span></li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
+    <!-- ===================== 2. TASK PAGE ===================== -->
+    <section class="page view" id="v-task" aria-labelledby="t-title">
+      <div class="crumbs">
+        <a href="#board">Board</a><span>›</span><span class="cur trunc" id="t-crumb"></span>
+        <div class="scen" role="group" aria-label="Scenario">
+          <span class="faint">Scenario</span>
+          <a class="fchip" data-scen="1575" href="#task-1575">#1575 · auto-retry</a>
+          <a class="fchip" data-scen="drift" href="#task-drift">Drift fix · plan gate</a>
+          <a class="fchip" data-scen="1568" href="#task-1568">#1568 · dependency</a>
+        </div>
+      </div>
+      <div class="thead">
+        <h1 id="t-title"></h1>
+        <div class="prl" id="t-prl"></div>
+      </div>
+      <div class="status" id="t-status">
+        <div class="txt"><span class="label" id="t-statuslabel"></span><p id="t-sentence"></p></div>
+        <div class="whowrap"><span class="label">Who acts next</span><span class="whoset" id="t-who"></span></div>
+      </div>
+
+      <div class="flowcard">
+        <div class="flowhead">
+          <span class="label">Where this task is</span>
+          <div class="legend">
+            <span><svg width="14" height="14" aria-hidden="true"><rect x="1.5" y="1.5" width="11" height="11" rx="3" fill="#fff" stroke="#3355f5" stroke-width="1.5"/></svg>Done</span>
+            <span><svg width="14" height="14" aria-hidden="true"><rect x="1.5" y="1.5" width="11" height="11" rx="3" fill="#eef1fe" stroke="#3355f5" stroke-width="2"/></svg>In progress (agent working)</span>
+            <span><svg width="14" height="14" aria-hidden="true"><rect x="1.5" y="1.5" width="11" height="11" rx="3" fill="#fff" stroke="#3355f5" stroke-width="1.5" stroke-dasharray="3 2"/></svg>Waiting</span>
+            <span><svg width="18" height="12" aria-hidden="true"><polygon points="1,6 4.5,1 13.5,1 17,6 13.5,11 4.5,11" fill="#fff" stroke="#5c616b" stroke-width="1.2"/></svg>Your approval</span>
+            <span><svg width="14" height="14" aria-hidden="true"><rect x="1.5" y="1.5" width="11" height="11" rx="3" fill="#f7f8fa" stroke="#9aa0aa" stroke-dasharray="2 2"/></svg>Skipped</span>
+          </div>
+        </div>
+        <div class="flowwrap"><svg class="flow" id="flow" viewBox="0 0 760 676" role="group" aria-label="Task lifecycle flowchart"></svg></div>
+        <div class="flowfoot"><span>Click any step for its current attempt, history and timing.</span><span>Loops back to an earlier step are drawn on the left.</span></div>
+      </div>
+
+      <div id="t-pending"></div>
+
+      <button class="rawtog" type="button" id="rawtog" aria-pressed="false" aria-controls="t-raw"><span class="switch"></span>Show raw state</button>
+      <pre class="raw" id="t-raw" hidden></pre>
+    </section>
+
+    <!-- ===================== 3. BOARD ===================== -->
+    <section class="page wide view" id="v-board" aria-labelledby="board-title">
+      <div class="boardhead">
+        <div class="pagehead">
+          <h1 id="board-title">Board</h1>
+          <p>Each card says what's happening and who moves next. The stripe shows every step and approval; click a segment to open that step.</p>
+        </div>
+        <div class="slegend" aria-label="Stripe legend">
+          <span><i style="background:var(--primary)"></i>Done</span>
+          <span><span class="livedot"></span>Agent working</span>
+          <span><i style="background:#fff;box-shadow:inset 0 0 0 1.5px var(--primary)"></i>Waiting</span>
+          <span><i style="background:var(--att-dot)"></i>Needs you</span>
+          <span><i style="background:repeating-linear-gradient(135deg,var(--edge) 0 1px,transparent 1px 3px)"></i>Skipped</span>
+          <span><i style="width:9px;height:9px;transform:rotate(45deg);background:#fff;box-shadow:inset 0 0 0 1.5px var(--edge)"></i>Approval</span>
+        </div>
+      </div>
+      <div class="boardscroll" tabindex="0" aria-label="Board lanes, scroll horizontally"><div class="lanes" id="lanes"></div></div>
+
+      <details class="scale" style="margin-right:40px">
+        <summary class="disclose">Type scale used in this mockup</summary>
+        <ol>
+          <li><span class="spec">24 / 600 · page</span><span style="font-size:24px;font-weight:600;letter-spacing:-.015em;line-height:1.25">Inbox</span></li>
+          <li><span class="spec">16 / 600 · card title</span><span style="font-size:16px;font-weight:600">Fix protobuf generation drift</span></li>
+          <li><span class="spec">14 / 400 · body</span><span>Is plan v1 the right way to fix the drift? Approving starts implementation.</span></li>
+          <li><span class="spec">12 / 400 · meta</span><span class="meta">PR #1566 · 32 min · If you do nothing: verify holds until 18:40.</span></li>
+          <li><span class="spec">11 / 600 · label</span><span class="label">Blocked by other tasks</span></li>
+        </ol>
+      </details>
+    </section>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="sheet" id="sheet" aria-labelledby="sh-title" aria-hidden="true" role="dialog">
+  <div class="sheethead">
+    <div class="grow"><p class="ctxline" id="sh-ctx"></p><h2 id="sh-title"></h2><p class="desc" id="sh-desc"></p></div>
+    <button class="xbtn" type="button" id="sh-close" aria-label="Close panel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="sheetbody" id="sh-body"></div>
+  <div class="sheetfoot" id="sh-foot" hidden></div>
+</aside>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+(() => {
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ---------- icons (lucide paths) ---------- */
+const ICONS = {
+  kanban: '<path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/>',
+  list: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+  inbox: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  folder: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>',
+  workflow: '<rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M2 12h3M19 12h3M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"/>',
+  arrow: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  ext: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  github: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+};
+function hydrateIcons(root = document) {
+  $$('svg[data-i]', root).forEach((el) => {
+    if (el.dataset.done) return;
+    el.dataset.done = '1';
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.setAttribute('fill', 'none');
+    el.setAttribute('stroke', 'currentColor');
+    el.setAttribute('stroke-width', '2');
+    el.setAttribute('stroke-linecap', 'round');
+    el.setAttribute('stroke-linejoin', 'round');
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = ICONS[el.dataset.i] || '';
+  });
+}
+hydrateIcons();
+const icon = (n) => `<svg data-i="${n}"></svg>`;
+
+/* ---------- toast ---------- */
+const toastEl = $('#toast');
+let toastTimer = 0;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('on'), 3200);
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-toast]');
+  if (t) { if (t.tagName === 'A') e.preventDefault(); toast(t.dataset.toast); return; }
+  const cp = e.target.closest('[data-copy]');
+  if (cp) {
+    const v = cp.dataset.copy;
+    try { navigator.clipboard && navigator.clipboard.writeText(v).catch(() => {}); } catch (_) { /* file:// may refuse */ }
+    toast(`Copied ${v}`);
+  }
+});
+
+/* ---------- inbox filters ---------- */
+$$('.fchip[data-filter]').forEach((chip) => chip.addEventListener('click', () => {
+  $$('.fchip[data-filter]').forEach((c) => c.classList.toggle('on', c === chip));
+  const f = chip.dataset.filter;
+  $$('#v-inbox .band').forEach((b) => { b.hidden = f !== 'all' && b.dataset.band !== f; });
+  if (f === 'auto') { const d = $('.autobox'); if (d) d.open = true; }
+}));
+
+/* ---------- stages ---------- */
+const MAIN = ['triage', 'plan', 'pgate', 'impl', 'verify', 'review', 'mgate', 'merged'];
+const GATES = new Set(['pgate', 'mgate']);
+const LABEL = { triage: 'Triage', plan: 'Plan', pgate: 'Plan approval', impl: 'Implement', verify: 'Verify', review: 'Review', mgate: 'Merge approval', merged: 'Merged', wait: 'Waiting on another task', ask: 'Agent asks you', retry: 'Auto-retrying', parked: 'Parked', closed: 'Closed' };
+const DESC = {
+  triage: 'Conveyor reads the task and decides which steps it needs, for example whether you approve a plan first.',
+  plan: 'An agent writes a plan: approach, files, ordering, risks and done criteria. It reads code but changes nothing.',
+  pgate: 'You approve, revise or reject the plan. Only happens when plan approval is on for the task.',
+  impl: 'An agent builds the change in its own worktree and pushes the branch; Conveyor opens the PR.',
+  verify: 'An agent runs the checks and any verification steps against the PR, in a sandbox.',
+  review: 'Two independent reviewers check the PR against the requirements and the plan.',
+  mgate: 'You decide whether to merge. Only happens when merge approval is on for the repo.',
+  merged: 'Finished. The worktree is cleaned up; the branch is kept.',
+  wait: 'The task can\u2019t take its next step until another task merges. Conveyor resumes it by itself.',
+  ask: 'An agent stopped to ask something the requirements and design don\u2019t settle. It reaches your inbox as a decision.',
+  retry: 'A step ended without a result for a mechanical reason, such as the agent process exiting. Conveyor retries up to 3 times and stops early if the same failure repeats.',
+  parked: 'Set aside on purpose, by you or by Conveyor after a stalemate. Nothing runs until it\u2019s resumed.',
+  closed: 'Ended without merging.',
+};
+const ST = { d: ['done', 'Done'], p: ['progress', 'In progress'], w: ['waiting', 'Waiting'], y: ['you', 'Needs you'], s: ['skip', 'Skipped'], u: ['up', 'Upcoming'] };
+
+/* ---------- tasks (board + task pages share this) ---------- */
+const OPUS = 'OMP \u00b7 Claude Opus 5.5';
+const TASKS = [
+  { id: 'drift', lane: 'plan', title: 'Fix protobuf generation drift', pr: null, req: ['REQ-2', 'Reproducible builds'], stripe: 'ddyuuuuu', who: 'you', sentence: 'Plan v1 is ready for your approval. 2 tasks wait on it.', cap: 'Plan approval \u00b7 38 min', inbox: 'd-drift',
+    you: { stage: 'pgate', note: 'Plan v1 has waited 38 min. Two tasks are blocked behind it. Gates never time out.', href: '#inbox/d-drift' } },
+  { id: 'retention', lane: 'plan', title: 'Audit log retention', pr: null, stripe: 'dpuuuuuu', who: 'agent', sentence: 'Drafting the plan: 90-day retention with an archive tier.', cap: 'Plan',
+    live: { stage: 'plan', runner: OPUS, by: 'started by Zeno', session: 'ses_01JA2R4N7QW2H8VZ5KXC0MB3DT', attempt: 'att_01JA2R4P0F6TGJ9Y2SN8QK5VAE', claimed: '17:21', checkin: '30 s ago', progress: 'Reading the retention job and the S3 lifecycle config.', running: 9, typical: 15 } },
+  { id: 'partner', lane: 'impl', title: 'Partner webhook retries', pr: null, stripe: 'dssw' + 'uuuu', who: 'auto', sentence: 'Waits for \u201cWebhook signature check\u201d (#1572) to merge.', cap: 'Waiting',
+    wait: { stage: 'impl', note: 'Builds on the signature check in PR #1572, which is ready for your merge.', link: ['Webhook signature check \u00b7 PR #1572', '#inbox/d-merge'] } },
+  { id: 'shortcuts', lane: 'impl', title: 'Rule editor keyboard shortcuts', pr: null, stripe: 'ddsw' + 'uuuu', who: 'auto', sentence: 'Waits for \u201cRule engine API v2\u201d (#1570) to merge.', cap: 'Waiting',
+    wait: { stage: 'impl', note: 'Needs the new rule API from PR #1570, which is in review now.', link: null } },
+  { id: 'dedupe', lane: 'impl', title: 'Deduplicate click events at ingestion', pr: '#1577', req: ['REQ-7', 'Click deduplication'], stripe: 'dssy' + 'uuuu', who: 'you', sentence: 'Paused to ask you which rule wins: REQ-7 or the design.', cap: 'Question \u00b7 38 min', inbox: 'd-question',
+    you: { stage: 'impl', note: 'The implementer paused and asked a question 38 min ago. Its slot went to other tasks.', href: '#inbox/d-question' } },
+  { id: 'csv', lane: 'impl', title: 'Audit log CSV export', pr: '#1581', stripe: 'dddp' + 'uuuu', who: 'agent', sentence: 'Writing the streaming CSV encoder (3 of 5 files).', cap: 'Implement',
+    live: { stage: 'impl', runner: 'OMP \u00b7 GPT-5.5', by: 'started by Mira', session: 'ses_01JA2N8C2HZ4Q6W1TBRX9D5KME', attempt: 'att_01JA2N8D7V3PKF0J5XWQ2Y8CRN', claimed: '16:18', checkin: '7 min ago', checkinWarn: true, progress: 'Writing the streaming CSV encoder (3 of 5 files).', running: 72, typical: 25, slow: true } },
+  { id: 'oauth', lane: 'verify', scen: '1575', title: 'OAuth reauthorization when rollout disabled', pr: '#1575', req: ['REQ-4', 'OAuth reauthorization'], stripe: 'dssdpuuu', who: 'agent', sentence: 'Re-running verify after an automatic retry (2 of 3).', cap: 'Verify \u00b7 attempt 8',
+    live: { stage: 'verify', runner: OPUS, by: 'started by Zeno', session: 'ses_01JA2Q7K3V9XG4M2TB8D5RWN6P', attempt: 'att_01JA2Q7M4KD8F2XZ0C7HB3NQ1R', claimed: '17:16', checkin: '1 min ago', progress: 'Running integration tests: 14 of 22 passed, none failed.', running: 14, typical: 25 } },
+  { id: 'meta', lane: 'verify', scen: '1568', title: 'Meta empty arrays', pr: '#1568', req: ['REQ-5', 'Meta fields accept empty arrays'], stripe: 'dssdwuuu', who: 'auto', sentence: 'Lint fails until the drift fix merges. Resumes by itself.', cap: 'Waiting',
+    wait: { stage: 'verify', note: 'Lint fails because generated protobuf files drift. Retries are paused; Conveyor re-runs lint when the fix merges.', link: ['Fix protobuf generation drift', '#task-drift'] } },
+  { id: 'export', lane: 'verify', title: 'Campaign export streaming', pr: '#1564', stripe: 'ddddwuuu', who: 'auto', sentence: 'Same lint failure; waits for the drift fix. Retries used up.', cap: 'Waiting',
+    wait: { stage: 'verify', note: 'Verify failed 3 times the same way. It waits for the drift fix; a one-click retry is in the inbox\u2019s Auto section.', link: ['Fix protobuf generation drift', '#task-drift'] } },
+  { id: 'creds', lane: 'verify', title: 'Rotate staging database credentials', pr: '#1566', req: ['REQ-11', 'Credential rotation'], stripe: 'dssdyuuu', who: 'you', sentence: 'Did the staging deploy apply? Confirm by 18:40.', cap: 'Confirm \u00b7 due 18:40', inbox: 'd-deploy',
+    you: { stage: 'verify', note: 'The verify agent ran the deploy but can\u2019t see its result from the sandbox. It holds until 18:40, then retries the deploy.', href: '#inbox/d-deploy' } },
+  { id: 'ruleapi', lane: 'review', title: 'Rule engine API v2', pr: '#1570', req: ['REQ-14', 'Rule API versioning'], stripe: 'ddddd' + 'puu', who: 'agent', sentence: 'Reviewer 1 is checking the diff; seat 2 is queued.', cap: 'Review \u00b7 1 of 2',
+    live: { stage: 'review', runner: OPUS, by: 'reviewer seat 1', session: 'ses_01JA2PZ1D8K5MV3QW7TC2XH9RB', attempt: 'att_01JA2PZ2N4G8RJ6Y1VFQ0S3WKD', claimed: '17:19', checkin: '2 min ago', progress: 'Checking AC-14.1 to 14.4 against the diff.', running: 11, typical: 20 } },
+  { id: 'bulk', lane: 'review', title: 'Bulk edit for campaign rules', pr: '#1561', req: ['REQ-12', 'Bulk rule editing'], stripe: 'ddsdd' + 'yuu', who: 'you', sentence: 'Parked after 10 review rounds on one point. Needs your ruling.', cap: 'Stalemate \u00b7 2 h', inbox: 'd-loop',
+    you: { stage: 'review', note: 'Reviewers and the implementer disagree on transaction scope after 10 rounds. Parked; nothing retries.', href: '#inbox/d-loop' } },
+  { id: 'webhook', lane: 'merge', title: 'Webhook signature check for partner callbacks', pr: '#1572', req: ['REQ-9', 'Partner callbacks are authenticated'], stripe: 'dssddd' + 'yu', who: 'you', sentence: 'Approved by both reviewers, checks green. Ready to merge.', cap: 'Merge \u00b7 2 h', inbox: 'd-merge',
+    you: { stage: 'mgate', note: 'Everything automatic passed 2 h ago. Partner webhook retries waits on this merge.', href: '#inbox/d-merge' } },
+  { id: 'pixel', lane: 'done', title: 'Tracking pixel retries', pr: '#1569', stripe: 'dssddddd', who: 'none', sentence: 'Merged at 14:05.', cap: 'Merged' },
+  { id: 'cache', lane: 'done', title: 'Landing page cache headers', pr: '#1567', stripe: 'dssddddd', who: 'none', sentence: 'Merged at 11:20.', cap: 'Merged' },
+];
+const T = Object.fromEntries(TASKS.map((t) => [t.id, t]));
+const ROUTE = { '1575': 'oauth', drift: 'drift', '1568': 'meta' };
+const LANES = [['plan', 'Planning'], ['impl', 'Implement'], ['verify', 'Verify'], ['review', 'Review'], ['merge', 'Merge approval'], ['done', 'Merged today']];
+const stateOf = (task, stage) => { const i = MAIN.indexOf(stage); return i < 0 ? ((task.side && task.side[stage]) || 'u') : task.stripe[i]; };
+
+/* ---------- per-task detail: attempts and task-page copy ---------- */
+T.oauth.side = { retry: 'd' };
+T.oauth.bounce = { from: 'verify', to: 'impl', n: 2 };
+T.oauth.stages = {
+  triage: { attempts: [{ n: 'Run 1', at: 'Oct 9 09:12', out: 'Classified as a small bug fix. Plan step turned off.' }] },
+  impl: { attempts: [
+    { n: 'Run 3', at: '14:40', out: 'Fixed the token refresh; PR updated.' },
+    { n: 'Run 2', at: '11:05', out: 'Verify then found a failing test.', cls: 'fail', why: 'oauth_refresh_test failed after the change.' },
+    { n: 'Run 1', at: 'Oct 9 15:30', out: 'Verify then found a missing migration.', cls: 'fail' },
+  ] },
+  verify: { attempts: [{ n: 'Attempt 8', at: '17:16', out: 'Running checks: retry 2 of 3 on this commit.', cur: true }],
+    superseded: [
+      { n: 'Attempt 7', at: '16:29', out: 'Agent process exited at 17:14 without a result.', cls: 'auto', why: 'Conveyor re-queued it automatically.' },
+      { n: 'Attempt 6', at: '14:52', out: 'Replaced before it started: new commit pushed.', cls: 'auto' },
+      { n: 'Attempt 5', at: '11:40', out: 'Found a failing test; sent back to implement.', cls: 'fail' },
+      { n: 'Attempt 4', at: '11:02', out: 'Replaced before it started: new commit pushed.', cls: 'auto' },
+      { n: 'Attempt 3', at: 'Oct 9 16:20', out: 'Found a missing migration; sent back to implement.', cls: 'fail' },
+      { n: 'Attempt 2', at: 'Oct 9 16:02', out: 'Agent exited before starting; re-queued.', cls: 'auto' },
+      { n: 'Attempt 1', at: 'Oct 9 15:58', out: 'Replaced: implement pushed again before verify started.', cls: 'auto' },
+    ] },
+  retry: { title: 'Retries', attempts: [{ n: '17:14', at: '', out: 'Verify attempt 7 exited without a result; re-queued as attempt 8.', cls: 'auto', why: 'Not a repeat of an earlier failure, so retries continue (1 of 3 used).' }] },
+  mgate: { note: 'Merge approval is on for this repo. A Merge decision reaches your inbox once review approves.' },
+};
+T.oauth.page = {
+  sentence: 'Checking: verify is re-running after an automatic retry. Your next stop is merge approval.',
+  statusLabel: 'Right now \u00b7 in progress',
+  pending: { tone: 'calm', label: 'Pending action', title: 'Nothing needs you right now.', rows: [
+    ['Why it\u2019s here', 'Verify is on retry 2 of 3 after the agent process exited.'],
+    ['What happens next', 'If verify passes, two reviewers pick it up. Then you approve the merge.'],
+    ['If it fails again', 'One more automatic retry. A repeated failure stops retries and reaches your inbox as a one-click retry.'],
+  ] },
+  raw: 'task 261002-9b81c4  state=running  next_stage=verify  gates{plan:off, merge:on}\norder 260928-4144ee-verify-8  state=claimed  attempt=att_01JA2Q7M4KD8F2XZ0C7HB3NQ1R\n  session=ses_01JA2Q7K3V9XG4M2TB8D5RWN6P  harness=omp  model=claude-opus-5.5  started_by=zeno\n  claimed_at=17:16:02  last_heartbeat=17:29:01 (every 5m)  running=14m  typical_p50=25m\n  retry_count=1/3  retry_suppressed=false  previous=verify-7 state=exited_without_result recovered_by=auto\nbounces_since_human=2  superseded=[verify-1 \u2026 verify-7]',
+};
+T.drift.stages = {
+  triage: { attempts: [{ n: 'Run 1', at: '15:55', out: 'Classified as build tooling. Plan approval on, since it changes CI.' }] },
+  plan: { attempts: [{ n: 'Run 1', at: '16:12', out: 'Submitted plan v1 at 16:52: 4 files, 5 done criteria.' }], planLink: true },
+  pgate: { planLink: true },
+};
+T.drift.page = {
+  sentence: 'Waiting for you: plan v1 is ready. Approving starts implementation, and two other tasks wait on this one.',
+  statusLabel: 'Right now \u00b7 needs you',
+  pending: { tone: 'you', label: 'Pending action \u00b7 Approve plan', title: 'Approve plan v1 to start implementation', ctx: 'plan', rows: [
+    ['Why you', 'Plan approval is on for build-tooling changes, and only you can approve a plan.'],
+    ['What approving does', 'Queues implementation immediately and publishes the plan as a GitHub issue.'],
+    ['If you do nothing', 'Nothing proceeds. \u201cMeta empty arrays\u201d (#1568) and \u201cCampaign export streaming\u201d (#1564) stay blocked.'],
+  ] },
+  raw: 'task 261009-477f9a  state=awaiting_human  gate=spec  plan_version=1  gates{plan:on, merge:on}\norder 261009-477f9a-spec-1  state=completed  attempt=att_01JA1X9F2C  outcome=plan_submitted\ndependents=[261003-5d21e0 (#1568), 260927-0c44b9 (#1564)]',
+};
+T.meta.side = { wait: 'w' };
+T.meta.stages = {
+  triage: { attempts: [{ n: 'Run 1', at: 'Oct 8 10:02', out: 'Classified as a small fix. Plan step turned off.' }] },
+  impl: { attempts: [{ n: 'Run 1', at: '12:10', out: 'Allowed empty arrays in Meta fields; PR opened.' }] },
+  verify: { attempts: [
+    { n: 'Attempt 2', at: '13:31', out: 'Lint failed: generated files differ.', cls: 'fail', why: 'Same as attempt 1 (protoc 25.1 vs committed 24.4 output), so retries paused.' },
+    { n: 'Attempt 1', at: '12:58', out: 'Lint failed: generated files differ.', cls: 'fail' },
+  ] },
+};
+T.meta.page = {
+  sentence: 'Waiting on another task: lint fails until \u201cFix protobuf generation drift\u201d merges. Conveyor re-runs lint by itself when it does.',
+  statusLabel: 'Right now \u00b7 blocked by another task',
+  pending: { tone: 'calm', label: 'Pending action', title: 'Nothing to do on this task.', rows: [
+    ['Why it\u2019s stopped', 'Lint fails because generated protobuf files drift. The fix is a separate task.'],
+    ['What unblocks it', '<a href="#task-drift">Approve the plan on \u201cFix protobuf generation drift\u201d \u2192</a>'],
+    ['If you do nothing', 'It keeps waiting. No retries are spent while it waits.'],
+  ] },
+  raw: 'task 261003-5d21e0  state=queued  blocking_task_ids=[261009-477f9a]  gates{plan:off, merge:on}\norder 261003-5d21e0-verify-2  state=completed  outcome=child_failure  failure_detail="lint: generated files differ"\n  retry_count=2/3  retry_suppressed=true (identical failure \u00d72)\nproposed: clear retry_suppressed when the blocking task merges',
+};
+
+
+/* ---------- every task gets a flowchart page ---------- */
+TASKS.forEach((t) => { if (!ROUTE[t.id]) ROUTE[t.id] = t.id; });
+const routeOf = (t) => t.scen || t.id;
+T.partner.side = { wait: 'w' };
+T.partner.sideLinks = [{ side: 'wait', from: 'impl', label: 'needs #1572' }];
+T.shortcuts.side = { wait: 'w' };
+T.shortcuts.wait.link = ['Rule engine API v2 \u00b7 PR #1570', '#task-ruleapi'];
+T.shortcuts.sideLinks = [{ side: 'wait', from: 'impl', label: 'needs #1570' }];
+T.export.side = { wait: 'w' };
+T.export.sideLinks = [{ side: 'wait', from: 'verify', label: 'lint failed \u00d73, same error' }];
+T.meta.sideLinks = [{ side: 'wait', from: 'verify', label: 'lint failed \u00d72, same error' }];
+T.meta.wait.resume = 'resumes Verify when it merges';
+T.dedupe.side = { ask: 'y' };
+T.dedupe.sideLinks = [{ side: 'ask', from: 'impl', label: 'paused 16:52' }];
+T.bulk.side = { parked: 'y' };
+T.bulk.bounce = { from: 'review', to: 'impl', n: 10 };
+T.bulk.sideLinks = [{ side: 'parked', from: 'review', label: 'stalemate' }];
+const TID = { retention: '261010-3c7a51', partner: '261001-a4e2b8', shortcuts: '261006-71d0c3', dedupe: '261005-8e2d10', csv: '261010-0b9f42', export: '260927-0c44b9', creds: '261004-c71e02', ruleapi: '260929-e15a7d', bulk: '260921-5a90f3', webhook: '260930-17ab5c', pixel: '260926-d3b8e1', cache: '260925-6f02aa' };
+
+const NEXT = (t) => { const i = t.stripe.search(/[pwyu]/); return i < 0 ? null : MAIN.slice(i + 1).find((s, k) => t.stripe[i + 1 + k] === 'u'); };
+function pageOf(t) {
+  if (t.page) return t.page;
+  const at = MAIN[t.stripe.search(/[pwy]/)] || 'merged';
+  const pr = t.pr ? `pr=${t.pr}` : 'pr=none';
+  const nx = NEXT(t);
+  if (t.who === 'you') return {
+    sentence: `Waiting for you: ${t.sentence.charAt(0).toLowerCase()}${t.sentence.slice(1)}`,
+    statusLabel: 'Right now \u00b7 needs you',
+    pending: { tone: 'you', label: `Pending action \u00b7 ${LABEL[t.you.stage]}`, title: t.sentence, rows: [
+      ['Why you', t.you.note],
+      ['Where to act', `<a href="${t.you.href}">Open the decision in your inbox \u2192</a>`],
+    ] },
+    raw: `task ${TID[t.id] || t.id}  state=awaiting_human  stage=${at}  ${pr}`,
+  };
+  if (t.who === 'agent') return {
+    sentence: `${t.sentence} ${nx ? `Next: ${LABEL[nx]}.` : ''}`,
+    statusLabel: 'Right now \u00b7 in progress',
+    pending: { tone: 'calm', label: 'Pending action', title: 'Nothing needs you right now.', rows: [
+      ['What\u2019s happening', esc(t.live.progress)],
+      ['What happens next', nx ? `${esc(LABEL[nx])} starts when this step finishes.` : 'The task finishes.'],
+    ] },
+    raw: `task ${TID[t.id] || t.id}  state=running  stage=${at}  ${pr}\norder ${TID[t.id] || t.id}-${t.live.stage}-1  state=claimed  attempt=${t.live.attempt}\n  session=${t.live.session}  claimed_at=${t.live.claimed}  running=${t.live.running}m  typical_p50=${t.live.typical}m`,
+  };
+  if (t.wait) return {
+    sentence: `Waiting on another task: ${t.wait.note.charAt(0).toLowerCase()}${t.wait.note.slice(1)}`,
+    statusLabel: 'Right now \u00b7 blocked by another task',
+    pending: { tone: 'calm', label: 'Pending action', title: 'Nothing to do on this task.', rows: [
+      ['Why it\u2019s stopped', esc(t.wait.note)],
+      ['What unblocks it', t.wait.link ? `<a href="${t.wait.link[1]}">${esc(t.wait.link[0])} \u2192</a>` : 'The blocking task merging.'],
+      ['If you do nothing', 'It keeps waiting. Conveyor resumes it when the blocker merges.'],
+    ] },
+    raw: `task ${TID[t.id] || t.id}  state=queued  stage=${at}  ${pr}  blocking_task_ids=[\u2026]`,
+  };
+  return {
+    sentence: `Finished: ${t.sentence}`,
+    statusLabel: 'Merged',
+    pending: { tone: 'calm', label: 'Pending action', title: 'Nothing to do. This task is finished.', rows: [['Worktree', 'Cleaned up after merge; the branch is kept.']] },
+    raw: `task ${TID[t.id] || t.id}  state=completed  outcome=merged  ${pr}`,
+  };
+}
+
+/* ---------- "What this task is doing": plan, requirements, criteria, context ---------- */
+const COV = { sat: ['b-pos', 'Satisfied'], unv: ['b-default', 'Unverified'], chk: ['b-prog', 'Checking now'], dis: ['b-att', 'Disputed'], new: ['b-none', 'Not reviewed yet'] };
+const PLANOFF = 'Plan approval was off for this task. This is the implementer\u2019s own plan, recorded with its first run.';
+const DETAIL = {
+  drift: { plan: 'Plan v1 \u00b7 waiting for your approval', planCls: 'st-you',
+    approach: 'Pin protoc and its plugins in one tools module, generate into a temp directory, and copy back only when output differs. CI regenerates on every PR and fails on any diff, so drift can\u2019t land again.',
+    files: [['tools/tools.go', 'new', 'Pins protoc-gen-go v1.34.2 and protoc-gen-go-grpc v1.5.1.'], ['scripts/gen-proto.sh', 'rewrite', 'Downloads protoc 25.1 by checksum; generates into a temp dir.'], ['.github/workflows/ci.yml', '+14', 'Adds the \u201cproto-drift\u201d job.'], ['gen/proto/**', 'regenerated', 'One-time regeneration with pinned versions.']],
+    ordering: ['Add the pinned tools module and the generation script.', 'Regenerate gen/proto once and commit it on its own.', 'Add the CI drift job last, so it starts green.'],
+    risks: ['#1568 and #1564 will need a rebase; Conveyor does that automatically.', 'Downloading protoc adds about 10 s per CI run, cached by checksum.'],
+    done: ['protoc and plugin versions are pinned in one place.', 'Generation never writes into the checkout directly.', 'CI fails when regenerated files differ.', 'Generating twice on a clean tree changes nothing.', 'Existing generated files are regenerated once and committed.'],
+    reqs: [['REQ-2', 'Reproducible builds: the same commit produces the same artifacts on any machine.']],
+    acs: [['AC-2.1', 'Code generators are pinned to exact versions.', 'new'], ['AC-2.2', 'CI fails when committed generated code is stale.', 'new'], ['AC-2.3', 'A clean checkout builds without network access to generator mirrors.', 'new']],
+    related: [['ctx', 'Plan v1 (full text)', 'plan', 'Plan'], ['inbox', 'Approve plan decision', '#inbox/d-drift', 'Inbox'], ['task', 'Meta empty arrays \u00b7 #1568 (waits on this)', '#task-1568', 'Dependent'], ['task', 'Campaign export streaming \u00b7 #1564 (waits on this)', '#task-export', 'Dependent'], ['doc', 'Build and release v2 \u00a73 Code generation', 'Would open System Design \u201cBuild and release v2\u201d at \u00a73 Code generation.', 'Design'], ['doc', 'DEC-6 Generated code is committed', 'Would open decision DEC-6: generated code stays committed to the repo, not built at install time.', 'Decision']] },
+
+  retention: { plan: 'Draft \u00b7 being written now', planCls: 'st-progress',
+    approach: 'Keep 90 days of audit log rows in Postgres. A nightly job moves older rows to Parquet files in S3 with a Glacier lifecycle after a year. Reads past 90 days go through a slower archive query.',
+    files: [['jobs/audit_retention.go', 'new', 'Nightly batch move, 10k rows per transaction.'], ['infra/s3/audit-archive.tf', 'new', 'Bucket with 365-day Glacier transition.'], ['api/audit/query.go', 'edit', 'Falls back to the archive past 90 days.']],
+    ordering: ['Not written yet. The agent is still reading the existing retention job.'],
+    risks: ['The first run moves about 40 million rows; it needs a throttle.', 'Archive queries may take minutes; the UI needs a pending state.'],
+    done: ['Draft: rows older than 90 days leave Postgres within 24 h.', 'Draft: archived rows are queryable by tenant and date range.'],
+    reqs: [['REQ-15', 'Audit log retention: keep audit history for 7 years at bounded database cost.']],
+    acs: [['AC-15.1', 'Rows older than 90 days are moved out of the primary database daily.', 'new'], ['AC-15.2', 'Archived rows remain queryable by tenant and date range.', 'new'], ['AC-15.3', 'Nothing is deleted before 7 years.', 'new']],
+    related: [['stage', 'Live plan session', 'retention:plan', 'Session'], ['doc', 'Data lifecycle v1 \u00a72 Retention tiers', 'Would open System Design \u201cData lifecycle v1\u201d at \u00a72 Retention tiers.', 'Design'], ['doc', 'DEC-11 Archive format is Parquet', 'Would open decision DEC-11: archives are written as Parquet partitioned by tenant and month.', 'Decision']] },
+
+  partner: { plan: PLANOFF, planCls: '',
+    approach: 'Retry failed partner webhook deliveries with exponential backoff (1 min to 6 h, 8 tries), reusing the signature check from #1572 on every retry.',
+    files: [['webhooks/retry.go', 'new', 'Backoff schedule and dead-letter after 8 tries.'], ['webhooks/deliver.go', 'edit', 'Signs every attempt.']],
+    ordering: ['Wait for #1572, rebase, then add the retry worker.'],
+    risks: ['Partners may receive duplicates; deliveries carry an idempotency key.'],
+    done: ['Failed deliveries retry 8 times with backoff.', 'Every attempt is signed.', 'Dead letters are visible in the partner console.'],
+    reqs: [['REQ-10', 'Partner callbacks are delivered at least once.']],
+    acs: [['AC-10.1', 'A failed delivery is retried with backoff for up to 6 hours.', 'new'], ['AC-10.2', 'Each delivery carries an idempotency key.', 'new']],
+    related: [['inbox', 'Webhook signature check \u00b7 #1572 (waits for your merge)', '#inbox/d-merge', 'Blocker'], ['gh', 'PR #1572 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1572', 'PR'], ['doc', 'Partner integrations v2 \u00a75 Delivery', 'Would open System Design \u201cPartner integrations v2\u201d at \u00a75 Delivery.', 'Design']] },
+
+  shortcuts: { plan: PLANOFF, planCls: '',
+    approach: 'Add keyboard shortcuts to the rule editor (save, duplicate, move, toggle) on top of the v2 rule API\u2019s batch reorder.',
+    files: [['web/rules/editor/shortcuts.ts', 'new', 'Keymap and conflict check.'], ['web/rules/editor/Editor.tsx', 'edit', 'Registers the keymap.']],
+    ordering: ['Wait for #1570, then build on its reorder endpoint.'],
+    risks: ['Shortcuts must not fire inside text inputs.'],
+    done: ['Six shortcuts work and are listed in the help dialog.', 'No shortcut fires while typing.'],
+    reqs: [['REQ-16', 'Rule editor is usable from the keyboard.']],
+    acs: [['AC-16.1', 'Save, duplicate, move up/down and toggle have shortcuts.', 'new'], ['AC-16.2', 'Shortcuts are listed in the editor help.', 'new']],
+    related: [['task', 'Rule engine API v2 \u00b7 #1570 (blocker, in review)', '#task-ruleapi', 'Blocker'], ['doc', 'Rule editor v3 \u00a74 Keyboard', 'Would open System Design \u201cRule editor v3\u201d at \u00a74 Keyboard.', 'Design']] },
+
+  dedupe: { plan: PLANOFF, planCls: '',
+    approach: 'Drop repeat clicks at the ingest worker before they reach the counters. The window rule is the open question in your inbox.',
+    files: [['ingest/dedupe.go', 'new', 'Seen-set keyed by visitor and campaign.'], ['ingest/worker.go', 'edit', 'Calls dedupe before counting.']],
+    ordering: ['Paused before the window logic, waiting for your answer.'],
+    risks: ['Memory for the seen-set grows with traffic; capped by TTL.'],
+    done: ['Repeat clicks count once under the agreed rule.', 'Dedupe adds under 1 ms p99 at ingest.'],
+    reqs: [['REQ-7', 'Click deduplication: repeat clicks are not billed twice.']],
+    acs: [['AC-7.1', 'A click carries a visitor ID and a campaign ID.', 'sat'], ['AC-7.2', 'Repeat clicks from one visitor on one campaign within 30 s count once.', 'dis']],
+    related: [['inbox', 'Agent question: REQ-7 vs design', '#inbox/d-question', 'Inbox'], ['ctx', 'Cited text and pending proposal', 'question', 'Context'], ['gh', 'PR #1577 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1577', 'PR'], ['doc', 'Event ingestion v3 \u00a74.2 Deduplication', 'Would open System Design \u201cEvent ingestion v3\u201d at \u00a74.2.', 'Design']] },
+
+  csv: { plan: PLANOFF, planCls: '',
+    approach: 'Stream audit log rows to CSV straight from a database cursor, so exports of any size never load fully into memory. The browser downloads as the rows arrive.',
+    files: [['api/audit/export.go', 'new', 'HTTP handler that streams with chunked encoding.'], ['api/audit/csv.go', 'new', 'Encoder with RFC 4180 quoting.'], ['api/audit/cursor.go', 'new', 'Keyset pagination, 5k rows per fetch.'], ['web/audit/ExportButton.tsx', 'edit', 'Starts the download.'], ['api/audit/export_test.go', 'new', '1M-row memory test.']],
+    ordering: ['Cursor and encoder first (3 of 5 files done).', 'Handler and button.', 'Memory test last.'],
+    risks: ['Long exports hold a database connection; capped at 10 minutes.', 'Proxies may buffer chunked responses.'],
+    done: ['A 1M-row export stays under 50 MB of server memory.', 'Fields with commas, quotes and newlines round-trip.', 'Exports honour the current filters.'],
+    reqs: [['REQ-13', 'Audit logs can be exported for compliance reviews.']],
+    acs: [['AC-13.1', 'Export produces RFC 4180 CSV.', 'new'], ['AC-13.2', 'Exports of any size complete without exhausting memory.', 'new'], ['AC-13.3', 'Exported rows match the filters on screen.', 'new']],
+    related: [['stage', 'Live implement session (missed a check-in)', 'csv:impl', 'Session'], ['gh', 'PR #1581 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1581', 'PR'], ['doc', 'Audit log v2 \u00a76 Export', 'Would open System Design \u201cAudit log v2\u201d at \u00a76 Export.', 'Design']] },
+
+  oauth: { plan: PLANOFF, planCls: '',
+    approach: 'When the OAuth rollout flag is off, expired tokens fall back to the legacy refresh path instead of failing. Users are asked to reauthorize only when that refresh is rejected.',
+    files: [['auth/oauth/refresh.go', 'edit', 'Checks the rollout flag before choosing a path.'], ['auth/oauth/legacy.go', 'edit', 'Exposes the legacy refresh.'], ['migrations/0142_oauth_reauth.sql', 'new', 'Adds reauth_required_at (missing in run 1).'], ['auth/oauth/refresh_test.go', 'edit', 'Covers both flag states (failed in run 2).']],
+    ordering: ['Migration first, then refresh path, then tests.'],
+    risks: ['Legacy refresh tokens rotate; a race could log users out. Guarded by a row lock.'],
+    done: ['With the flag off, expired tokens refresh silently.', 'Reauthorization is requested only on a rejected refresh.', 'Both flag states are covered by tests.'],
+    reqs: [['REQ-4', 'OAuth reauthorization: users are asked to reconnect only when it\u2019s actually needed.']],
+    acs: [['AC-4.1', 'With rollout disabled, an expired token refreshes without user action.', 'chk'], ['AC-4.2', 'A rejected refresh marks the connection as needing reauthorization.', 'chk'], ['AC-4.3', 'The reconnect prompt appears at most once per session.', 'unv']],
+    related: [['stage', 'Live verify session (attempt 8)', 'oauth:verify', 'Session'], ['stage', 'Verification log: earlier attempts', 'oauth:verify', 'Verify log'], ['stage', 'Last feedback: oauth_refresh_test failure', 'oauth:impl', 'Feedback'], ['gh', 'PR #1575 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1575', 'PR'], ['doc', 'Integrations auth v4 \u00a72 Token refresh', 'Would open System Design \u201cIntegrations auth v4\u201d at \u00a72 Token refresh.', 'Design'], ['doc', 'DEC-9 Legacy refresh stays until rollout ends', 'Would open decision DEC-9: the legacy refresh path stays until the OAuth rollout reaches 100%.', 'Decision']] },
+
+  meta: { plan: PLANOFF, planCls: '',
+    approach: 'Let Meta campaign fields accept an empty array as \u201cno values\u201d instead of rejecting the request.',
+    files: [['api/meta/validate.go', 'edit', 'Treats [] as valid and empty.'], ['api/meta/validate_test.go', 'edit', 'Adds empty-array cases.']],
+    ordering: ['One change; verify is blocked by an unrelated lint failure.'],
+    risks: ['Clients that send [] to mean \u201cunchanged\u201d would now clear the field. None found in logs.'],
+    done: ['Empty arrays are accepted and stored as empty.', 'Missing fields still mean unchanged.'],
+    reqs: [['REQ-5', 'Meta fields accept empty arrays.']],
+    acs: [['AC-5.1', 'An empty array saves as an empty list.', 'unv'], ['AC-5.2', 'An omitted field leaves the stored value unchanged.', 'unv']],
+    related: [['task', 'Fix protobuf generation drift (blocker, needs your approval)', '#task-drift', 'Blocker'], ['stage', 'Verification log: lint failed \u00d72', 'meta:verify', 'Verify log'], ['gh', 'PR #1568 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1568', 'PR']] },
+
+  export: { plan: 'Plan v1 \u00b7 approved Oct 7', planCls: 'st-done',
+    approach: 'Stream campaign exports instead of building the whole file in memory, using the same cursor pattern as audit logs.',
+    files: [['api/campaigns/export.go', 'rewrite', 'Streams rows with a cursor.'], ['api/campaigns/export_test.go', 'edit', 'Large-export test.']],
+    ordering: ['Done; verify waits on the drift fix.'],
+    risks: ['Same lint failure as #1568 until the drift fix merges.'],
+    done: ['A 500k-row export stays under 50 MB of memory.', 'Column order is unchanged.'],
+    reqs: [['REQ-8', 'Campaign exports work for large accounts.']],
+    acs: [['AC-8.1', 'Exports over 100k rows complete.', 'unv'], ['AC-8.2', 'Export columns keep their current order.', 'unv']],
+    related: [['task', 'Fix protobuf generation drift (blocker)', '#task-drift', 'Blocker'], ['gh', 'PR #1564 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1564', 'PR'], ['stage', 'Verification log', 'export:verify', 'Verify log']] },
+
+  creds: { plan: PLANOFF, planCls: '',
+    approach: 'Rotate the staging database password through Secrets Manager and restart the API so it picks up the new secret version.',
+    files: [['infra/staging/db-credentials.tf', 'edit', 'New secret version, 30-day rotation.'], ['deploy/staging/api.yaml', 'edit', 'Reads the secret by version stage.']],
+    ordering: ['Done; verify ran the deploy and needs your confirmation.'],
+    risks: ['If the restart fails, staging is down until rollback.'],
+    done: ['Staging runs on the new secret version.', 'The old version is revoked after 24 h.'],
+    reqs: [['REQ-11', 'Credential rotation: database credentials rotate every 30 days.']],
+    acs: [['AC-11.1', 'Rotation is applied without manual steps.', 'dis'], ['AC-11.2', 'Services pick up new credentials without a code change.', 'unv']],
+    related: [['inbox', 'Confirm the staging deploy (due 18:40)', '#inbox/d-deploy', 'Inbox'], ['ctx', 'Operation log: staging deploy', 'deploy', 'Verify log'], ['gh', 'PR #1566 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1566', 'PR']] },
+
+  ruleapi: { plan: 'Plan v2 \u00b7 approved Oct 8', planCls: 'st-done',
+    approach: 'Add /v2/rules alongside /v1, with versioned rule documents and a batch reorder endpoint. v1 stays read-compatible for two releases.',
+    files: [['api/rules/v2/handler.go', 'new', 'CRUD and batch reorder.'], ['api/rules/v2/schema.json', 'new', 'Versioned rule document.'], ['api/rules/v1/handler.go', 'edit', 'Reads through the v2 store.'], ['api/rules/v2/handler_test.go', 'new', 'Contract tests.']],
+    ordering: ['Schema, then store, then handlers; v1 adapter last.'],
+    risks: ['v1 clients that write must migrate; a deprecation header warns them.'],
+    done: ['v2 endpoints pass contract tests.', 'v1 reads return identical results.', 'Batch reorder is atomic.', 'v1 responses carry a Deprecation header.'],
+    reqs: [['REQ-14', 'Rule API versioning: breaking rule changes ship behind a new API version.']],
+    acs: [['AC-14.1', '/v2/rules supports create, read, update, delete.', 'sat'], ['AC-14.2', 'Batch reorder applies all moves or none.', 'chk'], ['AC-14.3', 'v1 reads are unchanged.', 'chk'], ['AC-14.4', 'v1 responses include a Deprecation header.', 'new']],
+    related: [['stage', 'Live review session (seat 1)', 'ruleapi:review', 'Session'], ['gh', 'PR #1570 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1570', 'PR'], ['task', 'Rule editor keyboard shortcuts (waits on this)', '#task-shortcuts', 'Dependent'], ['doc', 'Rule engine v2 \u00a73 API surface', 'Would open System Design \u201cRule engine v2\u201d at \u00a73 API surface.', 'Design'], ['doc', 'DEC-8 Two-release deprecation window', 'Would open decision DEC-8: deprecated API versions stay for two releases.', 'Decision']] },
+
+  bulk: { plan: 'Plan v1 \u00b7 approved Oct 1', planCls: 'st-done',
+    approach: 'Let operators select many campaign rules and change status, priority or target in one action, with per-rule writes and rollback on failure.',
+    files: [['api/rules/bulk.go', 'new', 'Applies changes rule by rule with rollback.'], ['web/rules/BulkBar.tsx', 'new', 'Selection and actions.']],
+    ordering: ['Implemented; review is parked on one point.'],
+    risks: ['Without a batch endpoint, a crash mid-way can leave rules half-updated. This is the disputed point.'],
+    done: ['Up to 500 rules change in one action.', 'A failed bulk edit leaves rules as they were.'],
+    reqs: [['REQ-12', 'Bulk rule editing.']],
+    acs: [['AC-12.1', 'Operators can change status, priority or target for many rules at once.', 'sat'], ['AC-12.2', 'A failed bulk edit leaves no rule changed.', 'dis']],
+    related: [['inbox', 'Review stalemate decision', '#inbox/d-loop', 'Inbox'], ['ctx', 'Latest review feedback (round 10)', 'loop', 'Feedback'], ['gh', 'PR #1561 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1561', 'PR'], ['task', 'Rule engine API v2 \u00b7 #1570 (adds batch writes)', '#task-ruleapi', 'Related']] },
+
+  webhook: { plan: 'Plan v1 \u00b7 approved Oct 2', planCls: 'st-done',
+    approach: 'Sign partner callbacks with HMAC-SHA256 over the body and a timestamp; reject callbacks older than 5 minutes.',
+    files: [['webhooks/sign.go', 'new', 'Signing and verification.'], ['webhooks/deliver.go', 'edit', 'Adds the signature header.'], ['docs/partners/webhooks.md', 'edit', 'Verification guide.']],
+    ordering: ['Done; approved by both reviewers.'],
+    risks: ['Partners who don\u2019t verify yet are unaffected; the header is additive.'],
+    done: ['Every callback carries a signature header.', 'Replays older than 5 minutes are rejected.'],
+    reqs: [['REQ-9', 'Partner callbacks are authenticated.']],
+    acs: [['AC-9.1', 'Callbacks are signed with a per-partner secret.', 'sat'], ['AC-9.2', 'Replayed callbacks older than 5 minutes are rejected.', 'sat'], ['AC-9.3', 'Partners have a documented way to verify.', 'sat']],
+    related: [['inbox', 'Merge decision', '#inbox/d-merge', 'Inbox'], ['ctx', 'Review summary', 'merge', 'Review'], ['gh', 'PR #1572 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1572', 'PR'], ['task', 'Partner webhook retries (waits on this)', '#task-partner', 'Dependent']] },
+
+  pixel: { plan: PLANOFF, planCls: '',
+    approach: 'Retry tracking pixel fires that fail with a 5xx, up to 3 times with jitter.',
+    files: [['web/pixel/fire.ts', 'edit', 'Retry with jitter.']],
+    ordering: ['Merged 14:05.'], risks: ['None open.'],
+    done: ['Pixel fires retry up to 3 times on 5xx.'],
+    reqs: [['REQ-6', 'Tracking pixels survive transient failures.']],
+    acs: [['AC-6.1', 'A 5xx response is retried up to 3 times.', 'sat']],
+    related: [['gh', 'PR #1569 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1569', 'PR']] },
+
+  cache: { plan: PLANOFF, planCls: '',
+    approach: 'Set Cache-Control on landing pages: 5 minutes at the edge, revalidate in the browser.',
+    files: [['edge/landing/headers.go', 'edit', 'Adds the header.']],
+    ordering: ['Merged 11:20.'], risks: ['None open.'],
+    done: ['Landing pages are cached 5 minutes at the edge.'],
+    reqs: [['REQ-3', 'Landing pages load fast worldwide.']],
+    acs: [['AC-3.1', 'Landing responses carry Cache-Control with s-maxage=300.', 'sat']],
+    related: [['gh', 'PR #1567 on GitHub', 'https://github.com/funnelflux/flux-saas-runtime/pull/1567', 'PR']] },
+};
+
+function relRow([kind, label, target, tag]) {
+  const tg = `<span class="rtag">${esc(tag)}</span>`;
+  if (kind === 'gh') return `<li><a href="${target}" target="_blank" rel="noopener noreferrer">${tg}<span class="rl">${esc(label)}</span>${icon('ext')}</a></li>`;
+  if (kind === 'task' || kind === 'inbox') return `<li><a href="${target}">${tg}<span class="rl">${esc(label)}</span>${icon('arrow')}</a></li>`;
+  if (kind === 'ctx') return `<li><button type="button" data-ctx="${target}">${tg}<span class="rl">${esc(label)}</span>${icon('arrow')}</button></li>`;
+  if (kind === 'stage') return `<li><button type="button" data-open-stage="${target}">${tg}<span class="rl">${esc(label)}</span>${icon('arrow')}</button></li>`;
+  return `<li><button type="button" data-toast="${esc(target)}">${tg}<span class="rl">${esc(label)}</span>${icon('arrow')}</button></li>`;
+}
+function openDetail(id) {
+  const t = T[id], d = DETAIL[id];
+  const list = (items, ol) => `<${ol ? 'ol' : 'ul'}>${items.map((x) => `<li>${esc(x)}</li>`).join('')}</${ol ? 'ol' : 'ul'}>`;
+  const psec = (name, n, inner, open) => `<details class="psec"${open ? ' open' : ''}><summary class="disclose"><span>${name}</span>${n ? `<span class="n">${n}</span>` : ''}</summary><div class="pbody">${inner}</div></details>`;
+  const off = d.plan === PLANOFF;
+  let b = `<div class="sec"><div class="sechead"><span class="label">Plan</span>${off ? '<span class="meta">implementer\u2019s plan</span>' : `<span class="st ${d.planCls}">${esc(d.plan)}</span>`}</div>`;
+  if (off) b += `<p class="meta planoff">${esc(PLANOFF)}</p>`;
+  b += `<div class="psecs">
+    ${psec('Approach', '', `<p class="prose">${esc(d.approach)}</p>`, true)}
+    ${psec('Files touched', d.files.length, `<ul class="files">${d.files.map(([f, c, w]) => `<li><code>${esc(f)}</code><span class="chg">${esc(c)}</span><span class="why">${esc(w)}</span></li>`).join('')}</ul>`)}
+    ${psec('Ordering', d.ordering.length, `<div class="prose">${list(d.ordering, true)}</div>`)}
+    ${psec('Risks', d.risks.length, `<div class="prose">${list(d.risks)}</div>`)}
+    ${psec('Done criteria', d.done.length, `<div class="prose">${list(d.done, true)}</div>`, true)}
+  </div></div>`;
+  b += `<div class="sec"><span class="label">Requirements it serves</span><ul class="reqs">${d.reqs.map(([r, x]) => `<li><b>${esc(r)}</b><span>${esc(x)}</span></li>`).join('')}</ul></div>`;
+  const covd = d.acs.filter((a) => a[2] === 'sat').length;
+  b += `<div class="sec"><div class="sechead"><span class="label">Acceptance criteria</span><span class="meta">${covd} of ${d.acs.length} satisfied in review</span></div><ul class="acs">${d.acs.map(([a, x, c]) => `<li><b>${esc(a)}</b><span class="tx">${esc(x)}</span><span class="badge ${COV[c][0]}">${COV[c][1]}</span></li>`).join('')}</ul></div>`;
+  b += `<div class="sec"><span class="label">Related context</span><ul class="related">${d.related.map(relRow).join('')}</ul></div>`;
+  const foot = `<a class="btn btn-primary btn-sm" href="#task-${routeOf(t)}">${icon('workflow')}Open flowchart</a>`
+    + (t.pr ? `<a class="btn btn-outline btn-sm" href="https://github.com/funnelflux/flux-saas-runtime/pull/${t.pr.slice(1)}" target="_blank" rel="noopener noreferrer">${icon('github')}PR ${t.pr} on GitHub${icon('ext')}</a>` : '')
+    + (t.you ? `<a class="btn btn-ghost btn-sm" href="${t.you.href}">Go to the decision</a>` : '');
+  openSheet({ ctx: `${t.title}${t.pr ? ` \u00b7 PR ${t.pr}` : ''}`, title: 'What this task is doing', desc: t.sentence, body: b, foot });
+}
+/* ---------- flowchart (vertical) ---------- */
+const C = { primary: '#3355f5', psoft: '#eef1fe', att: '#b45309', attSoft: '#fdf1e2', attDot: '#f59e0b', fg: '#16181d', muted: '#5c616b', faint: '#9aa0aa', edge: '#d4d7dd', surface: '#f7f8fa', white: '#ffffff' };
+const MX = 300, RW = 172, RH = 44, GH = 52, SX = 600, PW = 196, PH = 34, LX = 152;
+const Y = { triage: 44, plan: 128, pgate: 212, impl: 296, verify: 380, review: 464, mgate: 548, merged: 632, ask: 128, wait: 296, retry: 380, parked: 548, closed: 632 };
+const SIDE = ['ask', 'wait', 'retry', 'parked', 'closed'];
+const CAPTION = { ask: 'from Plan, Implement or Review', wait: 'can hold any step', retry: 'from Implement, Verify or Review' };
+const ATTACH_ROW = { ask: 'plan', wait: 'impl', retry: 'verify' };
+
+function geom(id) {
+  const side = SIDE.includes(id);
+  const x = side ? SX : MX, y = Y[id];
+  if (side) return { x, y, l: x - PW / 2, r: x + PW / 2, t: y - PH / 2, b: y + PH / 2, w: PW, h: PH, kind: 'pill' };
+  if (GATES.has(id)) return { x, y, l: x - RW / 2, r: x + RW / 2, t: y - GH / 2, b: y + GH / 2, w: RW, h: GH, kind: 'gate' };
+  return { x, y, l: x - RW / 2, r: x + RW / 2, t: y - RH / 2, b: y + RH / 2, w: RW, h: RH, kind: 'rect' };
+}
+function shape(g, fill, stroke, extra) {
+  if (g.kind === 'gate') {
+    const i = 16;
+    return `<polygon points="${g.l},${g.y} ${g.l + i},${g.t} ${g.r - i},${g.t} ${g.r},${g.y} ${g.r - i},${g.b} ${g.l + i},${g.b}" fill="${fill}" stroke="${stroke}" ${extra}/>`;
+  }
+  return `<rect x="${g.l}" y="${g.t}" width="${g.w}" height="${g.h}" rx="${g.kind === 'pill' ? g.h / 2 : 8}" fill="${fill}" stroke="${stroke}" ${extra}/>`;
+}
+function edge(d, st, extra = '') {
+  const s = {
+    v: `stroke="${C.primary}" stroke-width="1.75" marker-end="url(#mk-p)"`,
+    k: `stroke="${C.edge}" stroke-width="1.25" stroke-dasharray="2 4" marker-end="url(#mk-k)"`,
+    a: `stroke="${C.edge}" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round"`,
+    f: `stroke="${C.faint}" stroke-width="1.25" stroke-dasharray="5 4" marker-end="url(#mk-f)"`,
+  }[st];
+  return `<path d="${d}" fill="none" ${s} ${extra}/>`;
+}
+function nodeSVG(id, st, sel) {
+  const g = geom(id);
+  let fill = C.white, stroke = C.edge, text = C.muted, weight = 500, dash = '', sw = 1.25;
+  if (st === 'd') { stroke = C.primary; text = C.fg; sw = 1.5; }
+  if (st === 'p') { fill = C.psoft; stroke = C.primary; text = C.primary; weight = 600; sw = 2; }
+  if (st === 'w') { stroke = C.primary; text = C.primary; weight = 600; sw = 1.5; dash = 'stroke-dasharray="5 3"'; }
+  if (st === 'y') { fill = C.attSoft; stroke = C.attDot; text = C.att; weight = 600; sw = 2; }
+  if (st === 's') { fill = C.surface; stroke = C.faint; text = C.faint; dash = 'stroke-dasharray="3 3"'; }
+  let o = `<g class="n${sel ? ' sel' : ''}" data-node="${id}" tabindex="0" role="button" aria-label="${esc(LABEL[id])}: ${esc(ST[st][1])}">`;
+  if (st === 'p') o += `<g class="pulse">${shape(g, 'none', C.primary, 'stroke-width="2"')}</g>`;
+  o += shape(g, fill, stroke, `class="shape" stroke-width="${sw}" ${dash}`);
+  const fs = g.kind === 'pill' ? 13 : 14;
+  const name = id === 'ask' ? 'Agent asks you' : id === 'wait' ? 'Waiting on another task' : LABEL[id];
+  // Gates always carry a second line; main steps only when skipped. Both lines stay inside the shape.
+  const second = g.kind === 'gate' ? (st === 's' ? 'skipped' : 'you decide') : g.kind === 'rect' && st === 's' ? 'skipped' : '';
+  if (second) {
+    o += `<text x="${g.x}" y="${g.y - 6}" text-anchor="middle" dominant-baseline="central" font-size="${fs}" font-weight="${weight}" fill="${text}">${esc(name)}</text>`;
+    o += `<text x="${g.x}" y="${g.y + 11}" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="500" fill="${st === 'y' ? C.att : C.faint}">${second}</text>`;
+  } else {
+    o += `<text x="${g.x}" y="${g.y + 0.5}" text-anchor="middle" dominant-baseline="central" font-size="${fs}" font-weight="${weight}" fill="${text}">${esc(name)}</text>`;
+  }
+  if (st === 'd') {
+    const cx = g.kind === 'gate' ? g.r - 16 : g.r - 1, cy = g.t + 1;
+    o += `<circle cx="${cx}" cy="${cy}" r="6.5" fill="${C.primary}"/><path d="M ${cx - 3} ${cy + 0.2} l 2 2 l 3.4 -3.6" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>`;
+  }
+  if (SIDE.includes(id) && st === 'u' && CAPTION[id]) o += `<text x="${g.x}" y="${g.b + 14}" text-anchor="middle" font-size="11" fill="${C.faint}">${esc(CAPTION[id])}</text>`;
+  return o + '</g>';
+}
+
+let current = 'oauth';
+let selected = null;
+
+function renderFlow() {
+  const t = T[current];
+  const svg = $('#flow');
+  const st = (id) => stateOf(t, id);
+  const now = [...MAIN, ...SIDE].filter((k) => 'pwy'.includes(st(k))).map((k) => `${LABEL[k]} (${ST[st(k)][1]})`).join(', ');
+  svg.setAttribute('aria-label', `Lifecycle flowchart, top to bottom. Current: ${now}.`);
+  const mk = (id, color) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9 z" fill="${color}"/></marker>`;
+  let h = `<defs>${mk('mk-p', C.primary)}${mk('mk-f', C.faint)}${mk('mk-k', C.edge)}</defs>`;
+  // "from any step" group
+  h += `<text x="${SX}" y="${Y.parked - 42}" text-anchor="middle" font-size="11" fill="${C.faint}">from any step</text>`;
+  h += `<line x1="${SX - PW / 2}" y1="${Y.parked - 34}" x2="${SX + PW / 2}" y2="${Y.parked - 34}" stroke="${C.edge}"/>`;
+  // dotted attachments for side states this task hasn't used
+  Object.entries(ATTACH_ROW).forEach(([s, row]) => { if (st(s) === 'u') h += edge(`M ${geom(row).r + 2} ${Y[s]} H ${SX - PW / 2 - 2}`, 'a'); });
+  // main spine
+  for (let i = 0; i < MAIN.length - 1; i++) {
+    const a = MAIN[i], b = MAIN[i + 1], sa = st(a), sb = st(b);
+    const kind = sa !== 'u' && sb !== 'u' ? (sa === 's' || sb === 's' ? 'k' : 'v') : 'f';
+    h += edge(`M ${MX} ${geom(a).b + 1} V ${geom(b).t - 2}`, kind);
+  }
+  // bypass for skipped runs (left side)
+  for (let i = 1; i < MAIN.length; i++) {
+    if (st(MAIN[i]) !== 's' || st(MAIN[i - 1]) === 's') continue;
+    let j = i; while (j < MAIN.length && st(MAIN[j]) === 's') j++;
+    if (j >= MAIN.length || st(MAIN[j]) === 'u') continue;
+    const ya = Y[MAIN[i - 1]], yb = Y[MAIN[j]] - 7, x0 = MX - RW / 2;
+    h += edge(`M ${x0} ${ya} H ${LX + 16} Q ${LX} ${ya} ${LX} ${ya + 16} V ${yb - 16} Q ${LX} ${yb} ${LX + 16} ${yb} H ${x0 - 2}`, 'v');
+    h += `<text x="${LX - 10}" y="${(ya + yb) / 2}" text-anchor="end" dominant-baseline="central" font-size="11.5" fill="${C.primary}">skipped for this task</text>`;
+  }
+  // bounce back-edge with count badge (left side)
+  if (t.bounce) {
+    const ya = Y[t.bounce.from], yb = Y[t.bounce.to] + 7, x0 = MX - RW / 2, bx = LX - 2;
+    h += `<g><title>${esc(LABEL[t.bounce.from])} sent the work back to ${esc(LABEL[t.bounce.to])} ${t.bounce.n} times</title>`;
+    h += edge(`M ${x0} ${ya} H ${bx + 16} Q ${bx} ${ya} ${bx} ${ya - 16} V ${yb + 16} Q ${bx} ${yb} ${bx + 16} ${yb} H ${x0 - 2}`, 'v');
+    const label = `sent back \u00d7${t.bounce.n}`, w = label.length * 6.6 + 18, my = (ya + yb) / 2;
+    h += `<rect x="${bx - w / 2}" y="${my - 11}" width="${w}" height="22" rx="11" fill="#fff" stroke="${C.primary}" stroke-width="1.25"/><text x="${bx}" y="${my + 0.5}" text-anchor="middle" dominant-baseline="central" font-size="11.5" font-weight="600" fill="${C.primary}">${esc(label)}</text></g>`;
+  }
+  const pl = SX - PW / 2;
+  // automatic retry loop (Verify <-> Auto-retrying)
+  if (st('retry') !== 'u' && t.id === 'oauth') {
+    const vr = geom('verify').r;
+    h += edge(`M ${vr + 1} ${Y.verify - 6} H ${pl - 2}`, 'v');
+    h += edge(`M ${pl} ${Y.verify + 6} H ${vr + 2}`, 'v');
+    h += `<text x="${(vr + pl) / 2}" y="${Y.verify - 14}" text-anchor="middle" font-size="11.5" fill="${C.primary}">exited 17:14</text>`;
+    h += `<text x="${(vr + pl) / 2}" y="${Y.verify + 22}" text-anchor="middle" font-size="11.5" fill="${C.primary}">re-queued</text>`;
+  }
+  // edges from the step that stopped into its side state, plus what releases it
+  (t.sideLinks || []).forEach(({ side, from, label }) => {
+    const fr = geom(from).r, yf = Y[from], ys = Y[side];
+    if (yf === ys) {
+      h += edge(`M ${fr + 1} ${ys} H ${pl - 2}`, 'v');
+      h += `<text x="${(fr + pl) / 2}" y="${ys - 10}" text-anchor="middle" font-size="11.5" fill="${C.primary}">${esc(label)}</text>`;
+    } else {
+      const bx = fr + 46, dir = ys < yf ? -1 : 1;
+      h += edge(`M ${fr + 1} ${yf + 8 * dir} H ${bx - 16} Q ${bx} ${yf + 8 * dir} ${bx} ${yf + 24 * dir} V ${ys - 16 * dir} Q ${bx} ${ys} ${bx + 16} ${ys} H ${pl - 2}`, 'v');
+      h += `<text x="${bx + 10}" y="${(yf + ys) / 2 - 4}" font-size="11.5" fill="${C.primary}">${esc(label)}</text>`;
+    }
+    const link = side === 'ask' ? ['Your answer: go to the decision', t.you && t.you.href] : side === 'parked' ? ['Your ruling: go to the decision', t.you && t.you.href] : t.wait && t.wait.link ? [`Blocked by: ${t.wait.link[0]}`, t.wait.link[1]] : null;
+    const sub = side === 'ask' ? `resumes ${LABEL[from]} when you answer` : side === 'parked' ? 'nothing runs until you rule' : (t.wait && t.wait.resume) || `resumes ${LABEL[from]} when it merges`;
+    const ly = side === 'parked' ? ys + 36 : ys - 46;
+    if (link && link[1]) h += `<a href="${link[1]}"><text x="${SX}" y="${ly}" text-anchor="middle" font-size="12" font-weight="500" fill="${C.primary}">${esc(link[0])} \u2192</text></a>`;
+    h += `<text x="${SX}" y="${ly + 16}" text-anchor="middle" font-size="11" fill="${C.faint}">${esc(sub)}</text>`;
+  });
+  [...MAIN, ...SIDE].forEach((id) => { h += nodeSVG(id, st(id), selected === id); });
+  svg.innerHTML = h;
+}
+
+function whoChip(kind, on) {
+  const m = { agent: ['who-agent', 'AI', 'Agent'], auto: ['who-auto', 'C', 'Conveyor (auto)'], you: ['who-you', '!', 'You'] }[kind];
+  if (!m) return '';
+  return `<span class="who ${m[0]}${on ? '' : ' off'}"><i>${m[1]}</i>${m[2]}</span>`;
+}
+function prLine(t) {
+  return (t.pr ? `<a href="https://github.com/funnelflux/flux-saas-runtime/pull/${t.pr.slice(1)}" target="_blank" rel="noopener noreferrer">PR ${t.pr} \u2197</a>` : '<span>No PR yet</span>')
+    + '<span class="faint">\u00b7</span><span>funnelflux-pro</span>'
+    + (t.req ? `<span class="faint">\u00b7</span><span class="chip-req"><b>${t.req[0]}</b><span>${esc(t.req[1])}</span></span>` : '');
+}
+
+function renderTask() {
+  const t = T[current], p = pageOf(t);
+  $('#t-crumb').textContent = t.title;
+  $('#t-title').textContent = t.title;
+  $('#t-prl').innerHTML = prLine(t);
+  $('#t-statuslabel').textContent = p.statusLabel;
+  $('#t-statuslabel').style.color = t.who === 'you' ? C.att : '';
+  $('#t-sentence').textContent = p.sentence;
+  $('#t-status').classList.toggle('you', t.who === 'you');
+  $('#t-who').innerHTML = ['agent', 'auto', 'you'].map((k) => whoChip(k, k === t.who)).join('');
+  $$('.scen .fchip').forEach((c) => c.classList.toggle('on', ROUTE[c.dataset.scen] === current));
+  const q = p.pending;
+  const card = t.inbox && document.getElementById(t.inbox);
+  const choices = card ? $('.choices', card).innerHTML : '';
+  $('#t-pending').innerHTML = `<section class="pending ${q.tone}" aria-label="Pending action">
+    <span class="label${q.tone === 'you' ? ' you' : ''}">${esc(q.label)}</span>
+    <h3>${esc(q.title)}</h3>
+    <dl>${q.rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>
+    ${q.ctx ? `<div class="ctxrow"><button class="linkbtn" type="button" data-ctx="${q.ctx}">View plan v1 \u2192</button></div>` : ''}
+    ${choices ? `<div class="choices">${choices}</div>` : ''}
+  </section>`;
+  $('#t-raw').textContent = p.raw;
+  renderFlow();
+}
+/* ---------- board ---------- */
+function stripeHTML(t) {
+  return `<div class="stripe" role="group" aria-label="Steps">${MAIN.map((s, i) => {
+    const c = t.stripe[i];
+    return `<button type="button" class="seg${GATES.has(s) ? ' g' : ''} ${c}" data-task="${t.id}" data-stage="${s}" title="${esc(LABEL[s])}: ${ST[c][1]}" aria-label="${esc(LABEL[s])}: ${ST[c][1]}"></button>`;
+  }).join('')}</div>`;
+}
+function renderBoard() {
+  $('#lanes').innerHTML = LANES.map(([key, name]) => {
+    const cards = TASKS.filter((t) => t.lane === key);
+    const yours = cards.filter((t) => t.who === 'you').length;
+    return `<section class="lane${key === 'done' ? ' done' : ''}" aria-label="${esc(name)}">
+      <div class="lanehead"><span class="label">${esc(name)}</span><span class="n">${cards.length}</span>${yours ? `<span class="badge b-att lanebadge" title="${yours} need you">${yours}</span>` : ''}</div>
+      ${cards.map((t) => {
+        const live = t.live ? '<span class="livedot" aria-label="agent working"></span>' : '';
+        return `<article class="bcard${t.who === 'you' ? ' yours' : ''}" data-id="${t.id}">
+          <button type="button" class="cardopen" data-detail="${t.id}" aria-haspopup="dialog">
+            <span class="title">${esc(t.title)}</span>
+            <span class="sub">${t.pr ? `PR ${t.pr}` : 'No PR yet'}${t.req ? ` \u00b7 ${t.req[0]}` : ''}</span>
+            <span class="sent">${esc(t.sentence)}</span>
+          </button>
+          <a class="flowbtn" href="#task-${routeOf(t)}" aria-label="Open task flowchart: ${esc(t.title)}" title="Open task flowchart">${icon('workflow')}</a>
+          ${stripeHTML(t)}
+          <div class="foot">${whoChip(t.who, true)}<span class="cap">${live}${esc(t.cap)}</span></div>
+        </article>`;
+      }).join('')}
+    </section>`;
+  }).join('');
+  hydrateIcons($('#lanes'));
+}
+/* ---------- side sheet ---------- */
+const sheet = $('#sheet'), scrim = $('#scrim');
+let returnFocus = null;
+function openSheet({ ctx = '', title, pill = '', desc = '', body, foot = '' }) {
+  returnFocus = document.activeElement;
+  $('#sh-ctx').textContent = ctx;
+  $('#sh-ctx').hidden = !ctx;
+  $('#sh-title').innerHTML = `${esc(title)}${pill}`;
+  $('#sh-desc').textContent = desc;
+  $('#sh-desc').hidden = !desc;
+  $('#sh-body').innerHTML = body;
+  $('#sh-foot').innerHTML = foot;
+  $('#sh-foot').hidden = !foot;
+  hydrateIcons(sheet);
+  $('#sh-body').scrollTop = 0;
+  sheet.classList.add('on'); scrim.classList.add('on');
+  sheet.setAttribute('aria-hidden', 'false');
+  $('#sh-close').focus({ preventScroll: true });
+}
+function closeSheet(restore = true) {
+  if (!sheet.classList.contains('on')) return;
+  sheet.classList.remove('on'); scrim.classList.remove('on');
+  sheet.setAttribute('aria-hidden', 'true');
+  const hadSel = selected;
+  selected = null;
+  $$('.seg.sel').forEach((s) => s.classList.remove('sel'));
+  if (hadSel && $('#v-task').classList.contains('on')) renderFlow();
+  if (restore && returnFocus && document.contains(returnFocus)) returnFocus.focus({ preventScroll: true });
+  else if (restore && hadSel) { const n = $(`#flow [data-node="${hadSel}"]`); if (n) n.focus({ preventScroll: true }); }
+}
+
+const idRow = (k, v) => `<dt>${k}</dt><dd title="${esc(v)}">${esc(v)}</dd><button class="copy" type="button" data-copy="${esc(v)}" aria-label="Copy ${k.toLowerCase()} ID">${icon('copy')}</button>`;
+function liveBlock(L) {
+  const max = Math.max(L.running, L.typical) * 1.15;
+  const fmt = (m) => (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`);
+  return `<div class="now">
+    <p class="runner"><span class="livedot"></span>${esc(L.runner)}<span class="by">\u00b7 ${esc(L.by)}</span></p>
+    <dl class="ids">${idRow('Session', L.session)}${idRow('Attempt', L.attempt)}</dl>
+    <dl class="nowgrid">
+      <dt>Claimed</dt><dd>${esc(L.claimed)} today</dd>
+      <dt>Check-in</dt><dd><span class="hb${L.checkinWarn ? ' warn' : ''}"><i></i>Last check-in ${esc(L.checkin)}</span>
+        <p class="softnote${L.checkinWarn ? ' warn' : ''}">${L.checkinWarn ? 'Missed its last check-in. The agent may be stuck or stale; it keeps the work until someone acts.' : 'Agents check in every 5 min. A missed check-in only flags the agent as possibly stuck; work is never taken away.'}</p></dd>
+      <dt>Progress</dt><dd>\u201c${esc(L.progress)}\u201d</dd>
+      <dt>Time</dt><dd><div class="timing"><b>Running ${fmt(L.running)}</b><span class="meta">\u00b7 typical ${fmt(L.typical)}</span></div>
+        <div class="tbar" title="Typical duration marked"><i style="width:${(L.running / max * 100).toFixed(1)}%"></i><span class="typ" style="left:${(L.typical / max * 100).toFixed(1)}%"></span></div>
+        <p class="softnote">${L.slow ? 'Taking longer than usual. Nothing is stopped automatically.' : 'Within the usual range. There is no hard limit.'}</p></dd>
+    </dl>
+    ${L.slow || L.checkinWarn ? `<div class="choices"><button class="btn btn-outline btn-sm" type="button" data-toast="Would open the agent's live session in OMP.">Open session</button><button class="btn btn-ghost btn-sm" type="button" data-toast="Would stop this attempt and re-queue the step. Only you can do this.">Stop and re-queue\u2026</button></div>` : ''}
+  </div>`;
+}
+function attRow(a) {
+  const cls = a.cls === 'fail' ? 'out-fail' : a.cls === 'auto' ? 'out-auto' : '';
+  return `<div class="att${a.cur ? ' cur' : ''}"><span class="num">${esc(a.n)}</span><span class="${cls}">${esc(a.out)}</span><time>${esc(a.at)}</time>${a.why ? `<span class="why">${esc(a.why)}</span>` : ''}</div>`;
+}
+function openStage(taskId, stage) {
+  const t = T[taskId];
+  const s = stateOf(t, stage);
+  const info = (t.stages && t.stages[stage]) || {};
+  let b = '<div class="sec"><span class="label">Current attempt status</span>';
+  if (t.live && t.live.stage === stage) b += liveBlock(t.live);
+  else if (s === 'y' && t.you) b += `<div class="now you"><p>${esc(t.you.note)}</p><div class="choices"><a class="btn btn-primary btn-sm" href="${t.you.href}" data-close>Go to the decision</a>${info.planLink ? '<button class="btn btn-outline btn-sm" type="button" data-ctx="plan">View plan v1</button>' : ''}</div></div>`;
+  else if ((s === 'w' || stage === 'wait') && t.wait) b += `<div class="now static"><p>${esc(t.wait.note)}</p>${t.wait.link ? `<p style="margin-top:8px"><a href="${t.wait.link[1]}" data-close>Blocked by: ${esc(t.wait.link[0])} \u2192</a></p>` : ''}<p class="softnote">No agent holds this step while it waits, and no retries are spent.</p></div>`;
+  else if (s === 'd') b += `<p class="empty">Finished.${info.planLink ? ' <button class="linkbtn" type="button" data-ctx="plan">View plan v1 \u2192</button>' : ''}</p>`;
+  else if (s === 's') b += '<p class="empty">Skipped: turned off for this task at triage.</p>';
+  else b += `<p class="empty">${esc(info.note || 'Not reached yet.')}</p>`;
+  b += '</div>';
+  if (info.attempts || info.superseded) {
+    b += `<div class="sec"><span class="label">${esc(info.title || 'Attempts')}</span><div class="atts">${(info.attempts || []).map(attRow).join('')}`;
+    if (info.superseded) b += `<details class="supers"><summary class="disclose">${info.superseded.length} earlier attempts, superseded</summary>${info.superseded.map(attRow).join('')}</details>`;
+    b += '</div></div>';
+  }
+  const [cls, word] = ST[s];
+  openSheet({ ctx: `${t.title}${t.pr ? ` \u00b7 PR ${t.pr}` : ''}`, title: LABEL[stage], pill: `<span class="st st-${cls}">${s === 'p' ? '<span class="livedot"></span>' : ''}${word}</span>`, desc: DESC[stage], body: b });
+}
+
+/* ---------- inbox context sheets ---------- */
+const CTX = {
+  plan: () => ({ ctx: 'Fix protobuf generation drift \u00b7 REQ-2', title: 'Plan v1', pill: '<span class="st st-you">Needs you</span>', desc: 'Submitted 16:52 by the plan agent (OMP \u00b7 Claude Opus 5.5). 4 files, 5 done criteria.', card: 'd-drift', body: `
+    <div class="sec"><span class="label">Approach</span><div class="prose"><p>Generated protobuf code drifts because each machine runs whatever protoc is installed, and generation writes straight into the checkout. Pin protoc and its plugins in one tools module, generate into a temporary directory, and copy the result back only when it differs.</p><p>CI regenerates on every PR and fails if the committed files don\u2019t match, so drift can\u2019t land again.</p></div></div>
+    <div class="sec"><span class="label">Files touched</span><ul class="files">
+      <li><code>tools/tools.go</code><span class="chg">new</span><span class="why">Pins protoc-gen-go v1.34.2 and protoc-gen-go-grpc v1.5.1 as module dependencies.</span></li>
+      <li><code>scripts/gen-proto.sh</code><span class="chg">rewrite</span><span class="why">Downloads protoc 25.1 by checksum, generates into a temp dir, copies back with rsync --checksum.</span></li>
+      <li><code>.github/workflows/ci.yml</code><span class="chg">+14 lines</span><span class="why">Adds a \u201cproto-drift\u201d job: regenerate, then git diff --exit-code on gen/.</span></li>
+      <li><code>gen/proto/**</code><span class="chg">regenerated</span><span class="why">One-time regeneration with the pinned versions; no hand edits.</span></li>
+    </ul></div>
+    <div class="sec"><span class="label">Ordering</span><div class="prose"><ol><li>Add the pinned tools module and the new generation script.</li><li>Regenerate gen/proto once and commit it on its own.</li><li>Add the CI drift job last, so it starts green.</li></ol></div></div>
+    <div class="sec"><span class="label">Risks</span><div class="prose"><ul><li>Regenerated files may differ from what other branches expect. #1568 and #1564 will need a rebase; Conveyor does that automatically.</li><li>Downloading protoc in CI adds about 10 s per run. Cached by checksum.</li><li>Developers on older local protoc see a one-time diff. The script prints the fix.</li></ul></div></div>
+    <div class="sec"><span class="label">Done criteria</span><div class="prose"><ol><li>protoc and plugin versions are pinned in one place.</li><li>Generation never writes into the checkout directly.</li><li>CI fails when regenerated files differ from committed ones.</li><li>Generating twice on a clean tree changes nothing.</li><li>Existing generated files are regenerated once and committed.</li></ol></div></div>` }),
+  deploy: () => ({ ctx: 'Rotate staging database credentials \u00b7 PR #1566', title: 'Operation log: staging deploy', pill: '<span class="st st-you">Needs you</span>', desc: 'Run by the verify agent in its sandbox. The deploy finished; the health check could not be reached from the sandbox.', card: 'd-deploy', body: `
+    <div class="sec"><span class="label">Summary</span><div class="facts" style="margin-top:0"><span><span class="ok">\u2713</span> Command exited 0</span><span>Secret version v13 \u2192 v14</span><span>Health check: no response (sandbox egress)</span></div></div>
+    <div class="sec"><span class="label">Log</span><pre class="oplog">16:58:02  $ make deploy-staging SERVICE=db-credentials
+16:58:04  terraform plan: 1 to change, 0 to add, 0 to destroy
+16:58:09  aws_secretsmanager_secret_version.db: rotating\u2026
+16:58:41  aws_secretsmanager_secret_version.db: version v14 created
+16:58:43  kubectl rollout restart deploy/api -n staging
+16:59:30  deployment "api" successfully rolled out
+16:59:31  $ curl -fsS https://staging.funnelflux.internal/healthz
+17:00:01  curl: (28) Connection timed out after 30000 ms
+17:00:01  verify: outcome unconfirmed, needs an operator</pre></div>
+    <div class="sec"><span class="label">How to check</span><div class="prose"><p>Open the staging health page from your network, or check that the api pods restarted after 16:59.</p></div><div class="choices"><button class="btn btn-outline btn-sm" type="button" data-toast="Would open the full deploy log in a new tab.">Open full log ${icon('ext')}</button></div></div>` }),
+  question: () => ({ ctx: 'Deduplicate click events at ingestion \u00b7 PR #1577', title: 'What the agent cited', pill: '<span class="st st-you">Needs you</span>', desc: 'The implementer paused at 16:52: the requirement and the confirmed design give different rules.', card: 'd-question', body: `
+    <div class="sec"><span class="label">Requirement</span>
+      <div class="excerpt"><p class="src"><b>REQ-7</b> Click deduplication <span class="badge b-pos">Confirmed</span></p><p><b>AC-7.1</b> A click carries a visitor ID and a campaign ID.</p><p style="margin-top:6px"><b>AC-7.2</b> <mark>Repeat clicks from the same visitor on the same campaign within 30 seconds count once.</mark></p></div></div>
+    <div class="sec"><span class="label">System Design</span>
+      <div class="excerpt"><p class="src"><b>Event ingestion v3</b> \u00a74.2 Deduplication <span class="badge b-pos">Confirmed</span></p><p>The ingest worker keeps a per-session seen-set. <mark>A click is a duplicate if the session has already recorded it, with no time window.</mark> Sessions end after 30 minutes idle.</p></div></div>
+    <div class="sec"><span class="label">Pending proposal</span>
+      <div class="excerpt pending-prop"><p class="src"><b>Event ingestion v4</b> \u00a74.2 <span class="badge b-default">Waiting for you in Pending proposals</span></p><p>Replaces the per-session seen-set with a 30-second window keyed on visitor and campaign, matching REQ-7 AC-7.2. Proposed by the planning assistant on Oct 9.</p><div class="choices"><button class="btn btn-ghost btn-sm" type="button" data-toast="Would open Pending proposals \u2192 Event ingestion v4.">Open proposal</button></div></div></div>
+    <div class="sec"><span class="label">Agent\u2019s question, verbatim</span><div class="prose"><p>\u201cREQ-7 AC-7.2 asks for a 30-second window; Event ingestion v3 \u00a74.2 dedupes per session with no window. These give different counts for a visitor who clicks twice 2 minutes apart. Which should I implement?\u201d</p></div></div>` }),
+  merge: () => ({ ctx: 'Webhook signature check for partner callbacks \u00b7 PR #1572', title: 'Review summary', pill: '<span class="st st-you">Needs you</span>', desc: 'Round 3 of review finished at 15:20. Both seats approve.', card: 'd-merge', body: `
+    <div class="sec"><a class="btn btn-outline" style="width:100%" href="https://github.com/funnelflux/flux-saas-runtime/pull/1572" target="_blank" rel="noopener noreferrer">${icon('github')}Open PR #1572 on GitHub${icon('ext')}</a></div>
+    <div class="sec"><span class="label">Verdicts</span>
+      <div class="excerpt"><p class="src"><b>Seat 1</b> OMP \u00b7 Claude Opus 5.5 <span class="badge b-pos">Approve</span></p><p>HMAC-SHA256 over the raw body with a constant-time compare; rejects stale timestamps over 5 min. REQ-9 AC-9.1 to 9.3 met. No open findings.</p></div>
+      <div class="excerpt"><p class="src"><b>Seat 2</b> OMP \u00b7 GPT-5.5 <span class="badge b-pos">Approve</span></p><p>Key rotation works with two active secrets. Round 2\u2019s request for a replay test is addressed in partner_webhook_test.go.</p></div></div>
+    <div class="sec"><span class="label">Checks</span><div class="facts" style="margin-top:0"><span><span class="ok">\u2713</span> build</span><span><span class="ok">\u2713</span> unit (412)</span><span><span class="ok">\u2713</span> integration (38)</span><span><span class="ok">\u2713</span> lint</span><span><span class="ok">\u2713</span> verify: replay attack rejected</span></div></div>
+    <div class="sec"><span class="label">Change</span><div class="prose"><p>6 files, +248 \u2212 31. Main is 0 commits ahead.</p></div></div>` }),
+  loop: () => ({ ctx: 'Bulk edit for campaign rules \u00b7 PR #1561', title: 'Last exchange (round 10)', pill: '<span class="st st-you">Needs you</span>', desc: 'Same disagreement since round 4. Conveyor parked the task after the 10th send-back.', card: 'd-loop', body: `
+    <div class="sec"><span class="label">Reviewer feedback, round 10</span>
+      <div class="excerpt"><p class="src"><b>Seat 1</b> <span class="badge b-default">Changes requested</span></p><p>If rule 37 of 50 fails, rules 1 to 36 are already written and the rollback is best-effort. REQ-12 AC-12.3 says <mark>a bulk edit applies to all selected rules or none</mark>. Per-rule writes can\u2019t guarantee that.</p></div>
+      <div class="excerpt"><p class="src"><b>Seat 2</b> <span class="badge b-default">Changes requested</span></p><p>Agree with seat 1. Everything else (UI, validation, audit entries) is good.</p></div></div>
+    <div class="sec"><span class="label">Implementer reply</span>
+      <div class="excerpt"><p class="src"><b>Implementer</b> run 10</p><p>The rules service exposes only per-rule PUT. I added compensating writes that restore the previous version on failure, plus a retry. A true transaction needs a batch endpoint in the rules service, which is outside this task\u2019s scope.</p></div></div>
+    <div class="sec"><span class="label">Ways to rule</span><div class="prose"><ul><li>Accept compensating rollback as meeting AC-12.3, and say so to the reviewers.</li><li>Split out a task for a batch endpoint and block this one on it.</li><li>Relax AC-12.3 with a requirement revision.</li></ul></div></div>` }),
+};
+function openCtx(kind) {
+  const c = CTX[kind]();
+  const card = document.getElementById(c.card);
+  const foot = card ? `<div class="choices">${$('.choices', card).innerHTML}</div>` : '';
+  openSheet({ ctx: c.ctx, title: c.title, pill: c.pill, desc: c.desc, body: c.body, foot });
+}
+
+/* ---------- events ---------- */
+$('#flow').addEventListener('click', (e) => { const g = e.target.closest('[data-node]'); if (g) { selected = g.dataset.node; renderFlow(); openStage(current, selected); } });
+$('#flow').addEventListener('keydown', (e) => {
+  const g = e.target.closest('[data-node]');
+  if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selected = g.dataset.node; renderFlow(); openStage(current, selected); }
+});
+// Board card: three separate targets. Stripe segment -> stage sheet; flowchart icon -> task page; body -> task detail sheet.
+$('#lanes').addEventListener('click', (e) => {
+  const s = e.target.closest('.seg');
+  if (s) {
+    e.stopPropagation();
+    $$('.seg.sel').forEach((x) => x.classList.remove('sel'));
+    openStage(s.dataset.task, s.dataset.stage);
+    s.classList.add('sel');
+    return;
+  }
+  if (e.target.closest('.flowbtn')) { e.stopPropagation(); return; }
+  const o = e.target.closest('[data-detail]');
+  if (o) openDetail(o.dataset.detail);
+});
+document.addEventListener('click', (e) => {
+  const c = e.target.closest('[data-ctx]');
+  if (c) { e.preventDefault(); openCtx(c.dataset.ctx); return; }
+  const os = e.target.closest('[data-open-stage]');
+  if (os) { const [task, stage] = os.dataset.openStage.split(':'); openStage(task, stage); }
+});
+$('#sh-close').addEventListener('click', () => closeSheet());
+scrim.addEventListener('click', () => closeSheet());
+sheet.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeSheet(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+
+function flash(el) {
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.animate([{ boxShadow: '0 0 0 4px rgba(245,158,11,.45)' }, { boxShadow: '0 0 0 4px rgba(245,158,11,0)' }], { duration: 1600 });
+}
+
+$('#rawtog').addEventListener('click', () => {
+  const t = $('#rawtog'), on = t.getAttribute('aria-pressed') !== 'true';
+  t.setAttribute('aria-pressed', String(on));
+  $('#t-raw').hidden = !on;
+});
+
+/* ---------- routing ---------- */
+function route() {
+  const raw = (location.hash || '#inbox').slice(1);
+  const [path, anchor] = raw.split('/');
+  let view = 'inbox';
+  if (path === 'board') view = 'board';
+  else if (path.startsWith('task-') && ROUTE[path.slice(5)]) {
+    view = 'task';
+    const key = ROUTE[path.slice(5)];
+    if (key !== current) { current = key; selected = null; }
+  }
+  closeSheet(false);
+  $$('.view').forEach((v) => v.classList.toggle('on', v.id === `v-${view}`));
+  $$('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === view));
+  $$('.nav[data-nav]').forEach((n) => n.classList.toggle('active', n.dataset.nav === (view === 'task' ? 'board' : view)));
+  if (view === 'task') renderTask();
+  const el = anchor && document.getElementById(anchor);
+  if (el) flash(el); else window.scrollTo(0, 0);
+}
+renderBoard();
+window.addEventListener('hashchange', route);
+route();
+})();
+</script>
+</body>
+</html>
