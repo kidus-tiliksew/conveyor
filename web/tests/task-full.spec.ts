@@ -2298,7 +2298,8 @@ const longBody = [
   '',
   ...Array.from(
     { length: 6 },
-    (_, index) => `Paragraph ${index + 1}. ${'Every sentence of this body stays in the description. '.repeat(3).trim()}`,
+    (_, index) =>
+      `Paragraph ${index + 1}. ${'Every sentence of this body stays in the description. '.repeat(3).trim()}`,
   ).flatMap((paragraph) => [paragraph, '']),
   'Final paragraph ends here.',
 ].join('\n')
