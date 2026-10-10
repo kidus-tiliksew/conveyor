@@ -186,6 +186,7 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, name string) (
 	})
 	return u, translateBackendConflict(err)
 }
+
 // BootstrapIdentity maps the configured deployment token to the
 // instance-administration principal, the owner of the sole
 // deployment_credential marker. A live marker keeps its owner across restart,
