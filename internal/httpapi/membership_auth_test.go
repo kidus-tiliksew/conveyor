@@ -712,13 +712,17 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 			t.Fatalf("viewer MCP tool %s calls=%v want %q", tool, fixture.capabilityCalls, want)
 		}
 	}
+	// The governance tools need claim_work, so a viewer is refused by the
+	// capability check before any claim lookup (req-accounts-and-membership
+	// AC-2.2). Live-claim demotion is covered in
+	// mcp_governance_authorization_test.go.
 	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 		fixture.capabilityCalls = nil
 		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
-		if !errors.Is(err, store.ErrWorkOrderClaimLost) {
-			t.Fatalf("viewer MCP governance tool %s error=%v, want claim loss", tool, err)
+		if err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+			t.Fatalf("viewer MCP governance tool %s error=%v, want workspace_not_found", tool, err)
 		}
-		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityViewWorkspace {
+		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityClaimWork {
 			t.Fatalf("viewer MCP governance tool %s calls=%v", tool, fixture.capabilityCalls)
 		}
 	}
@@ -747,10 +751,17 @@ func TestMCPGovernanceToolsRemainClaimGatedForEveryRole(t *testing.T) {
 			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 				fixture.capabilityCalls = nil
 				_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
-				if !errors.Is(err, store.ErrWorkOrderClaimLost) {
+				// A viewer lacks claim_work and is refused before the claim
+				// lookup; every other role reaches the claim gate
+				// (req-accounts-and-membership AC-2.2-AC-2.4).
+				if role == core.WorkspaceRoleViewer {
+					if err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+						t.Fatalf("%s error=%v, want workspace_not_found", tool, err)
+					}
+				} else if !errors.Is(err, store.ErrWorkOrderClaimLost) {
 					t.Fatalf("%s error=%v, want claim loss", tool, err)
 				}
-				if len(fixture.capabilityCalls) != 1 || fixture.capabilityCalls[0] != core.CapabilityViewWorkspace {
+				if len(fixture.capabilityCalls) != 1 || fixture.capabilityCalls[0] != core.CapabilityClaimWork {
 					t.Fatalf("%s capability calls=%v", tool, fixture.capabilityCalls)
 				}
 			}

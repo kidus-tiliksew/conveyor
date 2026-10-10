@@ -142,8 +142,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return result
 	}
 	worker, workerAuth := workerFromContext(r.Context())
-	if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialAgent && humanReservedMCPTool(name) {
-		return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
+	if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialAgent {
+		// The agent ceiling is derived from the tool's capability, never from
+		// a tool-name list, so a new tool above contributor is refused without
+		// further edits. Unmapped tools fail closed below as unknown
+		// (req-accounts-and-membership AC-3.4, AC-5.1; req-security-boundaries
+		// REQ-1; component-mcp-protocol).
+		if capability, mapped := mcpCapabilities[name]; mapped && !agentMayExerciseCapability(capability) {
+			return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
+		}
 	}
 	explicitWorkspace := stringArg("workspace_id")
 	workspace, err := s.resolveMCPWorkspace(r.Context(), explicitWorkspace)
@@ -424,6 +431,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, rateLimit)
 	case "report_continuation":
+		// Continuation metadata belongs to the launching client (the conveyor
+		// run parent or a worker), never to the agent session it launched. This
+		// is a launcher-origin rule, independent of the capability-derived agent
+		// ceiling (component-mcp-protocol).
+		if credential, ok := store.CredentialFromContext(ctx); ok && !workerAuth && credential.Kind == core.CredentialAgent {
+			return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
+		}
 		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
@@ -546,23 +560,23 @@ func agentCreateTaskArgTypeError(args map[string]any) *taskCreateError {
 	return nil
 }
 
-func humanReservedMCPTool(name string) bool {
-	if isMCPRead(name) {
-		return true
-	}
-	switch name {
-	// create_task is deliberately absent: it is the one maintainer act an
-	// agent credential may perform, authorized by its owner's create_tasks
-	// binding and limited to gate-on-only overrides (req-accounts-and-membership
-	// AC-3.3, AC-3.4; req-intake-and-triage AC-4.2, AC-4.3; DEC-60;
-	// component-mcp-protocol).
-	case "add_task_dependency", "redispatch_work_order", "set_assignee", "attach_task_branch", "report_continuation":
-		return true
-	default:
-		return false
-	}
+// agentMayExerciseCapability is the agent credential ceiling: every
+// contributor capability, plus create_tasks, the one maintainer capability an
+// execution credential may exercise. It is derived from the role bundles, so a
+// bundle change moves the ceiling on the MCP surface without a tool list to
+// edit. Passing it grants nothing by itself; the owner's live binding, claim,
+// stage, and handler checks still apply (req-accounts-and-membership AC-3.4,
+// AC-5.1; DEC-60; component-mcp-protocol).
+func agentMayExerciseCapability(capability core.Capability) bool {
+	return capability == core.CapabilityCreateTasks || core.RoleAllows(core.WorkspaceRoleContributor, capability)
 }
 
+// mcpCapabilities names each tool's capability, checked against the live
+// binding of the credential's owning user on every call. The four claim-bound
+// governance tools (request_plan_revision and the three proposal tools) need
+// claim_work, so a caller demoted to viewer is refused even while it still
+// holds a live claim; the claim remains the second gate
+// (req-accounts-and-membership AC-2.2-AC-2.4; component-mcp-protocol).
 var mcpCapabilities = map[string]core.Capability{
 	"get_verification_context":         core.CapabilityViewWorkspace,
 	"prepare_verification_operation":   core.CapabilityClaimWork,
@@ -598,16 +612,16 @@ var mcpCapabilities = map[string]core.Capability{
 	"redispatch_work_order":          core.CapabilityRecoverWork,
 	"renew_work_order":               core.CapabilityClaimWork,
 	"release_work_order":             core.CapabilityClaimWork,
-	"request_plan_revision":          core.CapabilityViewWorkspace,
+	"request_plan_revision":          core.CapabilityClaimWork,
 	"get_work_order":                 core.CapabilityClaimWork,
 	"read_artifact":                  core.CapabilityClaimWork,
 	"refresh_work_order_context":     core.CapabilityClaimWork,
 	"report_progress":                core.CapabilityClaimWork,
 	"report_usage":                   core.CapabilityClaimWork,
 	"report_continuation":            core.CapabilityClaimWork,
-	"propose_system_design_revision": core.CapabilityViewWorkspace,
-	"propose_requirement_revision":   core.CapabilityViewWorkspace,
-	"propose_decision":               core.CapabilityViewWorkspace,
+	"propose_system_design_revision": core.CapabilityClaimWork,
+	"propose_requirement_revision":   core.CapabilityClaimWork,
+	"propose_decision":               core.CapabilityClaimWork,
 	"upload_transcript":              core.CapabilityClaimWork,
 	"submit_plan":                    core.CapabilityClaimWork,
 	"submit_for_review":              core.CapabilityClaimWork,
