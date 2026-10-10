@@ -428,7 +428,7 @@ func (s *Server) submitWorkOrderReview(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.callMCPTool(r, "submit_for_review", map[string]any{"work_order_id": chi.URLParam(r, "id"), "session_id": request.SessionID, "head_sha": request.HeadSHA, "workspace_id": request.WorkspaceID})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeWorkOrderToolError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -439,9 +439,13 @@ func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "work-order service unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	// Every visibility refusal below (no binding, no membership authority or
+	// credential, no claim_work, a run child's foreign workspace) answers the
+	// canonical 404 a nonexistent workspace gets, never 403
+	// (req-accounts-and-membership AC-4.2; DEC-19; component-http-api).
 	workspace, err := s.resolveMCPWorkspace(r.Context(), r.URL.Query().Get("workspace_id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusForbidden)
+		writeWorkOrderToolError(w, err)
 		return
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
@@ -450,17 +454,24 @@ func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {
 	if !workerAuth && s.Workspaces != nil {
 		credential, ok := store.CredentialFromContext(ctx)
 		if !ok || s.Memberships == nil {
-			http.Error(w, "workspace_not_found", http.StatusForbidden)
+			writeWorkspaceNotFound(w)
 			return
 		}
 		allowed, authErr := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, core.CapabilityClaimWork)
-		if authErr != nil || !allowed {
-			http.Error(w, "workspace_not_found", http.StatusForbidden)
+		if authErr != nil {
+			// An authorization-store failure is not a refusal; it answers
+			// the same opaque 500 as requireWorkspaceCapability.
+			log.Printf("authorize submission template: %v", authErr)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !allowed {
+			writeWorkspaceNotFound(w)
 			return
 		}
 	}
 	if credential, ok := store.CredentialFromContext(ctx); ok && credential.RunWorkspaceID != "" && credential.RunWorkspaceID != workspace {
-		http.Error(w, "workspace_not_found", http.StatusForbidden)
+		writeWorkspaceNotFound(w)
 		return
 	}
 	if _, err = s.authorizeClaimantSession(ctx, workerAuth, worker, chi.URLParam(r, "id"), session); err != nil {

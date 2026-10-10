@@ -157,7 +157,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	// (req-security-boundaries REQ-1/AC-1.1; component-mcp-protocol).
 	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
 		if credential.RunWorkspaceID != workspace {
-			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+			return nil, errWorkspaceNotVisible
 		}
 		if name == "claim_work_order" {
 			return nil, fmt.Errorf("claim_work_order is unavailable to a session-bound run child credential")
@@ -175,18 +175,18 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 	if !workerAuth && s.Workspaces != nil {
 		if s.Memberships == nil {
-			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+			return nil, errWorkspaceNotVisible
 		}
 		credential, ok := store.CredentialFromContext(ctx)
 		if !ok {
-			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+			return nil, errWorkspaceNotVisible
 		}
 		allowed, authErr := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, capability)
 		if authErr != nil {
 			return nil, authErr
 		}
 		if !allowed {
-			return nil, fmt.Errorf("workspace_not_found: workspace not found")
+			return nil, errWorkspaceNotVisible
 		}
 	}
 	switch name {
@@ -490,6 +490,15 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.WorkOrders.SubmitPlan(ctx, stringArg("work_order_id"), session, value)
 	case "submit_for_review":
+		// A missing head is an argument error, classified only after the
+		// workspace and claimant admission above so it never bypasses
+		// authorization (component-http-api).
+		if strings.TrimSpace(stringArg("head_sha")) == "" {
+			if _, err := s.authorizeClaimantSession(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
+				return nil, err
+			}
+			return nil, invalidToolArgument(errors.New("head_sha is required"))
+		}
 		return s.WorkOrders.SubmitForReview(ctx, stringArg("work_order_id"), session, stringArg("head_sha"))
 	case "await_review":
 		seconds := 300.0
@@ -748,18 +757,18 @@ func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (stri
 		if explicit == "" || explicit == worker.Workspace {
 			return worker.Workspace, nil
 		}
-		return "", fmt.Errorf("workspace_not_found: workspace not found")
+		return "", errWorkspaceNotVisible
 	}
 	var items []core.Workspace
 	if s.Workspaces != nil {
 		if s.Memberships == nil {
-			return "", fmt.Errorf("workspace_not_found: workspace not found")
+			return "", errWorkspaceNotVisible
 		}
 		var err error
 		if credential, ok := store.CredentialFromContext(ctx); ok {
 			items, err = s.Memberships.ListWorkspacesForUser(ctx, credential.OwnerUserID)
 		} else {
-			return "", fmt.Errorf("workspace_not_found: workspace not found")
+			return "", errWorkspaceNotVisible
 		}
 		if err != nil {
 			return "", err
@@ -792,7 +801,7 @@ func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (stri
 			return explicit, nil
 		}
 	}
-	return "", fmt.Errorf("workspace_not_found: workspace not found")
+	return "", errWorkspaceNotVisible
 }
 
 // leaseArg selects a claim or renewal lease: lease_seconds in (0, 3600] sets
