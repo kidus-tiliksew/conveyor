@@ -78,7 +78,7 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	if _, err = st.ConsumeWorkerPairing(ctx, pairing.TokenHash, now); err == nil {
 		t.Fatal("pairing reuse succeeded")
 	}
-	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "integration", CredentialHash: "credential-" + core.NewTaskID(), CreatedAt: now}
+	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: activeWorkerOwner(t, st, workspace), Name: "integration", CredentialHash: "credential-" + core.NewTaskID(), CreatedAt: now}
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}

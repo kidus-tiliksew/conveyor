@@ -231,3 +231,20 @@ func TestWorkerOwnerDeletionFailsClosedIntegration(t *testing.T) {
 		t.Fatalf("refused claim changed order: %+v %v", persisted, err)
 	}
 }
+
+// activeWorkerOwner inserts an active user bound as a contributor in
+// workspace, so fixture workers have the owner that worker admission requires.
+func activeWorkerOwner(t *testing.T, st *Store, workspace string) string {
+	t.Helper()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
+	user, err := st.queries.InsertIdentityUser(ctx, db.InsertIdentityUserParams{
+		ID: "usr_worker_owner_" + core.NewTaskID(), Email: "worker-owner-" + core.NewTaskID() + "@example.test", DisplayName: "Worker owner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	return user.ID
+}

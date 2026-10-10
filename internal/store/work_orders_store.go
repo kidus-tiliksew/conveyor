@@ -2022,9 +2022,6 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerLocked); err != nil {
 			return core.WorkOrder{}, err
 		}
-		// The claim records the enrolled worker as its actor, as the durable
-		// backends do.
-		ctx = WithActor(ctx, Actor{ID: WorkerActorID(worker.ID), Role: core.ActorWorker})
 	}
 	if task := m.tasks[order.TaskID]; task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, task.Assignee.UserID)

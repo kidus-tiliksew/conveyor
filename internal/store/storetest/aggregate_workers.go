@@ -216,7 +216,9 @@ func runWorkers(t *testing.T, x Fixture) {
 			t.Fatal("heartbeat appended a lifecycle event")
 		}
 		order := queuedWorkerOrder(t, x, ctx, "active")
-		claimed, err := For(st).ClaimWorkOrder(ctx, order.ID, workerClaim(worker, "active-session", ""))
+		// The worker routes bind the enrolled worker's actor before claiming.
+		workerCtx := store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker})
+		claimed, err := For(st).ClaimWorkOrder(workerCtx, order.ID, workerClaim(worker, "active-session", ""))
 		requireOK(t, err)
 		if claimed.WorkerID != worker.ID || claimed.ClaimantID != worker.ID || claimed.State != core.WorkOrderClaimed {
 			t.Fatalf("claim=%+v", claimed)

@@ -124,7 +124,7 @@ func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "phase52-claims", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}
+	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: activeWorkerOwner(t, st, workspace), Name: "phase52-claims", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
