@@ -883,26 +883,21 @@ function Fact({ label, value, startRow }: { label: React.ReactNode; value: React
 }
 
 // The agent prompt for the conveyor-work skill (req-agent-skills REQ-3) is the
-// task title, the full task body, and the instruction, one blank line apart.
-// The body keeps every line, blank line, and Markdown mark as stored; only its
-// outer whitespace is trimmed, and an empty body is left out. The instruction
-// carries only what an agent cannot infer: the task, the selected workspace,
-// and this dashboard's origin as the server.
+// task title and the instruction, one blank line apart. It leaves the task body
+// out: the agent reads it from its claimed work order. The instruction carries
+// only what an agent cannot infer: the task, the selected workspace, and this
+// dashboard's origin as the server.
 function agentPrompt(item: ActivityItem, workspace: string): string {
   return [
     item.task.title,
-    (item.task.body ?? '').trim(),
     `Use the conveyor-work skill to work Conveyor task ${item.task.id} in workspace \`${workspace}\` on ${window.location.origin}.`,
-  ]
-    .filter((part) => part !== '')
-    .join('\n\n')
+  ].join('\n\n')
 }
 
 // One group, as wide as its parent up to 32rem, shows the whole prompt the copy
-// button copies. The prompt wraps with its blank lines kept, and a long
-// unbroken token breaks anywhere rather than widening the group. A prompt
-// taller than 16rem scrolls inside the group rather than being cut. It renders
-// nothing until the workspace selection resolves.
+// button copies. The prompt wraps with its blank line kept, and a long unbroken
+// token breaks anywhere rather than widening the group. It renders nothing
+// until the workspace selection resolves.
 function Checkout({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   if (item.checkout_available) {
@@ -913,7 +908,7 @@ function Checkout({ item }: { item: ActivityItem }) {
         <p className="border-b border-border px-2.5 py-1 text-[11px] text-faint">Prompt for AI Agents</p>
         <div className="flex min-w-0 items-start gap-2 py-0.5 pl-2.5 pr-0.5">
           <Bot className="mt-2 size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <code className="max-h-64 min-w-0 flex-1 overflow-y-auto py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted">
+          <code className="min-w-0 flex-1 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted">
             {prompt}
           </code>
           <CopyButton value={prompt} label="Copy agent prompt" />

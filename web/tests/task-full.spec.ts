@@ -2150,11 +2150,11 @@ test('task metadata presents stored spec versions as plan versions', async ({ pa
   await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
 
-// The agent prompt the checkout group copies: title, optional full body, and
-// the conveyor-work instruction, one blank line apart.
-function expectedAgentPrompt(origin: string, taskID: string, title: string, body?: string) {
+// The agent prompt the checkout group copies: the title and the conveyor-work
+// instruction, one blank line apart. The task body is never part of it.
+function expectedAgentPrompt(origin: string, taskID: string, title: string) {
   const instruction = `Use the conveyor-work skill to work Conveyor task ${taskID} in workspace \`demo\` on ${origin}.`
-  return [title, body, instruction].filter((part) => part !== undefined).join('\n\n')
+  return [title, instruction].join('\n\n')
 }
 
 // Serves one task's detail with overridden task fields or checkout projection.
@@ -2238,23 +2238,24 @@ async function expectCheckoutFits(group: Locator) {
   return bounds
 }
 
-test('Prompt for AI Agents shows the full agent prompt and copies the same text', async ({ page, context }) => {
+test('Prompt for AI Agents shows the title and instruction and copies the same text', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
   await page.goto(`/tasks/${taskID}/full`)
   const origin = await page.evaluate(() => window.location.origin)
-  const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', 'A short description.')
+  const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task')
   const group = checkoutGroup(page)
   await expect(group).toBeVisible()
   expect(await promptText(group)).toBe(expectedPrompt)
+  expect(await promptText(group)).not.toContain('A short description.')
   await expect(group.locator('code')).not.toHaveAttribute('title')
 
-  // The prompt keeps its blank lines: three paragraphs and two blank lines
-  // render as at least five lines.
+  // The prompt keeps its blank line: two paragraphs and one blank line render
+  // as at least three lines.
   const bounds = await checkoutBounds(group)
   expect(bounds.whiteSpace).toBe('pre-wrap')
-  expect(bounds.lines).toBeGreaterThanOrEqual(5)
+  expect(bounds.lines).toBeGreaterThanOrEqual(3)
 
   // The Terminal tab and the tab structure are gone.
   await expect(page.getByRole('tablist')).toHaveCount(0)
@@ -2279,14 +2280,16 @@ test('Prompt for AI Agents shows the full agent prompt and copies the same text'
   expect(await promptText(group)).toBe(expectedPrompt)
 })
 
-// A long title, a long multi-paragraph body with an unbroken token, and a long
-// task ID must wrap at phone widths on both the full page and the task sheet.
+// A long title with an unbroken token and a long task ID must wrap at phone
+// widths on both the full page and the task sheet. The task's long Markdown
+// body stays out of the prompt.
 const longToken = `https://example.test/${'unbroken-segment-'.repeat(8)}end`
-const longTitle = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()}`
+const longTitle = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()} ${longToken}`
+const bodyMarker = 'body-marker-never-in-the-prompt'
 const longBody = [
   '## Context',
   '',
-  `The prompt carries the whole body. See ${longToken} for the original report.`,
+  `The task body carries ${bodyMarker} and the original report.`,
   '',
   '1. First step with `code` and **bold** text.',
   '2. Second step:',
@@ -2295,30 +2298,14 @@ const longBody = [
   '',
   ...Array.from(
     { length: 6 },
-    (_, index) => `Paragraph ${index + 1}. ${'Every sentence of this body must survive. '.repeat(3).trim()}`,
+    (_, index) =>
+      `Paragraph ${index + 1}. ${'Every sentence of this body stays in the description. '.repeat(3).trim()}`,
   ).flatMap((paragraph) => [paragraph, '']),
   'Final paragraph ends here.',
 ].join('\n')
 
-// Scrolls the prompt to its end and reports whether the scroll reached it with
-// the final line inside the prompt's visible box.
-function scrollPromptToEnd(group: Locator) {
-  return group.locator('code').evaluate((node) => {
-    node.scrollTop = node.scrollHeight
-    const box = node.getBoundingClientRect()
-    const range = document.createRange()
-    range.selectNodeContents(node)
-    const rects = range.getClientRects()
-    const last = rects[rects.length - 1]
-    return {
-      atEnd: Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 1,
-      lastLineVisible: last.bottom <= box.bottom + 0.5 && last.top >= box.top - 0.5,
-    }
-  })
-}
-
 for (const route of ['full', 'sheet'] as const) {
-  test(`Prompt for AI Agents wraps a long prompt without overflow on the ${route} task view`, async ({
+  test(`Prompt for AI Agents leaves out the body and wraps without overflow on the ${route} task view`, async ({
     page,
     context,
   }) => {
@@ -2328,28 +2315,29 @@ for (const route of ['full', 'sheet'] as const) {
 
     await page.goto(route === 'full' ? `/tasks/${taskID}/full` : `/tasks/${taskID}`)
     const origin = await page.evaluate(() => window.location.origin)
-    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle, longBody)
+    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle)
     const sheet = page.getByRole('dialog', { name: 'Task detail' })
     const scope = route === 'full' ? page : sheet
     const group = checkoutGroup(scope)
     await expect(group).toBeVisible()
     expect(await promptText(group)).toBe(expectedPrompt)
+    expect(await promptText(group)).not.toContain(bodyMarker)
+    // The task's description still shows the body the prompt leaves out.
+    await expect(scope.getByText(bodyMarker, { exact: false })).toBeVisible()
     // The sheet's slide moves the group and its copy button between reads.
     if (route === 'sheet') await waitForSheetSettled(sheet)
 
+    // The prompt grows with its text and has no inner scroll.
     const desktop = await expectCheckoutFits(group)
     expect(desktop.width).toBeLessThanOrEqual(desktop.cap + 0.5)
-    // The long prompt is taller than its 16rem bound and scrolls to its end.
-    expect(desktop.scrollable).toBe(true)
-    expect(await scrollPromptToEnd(group)).toEqual({ atEnd: true, lastLineVisible: true })
+    expect(desktop.scrollable).toBe(false)
 
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 720 })
       if (route === 'sheet') await waitForSheetSettled(sheet)
       const phone = await expectCheckoutFits(group)
       expect(phone.lines).toBeGreaterThan(desktop.lines)
-      expect(phone.scrollable).toBe(true)
-      expect(await scrollPromptToEnd(group)).toEqual({ atEnd: true, lastLineVisible: true })
+      expect(phone.scrollable).toBe(false)
       expect(await promptText(group)).toBe(expectedPrompt)
     }
 
@@ -2373,46 +2361,6 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
-// The prompt carries the stored body with only its outer whitespace trimmed;
-// a body with nothing left after trimming is omitted.
-const promptBodyCases: { name: string; body: string; expected?: string }[] = [
-  {
-    name: 'keeps a multi-paragraph body over 280 characters exactly',
-    body: `\n\n  ${longBody}  \n\n`,
-    expected: longBody,
-  },
-  {
-    name: 'keeps a leading heading and the paragraphs after it',
-    body: '# Heading\n\n## Section\nFirst line with `code`\nand **bold** text.\n\nSecond paragraph.',
-    expected: '# Heading\n\n## Section\nFirst line with `code`\nand **bold** text.\n\nSecond paragraph.',
-  },
-  { name: 'keeps a heading-only body', body: '# Only a heading', expected: '# Only a heading' },
-  {
-    name: 'trims only outer whitespace',
-    body: '\n \t First line\n    indented line\n\n\nAfter two blank lines.\t \n',
-    expected: 'First line\n    indented line\n\n\nAfter two blank lines.',
-  },
-  { name: 'omits an empty body', body: '' },
-  { name: 'omits a whitespace-only body', body: ' \n\n\t \n ' },
-]
-
-for (const [index, { name, body, expected }] of promptBodyCases.entries()) {
-  test(`Prompt for AI Agents body ${name}`, async ({ page, context }) => {
-    const taskID = `work-on-this-body-${index}`
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await routeCheckoutTask(page, taskID, { body })
-    await page.goto(`/tasks/${taskID}/full`)
-    const origin = await page.evaluate(() => window.location.origin)
-    const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', expected)
-    const group = checkoutGroup(page)
-    await expect(group).toBeVisible()
-    expect(await promptText(group)).toBe(expectedPrompt)
-    await group.getByRole('button', { name: 'Copy agent prompt' }).click()
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
-    expect(expectedPrompt).not.toContain('…')
-  })
-}
-
 test('Prompt for AI Agents shows the agent prompt for an available checkout without a command', async ({ page }) => {
   const taskID = 'work-on-this-no-command'
   await routeCheckoutTask(page, taskID, { checkout_command: undefined })
@@ -2420,7 +2368,7 @@ test('Prompt for AI Agents shows the agent prompt for an available checkout with
   const origin = await page.evaluate(() => window.location.origin)
   const group = checkoutGroup(page)
   await expect(group).toBeVisible()
-  expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task', 'A short description.'))
+  expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task'))
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toBeVisible()
 })
 
