@@ -367,7 +367,7 @@ func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) 
 		t.Fatal(err)
 	}
 	server := httpapi.NewServer(st)
-	server.Workspaces, server.Workspace = st, workspace
+	server.Workspaces, server.Workspace, server.Deployment = st, workspace, &config.Config{}
 	handler := server.Handler()
 	callWithToken := func(token, method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))

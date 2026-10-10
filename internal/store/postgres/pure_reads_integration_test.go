@@ -201,6 +201,11 @@ func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Startup seeding binds nobody in a populated registry (DEC-63(4)), so the
+	// assignee's membership in the other workspace is explicit.
+	if _, err := st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, otherWorkspace, userID); err != nil {
+		t.Fatal(err)
+	}
 	otherWorkspaceTask := phase61Task(otherWorkspace, "attention-other-workspace-task-"+core.NewTaskID(), core.TaskAwaiting, "")
 	if err := st.CreateTask(otherContext, otherWorkspaceTask); err != nil {
 		t.Fatal(err)
