@@ -1,12 +1,24 @@
 # Operator UX proposal: review package
 
-Status: a proposal for developer review before implementation.
-
-It is not confirmed corpus.
-
-Nothing has been filed in Conveyor.
+Status: reviewed and carried into the Conveyor corpus on 2026-10-10.
+This package is historical input.
+Where it differs from the confirmed records below, the records govern.
 
 Code citations were verified against origin/main 1c70303e.
+
+## Governing records
+
+| Record | Covers |
+|---|---|
+| DEC-61, `req-operator-next-action` v2, `feature-operator-next-action` v2 | A2, A4, A5, B1, B2, B3, C1, C2, C3 |
+| DEC-62, `req-bounded-automatic-recovery` v1, `feature-bounded-automatic-recovery` v1 | A1, A3, A7, A9 |
+| `req-task-lifecycle-and-queue` v11, AC-6.1 | Timed-out orders count as stalled |
+| Tasks 261010-7c478f and 261010-714c68 | §10 recover and restart bugs |
+
+Not carried yet: A6, A8, A10, A11, B4, §5, and the skills review (§9).
+A10 is excluded by DEC-62.
+A later operator decision removes the Tasks page and adds a kanban/list switch to the Board.
+It is proposed as a revision of the next-action documents and is not yet confirmed.
 
 ## What's here
 

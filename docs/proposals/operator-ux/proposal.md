@@ -17,6 +17,7 @@ Citations verified against 1c70303e.
 8. [Operator decisions (2026-10-10)](#8-operator-decisions-2026-10-10)
 9. [Harness-neutral skills and CLI](#9-harness-neutral-skills-and-cli)
 10. [Must-ship bug: recover leaves verify orders unclaimable; restart returns 500](#10-must-ship-bug-recover-leaves-verify-orders-unclaimable-restart-returns-500)
+11. [Bug: a pull request merged on GitHub leaves a merge-gated task stuck at approved](#11-bug-a-pull-request-merged-on-github-leaves-a-merge-gated-task-stuck-at-approved)
 
 ## 1. Design rule
 
@@ -441,3 +442,45 @@ Each test runs in the storetest conformance suite against memory, PostgreSQL and
 - Recover is offered only when the order would be claimable: for a task whose contract has `verify_stage` false and a queued, stale or timed-out verify order, the task view and the CLI do not offer recover. They show the failing condition, and a direct POST to the recover endpoint returns 409.
 - Repair of a stranded task: with no `prior` that has verify on, the repair moves the task to review and cancels the verify order, and the next review order is claimable.
 Mutation targets: each conjunct in `ValidateVerifyDispatch`, the refreeze field copy, and each case in the restart error switch.
+
+## 11. Bug: a pull request merged on GitHub leaves a merge-gated task stuck at `approved`
+
+Live report from the coordinator, workspace `funnelflux-pro`.
+Task 261009-477f9a was `awaiting_human` at the merge gate.
+The operator merged PR #1608 directly on GitHub at 08:45:32Z.
+Conveyor did not notice; 39 minutes later the task was still `awaiting_human`.
+At 17:00:55Z the operator ran `conveyor task approve 261009-477f9a`; the task moved to `approved` and stayed there, never reaching `merged`.
+`conveyor done` refuses because the task is neither merged nor closed, and `task close` would record shipped work as cancelled.
+The same day the server answered 503 "unconditional drop overload" twice at about 17:00Z.
+
+### 11.1 Code path (origin/main 1c70303e; not proven for this task)
+
+- The monitor's merged-PR observation calls `ReconcileObservedPullRequest` (`cmd/conveyord/main.go:430-432`).
+  It returns without effect unless the task is `approved` or `merged` (`internal/dispatch/merge.go:644`), so a merge observed while the task waits at the merge gate is dropped and not retried.
+- With the merge gate on, `approve` only moves the task to `approved`.
+  The merge is a separate act, `POST /v1/tasks/{id}/merge` (`internal/httpapi`, wired to `MergeApprovedTask` at `cmd/conveyord/main.go:226`), which has no CLI command; that is the two-step merge proposal A6 removes.
+- No background path covers merge-gated tasks: the readiness tick skips every task with `MergeApproval` set (`merge.go:794`), and the review-acceptance hook merges only when the gate is off (`internal/dispatch/dispatch.go:1156`).
+- `MergeApprovedTask` already handles an already-merged PR: it calls `reconcileObservedMergeLocked`, which records `merge.reconciled` and moves the task to `merged` (`merge.go:550-551,679-715`).
+  It is never invoked here.
+
+Workaround for the stuck task [INFERENCE: from code, not run]: the dashboard's Merge action, which is the `POST /v1/tasks/261009-477f9a/merge` route, should reconcile it to `merged` without a forge write, because the PR reads as merged at the approved head.
+If it refuses, its 409 text names the mismatch, for example a different head or `approval_stale`.
+
+Proof needed: the task's events for a `monitor`/forge observation near 08:45Z with no following `merge.reconciled`, and the server log around 17:00Z for 503s on the approve request.
+
+### 11.2 Fix
+
+1. An observed merge at a merge-gated task (`awaiting_human` with the merge gate, `approved`, or `merged`) whose PR head equals the approved or reviewed head is reconciled to `merged` as `merge.reconciled` with `result: merged_outside_conveyor` and the forge's `merged_by`.
+   The operator merging on the forge is the operator's merge decision (DEC-45); Conveyor records it rather than waiting for a second act.
+   A merge at a different head is recorded as drift and raised in the inbox, never as `merged`.
+2. The readiness tick also visits merge-gated `approved` and `awaiting_human` (merge) tasks, read-only: it reads the PR and reconciles an already-merged one, and never merges.
+3. `approve` at the merge gate reads the PR first; if it is already merged at the approved head, it reconciles directly to `merged`.
+4. Under C1 and DEC-61, a merge-gated task whose PR is merged appears in the inbox as a mechanical item that Conveyor clears itself, not as a decision.
+
+### 11.3 Regression tests
+
+- Merge-gated `awaiting_human` task: the monitor observes a merged PR at the reviewed head, and the task becomes `merged` with one `merge.reconciled` event; the same observation repeated adds no event.
+- Merge-gated `approved` task with the PR already merged: the next readiness tick moves it to `merged` and calls no merge API.
+- An observed merge at a different head leaves the state unchanged and records drift.
+- `approve` on an already-merged PR ends in `merged`.
+- `conveyor done` succeeds after each of the above.
