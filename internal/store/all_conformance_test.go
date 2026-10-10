@@ -57,3 +57,27 @@ func TestMemoryConformance(t *testing.T) {
 		},
 	})
 }
+
+// TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-63 cases
+// against a new volatile backend per case (component-identity-membership).
+func TestMemoryFreshDeploymentBootstrap(t *testing.T) {
+	storetest.RunFreshDeploymentBootstrap(t, storetest.FreshDeployment{
+		Open: func(t *testing.T) store.Backend {
+			st := store.NewVolatileBackend()
+			t.Cleanup(st.Close)
+			return st
+		},
+		Deactivate: func(t *testing.T, st store.Backend, userID string) {
+			deactivator, ok := st.(interface {
+				DeactivateIdentityUser(context.Context, string) (core.IdentityUser, error)
+			})
+			if !ok {
+				t.Fatal("volatile backend lacks account deactivation")
+			}
+			ctx := store.WithActor(t.Context(), store.Actor{ID: "system", Role: core.ActorSystem})
+			if _, err := deactivator.DeactivateIdentityUser(ctx, userID); err != nil {
+				t.Fatal(err)
+			}
+		},
+	})
+}

@@ -15,10 +15,12 @@ import (
 func TestDocumentDismissalArchiveHTTPIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ctx := store.WithWorkspace(t.Context(), "dismissal-http")
-	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "dismissal-http"}); err != nil {
+	// Identity first: the first workspace of the empty registry binds the
+	// deployment owner; bootstrap never heals a later binding (DEC-63(4)).
+	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Dismissal", Email: "owner@example.test", DisplayName: "Owner"}, "dismissal-token"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Dismissal", Email: "owner@example.test", DisplayName: "Owner"}, "dismissal-token"); err != nil {
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "dismissal-http"}); err != nil {
 		t.Fatal(err)
 	}
 	s := httpapi.NewServer(st)

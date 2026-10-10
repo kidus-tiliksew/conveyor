@@ -253,13 +253,10 @@ func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *test
 	}
 
 	provision := call(http.MethodPost, "/v1/users", `{"email":"`+invitedEmail+`","display_name":"Still Pending"}`)
-	if provision.Code != http.StatusCreated {
+	if provision.Code != http.StatusOK || provision.Body.String() != "{\"accepted\":true}\n" {
 		t.Fatalf("provision after failed revocation status=%d body=%s", provision.Code, provision.Body.String())
 	}
-	var user core.IdentityUser
-	if err = json.Unmarshal(provision.Body.Bytes(), &user); err != nil {
-		t.Fatal(err)
-	}
+	user := provisionedIdentityRow(t, st, invitedEmail)
 	var bindings int
 	if err = st.pool.QueryRow(t.Context(), `SELECT
 		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2),
@@ -290,22 +287,27 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := "identity-heal-" + core.NewTaskID()
+	workspace := "identity-preserve-" + core.NewTaskID()
 	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), isolationConfig(workspace)); err != nil || !seeded {
 		t.Fatalf("workspace bootstrap seeded=%t err=%v", seeded, err)
 	}
 	if _, err := st.pool.Exec(t.Context(), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err != nil || !changed {
-		t.Fatalf("binding healing changed=%t err=%v", changed, err)
+	// Bootstrap never heals a missing binding (DEC-63(4)).
+	if changed, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err != nil || changed {
+		t.Fatalf("unchanged restart changed=%t err=%v, want no-op", changed, err)
+	}
+	var restored int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID).Scan(&restored); err != nil || restored != 0 {
+		t.Fatalf("restart restored the removed binding count=%d err=%v", restored, err)
 	}
 	var healed int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_bindings_healed'`).Scan(&healed); err != nil || healed != 1 {
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_bindings_healed'`).Scan(&healed); err != nil || healed != 0 {
 		t.Fatalf("binding-healing events=%d err=%v", healed, err)
 	}
 	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'`).Scan(&rotated); err != nil || rotated != 1 {
-		t.Fatalf("binding healing emitted rotation events=%d err=%v", rotated, err)
+		t.Fatalf("unchanged restart emitted rotation events=%d err=%v", rotated, err)
 	}
 
 	var tokenID string
@@ -322,9 +324,29 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	if err := st.pool.QueryRow(t.Context(), `SELECT revoked_at IS NOT NULL FROM user_tokens WHERE id=$1`, tokenID).Scan(&revoked); err != nil || !revoked {
 		t.Fatalf("revoked legacy mapping resurrected=%t err=%v", !revoked, err)
 	}
+	// A new deployment token after revocation is reissued to the same owner
+	// and still restores no binding (DEC-63(3), DEC-63(4)).
+	if changed, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Other Org", Email: "someone-else@example.test", DisplayName: "Someone"}, "legacy-three"); err != nil || !changed {
+		t.Fatalf("reissue after revocation changed=%t err=%v", changed, err)
+	}
+	if reissued, err := st.VerifyPersonalAccessToken(t.Context(), "legacy-three"); err != nil || reissued.ID != principal.ID {
+		t.Fatalf("reissued owner=%+v err=%v, want %s", reissued, err, principal.ID)
+	}
+	if _, err := st.VerifyPersonalAccessToken(t.Context(), "legacy-two"); err == nil {
+		t.Fatal("revoked deployment token authenticated after reissue")
+	}
+	var markers, users int
+	if err := st.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM user_tokens WHERE deployment_credential), (SELECT count(*) FROM users)`).Scan(&markers, &users); err != nil || markers != 1 || users != 1 {
+		t.Fatalf("reissue markers=%d users=%d err=%v", markers, users, err)
+	}
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID).Scan(&restored); err != nil || restored != 0 {
+		t.Fatalf("reissue restored the removed binding count=%d err=%v", restored, err)
+	}
 }
 
-func TestDeploymentMutationAuthorizationTracksLiveOperatorBindingsIntegration(t *testing.T) {
+// DEC-63(1), DEC-63(2), DEC-63(5): instance administration follows the
+// deployment marker owner, never operator bindings or credential scope.
+func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "live-binding-http-token"
 	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Live Org", Email: "live-owner@example.test", DisplayName: "Live Owner"}, legacy); err != nil {
@@ -358,43 +380,42 @@ func TestDeploymentMutationAuthorizationTracksLiveOperatorBindingsIntegration(t 
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		return callWithToken(pat.Value, method, path, body)
 	}
-	if response := call(http.MethodPost, "/v1/users", `{"email":"before@example.test","display_name":"Before"}`); response.Code != http.StatusCreated {
-		t.Fatalf("authorized provisioning status=%d body=%s", response.Code, response.Body.String())
+	if response := call(http.MethodPost, "/v1/users", `{"email":"before@example.test","display_name":"Before"}`); response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
+		t.Fatalf("owner provisioning status=%d body=%s", response.Code, response.Body.String())
 	}
 	second, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_second_" + core.NewTaskID(), Email: "second-" + core.NewTaskID() + "@example.test", DisplayName: "Second"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, second.ID); err != nil {
+	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'operator')`, workspace, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	userScopePAT, err := st.IssuePersonalAccessToken(t.Context(), second.ID, "issued as user")
+	secondPAT, err := st.IssuePersonalAccessToken(t.Context(), second.ID, "second operator")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `UPDATE workspace_role_bindings SET role='operator' WHERE workspace_id=$1 AND user_id=$2`, workspace, second.ID); err != nil {
-		t.Fatal(err)
+	for _, request := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/users", `{"email":"denied@example.test","display_name":"Denied"}`},
+		{http.MethodPost, "/v1/workspaces", `{"id":"denied-` + core.NewTaskID()[:8] + `","name":"Denied"}`},
+	} {
+		if response := callWithToken(secondPAT.Value, request.method, request.path, request.body); response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"workspace_not_found"`) {
+			t.Fatalf("nonowner operator %s status=%d body=%s", request.path, response.Code, response.Body.String())
+		}
 	}
-	if response := callWithToken(userScopePAT.Value, http.MethodPost, "/v1/users", `{"email":"scope-denied@example.test","display_name":"Scope Denied"}`); response.Code != http.StatusUnauthorized {
-		t.Fatalf("user-scope PAT status=%d body=%s", response.Code, response.Body.String())
+	var deniedUsers int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM users WHERE email='denied@example.test'`).Scan(&deniedUsers); err != nil || deniedUsers != 0 {
+		t.Fatalf("refused provisioning wrote users=%d err=%v", deniedUsers, err)
 	}
 	revokeCtx := store.WithCredential(store.WithWorkspace(operatorCtx, workspace), core.AuthenticatedCredential{ID: pat.ID, OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	if err := st.RevokeWorkspaceRole(revokeCtx, owner.ID, workspace); err != nil {
 		t.Fatal(err)
 	}
-	for _, request := range []struct{ method, path, body string }{
-		{http.MethodPost, "/v1/users", `{"email":"denied@example.test","display_name":"Denied"}`},
-		{http.MethodPost, "/v1/workspaces", `{}`},
-	} {
-		if response := call(request.method, request.path, request.body); response.Code != http.StatusUnauthorized {
-			t.Fatalf("revoked %s status=%d body=%s", request.path, response.Code, response.Body.String())
-		}
+	// The owner holds no binding now and still administers the instance.
+	if response := call(http.MethodPost, "/v1/users", `{"email":"after@example.test","display_name":"After"}`); response.Code != http.StatusOK {
+		t.Fatalf("unbound owner provisioning status=%d body=%s", response.Code, response.Body.String())
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'operator')`, workspace, owner.ID); err != nil {
-		t.Fatal(err)
-	}
-	if response := call(http.MethodPost, "/v1/users", `{"email":"restored@example.test","display_name":"Restored"}`); response.Code != http.StatusCreated {
-		t.Fatalf("re-granted provisioning status=%d body=%s", response.Code, response.Body.String())
+	if response := call(http.MethodPost, "/v1/workspaces", `{}`); response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unbound owner creation validation status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -778,14 +799,19 @@ func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 	wait.Add(2)
 	results := make(chan bool, 2)
 	errors := make(chan error, 2)
+	// A start barrier releases both bootstraps together; the advisory lock
+	// must still yield exactly one owner and one deployment marker.
+	start := make(chan struct{})
 	for range 2 {
 		go func() {
 			defer wait.Done()
+			<-start
 			seeded, err := st.BootstrapIdentity(t.Context(), identity, "shared-legacy-token")
 			results <- seeded
 			errors <- err
 		}()
 	}
+	close(start)
 	wait.Wait()
 	close(results)
 	close(errors)
@@ -885,6 +911,11 @@ func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 	}
 	if seeded, err := st.BootstrapIdentity(t.Context(), identity, "upgrade-legacy-token"); err != nil || seeded {
 		t.Fatalf("upgrade healthy restart seeded=%t err=%v", seeded, err)
+	}
+	// Upgrade adds no membership to the established workspace (DEC-63(4)).
+	var ownerBindings int
+	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID).Scan(&ownerBindings); err != nil || ownerBindings != 0 {
+		t.Fatalf("upgrade bootstrap bound the owner count=%d err=%v", ownerBindings, err)
 	}
 	var orgID string
 	if err := st.pool.QueryRow(t.Context(), `SELECT org_id FROM workspaces WHERE id=$1`, workspace).Scan(&orgID); err != nil {

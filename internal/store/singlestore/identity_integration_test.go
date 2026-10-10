@@ -20,10 +20,12 @@ func ownedIdentityFixture(t *testing.T) (*Store, context.Context, core.IdentityU
 	s := integrationStore(t)
 	ctx := store.WithWorkspace(t.Context(), "identity-fixture")
 	cfg := &config.Config{Workspace: "identity-fixture", Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/repo", Base: "main"}}}
-	if _, err := s.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+	// Identity first: the first workspace of the reset registry binds the
+	// deployment owner; bootstrap never heals a later binding (DEC-63(4)).
+	if _, err := s.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Fixture", Email: "owner@example.test", DisplayName: "Owner"}, "fixture-bootstrap"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Fixture", Email: "owner@example.test", DisplayName: "Owner"}, "fixture-bootstrap"); err != nil {
+	if _, err := s.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
 	owner, err := s.VerifyPersonalAccessToken(ctx, "fixture-bootstrap")
