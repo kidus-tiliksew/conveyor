@@ -305,6 +305,18 @@ func runMembershipAuditEvents(t *testing.T, x Fixture, ctx context.Context, owne
 	if after := len(workspaceEventsOf(t, x, foreign, "workspace.membership_granted")) + len(workspaceEventsOf(t, x, foreign, "workspace.membership_revoked")); after != foreignBefore {
 		t.Fatalf("membership events leaked into another workspace: before=%d after=%d", foreignBefore, after)
 	}
+	// A grant that names another workspace is recorded in that workspace's
+	// ledger, whatever workspace the call's context carries.
+	_, err = st.GrantWorkspaceRole(ctx, "foreign-audit@example.test", foreign, core.WorkspaceRoleViewer)
+	requireOK(t, err)
+	foreignGranted := workspaceEventsOf(t, x, foreign, "workspace.membership_granted")
+	if len(foreignGranted) == 0 {
+		t.Fatal("foreign grant recorded no event in its workspace")
+	}
+	requirePayload(t, foreignGranted[len(foreignGranted)-1], map[string]any{"workspace_id": foreign, "email": "foreign-audit@example.test", "invitation": true})
+	if got := len(workspaceEventsOf(t, x, x.Workspace, "workspace.membership_granted")) - grantedBefore; got != 2 {
+		t.Fatalf("foreign grant leaked into the context workspace: granted=%d", got)
+	}
 }
 
 // runHostLocalIssueLinkAdmission keeps the deployment-wide admission of

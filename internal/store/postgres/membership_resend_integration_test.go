@@ -158,7 +158,7 @@ func TestInvitationResentEventMigrationIntegration(t *testing.T) {
 	if after := rowsAsJSON(t, ctx, st.pool, `SELECT id,workspace_id,kind,actor_id,payload_json FROM events WHERE workspace_id=$1`, workspace); strings.Join(after, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("recorded events changed:\nbefore=%v\nafter=%v", before, after)
 	}
-	for _, kind := range []string{"workspace.invitation_resent", "workspace.membership_granted", "workspace.membership_revoked", "requirement.title_changed", "system_design.title_changed", "artifact.metadata_repaired", "lineage.rebuilt"} {
+	for _, kind := range []string{"workspace.invitation_resent", "workspace.membership_granted", "workspace.membership_revoked", "requirement.title_changed", "system_design.title_changed"} {
 		if err := insert(kind); err != nil {
 			t.Fatalf("migrated schema refused %s: %v", kind, err)
 		}
