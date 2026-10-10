@@ -430,7 +430,7 @@ func TestMCPUnboundWorkspaceMatchesMissingWorkspace(t *testing.T) {
 	server := NewServer(store.NewMemory())
 	server.Workspaces, server.Memberships = fixture, fixture
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
 	_, unbound := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "beta"})
 	_, missing := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "does-not-exist"})
 	if unbound == nil || missing == nil || unbound.Error() != missing.Error() {
@@ -693,7 +693,7 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 	server.Workspaces, server.Memberships = fixture, fixture
 	server.WorkOrders = &workorder.Service{Store: st}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 	fixture.capabilityCalls = nil
 	if _, err := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "alpha"}); err != nil {
 		t.Fatalf("viewer list_work_orders: %v", err)
@@ -747,7 +747,7 @@ func TestMCPGovernanceToolsRemainClaimGatedForEveryRole(t *testing.T) {
 			server.Workspaces, server.Memberships = fixture, fixture
 			server.WorkOrders = &workorder.Service{Store: st}
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+			request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 				fixture.capabilityCalls = nil
 				_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
@@ -952,7 +952,7 @@ func TestDurableWorkspaceAuthorizationWithoutMembershipsFailsClosed(t *testing.T
 			t.Fatalf("%s status=%d body=%q", path, response.Code, response.Body.String())
 		}
 	}
-	ctx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser})
+	ctx := withCredentialActor(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser})
 	if _, err := server.resolveMCPWorkspace(ctx, "alpha"); err == nil || err.Error() != "workspace_not_found: workspace not found" {
 		t.Fatalf("MCP fail-closed error=%v", err)
 	}
@@ -961,7 +961,7 @@ func TestDurableWorkspaceAuthorizationWithoutMembershipsFailsClosed(t *testing.T
 func TestWorkerMCPWorkspaceIsBoundToEnrollment(t *testing.T) {
 	server := NewServer(store.NewMemory())
 	server.Workspaces = &fakeWorkspaceControl{items: []core.Workspace{{ID: "alpha"}, {ID: "beta"}}}
-	ctx := context.WithValue(t.Context(), workerContextKey{}, core.Worker{ID: "worker-alpha", Workspace: "alpha"})
+	ctx := context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker-alpha", Workspace: "alpha"})
 	if got, err := server.resolveMCPWorkspace(ctx, ""); err != nil || got != "alpha" {
 		t.Fatalf("omitted workspace=%q err=%v", got, err)
 	}

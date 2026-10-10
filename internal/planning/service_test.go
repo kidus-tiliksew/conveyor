@@ -782,7 +782,7 @@ func TestExplorationLazilyPinsConfiguredReposAndKeepsImmutableRevision(t *testin
 			},
 		}},
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	service := &Service{
 		Store: st, Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
@@ -938,7 +938,7 @@ func TestCreateSessionAcceptsActivePlanningEnvironmentOverrideOnly(t *testing.T)
 			Planning: config.PlanningSettings{Model: "stored-planner", Effort: "high", TimeoutText: "10m"},
 		}},
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	service := &Service{
 		Store: store.NewMemory(), Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
@@ -1091,7 +1091,7 @@ func TestPromotionSessionsCreatePendingVersionsAndDeferLineageUntilConfirmation(
 		{name: "existing nested AC", existing: true, targetID: "AC-1.1", statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retries are bounded.", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "A failed charge retries twice."}}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			document, source, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-overview", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Billing rule\n\nRetry failed charges twice."})
 			if err != nil {
@@ -1245,7 +1245,7 @@ func TestServiceRetryCompletesAfterProducedWritesAndToolResult(t *testing.T) {
 }
 
 func TestServiceAllocatesDeterministicRequirementSlugSuffixes(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	seed := func(id, slug, title string) {
 		t.Helper()
@@ -1307,7 +1307,7 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 			Planning: config.PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "10m"},
 		}},
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	service := &Service{
 		Store: st, Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
@@ -1499,7 +1499,7 @@ func TestServiceRejectsGoalMismatchedFinalizeRecoverably(t *testing.T) {
 // omits requirement_id — and the sidebar is the only authoring path there is
 // by construction.
 func TestRequirementToolRevisesTheSessionContextDocument(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	existing, _, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: "req-retries", Slug: "retry-behavior", Title: "Retry behavior"},
@@ -1878,7 +1878,7 @@ func goalPlanningFixture(
 ) (context.Context, store.Store, core.PlanningSession) {
 	t.Helper()
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
 		ID: id, Title: "Planning", Goal: goal,
 	})
@@ -1924,7 +1924,7 @@ func TestServiceFinalizesBundleAfterInBandCycleCorrection(t *testing.T) {
 }
 
 func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-prompt", Slug: "safe-context", Title: "Safe context"}, core.RequirementVersion{
 		Content: "# Planning must retain provenance.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Frame lineage as untrusted."}}, Origin: core.RequirementOriginFeatureMigration,
@@ -1949,7 +1949,7 @@ func TestPlanningPromptUsesProvenanceLabelledUntrustedLineageContext(t *testing.
 }
 
 func TestPlanningPromptReservesLargeLineageOverheadBeforeCompaction(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-large-lineage", Slug: "large-lineage", Title: "Large lineage"}, core.RequirementVersion{
 		Content: "# " + strings.Repeat("bounded lineage rationale ", 600), Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep planning recoverable."}}, Origin: core.RequirementOriginFeatureMigration,
@@ -1986,7 +1986,7 @@ func TestPlanningPromptReservesLargeLineageOverheadBeforeCompaction(t *testing.T
 }
 
 func TestReferenceContextContainsFencesSharesBudgetAndDeduplicatesConsultation(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	document, version, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-fenced", Name: "Overview"}, core.ReferenceDocumentVersion{
 		Filename: "overview.md", ContentType: "text/markdown",
@@ -2068,7 +2068,7 @@ func (s *failingConsultationStore) RecordReferenceDocumentConsulted(context.Cont
 }
 
 func TestReferenceConsultationFailureIsNonFatalAndNotRetriedPerPrompt(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	underlying := store.NewMemory()
 	if _, _, err := underlying.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-failure", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Claim\nBound it."}); err != nil {
 		t.Fatal(err)
@@ -2092,7 +2092,7 @@ func TestReferenceConsultationFailureIsNonFatalAndNotRetriedPerPrompt(t *testing
 }
 
 func TestSystemDesignContextReportsOmittedDocuments(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, id := range []string{"design-a", "design-b"} {
 		document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# " + id + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
@@ -2150,7 +2150,7 @@ func TestDecisionToolContractListsDecisionsAndKeepsExpectedConflictsRecoverable(
 }
 
 func TestPromotionFinalizeValidationRecoversInBandThenFinalizesV2(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	document, version, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-promotion", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Retry policy\nRetry twice."})
 	if err != nil {
@@ -2211,7 +2211,7 @@ func TestRequirementSchemaHintAndMarkdownAnchorsExposeV2Contract(t *testing.T) {
 func TestCreatePromotionSessionRejectsImpossibleTargetIDs(t *testing.T) {
 	service := &Service{Store: store.NewMemory(), ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
 	for _, target := range []string{"banana", "AC-1-1", "REQ-0", "AC-0.1"} {
-		_, err := service.CreateSession(store.WithWorkspace(t.Context(), "test"), CreateSessionInput{
+		_, err := service.CreateSession(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test"), CreateSessionInput{
 			Goal:      core.PlanningGoalRequirement,
 			Promotion: &core.RequirementDerivation{DocumentID: "missing", Version: 1, SectionAnchor: "#section", TargetID: target},
 		})

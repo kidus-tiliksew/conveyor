@@ -38,7 +38,7 @@ func TestCheckpointHandoffChild(t *testing.T) {
 	if !ok {
 		t.Fatal("missing assignment")
 	}
-	path, err := checkoutWithWriter(t.Context(), c, taskID, branch, base, repo, repoURL, "", os.Getenv("CONVEYOR_WORKTREE_ROOT"))
+	path, err := checkoutWithWriter(store.WithActor(t.Context(), store.SystemActor()), c, taskID, branch, base, repo, repoURL, "", os.Getenv("CONVEYOR_WORKTREE_ROOT"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestCheckpointHandoffChild(t *testing.T) {
 	fmt.Println("checkpoint fixture child executed", action)
 	payload, _ := json.Marshal(map[string]string{"session_id": os.Getenv("CONVEYOR_SESSION_ID"), "order_id": os.Getenv("CONVEYOR_WORK_ORDER_ID"), "action": action})
 	var result any
-	if err = c.workerDoContext(t.Context(), http.MethodPost, "/fixture/finish", payload, &result, c.token); err != nil {
+	if err = c.workerDoContext(store.WithActor(t.Context(), store.SystemActor()), http.MethodPost, "/fixture/finish", payload, &result, c.token); err != nil {
 		t.Fatal(err)
 	}
 	if action == "produce-linger" {
@@ -83,7 +83,7 @@ func TestCheckpointHandoffLauncherPlanRevision(t *testing.T) {
 			linger := termination == "renewal" || termination == "teardown"
 			t.Run(fmt.Sprintf("%s/%s", mode, termination), func(t *testing.T) {
 				fixture := newGitFixture(t)
-				ctx := store.WithWorkspace(t.Context(), "demo")
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 				st := store.NewMemory()
 				now := time.Now().UTC()
 				task := core.Task{ID: "handoff", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-handoff", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
@@ -357,7 +357,7 @@ func TestCheckpointHandoffLauncherPlanRevision(t *testing.T) {
 
 func TestCheckpointHandoffGitFailuresAndWriterFence(t *testing.T) {
 	fixture := newGitFixture(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	branch := "conveyor/task-checkpoint-failure"
 	path, err := checkoutTask(ctx, branch, "main", "conveyor", fixture.origin, "checkpoint-failure", "")
 	if err != nil {
@@ -460,7 +460,7 @@ func writeTestWriterAdmission(w http.ResponseWriter, r *http.Request, identity c
 
 func TestCheckpointHandoffRejectsRemoteAheadBeforeStaging(t *testing.T) {
 	fixture := newGitFixture(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	branch := "conveyor/task-divergent"
 	path, err := checkoutTask(ctx, branch, "main", "conveyor", fixture.origin, "divergent", "")
 	if err != nil {

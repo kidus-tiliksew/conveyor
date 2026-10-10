@@ -22,10 +22,10 @@ import (
 func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "invitation-owner-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Invite Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Invite Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 		t.Fatalf("grant=%+v", grant)
 	}
 	token := strings.TrimPrefix(grant.SignInURL, "https://conveyor.example/sign-in#token=")
-	if _, err = st.pool.Exec(t.Context(), `UPDATE invitation_signin_tokens SET expires_at=now()-interval '1 second' WHERE email=$1 AND redeemed_at IS NULL`, email); err != nil {
+	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `UPDATE invitation_signin_tokens SET expires_at=now()-interval '1 second' WHERE email=$1 AND redeemed_at IS NULL`, email); err != nil {
 		t.Fatal(err)
 	}
 	if expired := call(http.MethodPost, "/v1/sign-in/redeem", "", `{"token":"`+token+`"}`, nil, false); expired.Code != http.StatusUnauthorized {
@@ -189,21 +189,21 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, identity, err := st.RedeemSignInLink(t.Context(), link.Value)
+	session, identity, err := st.RedeemSignInLink(store.WithActor(t.Context(), store.SystemActor()), link.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.VerifyDashboardSession(t.Context(), session.Value); err != nil {
+	if _, err = st.VerifyDashboardSession(store.WithActor(t.Context(), store.SystemActor()), session.Value); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.DeactivateIdentityUser(ctx, identity.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.VerifyDashboardSession(t.Context(), session.Value); err == nil {
+	if _, err = st.VerifyDashboardSession(store.WithActor(t.Context(), store.SystemActor()), session.Value); err == nil {
 		t.Fatal("deactivated user retained a live session")
 	}
 	var persistedSecrets int
-	if err = st.pool.QueryRow(t.Context(), `SELECT
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM invitation_signin_tokens WHERE encode(token_hash,'escape')=$1) +
 		(SELECT count(*) FROM dashboard_sessions WHERE encode(session_hash,'escape')=$2)`, token, cookies[0].Value).Scan(&persistedSecrets); err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 		t.Fatal("cleartext sign-in or session secret persisted")
 	}
 	var lifecycleEvents int
-	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM deployment_events
 		WHERE kind IN ('identity.signin_link_issued','identity.signin_link_redeemed','identity.dashboard_session_created','identity.dashboard_session_revoked','identity.invitation_delivery_fallback')
 		AND payload_json::text NOT LIKE '%cv_signin_%' AND payload_json::text NOT LIKE '%cv_session_%'`).Scan(&lifecycleEvents); err != nil {
 		t.Fatal(err)
@@ -225,10 +225,10 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 func TestPasswordSignInResetAndSlidingSessionIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "password-owner-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Password Org", Email: "password-owner@example.test", DisplayName: "Password Owner"}, legacy); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Password Org", Email: "password-owner@example.test", DisplayName: "Password Owner"}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,50 +306,50 @@ func TestPasswordSignInResetAndSlidingSessionIntegration(t *testing.T) {
 		t.Fatalf("link reset status=%d body=%s", reset.Code, reset.Body.String())
 	}
 
-	session, _, err := st.SignInWithPassword(t.Context(), owner.Email, "reset-password-value")
+	session, _, err := st.SignInWithPassword(store.WithActor(t.Context(), store.SystemActor()), owner.Email, "reset-password-value")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.pool.Exec(t.Context(), `UPDATE dashboard_sessions SET expires_at=now()+interval '1 hour' WHERE id=$1`, session.ID); err != nil {
+	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `UPDATE dashboard_sessions SET expires_at=now()+interval '1 hour' WHERE id=$1`, session.ID); err != nil {
 		t.Fatal(err)
 	}
-	verified, err := st.VerifyDashboardSession(t.Context(), session.Value)
+	verified, err := st.VerifyDashboardSession(store.WithActor(t.Context(), store.SystemActor()), session.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if time.Until(verified.SessionExpiresAt) < 6*24*time.Hour+23*time.Hour {
 		t.Fatalf("session was not renewed through the seven-day window: %s", verified.SessionExpiresAt)
 	}
-	if err = st.RevokeDashboardSession(t.Context(), owner.ID, session.ID); err != nil {
+	if err = st.RevokeDashboardSession(store.WithActor(t.Context(), store.SystemActor()), owner.ID, session.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.VerifyDashboardSession(t.Context(), session.Value); err == nil {
+	if _, err = st.VerifyDashboardSession(store.WithActor(t.Context(), store.SystemActor()), session.Value); err == nil {
 		t.Fatal("revoked session was renewed")
 	}
 
-	deactivatedSession, _, err := st.SignInWithPassword(t.Context(), owner.Email, "reset-password-value")
+	deactivatedSession, _, err := st.SignInWithPassword(store.WithActor(t.Context(), store.SystemActor()), owner.Email, "reset-password-value")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.DeactivateIdentityUser(ctx, owner.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.VerifyDashboardSession(t.Context(), deactivatedSession.Value); err == nil {
+	if _, err = st.VerifyDashboardSession(store.WithActor(t.Context(), store.SystemActor()), deactivatedSession.Value); err == nil {
 		t.Fatal("deactivated user retained password session")
 	}
-	if _, _, err = st.SignInWithPassword(t.Context(), owner.Email, "reset-password-value"); !errors.Is(err, core.ErrInvalidCredential) {
+	if _, _, err = st.SignInWithPassword(store.WithActor(t.Context(), store.SystemActor()), owner.Email, "reset-password-value"); !errors.Is(err, core.ErrInvalidCredential) {
 		t.Fatalf("deactivated password sign-in err=%v", err)
 	}
 
 	var cleartextHashes int
-	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM users WHERE password_hash IN ('first-password-value','second-password-value','reset-password-value')`).Scan(&cleartextHashes); err != nil {
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM users WHERE password_hash IN ('first-password-value','second-password-value','reset-password-value')`).Scan(&cleartextHashes); err != nil {
 		t.Fatal(err)
 	}
 	if cleartextHashes != 0 {
 		t.Fatal("cleartext password persisted")
 	}
 	var passwordEvents, passwordSecrets int
-	if err = st.pool.QueryRow(t.Context(), `SELECT
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		count(*) FILTER (WHERE kind IN ('identity.password_set','identity.password_changed')),
 		count(*) FILTER (WHERE payload_json::text LIKE '%first-password-value%' OR payload_json::text LIKE '%second-password-value%' OR payload_json::text LIKE '%reset-password-value%')
 		FROM deployment_events`).Scan(&passwordEvents, &passwordSecrets); err != nil {

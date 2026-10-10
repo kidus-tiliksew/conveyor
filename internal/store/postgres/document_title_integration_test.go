@@ -52,7 +52,7 @@ func newDocumentTitleStore(t *testing.T) (*Store, context.Context) {
 			t.Errorf("drop schema %s: %v", schema, dropErr)
 		}
 	})
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 0); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 0); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)

@@ -33,7 +33,7 @@ func TestSystemDesignViewSerializesDriftDetectedAt(t *testing.T) {
 }
 
 func TestSystemDesignArchiveRESTLifecycle(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-archive-api", Title: "Archive API", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Archive\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
 	if err != nil {
@@ -134,7 +134,7 @@ func (s *countingSystemDesignStore) ListSystemDesignEvents(ctx context.Context, 
 }
 
 func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
 	for _, id := range []string{"design-a", "design-b", "design-c"} {
 		document, version, err := base.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{
@@ -162,7 +162,7 @@ func TestListSystemDesignsUsesBoundedStoreRounds(t *testing.T) {
 }
 
 func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	document, first, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-dispatch", Title: "Dispatch", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Dispatch\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -170,7 +170,7 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sibling := store.WithWorkspace(t.Context(), "sibling")
+	sibling := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "sibling")
 	if _, _, err = st.CreateSystemDesign(sibling, core.SystemDesign{ID: document.ID, Title: "Sibling", Category: "Operations"}, core.SystemDesignVersion{
 		Content: "# Sibling\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - cmd/**\n```", Origin: core.SystemDesignOriginOperator,
 	}); err != nil {
@@ -291,7 +291,7 @@ func TestSystemDesignAndDecisionHTTPConfirmationContracts(t *testing.T) {
 }
 
 func TestDecisionSupersessionSweepHTTPProjectionAndDismissal(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	createRequirement := func(id, content string) {
 		t.Helper()
@@ -361,7 +361,7 @@ func TestDecisionSupersessionSweepHTTPProjectionAndDismissal(t *testing.T) {
 }
 
 func TestSystemDesignOnlyProposalDismissalArchiveHTTP(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	id := "only-proposal"
 	_, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# Proposal\n\n```conveyor:governs\n- repo: conveyor\n  paths: [internal/**]\n```", Origin: core.SystemDesignOriginOperator})

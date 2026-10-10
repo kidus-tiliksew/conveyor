@@ -535,7 +535,7 @@ func (s *Service) ReconcileVerificationClaims(ctx context.Context) (int, error) 
 	if actor.Role != core.ActorSystem {
 		return 0, store.ErrVerificationAccess
 	}
-	return b.ReconcileVerificationClaims(store.WithActor(ctx, store.Actor{ID: "verification-reconciler", Role: core.ActorSystem}))
+	return b.ReconcileVerificationClaims(store.WithActor(ctx, store.SystemActor("verification-reconciler")))
 }
 
 // ExpireVerificationChunks is called by the daemon workspace reconciliation
@@ -550,5 +550,5 @@ func (s *Service) ExpireVerificationChunks(ctx context.Context, limit int) (int,
 	if !ok {
 		return 0, nil
 	}
-	return b.ExpireVerificationChunks(store.WithActor(ctx, store.Actor{ID: "verification-reconciler", Role: core.ActorSystem}), limit)
+	return b.ExpireVerificationChunks(store.WithActor(ctx, store.SystemActor("verification-reconciler")), limit)
 }

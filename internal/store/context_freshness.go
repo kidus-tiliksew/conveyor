@@ -109,6 +109,9 @@ func evaluateContextObservation(ctx context.Context, task core.Task, order core.
 	return o, &e, nil
 }
 func (m *memory) RecordContextObservation(ctx context.Context, lease taskops.TaskLease, o core.ContextObservation) (core.ContextObservation, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.ContextObservation{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[o.WorkOrderID]
@@ -205,6 +208,9 @@ func EvaluateInProcessContextObservation(ctx context.Context, task core.Task, jo
 	return evaluateContextObservation(ctx, task, order, events, o, now)
 }
 func (m *memory) RecordInProcessContextObservation(ctx context.Context, lease taskops.TaskLease, o core.ContextObservation) (core.ContextObservation, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.ContextObservation{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !lease.ValidForCommand(o.TaskID, string(ContextObservationCommand)) {

@@ -1,10 +1,13 @@
 package singlestore
 
-import "testing"
+import (
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"testing"
+)
 
 func TestOpenTaskBranchUniqueDropsKeyIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	var count int
 	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='tasks' AND index_name='tasks_branch_key'`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unique key remains count=%d err=%v", count, err)

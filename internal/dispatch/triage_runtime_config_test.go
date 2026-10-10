@@ -61,7 +61,7 @@ repos: []
 	}
 	backend := store.NewVolatileBackend()
 	t.Cleanup(backend.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	workspace := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api", URL: "https://github.com/example/api", Base: "main"}}}
 	if _, err = backend.BootstrapWorkspaceConfig(ctx, workspace); err != nil {
 		t.Fatal(err)

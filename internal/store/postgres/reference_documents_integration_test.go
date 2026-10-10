@@ -2,12 +2,13 @@ package postgres
 
 import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"strings"
 	"testing"
 )
 
 func TestInsertEventRejectsTasklessEvent(t *testing.T) {
-	err := insertEvent(t.Context(), nil, core.Event{Kind: "reference_document.created"})
+	err := insertEvent(store.WithActor(t.Context(), store.SystemActor()), nil, core.Event{Kind: "reference_document.created"})
 	if err == nil || !strings.Contains(err.Error(), "use insertWorkspaceEvent") {
 		t.Fatalf("task-less task-bound insertion error=%v", err)
 	}

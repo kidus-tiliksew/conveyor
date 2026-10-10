@@ -14,7 +14,7 @@ import (
 
 func TestTaskIntakeAndOpenTaskContextAction(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-context", Title: "Context intent"}, core.RequirementVersion{
 		Content: "# Context intent", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Use task context."}},
@@ -79,7 +79,7 @@ func TestTaskIntakeRejectsUnknownContextWithoutPartialTask(t *testing.T) {
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "req-missing") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	tasks, err := st.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	tasks, err := st.ListTasks(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"))
 	if err != nil || len(tasks) != 0 {
 		t.Fatalf("partial tasks=%+v err=%v", tasks, err)
 	}
@@ -87,7 +87,7 @@ func TestTaskIntakeRejectsUnknownContextWithoutPartialTask(t *testing.T) {
 
 func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-rest-proposal", Title: "REST proposal"}, core.RequirementVersion{
 		Content: "# REST proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Expose proposal decisions."}},
 	})
@@ -166,7 +166,7 @@ func TestArchivedContextErrorsAcrossRESTAndMCP(t *testing.T) {
 	for _, kind := range []core.TaskContextProposalTargetKind{core.TaskContextProposalRequirement, core.TaskContextProposalSystemDesign} {
 		t.Run(string(kind), func(t *testing.T) {
 			st := store.NewMemory()
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			id := "archive-context"
 			code := "requirement_archived"
 			field := "requirement_ids"

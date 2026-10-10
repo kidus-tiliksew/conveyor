@@ -94,7 +94,7 @@ func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *
 
 func githubIssuePublicationFixture(t *testing.T) (context.Context, store.Store, *githubIssuePublicationWorker, string) {
 	t.Helper()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "github-publication-" + core.NewTaskID(), Workspace: "test", Repo: "app", Title: "Publish issue", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -232,7 +232,7 @@ func TestReviewPublicationFailureKeepsInternalReviewAuthoritative(t *testing.T) 
 
 func reviewPublicationFixture(t *testing.T, verdict string) (context.Context, store.Store, *reviewPublicationWorker, core.ReviewPublication) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	taskID := "review-publication-" + core.NewTaskID()
 	task := core.Task{
@@ -383,7 +383,7 @@ func (s *cancelledDispatchStore) GetTask(context.Context, string) (core.Task, er
 // every second for as long as the task waits.
 func TestDispatchJobCompletesWhileTaskWaitsForAClaim(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	cfg := &config.Config{
 		Workspace: "test",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -445,7 +445,7 @@ func TestQueueRescueThresholdUsesLargestRouteAndFallback(t *testing.T) {
 
 func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context, store.Store, *dispatchTaskWorker, string) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	taskID := "dispatch-failure-" + core.NewTaskID()
 	task := core.Task{ID: taskID, Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}

@@ -14,7 +14,7 @@ import (
 
 func TestDocumentDismissalArchivalMigrationIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	var log bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&log, nil)))

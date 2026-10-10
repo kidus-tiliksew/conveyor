@@ -18,7 +18,12 @@ import (
 // Worker persistence follows the PostgreSQL reference (DEC-38,
 // component-persistence). Pairings are consumed once under a row lock.
 const workerColumns = `id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at`
-const activeWorkerOwner = `(owner_user_id IS NULL OR EXISTS (SELECT 1 FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=workers.workspace_id WHERE u.id=workers.owner_user_id AND u.status='active'))`
+
+// activeWorkerOwner admits a worker only with a nonnull owner who is an active
+// user with a binding in the worker's workspace. SingleStore has no foreign
+// keys, so a dangling owner reference also fails the EXISTS (component-work-
+// orders, Workers: Admission).
+const activeWorkerOwner = `(owner_user_id IS NOT NULL AND EXISTS (SELECT 1 FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=workers.workspace_id WHERE u.id=workers.owner_user_id AND u.status='active'))`
 
 func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
 	ws, err := workspace(ctx)
@@ -170,14 +175,15 @@ func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires tim
 		if err != nil {
 			return err
 		}
-		if w.OwnerUserID != "" {
-			var active bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id WHERE u.id=? AND u.status='active' AND b.workspace_id=?)`, w.OwnerUserID, ws).Scan(&active); err != nil {
-				return err
-			}
-			if !active {
-				return store.ErrWorkerUnauthorized
-			}
+		if strings.TrimSpace(w.OwnerUserID) == "" {
+			return store.ErrWorkerUnauthorized
+		}
+		var active bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id WHERE u.id=? AND u.status='active' AND b.workspace_id=?)`, w.OwnerUserID, ws).Scan(&active); err != nil {
+			return err
+		}
+		if !active {
+			return store.ErrWorkerUnauthorized
 		}
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		if _, err = tx.ExecContext(ctx, `UPDATE workers SET lease_expires_at=?,last_seen_at=?,probe_results=? WHERE workspace_id=? AND id=?`, leaseExpires, now, data, ws, id); err != nil {
@@ -198,6 +204,9 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := store.RequireActor(ctx); err != nil {
+		return err
+	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var exists int
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM workers WHERE workspace_id=? AND id=? FOR UPDATE`, ws, id).Scan(&exists); err != nil {
@@ -207,9 +216,9 @@ func (s *Store) RevokeWorker(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE workers SET revoked_at=COALESCE(revoked_at,?),lease_expires_at=NULL WHERE workspace_id=? AND id=?`, now, ws, id); err != nil {
 			return err
 		}
-		actor := store.ActorFromContext(ctx)
-		if actor.ID == "" {
-			actor = store.Actor{ID: "system", Role: core.ActorSystem}
+		actor, err := store.RequireActor(ctx)
+		if err != nil {
+			return err
 		}
 		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "worker.revoked", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]string{"worker_id": id}), At: now})
 	})

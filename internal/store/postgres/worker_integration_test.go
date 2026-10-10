@@ -15,22 +15,22 @@ import (
 func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "worker-lifecycle-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Worker Org", Email: "worker-owner@example.test", DisplayName: "Worker Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "worker-lifecycle-" + core.NewTaskID()
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	if _, err := st.CreateWorkspace(operatorCtx, workspace, workspace, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
-	member, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	member, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: "usr_worker_" + core.NewTaskID(), Email: "worker-member-" + core.NewTaskID() + "@example.test", DisplayName: "Worker Member",
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 		return order
 	}
 	ownedOrder := createClaimable("owned-race")
-	if _, err := st.pool.Exec(t.Context(), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, member.ID); err != nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, member.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.AuthenticateWorker(ctx, owned.CredentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
@@ -83,7 +83,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	if _, err := st.AuthenticateWorker(ctx, legacyWorker.CredentialHash); err != nil {
 		t.Fatalf("ownerless legacy worker authentication: %v", err)
 	}
-	demotedMember, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	demotedMember, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: "usr_demoted_" + core.NewTaskID(), Email: "demoted-member-" + core.NewTaskID() + "@example.test", DisplayName: "Demoted Worker Member",
 	})
 	if err != nil {
@@ -112,7 +112,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 		t.Fatalf("demoted-owner worker claim error=%v", err)
 	}
 	var demotionRevoked, demotionAudited int
-	if err := st.pool.QueryRow(t.Context(), `SELECT
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM workers WHERE id=$1 AND revoked_at IS NOT NULL),
 		(SELECT count(*) FROM events WHERE workspace_id=$2 AND kind='worker.revoked'
 		 AND payload_json->>'worker_id'=$1 AND payload_json->>'reason'='workspace_membership_demoted')`, demotedWorker.ID, workspace).Scan(&demotionRevoked, &demotionAudited); err != nil || demotionRevoked != 1 || demotionAudited != 1 {
@@ -137,7 +137,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 		t.Fatalf("membership-revoked worker authentication error=%v", err)
 	}
 	var revoked, audited int
-	if err := st.pool.QueryRow(t.Context(), `SELECT
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM workers WHERE id=$1 AND revoked_at IS NOT NULL),
 		(SELECT count(*) FROM events WHERE workspace_id=$2 AND kind='worker.revoked'
 		 AND payload_json->>'worker_id'=$1 AND payload_json->>'reason'='workspace_membership_revoked')`, owned.ID, workspace).Scan(&revoked, &audited); err != nil || revoked != 1 || audited != 1 {
@@ -157,7 +157,7 @@ func TestOwnedWorkerAuthorizationAndRevocationCascadeIntegration(t *testing.T) {
 	if _, err := st.AuthenticateWorker(ctx, owned2.CredentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
 		t.Fatalf("deactivated-owner worker authentication error=%v", err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM workers WHERE id=$1 AND revoked_at IS NOT NULL),
 		(SELECT count(*) FROM events WHERE workspace_id=$2 AND kind='worker.revoked'
 		 AND payload_json->>'worker_id'=$1 AND payload_json->>'reason'='identity_user_deactivated')`, owned2.ID, workspace).Scan(&revoked, &audited); err != nil || revoked != 1 || audited != 1 {

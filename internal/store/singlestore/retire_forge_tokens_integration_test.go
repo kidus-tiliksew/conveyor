@@ -1,13 +1,14 @@
 package singlestore
 
 import (
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"strings"
 	"testing"
 )
 
 func TestRetireForgeTokensSeededRowsAndRetryIntegration(t *testing.T) {
 	s := integrationStore(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	// Restore only the retired tables from the published legacy schema to model
 	// populated pre-upgrade rows. The current migration chain has already run.
 	raw, err := migrationFiles.ReadFile("migrations/0001_schema.sql")

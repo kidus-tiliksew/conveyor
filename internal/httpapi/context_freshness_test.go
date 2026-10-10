@@ -23,7 +23,7 @@ import (
 func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 	for _, channel := range []string{"user", "agent", "worker"} {
 		t.Run(channel, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			if e := st.CreateTask(ctx, core.Task{ID: "fresh", Workspace: "demo", State: core.TaskRunning}); e != nil {
 				t.Fatal(e)
@@ -45,7 +45,7 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 			if channel == "worker" {
 				claim.WorkerID = "worker"
 				claim.ClaimantID = "worker"
-				if e := st.CreateWorker(ctx, core.Worker{ID: "worker", Workspace: "demo", OwnerUserID: "owner"}); e != nil {
+				if e := createOwnedWorker(st, ctx, core.Worker{ID: "worker", Workspace: "demo", OwnerUserID: "owner"}); e != nil {
 					t.Fatal(e)
 				}
 			}

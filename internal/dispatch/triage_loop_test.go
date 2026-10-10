@@ -45,7 +45,7 @@ func triageScreenshot(t *testing.T) []byte {
 
 func triageBudgetDispatcher(t *testing.T, agent inprocess.Agent) (*Dispatcher, store.Store, context.Context, core.Task) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := newHistoricalArtifactStore()
 	task := core.Task{ID: "budget-task", Workspace: "demo", Repo: "api", Title: "Preserve screenshot", Body: "Exact task intent.", PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {

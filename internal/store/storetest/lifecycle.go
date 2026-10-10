@@ -90,10 +90,26 @@ func RecoverInterruptedReviewRound(ctx context.Context, st store.Store, request 
 	})
 }
 
+// ClaimWorkOrder claims through the taskops plane. A worker claim needs a real
+// enrollment with an active owner, so a fixture worker ID that has no row in
+// the bound workspace is enrolled first; an existing row keeps its state.
 func ClaimWorkOrder(ctx context.Context, st store.Store, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	order, err := st.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	if claim.WorkerID != "" {
+		enrollCtx := ctx
+		if _, ok := store.WorkspaceFromContext(ctx); !ok {
+			task, err := st.GetTask(ctx, order.TaskID)
+			if err != nil {
+				return core.WorkOrder{}, err
+			}
+			enrollCtx = store.WithWorkspace(ctx, task.Workspace)
+		}
+		if _, err := EnsureWorkerEnrollment(enrollCtx, st, claim.WorkerID); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	return taskops.New(st).ClaimWorkOrder(ctx, order.TaskID, id, claim)
 }

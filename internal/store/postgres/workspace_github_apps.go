@@ -186,6 +186,6 @@ func (s *Store) DeleteWorkspaceGitHubApp(ctx context.Context, id string) error {
 
 func (s *Store) appendAppEvent(ctx context.Context, q *db.Queries, kind string, status core.WorkspaceGitHubAppStatus) error {
 	actor := store.ActorFromContext(ctx)
-	_, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: status.WorkspaceID, Kind: kind, ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(store.WorkspaceGitHubAppEvent(status)), At: timestamp(time.Now().UTC())})
+	_, err := insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{WorkspaceID: status.WorkspaceID, Kind: kind, ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(store.WorkspaceGitHubAppEvent(status)), At: timestamp(time.Now().UTC())})
 	return err
 }

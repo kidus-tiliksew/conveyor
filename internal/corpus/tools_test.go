@@ -27,7 +27,7 @@ func TestFunctionToolsStaySynchronizedAndStrict(t *testing.T) {
 }
 
 func TestToolsAreReadOnlyAndListsAreConfirmedSummaries(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	confirmed, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirmed", Title: "Confirmed", Slug: "confirmed"}, core.RequirementVersion{
 		Content: "# Confirmed body\n\nSecret detail that belongs only in an explicit read.", Origin: core.RequirementOriginOperator,
@@ -72,7 +72,7 @@ func TestToolsAreReadOnlyAndListsAreConfirmedSummaries(t *testing.T) {
 }
 
 func TestSystemDesignAndDecisionListsExcludeUnconfirmedAuthority(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-confirmed", Title: "Confirmed design", Category: "Architecture", Slug: "confirmed-design"}, core.SystemDesignVersion{
 		Content: "# Confirmed design\n\nBody only on read.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -114,7 +114,7 @@ func TestSystemDesignAndDecisionListsExcludeUnconfirmedAuthority(t *testing.T) {
 }
 
 func TestCorpusRejectsArchivedCurrentReadsButPreservesHistory(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	_, rv, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive", Title: "Archive"}, core.RequirementVersion{Content: "# Historical requirement", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain history."}}})
 	if err != nil {

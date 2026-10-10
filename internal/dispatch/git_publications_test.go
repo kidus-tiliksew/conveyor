@@ -45,7 +45,7 @@ func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
 }
 
 func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "spec-task", Workspace: "test", Repo: "app", Source: "github:acme/app#19", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -75,7 +75,7 @@ func TestSpecApprovalQueuesSourceIssueLifecycle(t *testing.T) {
 }
 
 func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *testing.T) {
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "repo-boundary", Workspace: "test", Repo: "app", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -104,7 +104,7 @@ func TestIssuePublisherRejectsLifecycleFromDifferentConfiguredRepository(t *test
 }
 
 func TestIssuePublisherBoundsAmbiguousRecoveryBeforeOneCreateReauthorization(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "lost-ack", Workspace: "test", Repo: "app", Title: "Lost ack", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -189,7 +189,7 @@ func TestIssuePublisherBoundsAmbiguousRecoveryBeforeOneCreateReauthorization(t *
 }
 
 func TestReconcileGitHubLifecyclesRepairsApprovalOutboxGapOnce(t *testing.T) {
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "reconcile-issue", Workspace: "test", Repo: "app", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {

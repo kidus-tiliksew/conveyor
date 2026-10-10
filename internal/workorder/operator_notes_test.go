@@ -18,7 +18,7 @@ import (
 func TestOperatorNotesRefreshWithoutChangingPinnedAuthority(t *testing.T) {
 	for _, stage := range []core.Stage{core.StageReview, core.StageImplement} {
 		t.Run(string(stage), func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			task := core.Task{ID: "notes-task", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: stage, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {

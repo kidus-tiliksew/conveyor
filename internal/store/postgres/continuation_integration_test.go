@@ -13,12 +13,12 @@ import (
 
 func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "continuation-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}}); err != nil {
 		st.Close()
 		t.Fatal(err)
@@ -60,12 +60,12 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Close()
-	st, err = Open(t.Context(), databaseURL)
+	st, err = Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	ctx = store.WithWorkspace(t.Context(), workspace)
+	ctx = store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	persisted, err := st.GetWorkOrder(ctx, terminal.ID)
 	if err != nil || persisted.ContinuationSessionID != "native-2" || persisted.ContinuationAttemptID != terminal.AttemptID ||
 		persisted.ContinuationHarness != "codex" || persisted.ContinuationLaunchEnvironment != "worker-a/env-1" {
@@ -110,13 +110,13 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 // (req-260818-24dd3a AC-1.3).
 func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "continuation-review-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

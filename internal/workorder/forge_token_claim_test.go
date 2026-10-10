@@ -12,7 +12,7 @@ import (
 )
 
 func TestClaimSucceedsWithoutStoredForgeTokens(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "forge-gated", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {

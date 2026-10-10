@@ -270,7 +270,16 @@ func hash(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// IssuePairing issues a single-use pairing token owned by the human whose user
+// credential is in ctx. An absent, incomplete, or agent credential, or a bare
+// actor without a credential, is refused before a token is generated or
+// anything is written, so every enrolled worker resolves to a person
+// (req-accounts-and-membership REQ-3; component-work-orders).
 func (s *Service) IssuePairing(ctx context.Context, ttl time.Duration) (string, core.WorkerPairing, error) {
+	credential, ok := store.CredentialFromContext(ctx)
+	if !ok || credential.Kind != core.CredentialUser || strings.TrimSpace(credential.OwnerUserID) == "" {
+		return "", core.WorkerPairing{}, fmt.Errorf("%w: worker pairing requires a user credential", store.ErrWorkerUnauthorized)
+	}
 	if ttl <= 0 || ttl > time.Hour {
 		ttl = DefaultPairingTTL
 	}
@@ -283,10 +292,7 @@ func (s *Service) IssuePairing(ctx context.Context, ttl time.Duration) (string, 
 		return "", core.WorkerPairing{}, store.ErrWorkspaceRequired
 	}
 	now := s.now()
-	pairing := core.WorkerPairing{TokenHash: hash(token), Workspace: workspace, ExpiresAt: now.Add(ttl), CreatedAt: now}
-	if credential, ok := store.CredentialFromContext(ctx); ok {
-		pairing.OwnerUserID = credential.OwnerUserID
-	}
+	pairing := core.WorkerPairing{TokenHash: hash(token), Workspace: workspace, OwnerUserID: strings.TrimSpace(credential.OwnerUserID), ExpiresAt: now.Add(ttl), CreatedAt: now}
 	if err = s.Store.CreateWorkerPairing(ctx, pairing); err != nil {
 		return "", core.WorkerPairing{}, err
 	}
@@ -662,10 +668,12 @@ func (s *Service) TaskAvailability(ctx context.Context, cfg *config.Config, task
 // ListClaimable returns queued orders eligible for this live worker. Execution
 // compatibility is resolved exclusively from the worker's client-local setup.
 func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]DispatchOrder, error) {
-	if s.Store.IsDurable() {
-		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
-			return nil, err
-		}
+	// Every backend reauthenticates, and the returned enrollment replaces the
+	// caller's value, so a stale Worker cannot list after its owner is
+	// deactivated (component-work-orders, Workers: Listing).
+	worker, err := s.reauthenticate(ctx, worker)
+	if err != nil {
+		return nil, err
 	}
 	cfg, err := s.ConfigProvider(ctx)
 	if err != nil {
@@ -761,10 +769,12 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 // ClaimForWorker enforces task and worker lifecycle eligibility. Harness and
 // model selection remain exclusively in the worker's client-local setup.
 func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
-	if s.Store.IsDurable() {
-		if _, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash); err != nil {
-			return core.WorkOrder{}, err
-		}
+	// Claim identity comes from the freshly authenticated enrollment, never from
+	// the caller's Worker value; the locked claim then admits the owner again
+	// (component-work-orders, Worker owner admission).
+	worker, err := s.reauthenticate(ctx, worker)
+	if err != nil {
+		return core.WorkOrder{}, err
 	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
@@ -794,6 +804,23 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 		claim.Lease = DefaultClaimLease
 	}
 	return s.WorkOrders.Claim(ctx, id, claim)
+}
+
+// reauthenticate resolves the worker's current enrollment from its credential
+// hash. A missing, revoked, ownerless, or inactive-owner enrollment returns
+// store.ErrWorkerUnauthorized.
+func (s *Service) reauthenticate(ctx context.Context, worker core.Worker) (core.Worker, error) {
+	if strings.TrimSpace(worker.CredentialHash) == "" {
+		return core.Worker{}, store.ErrWorkerUnauthorized
+	}
+	current, err := s.Store.AuthenticateWorker(ctx, worker.CredentialHash)
+	if err != nil {
+		return core.Worker{}, err
+	}
+	if worker.ID != "" && current.ID != worker.ID {
+		return core.Worker{}, store.ErrWorkerUnauthorized
+	}
+	return current, nil
 }
 
 // ClaimForWorkerDelivery claims through ClaimForWorker's eligibility checks and

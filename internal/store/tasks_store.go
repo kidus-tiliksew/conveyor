@@ -257,6 +257,9 @@ type memoryDependencyAddition struct {
 }
 
 func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	versions := m.specs[taskID]
@@ -472,6 +475,9 @@ func (m *memory) ListDependencyBlockers(ctx context.Context, taskIDs []string) (
 }
 
 func (m *memory) AddTaskDependency(ctx context.Context, request DependencyAdditionRequest) (DependencyAdditionResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return DependencyAdditionResult{}, err
+	}
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -563,6 +569,9 @@ func (m *memory) dependencyPathExistsLocked(from, target string) bool {
 }
 
 func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return DependencyRemovalResult{}, err
+	}
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -607,14 +616,23 @@ func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRem
 }
 
 func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.CreateTaskWithDependencies(ctx, t, nil)
 }
 
 func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.CreateTaskWithDependenciesAndContext(ctx, t, dependencyIDs, TaskContextInput{})
 }
 
 func (m *memory) CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.createTaskWithContextLocked(ctx, t, dependencyIDs, attached, nil)
@@ -736,6 +754,9 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 }
 
 func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskContext{}, err
+	}
 	add, err := NormalizeTaskContextInput(change.Add)
 	if err != nil {
 		return core.TaskContext{}, err
@@ -1096,6 +1117,9 @@ func taskOperationsEventKind(kind string) bool {
 }
 
 func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -1123,6 +1147,9 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 }
 
 func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
 		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
 	}
@@ -1162,6 +1189,9 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (m *memory) UpdateTaskClassification(ctx context.Context, id, class string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
@@ -1188,6 +1218,9 @@ func (m *memory) EnsureTaskEnqueued(_ context.Context, id string) error {
 }
 
 func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[j.TaskID]; !ok {
@@ -1202,6 +1235,9 @@ func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
 }
 
 func (m *memory) UpdateJob(ctx context.Context, j core.Job) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	jobs := m.jobs[j.TaskID]
@@ -1239,6 +1275,9 @@ func (m *memory) GetLatestJob(_ context.Context, taskID string) (core.Job, bool,
 }
 
 func (m *memory) CreateIntervention(ctx context.Context, intervention core.Intervention) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, ok := m.tasks[intervention.TaskID]
@@ -1283,6 +1322,9 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 }
 
 func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, taskops.RequestChangesCommand) {
 		return core.Task{}, fmt.Errorf("request changes requires a valid taskops lease")
 	}
@@ -1344,6 +1386,9 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 }
 
 func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if !lease.ValidFor(intervention.TaskID) {
 		return core.Task{}, fmt.Errorf("task cancellation requires a valid taskops lease")
 	}

@@ -158,7 +158,7 @@ func createTaskRunOrder(t *testing.T, st store.Store, taskID string) core.WorkOr
 
 func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stage core.Stage, enteredAt time.Time) core.WorkOrder {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, err := st.GetTask(ctx, taskID); err != nil {
 		task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: stage, CreatedAt: enteredAt}
 		if err = st.CreateTask(ctx, task); err != nil {
@@ -221,7 +221,7 @@ func TestTaskRunEightIdleLauncherBenchmark(t *testing.T) {
 	}
 	counter.reset()
 	legacy := &workorder.Service{Store: counter, ConfigProvider: server.ConfigProvider}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, taskID := range targets {
 		if _, err := counter.GetTask(ctx, taskID); err != nil {
 			t.Fatal(err)
@@ -299,17 +299,17 @@ func TestTaskRunHTTPIsExplicitlyTaskScopedAndUsesUserLeaseLifecycle(t *testing.T
 	if snapshotRenew.Code != http.StatusOK {
 		t.Fatalf("snapshot renewal status=%d body=%s", snapshotRenew.Code, snapshotRenew.Body.String())
 	}
-	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(store.WithWorkspace(t.Context(), "demo"), target.ID); snapshotErr != nil || !exists || snapshot.Content != "latest output" {
+	if snapshot, exists, snapshotErr := st.GetWorkOrderActivitySnapshot(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), target.ID); snapshotErr != nil || !exists || snapshot.Content != "latest output" {
 		t.Fatalf("snapshot=%+v exists=%v err=%v", snapshot, exists, snapshotErr)
 	}
 	checkpoint := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/attempt-checkpoint", `{"session_id":"run-session","attempt_id":"`+claimed.AttemptID+`","termination_reason":"harness exited","commit_sha":"1111111111111111111111111111111111111111","push_result":"pushed","transcript":"malformed"}`)
 	if checkpoint.Code != http.StatusOK || !strings.Contains(checkpoint.Body.String(), `"created":true`) {
 		t.Fatalf("malformed transcript changed checkpoint status=%d body=%s", checkpoint.Code, checkpoint.Body.String())
 	}
-	if captures, captureErr := st.ListWorkOrderTranscriptCaptures(store.WithWorkspace(t.Context(), "demo"), target.ID); captureErr != nil || len(captures) != 0 {
+	if captures, captureErr := st.ListWorkOrderTranscriptCaptures(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), target.ID); captureErr != nil || len(captures) != 0 {
 		t.Fatalf("malformed transcript captures=%+v err=%v", captures, captureErr)
 	}
-	events, err := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), "target")
+	events, err := st.ListEvents(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), "target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +393,7 @@ func TestTaskRunHTTPAdmitsBoundRunChildOnRenewAndCheckpointOnly(t *testing.T) {
 	if checkpoint.Code != http.StatusOK || !strings.Contains(checkpoint.Body.String(), `"created":true`) {
 		t.Fatalf("bound child checkpoint status=%d body=%s", checkpoint.Code, checkpoint.Body.String())
 	}
-	events, err := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), "target")
+	events, err := st.ListEvents(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), "target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func TestTaskRunHTTPReconcileDisclosesTerminalHandoffOnlyToSubmittingSession(t *
 				t.Fatal(err)
 			}
 			terminal.State = test.state
-			if err := storetest.For(st).UpdateWorkOrder(store.WithWorkspace(t.Context(), "demo"), terminal, test.command); err != nil {
+			if err := storetest.For(st).UpdateWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), terminal, test.command); err != nil {
 				t.Fatal(err)
 			}
 
@@ -577,7 +577,7 @@ func TestTaskRunHTTPReconcileRejectsExpiredNonTerminalClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	expired.LeaseExpiresAt = time.Now().Add(-time.Second)
-	if err := storetest.For(st).UpdateWorkOrder(store.WithWorkspace(t.Context(), "demo"), expired); err != nil {
+	if err := storetest.For(st).UpdateWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), expired); err != nil {
 		t.Fatal(err)
 	}
 	reconcile := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/expired-run/run-orders/"+order.ID+"/reconcile?session_id=run-session", "")
@@ -603,12 +603,12 @@ func TestTaskRunHTTPReturnsNoWorkAndSurfacesAssigneeRefusal(t *testing.T) {
 	if claim.Code != http.StatusConflict || !strings.Contains(claim.Body.String(), "task assigned is assigned to usr-alice; only that assignee may claim its work orders") {
 		t.Fatalf("assignment status=%d body=%s", claim.Code, claim.Body.String())
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(store.WithWorkspace(t.Context(), "demo"), order.ID, core.WorkOrderClaim{SessionID: "done", ClientToken: "done", OwnerUserID: "usr-alice", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), order.ID, core.WorkOrderClaim{SessionID: "done", ClientToken: "done", OwnerUserID: "usr-alice", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimed.State = core.WorkOrderCompleted
-	if err = storetest.For(st).UpdateWorkOrder(store.WithWorkspace(t.Context(), "demo"), claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+	if err = storetest.For(st).UpdateWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), claimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
 		t.Fatal(err)
 	}
 	if response := taskRunHTTPCall(handler, http.MethodGet, "/v1/tasks/assigned/run-order", ""); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"running"`) || !strings.Contains(response.Body.String(), `"work_order":{"id":""`) {
@@ -690,7 +690,7 @@ func TestTaskRunHTTPProjectsOnlyTaskAuthoredPendingProposalsWithCapabilities(t *
 	}}
 	order := createTaskRunOrder(t, st, "proposal-task")
 	createTaskRunOrder(t, st, "other-task")
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-run-context", Title: "Run context", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Run context\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/run.go\n```",
 		Origin:  core.SystemDesignOriginImplementation, OriginTaskID: "proposal-task",
@@ -710,7 +710,7 @@ func TestTaskRunHTTPProjectsOnlyTaskAuthoredPendingProposalsWithCapabilities(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sibling := store.WithWorkspace(t.Context(), "sibling")
+	sibling := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "sibling")
 	if _, _, err = st.CreateSystemDesign(sibling, core.SystemDesign{ID: "design-sibling", Title: "Sibling", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Sibling\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/sibling/**\n```",
 		Origin:  core.SystemDesignOriginImplementation, OriginTaskID: "proposal-task",
@@ -857,7 +857,7 @@ func TestTaskRunAbandonedInvocationBecomesClaimableAfterLeaseExpiry(t *testing.T
 
 func seedTaskRunRequirement(t *testing.T, st store.Store, workspace, id, taskID string) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	_, first, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Slug: id, Title: "Run requirement"}, core.RequirementVersion{
 		Content: "# Run requirement", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Surface proposals."}},
@@ -903,7 +903,7 @@ func TestTaskRunHTTPRequirementConfirmationCapabilityAndReviewAdmission(t *testi
 			t.Fatalf("%s confirmed: %d %s", token, response.Code, response.Body.String())
 		}
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	unchanged, err := st.GetWorkOrder(ctx, order.ID)
 	if err != nil || unchanged.State != core.WorkOrderQueued || unchanged.SessionID != "" {
 		t.Fatalf("order=%+v err=%v", unchanged, err)
@@ -922,7 +922,7 @@ func TestTaskRunHTTPProposalSignalDoesNotMaskUnrelatedClaimConflict(t *testing.T
 	server, st, _ := taskRunHTTPFixture(t)
 	order := createTaskRunOrderAtStage(t, st, "assigned-review", core.StageReview, time.Now().UTC())
 	seedTaskRunRequirement(t, st, "demo", "req-assigned", order.TaskID)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := store.SetMemoryWorkspaceMember(st, "demo", "someone-else", true); err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +950,7 @@ func createApprovedTaskRunTask(t *testing.T, st store.Store, id string, mergeGat
 		ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id,
 		State: core.TaskApproved, MergeApproval: mergeGate, ApprovedHeadSHA: "0123456789abcdef0123", CreatedAt: time.Now().UTC(),
 	}
-	if err := st.CreateTask(store.WithWorkspace(t.Context(), "demo"), task); err != nil {
+	if err := st.CreateTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), task); err != nil {
 		t.Fatal(err)
 	}
 }

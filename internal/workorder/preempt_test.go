@@ -17,6 +17,9 @@ func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 	if _, err := st.SetTaskHold(ctx, order.TaskID, true); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := storetest.EnsureWorkerEnrollment(ctx, st, "worker-7"); err != nil {
+		t.Fatal(err)
+	}
 	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
 		SessionID: "preempt-session", ClientToken: "secret", ClaimantID: "worker-7", WorkerID: "worker-7",
 		Agent: "codex", Model: "gpt", Lease: time.Minute,
@@ -126,6 +129,9 @@ func TestPreemptRetiresQueuedOrderIdempotently(t *testing.T) {
 func TestPreemptAfterDeadWorkerLeaseExpiryRetiresQueuedOrder(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt-dead")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, err := storetest.EnsureWorkerEnrollment(ctx, st, "dead-worker"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ func TestRetiredForgeTokenRoutesReturnNotFound(t *testing.T) {
 	}
 }
 func TestClaimabilityWithoutStoredForgeTokens(t *testing.T) {
-	ctx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "agent", OwnerUserID: "usr", Kind: core.CredentialAgent})
+	ctx := withCredentialActor(t.Context(), core.AuthenticatedCredential{ID: "agent", OwnerUserID: "usr", Kind: core.CredentialAgent})
 	orders := projectAssigneeClaimability(ctx, []core.WorkOrder{{ID: "queued", State: core.WorkOrderQueued, Claimable: true}})
 	if !orders[0].Claimable || orders[0].ClaimRefusalReason != "" {
 		t.Fatalf("projection=%+v", orders[0])

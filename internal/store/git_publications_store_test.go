@@ -10,7 +10,7 @@ import (
 
 func TestMemoryGitHubLifecycleOnlyEmitsActivityForOutcomesAndRealRetries(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(context.Background(), "test")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "test")
 	st := NewMemory()
 	task := core.Task{ID: "github-lifecycle-events", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {

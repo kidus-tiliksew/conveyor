@@ -50,15 +50,19 @@ func eventAttemptIDs(t *testing.T, events []core.Event, kind, jobID string) []st
 }
 
 func TestMemoryWorkerHeartbeatUpdatesLivenessWithoutEvent(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	worker := core.Worker{
 		ID:             "worker-heartbeat",
 		Workspace:      "demo",
+		OwnerUserID:    "usr-heartbeat",
 		Name:           "heartbeat",
 		CredentialHash: "credential-heartbeat",
 		CreatedAt:      now,
+	}
+	if err := SetMemoryWorkspaceMember(st, "demo", worker.OwnerUserID, true); err != nil {
+		t.Fatal(err)
 	}
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
@@ -157,7 +161,7 @@ func TestTaskAssigneeConstrainsClaimsAndClearRestoresEligibility(t *testing.T) {
 }
 
 func TestMemoryAttemptIdentityIsFreshAcrossSameSessionReclaims(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "attempt-identity-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "attempt-identity-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -202,7 +206,7 @@ func TestMemoryAttemptIdentityIsFreshAcrossSameSessionReclaims(t *testing.T) {
 }
 
 func TestMemoryCheckpointContextCandidatesRequireOpenPausedUnattachedTask(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	seed := func(id, reason string) {
@@ -238,7 +242,7 @@ func TestMemoryCheckpointContextCandidatesRequireOpenPausedUnattachedTask(t *tes
 }
 
 func TestMemoryReviewRequirementSnapshotSurvivesReload(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "snapshot-memory", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
@@ -268,7 +272,7 @@ func TestMemoryReviewRequirementSnapshotSurvivesReload(t *testing.T) {
 
 func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "create-order-state", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -293,7 +297,7 @@ func TestMemoryCreateWorkOrderRejectsExplicitNonCreateStates(t *testing.T) {
 
 func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "review-requeue-command", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
@@ -326,7 +330,7 @@ func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
 }
 
 func TestMemoryAcceptedReviewClearsSubmittedImplementationContinuation(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "review-clears-continuation", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: now}
@@ -422,7 +426,7 @@ func TestReviewVerdictDiagnosticsDistinguishClaimedExpiredAndReleased(t *testing
 
 func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "task", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
@@ -458,8 +462,8 @@ func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 func TestMemoryWorkOrderRequiresLinkedTaskJobAndWorkspace(t *testing.T) {
 	t.Parallel()
 	st := NewMemory()
-	ctxA := WithWorkspace(context.Background(), "alpha")
-	ctxB := WithWorkspace(context.Background(), "beta")
+	ctxA := WithWorkspace(WithActor(context.Background(), SystemActor()), "alpha")
+	ctxB := WithWorkspace(WithActor(context.Background(), SystemActor()), "beta")
 	for _, task := range []core.Task{{ID: "task-a", Workspace: "alpha"}, {ID: "task-b", Workspace: "beta"}} {
 		ctx := ctxA
 		if task.Workspace == "beta" {
@@ -488,7 +492,7 @@ func TestMemoryWorkOrderRequiresLinkedTaskJobAndWorkspace(t *testing.T) {
 
 func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
 	task := core.Task{ID: "timeout-task", State: core.TaskRunning}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -540,7 +544,7 @@ func TestMemoryTimedOutWorkOrderRejectsStaleUpdate(t *testing.T) {
 
 func TestMemoryCreateSpecVersionAlwaysStartsUnapproved(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "spec-task", State: core.TaskAwaiting}); err != nil {
 		t.Fatal(err)
@@ -759,7 +763,7 @@ func TestMemoryTransientConnectivityBackoffResetAndObservability(t *testing.T) {
 }
 
 func TestMemoryStalledOutcomeConsumesRetryAndReachesNeedsOperator(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "stalled-retry-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "stalled-retry-job", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -808,7 +812,7 @@ func TestMemoryStalledOutcomeConsumesRetryAndReachesNeedsOperator(t *testing.T) 
 }
 
 func TestMemoryFirstActivityTimeoutUsesExistingRetryAuditAndStallEvidence(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "first-activity-timeout-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
@@ -874,7 +878,7 @@ func TestMemoryFirstActivityTimeoutUsesExistingRetryAuditAndStallEvidence(t *tes
 }
 
 func TestMemorySuppressesSecondIdenticalNonEmptyChildFailure(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "identical-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}

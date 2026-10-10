@@ -10,7 +10,7 @@ import (
 
 func TestRetireForgeTokensPreservesHistoricalEventsIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 124)
-	ctx := store.WithWorkspace(t.Context(), "retirement")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "retirement")
 	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Retirement", Email: "owner@example.test", DisplayName: "Owner"}, "bootstrap-retirement"); err != nil {
 		t.Fatal(err)
 	}

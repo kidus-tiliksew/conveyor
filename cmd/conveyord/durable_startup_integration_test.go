@@ -59,7 +59,7 @@ repos:
 			}
 			addr := listener.Addr().String()
 			listener.Close()
-			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+			ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 45*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestConveyordDurableStartupIntegration$")
 			for _, e := range os.Environ() {
@@ -156,21 +156,21 @@ repos:
 			if strings.Count(string(b), deprecationWarning) != 1 || strings.Contains(string(b), "GitHub App key encryption unavailable") {
 				t.Fatalf("startup log must warn once about the deprecated App key variable and install the key: %s", b)
 			}
-			st, err := backend.Open(t.Context(), config.Database{Backend: name, URL: raw})
+			st, err := backend.Open(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: name, URL: raw})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer st.Close()
-			if _, err = st.VerifyPersonalAccessToken(t.Context(), "startup-fixture-token"); err != nil {
+			if _, err = st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "startup-fixture-token"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = st.GetWorkspace(store.WithWorkspace(t.Context(), "startup"), "startup"); err != nil {
+			if _, err = st.GetWorkspace(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "startup"), "startup"); err != nil {
 				t.Fatal(err)
 			}
 			if st.Log() == nil {
 				t.Fatal("missing durable event log")
 			}
-			if _, err = st.GetWorkspace(store.WithWorkspace(t.Context(), "created"), "created"); err != nil {
+			if _, err = st.GetWorkspace(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "created"), "created"); err != nil {
 				t.Fatal(err)
 			}
 
@@ -233,7 +233,7 @@ func durableStartupDatabase(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 30*time.Second)
 		defer cancel()
 		if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+database+"`"); err != nil {
 			t.Error(err)

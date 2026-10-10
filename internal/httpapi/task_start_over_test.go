@@ -19,7 +19,7 @@ func TestTaskStartOverHTTP(t *testing.T) {
 	for _, role := range []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator} {
 		t.Run(string(role), func(t *testing.T) {
 			st := store.NewMemory()
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			old := core.Task{ID: "restart-http", Workspace: "demo", Repo: "conveyor", Body: "Start again", Title: "Restart", State: core.TaskRunning, Branch: "conveyor/task-restart-http"}
 			if err := st.CreateTask(ctx, old); err != nil {
 				t.Fatal(err)
@@ -98,7 +98,7 @@ func TestTaskStartOverHTTP(t *testing.T) {
 func restartHTTPFixture(t *testing.T, taskID string) http.Handler {
 	t.Helper()
 	st := store.NewMemory()
-	if err := st.CreateTask(store.WithWorkspace(t.Context(), "demo"), core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
+	if err := st.CreateTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}
 	server := NewServer(st)
@@ -122,7 +122,7 @@ func TestTaskStartOverValidation(t *testing.T) {
 
 func TestTaskStartOverConcurrentHTTP(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := st.CreateTask(ctx, core.Task{ID: "concurrent-http", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}

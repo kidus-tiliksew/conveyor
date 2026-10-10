@@ -21,7 +21,7 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 	for _, phase := range []string{"cancel", "dismiss", "create", "artifact", "links", "final_event"} {
 		t.Run(phase, func(t *testing.T) {
 			st := newIdentityIntegrationStore(t, 0)
-			ctx := store.WithWorkspace(t.Context(), "restart-rollback")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "restart-rollback")
 			ctx = store.WithActor(ctx, store.Actor{ID: "restart-operator", Role: core.ActorHuman})
 			if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "restart-rollback", Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 				t.Fatal(err)

@@ -147,7 +147,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
 			ws := "conformance-" + core.NewTaskID()
-			ctx := store.WithWorkspace(t.Context(), ws)
+			ctx := store.WithActor(store.WithWorkspace(t.Context(), ws), store.SystemActor())
 			cfg := &config.Config{Workspace: ws, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)

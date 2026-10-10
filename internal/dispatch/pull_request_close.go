@@ -95,7 +95,7 @@ func (w *pullRequestCloseWorker) Work(ctx context.Context, job queue.Job) error 
 		return err
 	}
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
-	ctx = store.WithActor(ctx, store.Actor{ID: "queue:pull-request-close:" + job.ID, Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.SystemActor("queue:pull-request-close:"+job.ID))
 	return w.dispatcher.Store.WithTaskSideEffectLock(ctx, args.TaskID, func(ctx context.Context) error {
 		p, ok, err := w.dispatcher.Store.GetPullRequestClose(ctx, args.TaskID)
 		if err != nil || !ok || p.Terminal() {

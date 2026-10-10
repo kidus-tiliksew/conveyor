@@ -12,7 +12,7 @@ import (
 func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 	st := integrationStore(t)
 	workspace := "app-ledger-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 // the encryption identifiers were renamed decrypts unchanged.
 func TestWorkspaceGitHubAppLegacyCiphertextIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	storetest.RunLegacyGitHubAppKeyRecovery(t, st, ctx, func(t *testing.T, workspace string, nonce, ciphertext []byte) error {
 		t.Helper()
 		result, err := st.db.ExecContext(ctx, `UPDATE workspace_github_apps SET private_key_nonce=?,private_key_ciphertext=? WHERE workspace_id=?`, nonce, ciphertext, workspace)

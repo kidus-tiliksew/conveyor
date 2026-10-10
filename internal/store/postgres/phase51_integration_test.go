@@ -19,13 +19,13 @@ import (
 
 func TestWorkerWarningFollowsEnrollmentLifecycleIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "serviceability-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	now := time.Now().UTC()
 	service := &workerservice.Service{Store: st, Now: func() time.Time { return now }}
 	cfg := &config.Config{Workspace: workspace, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex", Execution: config.ExecutionMCP}}}}
@@ -56,13 +56,13 @@ func TestWorkerWarningFollowsEnrollmentLifecycleIntegration(t *testing.T) {
 
 func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "phase51-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", TimeoutText: "1m", Timeout: time.Minute, Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "1m", Timeout: time.Minute, Execution: config.ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -389,13 +389,13 @@ func TestPhase51WorkerPersistenceIntegration(t *testing.T) {
 
 func TestTransientConnectivityBackoffPersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "transient-backoff-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

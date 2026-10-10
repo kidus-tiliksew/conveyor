@@ -18,13 +18,13 @@ import (
 // persisted state stays completed (component-work-orders).
 func TestAcceptedReviewSeatRejectsReclaimIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "accepted-seat-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -66,13 +66,13 @@ func TestAcceptedReviewSeatRejectsReclaimIntegration(t *testing.T) {
 
 func TestClaimedReviewVerdictReDerivesRegressedTaskProjectionIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "claim-verdict-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, MaxBounces: 2, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

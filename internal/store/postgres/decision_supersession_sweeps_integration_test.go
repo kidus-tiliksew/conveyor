@@ -13,13 +13,13 @@ import (
 )
 
 func TestDecisionSupersessionSweepLifecycleIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "decision-sweep-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestDecisionSupersessionSweepLifecycleIntegration(t *testing.T) {
 		t.Fatalf("dismiss events=%d err=%v", dismissEvents, err)
 	}
 
-	sibling := store.WithWorkspace(t.Context(), "decision-sweep-sibling-"+core.NewTaskID())
+	sibling := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "decision-sweep-sibling-"+core.NewTaskID())
 	if _, err = st.GetDecision(sibling, second.ID); err == nil {
 		t.Fatal("decision sweep crossed workspace boundary")
 	}
@@ -118,11 +118,11 @@ func TestDecisionSupersessionSweepBackfillIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 112); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 112); err != nil {
 		t.Fatal(err)
 	}
 	workspace := "backfill-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
@@ -143,10 +143,10 @@ func TestDecisionSupersessionSweepBackfillIntegration(t *testing.T) {
 	if _, err = pool.Exec(ctx, `UPDATE decisions SET status='superseded',superseded_by='DEC-31' WHERE workspace_id=$1 AND id='DEC-27'`, workspace); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatalf("repeated startup migration: %v", err)
 	}
 	var entries, events int

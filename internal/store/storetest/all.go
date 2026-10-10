@@ -116,7 +116,7 @@ func RunAll(t *testing.T, factory Factory) {
 		RunLineageConformance(t, func(t *testing.T, repos []config.Repo) LineageFixture {
 			x := factory.fresh(t, repos)
 			foreign := x.Workspace + "-other"
-			ctx := store.WithWorkspace(t.Context(), foreign)
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), foreign)
 			if _, err := x.Backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: foreign, Repos: repos}); err != nil {
 				t.Fatal(err)
 			}

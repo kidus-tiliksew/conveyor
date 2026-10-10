@@ -18,7 +18,7 @@ import (
 func ownedIdentityFixture(t *testing.T) (*Store, context.Context, core.IdentityUser) {
 	t.Helper()
 	s := integrationStore(t)
-	ctx := store.WithWorkspace(t.Context(), "identity-fixture")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "identity-fixture")
 	cfg := &config.Config{Workspace: "identity-fixture", Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err := s.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

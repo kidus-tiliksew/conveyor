@@ -164,7 +164,7 @@ func (f fakeTx) Commit(context.Context) error { return f.err }
 func TestBoundaryTranslatesEveryQueryPath(t *testing.T) {
 	driver := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"})
 	db := boundaryDB{fakeQuerier{err: driver}}
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	_, execErr := db.Exec(ctx, "UPDATE")
 	rows, queryErr := db.Query(ctx, "SELECT")
 	if queryErr != nil {

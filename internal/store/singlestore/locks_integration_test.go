@@ -33,7 +33,7 @@ func TestKeyLocksIntegration(t *testing.T) {
 			}
 			for _, same := range []bool{true, false} {
 				t.Run(map[bool]string{true: "same-key-serializes", false: "different-keys-interleave"}[same], func(t *testing.T) {
-					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 5*time.Second)
 					defer cancel()
 					firstHeld := make(chan struct{})
 					releaseFirst := make(chan struct{})
@@ -105,7 +105,7 @@ func TestKeyLocksIntegration(t *testing.T) {
 }
 func TestSessionLockCancellationAndCallbackCleanupIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(store.WithActor(t.Context(), store.SystemActor()))
 	release, err := st.sessionLock(ctx, "cancelled-owner")
 	if err != nil {
 		t.Fatal(err)
@@ -114,26 +114,26 @@ func TestSessionLockCancellationAndCallbackCleanupIntegration(t *testing.T) {
 	if err = release(); err != nil {
 		t.Fatal(err)
 	}
-	next, err := st.sessionLock(t.Context(), "cancelled-owner")
+	next, err := st.sessionLock(store.WithActor(t.Context(), store.SystemActor()), "cancelled-owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = next(); err != nil {
 		t.Fatal(err)
 	}
-	held, err := st.sessionLock(t.Context(), "cancelled-waiter")
+	held, err := st.sessionLock(store.WithActor(t.Context(), store.SystemActor()), "cancelled-waiter")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer held()
-	waitCtx, stop := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	waitCtx, stop := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 100*time.Millisecond)
 	defer stop()
 	if _, err = st.sessionLock(waitCtx, "cancelled-waiter"); err == nil {
 		t.Fatal("cancelled waiter acquired held lock")
 	}
 	held()
 	callbackError := errors.New("callback")
-	scoped := store.WithWorkspace(t.Context(), "locks")
+	scoped := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "locks")
 	for _, result := range []error{callbackError, nil, callbackError} {
 		err = st.WithTaskSideEffectLock(scoped, "task", func(context.Context) error { return result })
 		if !errors.Is(err, result) {
@@ -146,7 +146,7 @@ func TestSessionLockCancellationAndCallbackCleanupIntegration(t *testing.T) {
 }
 func TestTransactionRollbackAndWorkspaceAtomicityIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := store.WithWorkspace(t.Context(), "atomic")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "atomic")
 	cfg := &config.Config{Workspace: "atomic"}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -199,21 +199,21 @@ func TestMigrationRefusalsIntegration(t *testing.T) {
 		{"checksum", `UPDATE conveyor_singlestore_migrations SET checksum='changed' WHERE version=?`, []any{file.version}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := st.db.ExecContext(t.Context(), tc.query, tc.args...); err != nil {
+			if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), tc.query, tc.args...); err != nil {
 				t.Fatal(err)
 			}
-			if err := st.migrate(t.Context()); err == nil {
+			if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err == nil {
 				t.Fatal("mismatched ledger accepted")
 			}
-			if _, err := st.db.ExecContext(t.Context(), `DELETE FROM conveyor_singlestore_migrations WHERE version=99999`); err != nil {
+			if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `DELETE FROM conveyor_singlestore_migrations WHERE version=99999`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := st.db.ExecContext(t.Context(), `UPDATE conveyor_singlestore_migrations SET name=?,checksum=? WHERE version=?`, file.name, file.checksum, file.version); err != nil {
+			if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `UPDATE conveyor_singlestore_migrations SET name=?,checksum=? WHERE version=?`, file.name, file.checksum, file.version); err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
-	if err := st.migrate(t.Context()); err != nil {
+	if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -228,7 +228,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 			for i := range 2 {
 				go func() {
 					<-start
-					results <- st.withTx(t.Context(), func(tx *sql.Tx) error {
+					results <- st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
 						var w rowWrite
 						if kind == "reference" {
 							name := "Same"
@@ -239,7 +239,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 						} else {
 							w = rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": fmt.Sprintf("token-%d", i), "user_id": "fixture", "token_hash": []byte(fmt.Sprintf("synthetic-hash-%d", i)), "deployment_credential": true}}
 						}
-						_, err := writeRow(t.Context(), tx, w)
+						_, err := writeRow(store.WithActor(t.Context(), store.SystemActor()), tx, w)
 						if err != nil {
 							t.Logf("fixture %s write: %v", kind, err)
 						}
@@ -262,7 +262,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 			}
 			if kind == "reference" {
 				var stored time.Time
-				if err := st.db.QueryRowContext(t.Context(), `SELECT created_at FROM reference_documents WHERE workspace_id='rules'`).Scan(&stored); err != nil {
+				if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT created_at FROM reference_documents WHERE workspace_id='rules'`).Scan(&stored); err != nil {
 					t.Fatal(err)
 				}
 				if !stored.Equal(now.Truncate(time.Microsecond)) {
@@ -284,7 +284,7 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			results <- st.migrate(t.Context())
+			results <- st.migrate(store.WithActor(t.Context(), store.SystemActor()))
 		}()
 	}
 	close(start)
@@ -295,7 +295,7 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 	}
 	f.assertConverged(t, st, before)
 	var zone, mode string
-	if err := st.db.QueryRowContext(t.Context(), `SELECT @@system_time_zone,@@sql_mode`).Scan(&zone, &mode); err != nil {
+	if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT @@system_time_zone,@@sql_mode`).Scan(&zone, &mode); err != nil {
 		t.Fatal(err)
 	}
 	if zone != "UTC" || !strings.Contains(mode, "STRICT_ALL_TABLES") {
@@ -305,7 +305,7 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 		t.Fatal("unbounded pool")
 	}
 	st.Close()
-	if err := st.db.PingContext(t.Context()); err == nil {
+	if err := st.db.PingContext(store.WithActor(t.Context(), store.SystemActor())); err == nil {
 		t.Fatal("closed pool remained usable")
 	}
 }
@@ -313,10 +313,13 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 func TestNamedJobConflictCrossesTransactionBoundaryIntegration(t *testing.T) {
 	st := integrationStore(t)
 	query := `INSERT INTO jobs(workspace_id,id,task_id,stage,harness,runner,confinement_tier,state) VALUES('conflict','job','task','implement','fixture','fixture','fixture','pending')`
-	if _, err := st.db.ExecContext(t.Context(), query); err != nil {
+	if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), query); err != nil {
 		t.Fatal(err)
 	}
-	err := st.withTx(t.Context(), func(tx *sql.Tx) error { _, err := tx.ExecContext(t.Context(), query); return err })
+	err := st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(store.WithActor(t.Context(), store.SystemActor()), query)
+		return err
+	})
 	if !errors.Is(err, store.ErrDispatchJobConflict) {
 		t.Fatalf("named job conflict escaped: %v", err)
 	}
@@ -331,12 +334,12 @@ func TestArtifactLinkSchemaAllowsMultipleLinksIntegration(t *testing.T) {
 		{"artifact-b", "task-a"},
 		{"artifact-a", "task-b"},
 	} {
-		if _, err := st.db.ExecContext(t.Context(), `INSERT INTO artifact_links(workspace_id,artifact_id,task_id) VALUES('links',?,?)`, link.artifact, link.task); err != nil {
+		if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO artifact_links(workspace_id,artifact_id,task_id) VALUES('links',?,?)`, link.artifact, link.task); err != nil {
 			t.Fatalf("insert distinct artifact link: %v", err)
 		}
 	}
 	var count int
-	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM artifact_links WHERE workspace_id='links'`).Scan(&count); err != nil || count != 3 {
+	if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT COUNT(*) FROM artifact_links WHERE workspace_id='links'`).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("artifact links: count=%d err=%v", count, err)
 	}
 }

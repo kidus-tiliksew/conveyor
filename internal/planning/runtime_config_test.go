@@ -56,7 +56,7 @@ func newPolicyOnlyRuntime(t *testing.T, timeout string) *policyOnlyRuntime {
 	manager := planningSnapshotManager(t, seed)
 	backend := store.NewVolatileBackend()
 	t.Cleanup(backend.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, err = backend.BootstrapWorkspaceConfig(ctx, seed); err != nil {
 		t.Fatal(err)
 	}

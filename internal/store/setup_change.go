@@ -135,6 +135,9 @@ func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSet
 }
 
 func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw SetupChangeRequest) (SetupChangeResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return SetupChangeResult{}, err
+	}
 	request, err := PrepareSetupChangeRequest(raw)
 	request.PolicyActor = ActorFromContext(ctx)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {

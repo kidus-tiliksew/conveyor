@@ -11,8 +11,9 @@ import (
 )
 
 func TestServiceabilityUsesWorkerLivenessNotHarnessKnowledge(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	now := time.Now().UTC()
 	if err := st.CreateWorker(ctx, core.Worker{ID: "live", Workspace: "demo", LeaseExpiresAt: now.Add(time.Hour), LastSeenAt: now}); err != nil {
 		t.Fatal(err)
