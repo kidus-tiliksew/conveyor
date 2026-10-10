@@ -326,7 +326,7 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	}
 	// A new deployment token after revocation is reissued to the same owner
 	// and still restores no binding (DEC-63(3), DEC-63(4)).
-	if changed, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Other Org", Email: "someone-else@example.test", DisplayName: "Someone"}, "legacy-three"); err != nil || !changed {
+	if changed, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Other Org", Email: "someone-else@example.test", DisplayName: "Someone"}, "legacy-three"); err != nil || !changed {
 		t.Fatalf("reissue after revocation changed=%t err=%v", changed, err)
 	}
 	if reissued, err := st.VerifyPersonalAccessToken(t.Context(), "legacy-three"); err != nil || reissued.ID != principal.ID {
