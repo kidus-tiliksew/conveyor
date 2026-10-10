@@ -26,7 +26,7 @@ type decompositionFixture struct {
 // projection reads.
 func materializeBlueprint(t *testing.T, st store.Store, id string, items []decompositionFixture) core.Task {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	anchor := core.Task{
 		ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main",
 		Branch: "conveyor/task-" + id, Title: "Ship bounded retries",
@@ -101,7 +101,7 @@ func TestActivityFeedExcludesBlueprintAnchorsButKeepsChildren(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{
 		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	anchor := materializeBlueprint(t, st, "anchor-feed", []decompositionFixture{
 		{ID: "SUB-1", Repo: "conveyor", Summary: "First"},
 		{ID: "SUB-2", Repo: "conveyor", Summary: "Second", DependsOn: []string{"SUB-1"}},
@@ -139,7 +139,7 @@ func TestReviewInboxKeepsBlueprintAnchors(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{
 		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	anchor := materializeBlueprint(t, st, "anchor-inbox", []decompositionFixture{
 		{ID: "SUB-1", Repo: "conveyor", Summary: "First"},
 	})
@@ -189,7 +189,7 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{
 		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	// SUB-3 is declared before the item it depends on, so stored order alone
 	// would render a child above its own dependency.
 	anchor := materializeBlueprint(t, st, "anchor-delivery", []decompositionFixture{
@@ -309,7 +309,7 @@ func TestBlueprintsProjectionReportsDeliveryAndDependencyOrder(t *testing.T) {
 
 func TestBlueprintServesMutationRoutesAreRetired(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	anchor := materializeBlueprint(t, st, "anchor-serves", []decompositionFixture{{ID: "SUB-1", Repo: "conveyor", Summary: "Deliver"}})
 	createRequirement := func(id string) {
 		t.Helper()
@@ -379,7 +379,7 @@ func TestBlueprintsProjectionFollowsRevisedGoverningSpec(t *testing.T) {
 		Workspace: "demo",
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}, {Name: "auxiliary", Base: "release"}},
 	})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	v1Items := []decompositionFixture{
 		{ID: "SUB-1", Repo: "conveyor", Summary: "Foundation"},
 		{ID: "SUB-2", Repo: "conveyor", Summary: "Surface", DependsOn: []string{"SUB-1"}},
@@ -478,7 +478,7 @@ func TestBlueprintsProjectionIgnoresUnapprovedDraft(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{
 		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	anchor := materializeBlueprint(t, st, "anchor-draft", []decompositionFixture{
 		{ID: "SUB-1", Repo: "conveyor", Summary: "Foundation"},
 		{ID: "SUB-2", Repo: "conveyor", Summary: "Surface", DependsOn: []string{"SUB-1"}},
@@ -518,7 +518,7 @@ func TestBlueprintsProjectionIsEmptyWithoutAnchors(t *testing.T) {
 	st := store.NewMemoryWithConfig(&config.Config{
 		Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	})
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := st.CreateTask(ctx, core.Task{
 		ID: "solo-task", Workspace: "demo", Repo: "conveyor", BaseBranch: "main",
 		Branch: "conveyor/task-solo-task", State: core.TaskQueued, CreatedAt: time.Now().UTC(),

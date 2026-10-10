@@ -143,7 +143,7 @@ func appendQueueEvent(t *testing.T, st *Store, workspace string, stream eventlog
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Log().Append(t.Context(), workspace, stream, expected, []eventlog.NewEvent{{Kind: kind, ActorID: "test", ActorRole: "system", Payload: encoded}}); err != nil {
+	if _, err := st.Log().Append(store.WithActor(t.Context(), store.SystemActor()), workspace, stream, expected, []eventlog.NewEvent{{Kind: kind, ActorID: "test", ActorRole: "system", Payload: encoded}}); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -167,7 +167,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 			t.Helper()
 			st := conformanceStore(t)
 			workspace := "conformance-" + core.NewTaskID()
-			ctx := store.WithWorkspace(t.Context(), workspace)
+			ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.SystemActor())
 			cfg := &config.Config{Workspace: workspace, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{
 				"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 			}}}

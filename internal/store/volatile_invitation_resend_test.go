@@ -19,13 +19,13 @@ func volatileResendFixture(t *testing.T) (*volatileMemory, context.Context, core
 	t.Helper()
 	m := NewVolatileBackend().(*volatileMemory)
 	t.Cleanup(m.Close)
-	if _, err := m.BootstrapWorkspaceConfig(WithWorkspace(t.Context(), "alpha"), &config.Config{Workspace: "alpha"}); err != nil {
+	if _, err := m.BootstrapWorkspaceConfig(WithWorkspace(WithActor(t.Context(), SystemActor()), "alpha"), &config.Config{Workspace: "alpha"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Volatile", Email: "owner@example.test", DisplayName: "Owner"}, "volatile-owner"); err != nil {
+	if _, err := m.BootstrapIdentity(WithActor(t.Context(), SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Volatile", Email: "owner@example.test", DisplayName: "Owner"}, "volatile-owner"); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := m.VerifyPersonalAccessToken(t.Context(), "volatile-owner")
+	owner, err := m.VerifyPersonalAccessToken(WithActor(t.Context(), SystemActor()), "volatile-owner")
 	if err != nil {
 		t.Fatal(err)
 	}

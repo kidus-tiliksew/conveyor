@@ -10,7 +10,7 @@ import (
 
 func TestMemoryArtifactsAreContentAddressedAndLinked(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "task"}); err != nil {
 		t.Fatal(err)
@@ -39,7 +39,7 @@ func TestMemoryArtifactsAreContentAddressedAndLinked(t *testing.T) {
 func TestMemoryVerificationEvidenceEnforcesRoleMediaLimitsAndOwnership(t *testing.T) {
 	t.Parallel()
 	st := NewMemory()
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	for _, id := range []string{"task-a", "task-b"} {
 		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo"}); err != nil {
 			t.Fatal(err)
@@ -72,8 +72,8 @@ func TestMemoryVerificationEvidenceEnforcesRoleMediaLimitsAndOwnership(t *testin
 func TestMemoryArtifactsScopeIdenticalContentByWorkspace(t *testing.T) {
 	t.Parallel()
 	st := NewMemory()
-	ctxA := WithWorkspace(context.Background(), "workspace-a")
-	ctxB := WithWorkspace(context.Background(), "workspace-b")
+	ctxA := WithWorkspace(WithActor(context.Background(), SystemActor()), "workspace-a")
+	ctxB := WithWorkspace(WithActor(context.Background(), SystemActor()), "workspace-b")
 	if err := st.CreateTask(ctxA, core.Task{ID: "task-a", Workspace: "workspace-a"}); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestMemoryArtifactsScopeIdenticalContentByWorkspace(t *testing.T) {
 		})
 	}
 
-	if _, _, err := st.GetArtifact(context.Background(), artifactA.ID); err == nil {
+	if _, _, err := st.GetArtifact(WithActor(context.Background(), SystemActor()), artifactA.ID); err == nil {
 		t.Fatal("unscoped read of cross-workspace digest was not rejected as ambiguous")
 	}
 }

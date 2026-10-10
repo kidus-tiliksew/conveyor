@@ -18,12 +18,12 @@ import (
 
 func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "review-proposal-gate-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegrati
 		t.Fatal(err)
 	}
 	st.Close()
-	st, err = Open(t.Context(), databaseURL)
+	st, err = Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegrati
 }
 
 func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,13 +130,13 @@ func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration
 }
 
 func TestPendingProposalsProjectionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "pending-proposals-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -216,13 +216,13 @@ func TestPendingProposalsProjectionIntegration(t *testing.T) {
 }
 
 func TestTerminalTaskContextProposalsStayOutOfPendingProjectionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "terminal-pending-context-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -302,12 +302,12 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 107); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 107); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "migration-context-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	var head int
@@ -413,12 +413,12 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = Migrate(t.Context(), pool); err != nil {
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "pending-scale-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -484,13 +484,13 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 }
 
 func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "pending-truth-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 	}
 
 	sibling := "pending-truth-sibling-" + core.NewTaskID()
-	siblingCtx := store.WithWorkspace(t.Context(), sibling)
+	siblingCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), sibling)
 	if _, err = st.BootstrapWorkspaceConfig(siblingCtx, &config.Config{Workspace: sibling, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

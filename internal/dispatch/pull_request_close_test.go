@@ -33,7 +33,7 @@ func TestStartOverPullRequestCloseForgeEndToEnd(t *testing.T) {
 			t.Setenv("GH_TOKEN", "ambient-must-not-be-used")
 			st := store.NewVolatileBackend()
 			defer st.Close()
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			ctx = store.WithActor(ctx, store.Actor{ID: "user:restarting-operator", Role: core.ActorHuman})
 			cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", GitHub: "org/repo", Base: "main"}}}
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
@@ -324,7 +324,7 @@ func TestObservePullRequestPrefersRecordedNumber(t *testing.T) {
 			return github.PullRequest{}, fmt.Errorf("branch lookup")
 		},
 	}}
-	pr, err := w.observePullRequest(t.Context(), core.PullRequestClose{Repository: "org/repo", Branch: "other-branch", Number: 42})
+	pr, err := w.observePullRequest(store.WithActor(t.Context(), store.SystemActor()), core.PullRequestClose{Repository: "org/repo", Branch: "other-branch", Number: 42})
 	if err != nil || !sawNumber || sawBranch || pr.Number != 42 {
 		t.Fatalf("pr=%+v sawNumber=%t sawBranch=%t err=%v", pr, sawNumber, sawBranch, err)
 	}
@@ -333,7 +333,7 @@ func TestObservePullRequestPrefersRecordedNumber(t *testing.T) {
 func TestQueueStartedOverPRCopiesOpenedIdentity(t *testing.T) {
 	st := store.NewVolatileBackend()
 	defer st.Close()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	ctx = store.WithActor(ctx, store.Actor{ID: "user:restarting-operator", Role: core.ActorHuman})
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", GitHub: "org/repo", Base: "main"}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
@@ -367,7 +367,7 @@ func TestQueueStartedOverPRCopiesOpenedIdentity(t *testing.T) {
 func closeOwnershipFixture(t *testing.T, recorded bool) (context.Context, store.Store, *Dispatcher, core.Task, core.Task) {
 	st := store.NewVolatileBackend()
 	t.Cleanup(st.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	ctx = store.WithActor(ctx, store.Actor{ID: "user:restarting-operator", Role: core.ActorHuman})
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", GitHub: "org/repo", Base: "main"}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {

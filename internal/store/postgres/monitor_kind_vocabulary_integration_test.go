@@ -18,7 +18,7 @@ import (
 // Exercise every Go-valid kind against the live constraints so the two
 // vocabularies cannot drift apart again.
 func TestMonitorKindVocabularyMatchesConstraintsIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestMonitorKindVocabularyMatchesConstraintsIntegration(t *testing.T) {
 }
 
 func TestMonitorSignalClassLockCreatesOneOpenTaskIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

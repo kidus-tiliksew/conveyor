@@ -315,6 +315,9 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *R
 }
 
 func (m *memory) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if pairing.Workspace != workspaceOrDefault(ctx, pairing.Workspace) {
@@ -344,6 +347,9 @@ func (m *memory) ConsumeWorkerPairing(_ context.Context, tokenHash string, now t
 }
 
 func (m *memory) CreateWorker(ctx context.Context, worker core.Worker) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if worker.Workspace != workspaceOrDefault(ctx, worker.Workspace) {
@@ -376,12 +382,22 @@ func (m *memory) ListWorkers(ctx context.Context) ([]core.Worker, error) {
 	return result, nil
 }
 
+// workerOwnerActiveLocked reports whether a worker has a nonblank owner with
+// an active membership in the worker's workspace. The volatile backend's
+// membership projection stands in for the durable users and bindings rows;
+// NewVolatileBackend derives it under the mutex and NewMemory fixtures seed it
+// explicitly (component-work-orders, Workers: Admission).
+func (m *memory) workerOwnerActiveLocked(worker core.Worker) bool {
+	owner := strings.TrimSpace(worker.OwnerUserID)
+	return owner != "" && m.workspaceMembers[memoryScopedKey{workspace: worker.Workspace, id: owner}]
+}
+
 func (m *memory) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace, _ := WorkspaceFromContext(ctx)
 	for _, worker := range m.workers {
-		if (workspace == "" || worker.Workspace == workspace) && worker.CredentialHash == credentialHash && worker.RevokedAt.IsZero() {
+		if (workspace == "" || worker.Workspace == workspace) && worker.CredentialHash == credentialHash && worker.RevokedAt.IsZero() && m.workerOwnerActiveLocked(worker) {
 			return worker, nil
 		}
 	}
@@ -393,7 +409,7 @@ func (m *memory) HeartbeatWorker(ctx context.Context, id string, leaseExpires ti
 	defer m.mu.Unlock()
 	worker, ok := m.workers[id]
 	workspace, _ := WorkspaceFromContext(ctx)
-	if !ok || worker.Workspace != workspace || !worker.RevokedAt.IsZero() {
+	if !ok || worker.Workspace != workspace || !worker.RevokedAt.IsZero() || !m.workerOwnerActiveLocked(worker) {
 		return core.Worker{}, ErrWorkerUnauthorized
 	}
 	worker.LastSeenAt = time.Now().UTC()
@@ -423,6 +439,9 @@ func (m *memory) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessMo
 }
 
 func (m *memory) RevokeWorker(ctx context.Context, id string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	worker, ok := m.workers[id]
@@ -440,6 +459,9 @@ func (m *memory) RevokeWorker(ctx context.Context, id string) error {
 }
 
 func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -494,6 +516,9 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 }
 
 func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -530,6 +555,9 @@ func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID st
 }
 
 func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -698,6 +726,9 @@ func (m *memory) previousTransientFailuresLocked(order core.WorkOrder) int {
 }
 
 func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -1002,6 +1033,9 @@ func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration
 }
 
 func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if !lease.ValidFor(decision.TaskID) {
 		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
 	}
@@ -1341,6 +1375,9 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 }
 
 func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("work-order create requires a valid taskops lease")
 	}
@@ -1404,6 +1441,9 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
 	}
@@ -1473,6 +1513,9 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 }
 
 func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
 	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
@@ -1539,6 +1582,9 @@ func (m *memory) taskBlockedLocked(taskID string) bool {
 }
 
 func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return ReviewRoundRetryResult{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
 	}
@@ -1633,6 +1679,9 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 }
 
 func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return InterruptedReviewRecoveryResult{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdRecover)) {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires a valid taskops lease")
 	}
@@ -1915,6 +1964,9 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 }
 
 func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	if !lease.ValidFor(taskID) {
 		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
 	}
@@ -1936,6 +1988,9 @@ func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLeas
 }
 
 func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
@@ -1944,6 +1999,29 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	}
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
+	}
+	if claim.WorkerID != "" {
+		// Worker owner admission under the mutex: the enrollment must exist,
+		// be unrevoked, and have an active owner. Its owner replaces any
+		// client-supplied owner (component-work-orders, Worker owner
+		// admission).
+		worker, ok := m.workers[claim.WorkerID]
+		if !ok || worker.Workspace != m.tasks[order.TaskID].Workspace {
+			return core.WorkOrder{}, fmt.Errorf("%w: worker %s is not enrolled", ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if !worker.RevokedAt.IsZero() {
+			return core.WorkOrder{}, fmt.Errorf("%w: worker %s", ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerRead); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if !m.workerOwnerActiveLocked(worker) {
+			return core.WorkOrder{}, fmt.Errorf("%w: worker %s owner has no active workspace membership", ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		claim.OwnerUserID = strings.TrimSpace(worker.OwnerUserID)
+		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerLocked); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if task := m.tasks[order.TaskID]; task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, task.Assignee.UserID)
@@ -2104,6 +2182,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 }
 
 func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
@@ -2177,6 +2258,9 @@ func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
 }
 
 func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	clean, sanitationErr := SanitizeVerificationRecovery(ctx, nil)
 	if sanitationErr != nil {
 		return core.WorkOrder{}, sanitationErr
@@ -2402,6 +2486,9 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
 
 func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.updateWorkOrderCommandLocked(ctx, lease, order, commands...)
@@ -2506,6 +2593,9 @@ func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCo
 }
 
 func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.SpecVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[spec.TaskID]; !ok {
@@ -2568,6 +2658,9 @@ func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.
 }
 
 func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	versions := m.specs[taskID]

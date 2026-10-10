@@ -167,7 +167,7 @@ func runMonitorWorkspaceScoping(t *testing.T, x Fixture) {
 		return out
 	}
 
-	unbound := t.Context()
+	unbound := store.WithActor(t.Context(), store.SystemActor())
 	for name, refusal := range map[string]struct {
 		ctx       context.Context
 		workspace string

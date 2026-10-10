@@ -85,7 +85,7 @@ func assertFeatureSchemaRetired(t *testing.T, ctx context.Context, pool *pgxpool
 func TestFeatureRetirementFreshSchemaIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	workspace := "feature-retired-fresh-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestFeatureRetirementHistoricalUpgradeIntegration(t *testing.T) {
 func TestFeatureRetirementUpgradeFromPreviousHeadIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, featureDropVersion-1)
 	workspace := "feature-retired-head-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
@@ -359,9 +359,9 @@ func TestFeatureRetirementRestartIntegration(t *testing.T) {
 	// Restarts on a dropped schema skip every recorded version, so neither the
 	// historical 046 file nor its pending overlay reads the missing table.
 	for range 2 {
-		if err := Migrate(t.Context(), st.pool); err != nil {
+		if err := Migrate(store.WithActor(t.Context(), store.SystemActor()), st.pool); err != nil {
 			t.Fatalf("restart on a dropped schema: %v", err)
 		}
 	}
-	assertFeatureSchemaRetired(t, t.Context(), st.pool)
+	assertFeatureSchemaRetired(t, store.WithActor(t.Context(), store.SystemActor()), st.pool)
 }

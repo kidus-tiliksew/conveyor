@@ -41,7 +41,7 @@ func approvedMergeFixtureWithScope(t *testing.T, githubRepo, scope string) (cont
 
 func approvedMergeFixtureWithScopeAndGate(t *testing.T, githubRepo, scope string, mergeApproval bool) (context.Context, store.Store, core.Task, *Dispatcher) {
 	t.Helper()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merge-task", State: core.TaskApproved, MergeApproval: mergeApproval, SetupContract: config.ExecutionSetup{RefreshReview: scope}, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -372,7 +372,7 @@ func TestMergeApprovedTaskRefusesChangedObservedHead(t *testing.T) {
 }
 
 func TestReconcileMergeReadinessRecoversAcceptedTaskKnockedOutOfApproved(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "lost-approved", Workspace: "test", Repo: "app", Branch: "conveyor/lost-approved", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, ApprovedHeadSHA: "accepted-head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1227,7 +1227,7 @@ func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
 func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T) {
 	for _, scenario := range []string{"approved", "unapproved", "wrong-repository", "wrong-slug", "wrong-pr", "changed-head", "missing-lineage", "stale-approval"} {
 		t.Run(scenario, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			task := core.Task{ID: "observed", Workspace: "demo", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-observed", State: core.TaskApproved, ReviewedHeadSHA: "head", ApprovedHeadSHA: "head", CreatedAt: time.Now()}
 			if scenario == "unapproved" {
@@ -1298,7 +1298,7 @@ func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T)
 }
 
 func TestReconcileObservedPullRequestUsesCurrentAssignedBranch(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "observed", Workspace: "demo", Repo: "app", BaseBranch: "main", Branch: "feature/from-ide", State: core.TaskApproved, ReviewedHeadSHA: "head", ApprovedHeadSHA: "head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1325,7 +1325,7 @@ func TestReconcileObservedPullRequestUsesCurrentAssignedBranch(t *testing.T) {
 // implement order while GitHub already reports the pushed fix as mergeable.
 func conflictFixDeferralFixture(t *testing.T, taskState core.TaskState, claim bool) (context.Context, store.Store, core.Task, *Dispatcher, *int) {
 	t.Helper()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "conflict-deferral", Workspace: "test", Repo: "app", Branch: "conveyor/conflict-deferral", BaseBranch: "main", State: taskState, NextStage: core.StageImplement, PolicyVersion: 1, ApprovedHeadSHA: "approved-head", ReviewedHeadSHA: "approved-head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {

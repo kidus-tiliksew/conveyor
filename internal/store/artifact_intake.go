@@ -38,6 +38,9 @@ func IntakeArtifactEvent(t core.Task, a core.Artifact) core.Event {
 }
 
 func (m *memory) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids []string, attached TaskContextInput, uploads []ArtifactUpload) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if t.Workspace != workspaceOrDefault(ctx, t.Workspace) {
 		return fmt.Errorf("task workspace mismatch")
 	}

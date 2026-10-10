@@ -156,7 +156,7 @@ func (s snapshotAppStore) GetWorkspaceGitHubAppForUse(context.Context, string) (
 	return s.credential, nil
 }
 func TestSnapshotWorkspaceCredentialPermissionAndCoverage(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	missing := &Service{Store: store.NewMemory()}
 	if _, err := missing.workspaceCredential(ctx, "https://github.com/owner/repo"); github.ErrorCategory(err) != github.ForgePermission || !strings.Contains(err.Error(), "owner/repo") || !strings.Contains(err.Error(), "workspace settings") {
 		t.Fatalf("missing app: %v", err)

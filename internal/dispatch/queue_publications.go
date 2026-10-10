@@ -25,7 +25,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:github-issue-publication:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:github-issue-publication:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, args.TaskID)
 	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished {
@@ -122,7 +122,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job queue.Job) error
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:review-publication:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:review-publication:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, args.ReviewWorkOrderID)
 	if err != nil || (publication.State == core.ReviewPublicationPublished && publication.CommentID > 0) {

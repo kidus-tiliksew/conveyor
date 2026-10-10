@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 )
 
@@ -251,7 +252,7 @@ func Enqueue(ctx context.Context, log eventlog.Store, workspace, kind, key strin
 		return false, err
 	}
 	_, err = log.Append(ctx, workspace, stream, job.Head, []eventlog.NewEvent{{
-		Kind: KindEnqueued, ActorID: "queue", ActorRole: "system", Payload: payload, At: now,
+		Kind: KindEnqueued, ActorID: core.SystemActor("queue").ID, ActorRole: string(core.ActorSystem), Payload: payload, At: now,
 	}})
 	if eventlog.IsVersionConflict(err) {
 		return false, nil

@@ -193,7 +193,7 @@ type referenceDocumentWrite struct {
 func newReferenceDocumentRoleHarness(t *testing.T) *referenceDocumentRoleHarness {
 	t.Helper()
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	document, _, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-overview", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# One"})
 	if err != nil {
 		t.Fatal(err)

@@ -9,7 +9,7 @@ import (
 
 func TestDocumentSuccessorMigrationsAdvanceCanonicalVersion118Integration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 118)
-	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 120); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), st.pool, 120); err != nil {
 		t.Fatalf("advance canonical version-118 history: %v", err)
 	}
 	assertDocumentSuccessorMigrationHead(t, st)
@@ -18,7 +18,7 @@ func TestDocumentSuccessorMigrationsAdvanceCanonicalVersion118Integration(t *tes
 func TestDocumentSuccessorMigrationsPreserveHistoricalArchivalVersion118Integration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 117)
 	workspace := "archive-v118-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
@@ -75,16 +75,16 @@ func TestDocumentSuccessorMigrationsPreserveHistoricalArchivalVersion118Integrat
 func assertDocumentSuccessorMigrationHead(t *testing.T, st *Store) {
 	t.Helper()
 	var version, dependencyTables, canonicalColumns, predecessorColumns int
-	if err := st.pool.QueryRow(t.Context(), `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&version); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='task_dependency_additions'`).Scan(&dependencyTables); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='task_dependency_additions'`).Scan(&dependencyTables); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('requirements','system_designs') AND column_name='superseded_by'`).Scan(&canonicalColumns); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('requirements','system_designs') AND column_name='superseded_by'`).Scan(&canonicalColumns); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('requirements','system_designs') AND column_name='superseding_document_ids'`).Scan(&predecessorColumns); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('requirements','system_designs') AND column_name='superseding_document_ids'`).Scan(&predecessorColumns); err != nil {
 		t.Fatal(err)
 	}
 	if version != 120 || dependencyTables != 1 || canonicalColumns != 2 || predecessorColumns != 0 {

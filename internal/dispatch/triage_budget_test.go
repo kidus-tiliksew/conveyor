@@ -90,7 +90,7 @@ func TestTriageBudgetAdmitsRecordedMandatoryInput(t *testing.T) {
 }
 
 func TestTriageInitialTextHistoryBoundary(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	agent := &sequenceAgent{results: []inprocess.Result{nativeMessageResult("final")}}
 	result, err := New(store.NewMemory(), nil, agent).runTriageLoop(ctx, "model", triageInputWithTextBytes(t, 524288))
 	if err != nil || result.Output != "final" || len(agent.inputs) != 1 {
@@ -115,7 +115,7 @@ func TestTriageOversizedCorpusBodyIsExplicitlyUnread(t *testing.T) {
 }
 
 func TestTriageContinuationBudgetReturnsVerdictWithoutSendingOversizedHistory(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	first := nativeCallResult("list", "list_requirements", "{}", "")
 	item, _ := json.Marshal(map[string]any{"type": "reasoning", "content": strings.Repeat("r", maxTriageInputBytes)})
 	first.ResponseItems = append(first.ResponseItems, item)
@@ -128,7 +128,7 @@ func TestTriageContinuationBudgetReturnsVerdictWithoutSendingOversizedHistory(t 
 }
 
 func TestTriageToolContinuationSucceedsUnderTextHistoryLimit(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	first := nativeCallResult("list", "list_requirements", "{}", "")
 	history, _ := json.Marshal(map[string]any{"type": "reasoning", "content": strings.Repeat("h", 300<<10)})
 	first.ResponseItems = append(first.ResponseItems, history)
@@ -144,7 +144,7 @@ func TestTriageToolContinuationSucceedsUnderTextHistoryLimit(t *testing.T) {
 }
 
 func TestTriageCorpusReadsRespectCumulativeAllowance(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	req, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-large", Title: "Large confirmed body"}, core.RequirementVersion{Content: "# Large confirmed body\n\n" + strings.Repeat("governing text ", 3200), Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep authority whole."}}})
 	if err != nil {
@@ -282,7 +282,7 @@ func TestTriageTranscriptBudgetSuppressesResponses(t *testing.T) {
 			defer server.Close()
 			client := &inprocess.OpenAI{APIKey: "test", BaseURL: server.URL, Client: server.Client()}
 			input := inprocess.Input{Prompt: "intent", Attachments: []inprocess.Attachment{{ID: "voice", Name: "voice.mp3", Kind: inprocess.AttachmentAudio, ContentType: "audio/mpeg", Content: bytes.Repeat([]byte("a"), 461<<10)}}}
-			result, err := New(store.NewMemory(), nil, client).runTriageLoop(store.WithWorkspace(t.Context(), "demo"), "model", input)
+			result, err := New(store.NewMemory(), nil, client).runTriageLoop(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), "model", input)
 			if (err != nil) != tc.wantError || responses != tc.wantResponses || transcriptions != len(tc.transcriptSizes) {
 				t.Fatalf("err=%v Responses=%d transcriptions=%d", err, responses, transcriptions)
 			}

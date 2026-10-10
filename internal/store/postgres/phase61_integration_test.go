@@ -265,7 +265,7 @@ func TestBlueprintParentForeignKeyIsWorkspaceScopedIntegration(t *testing.T) {
 	}
 
 	otherWorkspace := "phase61-other-" + suffix
-	otherCtx := store.WithWorkspace(context.Background(), otherWorkspace)
+	otherCtx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), otherWorkspace)
 	if _, err := st.BootstrapWorkspaceConfig(otherCtx, &config.Config{
 		Workspace: otherWorkspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -283,7 +283,7 @@ func TestBlueprintParentForeignKeyIsWorkspaceScopedIntegration(t *testing.T) {
 }
 
 func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,13 +405,13 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 }
 
 func TestBlueprintApprovalWithoutDecompositionWritesNoMaterializationRowsIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "blueprint-empty-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -465,12 +465,12 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "relation-batch-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -523,7 +523,7 @@ func TestListTasksBatchesRelationHydrationIntegration(t *testing.T) {
 	}
 
 	emptyWorkspace := "relation-empty-" + core.NewTaskID()
-	emptyCtx := store.WithWorkspace(t.Context(), emptyWorkspace)
+	emptyCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), emptyWorkspace)
 	if _, err = st.BootstrapWorkspaceConfig(emptyCtx, &config.Config{
 		Workspace: emptyWorkspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -649,11 +649,11 @@ func TestLinkProvenanceMigrationPreservesAmbiguousLegacyRowsIntegration(t *testi
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 44); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 44); err != nil {
 		t.Fatalf("migrate isolated schema to version 44: %v", err)
 	}
 	workspace := "link-migration-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
@@ -692,7 +692,7 @@ func TestLinkProvenanceMigrationPreservesAmbiguousLegacyRowsIntegration(t *testi
 			t.Fatal(err)
 		}
 	}
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 45); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 45); err != nil {
 		t.Fatalf("migrate isolated schema to version 45: %v", err)
 	}
 	var migratedEventID *int64
@@ -861,12 +861,12 @@ func TestPlanningBundleApprovalTransactionIntegration(t *testing.T) {
 
 func newPhase61IntegrationStore(t *testing.T) (*Store, context.Context, string) {
 	t.Helper()
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "phase61-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -963,7 +963,7 @@ func discardDispatchJob(t *testing.T, st *Store, workspace, taskID string) {
 
 func loadDispatchJob(t *testing.T, st *Store, workspace, taskID string) logqueue.Job {
 	t.Helper()
-	job, err := logqueue.Load(t.Context(), st.Log(), workspace, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), taskID))
+	job, err := logqueue.Load(store.WithActor(t.Context(), store.SystemActor()), st.Log(), workspace, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), taskID))
 	if err != nil {
 		t.Fatal(err)
 	}

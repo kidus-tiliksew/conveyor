@@ -49,7 +49,7 @@ type governanceAuthFixture struct {
 
 func newGovernanceAuthFixture(t *testing.T) *governanceAuthFixture {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), governanceWorkspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), governanceWorkspace)
 	st := store.NewMemory()
 	if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: governanceDesignID, Title: "Governance", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Governance\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator}); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func (f *governanceAuthFixture) claimRun(orderID, owner, session string) {
 // claimWorker enrolls a worker for owner and stores its live claim.
 func (f *governanceAuthFixture) claimWorker(orderID, workerID, owner, session string) {
 	f.t.Helper()
-	if err := f.store.CreateWorker(f.ctx, core.Worker{ID: workerID, Workspace: governanceWorkspace, OwnerUserID: owner, Name: workerID, CredentialHash: "hash-" + workerID, CreatedAt: time.Now()}); err != nil {
+	if err := createOwnedWorker(f.store, f.ctx, core.Worker{ID: workerID, Workspace: governanceWorkspace, OwnerUserID: owner, Name: workerID, CredentialHash: "hash-" + workerID, CreatedAt: time.Now()}); err != nil {
 		f.t.Fatal(err)
 	}
 	if _, err := storetest.For(f.store).ClaimWorkOrder(f.ctx, orderID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret-" + session, ClaimantID: workerID, WorkerID: workerID, Agent: "codex", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {

@@ -43,7 +43,7 @@ func (s *contextRecordCountingStore) GetRequirementVersion(ctx context.Context, 
 }
 
 func TestAssembleBatchesGraphContextRecords(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
 	task := core.Task{ID: "batched-context", Workspace: "demo", Repo: "conveyor", Title: "Completed task", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
 	if err := base.CreateTask(ctx, task); err != nil {
@@ -145,7 +145,7 @@ func TestBlueprintSectionUsesCanonicalDecompositionAndExactID(t *testing.T) {
 }
 
 func TestAssembleRetainsDirectReviewEvidenceUnderBytePressure(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	dependency := core.Task{ID: "dependency", Workspace: "demo", Title: strings.Repeat("adjacent", 30), State: core.TaskMerged, CreatedAt: now}
@@ -177,7 +177,7 @@ func TestAssembleRetainsDirectReviewEvidenceUnderBytePressure(t *testing.T) {
 }
 
 func TestAssembleReportsRenderableByteExhaustion(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "task-budget", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-task-budget", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -203,7 +203,7 @@ func TestAssembleReportsRenderableByteExhaustion(t *testing.T) {
 // deployment's planning context limits through RuntimeConfig composition for a
 // policy-only workspace (component-lineage; component-runtime; DEC-56(3)).
 func TestPolicyOnlyRuntimeContextBudgets(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	backend := store.NewVolatileBackend()
 	t.Cleanup(backend.Close)
 	if _, err := backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/example/conveyor", Base: "main"}}}); err != nil {

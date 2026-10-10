@@ -121,7 +121,7 @@ func TestPlanRevisionDeclineRecoversImplementationWithDirection(t *testing.T) {
 
 func newPlanRevisionLoop(t *testing.T, suffix string) (context.Context, store.Store, *dispatch.Dispatcher, *workorder.Service, core.Task, core.WorkOrder) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	return newPlanRevisionLoopWithStore(t, ctx, st, "demo", suffix)
 }

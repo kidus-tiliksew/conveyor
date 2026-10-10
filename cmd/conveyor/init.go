@@ -212,6 +212,9 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	if _, err = pack.Load(validated.PackDir); err != nil {
 		return fmt.Errorf("load deployment role pack: %w", err)
 	}
+	// Host-local initialization is a system act until the first operator
+	// exists; later workspace creation binds that operator explicitly.
+	ctx = store.WithActor(ctx, store.SystemActor())
 	pgStore, err := backend.Open(ctx, config.DatabaseForURL(databaseURL))
 	if err != nil {
 		return fmt.Errorf("initialize %s store: %w", validated.Database.Backend, err)

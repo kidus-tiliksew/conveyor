@@ -254,7 +254,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 				auditKind = "identity.legacy_bindings_healed"
 			}
 			changed = true
-			return appendDeploymentEvent(store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem}), tx, auditKind, map[string]any{"credential_id": id})
+			return appendDeploymentEvent(store.WithActor(ctx, store.SystemActor("system")), tx, auditKind, map[string]any{"credential_id": id})
 		}
 		u, err := scanIdentity(tx.QueryRowContext(ctx, "SELECT u.id,u.email,u.display_name,u.status,u.created_at FROM users u JOIN user_tokens t ON t.user_id=u.id WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active' AND EXISTS(SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=u.id AND b.role='operator') ORDER BY t.created_at,t.id LIMIT 1"))
 		if errors.Is(err, store.ErrNotFound) {
@@ -282,7 +282,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 			return translateBackendConflict(err)
 		}
 		if legacyErr == nil {
-			if err = appendDeploymentEvent(store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem}), tx, "identity.legacy_token_rotated", map[string]any{"credential_id": tokenID}); err != nil {
+			if err = appendDeploymentEvent(store.WithActor(ctx, store.SystemActor("system")), tx, "identity.legacy_token_rotated", map[string]any{"credential_id": tokenID}); err != nil {
 				return translateBackendConflict(err)
 			}
 		}

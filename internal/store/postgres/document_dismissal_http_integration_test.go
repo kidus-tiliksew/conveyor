@@ -14,7 +14,7 @@ import (
 
 func TestDocumentDismissalArchiveHTTPIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
-	ctx := store.WithWorkspace(t.Context(), "dismissal-http")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "dismissal-http")
 	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "dismissal-http"}); err != nil {
 		t.Fatal(err)
 	}

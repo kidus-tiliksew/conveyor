@@ -41,7 +41,7 @@ func TestCrashLauncherHelper(t *testing.T) {
 			MCPTransport: config.MCPTransportTOMLOverride, Name: "helper", Command: []string{os.Args[0], "-test.run=^TestWorkerLifecycleHelper$", "--", "crash-child"},
 		},
 	}
-	_ = runHarnessChildWithFirstActivityTimeoutAndOutput(context.Background(), &client{base: address, workspace: "demo"}, "crash-worker-credential", item, time.Minute, os.Stdout, os.Stderr)
+	_ = runHarnessChildWithFirstActivityTimeoutAndOutput(store.WithActor(context.Background(), store.SystemActor()), &client{base: address, workspace: "demo"}, "crash-worker-credential", item, time.Minute, os.Stdout, os.Stderr)
 	t.Fatal("launcher returned before it was killed")
 }
 
@@ -68,7 +68,7 @@ func (f *crashFixtureServer) seen() []string {
 // (req-260820-221be8 AC-2.3; req-local-task-runs AC-5.1).
 func runLauncherCrashLeavesNoSyntheticCaptureAndRecoversLease(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"implement": {Execution: config.ExecutionMCP, Timeout: 24 * time.Hour},

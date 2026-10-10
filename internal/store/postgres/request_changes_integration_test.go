@@ -12,14 +12,14 @@ import (
 )
 
 func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
 	workspace := "request-changes-" + core.NewTaskID()
 	cfg := isolationConfig(workspace)
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID("requester"), Role: core.ActorUser})
 	if seeded, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil || !seeded {
 		t.Fatalf("workspace seeded=%t err=%v", seeded, err)
@@ -88,7 +88,7 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 }
 
 func TestWorkerRequestChangesBounceIsClaimableAndClearsAttentionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 )
 
 func TestWorkOrderOwnerUserIDUsesAuthenticatedRunOrDurableWorkerOwner(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "test")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "test")
 	st := NewMemory()
 	runOwner, err := WorkOrderOwnerUserID(ctx, st, core.WorkOrder{ID: "run-order", ClaimantID: core.TaskRunClaimantID("usr-run")})
 	if err != nil || runOwner != "usr-run" {
@@ -25,7 +26,7 @@ func TestWorkOrderOwnerUserIDUsesAuthenticatedRunOrDurableWorkerOwner(t *testing
 }
 
 func TestApprovingOperatorUserIDUsesLatestUserApproval(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "test")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "test")
 	st := NewMemory()
 	task := core.Task{ID: "task-approval", Workspace: "test", State: core.TaskApproved, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -43,5 +44,45 @@ func TestApprovingOperatorUserIDUsesLatestUserApproval(t *testing.T) {
 	userID, ok, err := ApprovingOperatorUserID(ctx, st, task.ID)
 	if err != nil || !ok || userID != "usr-approver" {
 		t.Fatalf("user=%q ok=%t err=%v", userID, ok, err)
+	}
+}
+
+// TestActorFromContextRequiresExplicitActor pins the removed silent fallback:
+// an absent, empty, or partial actor yields an empty Actor and a missing-actor
+// error, and explicit user, agent, worker, and system actors keep their typed
+// attribution (component-persistence, Actor context).
+func TestActorFromContextRequiresExplicitActor(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"absent":     t.Context(),
+		"empty":      WithActor(t.Context(), Actor{}),
+		"id only":    WithActor(t.Context(), Actor{ID: "user:usr-1"}),
+		"role only":  WithActor(t.Context(), Actor{Role: core.ActorUser}),
+		"blank id":   WithActor(t.Context(), Actor{ID: "  ", Role: core.ActorSystem}),
+		"credential": WithCredential(t.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "usr-1", Kind: core.CredentialUser}),
+	} {
+		if got := ActorFromContext(ctx); got != (Actor{}) {
+			t.Fatalf("%s: ActorFromContext = %+v, want empty actor", name, got)
+		}
+		if got, err := RequireActor(ctx); !errors.Is(err, ErrMissingActor) || !errors.Is(err, core.ErrMissingActor) || got != (Actor{}) {
+			t.Fatalf("%s: RequireActor = %+v, %v", name, got, err)
+		}
+	}
+	for _, actor := range []Actor{
+		{ID: UserActorID("usr-1"), Role: core.ActorUser},
+		{ID: AgentActorID("agent-1"), Role: core.ActorAgent},
+		{ID: WorkerActorID("worker-1"), Role: core.ActorWorker},
+		SystemActor(),
+		SystemActor("dispatcher"),
+	} {
+		ctx := WithActor(WithWorkspace(t.Context(), "test"), actor)
+		if got := ActorFromContext(ctx); got != actor {
+			t.Fatalf("ActorFromContext = %+v, want %+v", got, actor)
+		}
+		if got, err := RequireActor(ctx); err != nil || got != actor {
+			t.Fatalf("RequireActor = %+v, %v; want %+v", got, err, actor)
+		}
+	}
+	if got := SystemActor(); got.ID != core.SystemActorID || got.Role != core.ActorSystem {
+		t.Fatalf("store.SystemActor = %+v", got)
 	}
 }

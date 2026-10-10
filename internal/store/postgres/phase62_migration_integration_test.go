@@ -54,11 +54,11 @@ func newPhase62MigrationFixture(t *testing.T) *phase62Fixture {
 	t.Cleanup(pool.Close)
 	// Pin the schema to the last pre-046 version so the legacy rows below are
 	// written in exactly the shape the upgrade will find in production.
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 45); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 45); err != nil {
 		t.Fatalf("migrate isolated schema to version 45: %v", err)
 	}
 	workspace := "phase62-migration-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
@@ -136,7 +136,7 @@ func (f *phase62Fixture) upgrade(t *testing.T) {
 
 func (f *phase62Fixture) upgradeTo(t *testing.T, version int) {
 	t.Helper()
-	if err := migrateControlPlaneToVersion(t.Context(), f.pool, version); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), f.pool, version); err != nil {
 		t.Fatalf("migrate to version %d: %v", version, err)
 	}
 }
@@ -329,7 +329,7 @@ func TestPendingLineageMigrationSurvivesMalformedNumericPayloadsIntegration(t *t
 			t.Fatal(err)
 		}
 	}
-	if err := migrateControlPlaneToVersion(t.Context(), f.pool, 0); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), f.pool, 0); err != nil {
 		t.Fatalf("full upgrade from pre-054 malformed history: %v", err)
 	}
 	var version int
@@ -705,7 +705,7 @@ func TestRetiredFeatureConsumersBecomeRequirementReferencesIntegration(t *testin
 		t.Fatal(err)
 	}
 
-	if err := migrateControlPlaneToVersion(t.Context(), f.pool, 47); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), f.pool, 47); err != nil {
 		t.Fatalf("migrate to version 47: %v", err)
 	}
 	var observationRequirement, driftRequirement, taskFeature string

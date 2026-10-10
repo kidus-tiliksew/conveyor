@@ -22,6 +22,12 @@ type PlanRevisionRequestResult struct {
 }
 
 func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error) {
+	// A worker claim records its own worker actor; any other claim records the
+	// caller's actor. Either must be complete before the order, job, session,
+	// or task changes (component-persistence, Actor context).
+	if _, err := RequireActor(workerClaimActorContext(ctx, claim.WorkerID)); err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rationale = strings.TrimSpace(rationale)
@@ -102,6 +108,9 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 }
 
 func (m *memory) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -321,6 +330,9 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 }
 
 func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if command.Kind == core.TaskStartOver {
 		return core.Task{}, fmt.Errorf("task start over requires StartOverTaskCommand")
 	}

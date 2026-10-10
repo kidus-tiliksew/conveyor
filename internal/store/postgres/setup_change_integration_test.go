@@ -21,7 +21,7 @@ func changeTaskPolicy(t *testing.T, st *Store, ctx context.Context, request stor
 }
 
 func TestTaskPolicyChangePostgresScopesExclusionToExecutingAttempts(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestTaskPolicyChangePostgresScopesExclusionToExecutingAttempts(t *testing.T
 // as the retired command left it, an immutable task.setup.changed event plus
 // the review_superseded flag (component-persistence).
 func TestHistoricalSetupSupersessionPostgresReaggregatesReplacementSeats(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

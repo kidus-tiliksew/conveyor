@@ -40,10 +40,10 @@ func countPGResendRows(t *testing.T, st *Store, ctx context.Context, workspace, 
 func resendIntegrationOwner(t *testing.T, st *Store, workspace string) (context.Context, core.IdentityUser) {
 	t.Helper()
 	legacy := "resend-owner-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Resend Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Resend Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestInvitationResendRowsIntegration(t *testing.T) {
 // earlier kind and recorded row, and still refuses an unrelated taskless kind.
 func TestInvitationResentEventMigrationIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, invitationResentMigrationVersion-1)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	workspace := "resent-migration-" + core.NewTaskID()
 	if _, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(ctx, workspace), isolationConfig(workspace)); err != nil {
 		t.Fatal(err)

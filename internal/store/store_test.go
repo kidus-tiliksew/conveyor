@@ -42,7 +42,7 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 
 func TestMemoryTranscriptProvenancePreservesAuditAndContextLinks(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "task", Workspace: "demo"}); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestMemoryTranscriptProvenancePreservesAuditAndContextLinks(t *testing.T) {
 
 func TestMemoryLegacyTranscriptLinkBecomesGeneratedAudit(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "task", Workspace: "demo"}); err != nil {
 		t.Fatal(err)
@@ -103,7 +103,7 @@ func TestMemoryLegacyTranscriptLinkBecomesGeneratedAudit(t *testing.T) {
 
 func TestMemoryStoreMatchesProductionRelationships(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
 	for _, task := range []core.Task{
 		{ID: "task-a", Branch: "conveyor/shared", State: core.TaskQueued},
@@ -160,7 +160,7 @@ func TestMemoryStoreMatchesProductionRelationships(t *testing.T) {
 }
 
 func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "terminal-state-guards", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -230,7 +230,7 @@ func TestMemoryStateMachinesRejectTerminalPublicationAndJobReentry(t *testing.T)
 }
 
 func TestMemoryActivityMarkerPrefersClaimedOrderStage(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "claimed-activity", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now.Add(-time.Hour)}

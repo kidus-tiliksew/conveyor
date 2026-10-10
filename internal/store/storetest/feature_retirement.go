@@ -182,7 +182,7 @@ func RunFeatureRetirementConformance(t *testing.T, x Fixture) {
 
 	// Another workspace reads none of these artifacts.
 	foreign := x.Workspace + "-retired-features"
-	foreignCtx := store.WithWorkspace(t.Context(), foreign)
+	foreignCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), foreign)
 	if _, err = st.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreign, Repos: x.Config.Repos}); err != nil {
 		t.Fatal(err)
 	}

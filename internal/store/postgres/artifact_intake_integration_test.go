@@ -62,7 +62,7 @@ func TestArtifactIntakeWriteFailuresRollbackIntegration(t *testing.T) {
 func TestArtifactRepairMigrationPreservesHistoricalMetadataIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 129)
 	ws := "artifact-migration-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), ws)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
 	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: ws}); err != nil {
 		t.Fatal(err)
 	}

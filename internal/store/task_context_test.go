@@ -12,7 +12,7 @@ import (
 )
 
 func TestAttachSubmissionGovernanceIsAdditivePinnedAndAudited(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	createConfirmed := func(id, path string) (core.SystemDesign, core.SystemDesignVersion) {
 		t.Helper()
@@ -85,7 +85,7 @@ func TestAttachSubmissionGovernanceIsAdditivePinnedAndAudited(t *testing.T) {
 }
 
 func TestTaskContextFeedsRequirementAndGovernanceAuthority(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory().(*memory)
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task", Title: "Task delivery"}, core.RequirementVersion{
 		Content: "# Task delivery", Origin: core.RequirementOriginOperator,
@@ -133,7 +133,7 @@ func TestTaskContextFeedsRequirementAndGovernanceAuthority(t *testing.T) {
 }
 
 func TestGovernanceMarksAttachmentDowngradeAndOmitsMalformedProposalHistory(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory().(*memory)
 	design, first, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-pin", Title: "Pinned mechanism", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# V1\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -180,7 +180,7 @@ func TestGovernanceMarksAttachmentDowngradeAndOmitsMalformedProposalHistory(t *t
 }
 
 func TestTaskContextRejectsUnknownReferenceWithoutCreatingTask(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "not-created", Workspace: "demo", State: core.TaskQueued}
 	err := st.CreateTaskWithDependenciesAndContext(ctx, task, nil, TaskContextInput{RequirementIDs: []string{"req-missing"}})

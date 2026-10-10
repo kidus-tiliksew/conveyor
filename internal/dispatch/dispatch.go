@@ -213,7 +213,7 @@ func (d *Dispatcher) DisableMemoryQueueForTest() { d.durableQueue = true }
 // uses this when review is configured in-process so its result includes the
 // completed review instead of a polling instruction (component-work-orders).
 func (d *Dispatcher) DispatchNow(ctx context.Context, taskID string) error {
-	return d.runTask(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), taskID)
+	return d.runTask(store.WithActor(ctx, store.SystemActor("dispatcher")), taskID)
 }
 
 func (d *Dispatcher) Run(ctx context.Context) {
@@ -225,7 +225,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case item := <-d.memoryQueue:
-			workCtx := store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: "dispatcher", Role: core.ActorSystem}), item.Workspace)
+			workCtx := store.WithWorkspace(store.WithActor(ctx, store.SystemActor("dispatcher")), item.Workspace)
 			if err := d.runTask(workCtx, item.TaskID); err != nil {
 				log.Printf("[task %s] dispatch failed: %v", item.TaskID, err)
 			}

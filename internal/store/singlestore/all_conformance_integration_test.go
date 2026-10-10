@@ -147,12 +147,17 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
 			ws := "conformance-" + core.NewTaskID()
-			ctx := store.WithWorkspace(t.Context(), ws)
+			ctx := store.WithActor(store.WithWorkspace(t.Context(), ws), store.SystemActor())
 			cfg := &config.Config{Workspace: ws, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{ReopenVerification: func(t *testing.T) store.Backend {
+			return storetest.Fixture{DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+				t.Helper()
+				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
+					t.Fatal(err)
+				}
+			}, ReopenVerification: func(t *testing.T) store.Backend {
 				reopened, err := Open(t.Context(), sharedDatabase.cfg.FormatDSN())
 				if err != nil {
 					t.Fatal(err)

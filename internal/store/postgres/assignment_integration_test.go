@@ -15,30 +15,30 @@ import (
 func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "assignment-legacy-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Assignment Org", Email: "owner-assignment@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "assignment-" + core.NewTaskID()
-	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), isolationConfig(workspace)); err != nil || !seeded {
+	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace), isolationConfig(workspace)); err != nil || !seeded {
 		t.Fatalf("workspace seeded=%t err=%v", seeded, err)
 	}
-	if err := st.queries.UpsertRepo(t.Context(), db.UpsertRepoParams{WorkspaceID: workspace, Name: "conveyor", DefaultBase: "main"}); err != nil {
+	if err := st.queries.UpsertRepo(store.WithActor(t.Context(), store.SystemActor()), db.UpsertRepoParams{WorkspaceID: workspace, Name: "conveyor", DefaultBase: "main"}); err != nil {
 		t.Fatal(err)
 	}
-	member, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	member, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: "usr_assignee_" + core.NewTaskID(), Email: "assignee-" + core.NewTaskID() + "@example.test", DisplayName: "Assigned User",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
-	ctx := store.WithCredential(store.WithWorkspace(t.Context(), workspace), credential)
+	ctx := store.WithCredential(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace), credential)
 	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	if _, err = st.GrantWorkspaceRole(ctx, member.Email, workspace, core.WorkspaceRoleExecutor); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	inactive, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	inactive, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: "usr_inactive_" + core.NewTaskID(), Email: "inactive-" + core.NewTaskID() + "@example.test", DisplayName: "Inactive User",
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 	if _, err = st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, workspace, inactive.ID); err != nil {
 		t.Fatal(err)
 	}
-	viewer, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	viewer, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: "usr_viewer_" + core.NewTaskID(), Email: "viewer-" + core.NewTaskID() + "@example.test", DisplayName: "Viewer",
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestTaskAssignmentRejectsNonMemberIntegration(t *testing.T) {
 	if _, err := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.queries.UpsertRepo(t.Context(), db.UpsertRepoParams{WorkspaceID: workspace, Name: "conveyor", DefaultBase: "main"}); err != nil {
+	if err := st.queries.UpsertRepo(store.WithActor(t.Context(), store.SystemActor()), db.UpsertRepoParams{WorkspaceID: workspace, Name: "conveyor", DefaultBase: "main"}); err != nil {
 		t.Fatal(err)
 	}
 	task := core.Task{ID: "task-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}

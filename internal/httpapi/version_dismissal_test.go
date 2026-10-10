@@ -11,7 +11,7 @@ import (
 )
 
 func TestVersionDismissalHTTPContracts(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, requirementVersion, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: "req-dismiss", Title: "Dismiss requirement"},
@@ -92,7 +92,7 @@ func TestOperatorDismissalNotesHTTP(t *testing.T) {
 				{"wrong type", `{"note":5}`, "", 400}, {"malformed", `{"note":`, "", 400}, {"trailing", `{"note":"a"}{}`, "", 400},
 			} {
 				t.Run(tier+"/"+action+"/"+tc.name, func(t *testing.T) {
-					ctx := store.WithWorkspace(t.Context(), "demo")
+					ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 					st := store.NewMemory()
 					id := "note-doc"
 					var history func() []string

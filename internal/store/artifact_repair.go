@@ -79,6 +79,9 @@ func ArtifactRepairEvent(ctx context.Context, r ArtifactRepairRequest, a core.Ar
 }
 
 func (m *memory) RepairArtifactMetadata(ctx context.Context, r ArtifactRepairRequest) (ArtifactRepairResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return ArtifactRepairResult{}, err
+	}
 	r, err := NormalizeArtifactRepair(ctx, r)
 	if err != nil {
 		return ArtifactRepairResult{}, err

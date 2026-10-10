@@ -237,7 +237,7 @@ func artifactUploadRequest(t *testing.T, taskID string, role core.ArtifactRole, 
 }
 
 func TestVerificationEvidenceUploadAndTaskActivityUseExplicitRole(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "evidence-api", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -296,7 +296,7 @@ func TestAttachmentTaskCreationIsAtomicAndRetriesAfterInvalidInput(t *testing.T)
 	if first.Code != http.StatusBadRequest || enqueued != 0 {
 		t.Fatalf("invalid intake: %d %s", first.Code, first.Body)
 	}
-	tasks, err := base.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	tasks, err := base.ListTasks(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"))
 	if err != nil || len(tasks) != 0 {
 		t.Fatalf("partial tasks: %+v %v", tasks, err)
 	}
@@ -315,7 +315,7 @@ func TestAttachmentTaskCreationIsAtomicAndRetriesAfterInvalidInput(t *testing.T)
 
 func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "recover-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "recover-order", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -401,7 +401,7 @@ func TestWorkOrderRecoveryHTTPConflictsWithPendingPlanRevisionDecision(t *testin
 
 func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "close-running", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "close-running-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -475,7 +475,7 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 
 func TestReviewEndpointRejectsLifecycleCancelAction(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "review-cannot-cancel", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -502,7 +502,7 @@ func TestReviewEndpointRejectsLifecycleCancelAction(t *testing.T) {
 
 func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "retry-review-http", Workspace: "demo", Repo: "api", Branch: "conveyor/task-retry-review-http", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -575,7 +575,7 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 
 func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "interrupted-review-http", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -629,7 +629,7 @@ func TestInterruptedReviewRecoveryHTTPIsAuthorizedAtomicAndIdempotent(t *testing
 
 func TestTerminalTaskHTTPRetainsReviewWithoutInterruptedRecovery(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "merged-retained-review-http", Workspace: "demo", Repo: "api", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -658,7 +658,7 @@ func TestSetTaskHoldTogglesReservationWithAudit(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)
 	server.BearerToken, server.Workspace = "token", "demo"
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := st.CreateTask(ctx, core.Task{ID: "hold-task", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -790,7 +790,7 @@ func TestCreateTaskRequiresBearerToken(t *testing.T) {
 		t.Fatal("authorized task was not dispatched")
 	}
 
-	tasks, err := st.ListTasks(context.Background())
+	tasks, err := st.ListTasks(store.WithActor(context.Background(), store.SystemActor()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,7 +841,7 @@ func TestCreateTaskDependencyValidationReturnsStructuredError(t *testing.T) {
 }
 
 func TestRemoveTaskDependencyRESTIsAuditedAndIdempotent(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	dependency := core.Task{ID: "unlink-dependency", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	dependent := core.Task{ID: "unlink-dependent", Workspace: "demo", Repo: "ui", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
@@ -897,7 +897,7 @@ func TestRemoveTaskDependencyRESTIsAuditedAndIdempotent(t *testing.T) {
 }
 
 func TestAddTaskDependencyRESTMapsStatusesAndReturnsUpdatedTask(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, task := range []core.Task{
 		{ID: "link-rest-dependent", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()},
@@ -974,7 +974,7 @@ func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *
 	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != "" || !task.Hold || task.SpecApproval || !task.MergeApproval {
 		t.Fatalf("generated=%d task=%+v", generated, task)
 	}
-	persisted, err := st.GetTask(store.WithWorkspace(t.Context(), "demo"), task.ID)
+	persisted, err := st.GetTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), task.ID)
 	if err != nil || persisted.Title != "Generated task title" {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
@@ -1000,14 +1000,14 @@ func TestCreateTaskTitleGenerationFailsClosed(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "generate task title") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	tasks, err := st.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	tasks, err := st.ListTasks(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"))
 	if err != nil || len(tasks) != 0 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
 }
 
 func TestGitHubLifecycleAppearsInTaskReadsButNotRetiredFeatureTree(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "github-visible", Workspace: "demo", Repo: "api", Title: "Visible lifecycle", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1051,7 +1051,7 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
 	task := core.Task{ID: "task-1", State: core.TaskAwaiting, NextStage: core.StageImplement}
-	if err := st.CreateTask(context.Background(), task); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), task); err != nil {
 		t.Fatal(err)
 	}
 	dispatched := make(chan string, 1)
@@ -1073,7 +1073,7 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 	if res.Code != http.StatusAccepted {
 		t.Fatalf("status = %d: %s", res.Code, res.Body.String())
 	}
-	updated, err := st.GetTask(context.Background(), "task-1")
+	updated, err := st.GetTask(store.WithActor(context.Background(), store.SystemActor()), "task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1093,7 +1093,7 @@ func TestRedispatchRequiresInactiveTaskAndAuth(t *testing.T) {
 func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
-	if err := st.CreateTask(context.Background(), core.Task{ID: "queued-task", State: core.TaskQueued}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "queued-task", State: core.TaskQueued}); err != nil {
 		t.Fatal(err)
 	}
 	dispatched := make(chan string, 1)
@@ -1120,7 +1120,7 @@ func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 func TestRedispatchMapsEnqueueRaceToNotFound(t *testing.T) {
 	t.Parallel()
 	base := store.NewMemory()
-	if err := base.CreateTask(t.Context(), core.Task{ID: "raced-task", State: core.TaskQueued}); err != nil {
+	if err := base.CreateTask(store.WithActor(t.Context(), store.SystemActor()), core.Task{ID: "raced-task", State: core.TaskQueued}); err != nil {
 		t.Fatal(err)
 	}
 	server := NewServer(notFoundRaceStore{Store: base, failEnsure: true})
@@ -1137,7 +1137,7 @@ func TestRedispatchMapsEnqueueRaceToNotFound(t *testing.T) {
 func TestRedispatchRecoversParkedTaskAtRecordedStage(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
-	if err := st.CreateTask(context.Background(), core.Task{ID: "halted", State: core.TaskParked, RecoveryStage: core.StageImplement}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "halted", State: core.TaskParked, RecoveryStage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
 	dispatched := make(chan string, 1)
@@ -1151,7 +1151,7 @@ func TestRedispatchRecoversParkedTaskAtRecordedStage(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	persisted, _ := st.GetTask(context.Background(), "halted")
+	persisted, _ := st.GetTask(store.WithActor(context.Background(), store.SystemActor()), "halted")
 	if persisted.State != core.TaskQueued || persisted.NextStage != core.StageImplement || persisted.RecoveryStage != "" {
 		t.Fatalf("halted task was not recovered: %+v", persisted)
 	}
@@ -1173,7 +1173,7 @@ func TestRedispatchReturnsConflictForTerminalTaskTransition(t *testing.T) {
 			t.Parallel()
 			st := store.NewMemory()
 			id := "terminal-" + string(state)
-			if err := st.CreateTask(context.Background(), core.Task{ID: id, State: state, NextStage: core.StageImplement}); err != nil {
+			if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: id, State: state, NextStage: core.StageImplement}); err != nil {
 				t.Fatal(err)
 			}
 			s := NewServer(st)
@@ -1206,7 +1206,7 @@ func TestReadEndpointsRequireToken(t *testing.T) {
 
 func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "checkpoint-detail", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1253,7 +1253,7 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 	}
 	// The same stable ID in another workspace must not affect either current
 	// confirmation or pending-proposal state in this task detail response.
-	siblingCtx := store.WithWorkspace(t.Context(), "sibling")
+	siblingCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "sibling")
 	siblingDesign, siblingFirst, err := st.CreateSystemDesign(siblingCtx, core.SystemDesign{ID: design.ID, Title: "Sibling checkpoint design", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Sibling checkpoint design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator,
 	})
@@ -1319,7 +1319,7 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 }
 
 func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "proposal-origin", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	attentionTask := core.Task{ID: "attention-task", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
@@ -1328,7 +1328,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	siblingCtx := store.WithWorkspace(t.Context(), "sibling")
+	siblingCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "sibling")
 	if err := st.CreateTask(siblingCtx, core.Task{ID: "sibling-attention", Workspace: "sibling", State: core.TaskParked, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
@@ -1456,7 +1456,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 }
 
 func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "context-attention", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1550,7 +1550,7 @@ func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 		{ID: "running", State: core.TaskRunning, CreatedAt: time.Now()},
 		{ID: "awaiting", State: core.TaskAwaiting, CreatedAt: time.Now()},
 	} {
-		if err := st.CreateTask(context.Background(), task); err != nil {
+		if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), task); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1568,7 +1568,7 @@ func TestActivityIncludesAllTasksWhileReviewsStayFiltered(t *testing.T) {
 }
 
 func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "submitted-after-retries", Workspace: "demo", State: core.TaskAwaiting,
@@ -1634,7 +1634,7 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 }
 
 func TestTaskActivityExposesLatestAgentProgressWithLabelAndTimestamp(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "latest-agent-activity", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning}
@@ -1685,9 +1685,9 @@ func TestAgentActivityLabelTruncatesProgressOnRuneBoundary(t *testing.T) {
 
 func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := context.Background()
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "missing-verdicts", State: core.TaskRunning, CreatedAt: now.Add(-time.Hour)}
+	task := core.Task{ID: "missing-verdicts", Workspace: "demo", State: core.TaskRunning, CreatedAt: now.Add(-time.Hour)}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -1739,7 +1739,7 @@ func TestActivitySurfacesReviewClaimsWithoutTerminalVerdicts(t *testing.T) {
 
 func TestListJobsOmitsInProcessCostAndKeepsWorkerCost(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "job-cost-wire", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1781,7 +1781,7 @@ func TestDashboardIsEmbedded(t *testing.T) {
 
 func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "spec-gate", State: core.TaskAwaiting, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1818,7 +1818,7 @@ func TestTaskActivityIncludesLatestSpecForHumanGate(t *testing.T) {
 
 func TestTaskActivitySurfacesAttachmentsExcludingAuditTranscripts(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "attach-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1857,7 +1857,7 @@ func TestTaskActivitySurfacesAttachmentsExcludingAuditTranscripts(t *testing.T) 
 
 func TestTaskActivityOmitsAttachmentsWhenNone(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "bare-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -1876,7 +1876,7 @@ func TestTaskActivityOmitsAttachmentsWhenNone(t *testing.T) {
 
 func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "readiness-error", State: core.TaskApproved, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1896,7 +1896,7 @@ func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T)
 
 func TestTaskActivityProvidesRunCommandAfterPushedBranchEvent(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "pushed-task", State: core.TaskAwaiting, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1925,7 +1925,7 @@ func TestTaskActivityProvidesRunCommandAfterPushedBranchEvent(t *testing.T) {
 
 func TestPullToLocalProvidesRunCommandBeforePush(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "assigned-only", State: core.TaskAwaiting, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -1951,7 +1951,7 @@ func TestPullToLocalProvidesRunCommandBeforePush(t *testing.T) {
 func TestReviewMapsInterventionRacesToNotFound(t *testing.T) {
 	t.Run("ordinary intervention", func(t *testing.T) {
 		base := store.NewMemory()
-		if err := base.CreateTask(t.Context(), core.Task{ID: "raced-review", State: core.TaskAwaiting, CreatedAt: time.Now()}); err != nil {
+		if err := base.CreateTask(store.WithActor(t.Context(), store.SystemActor()), core.Task{ID: "raced-review", State: core.TaskAwaiting, CreatedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 		server := NewServer(notFoundRaceStore{Store: base, failIntervention: true})
@@ -1981,7 +1981,7 @@ func TestReviewMapsInterventionRacesToNotFound(t *testing.T) {
 func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	st := store.NewMemory()
 	task := core.Task{ID: "task-review", Workspace: "test", Repo: "api", State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: time.Now()}
-	if err := st.CreateTask(context.Background(), task); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), task); err != nil {
 		t.Fatal(err)
 	}
 	requeued := make(chan string, 1)
@@ -2019,21 +2019,21 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	default:
 		t.Fatal("redirect did not requeue task")
 	}
-	updated, err := st.GetTask(context.Background(), task.ID)
+	updated, err := st.GetTask(store.WithActor(context.Background(), store.SystemActor()), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.State != core.TaskQueued {
 		t.Fatalf("state = %s", updated.State)
 	}
-	interventions, err := st.ListInterventions(context.Background(), task.ID)
+	interventions, err := st.ListInterventions(store.WithActor(context.Background(), store.SystemActor()), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(interventions) != 1 || interventions[0].ReasonCode != "spec-wrong" || interventions[0].ActorID != "user:local-operator" {
 		t.Fatalf("interventions = %+v", interventions)
 	}
-	events, err := st.ListEvents(context.Background(), task.ID)
+	events, err := st.ListEvents(store.WithActor(context.Background(), store.SystemActor()), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2143,7 +2143,7 @@ func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
 }
 
 func TestTaskActivityExposesOnlyRunningSnapshotAndAttemptTranscriptHistory(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "attempt-observability", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
@@ -2195,7 +2195,7 @@ func TestTaskActivityExposesOnlyRunningSnapshotAndAttemptTranscriptHistory(t *te
 
 func newPlanRevisionReviewServer(t *testing.T) (context.Context, store.Store, *Server, string, string) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	taskID := "plan-revision-review-" + core.NewTaskID()
 	now := time.Now().UTC()
@@ -2237,7 +2237,7 @@ func newPlanRevisionReviewServer(t *testing.T) (context.Context, store.Store, *S
 }
 
 func TestReviewApprovalWithoutReviewedHeadConflictsBeforeIntervention(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "missing-reviewed-head", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2277,7 +2277,7 @@ func TestApprovedTaskRedirectAndRejectConflictWithoutIntervention(t *testing.T) 
 		t.Run(string(action), func(t *testing.T) {
 			st := store.NewMemory()
 			task := core.Task{ID: "approved-" + string(action), State: core.TaskApproved, CreatedAt: time.Now()}
-			if err := st.CreateTask(t.Context(), task); err != nil {
+			if err := st.CreateTask(store.WithActor(t.Context(), store.SystemActor()), task); err != nil {
 				t.Fatal(err)
 			}
 			s := NewServer(st)
@@ -2289,7 +2289,7 @@ func TestApprovedTaskRedirectAndRejectConflictWithoutIntervention(t *testing.T) 
 			if response.Code != http.StatusConflict {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
-			interventions, err := st.ListInterventions(t.Context(), task.ID)
+			interventions, err := st.ListInterventions(store.WithActor(t.Context(), store.SystemActor()), task.ID)
 			if err != nil || len(interventions) != 0 {
 				t.Fatalf("interventions=%+v err=%v", interventions, err)
 			}
@@ -2298,7 +2298,7 @@ func TestApprovedTaskRedirectAndRejectConflictWithoutIntervention(t *testing.T) 
 }
 
 func TestConcurrentReviewApprovalReturnsConflictForLoser(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "concurrent-approval", Workspace: "demo", Repo: "api", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2341,10 +2341,10 @@ func TestConcurrentReviewApprovalReturnsConflictForLoser(t *testing.T) {
 
 func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 	st := store.NewMemory()
-	if err := st.CreateTask(context.Background(), core.Task{ID: "running", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "running", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateTask(context.Background(), core.Task{ID: "parked", State: core.TaskParked, RecoveryStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "parked", State: core.TaskParked, RecoveryStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	s := NewServer(st)
@@ -2366,12 +2366,12 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("parked task status = %d", response.Code)
 	}
-	parkedInterventions, err := st.ListInterventions(context.Background(), "parked")
+	parkedInterventions, err := st.ListInterventions(store.WithActor(context.Background(), store.SystemActor()), "parked")
 	if err != nil || len(parkedInterventions) != 0 {
 		t.Fatalf("parked interventions=%+v err=%v", parkedInterventions, err)
 	}
 
-	if _, err := taskops.New(st).Perform(context.Background(), "running", taskops.Command{Kind: core.TaskJobFail}); err != nil {
+	if _, err := taskops.New(st).Perform(store.WithActor(context.Background(), store.SystemActor()), "running", taskops.Command{Kind: core.TaskJobFail}); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve"}`)))
@@ -2382,7 +2382,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 		t.Fatalf("missing reason status = %d", response.Code)
 	}
 
-	if _, err := taskops.New(st).Perform(context.Background(), "running", taskops.Command{Kind: core.TaskInterventionApproveReview}); err != nil {
+	if _, err := taskops.New(st).Perform(store.WithActor(context.Background(), store.SystemActor()), "running", taskops.Command{Kind: core.TaskInterventionApproveReview}); err != nil {
 		t.Fatal(err)
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/tasks/running/review", bytes.NewReader([]byte(`{"action":"approve","reason_code":"approved"}`)))
@@ -2392,7 +2392,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "merge operation") {
 		t.Fatalf("approved review status=%d body=%s", response.Code, response.Body.String())
 	}
-	interventions, err := st.ListInterventions(context.Background(), "running")
+	interventions, err := st.ListInterventions(store.WithActor(context.Background(), store.SystemActor()), "running")
 	if err != nil || len(interventions) != 0 {
 		t.Fatalf("interventions=%+v err=%v", interventions, err)
 	}
@@ -2401,7 +2401,7 @@ func TestReviewRequiresReasonCodeAndHumanGate(t *testing.T) {
 func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	if err := st.CreateTask(ctx, core.Task{ID: "approved", State: core.TaskApproved, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -2441,7 +2441,7 @@ func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
 func TestMergeTaskDoesNotReportUnconfirmedSuccess(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
-	if err := st.CreateTask(context.Background(), core.Task{ID: "approved", State: core.TaskApproved}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "approved", State: core.TaskApproved}); err != nil {
 		t.Fatal(err)
 	}
 	s := NewServer(st)
@@ -2552,7 +2552,7 @@ func (s *observedStore) ReadTaskEventStream(ctx context.Context, query store.Tas
 
 func TestPendingProposalsEndpointUsesOnlyBoundedStoreProjection(t *testing.T) {
 	base := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := base.CreateTask(ctx, core.Task{ID: "attention", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -2576,7 +2576,7 @@ func TestPendingProposalsEndpointUsesOnlyBoundedStoreProjection(t *testing.T) {
 func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 	base := store.NewMemory()
 	for _, id := range []string{"one", "two", "three"} {
-		if err := base.CreateTask(context.Background(), core.Task{ID: id, State: core.TaskQueued}); err != nil {
+		if err := base.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: id, State: core.TaskQueued}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2597,7 +2597,7 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 
 func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 	base := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for i := 0; i < 205; i++ {
 		id := fmt.Sprintf("activity-%03d", i)
 		if err := base.CreateTask(ctx, core.Task{
@@ -2641,7 +2641,7 @@ func TestActivityDefaultsToBoundedPageAndSupportsExplicitPaging(t *testing.T) {
 
 func TestActivitySupportsSlimConditionalGzipDeltaReads(t *testing.T) {
 	base := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{
 		ID: "activity-delta", Workspace: "demo", Title: "Visible title", Body: strings.Repeat("detail only ", 100),
 		Repo: "conveyor", State: core.TaskQueued, CreatedAt: time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC),
@@ -2712,7 +2712,7 @@ func (s *markerStore) ListActivityMarkersForTasks(_ context.Context, taskIDs []s
 
 func TestActivityCursorUsesEventTupleFrontier(t *testing.T) {
 	base := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	created := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	for i, id := range []string{"tuple-a", "tuple-b", "tuple-c"} {
 		if err := base.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: id, Repo: "conveyor", State: core.TaskQueued, CreatedAt: created.Add(time.Duration(i) * time.Minute)}); err != nil {
@@ -2813,7 +2813,7 @@ func TestActivityCursorUsesEventTupleFrontier(t *testing.T) {
 
 func TestCallerAttentionPagesAfterSubjectAndAttentionFiltering(t *testing.T) {
 	base := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	assignee := &core.TaskAssignee{UserID: "local-operator", Email: "operator@example.test"}
 	older := core.Task{
 		ID: "older-returned", Workspace: "demo", State: core.TaskAwaiting, Assignee: assignee,
@@ -2841,7 +2841,7 @@ func TestCallerAttentionPagesAfterSubjectAndAttentionFiltering(t *testing.T) {
 	server := NewServer(base)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/v1/attention/tasks?limit=1&offset=0", nil)
-	request = request.WithContext(store.WithCredential(ctx, core.AuthenticatedCredential{
+	request = request.WithContext(withCredentialActor(ctx, core.AuthenticatedCredential{
 		ID: "pat-local", OwnerUserID: "local-operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser,
 	}))
 	server.listCallerAttentionTasks(response, request)
@@ -2863,10 +2863,10 @@ func TestCallerAttentionPagesAfterSubjectAndAttentionFiltering(t *testing.T) {
 func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 	base := store.NewMemory()
 	task := core.Task{ID: "running-detail", State: core.TaskRunning}
-	if err := base.CreateTask(context.Background(), task); err != nil {
+	if err := base.CreateTask(store.WithActor(context.Background(), store.SystemActor()), task); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.CreateJob(context.Background(), core.Job{
+	if err := base.CreateJob(store.WithActor(context.Background(), store.SystemActor()), core.Job{
 		ID: "job-running", TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning,
 	}); err != nil {
 		t.Fatal(err)
@@ -2888,7 +2888,7 @@ func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 
 func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, task := range []core.Task{
 		{ID: "queued-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskQueued},
 		{ID: "awaiting-auto", Workspace: "demo", Mode: core.TaskModeAuto, State: core.TaskAwaiting},
@@ -2921,6 +2921,11 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// The claimed review fixture enrolls its worker; revoke it so the
+	// pull-only case below has no unrevoked enrolled worker.
+	if err := st.RevokeWorker(ctx, "worker"); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(st)
 	server.Workspace = "demo"
 	server.Workers = &workerservice.Service{Store: st}
@@ -2934,7 +2939,7 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
 		t.Fatalf("pull-only queued activity status=%d body=%s", queued.Code, queued.Body.String())
 	}
-	if err := st.CreateWorker(ctx, core.Worker{ID: "stale-worker", Workspace: "demo", Name: "stale-codex", CreatedAt: time.Now().UTC()}); err != nil {
+	if err := createOwnedWorker(st, ctx, core.Worker{ID: "stale-worker", Workspace: "demo", OwnerUserID: "owner", Name: "stale-codex", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	queued = httptest.NewRecorder()
@@ -2968,10 +2973,10 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 func TestReviewUsesLatestJobWithoutLoadingHistory(t *testing.T) {
 	base := store.NewMemory()
 	task := core.Task{ID: "review-latest", State: core.TaskAwaiting}
-	if err := base.CreateTask(context.Background(), task); err != nil {
+	if err := base.CreateTask(store.WithActor(context.Background(), store.SystemActor()), task); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.CreateJob(context.Background(), core.Job{ID: "job-latest", TaskID: task.ID}); err != nil {
+	if err := base.CreateJob(store.WithActor(context.Background(), store.SystemActor()), core.Job{ID: "job-latest", TaskID: task.ID}); err != nil {
 		t.Fatal(err)
 	}
 	observed := &observedStore{Store: base}
@@ -2991,10 +2996,10 @@ func TestReviewUsesLatestJobWithoutLoadingHistory(t *testing.T) {
 
 func TestEventStreamUsesBoundedWindowReads(t *testing.T) {
 	base := store.NewMemory()
-	if err := base.CreateTask(context.Background(), core.Task{ID: "stream-task", State: core.TaskRunning}); err != nil {
+	if err := base.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "stream-task", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(store.WithActor(context.Background(), store.SystemActor()))
 	observed := &observedStore{Store: base, afterHook: cancel}
 	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/stream-task/events/stream", nil).WithContext(ctx)
 	response := httptest.NewRecorder()
@@ -3009,10 +3014,10 @@ func TestEventStreamUsesBoundedWindowReads(t *testing.T) {
 
 func TestEventStreamReturnsWhenServerBaseContextIsCancelled(t *testing.T) {
 	st := store.NewMemory()
-	if err := st.CreateTask(context.Background(), core.Task{ID: "shutdown-stream", State: core.TaskRunning}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "shutdown-stream", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}
-	baseCtx, cancelBase := context.WithCancel(context.Background())
+	baseCtx, cancelBase := context.WithCancel(store.WithActor(context.Background(), store.SystemActor()))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -3040,7 +3045,7 @@ func TestEventStreamReturnsWhenServerBaseContextIsCancelled(t *testing.T) {
 		t.Fatal("SSE stream did not return after base-context cancellation")
 	}
 	_ = response.Body.Close()
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
+	shutdownCtx, cancelShutdown := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), time.Second)
 	defer cancelShutdown()
 	if err = httpServer.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
@@ -3125,7 +3130,7 @@ func (st *taskOperationsBoundedStore) GetLatestSpecVersion(ctx context.Context, 
 }
 
 func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
 	for index, task := range []core.Task{
 		{ID: "first", Workspace: "demo", Repo: "conveyor", State: core.TaskQueued},
@@ -3246,7 +3251,7 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 // blocking authority — never a second derivation of it (REQ-1).
 func TestTaskOperationsListsEveryTaskWithDependencyAndBlockingState(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, id := range []string{"dep-open", "dep-closed", "dep-merged"} {
 		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Title: id, Repo: "conveyor", State: core.TaskRunning}); err != nil {
@@ -3294,7 +3299,7 @@ func TestTaskOperationsListsEveryTaskWithDependencyAndBlockingState(t *testing.T
 // reports absence instead of a rollup of zeroes.
 func TestTaskOperationsRollsUpChildrenOnlyWhenChildrenExist(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, task := range []core.Task{
 		{ID: "anchor", Workspace: "demo", Title: "Historical anchor", Repo: "conveyor", State: core.TaskRunning},
@@ -3323,7 +3328,7 @@ func TestTaskOperationsRollsUpChildrenOnlyWhenChildrenExist(t *testing.T) {
 // unattached task as unattached.
 func TestTaskOperationsLinksAttachedContextAndReportsItsAbsence(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-tasks-view", Title: "Task-centric operations view"}, core.RequirementVersion{
 		Content: "# Task-centric operations view", Origin: core.RequirementOriginOperator,
@@ -3375,7 +3380,7 @@ func TestTaskOperationsLinksAttachedContextAndReportsItsAbsence(t *testing.T) {
 // it (design-task-lifecycle).
 func TestTaskOperationsDerivesEveryPlanStatusFromDurableAuthority(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	plane := taskops.New(st)
 	for _, id := range []string{"no-plan", "pending", "approved", "redirected"} {
@@ -3424,7 +3429,7 @@ func TestTaskOperationsDerivesEveryPlanStatusFromDurableAuthority(t *testing.T) 
 // is durable task authority and therefore belongs on the task projection.
 func TestTaskOperationsExposesAssigneeButNoRetiredFields(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: "solo", Workspace: "demo", Title: "Standalone task", Repo: "conveyor", State: core.TaskQueued}); err != nil {
 		t.Fatal(err)
@@ -3474,7 +3479,7 @@ func TestTaskOperationsExposesAssigneeButNoRetiredFields(t *testing.T) {
 // renders a workspace holding the wrong rows.
 func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	get := func(t *testing.T, target string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -3620,7 +3625,7 @@ func TestTaskFilterParametersReachTheStoreOnBothSurfaces(t *testing.T) {
 // share the predicate before paging (AC-2.3).
 func TestUpdatedTaskFilterValidationAndPagination(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	get := func(t *testing.T, target string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -3758,7 +3763,7 @@ func TestUpdatedTaskFilterValidationAndPagination(t *testing.T) {
 // nothing left to unstick.
 func TestTaskOperationsProjectsStalledStateAndDropsItOnTerminalTasks(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	const failure = "harness exited before completing work order"
 	for _, task := range []core.Task{
@@ -3841,7 +3846,7 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 	var smallProjectionSize int
 	for _, snapshotSize := range []int{500_000, 1_000_000} {
 		t.Run(strconv.Itoa(snapshotSize), func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			// Fixed timestamp precision keeps serialized event sizes comparable.
 			task := core.Task{ID: "audit-task", Workspace: "demo", State: core.TaskRunning, Title: "Audit task", Body: "Keep task context", CreatedAt: time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)}

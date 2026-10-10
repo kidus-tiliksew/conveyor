@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
@@ -40,7 +39,7 @@ func repairDismissalArchives(ctx context.Context, tx pgx.Tx) (map[string][]strin
 			return nil, err
 		}
 		for _, c := range candidates {
-			scoped := store.WithActor(store.WithWorkspace(ctx, c.workspace), store.Actor{ID: "system", Role: core.ActorSystem})
+			scoped := store.WithActor(store.WithWorkspace(ctx, c.workspace), store.SystemActor("system"))
 			var note string
 			if err := tx.QueryRow(scoped, "SELECT COALESCE(dismissal_note,'') FROM "+tier.versions+" WHERE workspace_id=$1 AND "+tier.key+"=$2 AND "+tier.flag+" ORDER BY "+tier.at+" DESC,version DESC LIMIT 1", c.workspace, c.id).Scan(&note); err != nil {
 				return nil, err

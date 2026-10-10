@@ -60,8 +60,11 @@ func (m *volatileMemory) unlock() {
 	m.mu.Unlock()
 }
 
-func (m *volatileMemory) recordEventLocked(workspace string, event core.Event) core.Event {
-	m.appendEventLocked(WithWorkspace(context.Background(), workspace), event)
+// recordEventLocked records an event in a fresh workspace context. The caller
+// passes the actor the operation derived, so the fresh context never relies on
+// an implicit default.
+func (m *volatileMemory) recordEventLocked(actor Actor, workspace string, event core.Event) core.Event {
+	m.appendEventLocked(WithActor(WithWorkspace(context.Background(), workspace), actor), event)
 	event.ID = m.nextEventID
 	return event
 }

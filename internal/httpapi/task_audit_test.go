@@ -12,7 +12,7 @@ import (
 
 func TestTaskAuditRequiresMatchingWorkspaceBeforeSelectorLookup(t *testing.T) {
 	st := store.NewMemory()
-	if err := st.CreateTask(store.WithWorkspace(t.Context(), "foreign"), core.Task{ID: "foreign-task", Workspace: "foreign"}); err != nil {
+	if err := st.CreateTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "foreign"), core.Task{ID: "foreign-task", Workspace: "foreign"}); err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(st)

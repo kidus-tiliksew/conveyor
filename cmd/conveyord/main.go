@@ -97,6 +97,11 @@ func main() {
 	defer stopSignals()
 	ctx, cancelService := context.WithCancel(context.Background())
 	defer cancelService()
+	// Startup, bootstrap, reconciliation, and every background loop derive
+	// from the service context, so they record the explicit system actor. The
+	// HTTP base context stays independent: a request records only its
+	// credential-derived actor (component-persistence, Actor context).
+	ctx = store.WithActor(ctx, store.SystemActor())
 	httpBaseCtx, cancelHTTP := context.WithCancel(context.Background())
 	defer cancelHTTP()
 

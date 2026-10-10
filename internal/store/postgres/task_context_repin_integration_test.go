@@ -10,13 +10,13 @@ import (
 )
 
 func TestPostgresSubmissionGovernanceAttachmentIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
 	workspace := "postgres-submission-governance-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

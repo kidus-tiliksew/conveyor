@@ -21,7 +21,7 @@ import (
 )
 
 func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "merge-gate-request", Workspace: "demo", Repo: "conveyor", BaseBranch: "main",
@@ -133,7 +133,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 }
 
 func TestApprovedTaskDetailIsNotAtMergeGate(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "approved-not-merge-gate", Workspace: "demo", Repo: "conveyor", State: core.TaskApproved, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -150,7 +150,7 @@ func TestApprovedTaskDetailIsNotAtMergeGate(t *testing.T) {
 }
 
 func TestRequestChangesAssignmentAllowsAssigneeAndOperatorOnly(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-assignee", true); err != nil {
 		t.Fatal(err)

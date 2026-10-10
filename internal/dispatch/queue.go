@@ -104,7 +104,7 @@ func (w *orderClockWorker) Work(ctx context.Context, job queue.Job) error {
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	_, err = taskops.New(w.dispatcher.Store).TickOrderClock(ctx, time.Now().UTC())
 	return err

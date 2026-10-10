@@ -38,7 +38,7 @@ func TestVK10PostgresScenarioIntegration(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			defer admin.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 30*time.Second)
 			defer cancel()
 			if _, err := admin.Exec(ctx, "DROP SCHEMA "+quoted+" CASCADE"); err != nil {
 				t.Error(err)
@@ -51,7 +51,7 @@ func TestVK10PostgresScenarioIntegration(t *testing.T) {
 		q := u.Query()
 		q.Set("search_path", schema)
 		u.RawQuery = q.Encode()
-		b, err := postgres.Open(t.Context(), u.String())
+		b, err := postgres.Open(store.WithActor(t.Context(), store.SystemActor()), u.String())
 		if err != nil {
 			t.Fatal(err)
 		}
