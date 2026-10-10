@@ -2071,3 +2071,210 @@ func TestRunFailedProbeClaimsNothingAndNamesRemedy(t *testing.T) {
 		}
 	}
 }
+
+func mergeExecutionTestGate(state string) *workerservice.TaskRunGate {
+	return &workerservice.TaskRunGate{
+		Kind: workerservice.TaskRunGateMergeExecution, Label: "merge execution pending",
+		Summary:        "conveyor/task-target into main; approved head 0123456789ab; readiness " + state,
+		CanOperate:     true,
+		MergeReadiness: &workerservice.TaskRunMergeReadiness{State: state, HeadSHA: "0123456789abcdef", Number: 7},
+	}
+}
+
+// The attached run records approval and then a separate, explicitly confirmed
+// merge, both with the parent credential and without a claim
+// (req-local-task-runs AC-4.1, AC-4.3; req-review-gates-evidence AC-1.1).
+func TestAttachedRunApprovesThenMergesAtMergeExecutionGate(t *testing.T) {
+	var mutex sync.Mutex
+	state := core.TaskAwaiting
+	var paths []string
+	gateReads := map[string]int{}
+	approveShown, mergeShown := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		if r.Header.Get("Authorization") != "Bearer parent-user-credential" {
+			http.Error(w, "wrong credential", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			var gate *workerservice.TaskRunGate
+			switch state {
+			case core.TaskAwaiting:
+				gate = &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: "conveyor/task-target into main", CanOperate: true, CanRequestChanges: true}
+			case core.TaskApproved:
+				gate = mergeExecutionTestGate("MERGEABLE")
+			}
+			if gate != nil {
+				// A second read of the same gate proves the run already
+				// handed that gate to the terminal application.
+				gateReads[gate.Kind]++
+				if gateReads[gate.Kind] == 2 {
+					if gate.Kind == "merge" {
+						close(approveShown)
+					} else {
+						close(mergeShown)
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", Title: "Ship target", State: state}, Gate: gate, Dispatch: "run", Auth: "user"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/review":
+			paths = append(paths, r.URL.Path)
+			var request map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if state != core.TaskAwaiting || request["action"] != "approve" {
+				http.Error(w, "wrong decision", http.StatusConflict)
+				return
+			}
+			state = core.TaskApproved
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: "target", State: state}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/merge":
+			paths = append(paths, r.URL.Path)
+			if state != core.TaskApproved {
+				http.Error(w, "task is not approved for merge", http.StatusConflict)
+				return
+			}
+			state = core.TaskMerged
+			_ = json.NewEncoder(w).Encode(core.Task{ID: "target", State: state})
+		default:
+			paths = append(paths, r.Method+" "+r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	input, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = input.Close()
+		_ = writer.Close()
+	})
+	go func() {
+		<-approveShown
+		// Enter opens the Approve confirmation on No; k selects Yes.
+		_, _ = io.WriteString(writer, "\nk\n")
+		<-mergeShown
+		// Enter on No first must not merge; Enter reopens, k selects Yes.
+		_, _ = io.WriteString(writer, "\n\n\nk\n")
+	}()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", input, &output, false, true, true, false); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if strings.Join(paths, ",") != "/v1/tasks/target/review,/v1/tasks/target/merge" {
+		t.Fatalf("mutations = %v", paths)
+	}
+	for _, want := range []string{"merge execution pending", "finished in state merged"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q: %q", want, output.String())
+		}
+	}
+}
+
+func TestAttachedRawRunMergeRequiresFullWord(t *testing.T) {
+	merged := false
+	var mutations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && merged:
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskMerged}})
+		case r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", Title: "Ship target", State: core.TaskApproved}, Gate: mergeExecutionTestGate("MERGEABLE")})
+		case r.Method == http.MethodPost:
+			mutations = append(mutations, r.URL.Path)
+			if r.URL.Path != "/v1/tasks/target/merge" {
+				http.Error(w, "approved tasks must use the merge operation", http.StatusConflict)
+				return
+			}
+			merged = true
+			_ = json.NewEncoder(w).Encode(core.Task{ID: "target", State: core.TaskMerged})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	if err := runTaskWithPresentation(t.Context(), c, "target", "unused.yaml", strings.NewReader("approve\nm\nyes\nmerge\n"), &output, false, true, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(mutations, ",") != "/v1/tasks/target/merge" {
+		t.Fatalf("mutations = %v", mutations)
+	}
+	text := output.String()
+	if !strings.Contains(text, "Gate action [merge/wait]:") || strings.Count(text, "Merging requires the full word merge.") != 3 || !strings.Contains(text, "finished in state merged") {
+		t.Fatalf("output = %q", text)
+	}
+}
+
+func TestAttachedRunMergeConflictShowsServerMessageAndRefreshes(t *testing.T) {
+	var mutex sync.Mutex
+	reads, merges := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		switch {
+		case r.Method == http.MethodGet:
+			reads++
+			switch {
+			case merges == 0:
+				_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskApproved}, Gate: mergeExecutionTestGate("MERGEABLE")})
+			case reads <= 3:
+				// The refreshed projection no longer offers Merge.
+				_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskApproved}, Gate: mergeExecutionTestGate("UNKNOWN")})
+			default:
+				_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{Task: core.Task{ID: "target", State: core.TaskClosed}})
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/target/merge":
+			merges++
+			http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
+		default:
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, token: "parent-user-credential", workspace: "demo"}
+	var output bytes.Buffer
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	if err := runTaskWithPresentation(ctx, c, "target", "unused.yaml", strings.NewReader("merge\n"), &output, false, true, true, true); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	text := output.String()
+	if merges != 1 || reads < 3 {
+		t.Fatalf("merges=%d reads=%d output=%q", merges, reads, text)
+	}
+	for _, want := range []string{"Merge refused: merge was not confirmed by the forge; refreshing task state.", "Merge is offered only when merge readiness is MERGEABLE", "finished in state closed"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output missing %q: %q", want, text)
+		}
+	}
+}
+
+func TestUnattachedRunNamesPendingMergeExecution(t *testing.T) {
+	gate := mergeExecutionTestGate("MERGEABLE")
+	task := core.Task{ID: "target", Title: "Ship target", State: core.TaskApproved, MergeApproval: true}
+	for _, inputTerminal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("input-terminal=%t", inputTerminal), func(t *testing.T) {
+			calls, output, err := runUnattachedProjection(t, &workerservice.DispatchOrder{Task: task, Gate: gate, Dispatch: "run", Auth: "user"}, inputTerminal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "task target is waiting on merge execution pending; " + gate.Summary + "; no work order was claimed\n"
+			if output != want {
+				t.Fatalf("output=%q want %q", output, want)
+			}
+			if calls.reads != 1 || calls.claims != 0 || calls.renewals != 0 || calls.other != 0 {
+				t.Fatalf("unattached merge-execution run made requests %v", calls.paths)
+			}
+		})
+	}
+}
