@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // lockedMemberships serializes the shared membership fixture so concurrent
@@ -682,9 +683,12 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 		t.Fatalf("create: %q", created.errText)
 	}
 	taskID := created.task.ID
+	// report_continuation's launcher-only refusal is in its handler, past the
+	// work-order service availability check.
+	f.server.WorkOrders = &workorder.Service{Store: f.store}
 	for _, tool := range mcpTools() {
 		name, _ := tool["name"].(string)
-		if !humanReservedMCPTool(name) {
+		if !agentRefusedMCPTool(name) {
 			continue
 		}
 		result := f.callMCP(t, token, name, map[string]any{"workspace_id": "alpha", "task_id": taskID, "depends_on_task_id": taskID, "assignee_user_id": intakeOwner(core.WorkspaceRoleOperator), "branch": "feature/x", "work_order_id": taskID + "-spec-1"})
