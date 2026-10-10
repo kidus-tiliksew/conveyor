@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const workspaces = [
   { id: 'beta-ventures', name: 'Beta Ventures', config_version: 1, created_at: '2026-07-20T00:00:00Z' },
@@ -19,7 +20,12 @@ async function mockShell(page: Page) {
     }
     if (url.pathname === '/v1/me') {
       await route.fulfill({
-        json: { id: 'usr_operator', email: 'operator@example.test', display_name: 'Operator', role: 'operator' },
+        json: callerIdentity({
+          id: 'usr_operator',
+          email: 'operator@example.test',
+          display_name: 'Operator',
+          role: 'operator',
+        }),
       })
       return
     }
