@@ -407,6 +407,7 @@ func taskCmd() *cobra.Command {
 		addTaskDependencyCmd(),
 		removeTaskDependencyCmd(),
 		requestTaskChangesCmd(),
+		mergeTaskCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
 		reviewTaskCmd(core.InterventionRedirect),
@@ -457,6 +458,27 @@ func requestTaskChangesCmd() *cobra.Command {
 	}
 	command.Flags().StringVarP(&feedback, "feedback", "f", "", "required feedback passed verbatim to the next implementation order")
 	return command
+}
+
+// mergeTaskCmd sends the separate operator merge act for an approved task.
+// Approval never merges; with the merge gate on, the task stays approved
+// until this act or the dashboard's Merge (req-review-gates-evidence AC-1.1,
+// AC-1.2; component-runtime; component-submission-merge).
+func mergeTaskCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "merge <id>", Short: "Merge an approved task's pull request at the merge gate", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			task, err := newClient().mergeTask(args[0])
+			if err != nil {
+				return err
+			}
+			if task.State != core.TaskMerged {
+				return fmt.Errorf("merge of task %s was not confirmed: the server reported state %q", args[0], task.State)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "merged task %s (state %s)\n", task.ID, task.State)
+			return err
+		},
+	}
 }
 
 func removeTaskDependencyCmd() *cobra.Command {

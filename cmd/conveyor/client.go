@@ -219,6 +219,17 @@ func (c *client) requestTaskChanges(id, feedback string) (core.Task, error) {
 	return response.Task, err
 }
 
+// mergeTask posts the explicit merge act. The route answers the bare task and
+// refuses with 409 unless the forge confirms the merge.
+func (c *client) mergeTask(id string) (core.Task, error) {
+	if c.token == "" {
+		return core.Task{}, fmt.Errorf("a credential is required to merge a task; run `conveyor auth login`")
+	}
+	var task core.Task
+	err := c.do(http.MethodPost, "/v1/tasks/"+url.PathEscape(id)+"/merge", []byte("{}"), &task)
+	return task, err
+}
+
 func (c *client) closeTask(id, reason string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("a credential is required for task close; run `conveyor auth login`")

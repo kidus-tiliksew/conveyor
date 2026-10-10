@@ -905,7 +905,9 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if task.State == core.TaskApproved && request.Action == core.InterventionApprove {
-		http.Error(w, "approved tasks must use the merge operation", http.StatusConflict)
+		// Approval never merges; name the separate merge act so a CLI caller
+		// can find it (req-review-gates-evidence AC-1.1; component-runtime).
+		http.Error(w, fmt.Sprintf("approved tasks must use the merge operation; run `conveyor task merge %s`", task.ID), http.StatusConflict)
 		return
 	}
 	request.ReasonCode = strings.TrimSpace(request.ReasonCode)
