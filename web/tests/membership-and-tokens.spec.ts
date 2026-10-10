@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const workspaceConfig = {
   workspace: 'demo',
@@ -75,7 +76,12 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
     if (path === '/v1/me') {
       const workspaceRole = role === 'operator' ? 'operator' : role === 'viewer' ? 'viewer' : 'contributor'
       return route.fulfill({
-        json: { id: `usr_${role}`, email: `${role}@example.test`, display_name: role, role: workspaceRole },
+        json: callerIdentity({
+          id: `usr_${role}`,
+          email: `${role}@example.test`,
+          display_name: role,
+          role: workspaceRole,
+        }),
       })
     }
     if (path === '/v1/activity') return route.fulfill({ json: [] })

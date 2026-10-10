@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const createdAt = '2026-07-18T00:00:00Z'
 
@@ -31,7 +32,7 @@ async function mockTaskCreateAPIs(
     }
     if (url.pathname === '/v1/me') {
       const role = options.role ?? 'operator'
-      await route.fulfill({ json: { id: `usr_${role}`, role } })
+      await route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }) })
       return
     }
     if (url.pathname === '/v1/workspace') {

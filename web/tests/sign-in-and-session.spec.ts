@@ -1,4 +1,5 @@
 import { expect, test, type Route } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const invitationToken = 'cv_signin_invite-once'
 const invitationURL = `/sign-in#token=${invitationToken}`
@@ -160,9 +161,11 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
     }
     if (path === '/v1/me') {
       return route.fulfill({
-        json: isOperator
-          ? { id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }
-          : { id: 'usr_invited', email: 'new@example.test', display_name: displayName, role: 'contributor' },
+        json: callerIdentity(
+          isOperator
+            ? { id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }
+            : { id: 'usr_invited', email: 'new@example.test', display_name: displayName, role: 'contributor' },
+        ),
       })
     }
     return route.fulfill({ json: [] })
@@ -295,12 +298,12 @@ test('a returning user signs in with a password and resets it through an operato
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
     if (path === '/v1/me')
       return route.fulfill({
-        json: {
+        json: callerIdentity({
           id: 'usr_returning',
           email: 'returning@example.test',
           display_name: displayName,
           role: 'contributor',
-        },
+        }),
       })
     if (path === '/v1/tokens') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals')

@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 // component-verification-service and component-web-task-surfaces: a verify
 // order released at its operator checkpoint is labelled
@@ -253,7 +254,8 @@ async function fixture(
     const url = new URL(route.request().url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: options.role ?? 'maintainer' } })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.role ?? 'maintainer' }) })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: true }] })
     if (path.endsWith('/activity')) return route.fulfill({ json: item })

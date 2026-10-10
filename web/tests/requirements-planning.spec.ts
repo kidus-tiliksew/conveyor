@@ -1,5 +1,13 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
+import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
+
+// No production role holds confirm_documents without propose_documents. The
+// server serves whatever list its bundle table yields, so these cases serve
+// that combination directly to exercise the independent capability checks.
+const confirmOnlyCapabilities = capabilitiesForRole('operator').filter(
+  (capability) => capability !== 'propose_documents',
+)
 
 const requirement = {
   requirement: {
@@ -189,7 +197,7 @@ function shellResponse(route: Route) {
     return route.fulfill({
       json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
     })
-  if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+  if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
   if (path === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
   if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
   if (path === '/v1/activity') return route.fulfill({ json: [] })
@@ -397,7 +405,7 @@ test('requirement archive controls are absent without document confirmation capa
   })
   await page.route('**/v1/**', async (route) => {
     if (new URL(route.request().url()).pathname === '/v1/me')
-      return route.fulfill({ json: { id: 'usr_contributor', role: 'contributor' } })
+      return route.fulfill({ json: callerIdentity({ id: 'usr_contributor', role: 'contributor' }) })
     const handled = shellResponse(route)
     if (handled) return await handled
     const url = new URL(route.request().url())
@@ -482,7 +490,7 @@ test('viewer can read requirement detail without the Attach context control', as
   await initShell(page)
   await page.route('**/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_viewer', role: 'viewer' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }) })
     const shell = shellResponse(route)
     if (shell) return await shell
     if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })
@@ -1118,7 +1126,8 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
     if (url.pathname !== '/v1/workspaces') expect(route.request().headers().authorization).toBeUndefined()
     if (url.pathname === '/v1/workspaces')
       return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
-    if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (url.pathname === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
     if (url.pathname === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (url.pathname === '/v1/requirements' || url.pathname === '/v1/blueprints') return route.fulfill({ json: [] })
@@ -1210,7 +1219,7 @@ test('a viewer can read planning and a pending bundle without mutation affordanc
     const path = new URL(request.url()).pathname
     if (request.method() !== 'GET') mutationRequests++
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_viewer', role: 'viewer' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }) })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
     if (path === '/v1/activity') return route.fulfill({ json: [] })
@@ -1924,7 +1933,8 @@ test('planning explains run conflicts and surfaces abandon failures without conf
       return route.fulfill({
         json: [{ id: 'demo', name: 'Demo', config_version: 1 }],
       })
-    if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (url.pathname === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (url.pathname === '/v1/workspace/config') return route.fulfill({ json: planningConfig })
     if (url.pathname === '/v1/workspace')
       return route.fulfill({
@@ -2364,7 +2374,7 @@ for (const role of ['viewer', 'executor', 'contributor', 'maintainer', 'operator
     await page.route('**/v1/**', async (route) => {
       const request = route.request()
       const url = new URL(request.url())
-      if (url.pathname === '/v1/me') return route.fulfill({ json: { id: `usr_${role}`, role } })
+      if (url.pathname === '/v1/me') return route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }) })
       const shell = shellResponse(route)
       if (shell) return await shell
       if (url.pathname.startsWith('/v1/reference-documents') && request.method() !== 'GET') {
@@ -2722,7 +2732,7 @@ test('Requirement pending attention revises its first version and refreshes hist
     if (path.endsWith('/events'))
       return route.fulfill({ json: { events: [], total: 0, limit: 50, offset: 0, snapshot_id: 0 } })
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'operator', role: 'operator' }) })
     const view = {
       ...requirement,
       staleness: { delivery_after_intent: false, deliveries: [], active_drift: [] },
@@ -2769,15 +2779,16 @@ test('Requirement pending attention revises its first version and refreshes hist
 for (const access of ['confirm-only', 'propose-only'] as const) {
   test(`Requirement Revise stays absent for ${access}`, async ({ page }) => {
     await initShell(page)
-    if (access === 'confirm-only')
-      await page.route('**/src/lib/workspace-capabilities.json*', async (route) => {
-        const response = await route.fetch()
-        await route.fulfill({ response, body: (await response.text()).replace(/"propose_documents",?/g, '') })
-      })
     await page.route('**/v1/**', async (route) => {
       const path = new URL(route.request().url()).pathname
       if (path === '/v1/me')
-        return route.fulfill({ json: { id: 'caller', role: access === 'confirm-only' ? 'operator' : 'contributor' } })
+        return route.fulfill({
+          json: callerIdentity({
+            id: 'caller',
+            role: access === 'confirm-only' ? 'operator' : 'contributor',
+            capabilities: access === 'confirm-only' ? confirmOnlyCapabilities : undefined,
+          }),
+        })
       const handled = shellResponse(route)
       if (handled) return await handled
       if (path === '/v1/requirements') return route.fulfill({ json: [summarizeRequirement(requirement)] })

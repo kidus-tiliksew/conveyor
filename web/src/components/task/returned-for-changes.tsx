@@ -41,7 +41,7 @@ export function ReturnedForChangesAttention() {
   const attention = useActivity()
   const identity = useQuery({
     queryKey: ['caller-identity', workspace],
-    queryFn: () => fetchCallerIdentity(),
+    queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
     retry: false,
   })

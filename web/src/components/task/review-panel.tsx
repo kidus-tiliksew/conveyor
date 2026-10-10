@@ -48,7 +48,7 @@ export function useCanRequestTaskChanges(task: Task): boolean {
   const { workspace } = useWorkspaceSelection()
   const identity = useQuery({
     queryKey: ['caller-identity', workspace],
-    queryFn: () => fetchCallerIdentity(),
+    queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
     retry: false,
   })

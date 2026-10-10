@@ -3,6 +3,7 @@
 // canvas, and no surface scrolls sideways at phone width.
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import { waitForSheetSettled } from './helpers/sheet'
+import { callerIdentity } from './helpers/caller-identity'
 
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }
@@ -108,7 +109,12 @@ async function mockShell(page: Page) {
       })
     if (path === '/v1/me')
       return route.fulfill({
-        json: { id: 'usr_operator', email: 'operator@example.test', display_name: 'Operator', role: 'operator' },
+        json: callerIdentity({
+          id: 'usr_operator',
+          email: 'operator@example.test',
+          display_name: 'Operator',
+          role: 'operator',
+        }),
       })
     if (path === '/v1/workspace')
       return route.fulfill({

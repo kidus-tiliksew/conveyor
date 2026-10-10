@@ -1,6 +1,7 @@
 import { expect, type Page, test } from '@playwright/test'
 import { githubSlug } from '../src/lib/repository'
 import type { WorkspaceConfigDocument, WorkspaceConfigRepo } from '../src/lib/types'
+import { callerIdentity } from './helpers/caller-identity'
 
 const notice = 'This workspace has no registered repository.'
 const installTask = { id: '260908-install', state: 'queued' }
@@ -27,7 +28,7 @@ async function mockRepositories(page: Page, initial: WorkspaceConfigRepo[] = [],
   await page.route('**/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'operator', role: 'operator' }) })
     if (path === '/v1/workspace/config') {
       if (route.request().method() === 'PUT') {
         submitted = route.request().postDataJSON().document
