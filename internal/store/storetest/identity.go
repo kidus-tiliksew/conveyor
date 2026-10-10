@@ -917,7 +917,9 @@ func runInstanceAdministrationOwnerOnly(t *testing.T, x Fixture) {
 func runBootstrapPreservesMembershipDecisions(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
-	t.Cleanup(func() { _, _ = st.BootstrapIdentity(x.Context, conformanceIdentity(), conformanceBootstrapToken) })
+	t.Cleanup(func() {
+		_, _ = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	})
 	second := memberWith(t, st, ctx, "preserve-second-"+x.Workspace+"@example.test", x.Workspace, core.WorkspaceRoleOperator)
 	secondCtx := userContext(x.Context, second.ID)
 	_, err := st.GrantWorkspaceRole(secondCtx, owner.Email, x.Workspace, core.WorkspaceRoleViewer)
@@ -945,13 +947,13 @@ func runBootstrapPreservesMembershipDecisions(t *testing.T, x Fixture) {
 		}
 	}
 	check("before restart")
-	changed, err := st.BootstrapIdentity(x.Context, conformanceIdentity(), conformanceBootstrapToken)
+	changed, err := st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
 	requireOK(t, err)
 	if changed {
 		t.Fatal("unchanged restart reported a change")
 	}
 	check("unchanged restart")
-	changed, err = st.BootstrapIdentity(x.Context, conformanceIdentity(), "conformance-preserve-rotated")
+	changed, err = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), "conformance-preserve-rotated")
 	requireOK(t, err)
 	if !changed {
 		t.Fatal("rotation reported no change")
@@ -991,9 +993,11 @@ func runBootstrapWorkspaceUsesDeploymentOwner(t *testing.T, x Fixture) {
 func runBootstrapOwnershipStable(t *testing.T, x Fixture) {
 	st := x.Backend
 	_, owner := bootstrapOwner(t, x)
-	t.Cleanup(func() { _, _ = st.BootstrapIdentity(x.Context, conformanceIdentity(), conformanceBootstrapToken) })
+	t.Cleanup(func() {
+		_, _ = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	})
 	changedIdentity := config.FirstOperatorIdentity{OrganizationName: "Renamed", Email: "renamed-" + x.Workspace + "@example.test", DisplayName: "Renamed"}
-	changed, err := st.BootstrapIdentity(x.Context, changedIdentity, "conformance-stable-rotated")
+	changed, err := st.BootstrapIdentity(systemContext(x.Context), changedIdentity, "conformance-stable-rotated")
 	requireOK(t, err)
 	if !changed {
 		t.Fatal("rotation under a changed identity reported no change")
@@ -1006,7 +1010,7 @@ func runBootstrapOwnershipStable(t *testing.T, x Fixture) {
 	if allowed, err := st.AuthorizeInstanceAdministration(x.Context, owner.ID); err != nil || !allowed {
 		t.Fatalf("owner lost instance administration allowed=%t err=%v", allowed, err)
 	}
-	changed, err = st.BootstrapIdentity(x.Context, changedIdentity, "conformance-stable-rotated")
+	changed, err = st.BootstrapIdentity(systemContext(x.Context), changedIdentity, "conformance-stable-rotated")
 	requireOK(t, err)
 	if changed {
 		t.Fatal("unchanged start reported a change")
@@ -1020,7 +1024,9 @@ func runBootstrapOwnershipStable(t *testing.T, x Fixture) {
 func runBootstrapMembershipSerialization(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
-	t.Cleanup(func() { _, _ = st.BootstrapIdentity(x.Context, conformanceIdentity(), conformanceBootstrapToken) })
+	t.Cleanup(func() {
+		_, _ = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
+	})
 	second := memberWith(t, st, ctx, "serial-second-"+x.Workspace+"@example.test", x.Workspace, core.WorkspaceRoleOperator)
 	secondCtx := userContext(x.Context, second.ID)
 	exclusion := newForeignWorkspace(t, x, "serial")
@@ -1044,7 +1050,7 @@ func runBootstrapMembershipSerialization(t *testing.T, x Fixture) {
 		}, func() bool { return roleIn(t, st, ctx, owner.ID, exclusion) == "" }},
 	} {
 		reached, release := make(chan struct{}), make(chan struct{})
-		hooked := store.WithIdentityTestHook(x.Context, func(stage string) error {
+		hooked := store.WithIdentityTestHook(systemContext(x.Context), func(stage string) error {
 			if stage == test.stage {
 				close(reached)
 				<-release
@@ -1070,7 +1076,7 @@ func runBootstrapMembershipSerialization(t *testing.T, x Fixture) {
 		}
 		// The opposite order: the change has committed and a later
 		// bootstrap still leaves it in place.
-		_, err := st.BootstrapIdentity(x.Context, conformanceIdentity(), test.token+"-after")
+		_, err := st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), test.token+"-after")
 		requireOK(t, err)
 		if !test.check() {
 			t.Fatalf("%s: later bootstrap restored a membership change", test.stage)
@@ -1078,10 +1084,10 @@ func runBootstrapMembershipSerialization(t *testing.T, x Fixture) {
 	}
 
 	// An error injected after the rotation writes rolls them back.
-	_, err = st.BootstrapIdentity(x.Context, conformanceIdentity(), conformanceBootstrapToken)
+	_, err = st.BootstrapIdentity(systemContext(x.Context), conformanceIdentity(), conformanceBootstrapToken)
 	requireOK(t, err)
 	injected := errors.New("injected bootstrap failure")
-	failing := store.WithIdentityTestHook(x.Context, func(stage string) error {
+	failing := store.WithIdentityTestHook(systemContext(x.Context), func(stage string) error {
 		if stage == store.IdentityHookBootstrapBeforeCommit {
 			return injected
 		}
@@ -1118,7 +1124,7 @@ type FreshDeployment struct {
 func RunFreshDeploymentBootstrap(t *testing.T, fresh FreshDeployment) {
 	t.Run("NoMarkerUsesConfiguredIdentity", func(t *testing.T) {
 		st := fresh.Open(t)
-		ctx := t.Context()
+		ctx := systemContext(t.Context())
 		older, err := st.ProvisionIdentityUser(ctx, "older@example.test", "Older Account")
 		requireOK(t, err)
 		if allowed, err := st.AuthorizeInstanceAdministration(ctx, older.ID); err != nil || allowed {
@@ -1183,7 +1189,7 @@ func RunFreshDeploymentBootstrap(t *testing.T, fresh FreshDeployment) {
 	})
 	t.Run("RevokedAndDeactivatedOwner", func(t *testing.T) {
 		st := fresh.Open(t)
-		ctx := t.Context()
+		ctx := systemContext(t.Context())
 		identity := config.FirstOperatorIdentity{OrganizationName: "Fresh", Email: "owner@example.test", DisplayName: "Owner"}
 		_, err := st.BootstrapIdentity(ctx, identity, "fresh-one")
 		requireOK(t, err)

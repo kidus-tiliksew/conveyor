@@ -71,7 +71,7 @@ func reopenSharedStore(t *testing.T) *Store {
 
 func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := instanceSystemContext(t.Context())
 	if _, err := st.BootstrapIdentity(ctx, instanceOwnerIdentity, "instance-owner-token"); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 
 func TestBootstrapMembershipPersistenceIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := instanceSystemContext(t.Context())
 	if _, err := st.BootstrapIdentity(ctx, instanceOwnerIdentity, "persist-one"); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestBootstrapMembershipPersistenceIntegration(t *testing.T) {
 func TestBootstrapMembershipSerializationIntegration(t *testing.T) {
 	t.Run("ChangeIssuedWhileBootstrapHolds", func(t *testing.T) {
 		st := integrationStore(t)
-		ctx := t.Context()
+		ctx := instanceSystemContext(t.Context())
 		if _, err := st.BootstrapIdentity(ctx, instanceOwnerIdentity, "serial-zero"); err != nil {
 			t.Fatal(err)
 		}
@@ -333,7 +333,7 @@ func TestBootstrapMembershipSerializationIntegration(t *testing.T) {
 			go func() {
 				defer wait.Done()
 				<-start
-				_, err := st.BootstrapIdentity(t.Context(), instanceOwnerIdentity, "concurrent-first")
+				_, err := st.BootstrapIdentity(instanceSystemContext(t.Context()), instanceOwnerIdentity, "concurrent-first")
 				errs <- err
 			}()
 		}
@@ -351,7 +351,7 @@ func TestBootstrapMembershipSerializationIntegration(t *testing.T) {
 	})
 	t.Run("InjectedFailureRollsBackRotation", func(t *testing.T) {
 		st := integrationStore(t)
-		ctx := t.Context()
+		ctx := instanceSystemContext(t.Context())
 		if _, err := st.BootstrapIdentity(ctx, instanceOwnerIdentity, "rollback-one"); err != nil {
 			t.Fatal(err)
 		}

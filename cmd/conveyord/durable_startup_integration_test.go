@@ -136,6 +136,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			systemCtx := store.WithActor(t.Context(), store.Actor{ID: "system", Role: core.ActorSystem})
 			if code, body := daemon.post(t, "/v1/users", durableStartupToken, `{"email":"second@example.test","display_name":"Second"}`); code != http.StatusOK || body != "{\"accepted\":true}\n" {
 				t.Fatalf("provision second status=%d body=%q", code, body)
 			}
@@ -147,11 +148,11 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 					t.Fatalf("grant second in %s status=%d body=%s", workspace, code, body)
 				}
 			}
-			second, err := st.ProvisionIdentityUser(t.Context(), "second@example.test", "Second")
+			second, err := st.ProvisionIdentityUser(systemCtx, "second@example.test", "Second")
 			if err != nil {
 				t.Fatal(err)
 			}
-			secondPAT, err := st.IssueOwnPersonalAccessToken(t.Context(), second.ID, "second")
+			secondPAT, err := st.IssueOwnPersonalAccessToken(systemCtx, second.ID, "second")
 			if err != nil {
 				t.Fatal(err)
 			}
