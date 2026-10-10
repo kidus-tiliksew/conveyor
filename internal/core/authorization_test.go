@@ -97,3 +97,51 @@ func TestRoleCapabilityOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentCapabilityCeilingMatchesContributorPlusCreateTasks pins the agent
+// credential ceiling that the MCP surface derives from these bundles: every
+// contributor capability plus create_tasks, the one maintainer capability an
+// execution credential may exercise. A bundle change that moves the ceiling
+// fails here, so the MCP agent surface never widens unnoticed
+// (req-accounts-and-membership AC-3.4, AC-5.1; component-mcp-protocol).
+func TestAgentCapabilityCeilingMatchesContributorPlusCreateTasks(t *testing.T) {
+	ceiling := func(capability Capability) bool {
+		return capability == CapabilityCreateTasks || RoleAllows(WorkspaceRoleContributor, capability)
+	}
+	known := map[Capability]bool{}
+	for _, bundle := range roleCapabilities {
+		for capability := range bundle {
+			known[capability] = true
+		}
+	}
+	got := map[Capability]bool{}
+	for capability := range known {
+		if ceiling(capability) {
+			got[capability] = true
+		}
+	}
+	want := map[Capability]bool{
+		CapabilityViewWorkspace:    true,
+		CapabilityClaimWork:        true,
+		CapabilityRequestChanges:   true,
+		CapabilityProposeDocuments: true,
+		CapabilityCreateTasks:      true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("agent ceiling=%v, want %v", got, want)
+	}
+	for capability := range want {
+		if !got[capability] {
+			t.Fatalf("agent ceiling=%v lacks %q", got, capability)
+		}
+	}
+	for _, capability := range []Capability{CapabilityConfirmDocuments, CapabilityManageMembership, CapabilitySetAssignee, CapabilityOperateGates, CapabilityRecoverWork, CapabilityManageWorkspace, CapabilityManageReferenceDocuments} {
+		if !known[capability] || ceiling(capability) {
+			t.Fatalf("capability %q known=%v inside agent ceiling=%v", capability, known[capability], ceiling(capability))
+		}
+	}
+	// An unknown capability is held by no bundle and so fails closed.
+	if ceiling(Capability("unknown_capability")) {
+		t.Fatal("unknown capability passed the agent ceiling")
+	}
+}
