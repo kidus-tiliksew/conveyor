@@ -289,7 +289,7 @@ func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.
 	if usable, ok := m.usableOperatorLocked(); ok {
 		owner = usable
 	} else {
-		owner, err = m.provisionUserLocked(ctx, identity.Email, identity.DisplayName)
+		owner, err = m.provisionUserLocked(ctx, identity.Email, identity.DisplayName, false)
 		if err != nil {
 			return false, fmt.Errorf("seed first operator: %w", err)
 		}
@@ -363,7 +363,7 @@ func (m *volatileMemory) ProvisionIdentityUser(ctx context.Context, email, displ
 	}
 	m.lock()
 	defer m.unlock()
-	user, err := m.provisionUserLocked(ctx, email, displayName)
+	user, err := m.provisionUserLocked(ctx, email, displayName, false)
 	if err != nil {
 		return core.IdentityUser{}, err
 	}
@@ -371,8 +371,9 @@ func (m *volatileMemory) ProvisionIdentityUser(ctx context.Context, email, displ
 }
 
 // provisionUserLocked creates or resolves the account for email and redeems
-// every pending invitation addressed to it.
-func (m *volatileMemory) provisionUserLocked(ctx context.Context, email, displayName string) (identityUser, error) {
+// every pending invitation addressed to it. byLink selects sign-in link
+// redemption, whose grants are attributed to the redeemed account.
+func (m *volatileMemory) provisionUserLocked(ctx context.Context, email, displayName string, byLink bool) (identityUser, error) {
 	user, ok := m.userByEmail(email)
 	if !ok {
 		id, err := randomIdentityID("usr", 12)
@@ -385,11 +386,11 @@ func (m *volatileMemory) provisionUserLocked(ctx context.Context, email, display
 	if user.Status != "active" {
 		return identityUser{}, errors.New("provisioned account is deactivated")
 	}
-	m.redeemInvitationsLocked(ctx, user)
+	m.redeemInvitationsLocked(ctx, user, byLink)
 	return user, nil
 }
 
-func (m *volatileMemory) redeemInvitationsLocked(_ context.Context, user identityUser) {
+func (m *volatileMemory) redeemInvitationsLocked(_ context.Context, user identityUser, byLink bool) {
 	var keys []memoryScopedKey
 	for key := range m.invitations {
 		if key.id == user.Email {
@@ -401,12 +402,18 @@ func (m *volatileMemory) redeemInvitationsLocked(_ context.Context, user identit
 		invitation := m.invitations[key]
 		delete(m.invitations, key)
 		m.memberships[memoryScopedKey{workspace: key.workspace, id: user.ID}] = workspaceBinding{Role: invitation.Role, CreatedAt: time.Now().UTC()}
+		actorID := UserActorID(invitation.InvitedBy)
+		payload := map[string]any{
+			"workspace_id": key.workspace, "user_id": user.ID, "email": user.Email, "role": invitation.Role,
+			"invitation": false, "redemption": true, "granted_by": invitation.InvitedBy,
+		}
+		if byLink {
+			actorID = UserActorID(user.ID)
+			payload["invited_by"] = invitation.InvitedBy
+		}
 		m.recordEventLocked(key.workspace, core.Event{
-			Kind: "workspace.membership_granted", ActorID: UserActorID(invitation.InvitedBy), ActorRole: core.ActorUser, At: time.Now().UTC(),
-			Payload: core.JSONPayload(map[string]any{
-				"workspace_id": key.workspace, "user_id": user.ID, "email": user.Email, "role": invitation.Role,
-				"invitation": false, "redemption": true, "granted_by": invitation.InvitedBy,
-			}),
+			Kind: "workspace.membership_granted", ActorID: actorID, ActorRole: core.ActorUser, At: time.Now().UTC(),
+			Payload: core.JSONPayload(payload),
 		})
 	}
 }
@@ -594,6 +601,63 @@ func (m *volatileMemory) IssueSignInLink(ctx context.Context, email string) (cor
 	if !hasUser && !invited {
 		return core.IssuedSignInLink{}, ErrNotFound
 	}
+	return m.storeSignInLinkLocked(ctx, id, email, value, hash), nil
+}
+
+// IssueInvitationSignInLink implements InvitationSessionStore. It issues a
+// link only while workspaceID holds a pending invitation for email, and the
+// resend purpose records workspace.invitation_resent in the same critical
+// section. Every fallible step runs before any state changes.
+func (m *volatileMemory) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	if !purpose.Valid() {
+		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
+	}
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return core.IssuedSignInLink{}, fmt.Errorf("%w: workspace membership invitation", ErrNotFound)
+	}
+	var resentBy string
+	if purpose == SignInLinkResend {
+		credential, ok := CredentialFromContext(ctx)
+		if !ok || credential.OwnerUserID == "" {
+			return core.IssuedSignInLink{}, errors.New("authenticated user credential is required")
+		}
+		resentBy = credential.OwnerUserID
+	}
+	id, err := randomIdentityID("sil", 12)
+	if err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	value, hash, err := randomSecret("cv_signin_", id)
+	if err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	m.lock()
+	defer m.unlock()
+	if _, ok := m.invitations[memoryScopedKey{workspace: workspaceID, id: email}]; !ok {
+		return core.IssuedSignInLink{}, fmt.Errorf("%w: workspace membership invitation", ErrNotFound)
+	}
+	if err := RunIdentityTestHook(ctx, IdentityHookInvitationLinkLocked); err != nil {
+		return core.IssuedSignInLink{}, err
+	}
+	if purpose == SignInLinkResend {
+		if err := RunIdentityTestHook(ctx, IdentityHookInvitationResentAudit); err != nil {
+			return core.IssuedSignInLink{}, err
+		}
+	}
+	issued := m.storeSignInLinkLocked(ctx, id, email, value, hash)
+	if purpose == SignInLinkResend {
+		m.workspaceEventLocked(ctx, workspaceID, core.Event{
+			Kind: "workspace.invitation_resent", ActorID: UserActorID(resentBy), ActorRole: core.ActorUser,
+			Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "email": email, "resent_by": resentBy}),
+		})
+	}
+	return issued, nil
+}
+
+// storeSignInLinkLocked rotates earlier unredeemed links for email, stores the
+// new link, and records identity.signin_link_issued.
+func (m *volatileMemory) storeSignInLinkLocked(ctx context.Context, id, email, value string, hash []byte) core.IssuedSignInLink {
 	now := time.Now().UTC()
 	for linkID, link := range m.signInLinks {
 		if link.Email == email && link.RedeemedAt == nil {
@@ -602,12 +666,12 @@ func (m *volatileMemory) IssueSignInLink(ctx context.Context, email string) (cor
 		}
 	}
 	link := signInLink{ID: id, Email: email, TokenHash: hash, ExpiresAt: now.Add(signInLinkLifetime)}
-	if hasUser {
+	if user, ok := m.userByEmail(email); ok && user.Status == "active" {
 		link.UserID = user.ID
 	}
 	m.signInLinks[id] = link
 	m.deploymentEventLocked(ctx, "identity.signin_link_issued", map[string]any{"signin_link_id": id, "email": email})
-	return core.IssuedSignInLink{Email: email, Value: value, ExpiresAt: link.ExpiresAt}, nil
+	return core.IssuedSignInLink{Email: email, Value: value, ExpiresAt: link.ExpiresAt}
 }
 
 // RedeemSignInLink consumes the link and creates its browser session; a
@@ -628,9 +692,12 @@ func (m *volatileMemory) RedeemSignInLink(ctx context.Context, candidate string)
 	if !found || link.RedeemedAt != nil || !link.ExpiresAt.After(now) {
 		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
 	}
+	if err := RunIdentityTestHook(ctx, IdentityHookSignInRedeemLocked); err != nil {
+		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
+	}
 	link.RedeemedAt = timePtr(now)
 	if link.UserID == "" {
-		user, err := m.provisionUserLocked(ctx, link.Email, link.Email)
+		user, err := m.provisionUserLocked(ctx, link.Email, link.Email, true)
 		if err != nil {
 			return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
 		}
@@ -1012,7 +1079,7 @@ func (m *volatileMemory) GrantWorkspaceRole(ctx context.Context, email, workspac
 	m.workspaceEventLocked(ctx, workspaceID, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspaceID, "email": email, "role": role, "invitation": invitation, "granted_by": credential.OwnerUserID,
 	})})
-	return core.MembershipGrant{Email: email, Role: role}, nil
+	return core.MembershipGrant{Email: email, Role: role, Invitation: invitation}, nil
 }
 
 // RevokeWorkspaceInvitation implements MembershipStore.
@@ -1027,6 +1094,9 @@ func (m *volatileMemory) RevokeWorkspaceInvitation(ctx context.Context, email, w
 	}
 	m.lock()
 	defer m.unlock()
+	if err := RunIdentityTestHook(ctx, IdentityHookInvitationRevokeLocked); err != nil {
+		return err
+	}
 	key := memoryScopedKey{workspace: workspaceID, id: email}
 	if _, ok := m.invitations[key]; !ok {
 		return fmt.Errorf("%w: workspace membership invitation", ErrNotFound)

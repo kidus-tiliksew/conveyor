@@ -167,6 +167,7 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 			}
 		}
 		_, err := appendWorkspaceEvent(ctx, tx, workspaceID, "workspace.membership_granted", map[string]any{"workspace_id": workspaceID, "email": email, "role": role, "invitation": invitation, "granted_by": c.OwnerUserID})
+		r.Invitation = invitation
 		return translateBackendConflict(err)
 	})
 	return r, translateBackendConflict(err)
@@ -191,6 +192,9 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 		return errors.New("authenticated user credential is required")
 	}
 	return s.identityTx(ctx, func(tx *sql.Tx) error {
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationRevokeLocked); err != nil {
+			return err
+		}
 		r, err := tx.ExecContext(ctx, "DELETE FROM workspace_membership_invitations WHERE workspace_id=? AND email=?", workspaceID, email)
 		if err != nil {
 			return translateBackendConflict(err)

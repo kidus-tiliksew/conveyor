@@ -177,8 +177,9 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 				return err
 			}
 		}
+		result.Invitation = errors.Is(lookupErr, pgx.ErrNoRows)
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
-			"workspace_id": workspaceID, "email": email, "role": role, "invitation": errors.Is(lookupErr, pgx.ErrNoRows),
+			"workspace_id": workspaceID, "email": email, "role": role, "invitation": result.Invitation,
 			"granted_by": credential.OwnerUserID,
 		})})
 	})
@@ -199,6 +200,9 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 	}
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if err := lockIdentityEmail(ctx, tx, email); err != nil {
+			return err
+		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationRevokeLocked); err != nil {
 			return err
 		}
 		result, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email)

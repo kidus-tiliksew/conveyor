@@ -46,14 +46,68 @@ type MembershipStore interface {
 // InvitationSessionStore owns the opaque, hashed browser bootstrap
 // credentials. Issuance is restricted to an existing invitation or account;
 // there is deliberately no registration operation.
+//
+// IssueSignInLink admits any active account or any pending invitation and
+// serves only the host-local `conveyor user issue-link` act
+// (req-invitations-and-sign-in REQ-3). The HTTP membership routes call
+// IssueInvitationSignInLink, which requires a pending invitation for exactly
+// the named workspace and email under the same email serialization that
+// rotates and stores the link (req-accounts-and-membership AC-2.1, AC-4.3;
+// component-identity-membership).
 type InvitationSessionStore interface {
 	IssueSignInLink(context.Context, string) (core.IssuedSignInLink, error)
+	IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose SignInLinkPurpose) (core.IssuedSignInLink, error)
 	RedeemSignInLink(context.Context, string) (core.DashboardSession, core.IdentityUser, error)
 	SignInWithPassword(context.Context, string, string) (core.DashboardSession, core.IdentityUser, error)
 	SetOwnPassword(context.Context, string, string, string, string) error
 	VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error)
 	RevokeDashboardSession(context.Context, string, string) error
 	RecordInvitationDelivery(context.Context, string, string) error
+}
+
+// SignInLinkPurpose is selected by the server, never by request input. The
+// resend purpose appends workspace.invitation_resent in the issuance
+// transaction; the invitation purpose follows a grant and appends no resend.
+type SignInLinkPurpose string
+
+const (
+	SignInLinkInvitation SignInLinkPurpose = "invitation"
+	SignInLinkResend     SignInLinkPurpose = "resend"
+)
+
+// Valid reports whether purpose is one of the two server-selected purposes.
+func (p SignInLinkPurpose) Valid() bool {
+	return p == SignInLinkInvitation || p == SignInLinkResend
+}
+
+// Identity test-hook stages. Each backend calls the context hook at these
+// points while holding its email serialization, so shared and native tests
+// can hold one side of a race with channels or inject a failure at the resend
+// audit append (component-identity-membership, Verification).
+const (
+	IdentityHookInvitationLinkLocked   = "invitation_link_locked"
+	IdentityHookInvitationResentAudit  = "invitation_resent_audit"
+	IdentityHookInvitationRevokeLocked = "invitation_revoke_locked"
+	IdentityHookSignInRedeemLocked     = "signin_redeem_locked"
+)
+
+type identityTestHookKey struct{}
+
+// WithIdentityTestHook attaches a test-only hook that identity stores call at
+// the named stages. A non-nil error aborts the surrounding transaction. No
+// production caller sets it.
+func WithIdentityTestHook(ctx context.Context, hook func(stage string) error) context.Context {
+	return context.WithValue(ctx, identityTestHookKey{}, hook)
+}
+
+// RunIdentityTestHook calls the context's identity test hook for stage, if
+// any, and returns its error.
+func RunIdentityTestHook(ctx context.Context, stage string) error {
+	hook, _ := ctx.Value(identityTestHookKey{}).(func(string) error)
+	if hook == nil {
+		return nil
+	}
+	return hook(stage)
 }
 
 var (

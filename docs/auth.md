@@ -52,6 +52,14 @@ links for that email. Delivery is by SMTP when configured; otherwise the link
 is surfaced in the dashboard, or printed on the host by
 `conveyor user issue-link <email>`.
 
+The dashboard and API issue a link only for a pending invitation in the
+workspace being managed: inviting an email that has no account, or resending
+that workspace's pending invitation. Granting a role to an existing account
+records the binding and issues no link. A resend for an email without a
+pending invitation in that workspace answers `404 workspace_not_found`, and a
+successful resend is recorded as `workspace.invitation_resent`. Recovery for
+an existing account is the host-local `conveyor user issue-link <email>`.
+
 First sign-in routes to onboarding: set a display name and a password of at
 least 12 characters. Password sign-in is rate limited to 5 attempts per 15
 minutes per account and per source address, and unknown, deactivated, and

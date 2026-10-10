@@ -195,7 +195,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		}
 		owner.CreatedAt = createdAt
 	} else {
-		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName)
+		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName, false)
 		if err != nil {
 			return false, fmt.Errorf("seed first operator: %w", err)
 		}
@@ -255,7 +255,7 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, displayName st
 	var result db.User
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var provisionErr error
-		result, provisionErr = provisionIdentityUserInTx(ctx, tx, q, email, displayName)
+		result, provisionErr = provisionIdentityUserInTx(ctx, tx, q, email, displayName, false)
 		return provisionErr
 	})
 	if err != nil {
@@ -264,7 +264,11 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, displayName st
 	return identityUser(result), nil
 }
 
-func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, email, displayName string) (db.User, error) {
+// provisionIdentityUserInTx resolves or creates the account and consumes its
+// pending invitations. byLink selects sign-in link redemption, whose grants are
+// attributed to the redeemed account rather than to the inviter
+// (req-accounts-and-membership AC-3.1).
+func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, email, displayName string, byLink bool) (db.User, error) {
 	if err := lockIdentityEmail(ctx, tx, email); err != nil {
 		return db.User{}, err
 	}
@@ -285,13 +289,13 @@ func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, em
 	if row.Status != "active" {
 		return db.User{}, errors.New("provisioned account is deactivated")
 	}
-	if err := redeemWorkspaceInvitations(ctx, tx, q, row); err != nil {
+	if err := redeemWorkspaceInvitations(ctx, tx, q, row, byLink); err != nil {
 		return db.User{}, err
 	}
 	return row, nil
 }
 
-func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, user db.User) error {
+func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, user db.User, byLink bool) error {
 	rows, err := tx.Query(ctx, `SELECT workspace_id,role,invited_by
 		FROM workspace_membership_invitations WHERE email=$1 ORDER BY workspace_id FOR UPDATE`, user.Email)
 	if err != nil {
@@ -327,12 +331,18 @@ func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, u
 			return fmt.Errorf("consume workspace invitation: %w", err)
 		}
 		eventCtx := store.WithWorkspace(ctx, item.workspaceID)
+		actorID := store.UserActorID(item.invitedBy)
+		payload := map[string]any{
+			"workspace_id": item.workspaceID, "user_id": user.ID, "email": user.Email, "role": item.role,
+			"invitation": false, "redemption": true, "granted_by": item.invitedBy,
+		}
+		if byLink {
+			actorID = store.UserActorID(user.ID)
+			payload["invited_by"] = item.invitedBy
+		}
 		if err := insertWorkspaceEvent(eventCtx, q, core.Event{
-			Kind: "workspace.membership_granted", ActorID: store.UserActorID(item.invitedBy), ActorRole: core.ActorUser,
-			Payload: core.JSONPayload(map[string]any{
-				"workspace_id": item.workspaceID, "user_id": user.ID, "email": user.Email, "role": item.role,
-				"invitation": false, "redemption": true, "granted_by": item.invitedBy,
-			}),
+			Kind: "workspace.membership_granted", ActorID: actorID, ActorRole: core.ActorUser,
+			Payload: core.JSONPayload(payload),
 		}); err != nil {
 			return fmt.Errorf("audit workspace invitation redemption: %w", err)
 		}
@@ -539,12 +549,72 @@ const (
 
 // IssueSignInLink rotates prior unredeemed links and only succeeds for an
 // existing account or pending invitation. That predicate is the no-self-
-// registration boundary.
+// registration boundary. It serves only host-local issuance
+// (req-invitations-and-sign-in REQ-3).
 func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IssuedSignInLink{}, err
 	}
+	return s.issueSignInLink(ctx, email, func(tx pgx.Tx) error {
+		var allowed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=$1)`, email).Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return store.ErrNotFound
+		}
+		return nil
+	}, nil)
+}
+
+// IssueInvitationSignInLink issues a link only while workspaceID holds a
+// pending invitation for email. The check, rotation, insert, and the resend
+// audit event share one transaction under the identity email lock, which
+// revocation and redemption also take (component-identity-membership).
+func (s *Store) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	if !purpose.Valid() {
+		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
+	}
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return core.IssuedSignInLink{}, fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
+	}
+	var resentBy string
+	if purpose == store.SignInLinkResend {
+		credential, ok := store.CredentialFromContext(ctx)
+		if !ok || credential.OwnerUserID == "" {
+			return core.IssuedSignInLink{}, errors.New("authenticated user credential is required")
+		}
+		resentBy = credential.OwnerUserID
+	}
+	return s.issueSignInLink(ctx, email, func(tx pgx.Tx) error {
+		var pending bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2)`, workspaceID, email).Scan(&pending); err != nil {
+			return err
+		}
+		if !pending {
+			return fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
+		}
+		return store.RunIdentityTestHook(ctx, store.IdentityHookInvitationLinkLocked)
+	}, func(q *db.Queries) error {
+		if purpose != store.SignInLinkResend {
+			return nil
+		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationResentAudit); err != nil {
+			return err
+		}
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{
+			Kind: "workspace.invitation_resent", ActorID: store.UserActorID(resentBy), ActorRole: core.ActorUser,
+			Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "email": email, "resent_by": resentBy}),
+		})
+	})
+}
+
+// issueSignInLink holds the identity email lock, runs admit, rotates earlier
+// unredeemed links, stores the new hash, appends identity.signin_link_issued,
+// and then runs audit, all in one transaction.
+func (s *Store) issueSignInLink(ctx context.Context, email string, admit func(pgx.Tx) error, audit func(*db.Queries) error) (core.IssuedSignInLink, error) {
 	id, err := randomIdentityID("sil", 12)
 	if err != nil {
 		return core.IssuedSignInLink{}, err
@@ -560,14 +630,10 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 		if err := lockIdentityEmail(ctx, tx, email); err != nil {
 			return err
 		}
-		var userID *string
-		var allowed bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=$1)`, email).Scan(&allowed); err != nil {
+		if err := admit(tx); err != nil {
 			return err
 		}
-		if !allowed {
-			return store.ErrNotFound
-		}
+		var userID *string
 		var uid string
 		if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE email=$1 AND status='active'`, email).Scan(&uid); err == nil {
 			userID = &uid
@@ -581,7 +647,13 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 			return err
 		}
 		actor := store.ActorFromContext(ctx)
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}}); err != nil {
+			return err
+		}
+		if audit != nil {
+			return audit(q)
+		}
+		return nil
 	})
 	if err != nil {
 		return core.IssuedSignInLink{}, err
@@ -598,11 +670,23 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var linkID, email string
 		var userID *string
+		// Take the email lock before any token-row lock, the same order
+		// issuance uses, so redemption cannot deadlock against a concurrent
+		// issuance or resend. The conditional UPDATE still decides the winner.
+		if err := tx.QueryRow(ctx, `SELECT email FROM invitation_signin_tokens WHERE token_hash=$1`, hash[:]).Scan(&email); err != nil {
+			return notFound(err, "sign-in link")
+		}
+		if err := lockIdentityEmail(ctx, tx, email); err != nil {
+			return err
+		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookSignInRedeemLocked); err != nil {
+			return err
+		}
 		if err := tx.QueryRow(ctx, `UPDATE invitation_signin_tokens SET redeemed_at=now() WHERE token_hash=$1 AND redeemed_at IS NULL AND expires_at>now() RETURNING id,email,user_id`, hash[:]).Scan(&linkID, &email, &userID); err != nil {
 			return notFound(err, "sign-in link")
 		}
 		if userID == nil {
-			row, err := provisionIdentityUserInTx(ctx, tx, q, email, email)
+			row, err := provisionIdentityUserInTx(ctx, tx, q, email, email, true)
 			if err != nil {
 				return err
 			}

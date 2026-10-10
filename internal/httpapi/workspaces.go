@@ -175,8 +175,12 @@ func (s *Server) grantWorkspaceMembership(w http.ResponseWriter, r *http.Request
 		writeValidationError(w, "membership", err)
 		return
 	}
-	if s.InvitationSessions != nil {
-		delivery, issueErr := s.issueAndDeliverSignInLink(r, result.Email)
+	// Only an invitation receives a sign-in link. A grant to an existing
+	// active account reports the binding without sign_in_url or delivery and
+	// issues nothing; account recovery is the host-local issue-link act
+	// (req-invitations-and-sign-in REQ-1, REQ-3; component-identity-membership).
+	if result.Invitation && s.InvitationSessions != nil {
+		delivery, issueErr := s.issueAndDeliverSignInLink(r, workspaceID, result.Email, store.SignInLinkInvitation)
 		if issueErr != nil {
 			// Membership/invitation state is already durable. Delivery is
 			// intentionally best effort and must never roll it back.

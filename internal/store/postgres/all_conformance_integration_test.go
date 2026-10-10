@@ -199,7 +199,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				return result, rows.Err()
 			}, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
 				ws, _ := store.WorkspaceFromContext(ctx)
-				rows, err := st.pool.Query(ctx, `SELECT id,kind,payload_json,at FROM events WHERE workspace_id=$1 AND task_id IS NULL AND starts_with(kind,$2) ORDER BY at,id`, ws, kindPrefix)
+				rows, err := st.pool.Query(ctx, `SELECT id,kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=$1 AND task_id IS NULL AND starts_with(kind,$2) ORDER BY at,id`, ws, kindPrefix)
 				if err != nil {
 					return nil, err
 				}
@@ -207,9 +207,11 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				var result []core.Event
 				for rows.Next() {
 					var e core.Event
-					if err := rows.Scan(&e.ID, &e.Kind, &e.Payload, &e.At); err != nil {
+					var role string
+					if err := rows.Scan(&e.ID, &e.Kind, &e.ActorID, &role, &e.Payload, &e.At); err != nil {
 						return nil, err
 					}
+					e.ActorRole = core.ActorRole(role)
 					result = append(result, e)
 				}
 				return result, rows.Err()
