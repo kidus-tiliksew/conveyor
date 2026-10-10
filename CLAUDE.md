@@ -67,7 +67,7 @@ CLAUDE.md`. Refresh its guidance directly in the task worktree with
 `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' repo init --guidance-only`.
 This preserves the source skill wrappers and existing symlink. Deliver the
 updated guidance through the task's review lifecycle.
-<!-- conveyor:repo-init owner=v1 version=e52bc085 -->
+<!-- conveyor:repo-init owner=v1 version=v0.37.0 -->
 ## Conveyor factory work
 
 Repository: `conveyor`. Base branch: `main`.
