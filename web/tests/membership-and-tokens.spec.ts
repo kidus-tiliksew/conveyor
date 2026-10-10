@@ -41,6 +41,11 @@ type MembershipState = {
   }>
   soleOperator: boolean
   resendDeliveries: Record<string, 'sent' | 'fallback'>
+  // Emails with an account that holds no binding in this workspace.
+  accounts: Array<{ user_id: string; email: string; display_name: string }>
+  // Invitations still listed by the page but already revoked or accepted on
+  // the server.
+  staleInvitations: string[]
 }
 
 function membershipDefaults(): MembershipState {
@@ -52,6 +57,8 @@ function membershipDefaults(): MembershipState {
     invitations: [],
     soleOperator: false,
     resendDeliveries: {},
+    accounts: [],
+    staleInvitations: [],
   }
 }
 
@@ -110,7 +117,14 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
           })
         }
         member.role = body.role
-        return route.fulfill({ status: 201, json: { email, role: body.role, delivery: 'sent' } })
+        // A grant to an existing account issues no sign-in link.
+        return route.fulfill({ status: 201, json: { email, role: body.role } })
+      }
+      const account = state.accounts.find((candidate) => candidate.email.toLowerCase() === email)
+      if (account) {
+        state.accounts = state.accounts.filter((candidate) => candidate !== account)
+        state.members.push({ ...account, role: body.role })
+        return route.fulfill({ status: 201, json: { email, role: body.role } })
       }
       state.invitations.push({ email, role: body.role, invited_by_display_name: 'Ada Owner' })
       return route.fulfill({ status: 201, json: { email, role: body.role, delivery: 'sent' } })
@@ -143,12 +157,18 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
     if (path.endsWith('/resend') && request.method() === 'POST') {
       const email = decodeURIComponent(path.split('/').at(-2) ?? '').toLowerCase()
       const delivery = state.resendDeliveries[email] ?? 'sent'
-      const membership = state.members.find((member) => member.email.toLowerCase() === email)
       const invitation = state.invitations.find((candidate) => candidate.email.toLowerCase() === email)
+      // Only a pending invitation in this workspace can be resent; every other
+      // email receives the same not-found answer.
+      if (!invitation) return route.fulfill(notFound)
+      if (state.staleInvitations.includes(email)) {
+        state.invitations = state.invitations.filter((candidate) => candidate !== invitation)
+        return route.fulfill(notFound)
+      }
       return route.fulfill({
         json: {
           email,
-          role: membership?.role ?? invitation?.role ?? 'contributor',
+          role: invitation.role,
           delivery,
           ...(delivery === 'fallback' ? { sign_in_url: `https://conveyor.example/sign-in/${email}` } : {}),
         },
@@ -193,22 +213,68 @@ test('an operator invites a member, sees the pending invitation, and revokes it'
   await expect(page.getByText('invited@example.test')).toHaveCount(0)
 })
 
-test('an operator sends existing-member sign-in links for sent and fallback delivery', async ({ page }) => {
+test('an operator has no member sign-in control and resends pending invitations for sent and fallback delivery', async ({
+  page,
+}) => {
   const state = membershipDefaults()
-  state.resendDeliveries['owner@example.test'] = 'fallback'
+  state.invitations.push(
+    { email: 'sent@example.test', role: 'viewer', invited_by_display_name: 'Ada Owner' },
+    { email: 'fallback@example.test', role: 'executor', invited_by_display_name: 'Ada Owner' },
+  )
+  state.resendDeliveries['fallback@example.test'] = 'fallback'
   await mockWorkspace(page, 'operator', state)
   await openMembers(page, 'operator')
 
-  await page.getByRole('button', { name: 'Send sign-in link to Bo Member' }).click()
-  await expect(page.getByText('Sign-in link sent')).toBeVisible()
-  await expect(page.getByText(/get back in if they forgot their password/)).toBeVisible()
+  await expect(page.getByText('Bo Member')).toBeVisible()
+  await expect(page.getByRole('button', { name: /Send sign-in link/ })).toHaveCount(0)
+
+  await page.getByText('sent@example.test').locator('../..').getByRole('button', { name: 'Resend' }).click()
+  await expect(page.getByText('Invitation sent')).toBeVisible()
+  await expect(page.getByText('We sent a sign-in link by email.')).toBeVisible()
   await page.getByRole('button', { name: 'Dismiss' }).click()
 
-  await page.getByRole('button', { name: 'Send sign-in link to Ada Owner' }).click()
-  await expect(page.getByText('Sign-in link ready to share')).toBeVisible()
-  await expect(page.getByText(/Email delivery is unavailable/)).toBeVisible()
-  await expect(page.getByText('https://conveyor.example/sign-in/owner@example.test')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Copy sign-in link' })).toBeVisible()
+  await page.getByText('fallback@example.test').locator('../..').getByRole('button', { name: 'Resend' }).click()
+  await expect(page.getByText('Invitation ready to share')).toBeVisible()
+  await expect(page.getByText('https://conveyor.example/sign-in/fallback@example.test')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Copy invitation link' })).toBeVisible()
+})
+
+test('a resend for an invitation already revoked or accepted shows the refusal and no link', async ({ page }) => {
+  const state = membershipDefaults()
+  state.invitations.push({ email: 'stale@example.test', role: 'viewer', invited_by_display_name: 'Ada Owner' })
+  state.staleInvitations.push('stale@example.test')
+  state.resendDeliveries['stale@example.test'] = 'fallback'
+  await mockWorkspace(page, 'operator', state)
+  await openMembers(page, 'operator')
+
+  await page.getByRole('button', { name: 'Resend' }).click()
+  await expect(
+    page.getByText('That invitation is no longer pending. It may have been revoked or accepted.'),
+  ).toBeVisible()
+  await expect(page.getByText('No pending invitations.')).toBeVisible()
+  await expect(page.getByRole('button', { name: /Copy/ })).toHaveCount(0)
+  await expect(page.getByText(/https:\/\/conveyor\.example\/sign-in/)).toHaveCount(0)
+})
+
+test('granting a role to an existing account records the membership without a sign-in link', async ({ page }) => {
+  const state = membershipDefaults()
+  state.accounts.push({ user_id: 'usr_elsewhere', email: 'elsewhere@example.test', display_name: 'Cy Elsewhere' })
+  await mockWorkspace(page, 'operator', state)
+  await openMembers(page, 'operator')
+
+  const form = page.getByRole('form', { name: 'Invite a member' })
+  await form.getByLabel('Email address').fill('Elsewhere@Example.test')
+  await form.getByLabel('Role').selectOption('executor')
+  await form.getByRole('button', { name: 'Invite' }).click()
+
+  await expect(page.getByText('Member added')).toBeVisible()
+  await expect(
+    page.getByText('elsewhere@example.test already has an account and now has the Executor role in this workspace.'),
+  ).toBeVisible()
+  await expect(page.getByText('Cy Elsewhere')).toBeVisible()
+  await expect(page.getByText('No pending invitations.')).toBeVisible()
+  await expect(page.getByRole('button', { name: /Copy/ })).toHaveCount(0)
+  await expect(page.getByRole('status').filter({ hasText: 'Member added' })).not.toContainText(/link/i)
 })
 
 test('inviting an existing member with a different role is presented as a role change', async ({ page }) => {
@@ -224,6 +290,8 @@ test('inviting an existing member with a different role is presented as a role c
 
   await expect(page.getByText('Role updated')).toBeVisible()
   await expect(page.getByText('member@example.test changed from Contributor to Maintainer.')).toBeVisible()
+  await expect(page.getByRole('button', { name: /Copy/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Resend' })).toHaveCount(0)
   const memberRow = page.getByText('Bo Member').locator('../..')
   await expect(memberRow.getByText('Maintainer', { exact: true })).toBeVisible()
 })

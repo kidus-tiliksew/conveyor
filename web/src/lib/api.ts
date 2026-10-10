@@ -454,7 +454,13 @@ export async function resendWorkspaceInvitation(workspace: string, email: string
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    const message = apiErrorMessage(await response.text(), response.statusText)
+    // The server answers not-found for any email without a pending invitation
+    // in this workspace, including one already revoked or accepted.
+    if (response.status === 404) throw new WorkspaceNotVisibleError(message)
+    throw new Error(message)
+  }
   return response.json() as Promise<import('./types').MembershipGrant>
 }
 

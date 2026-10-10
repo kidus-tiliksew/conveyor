@@ -616,6 +616,11 @@ export interface WorkspaceInvitation {
   created_at: string
 }
 
+/**
+ * A membership grant or invitation resend result. `delivery` and
+ * `sign_in_url` are present only for an invitation; a grant to an existing
+ * account records the binding and issues no sign-in link.
+ */
 export interface MembershipGrant {
   email: string
   role: WorkspaceRole
