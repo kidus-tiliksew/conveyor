@@ -36,6 +36,9 @@ func MonitorRecordWorkspace(ctx context.Context, record string) (string, error) 
 }
 
 func (m *memory) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, Payload: core.JSONPayload(payload)})
 }
 
@@ -84,6 +87,9 @@ func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error)
 }
 
 func (m *memory) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.SystemDesignMergeJudgment{}, err
+	}
 	if causalEventID <= 0 || strings.TrimSpace(commitSHA) == "" {
 		return monitor.SystemDesignMergeJudgment{}, nil
 	}
@@ -267,6 +273,9 @@ func (m *memory) LinkTask(ctx context.Context, identity, taskID, outcome string)
 }
 
 func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.Drift{}, false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, err := MonitorRecordWorkspace(ctx, drift.WorkspaceID)
@@ -323,6 +332,9 @@ func (m *memory) reconcileConfirmedSystemDesignDriftLocked(ctx context.Context, 
 }
 
 func (m *memory) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.Drift{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, ok := WorkspaceFromContext(ctx)

@@ -39,7 +39,7 @@ func newPermissionRouteFixture(t *testing.T) *permissionRouteFixture {
 	b := s.Store.(store.Backend)
 	s.Workspaces = b
 	f := &permissionRouteFixture{t: t, s: s, b: b, worker: worker, id: id, path: "/v1/work-orders/" + id + "/verification/permissions?workspace_id=demo"}
-	f.ctx = store.WithWorkspace(t.Context(), "demo")
+	f.ctx = store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, err := b.BootstrapIdentity(f.ctx, config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}, "permission-read-token"); err != nil {
 		t.Fatal(err)
 	}

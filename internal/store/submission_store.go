@@ -208,6 +208,9 @@ func NonAdvancingRefreshBinding(decision core.ReviewDecision, approvedHeadSHA st
 }
 
 func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return ConflictFixResult{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return ConflictFixResult{}, fmt.Errorf("conflict-fix create requires a valid taskops lease")
 	}
@@ -299,6 +302,9 @@ func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.Tas
 // the memory backend's single mutation lock gives the same all-or-nothing
 // result as the SQL transactions.
 func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request ImplementationSubmission) (core.Job, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Job{}, err
+	}
 	if err := ValidateImplementationSubmission(request); err != nil {
 		return core.Job{}, err
 	}
@@ -326,6 +332,9 @@ func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.
 }
 
 func (m *memory) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[taskID]
@@ -367,6 +376,9 @@ func (m *memory) AttachSubmissionGovernance(ctx context.Context, taskID, reposit
 }
 
 func (m *memory) BindTaskApproval(ctx context.Context, id, headSHA string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
@@ -385,6 +397,9 @@ func (m *memory) BindTaskApproval(ctx context.Context, id, headSHA string) error
 }
 
 func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
@@ -406,6 +421,9 @@ func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA,
 }
 
 func (m *memory) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
@@ -431,6 +449,9 @@ func (m *memory) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA stri
 }
 
 func (m *memory) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]

@@ -64,14 +64,14 @@ func newScopedInvitationHarness(t *testing.T) *scopedInvitationHarness {
 	st := store.NewVolatileBackend()
 	t.Cleanup(st.Close)
 	for _, workspace := range []string{"alpha", "beta"} {
-		if _, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), &config.Config{Workspace: workspace}); err != nil {
+		if _, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace), &config.Config{Workspace: workspace}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Scoped", Email: "owner@example.test", DisplayName: "Owner"}, scopedOwnerToken); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Scoped", Email: "owner@example.test", DisplayName: "Owner"}, scopedOwnerToken); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), scopedOwnerToken)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), scopedOwnerToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func (h *scopedInvitationHarness) call(method, path, body string, header map[str
 
 func (h *scopedInvitationHarness) workspaceEvents(workspace, kind string) []core.Event {
 	h.t.Helper()
-	events, err := h.st.ListEvents(store.WithWorkspace(h.t.Context(), workspace), "")
+	events, err := h.st.ListEvents(store.WithWorkspace(store.WithActor(h.t.Context(), store.SystemActor()), workspace), "")
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestWorkspaceInvitationResendScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := h.st.RedeemSignInLink(h.t.Context(), redeemLink.Value); err != nil {
+	if _, _, err := h.st.RedeemSignInLink(store.WithActor(h.t.Context(), store.SystemActor()), redeemLink.Value); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +268,7 @@ func TestWorkspaceGrantExistingAccountDoesNotIssueLink(t *testing.T) {
 				if _, ok := body["invitation"]; ok || body["email"] != "existing@example.test" || body["role"] != string(step.role) || len(body) != 2 {
 					t.Fatalf("grant body=%v", body)
 				}
-				caller, err := h.st.GetCallerIdentity(h.t.Context(), existing.ID, "alpha")
+				caller, err := h.st.GetCallerIdentity(store.WithActor(h.t.Context(), store.SystemActor()), existing.ID, "alpha")
 				if err != nil || caller.Role != step.role {
 					t.Fatalf("binding role=%q err=%v want %q", caller.Role, err, step.role)
 				}

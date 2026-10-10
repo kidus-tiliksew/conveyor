@@ -270,7 +270,7 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 			return expectation{}
 		},
 		"another workspace's System Design": func(f claimParityFixture) expectation {
-			sibling := claimParityFixture{ctx: store.WithWorkspace(f.t.Context(), "sibling"), st: f.st, t: f.t}
+			sibling := claimParityFixture{ctx: store.WithWorkspace(store.WithActor(f.t.Context(), store.SystemActor()), "sibling"), st: f.st, t: f.t}
 			document := sibling.design("design-sibling")
 			sibling.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
 			return expectation{}
@@ -279,7 +279,7 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 	for name, setup := range cases {
 		for _, stage := range []core.Stage{core.StageVerify, core.StageReview} {
 			t.Run(fmt.Sprintf("%s/%s", name, stage), func(t *testing.T) {
-				ctx := store.WithWorkspace(t.Context(), "demo")
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 				st := store.NewMemory()
 				// A verify order binds to the task's verify policy and submitted
 				// head, so the verify variant carries both (DEC-43).
@@ -352,7 +352,7 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 // A task outside its claim window is not waiting even with a qualifying
 // proposal: nothing has been submitted for verification or review yet.
 func TestProposalClaimWaitingRequiresSubmittedWork(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	if err := st.CreateTask(ctx, core.Task{ID: claimParityTask, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
@@ -397,7 +397,7 @@ func (s *versionReadStore) GetSystemDesignVersion(ctx context.Context, id string
 // window, a version resolved during the read is judged on its re-read state,
 // and a storage failure is a read error, never "not waiting".
 func TestProposalClaimWaitingReadsAreBoundedAndTruthful(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
 	for _, id := range []string{claimParityTask, "claim-parity-idle"} {
 		if err := base.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {

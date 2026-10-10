@@ -730,7 +730,7 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 	}
 	// A worker credential still cannot create tasks.
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "alpha"}))
+	request = request.WithContext(withWorkerActor(request.Context(), core.Worker{ID: "worker", Workspace: "alpha"}))
 	if _, err := f.server.callMCPTool(request, "create_task", intakeArgs("worker", nil)); err == nil || !strings.Contains(err.Error(), "worker credentials cannot create tasks") {
 		t.Fatalf("worker err=%v", err)
 	}

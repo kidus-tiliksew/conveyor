@@ -39,7 +39,37 @@ func (a testLifecycleAdapter) ClaimWorkOrder(ctx context.Context, id string, cla
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	if claim.WorkerID != "" {
+		if err := ensureTestWorkerEnrollment(ctx, a.Store, order.TaskID, claim.WorkerID); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	return taskops.New(a.Store).ClaimWorkOrder(ctx, order.TaskID, id, claim)
+}
+
+// ensureTestWorkerEnrollment gives a fixture worker ID a real enrollment
+// whose owner is an active member of the task's workspace, because worker
+// claims refuse a missing worker row (component-work-orders, Worker owner
+// admission). An existing worker keeps its state.
+func ensureTestWorkerEnrollment(ctx context.Context, st Store, taskID, workerID string) error {
+	m, ok := st.(*memory)
+	if !ok {
+		if v, isVolatile := st.(*volatileMemory); isVolatile {
+			m = v.memory
+		} else {
+			return nil
+		}
+	}
+	m.mu.Lock()
+	workspace := m.tasks[taskID].Workspace
+	_, exists := m.workers[workerID]
+	owner := "owner-" + workerID
+	if !exists {
+		m.workers[workerID] = core.Worker{ID: workerID, Workspace: workspace, OwnerUserID: owner, Name: "fixture " + workerID, CredentialHash: "fixture-credential-" + workerID, CreatedAt: time.Now().UTC()}
+		m.workspaceMembers[memoryScopedKey{workspace: workspace, id: owner}] = true
+	}
+	m.mu.Unlock()
+	return nil
 }
 func (a testLifecycleAdapter) RedispatchWorkOrder(ctx context.Context, id string, timeout time.Duration) (core.WorkOrder, error) {
 	order, err := a.GetWorkOrder(ctx, id)

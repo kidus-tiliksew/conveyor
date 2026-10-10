@@ -18,7 +18,7 @@ func TestSpecResponsesFilterMaterializedChildrenByOriginVersion(t *testing.T) {
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
 	}
 	st := store.NewMemoryWithConfig(cfg)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	parent := core.Task{
 		ID: "versioned-blueprint", Workspace: "demo", Repo: "conveyor",
 		BaseBranch: "main", Branch: "conveyor/task-versioned-blueprint",

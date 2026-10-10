@@ -162,6 +162,9 @@ func VerificationChunkExpiryRecheck(taskID string, cutoff time.Time, selected []
 // ExpireVerificationChunks implements the internal expiry for the volatile
 // backend under its single mutex.
 func (m *volatileMemory) ExpireVerificationChunks(ctx context.Context, limit int) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	ws, cutoff, err := AuthorizeVerificationChunkExpiry(ctx)
 	if err != nil {
 		return 0, err

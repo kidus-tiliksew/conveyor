@@ -21,7 +21,7 @@ func TestMemoryConformance(t *testing.T) {
 			st := store.NewVolatileBackend()
 			t.Cleanup(st.Close)
 			workspace := "conformance-" + core.NewTaskID()
-			ctx := store.WithWorkspace(t.Context(), workspace)
+			ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.SystemActor())
 			cfg := &config.Config{Workspace: workspace, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{
 				"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 			}}}

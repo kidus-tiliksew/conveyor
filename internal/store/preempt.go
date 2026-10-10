@@ -49,6 +49,9 @@ func SameWorkOrderPreempt(left, right WorkOrderPreemptRequest) bool {
 }
 
 func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, raw WorkOrderPreemptRequest) (WorkOrderPreemptResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return WorkOrderPreemptResult{}, err
+	}
 	request, err := PrepareWorkOrderPreemptRequest(raw)
 	if err != nil {
 		return WorkOrderPreemptResult{}, err

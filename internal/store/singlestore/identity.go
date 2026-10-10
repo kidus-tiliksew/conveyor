@@ -207,7 +207,9 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	}
 	hash := sha256.Sum256([]byte(legacyToken))
 	changed := false
-	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
+	// Startup bootstrap binds the explicit system actor for its deployment
+	// audit rows (component-persistence, Actor context).
+	systemCtx := store.WithActor(ctx, store.SystemActor("system"))
 	err = s.identityTx(ctx, func(tx *sql.Tx) error {
 		if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapLocked); err != nil {
 			return err

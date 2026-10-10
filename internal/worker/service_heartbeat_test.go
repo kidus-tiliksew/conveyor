@@ -28,6 +28,7 @@ func (s heartbeatSecretSource) ListGitHubAppKeysForRedaction(context.Context) ([
 func heartbeatFixture(t *testing.T, now time.Time) (*Service, store.Store, context.Context, core.Worker) {
 	t.Helper()
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	service := &Service{Store: st, Now: func() time.Time { return now }, ConfigProvider: func(context.Context) (*config.Config, error) {
 		t.Error("heartbeat consulted the server configuration")
 		return nil, errors.New("server configuration must not be read by heartbeat")

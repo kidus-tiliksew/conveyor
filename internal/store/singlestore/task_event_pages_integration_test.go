@@ -20,7 +20,7 @@ import (
 func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ws := "event-window-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), ws)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
 	cfg := &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ws := "event-fetch-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), ws)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
 	cfg := &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

@@ -631,6 +631,9 @@ func (m *memory) WithTaskSideEffectLock(ctx context.Context, taskID string, fn f
 }
 
 func (m *memory) AppendEvent(ctx context.Context, event core.Event) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[event.TaskID]; !ok {
@@ -770,6 +773,9 @@ func (m *memory) ListActivityMarkersForTasks(ctx context.Context, taskIDs []stri
 }
 
 func (m *memory) UpsertTranscript(ctx context.Context, transcript core.Transcript) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job, _, ok := m.findJobLocked(transcript.JobID)
@@ -813,8 +819,15 @@ func (m *memory) GetTranscript(_ context.Context, jobID string) (core.Transcript
 	return transcript, nil
 }
 
+// appendEventLocked records one event under the held mutex. Every mutating
+// entry point checks RequireActor before it changes any state, so a missing
+// actor here is a programming error, never a silent default
+// (component-persistence, Actor context).
 func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
-	actor := ActorFromContext(ctx)
+	actor, err := RequireActor(ctx)
+	if err != nil {
+		panic(fmt.Errorf("volatile event %q reached the ledger without an actor check: %w", event.Kind, err))
+	}
 	if event.ActorID == "" {
 		event.ActorID = actor.ID
 	}

@@ -29,31 +29,31 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	st := newIdentityIntegrationStore(t, 0)
 	identity := config.FirstOperatorIdentity{OrganizationName: "Example Org", Email: "owner@example.test", DisplayName: "Example Owner"}
 	legacy := "legacy-token-value"
-	seeded, err := st.BootstrapIdentity(t.Context(), identity, legacy)
+	seeded, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, legacy)
 	if err != nil || !seeded {
 		t.Fatalf("bootstrap seeded=%t err=%v", seeded, err)
 	}
 	var orgCount, userCount, tokenCount int
-	if err := st.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM orgs), (SELECT count(*) FROM users), (SELECT count(*) FROM user_tokens)`).Scan(&orgCount, &userCount, &tokenCount); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT (SELECT count(*) FROM orgs), (SELECT count(*) FROM users), (SELECT count(*) FROM user_tokens)`).Scan(&orgCount, &userCount, &tokenCount); err != nil {
 		t.Fatal(err)
 	}
 	if orgCount != 1 || userCount != 1 || tokenCount != 1 {
 		t.Fatalf("bootstrap counts org=%d user=%d token=%d, want 1/1/1", orgCount, userCount, tokenCount)
 	}
 	var markedCount int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_tokens WHERE deployment_credential`).Scan(&markedCount); err != nil || markedCount != 1 {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM user_tokens WHERE deployment_credential`).Scan(&markedCount); err != nil || markedCount != 1 {
 		t.Fatalf("bootstrap deployment marker count=%d err=%v", markedCount, err)
 	}
-	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	principal, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil || principal.Email != identity.Email || principal.Status != "active" {
 		t.Fatalf("legacy verification principal=%+v err=%v", principal, err)
 	}
 	workspace := "identity-rotation-" + core.NewTaskID()
-	if seededWorkspace, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), isolationConfig(workspace)); err != nil || !seededWorkspace {
+	if seededWorkspace, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace), isolationConfig(workspace)); err != nil || !seededWorkspace {
 		t.Fatalf("bootstrap rotation workspace seeded=%t err=%v", seededWorkspace, err)
 	}
 	var storedHash []byte
-	if err := st.pool.QueryRow(t.Context(), `SELECT token_hash FROM user_tokens WHERE deployment_credential`).Scan(&storedHash); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT token_hash FROM user_tokens WHERE deployment_credential`).Scan(&storedHash); err != nil {
 		t.Fatal(err)
 	}
 	wantHash := sha256.Sum256([]byte(legacy))
@@ -61,77 +61,77 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 		t.Fatal("legacy token was not stored exclusively as its SHA-256 hash")
 	}
 
-	seeded, err = st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Replacement", Email: "other@example.test", DisplayName: "Other"}, "replacement-token")
+	seeded, err = st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Replacement", Email: "other@example.test", DisplayName: "Other"}, "replacement-token")
 	if err != nil || !seeded {
 		t.Fatalf("rotation bootstrap changed=%t err=%v, want remap", seeded, err)
 	}
 	var orgName, email string
-	if err := st.pool.QueryRow(t.Context(), `SELECT name FROM orgs`).Scan(&orgName); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT name FROM orgs`).Scan(&orgName); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT email FROM users`).Scan(&email); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT email FROM users`).Scan(&email); err != nil {
 		t.Fatal(err)
 	}
 	if orgName != identity.OrganizationName || email != identity.Email {
 		t.Fatalf("restart overwrote identity: org=%q email=%q", orgName, email)
 	}
-	if _, err := st.VerifyPersonalAccessToken(t.Context(), legacy); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("old token verification err=%v, want invalid", err)
 	}
-	if rotated, err := st.VerifyPersonalAccessToken(t.Context(), "replacement-token"); err != nil || rotated.ID != principal.ID {
+	if rotated, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "replacement-token"); err != nil || rotated.ID != principal.ID {
 		t.Fatalf("replacement token principal=%+v err=%v", rotated, err)
 	}
 	var rotationEvents int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'
 		AND payload_json ? 'credential_id' AND payload_json::text NOT LIKE '%replacement-token%'`).Scan(&rotationEvents); err != nil || rotationEvents != 1 {
 		t.Fatalf("rotation audit count=%d err=%v", rotationEvents, err)
 	}
-	seeded, err = st.BootstrapIdentity(t.Context(), identity, "replacement-token")
+	seeded, err = st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "replacement-token")
 	if err != nil || seeded {
 		t.Fatalf("healthy restart bootstrap changed=%t err=%v, want no-op", seeded, err)
 	}
 
-	issued, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "CLI")
+	issued, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "CLI")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if issued.Value == "" || !strings.HasPrefix(issued.Value, "cv_pat_") || strings.Count(issued.Value, ".") == 2 {
 		t.Fatal("issued token does not have the opaque non-JWT format")
 	}
-	if verified, err := st.VerifyPersonalAccessToken(t.Context(), issued.Value); err != nil || verified.ID != principal.ID {
+	if verified, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), issued.Value); err != nil || verified.ID != principal.ID {
 		t.Fatalf("issued token verification principal=%+v err=%v", verified, err)
 	}
-	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "Codex")
+	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "Codex")
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := st.VerifyCredential(t.Context(), agent.Value)
+	resolved, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), agent.Value)
 	if err != nil || resolved.ID != agent.ID || resolved.OwnerUserID != principal.ID || resolved.Kind != core.CredentialAgent || resolved.Scope != core.CredentialScopeUser {
 		t.Fatalf("resolved agent credential=%+v err=%v", resolved, err)
 	}
-	if _, err = st.VerifyPersonalAccessToken(t.Context(), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err = st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("agent credential authenticated as PAT: %v", err)
 	}
-	if _, err = st.RevokePersonalAccessToken(t.Context(), agent.ID); err == nil {
+	if _, err = st.RevokePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), agent.ID); err == nil {
 		t.Fatal("personal-token revocation accepted an agent credential")
 	}
-	if resolved, err = st.VerifyCredential(t.Context(), agent.Value); err != nil || resolved.Kind != core.CredentialAgent {
+	if resolved, err = st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), agent.Value); err != nil || resolved.Kind != core.CredentialAgent {
 		t.Fatalf("agent credential changed by PAT revocation: credential=%+v err=%v", resolved, err)
 	}
-	if err = st.RevokeAgentCredential(t.Context(), principal.ID, agent.ID); err != nil {
+	if err = st.RevokeAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, agent.ID); err != nil {
 		t.Fatalf("revoke agent credential: %v", err)
 	}
-	if _, err = st.VerifyCredential(t.Context(), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err = st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("revoked agent verification err=%v, want invalid", err)
 	}
-	if revoked, err := st.RevokePersonalAccessToken(t.Context(), issued.ID); err != nil || revoked.RevokedAt == nil {
+	if revoked, err := st.RevokePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), issued.ID); err != nil || revoked.RevokedAt == nil {
 		t.Fatalf("revoke token=%+v err=%v", revoked, err)
 	}
-	if _, err := st.VerifyPersonalAccessToken(t.Context(), issued.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), issued.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("revoked verification err=%v, want invalid", err)
 	}
 
-	second, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "second")
+	second, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "second")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,11 +139,11 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerBoundAgent, err := st.IssueAgentCredential(t.Context(), principal.ID, boundLabel)
+	ownerBoundAgent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, boundLabel)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if credential, verifyErr := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); verifyErr != nil || credential.RunWorkspaceID != "demo" || credential.RunWorkOrderID != "order-1" || credential.RunSessionID != "session-1" {
+	if credential, verifyErr := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), ownerBoundAgent.Value); verifyErr != nil || credential.RunWorkspaceID != "demo" || credential.RunWorkOrderID != "order-1" || credential.RunSessionID != "session-1" {
 		t.Fatalf("bound agent credential=%+v err=%v", credential, verifyErr)
 	}
 	revocationBinding := store.RunAgentCredentialBinding{WorkspaceID: "demo", WorkOrderID: "order-2", SessionID: "session-2"}
@@ -151,7 +151,7 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	revocableAgent, err := st.IssueAgentCredential(t.Context(), principal.ID, revocationLabel)
+	revocableAgent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, revocationLabel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,32 +160,32 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 		"work order": {WorkspaceID: "demo", WorkOrderID: "order-3", SessionID: "session-2"},
 		"session":    {WorkspaceID: "demo", WorkOrderID: "order-2", SessionID: "session-3"},
 	} {
-		if revokeErr := st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, mismatched); !errors.Is(revokeErr, store.ErrRunAgentCredentialBindingMismatch) {
+		if revokeErr := st.RevokeRunAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, revocableAgent.ID, mismatched); !errors.Is(revokeErr, store.ErrRunAgentCredentialBindingMismatch) {
 			t.Fatalf("%s mismatch revoke err=%v", name, revokeErr)
 		}
-		if credential, verifyErr := st.VerifyCredential(t.Context(), revocableAgent.Value); verifyErr != nil || credential.ID != revocableAgent.ID {
+		if credential, verifyErr := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), revocableAgent.Value); verifyErr != nil || credential.ID != revocableAgent.ID {
 			t.Fatalf("%s mismatch changed credential=%+v err=%v", name, credential, verifyErr)
 		}
 	}
-	if err = st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
+	if err = st.RevokeRunAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
 		t.Fatalf("revoke bound agent credential: %v", err)
 	}
-	if err = st.RevokeRunAgentCredential(t.Context(), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
+	if err = st.RevokeRunAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, revocableAgent.ID, revocationBinding); err != nil {
 		t.Fatalf("repeat bound agent revocation: %v", err)
 	}
-	if _, err = st.VerifyCredential(t.Context(), revocableAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err = st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), revocableAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("revoked bound agent verification err=%v, want invalid", err)
 	}
-	if user, err := st.DeactivateIdentityUser(t.Context(), principal.ID); err != nil || user.Status != "deactivated" {
+	if user, err := st.DeactivateIdentityUser(store.WithActor(t.Context(), store.SystemActor()), principal.ID); err != nil || user.Status != "deactivated" {
 		t.Fatalf("deactivate user=%+v err=%v", user, err)
 	}
-	if _, err := st.VerifyPersonalAccessToken(t.Context(), second.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), second.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("deactivated-user verification err=%v, want invalid", err)
 	}
-	if _, err := st.VerifyCredential(t.Context(), ownerBoundAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), ownerBoundAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("deactivated-owner agent verification err=%v, want invalid", err)
 	}
-	if _, err := st.IssuePersonalAccessToken(t.Context(), principal.ID, "forbidden"); err == nil {
+	if _, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "forbidden"); err == nil {
 		t.Fatal("issued token for deactivated user")
 	}
 }
@@ -193,17 +193,17 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "revocation-failure-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Revocation Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
-	operatorCtx := store.WithCredential(t.Context(), credential)
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), credential)
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	workspaceID := "revocation-failure-" + core.NewTaskID()
 	if _, err = st.CreateWorkspace(operatorCtx, workspaceID, workspaceID, isolationConfig(workspaceID)); err != nil {
@@ -233,7 +233,7 @@ func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *test
 	if grant.Code != http.StatusCreated {
 		t.Fatalf("grant invitation status=%d body=%s", grant.Code, grant.Body.String())
 	}
-	if _, err = st.pool.Exec(t.Context(), `CREATE FUNCTION reject_invitation_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `CREATE FUNCTION reject_invitation_delete() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'injected invitation delete failure with secret detail'; END $$;
 		CREATE TRIGGER reject_invitation_delete BEFORE DELETE ON workspace_membership_invitations
 		FOR EACH ROW EXECUTE FUNCTION reject_invitation_delete()`); err != nil {
@@ -244,10 +244,10 @@ func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *test
 		t.Fatalf("failed revocation status=%d body=%q", failure.Code, failure.Body.String())
 	}
 	var invitations int
-	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, invitedEmail).Scan(&invitations); err != nil || invitations != 1 {
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, invitedEmail).Scan(&invitations); err != nil || invitations != 1 {
 		t.Fatalf("pending invitation count=%d err=%v", invitations, err)
 	}
-	if _, err = st.pool.Exec(t.Context(), `DROP TRIGGER reject_invitation_delete ON workspace_membership_invitations;
+	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `DROP TRIGGER reject_invitation_delete ON workspace_membership_invitations;
 		DROP FUNCTION reject_invitation_delete()`); err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *test
 	}
 	user := provisionedIdentityRow(t, st, invitedEmail)
 	var bindings int
-	if err = st.pool.QueryRow(t.Context(), `SELECT
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2),
 		(SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$3)`,
 		workspaceID, user.ID, invitedEmail).Scan(&bindings, &invitations); err != nil {
@@ -272,30 +272,30 @@ func TestFailedInvitationRevocationLeavesInvitationRedeemableIntegration(t *test
 func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	identity := config.FirstOperatorIdentity{OrganizationName: "Audit Org", Email: "audit-owner@example.test", DisplayName: "Audit Owner"}
-	if _, err := st.BootstrapIdentity(t.Context(), identity, "legacy-one"); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "legacy-one"); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err != nil || !changed {
+	if changed, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "legacy-two"); err != nil || !changed {
 		t.Fatalf("zero-workspace rotation changed=%t err=%v", changed, err)
 	}
 	var rotated int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'`).Scan(&rotated); err != nil || rotated != 1 {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated'`).Scan(&rotated); err != nil || rotated != 1 {
 		t.Fatalf("zero-workspace rotation events=%d err=%v", rotated, err)
 	}
 
-	principal, err := st.VerifyPersonalAccessToken(t.Context(), "legacy-two")
+	principal, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "legacy-two")
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "identity-preserve-" + core.NewTaskID()
-	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), workspace), isolationConfig(workspace)); err != nil || !seeded {
+	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace), isolationConfig(workspace)); err != nil || !seeded {
 		t.Fatalf("workspace bootstrap seeded=%t err=%v", seeded, err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID); err != nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID); err != nil {
 		t.Fatal(err)
 	}
 	// Bootstrap never heals a missing binding (DEC-63(4)).
-	if changed, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err != nil || changed {
+	if changed, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "legacy-two"); err != nil || changed {
 		t.Fatalf("unchanged restart changed=%t err=%v, want no-op", changed, err)
 	}
 	var restored int
@@ -311,17 +311,17 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	}
 
 	var tokenID string
-	if err := st.pool.QueryRow(t.Context(), `SELECT id FROM user_tokens WHERE deployment_credential`).Scan(&tokenID); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT id FROM user_tokens WHERE deployment_credential`).Scan(&tokenID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.RevokePersonalAccessToken(t.Context(), tokenID); err != nil {
+	if _, err := st.RevokePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), tokenID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.BootstrapIdentity(t.Context(), identity, "legacy-two"); err == nil || !strings.Contains(err.Error(), "legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT") {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "legacy-two"); err == nil || !strings.Contains(err.Error(), "legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT") {
 		t.Fatalf("revoked legacy restart error=%v", err)
 	}
 	var revoked bool
-	if err := st.pool.QueryRow(t.Context(), `SELECT revoked_at IS NOT NULL FROM user_tokens WHERE id=$1`, tokenID).Scan(&revoked); err != nil || !revoked {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT revoked_at IS NOT NULL FROM user_tokens WHERE id=$1`, tokenID).Scan(&revoked); err != nil || !revoked {
 		t.Fatalf("revoked legacy mapping resurrected=%t err=%v", !revoked, err)
 	}
 	// A new deployment token after revocation is reissued to the same owner
@@ -349,20 +349,20 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "live-binding-http-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "Live Org", Email: "live-owner@example.test", DisplayName: "Live Owner"}, legacy); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Live Org", Email: "live-owner@example.test", DisplayName: "Live Owner"}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "live-binding-" + core.NewTaskID()
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	if _, err := st.CreateWorkspace(operatorCtx, workspace, workspace, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
-	pat, err := st.IssuePersonalAccessToken(t.Context(), owner.ID, "live binding")
+	pat, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), owner.ID, "live binding")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,14 +383,14 @@ func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) 
 	if response := call(http.MethodPost, "/v1/users", `{"email":"before@example.test","display_name":"Before"}`); response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
 		t.Fatalf("owner provisioning status=%d body=%s", response.Code, response.Body.String())
 	}
-	second, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_second_" + core.NewTaskID(), Email: "second-" + core.NewTaskID() + "@example.test", DisplayName: "Second"})
+	second, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{ID: "usr_second_" + core.NewTaskID(), Email: "second-" + core.NewTaskID() + "@example.test", DisplayName: "Second"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'operator')`, workspace, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	secondPAT, err := st.IssuePersonalAccessToken(t.Context(), second.ID, "second operator")
+	secondPAT, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), second.ID, "second operator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,19 +422,19 @@ func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) 
 func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "legacy-http-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{OrganizationName: "HTTP Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "HTTP Org", Email: "owner@example.test", DisplayName: "Owner"}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	principal, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "integration agent")
+	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "integration agent")
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "identity-http-" + core.NewTaskID()
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
 	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
@@ -483,12 +483,12 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorActsIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "run-agent-lifecycle-operator"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Run Agent Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorAc
 			cfg.Routing.Stages[stage] = route
 		}
 	}
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{
 		ID: "deployment", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator,
 	})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
@@ -593,7 +593,7 @@ func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorAc
 		if decodeErr := json.Unmarshal(issuedResponse.Body.Bytes(), &issued); decodeErr != nil || issued.ID == "" || issued.Value == "" {
 			t.Fatalf("decode issued %s credential=%+v err=%v", order.Stage, issued, decodeErr)
 		}
-		verified, verifyErr := st.VerifyCredential(t.Context(), issued.Value)
+		verified, verifyErr := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), issued.Value)
 		if verifyErr != nil || verified.Kind != core.CredentialAgent || verified.OwnerUserID != owner.ID || verified.RunWorkspaceID != workspace || verified.RunWorkOrderID != order.ID || verified.RunSessionID != sessionID {
 			t.Fatalf("verified %s credential=%+v err=%v", order.Stage, verified, verifyErr)
 		}
@@ -677,21 +677,21 @@ func TestIssuedRunAgentCredentialCompletesMCPStageLifecyclesAndRejectsOperatorAc
 func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "caller-identity-legacy"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Caller Identity Org", Email: "caller@example.test", DisplayName: "Caller",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	principal, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := st.IssueAgentCredential(t.Context(), principal.ID, "caller identity agent")
+	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "caller identity agent")
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "caller-identity-" + core.NewTaskID()
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
 	if _, err = st.CreateWorkspace(operatorCtx, workspace, workspace, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
@@ -736,12 +736,12 @@ func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegratio
 func TestOwnDisplayNameSessionMutationAndAuditIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "profile-owner-legacy"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Profile Org", Email: "profile@example.test", DisplayName: "Provisioned Name",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	principal, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	principal, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +750,7 @@ func TestOwnDisplayNameSessionMutationAndAuditIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, _, err := st.RedeemSignInLink(t.Context(), issued.Value)
+	session, _, err := st.RedeemSignInLink(store.WithActor(t.Context(), store.SystemActor()), issued.Value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +778,7 @@ func TestOwnDisplayNameSessionMutationAndAuditIntegration(t *testing.T) {
 	}
 
 	var storedName, actorID, payload string
-	if err = st.pool.QueryRow(t.Context(), `SELECT u.display_name,e.actor_id,e.payload_json::text
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT u.display_name,e.actor_id,e.payload_json::text
 		FROM users u JOIN deployment_events e ON e.kind='identity.display_name_changed'
 		WHERE u.id=$1`, principal.ID).Scan(&storedName, &actorID, &payload); err != nil {
 		t.Fatal(err)
@@ -806,7 +806,7 @@ func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			<-start
-			seeded, err := st.BootstrapIdentity(t.Context(), identity, "shared-legacy-token")
+			seeded, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "shared-legacy-token")
 			results <- seeded
 			errors <- err
 		}()
@@ -830,7 +830,7 @@ func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 		t.Fatalf("concurrent bootstrap seeded count=%d, want 1", seededCount)
 	}
 	var users, tokens, marked int
-	if err := st.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_tokens), (SELECT count(*) FROM user_tokens WHERE deployment_credential)`).Scan(&users, &tokens, &marked); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT (SELECT count(*) FROM users), (SELECT count(*) FROM user_tokens), (SELECT count(*) FROM user_tokens WHERE deployment_credential)`).Scan(&users, &tokens, &marked); err != nil {
 		t.Fatal(err)
 	}
 	if users != 1 || tokens != 1 || marked != 1 {
@@ -840,25 +840,25 @@ func TestIdentityBootstrapConcurrentStartsConvergeIntegration(t *testing.T) {
 
 func TestDeploymentCredentialMarkerMigrationBackfillAndRerunIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 97)
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO users(id,email,display_name,status)
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO users(id,email,display_name,status)
 		VALUES('usr_marker_owner','marker-owner@example.test','Marker Owner','active')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope)
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope)
 		VALUES('pat_legacy_marker','usr_marker_owner','legacy API token',decode(repeat('01',32),'hex'),'user','operator')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 98); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), st.pool, 98); err != nil {
 		t.Fatalf("apply marker migration: %v", err)
 	}
 
 	var marked bool
 	var markedCount int
-	if err := st.pool.QueryRow(t.Context(), `SELECT deployment_credential FROM user_tokens WHERE id='pat_legacy_marker'`).Scan(&marked); err != nil || !marked {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT deployment_credential FROM user_tokens WHERE id='pat_legacy_marker'`).Scan(&marked); err != nil || !marked {
 		t.Fatalf("backfilled marker=%t err=%v", marked, err)
 	}
 	// The legacy label is display-only after migration and may collide.
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope)
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope)
 		VALUES('pat_label_collision','usr_marker_owner','legacy API token',decode(repeat('02',32),'hex'),'user','operator')`); err != nil {
 		t.Fatalf("duplicate display label rejected: %v", err)
 	}
@@ -871,13 +871,13 @@ func TestDeploymentCredentialMarkerMigrationBackfillAndRerunIntegration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(t.Context(), string(sql)); err != nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), string(sql)); err != nil {
 		t.Fatalf("rerun marker migration: %v", err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_tokens WHERE deployment_credential`).Scan(&markedCount); err != nil || markedCount != 1 {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM user_tokens WHERE deployment_credential`).Scan(&markedCount); err != nil || markedCount != 1 {
 		t.Fatalf("marker count after rerun=%d err=%v", markedCount, err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope,deployment_credential)
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO user_tokens(id,user_id,label,token_hash,kind,scope,deployment_credential)
 		VALUES('pat_second_marker','usr_marker_owner','other label',decode(repeat('03',32),'hex'),'user','operator',true)`); err == nil {
 		t.Fatal("deployment marker uniqueness accepted a second marked row")
 	}
@@ -886,30 +886,30 @@ func TestDeploymentCredentialMarkerMigrationBackfillAndRerunIntegration(t *testi
 func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 80)
 	workspace := "identity-upgrade-" + core.NewTaskID()
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO workspaces (id,name,config_yaml) VALUES ($1,$1,'')`, workspace); err != nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO workspaces (id,name,config_yaml) VALUES ($1,$1,'')`, workspace); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO users(id,identity_provider_ref,role) VALUES('phase2-user','legacy-subject','operator')`); err != nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO users(id,identity_provider_ref,role) VALUES('phase2-user','legacy-subject','operator')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 0); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), st.pool, 0); err != nil {
 		t.Fatalf("upgrade from migration 080: %v", err)
 	}
 	identity := config.FirstOperatorIdentity{OrganizationName: "Upgraded Org", Email: "upgrade-owner@example.test", DisplayName: "Upgrade Owner"}
-	if seeded, err := st.BootstrapIdentity(t.Context(), identity, "upgrade-legacy-token"); err != nil || !seeded {
+	if seeded, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "upgrade-legacy-token"); err != nil || !seeded {
 		t.Fatalf("upgrade bootstrap seeded=%t err=%v", seeded, err)
 	}
-	principal, err := st.VerifyPersonalAccessToken(t.Context(), "upgrade-legacy-token")
+	principal, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "upgrade-legacy-token")
 	if err != nil || principal.Email != identity.Email {
 		t.Fatalf("upgrade legacy token principal=%+v err=%v", principal, err)
 	}
 	var legacyUsers, orgs int
-	if err := st.pool.QueryRow(t.Context(), `SELECT
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM users WHERE email LIKE '%@legacy.invalid'),
 		(SELECT count(*) FROM orgs)`).Scan(&legacyUsers, &orgs); err != nil || legacyUsers != 1 || orgs != 1 {
 		t.Fatalf("upgrade preserved users=%d orgs=%d err=%v", legacyUsers, orgs, err)
 	}
-	if seeded, err := st.BootstrapIdentity(t.Context(), identity, "upgrade-legacy-token"); err != nil || seeded {
+	if seeded, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "upgrade-legacy-token"); err != nil || seeded {
 		t.Fatalf("upgrade healthy restart seeded=%t err=%v", seeded, err)
 	}
 	// Upgrade adds no membership to the established workspace (DEC-63(4)).
@@ -918,19 +918,19 @@ func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 		t.Fatalf("upgrade bootstrap bound the owner count=%d err=%v", ownerBindings, err)
 	}
 	var orgID string
-	if err := st.pool.QueryRow(t.Context(), `SELECT org_id FROM workspaces WHERE id=$1`, workspace).Scan(&orgID); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT org_id FROM workspaces WHERE id=$1`, workspace).Scan(&orgID); err != nil {
 		t.Fatal(err)
 	}
 	if orgID != "deployment" {
 		t.Fatalf("upgraded workspace org_id=%q, want deployment", orgID)
 	}
-	if _, err := st.pool.Exec(t.Context(), `INSERT INTO orgs (id,name) VALUES ('second','Second')`); err == nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO orgs (id,name) VALUES ('second','Second')`); err == nil {
 		t.Fatal("singleton organization constraint accepted a second row")
 	}
-	if _, err := st.pool.Exec(t.Context(), `DELETE FROM orgs WHERE id='deployment'`); err == nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `DELETE FROM orgs WHERE id='deployment'`); err == nil {
 		t.Fatal("singleton organization could be deleted")
 	}
-	if _, err := st.pool.Exec(t.Context(), `UPDATE workspaces SET org_id='missing' WHERE id=$1`, workspace); err == nil {
+	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `UPDATE workspaces SET org_id='missing' WHERE id=$1`, workspace); err == nil {
 		t.Fatal("workspace organization foreign key accepted a missing organization")
 	}
 }
@@ -938,27 +938,27 @@ func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "self-service-legacy-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Self Service Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
 	suffix := core.NewTaskID()
-	alice, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_alice_" + suffix, Email: "alice-" + suffix + "@example.test", DisplayName: "Alice"})
+	alice, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{ID: "usr_alice_" + suffix, Email: "alice-" + suffix + "@example.test", DisplayName: "Alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_bob_" + suffix, Email: "bob-" + suffix + "@example.test", DisplayName: "Bob"})
+	bob, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{ID: "usr_bob_" + suffix, Email: "bob-" + suffix + "@example.test", DisplayName: "Bob"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Each account's first credential is seeded the way provisioning hands one
 	// out; from there the surface under test is the only way to mint more.
-	aliceSeed, err := st.IssuePersonalAccessToken(t.Context(), alice.ID, "seed")
+	aliceSeed, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), alice.ID, "seed")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bobSeed, err := st.IssuePersonalAccessToken(t.Context(), bob.ID, "seed")
+	bobSeed, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), bob.ID, "seed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -975,7 +975,7 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	}
 
 	// The bootstrap credential is marked only in its owner's non-secret list.
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1052,7 +1052,7 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	// Existing bootstrap rotation re-maps the credential without changing list
 	// secrecy; the marker follows the row that now authenticates the env value.
 	rotatedLegacy := "self-service-rotated-legacy-token"
-	if rotated, rotateErr := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if rotated, rotateErr := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Self Service Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, rotatedLegacy); rotateErr != nil || !rotated {
 		t.Fatalf("rotate deployment credential rotated=%t err=%v", rotated, rotateErr)
@@ -1092,14 +1092,14 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 		t.Fatalf("issued token=%+v", issued)
 	}
 	var storedValues int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM user_tokens WHERE id=$1 AND encode(token_hash,'escape')=$2`, issued.ID, issued.Value).Scan(&storedValues); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM user_tokens WHERE id=$1 AND encode(token_hash,'escape')=$2`, issued.ID, issued.Value).Scan(&storedValues); err != nil {
 		t.Fatal(err)
 	}
 	if storedValues != 0 {
 		t.Fatal("issued token value was persisted in cleartext")
 	}
 	var issueEvents int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM deployment_events
 		WHERE kind='identity.personal_token_issued'
 		  AND actor_id=$1 AND actor_role='human'
 		  AND payload_json=jsonb_build_object('credential_id',$2::text,'label','laptop')
@@ -1153,7 +1153,7 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 	if closed := call(http.MethodGet, "/v1/tokens", issued.Value, ""); closed.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked credential status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	if _, err := st.VerifyCredential(t.Context(), issued.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), issued.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("revoked credential verification err=%v", err)
 	}
 	after := call(http.MethodGet, "/v1/tokens", aliceSeed.Value, "")
@@ -1170,7 +1170,7 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 		t.Fatalf("post-revocation list=%s", after.Body.String())
 	}
 	var revokeEvents int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM deployment_events
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM deployment_events
 		WHERE kind='identity.personal_token_revoked'
 		  AND actor_id=$1 AND actor_role='human'
 		  AND payload_json=jsonb_build_object('credential_id',$2::text,'label','laptop')
@@ -1181,14 +1181,14 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 		`UPDATE deployment_events SET actor_id='tampered' WHERE payload_json->>'credential_id'=$1`,
 		`DELETE FROM deployment_events WHERE payload_json->>'credential_id'=$1`,
 	} {
-		if _, err := st.pool.Exec(t.Context(), statement, issued.ID); err == nil {
+		if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), statement, issued.ID); err == nil {
 			t.Fatalf("deployment token audit accepted append-only mutation: %s", statement)
 		}
 	}
 
 	// Agent credentials share the user_tokens table but are not human
 	// credentials: they can neither enumerate nor mint their owner's tokens.
-	agent, err := st.IssueAgentCredential(t.Context(), alice.ID, "execution")
+	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), alice.ID, "execution")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1225,7 +1225,7 @@ func newIdentityIntegrationStore(t *testing.T, maxVersion int) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	if err := migrateControlPlaneToVersion(t.Context(), pool, maxVersion); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, maxVersion); err != nil {
 		t.Fatalf("migrate identity fixture to %d: %v", maxVersion, err)
 	}
 	return newStore(pool)

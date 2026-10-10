@@ -55,13 +55,13 @@ func integrationEventAttemptIDs(t *testing.T, events []core.Event, kind, jobID s
 }
 
 func TestUpdateWorkspaceConfigMissingRowIsNotFound(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "missing-config-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	_, err = st.UpdateWorkspaceConfig(ctx, 1, &config.Config{Workspace: workspace})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("UpdateWorkspaceConfig error=%v, want store.ErrNotFound", err)
@@ -70,7 +70,7 @@ func TestUpdateWorkspaceConfigMissingRowIsNotFound(t *testing.T) {
 
 func TestPhase47PersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -406,7 +406,7 @@ func containsString(values []string, want string) bool {
 
 func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -460,7 +460,7 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	}, make([]byte, core.MaxVerificationScreenshotBytes+1)); err == nil {
 		t.Fatal("oversized verification evidence was accepted")
 	}
-	otherWorkspace := store.WithWorkspace(context.Background(), workspace+"-other")
+	otherWorkspace := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace+"-other")
 	if _, err = st.CreateArtifact(otherWorkspace, core.Artifact{
 		Name: "cross.png", ContentType: "image/png",
 		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
@@ -506,7 +506,7 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 
 func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -531,12 +531,12 @@ func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
 		if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{WorkerID: "worker-a", ClaimantID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err = storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{WorkerID: "phase47-worker-a", ClaimantID: "phase47-worker-a", SessionID: "session-a", ClientToken: "token-a", Lease: lease, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	createClaim("claimed-evidence-task", "claimed-evidence-task-implement-1", time.Minute)
-	request := store.ClaimedVerificationEvidenceRequest{WorkOrderID: "claimed-evidence-task-implement-1", WorkerID: "worker-a", SessionID: "session-a", ClientToken: "token-a", Name: "proof.bin", ContentType: "IMAGE/PNG; charset=binary"}
+	request := store.ClaimedVerificationEvidenceRequest{WorkOrderID: "claimed-evidence-task-implement-1", WorkerID: "phase47-worker-a", SessionID: "session-a", ClientToken: "token-a", Name: "proof.bin", ContentType: "IMAGE/PNG; charset=binary"}
 	content := testimage.PNG("concurrent")
 
 	var wg sync.WaitGroup
@@ -572,7 +572,7 @@ func TestClaimedVerificationEvidenceUploadIntegration(t *testing.T) {
 	if _, err = st.CreateClaimedVerificationEvidence(ctx, wrong, []byte("wrong")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
 		t.Fatalf("wrong token error=%v", err)
 	}
-	if _, err = st.CreateClaimedVerificationEvidence(store.WithWorkspace(context.Background(), workspace+"-other"), request, []byte("cross")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
+	if _, err = st.CreateClaimedVerificationEvidence(store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace+"-other"), request, []byte("cross")); !errors.Is(err, store.ErrVerificationEvidenceClaimConflict) {
 		t.Fatalf("cross-workspace error=%v", err)
 	}
 	createClaim("expired-evidence-task", "expired-evidence-task-implement-1", time.Nanosecond)

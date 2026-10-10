@@ -26,7 +26,7 @@ func TestRequirementEventLookupIndexIntegration(t *testing.T) {
 	st, _, _ := newPhase61IntegrationStore(t)
 	defer st.Close()
 	var definition string
-	if err := st.pool.QueryRow(t.Context(), `SELECT indexdef FROM pg_indexes
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT indexdef FROM pg_indexes
 		WHERE schemaname=current_schema() AND indexname='events_requirement_document_idx'`).Scan(&definition); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestSystemDesignEventLookupIndexIntegration(t *testing.T) {
 	st, _, _ := newPhase61IntegrationStore(t)
 	defer st.Close()
 	var definition string
-	if err := st.pool.QueryRow(t.Context(), `SELECT indexdef FROM pg_indexes
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT indexdef FROM pg_indexes
 		WHERE schemaname=current_schema() AND indexname='events_system_design_document_idx'`).Scan(&definition); err != nil {
 		t.Fatal(err)
 	}
@@ -65,24 +65,24 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = Migrate(t.Context(), pool); err != nil {
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "lineage-query-" + strings.ToLower(t.Name())
-	if _, err = pool.Exec(t.Context(), `INSERT INTO workspaces (id,name) VALUES ($1,$1) ON CONFLICT DO NOTHING`, workspace); err != nil {
+	if _, err = pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO workspaces (id,name) VALUES ($1,$1) ON CONFLICT DO NOTHING`, workspace); err != nil {
 		t.Fatal(err)
 	}
 	roots := make([]core.LineageNode, 0, 50)
 	for i := 0; i < 50; i++ {
 		id := fmt.Sprintf("req-%02d", i)
 		roots = append(roots, core.LineageNode{Type: core.LineageRequirement, ID: id})
-		if _, err = pool.Exec(t.Context(), `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event) VALUES ($1,'requirement',$2,'task',$3,'historical_feature_assignment','feature.migrated')`, workspace, id, "task-"+id); err != nil {
+		if _, err = pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event) VALUES ($1,'requirement',$2,'task',$3,'historical_feature_assignment','feature.migrated')`, workspace, id, "task-"+id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	recorder.reset()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	links, err := st.ListLineageNeighborhood(ctx, roots, core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: workspace})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 	st, ctx, workspace := newPhase61IntegrationStore(t)
 	defer st.Close()
 	userID := "usr_attention_" + core.NewTaskID()
-	if _, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	if _, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: userID, Email: userID + "@example.test", DisplayName: "Attention Assignee",
 	}); err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherUserID := "usr_attention_other_" + core.NewTaskID()
-	if _, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{
+	if _, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{
 		ID: otherUserID, Email: otherUserID + "@example.test", DisplayName: "Other Assignee",
 	}); err != nil {
 		t.Fatal(err)
@@ -194,16 +194,17 @@ func TestCallerAttentionFiltersBeforePagingIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherWorkspace := "attention-other-workspace-" + core.NewTaskID()
-	otherContext := store.WithWorkspace(context.Background(), otherWorkspace)
+	otherContext := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), otherWorkspace)
 	if _, err := st.BootstrapWorkspaceConfig(otherContext, &config.Config{
 		Workspace: otherWorkspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Startup seeding binds nobody in a populated registry (DEC-63(4)), so the
-	// assignee's membership in the other workspace is explicit.
-	if _, err := st.pool.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor')`, otherWorkspace, userID); err != nil {
+	// Bind the assignee explicitly: startup seeding binds nobody in a
+	// populated registry (DEC-63(4)), and both tasks made this binding
+	// explicit.
+	if _, err := st.pool.Exec(otherContext, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'contributor') ON CONFLICT(workspace_id,user_id) DO NOTHING`, otherWorkspace, userID); err != nil {
 		t.Fatal(err)
 	}
 	otherWorkspaceTask := phase61Task(otherWorkspace, "attention-other-workspace-task-"+core.NewTaskID(), core.TaskAwaiting, "")
@@ -293,12 +294,12 @@ func TestActivityMarkersForTasksScopeEveryReadToThePageIntegration(t *testing.T)
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = Migrate(t.Context(), pool); err != nil {
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "activity-scope-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -436,11 +437,11 @@ func TestWorkOrderReadsExecuteNoMutationQueriesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = Migrate(t.Context(), pool); err != nil {
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
-	ctx := store.WithWorkspace(t.Context(), "pure-read-"+strings.ToLower(t.Name()))
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "pure-read-"+strings.ToLower(t.Name()))
 	recorder.reset()
 
 	_, _ = st.GetWorkOrder(ctx, "missing")

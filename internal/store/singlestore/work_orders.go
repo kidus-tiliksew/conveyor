@@ -839,35 +839,47 @@ func (s *Store) claimOwnerTx(ctx context.Context, tx *sql.Tx, claim *core.WorkOr
 		}
 	}
 	if claim.WorkerID != "" {
+		// A missing worker row, a revoked worker, a null owner, a missing or
+		// inactive owner user, and a missing binding are all refused. The row
+		// locks serialize the claim against identity deactivation and
+		// membership revocation (component-work-orders, Worker owner admission).
 		var owner sql.NullString
 		var revoked sql.NullTime
 		err := tx.QueryRowContext(ctx, `SELECT owner_user_id,revoked_at FROM workers WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), claim.WorkerID).Scan(&owner, &revoked)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: worker %s is not enrolled", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err != nil {
+			return err
+		}
+		if revoked.Valid {
+			return fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if !owner.Valid || strings.TrimSpace(owner.String) == "" {
+			return fmt.Errorf("%w: worker %s has no owner", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err = store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerRead); err != nil {
+			return err
+		}
+		claim.OwnerUserID = owner.String
+		var status string
+		err = tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=? FOR UPDATE`, owner.String).Scan(&status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err == nil {
-			if revoked.Valid {
-				return fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
-			}
-			claim.OwnerUserID = owner.String
-			if owner.Valid {
-				var status string
-				err = tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=? FOR UPDATE`, owner.String).Scan(&status)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
-					return err
-				}
-				if err != nil || status != "active" {
-					return store.ErrWorkerUnauthorized
-				}
-				var exists int
-				err = tx.QueryRowContext(ctx, `SELECT 1 FROM workspace_role_bindings WHERE workspace_id=? AND user_id=? FOR UPDATE`, documentWorkspace(ctx), owner.String).Scan(&exists)
-				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
-				}
-				if err != nil {
-					return err
-				}
-			}
+		if err != nil || status != "active" {
+			return fmt.Errorf("%w: worker %s owner is not active", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		var exists int
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM workspace_role_bindings WHERE workspace_id=? AND user_id=? FOR UPDATE`, documentWorkspace(ctx), owner.String).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err != nil {
+			return err
+		}
+		if err = store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerLocked); err != nil {
+			return err
 		}
 	}
 	if task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {

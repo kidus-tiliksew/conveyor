@@ -25,7 +25,7 @@ import (
 
 func newMCPReadFixture(t *testing.T) (*Server, context.Context) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	s := NewServer(st)
 	membership := &membershipFixture{workspaces: []core.Workspace{{ID: "demo", Name: "Demo"}, {ID: "private", Name: "Private"}}, roles: map[string]map[string]core.WorkspaceRole{"reader": {"demo": core.WorkspaceRoleViewer}, "other": {"demo": core.WorkspaceRoleViewer}}}
@@ -290,7 +290,7 @@ func TestMCPReadAuthorizationAndSchemas(t *testing.T) {
 			if foreign != absent || !strings.Contains(foreign, "workspace_not_found") {
 				t.Fatalf("scope leaks existence: %s / %s", foreign, absent)
 			}
-			request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(t.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
 			if _, e := s.callMCPTool(request, d.name, a); e == nil {
 				t.Fatal("worker read accepted")
 			}

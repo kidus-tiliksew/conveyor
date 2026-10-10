@@ -15,7 +15,7 @@ import (
 )
 
 func TestInterruptedReviewRecoveryPersistenceIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestInterruptedReviewRecoveryPersistenceIntegration(t *testing.T) {
 }
 
 func TestInterruptedReviewRecoveryRejectsTerminalTaskWithoutWritesIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

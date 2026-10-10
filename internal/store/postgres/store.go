@@ -333,7 +333,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 			}
 		}
 		actor := store.ActorFromContext(ctx)
-		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		_, err = insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{
 			WorkspaceID: id, Kind: "workspace.created", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"id": id, "name": name, "config_version": row.ConfigVersion}),
 			At:          timestamp(time.Now().UTC()),
@@ -424,7 +424,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 		}
 		sections := configDiff(previous, next.PolicyDocument())
 		actor := store.ActorFromContext(ctx)
-		event, err := q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		event, err := insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "config.updated", ActorID: actor.ID,
 			ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{
 				"from_version": before.ConfigVersion,
@@ -885,11 +885,32 @@ func insertEvent(ctx context.Context, q *db.Queries, event core.Event) error {
 	return err
 }
 
+// insertWorkspaceEventRow and insertDeploymentEvent are the only callers of
+// the generated workspace and deployment event inserts. Each checks the
+// context actor before any SQL; an actor already named in the row does not
+// bypass the check (component-persistence, Actor context).
+func insertWorkspaceEventRow(ctx context.Context, q *db.Queries, arg db.InsertWorkspaceEventParams) (db.Event, error) {
+	if _, err := store.RequireActor(ctx); err != nil {
+		return db.Event{}, fmt.Errorf("workspace event %q: %w", arg.Kind, err)
+	}
+	return q.InsertWorkspaceEvent(ctx, arg)
+}
+
+func insertDeploymentEvent(ctx context.Context, q *db.Queries, arg db.InsertDeploymentEventParams) error {
+	if _, err := store.RequireActor(ctx); err != nil {
+		return fmt.Errorf("deployment event %q: %w", arg.Kind, err)
+	}
+	return q.InsertDeploymentEvent(ctx, arg)
+}
+
 func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (int64, error) {
+	actor, err := store.RequireActor(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("task event %q: %w", event.Kind, err)
+	}
 	if strings.TrimSpace(event.TaskID) == "" {
 		return 0, fmt.Errorf("task-bound event %q requires a task id; use insertWorkspaceEvent for workspace-scoped events", event.Kind)
 	}
-	actor := store.ActorFromContext(ctx)
 	if event.ActorID == "" {
 		event.ActorID = actor.ID
 	}
@@ -937,7 +958,10 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 // event insertion stay deliberately separate so a missing task ID cannot turn
 // an INSERT ... SELECT into a silent pgx.ErrNoRows rollback.
 func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) error {
-	actor := store.ActorFromContext(ctx)
+	actor, err := store.RequireActor(ctx)
+	if err != nil {
+		return fmt.Errorf("workspace event %q: %w", event.Kind, err)
+	}
 	if event.ActorID == "" {
 		event.ActorID = actor.ID
 	}

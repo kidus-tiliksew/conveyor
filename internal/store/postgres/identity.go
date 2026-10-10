@@ -70,7 +70,7 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displa
 			return notFound(err, "dashboard session")
 		}
 		actor := store.ActorFromContext(ctx)
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+		return insertDeploymentEvent(ctx, q, db.InsertDeploymentEventParams{
 			Kind: "identity.display_name_changed", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"user_id": userID, "session_id": sessionID}),
 			At:          pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
@@ -316,6 +316,9 @@ func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, u
 			actorID = store.UserActorID(user.ID)
 			payload["invited_by"] = item.invitedBy
 		}
+		// The redemption establishes its own attributed actor, so the event
+		// context binds it explicitly (component-persistence, Actor context).
+		eventCtx = store.WithActor(eventCtx, store.Actor{ID: actorID, Role: core.ActorUser})
 		if err := insertWorkspaceEvent(eventCtx, q, core.Event{
 			Kind: "workspace.membership_granted", ActorID: actorID, ActorRole: core.ActorUser,
 			Payload: core.JSONPayload(payload),
@@ -342,8 +345,14 @@ func lockIdentityEmail(ctx context.Context, tx pgx.Tx, email string) error {
 	return nil
 }
 
+// userActorContext binds the user actor that an identity operation itself
+// establishes, such as a sign-in or a session revocation.
+func userActorContext(ctx context.Context, userID string) context.Context {
+	return store.WithActor(ctx, store.Actor{ID: store.UserActorID(userID), Role: core.ActorUser})
+}
+
 func auditLegacyTokenLifecycle(ctx context.Context, q *db.Queries, credentialID, kind string) error {
-	if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+	if err := insertDeploymentEvent(store.WithActor(ctx, store.SystemActor("system")), q, db.InsertDeploymentEventParams{
 		Kind: kind, ActorID: "system", ActorRole: string(core.ActorSystem),
 		PayloadJson: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
 	}); err != nil {
@@ -357,7 +366,7 @@ func auditPersonalAccessTokenLifecycle(ctx context.Context, q *db.Queries, row d
 	if credential, ok := store.CredentialFromContext(ctx); ok {
 		actorUserID = credential.OwnerUserID
 	}
-	if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+	if err := insertDeploymentEvent(store.WithActor(ctx, store.Actor{ID: store.UserActorID(actorUserID), Role: core.ActorUser}), q, db.InsertDeploymentEventParams{
 		Kind: kind, ActorID: store.UserActorID(actorUserID), ActorRole: string(core.ActorUser),
 		PayloadJson: core.JSONPayload(map[string]any{"credential_id": row.ID, "label": row.Label}),
 		At:          pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
@@ -614,7 +623,7 @@ func (s *Store) issueSignInLink(ctx context.Context, email string, admit func(pg
 			return err
 		}
 		actor := store.ActorFromContext(ctx)
-		if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}}); err != nil {
+		if err := insertDeploymentEvent(ctx, q, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}}); err != nil {
 			return err
 		}
 		if audit != nil {
@@ -672,10 +681,10 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 			return mintErr
 		}
 		at := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
-		if eventErr := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); eventErr != nil {
+		if eventErr := insertDeploymentEvent(userActorContext(ctx, *userID), q, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); eventErr != nil {
 			return eventErr
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID}), At: at})
+		return insertDeploymentEvent(userActorContext(ctx, *userID), q, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID}), At: at})
 	})
 	if err != nil {
 		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
@@ -718,7 +727,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 		if err != nil {
 			return err
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(user.ID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID, "method": "password"}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		return insertDeploymentEvent(userActorContext(ctx, user.ID), q, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(user.ID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID, "method": "password"}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, core.ErrInvalidCredential) {
@@ -762,7 +771,7 @@ func (s *Store) SetOwnPassword(ctx context.Context, userID, sessionID, currentPa
 		if _, err := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, encoded); err != nil {
 			return err
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: kind, ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		return insertDeploymentEvent(userActorContext(ctx, userID), q, db.InsertDeploymentEventParams{Kind: kind, ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
 	})
 }
 
@@ -815,7 +824,7 @@ func (s *Store) RevokeDashboardSession(ctx context.Context, userID, sessionID st
 		if result.RowsAffected() != 1 {
 			return store.ErrNotFound
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_revoked", ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		return insertDeploymentEvent(userActorContext(ctx, userID), q, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_revoked", ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
 	})
 }
 
@@ -824,7 +833,7 @@ func (s *Store) RecordInvitationDelivery(ctx context.Context, email, outcome str
 		return errors.New("invalid invitation delivery outcome")
 	}
 	actor := store.ActorFromContext(ctx)
-	return s.queries.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+	return insertDeploymentEvent(ctx, s.queries, db.InsertDeploymentEventParams{
 		Kind: "identity.invitation_delivery_" + outcome, ActorID: actor.ID, ActorRole: string(actor.Role),
 		PayloadJson: core.JSONPayload(map[string]any{"email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
 	})

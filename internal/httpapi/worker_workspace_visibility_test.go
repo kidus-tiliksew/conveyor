@@ -54,7 +54,7 @@ type visibilityFixture struct {
 // alpha; usr_owner, who owns the run child, is bound to alpha and beta.
 func newVisibilityFixture(t *testing.T, claimant string) *visibilityFixture {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "alpha")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "alpha")
 	st := store.NewMemory()
 	task := core.Task{ID: "vis", Workspace: "alpha", Repo: "app", Title: "Visibility", Branch: "conveyor/task-vis", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -93,11 +93,11 @@ func newVisibilityFixture(t *testing.T, claimant string) *visibilityFixture {
 	workers := &workerservice.Service{Store: st, WorkOrders: orders}
 	claim := core.WorkOrderClaim{SessionID: visibilitySession, ClientToken: "claim-token", ClaimantID: core.TaskRunClaimantID(claimant), OwnerUserID: claimant, Lease: time.Hour}
 	if claimant == "worker" {
-		pairing, _, err := workers.IssuePairing(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "member-pat", OwnerUserID: "usr_member", Kind: core.CredentialUser}), time.Minute)
+		pairing, _, err := workers.IssuePairing(memberPairingContext(t, st, ctx, "usr_member"), time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
-		enrollment, err := workers.Enroll(t.Context(), pairing, "worker")
+		enrollment, err := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "worker")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +175,7 @@ type visibilityEffects struct {
 
 func (f *visibilityFixture) effects(t *testing.T) visibilityEffects {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "alpha")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "alpha")
 	order, err := f.st.GetWorkOrder(ctx, visibilityOrder)
 	if err != nil {
 		t.Fatal(err)
@@ -309,14 +309,14 @@ func TestWorkerRoutesCapabilityRefusalNotFound(t *testing.T) {
 
 	t.Run("template without credential", func(t *testing.T) {
 		g := newVisibilityFixture(t, "usr_member")
-		if response := direct(t, g.server, t.Context()); response.Code != http.StatusNotFound || response.Body.String() != canonical {
+		if response := direct(t, g.server, store.WithActor(t.Context(), store.SystemActor())); response.Code != http.StatusNotFound || response.Body.String() != canonical {
 			t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 		}
 	})
 	t.Run("template without membership authority", func(t *testing.T) {
 		g := newVisibilityFixture(t, "usr_member")
 		g.server.Memberships = nil
-		if response := direct(t, g.server, store.WithCredential(t.Context(), memberCredential)); response.Code != http.StatusNotFound || response.Body.String() != canonical {
+		if response := direct(t, g.server, withCredentialActor(store.WithActor(t.Context(), store.SystemActor()), memberCredential)); response.Code != http.StatusNotFound || response.Body.String() != canonical {
 			t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 		}
 	})
@@ -403,7 +403,7 @@ func TestWorkerRoutesVisibleWorkspaceLifecycleConflicts(t *testing.T) {
 	}
 
 	expired := newVisibilityFixture(t, "usr_member")
-	ctx := store.WithWorkspace(t.Context(), "alpha")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "alpha")
 	order, err := expired.st.GetWorkOrder(ctx, visibilityOrder)
 	if err != nil {
 		t.Fatal(err)

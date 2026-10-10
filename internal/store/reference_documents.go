@@ -12,6 +12,9 @@ import (
 )
 
 func (m *memory) CreateReferenceDocument(ctx context.Context, document core.ReferenceDocument, version core.ReferenceDocumentVersion) (core.ReferenceDocument, core.ReferenceDocumentVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.ReferenceDocument{}, core.ReferenceDocumentVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, document.Workspace)
@@ -42,6 +45,9 @@ func (m *memory) CreateReferenceDocument(ctx context.Context, document core.Refe
 }
 
 func (m *memory) SupersedeReferenceDocument(ctx context.Context, documentID string, version core.ReferenceDocumentVersion) (core.ReferenceDocumentVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.ReferenceDocumentVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := memoryScopedKey{workspace: workspaceOrDefault(ctx, version.Workspace), id: documentID}
@@ -129,6 +135,9 @@ func (m *memory) ListReferenceDocumentEvents(ctx context.Context, documentID str
 }
 
 func (m *memory) DeleteReferenceDocument(ctx context.Context, documentID string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: documentID}
@@ -146,6 +155,9 @@ func (m *memory) DeleteReferenceDocument(ctx context.Context, documentID string)
 }
 
 func (m *memory) RecordReferenceDocumentConsulted(ctx context.Context, documentID string, version int, sessionID string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: documentID}

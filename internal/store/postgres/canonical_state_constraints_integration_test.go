@@ -14,14 +14,14 @@ import (
 )
 
 func TestCanonicalStateConstraintsRejectUnsupportedValuesIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 
 	workspace := "state-constraints-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}},

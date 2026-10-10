@@ -21,17 +21,17 @@ import (
 func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "membership-redemption-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Redemption Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
-	operatorCtx := store.WithCredential(t.Context(), credential)
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), credential)
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	workspaceID := "redemption-" + core.NewTaskID()
 	if _, err = st.CreateWorkspace(operatorCtx, workspaceID, workspaceID, isolationConfig(workspaceID)); err != nil {
@@ -91,7 +91,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 		t.Fatalf("existing-account grant body=%s", existing.Body.String())
 	}
 	var bindings, invitations, redemptionEvents int
-	if err = st.pool.QueryRow(t.Context(), `SELECT
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		(SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2 AND role='contributor'),
 		(SELECT count(*) FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$3),
 		(SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.membership_granted'
@@ -112,7 +112,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 		t.Fatalf("invitation revocation status=%d body=%s", response.Code, response.Body.String())
 	}
 	revokedUser := provision(revokedEmail, "Revoked Invitee")
-	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, revokedUser.ID).Scan(&bindings); err != nil || bindings != 0 {
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, revokedUser.ID).Scan(&bindings); err != nil || bindings != 0 {
 		t.Fatalf("revoked invitation produced bindings=%d err=%v", bindings, err)
 	}
 }
@@ -120,24 +120,24 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "membership-legacy-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Membership Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bootstrapWorkspace := "member-bootstrap-" + core.NewTaskID()
-	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(t.Context(), bootstrapWorkspace), isolationConfig(bootstrapWorkspace)); err != nil || !seeded {
+	if seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), bootstrapWorkspace), isolationConfig(bootstrapWorkspace)); err != nil || !seeded {
 		t.Fatalf("bootstrap workspace seeded=%t err=%v", seeded, err)
 	}
-	if allowed, err := st.AuthorizeWorkspace(t.Context(), owner.ID, bootstrapWorkspace, core.CapabilityManageWorkspace); err != nil || !allowed {
+	if allowed, err := st.AuthorizeWorkspace(store.WithActor(t.Context(), store.SystemActor()), owner.ID, bootstrapWorkspace, core.CapabilityManageWorkspace); err != nil || !allowed {
 		t.Fatalf("legacy bootstrap membership allowed=%t err=%v", allowed, err)
 	}
 	operatorCredential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
-	operatorCtx := store.WithCredential(t.Context(), operatorCredential)
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), operatorCredential)
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 
 	suffix := core.NewTaskID()
@@ -151,7 +151,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if err := st.RevokeWorkspaceRole(workspaceBCtx, owner.ID, workspaceB); !errors.Is(err, store.ErrLastWorkspaceOperator) {
 		t.Fatalf("sole operator revocation error=%v", err)
 	}
-	secondOperator, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_operator_" + suffix, Email: "operator-" + suffix + "@example.test", DisplayName: "Second Operator"})
+	secondOperator, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{ID: "usr_operator_" + suffix, Email: "operator-" + suffix + "@example.test", DisplayName: "Second Operator"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if _, err := st.GrantWorkspaceRole(workspaceBCtx, secondOperator.Email, workspaceB, core.WorkspaceRoleViewer); !errors.Is(err, store.ErrLastWorkspaceOperator) {
 		t.Fatalf("sole operator demotion error=%v", err)
 	}
-	member, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_member_" + suffix, Email: "member-" + suffix + "@example.test", DisplayName: "Member"})
+	member, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{ID: "usr_member_" + suffix, Email: "member-" + suffix + "@example.test", DisplayName: "Member"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,17 +176,17 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 	if err != nil || grant.Email != member.Email || grant.Role != core.WorkspaceRoleContributor {
 		t.Fatalf("grant=%+v err=%v", grant, err)
 	}
-	visible, err := st.ListWorkspacesForUser(t.Context(), member.ID)
+	visible, err := st.ListWorkspacesForUser(store.WithActor(t.Context(), store.SystemActor()), member.ID)
 	if err != nil || len(visible) != 1 || visible[0].ID != workspaceA {
 		t.Fatalf("visible=%+v err=%v", visible, err)
 	}
-	if allowed, err := st.AuthorizeWorkspace(t.Context(), member.ID, workspaceA, core.CapabilityProposeDocuments); err != nil || !allowed {
+	if allowed, err := st.AuthorizeWorkspace(store.WithActor(t.Context(), store.SystemActor()), member.ID, workspaceA, core.CapabilityProposeDocuments); err != nil || !allowed {
 		t.Fatalf("member proposal allowed=%t err=%v", allowed, err)
 	}
-	if allowed, err := st.AuthorizeWorkspace(t.Context(), member.ID, workspaceA, core.CapabilityManageMembership); err != nil || allowed {
+	if allowed, err := st.AuthorizeWorkspace(store.WithActor(t.Context(), store.SystemActor()), member.ID, workspaceA, core.CapabilityManageMembership); err != nil || allowed {
 		t.Fatalf("member management allowed=%t err=%v", allowed, err)
 	}
-	maintainer, err := st.queries.InsertIdentityUser(t.Context(), db.InsertIdentityUserParams{ID: "usr_maintainer_" + suffix, Email: "maintainer-" + suffix + "@example.test", DisplayName: "Maintainer"})
+	maintainer, err := st.queries.InsertIdentityUser(store.WithActor(t.Context(), store.SystemActor()), db.InsertIdentityUserParams{ID: "usr_maintainer_" + suffix, Email: "maintainer-" + suffix + "@example.test", DisplayName: "Maintainer"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,21 +194,21 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, capability := range []core.Capability{core.CapabilityOperateGates, core.CapabilityCreateTasks, core.CapabilitySetAssignee, core.CapabilityRecoverWork} {
-		if allowed, authErr := st.AuthorizeWorkspace(t.Context(), maintainer.ID, workspaceA, capability); authErr != nil || !allowed {
+		if allowed, authErr := st.AuthorizeWorkspace(store.WithActor(t.Context(), store.SystemActor()), maintainer.ID, workspaceA, capability); authErr != nil || !allowed {
 			t.Fatalf("maintainer capability %q allowed=%t err=%v", capability, allowed, authErr)
 		}
 	}
 	for _, capability := range []core.Capability{core.CapabilityConfirmDocuments, core.CapabilityManageMembership, core.CapabilityManageWorkspace} {
-		if allowed, authErr := st.AuthorizeWorkspace(t.Context(), maintainer.ID, workspaceA, capability); authErr != nil || allowed {
+		if allowed, authErr := st.AuthorizeWorkspace(store.WithActor(t.Context(), store.SystemActor()), maintainer.ID, workspaceA, capability); authErr != nil || allowed {
 			t.Fatalf("maintainer forbidden capability %q allowed=%t err=%v", capability, allowed, authErr)
 		}
 	}
 
-	token, err := st.IssuePersonalAccessToken(t.Context(), member.ID, "member test")
+	token, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), member.ID, "member test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	credential, err := st.VerifyCredential(t.Context(), token.Value)
+	credential, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), token.Value)
 	if err != nil || credential.Kind != core.CredentialUser || credential.Scope != core.CredentialScopeUser {
 		t.Fatalf("member credential=%+v err=%v", credential, err)
 	}
@@ -261,14 +261,14 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 		t.Fatalf("task after role demotion assignee=%+v err=%v", cleared.Assignee, err)
 	}
 	var clearEvents int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='task.assignee.cleared' AND payload_json->>'revoked_user_id'=$3`, workspaceA, task.ID, member.ID).Scan(&clearEvents); err != nil || clearEvents != 1 {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='task.assignee.cleared' AND payload_json->>'revoked_user_id'=$3`, workspaceA, task.ID, member.ID).Scan(&clearEvents); err != nil || clearEvents != 1 {
 		t.Fatalf("assignment clear audit count=%d err=%v", clearEvents, err)
 	}
 	if _, err := storetest.For(st).ClaimWorkOrder(grantCtx, order.ID, core.WorkOrderClaim{SessionID: "first-come", ClientToken: "first-come", OwnerUserID: owner.ID}); err != nil {
 		t.Fatalf("claim after role demotion: %v", err)
 	}
 	var audited int
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.membership_granted'`, workspaceA).Scan(&audited); err != nil || audited != 3 {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.membership_granted'`, workspaceA).Scan(&audited); err != nil || audited != 3 {
 		t.Fatalf("membership audit count=%d err=%v", audited, err)
 	}
 }
@@ -276,16 +276,16 @@ func TestWorkspaceMembershipAuthorizationIntegration(t *testing.T) {
 func TestPendingInvitationListingIsOperatorScopedAndPendingOnlyIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "invitation-listing-token"
-	if _, err := st.BootstrapIdentity(t.Context(), config.FirstOperatorIdentity{
+	if _, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{
 		OrganizationName: "Invitation Org", Email: "owner@example.test", DisplayName: "Owner",
 	}, legacy); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), legacy)
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	suffix := core.NewTaskID()
 	workspaceID := "invitations-" + suffix
@@ -350,7 +350,7 @@ func TestPendingInvitationListingIsOperatorScopedAndPendingOnlyIntegration(t *te
 
 	// An ordinary member of the same workspace cannot read the listing, and the
 	// refusal is the canonical not-found body a non-member would receive.
-	memberToken, err := st.IssuePersonalAccessToken(t.Context(), redeemedMemberID(t, st, redeemed), "member")
+	memberToken, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), redeemedMemberID(t, st, redeemed), "member")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestPendingInvitationListingIsOperatorScopedAndPendingOnlyIntegration(t *te
 func redeemedMemberID(t *testing.T, st *Store, email string) string {
 	t.Helper()
 	var id string
-	if err := st.pool.QueryRow(t.Context(), `SELECT id FROM users WHERE email=$1`, email).Scan(&id); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT id FROM users WHERE email=$1`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id

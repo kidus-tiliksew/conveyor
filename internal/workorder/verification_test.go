@@ -26,7 +26,7 @@ func newVerificationServiceFixture(t *testing.T) verificationServiceFixture {
 	t.Helper()
 	b := store.NewVolatileBackend()
 	t.Cleanup(b.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}}}
 	if _, err := b.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 // verification-reconciler actor (component-verification-evidence).
 func TestExpireVerificationChunksRequiresSystemActor(t *testing.T) {
 	s := &Service{Store: store.NewVolatileBackend()}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, actor := range []store.Actor{{ID: "worker:w", Role: core.ActorWorker}, {ID: "owner", Role: core.ActorUser}} {
 		if _, err := s.ExpireVerificationChunks(store.WithActor(ctx, actor), store.VerificationChunkExpiryLimit); !errors.Is(err, store.ErrVerificationAccess) {
 			t.Fatalf("%+v reached chunk expiry: %v", actor, err)

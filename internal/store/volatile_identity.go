@@ -163,11 +163,12 @@ func (m *volatileMemory) operatorCount(workspaceID string) int {
 // deploymentEventLocked records an audit event that belongs to no workspace.
 func (m *volatileMemory) deploymentEventLocked(ctx context.Context, kind string, payload any) core.Event {
 	actor := ActorFromContext(ctx)
-	return m.recordEventLocked("", core.Event{Kind: kind, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(payload), At: time.Now().UTC()})
+	return m.recordEventLocked(actor, "", core.Event{Kind: kind, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(payload), At: time.Now().UTC()})
 }
 
 func (m *volatileMemory) userEventLocked(userID, kind string, payload any) core.Event {
-	return m.recordEventLocked("", core.Event{Kind: kind, ActorID: UserActorID(userID), ActorRole: core.ActorUser, Payload: core.JSONPayload(payload), At: time.Now().UTC()})
+	actor := Actor{ID: UserActorID(userID), Role: core.ActorUser}
+	return m.recordEventLocked(actor, "", core.Event{Kind: kind, ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(payload), At: time.Now().UTC()})
 }
 
 // workspaceEventLocked records an event in the named workspace, whatever
@@ -186,7 +187,7 @@ func (m *volatileMemory) workspaceEventLocked(ctx context.Context, workspaceID s
 	if event.Payload == nil {
 		event.Payload = core.JSONPayload(struct{}{})
 	}
-	return m.recordEventLocked(workspaceID, event)
+	return m.recordEventLocked(actor, workspaceID, event)
 }
 
 // GetCallerIdentity implements CallerIdentityStore.
@@ -210,6 +211,9 @@ func (m *volatileMemory) GetCallerIdentity(_ context.Context, userID, workspaceI
 
 // SetOwnDisplayName implements OwnProfileStore.
 func (m *volatileMemory) SetOwnDisplayName(ctx context.Context, userID, sessionID, displayName string) (core.CallerIdentity, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.CallerIdentity{}, err
+	}
 	m.lock()
 	defer m.unlock()
 	user, ok := m.users[userID]
@@ -270,7 +274,7 @@ func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.
 	}
 	audit := func(credentialID string) {
 		apply = append(apply, func() {
-			m.recordEventLocked("", core.Event{Kind: "identity.legacy_token_rotated", ActorID: "system", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: time.Now().UTC()})
+			m.recordEventLocked(SystemActor("system"), "", core.Event{Kind: "identity.legacy_token_rotated", ActorID: "system", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: time.Now().UTC()})
 		})
 	}
 	switch {
@@ -402,7 +406,7 @@ func (m *volatileMemory) redeemInvitationsLocked(_ context.Context, user identit
 			actorID = UserActorID(user.ID)
 			payload["invited_by"] = invitation.InvitedBy
 		}
-		m.recordEventLocked(key.workspace, core.Event{
+		m.recordEventLocked(Actor{ID: actorID, Role: core.ActorUser}, key.workspace, core.Event{
 			Kind: "workspace.membership_granted", ActorID: actorID, ActorRole: core.ActorUser, At: time.Now().UTC(),
 			Payload: core.JSONPayload(payload),
 		})
@@ -567,6 +571,9 @@ func (m *volatileMemory) verifyCredential(_ context.Context, candidate string) (
 // IssueSignInLink implements InvitationSessionStore. It succeeds only for an
 // existing account or a pending invitation: there is no self-registration.
 func (m *volatileMemory) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.IssuedSignInLink{}, err
+	}
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IssuedSignInLink{}, err
@@ -600,6 +607,9 @@ func (m *volatileMemory) IssueSignInLink(ctx context.Context, email string) (cor
 // resend purpose records workspace.invitation_resent in the same critical
 // section. Every fallible step runs before any state changes.
 func (m *volatileMemory) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.IssuedSignInLink{}, err
+	}
 	if !purpose.Valid() {
 		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
 	}
@@ -840,6 +850,9 @@ func (m *volatileMemory) RevokeDashboardSession(_ context.Context, userID, sessi
 
 // RecordInvitationDelivery implements InvitationSessionStore.
 func (m *volatileMemory) RecordInvitationDelivery(ctx context.Context, email, outcome string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if outcome != "sent" && outcome != "failed" && outcome != "fallback" {
 		return errors.New("invalid invitation delivery outcome")
 	}
@@ -908,6 +921,9 @@ func (m *volatileMemory) RevokeOwnPersonalAccessToken(ctx context.Context, userI
 
 // DeactivateIdentityUser closes the account and revokes its workers.
 func (m *volatileMemory) DeactivateIdentityUser(ctx context.Context, userID string) (core.IdentityUser, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.IdentityUser{}, err
+	}
 	m.lock()
 	defer m.unlock()
 	user, ok := m.users[userID]
@@ -1037,6 +1053,9 @@ func (m *volatileMemory) ListWorkspaceInvitations(_ context.Context, workspaceID
 // GrantWorkspaceRole implements MembershipStore. An address without an
 // account gets a pending invitation; an account gets the binding now.
 func (m *volatileMemory) GrantWorkspaceRole(ctx context.Context, email, workspaceID string, role core.WorkspaceRole) (core.MembershipGrant, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.MembershipGrant{}, err
+	}
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.MembershipGrant{}, err
@@ -1085,6 +1104,9 @@ func (m *volatileMemory) GrantWorkspaceRole(ctx context.Context, email, workspac
 
 // RevokeWorkspaceInvitation implements MembershipStore.
 func (m *volatileMemory) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceID string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return err
@@ -1112,6 +1134,9 @@ func (m *volatileMemory) RevokeWorkspaceInvitation(ctx context.Context, email, w
 // RevokeWorkspaceRole implements MembershipStore; the last operator of a
 // workspace cannot be removed.
 func (m *volatileMemory) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.lock()
 	defer m.unlock()
 	if _, ok := m.workspaces[workspaceID]; !ok {
@@ -1155,10 +1180,9 @@ func (m *volatileMemory) clearMemberAssignmentsLocked(ctx context.Context, works
 // revokeOwnedWorkersLocked revokes the user's live workers, in one workspace
 // or, with an empty workspace, everywhere.
 func (m *volatileMemory) revokeOwnedWorkersLocked(ctx context.Context, userID, workspaceID, reason string) {
+	// Mutating callers check RequireActor at entry, so the cascade records
+	// the actor that initiated the deactivation or revocation.
 	actor := ActorFromContext(ctx)
-	if actor.ID == "" {
-		actor = Actor{ID: "system", Role: core.ActorSystem}
-	}
 	now := time.Now().UTC()
 	var ids []string
 	for id, worker := range m.workers {
@@ -1171,7 +1195,7 @@ func (m *volatileMemory) revokeOwnedWorkersLocked(ctx context.Context, userID, w
 		worker := m.workers[id]
 		worker.RevokedAt, worker.LeaseExpiresAt = now, time.Time{}
 		m.workers[id] = worker
-		m.recordEventLocked(worker.Workspace, core.Event{
+		m.recordEventLocked(actor, worker.Workspace, core.Event{
 			Kind: "worker.revoked", ActorID: actor.ID, ActorRole: actor.Role, At: now,
 			Payload: core.JSONPayload(map[string]string{"worker_id": id, "owner_user_id": userID, "reason": reason}),
 		})

@@ -91,6 +91,9 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 }
 
 func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -117,6 +120,9 @@ func (m *memory) GetReviewPublication(_ context.Context, id string) (core.Review
 }
 
 func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -142,6 +148,9 @@ func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.R
 }
 
 func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	var missing []core.ReviewPublication
 	seen := map[string]bool{}
@@ -323,6 +332,9 @@ func publicationCommand(to, retrying, published, failed string) string {
 }
 
 func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -358,6 +370,9 @@ func (m *memory) GetGitHubLifecycle(_ context.Context, taskID string) (core.GitH
 }
 
 func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {

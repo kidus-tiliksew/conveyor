@@ -21,6 +21,9 @@ func cloneStartOverSlices[K comparable, V any](source map[K][]V) map[K][]V {
 }
 
 func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLease, r core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskStartOverResult{}, err
+	}
 	var result core.TaskStartOverResult
 	if !lease.ValidForCommand(r.TaskID, string(core.TaskStartOver)) {
 		return result, fmt.Errorf("task start over requires a valid taskops lease")

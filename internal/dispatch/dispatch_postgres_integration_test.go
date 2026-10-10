@@ -43,7 +43,7 @@ func (s *blockingDispatchStore) GetTask(ctx context.Context, id string) (core.Ta
 
 func TestWorkspaceForgeOperationFailsClosedWithoutAppIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 30*time.Second)
 	defer cancel()
 	st, err := storepg.Open(ctx, databaseURL)
 	if err != nil {
@@ -75,7 +75,7 @@ func (s *failingStageOrderStore) CreateStageWorkOrderCommand(context.Context, ta
 
 func TestReviewPublicationWorkerPostgresProjectionLifecycleIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
-	root := t.Context()
+	root := store.WithActor(t.Context(), store.SystemActor())
 	st, err := storepg.Open(root, databaseURL)
 	if err != nil {
 		t.Fatal(err)

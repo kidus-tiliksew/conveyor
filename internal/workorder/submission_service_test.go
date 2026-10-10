@@ -123,7 +123,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 		{name: "atomic attachment", attachErr: errors.New("transaction rolled back"), wantDetail: "attach submission governance"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			base := store.NewMemory()
 			design, version, err := base.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-submit-failure", Title: "Submit failure", Category: "Architecture"}, core.SystemDesignVersion{
 				Content: "# Submit\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -180,7 +180,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 }
 
 func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	design, confirmed, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-derived-gate", Title: "Derived gate", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Gate\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -260,7 +260,7 @@ type evidenceSubmissionFixture struct {
 
 func newEvidenceSubmissionFixture(t *testing.T) evidenceSubmissionFixture {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "evidence-task", Workspace: "demo", Repo: "app", Source: "roadmap:phase-5.4",
@@ -457,7 +457,7 @@ func TestSubmitForReviewAdmitsWithoutEvidenceAndPropagatesOnlyEligibleEvidence(t
 }
 
 func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "issue-linked", Workspace: "test", Repo: "app", Title: "Linked change", Branch: "conveyor/issue-linked", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -529,7 +529,7 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 
 func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "stale-refresh", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/stale-refresh", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -601,7 +601,7 @@ type conflictSubmission struct {
 
 func newConflictSubmission(t *testing.T, policy config.ExecutionSetup, wrap ...func(store.Store) store.Store) *conflictSubmission {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	var st store.Store = store.NewMemory()
 	for _, apply := range wrap {
 		st = apply(st)
@@ -1260,7 +1260,7 @@ func TestConflictFixSubmissionReplayRefusesIncompleteHandoff(t *testing.T) {
 		})
 	}
 	t.Run("refresh head advance fails", func(t *testing.T) {
-		ctx := store.WithWorkspace(t.Context(), "test")
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 		faults := &handoffFaultStore{Store: store.NewMemory(), failAdvanceHead: true}
 		task := core.Task{ID: "stale-advance", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/stale-advance", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 		if err := faults.CreateTask(ctx, task); err != nil {

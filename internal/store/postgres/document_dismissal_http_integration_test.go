@@ -14,7 +14,7 @@ import (
 
 func TestDocumentDismissalArchiveHTTPIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
-	ctx := store.WithWorkspace(t.Context(), "dismissal-http")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "dismissal-http")
 	// Identity first: the first workspace of the empty registry binds the
 	// deployment owner; bootstrap never heals a later binding (DEC-63(4)).
 	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Dismissal", Email: "owner@example.test", DisplayName: "Owner"}, "dismissal-token"); err != nil {

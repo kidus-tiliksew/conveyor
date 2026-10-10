@@ -47,6 +47,9 @@ func (m *volatileMemory) GetWorkspace(_ context.Context, id string) (core.Worksp
 // CreateWorkspace implements WorkspaceControlStore: the record, its repos,
 // the creator's operator binding, and the audit event land together.
 func (m *volatileMemory) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Workspace{}, err
+	}
 	data, err := config.MarshalPolicyDocument(cfg)
 	if err != nil {
 		return core.Workspace{}, err
@@ -176,6 +179,9 @@ func (m *volatileMemory) RuntimeConfig(ctx context.Context, deployment *config.C
 // UpdateWorkspaceConfig implements WorkspaceConfigStore as a compare-and-set
 // on the document version.
 func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return config.UpdateReceipt{}, err
+	}
 	data, err := config.MarshalPolicyDocument(next)
 	if err != nil {
 		return config.UpdateReceipt{}, err
@@ -245,6 +251,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 // ReconcileBlueprintClosures implements BlueprintClosureReconciler: a queued
 // parent whose children have all finished is closed.
 func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")

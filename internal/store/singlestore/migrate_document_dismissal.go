@@ -7,7 +7,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -39,7 +38,7 @@ func repairDismissalArchives(ctx context.Context, tx *sql.Tx) (map[string][]stri
 			return nil, err
 		}
 		for _, c := range candidates {
-			scoped := store.WithActor(store.WithWorkspace(ctx, c.workspace), store.Actor{ID: "system", Role: core.ActorSystem})
+			scoped := store.WithActor(store.WithWorkspace(ctx, c.workspace), store.SystemActor("system"))
 			var note string
 			if err := documentRow(scoped, tx, "SELECT COALESCE(dismissal_note,'') FROM "+tier.versions+" WHERE workspace_id=? AND "+tier.key+"=? AND "+tier.flag+" ORDER BY "+tier.at+" DESC,version DESC LIMIT 1", c.workspace, c.id).Scan(&note); err != nil {
 				return nil, err

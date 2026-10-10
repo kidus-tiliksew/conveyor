@@ -118,69 +118,11 @@ func notFound(err error, format string, args ...any) error {
 	}
 	return err
 }
-func insertWorkspaceEvent(ctx context.Context, tx *sql.Tx, event core.Event) error {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return err
-	}
-	actor := store.ActorFromContext(ctx)
-	if event.ActorID == "" {
-		event.ActorID = actor.ID
-	}
-	if event.ActorRole == "" {
-		event.ActorRole = actor.Role
-	}
-	if event.At.IsZero() {
-		event.At = time.Now().UTC()
-	}
-	if event.Payload == nil {
-		event.Payload = json.RawMessage(`{}`)
-	}
-	result, err := writeRow(s2log.WithTx(ctx, tx), tx, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": nullString(event.TaskID), "job_id": nullString(event.JobID), "kind": event.Kind, "actor_id": event.ActorID, "actor_role": string(event.ActorRole), "payload_json": []byte(event.Payload), "at": event.At}})
-	if err != nil {
-		return err
-	}
-	event.ID, err = result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	projection := store.ProjectLineageEvent(ws, event)
-	for _, l := range projection.Suppresses {
-		if _, err = tx.ExecContext(ctx, `DELETE FROM links WHERE workspace_id=? AND src_type=? AND src_id=? AND dst_type=? AND dst_id=? AND kind=?`, ws, l.SrcType, l.SrcID, l.DstType, l.DstID, l.Kind); err != nil {
-			return err
-		}
-	}
-	for _, l := range projection.Links {
-		if err = insertLineageLink(ctx, tx, l); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 func insertLineageLink(ctx context.Context, tx *sql.Tx, l core.LineageLink) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,created_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE created_by_event_id=LEAST(COALESCE(created_by_event_id,VALUES(created_by_event_id)),VALUES(created_by_event_id)),created_at=LEAST(created_at,VALUES(created_at)),legacy_created_by_event=NULL`, l.Workspace, l.SrcType, l.SrcID, l.DstType, l.DstID, l.Kind, l.CreatedByEventID, l.CreatedAt)
 	return err
 }
 
-func insertEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
-	_, err := insertEventWithID(ctx, tx, e)
-	return err
-}
-func insertEventWithID(ctx context.Context, tx *sql.Tx, e core.Event) (int64, error) {
-	if e.TaskID == "" {
-		return 0, fmt.Errorf("task-bound event requires a task id")
-	}
-	var exists int
-	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), e.TaskID).Scan(&exists); err != nil {
-		return 0, notFound(err, "task %s", e.TaskID)
-	}
-	if err := insertWorkspaceEvent(ctx, tx, e); err != nil {
-		return 0, err
-	}
-	var id int64
-	err := tx.QueryRowContext(ctx, `SELECT LAST_INSERT_ID()`).Scan(&id)
-	return id, err
-}
 func documentTaskEvents(ctx context.Context, db s2log.Executor, taskID string) ([]core.Event, error) {
 	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, documentWorkspace(ctx), taskID)
 	if err != nil {

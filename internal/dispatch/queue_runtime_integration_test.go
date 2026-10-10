@@ -39,7 +39,7 @@ func waitForJob(t *testing.T, ctx context.Context, st *storepg.Store, workspace 
 // delivery: the child's job runs, the parent's job completes without work.
 func TestQueueRuntimeConvergesLateWorkspacesIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 30*time.Second)
 	defer cancel()
 	st, err := storepg.Open(ctx, databaseURL)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestQueueRuntimeConvergesLateWorkspacesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopCtx, stopCancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 10*time.Second)
 		defer stopCancel()
 		if stopErr := runtime.Stop(stopCtx); stopErr != nil {
 			t.Errorf("stop queue runtime: %v", stopErr)
@@ -136,7 +136,7 @@ func TestQueueRuntimeConvergesLateWorkspacesIntegration(t *testing.T) {
 // and leaves the parent queued.
 func TestQueueDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	st, err := storepg.Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +188,7 @@ func TestQueueDispatchCompletesBlueprintAnchorIntegration(t *testing.T) {
 // and after the final attempt the job is discarded and the task parked.
 func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 60*time.Second)
 	defer cancel()
 	st, err := storepg.Open(ctx, databaseURL)
 	if err != nil {
@@ -226,7 +226,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	failed := waitForJob(t, ctx, st, workspace, stream, func(job logqueue.Job) bool { return job.State == logqueue.StateScheduled && job.Attempt == 1 }, "first failure")
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	stopCtx, stopCancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 10*time.Second)
 	if err = first.Stop(stopCtx); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopCtx, stopCancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 10*time.Second)
 		defer stopCancel()
 		_ = second.Stop(stopCtx)
 	}()

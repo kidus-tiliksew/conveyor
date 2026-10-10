@@ -93,6 +93,14 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if err := checkWrite(w); err != nil {
 		return nil, err
 	}
+	// Every ledger row names the explicit context actor; a row that already
+	// carries actor values does not bypass the check (component-persistence,
+	// Actor context).
+	if w.table == "events" || w.table == "deployment_events" {
+		if _, err := store.RequireActor(ctx); err != nil {
+			return nil, fmt.Errorf("%s insert: %w", w.table, err)
+		}
+	}
 	if !validIdentifier(w.table) {
 		return nil, fmt.Errorf("invalid SQL table")
 	}

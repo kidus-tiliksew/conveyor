@@ -18,7 +18,7 @@ import (
 // than failed.
 func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 	databaseURL := dispatchIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 30*time.Second)
 	defer cancel()
 	st, err := storepg.Open(ctx, databaseURL)
 	if err != nil {
@@ -58,7 +58,7 @@ func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 	for _, registration := range dispatcher.Registrations(marker) {
 		runtime.Register(registration)
 	}
-	if err = runtime.Start(context.Background()); err != nil {
+	if err = runtime.Start(store.WithActor(context.Background(), store.SystemActor())); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -71,7 +71,7 @@ func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 		t.Fatalf("job while running=%+v err=%v", running, err)
 	}
 
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stopCtx, stopCancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 5*time.Second)
 	defer stopCancel()
 	if err = NewMarkedRuntime(runtime, marker).StopAndCancel(stopCtx); err != nil {
 		t.Fatal(err)

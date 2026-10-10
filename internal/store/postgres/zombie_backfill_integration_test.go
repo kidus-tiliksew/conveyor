@@ -15,13 +15,13 @@ import (
 
 func TestSiblingReapingSerializesConcurrentClaimIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "sibling-claim-race-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -151,13 +151,13 @@ func TestSiblingReapingSerializesConcurrentClaimIntegration(t *testing.T) {
 
 func TestRecoveryRejectsSupersededOrderAndAllowsLatestIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "recovery-supersession-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -193,13 +193,13 @@ func TestRecoveryRejectsSupersededOrderAndAllowsLatestIntegration(t *testing.T) 
 
 func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "recovery-review-bounce-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplementOne, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
-	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "zombie-worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 func TestWorkOrderZombieBackfillMigrationRetiresPassedStageAndIsRerunSafeIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 98)
 	workspace := "zombie-backfill-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -288,15 +288,15 @@ func TestWorkOrderZombieBackfillMigrationRetiresPassedStageAndIsRerunSafeIntegra
 	if _, err := st.pool.Exec(ctx, `INSERT INTO work_orders(id,workspace_id,task_id,job_id,stage,state,queue_entered_at,queue_deadline,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$7,$7)`, order.ID, workspace, task.ID, job.ID, order.Stage, order.State, now, order.QueueDeadline); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrateControlPlaneToVersion(t.Context(), st.pool, 101); err != nil {
+	if err := migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), st.pool, 101); err != nil {
 		t.Fatalf("apply migration 101: %v", err)
 	}
 	var state core.WorkOrderState
 	var retirementEvents int
-	if err := st.pool.QueryRow(t.Context(), `SELECT state FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace, order.ID).Scan(&state); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT state FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace, order.ID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind='work_order.retired'`, workspace, task.ID, job.ID).Scan(&retirementEvents); err != nil {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind='work_order.retired'`, workspace, task.ID, job.ID).Scan(&retirementEvents); err != nil {
 		t.Fatal(err)
 	}
 	if state != core.WorkOrderCancelled || retirementEvents != 1 {
@@ -310,10 +310,10 @@ func TestWorkOrderZombieBackfillMigrationRetiresPassedStageAndIsRerunSafeIntegra
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.pool.Exec(t.Context(), string(sql)); err != nil {
+	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), string(sql)); err != nil {
 		t.Fatalf("rerun migration 101 projection: %v", err)
 	}
-	if err = st.pool.QueryRow(t.Context(), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind='work_order.retired'`, workspace, task.ID, job.ID).Scan(&retirementEvents); err != nil || retirementEvents != 1 {
+	if err = st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM events WHERE workspace_id=$1 AND task_id=$2 AND job_id=$3 AND kind='work_order.retired'`, workspace, task.ID, job.ID).Scan(&retirementEvents); err != nil || retirementEvents != 1 {
 		t.Fatalf("retirement events after rerun=%d err=%v", retirementEvents, err)
 	}
 }

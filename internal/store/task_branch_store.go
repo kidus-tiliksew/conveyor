@@ -73,6 +73,9 @@ func EvaluateTaskBranchAttach(task core.Task, branch string, claimedWorkOrder, p
 }
 
 func (m *memory) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	branch = strings.TrimSpace(branch)
 	if !gitx.LegalBranchName(branch) {
 		return core.Task{}, fmt.Errorf("%w", ErrInvalidBranch)

@@ -103,7 +103,7 @@ func TestRequirementStalenessAcknowledgmentSurvivesRestart(t *testing.T) {
 	}
 	st.Close()
 
-	restarted, err := Open(t.Context(), databaseURL)
+	restarted, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +163,12 @@ func TestRequirementReviewedReconciliationSurvivesRestart(t *testing.T) {
 	}
 	st.Close()
 
-	restarted, err := Open(t.Context(), databaseURL)
+	restarted, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(restarted.Close)
-	restartedCtx := store.WithWorkspace(t.Context(), workspace)
+	restartedCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	eventsByTask, err := restarted.ListRequirementDeliveryEventsForTasks(restartedCtx, []string{task.ID})
 	if err != nil {
 		t.Fatal(err)

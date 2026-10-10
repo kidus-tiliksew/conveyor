@@ -22,7 +22,7 @@ func (w *verificationPublicationWorker) Reconcile(ctx context.Context, workspace
 	if !ok {
 		return nil
 	}
-	ctx = store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: "verification-publication", Role: core.ActorSystem}), workspace)
+	ctx = store.WithWorkspace(store.WithActor(ctx, store.SystemActor("verification-publication")), workspace)
 	return b.ReconcileVerificationDeliveries(ctx)
 }
 
@@ -57,7 +57,7 @@ func (w *verificationPublicationWorker) Legacy(ctx context.Context, job queue.Jo
 	if !ok {
 		return store.ErrVerificationInvalid
 	}
-	ctx = store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: "verification-publication", Role: core.ActorSystem}), job.WorkspaceID)
+	ctx = store.WithWorkspace(store.WithActor(ctx, store.SystemActor("verification-publication")), job.WorkspaceID)
 	return b.TranslateVerificationPublication(ctx, a.VerificationPublication)
 }
 
@@ -74,7 +74,7 @@ func (w *verificationPublicationWorker) Work(ctx context.Context, job queue.Job)
 	if !ok {
 		return store.ErrVerificationInvalid
 	}
-	ctx = store.WithWorkspace(store.WithActor(ctx, store.Actor{ID: "verification-publication", Role: core.ActorSystem}), job.WorkspaceID)
+	ctx = store.WithWorkspace(store.WithActor(ctx, store.SystemActor("verification-publication")), job.WorkspaceID)
 	// Resolve credentials before the transaction lock: the App client itself reads
 	// store state. Only this typed worker ever writes a verification region.
 	forgeCtx, authErr := w.dispatcher.workspaceForgeContext(ctx, a.Repository)

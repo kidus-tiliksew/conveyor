@@ -19,7 +19,7 @@ import (
 
 func TestPostgresPlanRevisionDecisionLoopIntegration(t *testing.T) {
 	databaseURL := planRevisionIntegrationDatabaseURL(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 30*time.Second)
 	defer cancel()
 	st, err := storepg.Open(ctx, databaseURL)
 	if err != nil {

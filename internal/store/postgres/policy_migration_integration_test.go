@@ -13,14 +13,14 @@ import (
 
 func TestPolicyProjectionMigrationIsReplaySafeAndStartsFrozenTaskIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(controlstore.WithActor(t.Context(), controlstore.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 
 	workspace := "policy-migration-" + core.NewTaskID()
-	ctx := controlstore.WithWorkspace(context.Background(), workspace)
+	ctx := controlstore.WithWorkspace(controlstore.WithActor(context.Background(), controlstore.SystemActor()), workspace)
 	bootstrap := &config.Config{
 		Workspace: workspace, MaxBounces: 9, WorkOrderQueueTimeoutText: "24h",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{

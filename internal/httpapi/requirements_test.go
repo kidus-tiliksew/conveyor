@@ -22,7 +22,7 @@ import (
 )
 
 func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	_, source, err := st.CreateReferenceDocument(ctx,
 		core.ReferenceDocument{ID: "ref-api", Name: "API.md"},
@@ -158,7 +158,7 @@ func TestOperatorRequirementProposalRESTLifecycle(t *testing.T) {
 }
 
 func TestHistoricalRequirementProposalREST(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
@@ -190,7 +190,7 @@ func TestHistoricalRequirementProposalREST(t *testing.T) {
 }
 
 func TestRequirementArchiveRESTLifecycle(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	document, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archive-api", Title: "Archive API"}, core.RequirementVersion{Content: "# Archive API", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Archive safely."}}})
 	if err != nil {
@@ -277,7 +277,7 @@ func TestRequirementArchiveRESTLifecycle(t *testing.T) {
 }
 
 func TestRequirementReadsExposeImplementationOriginTask(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task-origin", Title: "Task origin"}, core.RequirementVersion{
 		Content:    "# Task origin\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Reads expose provenance.\n```",
@@ -313,7 +313,7 @@ func TestRequirementReadsExposeImplementationOriginTask(t *testing.T) {
 }
 
 func TestRequirementConfirmationDistinguishesSupersededFromIfMatchConflict(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirm-errors", Title: "Confirmation errors"}, core.RequirementVersion{
 		Content: "# First.", Origin: core.RequirementOriginOperator,
@@ -360,7 +360,7 @@ func TestRequirementConfirmationDistinguishesSupersededFromIfMatchConflict(t *te
 }
 
 func TestCheckpointContextCandidatesREST(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx,
 		core.Requirement{ID: "req-confirmed", Title: "Confirmed intent"},
@@ -414,7 +414,7 @@ func TestDeliveryReachabilityDoesNotCrossPlanningSessionBridge(t *testing.T) {
 }
 
 func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{
 		ID: "session-requirement", Title: "Define retry intent",
@@ -443,7 +443,7 @@ func TestRequirementsHTTPReplacesFeatureTreeAndConfirmsVersions(t *testing.T) {
 	}
 	// A sibling workspace may use the same requirement identity; its audit
 	// events must not leak through the in-memory global event stream.
-	sibling := store.WithWorkspace(t.Context(), "sibling")
+	sibling := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "sibling")
 	if _, err = st.CreatePlanningSession(sibling, core.PlanningSession{
 		ID: "session-requirement", Title: "Sibling intent",
 	}); err != nil {
@@ -614,7 +614,7 @@ func (st *requirementsScopedStore) ListArtifactsForLineage(ctx context.Context, 
 }
 
 func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-linked-stale", Title: "Linked intent"}, core.RequirementVersion{
 		Content: "# Linked intent", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Delivery remains traceable."}},
@@ -703,7 +703,7 @@ func TestRequirementStalenessFollowsLineageToChildMerge(t *testing.T) {
 }
 
 func TestDesignDriftCrossPostsPreserveSubjectAndResolveEverywhere(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, id := range []string{"req-deployment", "req-lifecycle"} {
 		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
@@ -793,7 +793,7 @@ func TestDesignDriftCrossPostsPreserveSubjectAndResolveEverywhere(t *testing.T) 
 // so a merge on that task is the requirement's delivery — with no blueprint
 // anywhere in the walk, and none invented to stand in for one.
 func TestRequirementStalenessFollowsTaskLevelServesChain(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-task-chain", Title: "Task-chain intent"}, core.RequirementVersion{
 		Content:    "# Delivery follows the task that serves the requirement.",
@@ -1071,7 +1071,7 @@ func TestRequirementDeliveryReproducesSuppliedVersionSignal(t *testing.T) {
 }
 
 func TestRequirementStalenessReproducesExecutionConfigurationV3V4Signal(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{
 		ID: "req-execution-configuration", Title: "Execution configuration: harnesses and setups",
@@ -1476,7 +1476,7 @@ func (st *truncatedDisplayLineageStore) ListLineageNeighborhood(_ context.Contex
 }
 
 func TestRequirementStalenessIgnoresDisplayTruncation(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
 	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-display-truncated", Title: "Bounded intent"}, core.RequirementVersion{
 		Content: "# Bounded intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Display fan-out does not suppress staleness."}},
@@ -1541,7 +1541,7 @@ func (st *truncatedDeliveryLineageStore) ListRequirementDeliveryLineage(_ contex
 }
 
 func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
 	requirement, proposed, err := base.CreateRequirement(ctx, core.Requirement{ID: "req-partial", Title: "Bounded delivery"}, core.RequirementVersion{
 		Content: "# Bounded delivery.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Partial delivery evaluation is visible."}},
@@ -1570,7 +1570,7 @@ func TestRequirementStalenessSurfacesTruncatedDeliveryEvaluation(t *testing.T) {
 }
 
 func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, proposed, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-dismissed-stale", Title: "Dismissed intent"}, core.RequirementVersion{
 		Content: "# Dismissed service must not create staleness.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Dismissed service is not authority."}},
@@ -1617,7 +1617,7 @@ func TestRequirementStalenessIgnoresDismissedServesProjection(t *testing.T) {
 }
 
 func TestRequirementConfirmationRejectsStaleExpectedAndSupersededVersions(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-confirm-race", Title: "Confirm race"}, core.RequirementVersion{
 		Content: "# First intent.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First intent is explicit."}},
@@ -1665,7 +1665,7 @@ func TestRequirementConfirmationRejectsStaleExpectedAndSupersededVersions(t *tes
 }
 
 func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	migrationCtx := store.WithActor(ctx, store.Actor{ID: "migration-050", Role: core.ActorSystem})
 	seed, _, err := st.CreateRequirement(migrationCtx, core.Requirement{
@@ -1722,7 +1722,7 @@ func TestRequirementsHTTPDistinguishesMigratedSeedFromStaleConfirmableRevision(t
 }
 
 func TestRequirementsHTTPSurfacesBlueprintSpecGateHandoffAndRemovesFeatureMutations(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirementSession, err := st.CreatePlanningSession(ctx, core.PlanningSession{
 		ID: "session-requirement", Title: "Capture intent",
@@ -1902,7 +1902,7 @@ const historicalCLIAuthenticationV2 = "CLI authentication (proposed v2)\n" +
 	"REQ-4: The CLI shall provide a connection act that writes each detected agent tool's native MCP registration for the logged-in server."
 
 func TestRequirementOnlyProposalDismissalArchiveHTTP(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	id := "only-proposal"
 	_, _, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{Content: "# Proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Preserve history."}}})

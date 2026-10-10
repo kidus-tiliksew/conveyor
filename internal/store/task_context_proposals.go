@@ -23,6 +23,9 @@ func (m *memory) deleteProposedTaskContextLocked(taskID string) {
 }
 
 func (m *memory) ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskContextProposal{}, false, err
+	}
 	return m.proposeTaskContext(ctx, input, false)
 }
 
@@ -78,10 +81,16 @@ func (m *memory) proposeTaskContext(ctx context.Context, input core.TaskContextP
 }
 
 func (m *memory) ConfirmTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskContextProposal{}, err
+	}
 	return m.transitionTaskContextProposal(ctx, taskID, kind, targetID, core.TaskContextProposalConfirmed, false)
 }
 
 func (m *memory) DismissTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskContextProposal{}, err
+	}
 	return m.transitionTaskContextProposal(ctx, taskID, kind, targetID, core.TaskContextProposalDismissed, false)
 }
 

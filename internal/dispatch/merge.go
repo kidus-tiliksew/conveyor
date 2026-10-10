@@ -436,7 +436,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		}
 		current.ApprovedHeadSHA = head
 	}
-	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
+	systemCtx := store.WithActor(ctx, store.SystemActor("system"))
 	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
 	if current.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(current.SetupContract)

@@ -18,7 +18,7 @@ import (
 func TestReviewApproveOnApprovedTaskNamesMergeCommand(t *testing.T) {
 	t.Parallel()
 	st := store.NewMemory()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	for _, task := range []core.Task{
 		{ID: "approved", State: core.TaskApproved, MergeApproval: true, CreatedAt: time.Now()},
 		{ID: "awaiting", State: core.TaskAwaiting, MergeApproval: true, CreatedAt: time.Now()},

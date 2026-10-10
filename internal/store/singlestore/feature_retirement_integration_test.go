@@ -28,7 +28,7 @@ const featureDropVersion = 18
 // the ledger lacks version 18. Tests end by migrating, which drops them.
 func restorePreFeatureDrop(t *testing.T, st *Store) {
 	t.Helper()
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	for _, table := range []string{"artifact_links", "tasks"} {
 		exists, err := st.columnExists(ctx, table, "feature_id")
 		if err != nil {
@@ -63,7 +63,7 @@ func restorePreFeatureDrop(t *testing.T, st *Store) {
 
 func assertSingleStoreFeatureSchemaRetired(t *testing.T, st *Store) {
 	t.Helper()
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	// SingleStore refuses one distributed query that joins information_schema
 	// with a user table (error 1749), so each count is a separate query.
 	var tables, columns, ledger int
@@ -99,7 +99,7 @@ type featureFixture struct {
 func seedFeatureFixture(t *testing.T, st *Store) featureFixture {
 	t.Helper()
 	f := featureFixture{workspace: "feature-retired-" + core.NewTaskID(), suffix: core.NewTaskID()}
-	f.ctx = store.WithWorkspace(t.Context(), f.workspace)
+	f.ctx = store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), f.workspace)
 	if _, err := st.BootstrapWorkspaceConfig(f.ctx, &config.Config{Workspace: f.workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestFeatureRetirementFreshSchemaIntegration(t *testing.T) {
 	st := integrationStore(t)
 	// The shared database was created and migrated from empty by this binary.
 	assertSingleStoreFeatureSchemaRetired(t, st)
-	if err := st.migrate(t.Context()); err != nil {
+	if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 		t.Fatal(err)
 	}
 	assertSingleStoreFeatureSchemaRetired(t, st)
@@ -277,7 +277,7 @@ func TestFeatureRetirementHistoricalUpgradeIntegration(t *testing.T) {
 	restorePreFeatureDrop(t, st)
 	f := seedFeatureFixture(t, st)
 	before := f.snapshot(t, st)
-	if err := st.migrate(t.Context()); err != nil {
+	if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 		t.Fatal(err)
 	}
 	f.assertConverged(t, st, before)
@@ -297,25 +297,25 @@ func TestFeatureRetirementPartialDDLRetryIntegration(t *testing.T) {
 				if index >= stopAfter {
 					break
 				}
-				if err := step(t.Context()); err != nil {
+				if err := step(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if stopAfter > steps {
-				if _, err := st.db.ExecContext(t.Context(), `DROP TABLE IF EXISTS features`); err != nil {
+				if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `DROP TABLE IF EXISTS features`); err != nil {
 					t.Fatal(err)
 				}
 			}
 			var recorded int
-			if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM conveyor_singlestore_migrations WHERE version=?`, featureDropVersion).Scan(&recorded); err != nil || recorded != 0 {
+			if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT COUNT(*) FROM conveyor_singlestore_migrations WHERE version=?`, featureDropVersion).Scan(&recorded); err != nil || recorded != 0 {
 				t.Fatalf("ledger recorded 0018 before the start finished: rows=%d err=%v", recorded, err)
 			}
-			if err := st.migrate(t.Context()); err != nil {
+			if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 				t.Fatal(err)
 			}
 			f.assertConverged(t, st, before)
 			// A second start is a no-op.
-			if err := st.migrate(t.Context()); err != nil {
+			if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 				t.Fatal(err)
 			}
 			f.assertConverged(t, st, before)

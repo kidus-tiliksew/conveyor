@@ -69,7 +69,7 @@ func TestRequirementConfirmationWithoutPredecessorDoesNotSupersedeDraft(t *testi
 func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	const workspace = "lineage-memory"
 	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}})
-	ctx := WithWorkspace(t.Context(), workspace)
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), workspace)
 	now := time.Now().UTC()
 	parent := core.Task{ID: "blueprint", Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: now}
 	dependency := core.Task{ID: "dependency", Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: now}
@@ -110,7 +110,7 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) {
 	const workspace = "lineage-preservation"
 	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}}).(*memory)
-	ctx := WithWorkspace(t.Context(), workspace)
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), workspace)
 	task := core.Task{ID: "historical-task", Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) 
 func TestMemoryLineageRebuildClassifiesRegeneratedLegacyKeyOnlyAsProjected(t *testing.T) {
 	const workspace = "lineage-overlap"
 	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}}).(*memory)
-	ctx := WithWorkspace(t.Context(), workspace)
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), workspace)
 	task := core.Task{ID: "overlap-task", Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)

@@ -33,7 +33,7 @@ func newVerificationCLIFixture(t *testing.T) verificationCLIFixture {
 	t.Helper()
 	b := store.NewVolatileBackend()
 	t.Cleanup(b.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}}}
 	if _, err := b.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

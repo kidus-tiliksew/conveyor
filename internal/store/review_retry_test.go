@@ -95,7 +95,7 @@ func TestMemoryRetryReviewRoundPreservesHistoryAndIsIdempotent(t *testing.T) {
 	if _, err = storetestFor(st).RetryReviewRound(ctx, changed, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
 		t.Fatalf("changed idempotency error=%v", err)
 	}
-	if _, err = storetestFor(st).RetryReviewRound(WithWorkspace(context.Background(), "other"), request, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
+	if _, err = storetestFor(st).RetryReviewRound(WithWorkspace(WithActor(context.Background(), SystemActor()), "other"), request, jobs, orders); !errors.Is(err, ErrReviewRetryConflict) {
 		t.Fatalf("cross-workspace request-id reuse error=%v", err)
 	}
 	for _, original := range prior {
@@ -175,7 +175,7 @@ func TestReviewRecoveryIncludesCompletedSeatWithContradictoryChildFailure(t *tes
 }
 
 func TestMemoryRetryReviewRoundSerializesConcurrentRequests(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "concurrent-review-retry", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {

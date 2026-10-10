@@ -106,7 +106,7 @@ func TestUniqueRuleInputsFailBeforeSQL(t *testing.T) {
 		{table: "reference_documents", operation: "INSERT", values: map[string]any{"workspace_id": "ws", "name": "name", "deleted_at": nilTime}},
 		{table: "reference_documents", operation: "UPDATE", values: map[string]any{"workspace_id": "ws", "name": "name", "deleted_at": nil}, where: map[string]any{"workspace_id": "ws"}},
 	} {
-		if _, err := writeRow(t.Context(), nil, w); err == nil {
+		if _, err := writeRow(store.WithActor(t.Context(), store.SystemActor()), nil, w); err == nil {
 			t.Fatal("unsafe unique-rule input accepted")
 		}
 	}

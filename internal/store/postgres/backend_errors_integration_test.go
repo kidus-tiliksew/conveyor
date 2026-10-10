@@ -52,7 +52,7 @@ func TestUnmappedDriverFailuresLeaveAsStoreErrorsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := workspace + "-other"
-	otherCtx := store.WithWorkspace(context.Background(), other)
+	otherCtx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), other)
 	if _, err := st.BootstrapWorkspaceConfig(otherCtx, &config.Config{Workspace: other, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

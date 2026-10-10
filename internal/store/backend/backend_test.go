@@ -13,14 +13,14 @@ import (
 
 func TestBackendSelection(t *testing.T) {
 	for _, name := range []string{"", "unsupported"} {
-		if _, err := backend.Open(t.Context(), config.Database{Backend: name}); !errors.Is(err, backend.ErrUnknownBackend) {
+		if _, err := backend.Open(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: name}); !errors.Is(err, backend.ErrUnknownBackend) {
 			t.Fatalf("%q: %v", name, err)
 		}
 	}
-	if _, err := backend.Open(t.Context(), config.Database{Backend: "memory"}); !errors.Is(err, backend.ErrVolatileBackend) {
+	if _, err := backend.Open(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: "memory"}); !errors.Is(err, backend.ErrVolatileBackend) {
 		t.Fatalf("memory selection: %v", err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(store.WithActor(t.Context(), store.SystemActor()))
 	cancel()
 	if _, err := backend.Open(ctx, config.Database{Backend: "postgres", URL: "postgres://localhost/conveyor_test"}); err == nil || errors.Is(err, backend.ErrUnknownBackend) {
 		t.Fatalf("postgres selection: %v", err)
@@ -28,7 +28,7 @@ func TestBackendSelection(t *testing.T) {
 }
 
 func TestVolatileOptInProvidesBackend(t *testing.T) {
-	st, err := backend.Open(t.Context(), config.Database{Backend: "memory"}, backend.AllowVolatile)
+	st, err := backend.Open(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: "memory"}, backend.AllowVolatile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,14 +37,14 @@ func TestVolatileOptInProvidesBackend(t *testing.T) {
 		t.Fatal("invalid volatile backend")
 	}
 	identity := config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}
-	if seeded, err := st.BootstrapIdentity(t.Context(), identity, "test-deployment-credential"); err != nil || !seeded {
+	if seeded, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "test-deployment-credential"); err != nil || !seeded {
 		t.Fatalf("bootstrap: %v %v", seeded, err)
 	}
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), "test-deployment-credential")
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "test-deployment-credential")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	ctx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	ctx = store.WithWorkspace(ctx, "test")
 	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main"}}}
 	if _, err := st.CreateWorkspace(ctx, "test", "Test", cfg); err != nil {
@@ -78,7 +78,7 @@ func TestVolatileOptInProvidesBackend(t *testing.T) {
 func TestSingleStoreAdmission(t *testing.T) {
 	database := config.Database{Backend: "singlestore", URL: "invalid"}
 	for _, options := range [][]backend.Option{nil, {backend.AllowVolatile}} {
-		if _, err := backend.Open(t.Context(), database, options...); err == nil || errors.Is(err, backend.ErrUnknownBackend) {
+		if _, err := backend.Open(store.WithActor(t.Context(), store.SystemActor()), database, options...); err == nil || errors.Is(err, backend.ErrUnknownBackend) {
 			t.Fatalf("SingleStore selection did not reach driver validation: %v", err)
 		}
 	}

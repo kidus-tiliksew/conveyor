@@ -219,7 +219,10 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 	if !core.TaskTerminal(state) {
 		return nil
 	}
-	actor := store.ActorFromContext(ctx)
+	actor, err := store.RequireActor(ctx)
+	if err != nil {
+		return err
+	}
 	for _, dependentID := range dependents {
 		payload := core.JSONPayload(map[string]any{
 			"task_id": dependentID, "depends_on_task_id": dependencyID, "dependency_state": state,

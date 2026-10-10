@@ -24,7 +24,7 @@ import (
 )
 
 func TestGetWorkOrderSurfacesAuthorityBudgetAsNeedsAttention(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "authority-attention", Workspace: "demo", Repo: "conveyor", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -117,7 +117,7 @@ func (s blockingLineageStore) ListLineageNeighborhood(ctx context.Context, _ []c
 }
 
 func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "guarded-context", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -197,7 +197,7 @@ func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
 }
 
 func TestGetContextActivityStopsAtExecutionDeadline(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "guarded-deadline", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -273,7 +273,7 @@ func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 			"task-a": {BlockingTaskIDs: []string{"dependency-a"}, UnsatisfiableTaskIDs: []string{"dependency-a"}},
 		},
 	}
-	orders, err := (&Service{Store: st}).List(t.Context())
+	orders, err := (&Service{Store: st}).List(store.WithActor(t.Context(), store.SystemActor()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 		{ID: "review-only", TaskID: "task-g", Stage: core.StageReview, State: core.WorkOrderQueued},
 	}
 	st.calls = nil
-	if _, err = (&Service{Store: st}).List(t.Context()); err != nil {
+	if _, err = (&Service{Store: st}).List(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 		t.Fatal(err)
 	}
 	if len(st.calls) != 0 {
@@ -352,7 +352,7 @@ func TestListForTaskUsesOnlyScopedReadsAndPreservesProjection(t *testing.T) {
 		{ID: "queued-review", TaskID: "task-a", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
 		{ID: "unrelated-review", TaskID: "task-b", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
 	}}
-	orders, err := (&Service{Store: st}).ListForTask(t.Context(), "task-a")
+	orders, err := (&Service{Store: st}).ListForTask(store.WithActor(t.Context(), store.SystemActor()), "task-a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestListForTaskUsesOnlyScopedReadsAndPreservesProjection(t *testing.T) {
 
 func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, task := range []core.Task{
 		{ID: "task-a", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()},
@@ -455,7 +455,7 @@ func (st *scopedContextStore) ListArtifactsForLineage(ctx context.Context, nodes
 
 func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScoped(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	blueprint := core.Task{ID: "blueprint", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: now}
@@ -607,7 +607,7 @@ func TestWorkOrderArtifactContextTraversesLineageAndKeepsAuthorizationOrderScope
 }
 
 func TestGetWorkOrderReportsOnlyTheNamedOmittedArtifactCount(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "artifact-cap", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -649,7 +649,7 @@ func TestGetWorkOrderReportsOnlyTheNamedOmittedArtifactCount(t *testing.T) {
 }
 
 func TestPostClaimProgressDoesNotReevaluateDependencies(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "claimed-before-edge", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -679,7 +679,7 @@ func TestPostClaimProgressDoesNotReevaluateDependencies(t *testing.T) {
 
 func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "submitted-owner", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-submitted-owner", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -781,7 +781,7 @@ func TestSubmittedOwnerObservationAndTelemetryAreLeaseExempt(t *testing.T) {
 
 func TestSubmitPlanUsesPlanLifecycle(t *testing.T) {
 	plan := pipeline.StructuredPlan{Markdown: "## Approach\nReuse it.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The plan is gated.", Decomposition: []pipeline.DecompositionItem{}}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "plan-submit", Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -826,7 +826,7 @@ func TestSubmitPlanUsesPlanLifecycle(t *testing.T) {
 }
 
 func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "review-retry-service", Workspace: "demo", Repo: "app", Branch: "conveyor/task-review-retry-service", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -932,7 +932,7 @@ func (agent *staticAgent) Run(_ context.Context, _ string, input inprocess.Input
 }
 
 func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "mcp-review-context", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -972,7 +972,7 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 // The delivered implement contract names both session modes and the
 // self-claimed lease cadence (req-agent-skills AC-2.2, AC-3.1, AC-3.8; DEC-44).
 func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "session-modes", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1026,7 +1026,7 @@ func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testi
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			task := core.Task{
 				ID: "pr-description-" + strings.ReplaceAll(tt.name, " ", "-"), Workspace: "test", Repo: "app",
@@ -1101,7 +1101,7 @@ func TestReviewWorkOrderContextIncludesPullRequestDescriptionBestEffort(t *testi
 }
 
 func TestReviewWorkOrderContextPreservesRefreshDeltaAndEmptyDiffMetadata(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "refresh-delta-context", Workspace: "test", Repo: "app", Branch: "conveyor/task-refresh-delta-context",
@@ -1155,7 +1155,7 @@ func TestReviewWorkOrderContextPreservesRefreshDeltaAndEmptyDiffMetadata(t *test
 }
 
 func TestReviewWorkOrderContextFailsClosedWhenComparisonUnavailable(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "comparison-unavailable", Workspace: "test", Repo: "app", Branch: "conveyor/task-comparison-unavailable", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1184,7 +1184,7 @@ func TestReviewWorkOrderContextFailsClosedWhenComparisonUnavailable(t *testing.T
 }
 
 func TestReviewWorkOrderContextRejectsLegacyClaimWithoutSnapshot(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "legacy-review-context", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
@@ -1211,7 +1211,7 @@ func TestReviewWorkOrderContextRejectsLegacyClaimWithoutSnapshot(t *testing.T) {
 }
 
 func TestReviewWorkOrderContextRejectsLegacyClaimWithoutGovernanceSnapshot(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "legacy-governance-context", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
@@ -1238,7 +1238,7 @@ func TestReviewWorkOrderContextRejectsLegacyClaimWithoutGovernanceSnapshot(t *te
 }
 
 func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "queued-review-peek", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1284,7 +1284,7 @@ func TestQueuedReviewWorkOrderPeekResolvesWithoutPinning(t *testing.T) {
 }
 
 func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "review-claim-pin", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
@@ -1351,7 +1351,7 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 }
 
 func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "governance-claim-pin", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
@@ -1426,7 +1426,7 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 }
 
 func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1569,7 +1569,7 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 }
 
 func TestSubmitVerdictUsesParentPlanAfterProposalDecision(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	parent := core.Task{ID: "legacy-blueprint-plan", Workspace: "test", Repo: "app", State: core.TaskAwaiting, CreatedAt: now}
@@ -1657,7 +1657,7 @@ func TestSubmitVerdictUsesParentPlanAfterProposalDecision(t *testing.T) {
 
 func TestUsagePersistsHighReportWithoutGating(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1853,7 +1853,7 @@ func TestWorkerFallbackUsagePreservesExistingAgentReport(t *testing.T) {
 
 func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "timeout-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2055,7 +2055,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 }
 
 func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	frozen := config.ExecutionSetup{Name: "removed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "frozen-model", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "1h"}}}
 	task := core.Task{ID: "missing-setup-task", Workspace: "demo", State: core.TaskRunning, SetupName: "removed", SetupContract: frozen, CreatedAt: time.Now().UTC()}
@@ -2137,7 +2137,7 @@ func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
 }
 
 func TestStageCompletionRetiresQueuedSameStageSibling(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "completion-reaps-sibling", Workspace: "test", State: core.TaskRunning, CreatedAt: now}
@@ -2205,7 +2205,7 @@ func TestRecoverySupersessionGuardNamesSuccessorAndGate(t *testing.T) {
 }
 
 func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "recover-review-bounce", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now.Add(-time.Hour)}
@@ -2348,7 +2348,7 @@ func TestRedispatchClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T)
 
 func newLifecycleService(t *testing.T, id string) (context.Context, store.Store, *Service, core.WorkOrder) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: id + "-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2375,7 +2375,7 @@ func newLifecycleService(t *testing.T, id string) (context.Context, store.Store,
 
 func TestExpiredLeaseReturnsWorkOrderToQueue(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "lease-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2435,7 +2435,7 @@ func TestClaimRejectsEmptyClaimantIdentity(t *testing.T) {
 }
 
 func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "stale-session", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2474,7 +2474,7 @@ func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
 
 func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "await-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2526,7 +2526,7 @@ func TestAwaitReviewSubmittedOrderOwnershipTimeoutAndPostLeaseRetry(t *testing.T
 
 func TestAwaitReviewReturnsWhenBaseContextIsCancelled(t *testing.T) {
 	st := store.NewMemory()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	task := core.Task{ID: "await-shutdown-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -2546,7 +2546,7 @@ func TestAwaitReviewReturnsWhenBaseContextIsCancelled(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
-	baseCtx, cancelBase := context.WithCancel(context.Background())
+	baseCtx, cancelBase := context.WithCancel(store.WithActor(context.Background(), store.SystemActor()))
 	done := make(chan error, 1)
 	go func() {
 		_, awaitErr := (&Service{Store: st}).AwaitReview(baseCtx, order.ID, "shutdown-owner", time.Minute)
@@ -2565,7 +2565,7 @@ func TestAwaitReviewReturnsWhenBaseContextIsCancelled(t *testing.T) {
 
 func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "await-progress-task", Workspace: "test", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2669,7 +2669,7 @@ func TestAwaitReviewPendingIncludesLatestRoundSeatProgressWithoutMutation(t *tes
 
 func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	base := store.NewMemory()
 	task := core.Task{ID: "retry-verdict", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := base.CreateTask(ctx, task); err != nil {
@@ -2717,7 +2717,7 @@ func TestSubmitVerdictAcceptanceFailureRemainsRetryable(t *testing.T) {
 }
 
 func TestSubmitVerdictReDerivesRunningFromLiveClaimAfterProjectionRegression(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "claim-demote-verdict", Workspace: "test", Repo: "app", Level: core.L2, PolicyVersion: 1, MergeApproval: true, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2778,7 +2778,7 @@ func TestSubmitVerdictReDerivesRunningFromLiveClaimAfterProjectionRegression(t *
 }
 
 func TestSubmitVerdictRejectsMissingGovernancePinAndKeepsClaim(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	base := store.NewMemory()
 	task := core.Task{ID: "legacy-governance-verdict", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
@@ -2815,7 +2815,7 @@ func TestSubmitVerdictRejectsMissingGovernancePinAndKeepsClaim(t *testing.T) {
 
 func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "loop-task", Workspace: "test", Repo: "app", Title: "Loop", Level: core.L2, State: core.TaskRunning, NextStage: core.StageImplement, Branch: "conveyor/loop", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2988,7 +2988,7 @@ func prepareSubmissionTest(service *Service) {
 
 func submissionTestHead(service *Service) string {
 	if service.ReviewTarget != nil {
-		target, err := service.ReviewTarget(context.Background(), "acme/app", "")
+		target, err := service.ReviewTarget(store.WithActor(context.Background(), store.SystemActor()), "acme/app", "")
 		if err == nil && target.HeadSHA != "" {
 			return target.HeadSHA
 		}
@@ -2999,7 +2999,7 @@ func submissionTestHead(service *Service) string {
 func TestSubmitVerdictUnresolvedApprovalRemainsRetryable(t *testing.T) {
 	for _, gate := range []bool{false, true} {
 		t.Run(fmt.Sprintf("merge-gate=%t", gate), func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			task := core.Task{ID: "unresolved-review", Workspace: "test", Repo: "app", PolicyVersion: 1, MergeApproval: gate, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
@@ -3149,7 +3149,7 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 			}
 		}},
 		{name: "another workspace", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
-			other := store.WithWorkspace(t.Context(), "other")
+			other := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "other")
 			if _, _, err := f.st.CreateRequirement(other, core.Requirement{ID: f.requirementID, Title: "Other"}, func() core.RequirementVersion {
 				version := requirementVersion("Another workspace's proposal.")
 				version.Origin, version.OriginTaskID = core.RequirementOriginImplementation, f.task.ID
@@ -3160,7 +3160,7 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			task := core.Task{ID: "claim-gate", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: tc.stage, CreatedAt: time.Now().UTC()}
 			if tc.stage == core.StageVerify {
@@ -3227,7 +3227,7 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 	}
 
 	t.Run("failed read", func(t *testing.T) {
-		ctx := store.WithWorkspace(t.Context(), "test")
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 		base := store.NewMemory()
 		task := core.Task{ID: "claim-read-failure", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 		if err := base.CreateTask(ctx, task); err != nil {

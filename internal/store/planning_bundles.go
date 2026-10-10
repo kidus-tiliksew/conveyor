@@ -191,6 +191,9 @@ func normalizeStrings(kind string, values []string) ([]string, error) {
 }
 
 func (m *memory) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBundle) (core.PlanningBundle, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningBundle{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	bundle.Workspace = workspaceOrDefault(ctx, bundle.Workspace)
@@ -331,6 +334,9 @@ func (m *memory) ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle
 }
 
 func (m *memory) ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningBundle{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: id}
@@ -397,6 +403,9 @@ func (m *memory) ApprovePlanningBundle(ctx context.Context, id string) (core.Pla
 }
 
 func (m *memory) RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningBundle{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := memoryScopedKey{workspace: workspaceOrDefault(ctx, ""), id: id}

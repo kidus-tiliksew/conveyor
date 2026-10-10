@@ -78,7 +78,9 @@ func newInstanceAdminHarness(t *testing.T) *instanceAdminHarness {
 	t.Helper()
 	st := store.NewVolatileBackend()
 	t.Cleanup(st.Close)
-	ctx := t.Context()
+	// Fixture setup writes events, so it binds the explicit system actor
+	// (component-persistence, Actor context).
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Instance", Email: "owner@example.test", DisplayName: "Owner"}, instanceOwnerToken); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +307,9 @@ func TestInstanceAdministrationRouteAdmission(t *testing.T) {
 
 func TestInstanceAdministrationProvisioningAcknowledgement(t *testing.T) {
 	h := newInstanceAdminHarness(t)
-	ctx := t.Context()
+	// Fixture setup writes events, so it binds the explicit system actor
+	// (component-persistence, Actor context).
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	existing, err := h.st.ProvisionIdentityUser(ctx, "existing@example.test", "Existing Name")
 	if err != nil {
 		t.Fatal(err)

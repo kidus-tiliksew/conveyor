@@ -13,7 +13,7 @@ import (
 )
 
 func TestTaskAssignmentDoesNotChangeFIFOOrder(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
 	for i, id := range []string{"old-unassigned", "middle-assigned", "new-unassigned"} {
@@ -138,7 +138,7 @@ func TestMemoryDependencyOutcomesUnlinkAndQueueClock(t *testing.T) {
 
 func TestMemoryBlueprintClosesAfterRecovery(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
 	parent := core.Task{
 		ID: "memory-blueprint-parent", State: core.TaskQueued,

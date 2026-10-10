@@ -28,7 +28,7 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 		return out
 	}
 	snapshot := call("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "permission-route"}).(store.VerificationSnapshot)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	_, err := b.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}, "permission-route-token")
 	if err != nil {
 		t.Fatal(err)

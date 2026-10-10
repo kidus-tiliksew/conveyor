@@ -14,7 +14,7 @@ import (
 func TestVerificationReadCorruptionIntegration(t *testing.T) {
 	s := conformanceStore(t)
 	ws := "verification-read-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), ws)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
 	cfg := &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
 	if _, err := s.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

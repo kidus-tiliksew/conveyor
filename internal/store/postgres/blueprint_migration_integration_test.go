@@ -33,12 +33,12 @@ func TestBlueprintOriginIdentityMigrationRejectsLiveDuplicatesIntegration(t *tes
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 41); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 41); err != nil {
 		t.Fatalf("migrate isolated schema to version 41: %v", err)
 	}
 
 	workspace := "blueprint-migration-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	st := newStore(pool)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{
 		Workspace: workspace,
@@ -64,7 +64,7 @@ func TestBlueprintOriginIdentityMigrationRejectsLiveDuplicatesIntegration(t *tes
 		}
 	}
 
-	err = migrateControlPlaneToVersion(t.Context(), pool, 42)
+	err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 42)
 	if err == nil || !strings.Contains(err.Error(), "duplicate live blueprint children") ||
 		!strings.Contains(err.Error(), "SUB-1") {
 		t.Fatalf("duplicate migration error=%v", err)
@@ -87,7 +87,7 @@ func TestBlueprintOriginIdentityMigrationRejectsLiveDuplicatesIntegration(t *tes
 	if _, err = pool.Exec(ctx, "UPDATE tasks SET state='merged' WHERE id=$1 AND workspace_id=$2", childIDs[1], workspace); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 42); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 42); err != nil {
 		t.Fatalf("upgrade with one historical terminal child: %v", err)
 	}
 	var indexDefinition string
