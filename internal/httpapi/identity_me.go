@@ -75,7 +75,27 @@ func (s *Server) getCallerIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, identity)
+	writeJSON(w, http.StatusOK, callerIdentityProjection(identity, workspaceID))
+}
+
+// callerIdentityProjection adds the dashboard's presentation lists to an
+// authorized workspace read. The capabilities follow the role returned by the
+// identity read itself, not the earlier middleware check, so a binding that
+// changed in between is reflected, and a read without a role serves no lists.
+// An unscoped read carries no role, capabilities, or roles
+// (req-accounts-and-membership AC-5.1; component-identity-membership).
+func callerIdentityProjection(identity core.CallerIdentity, workspaceID string) core.CallerIdentity {
+	identity.Capabilities, identity.Roles = nil, nil
+	if workspaceID == "" {
+		identity.Role = ""
+		return identity
+	}
+	if identity.Role == "" {
+		return identity
+	}
+	identity.Capabilities = core.RoleCapabilities(identity.Role)
+	identity.Roles = core.WorkspaceRoles()
+	return identity
 }
 
 const maxDisplayNameBytes = 128
