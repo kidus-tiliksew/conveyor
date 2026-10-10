@@ -185,6 +185,11 @@ type MembershipGrant struct {
 	Role      WorkspaceRole `json:"role"`
 	SignInURL string        `json:"sign_in_url,omitempty"`
 	Delivery  string        `json:"delivery,omitempty"`
+	// Invitation reports that the grant created or refreshed a pending
+	// invitation because the email had no active account. It never crosses
+	// the wire: the HTTP handler issues a sign-in link only when it is true
+	// (component-identity-membership).
+	Invitation bool `json:"-"`
 }
 
 // IssuedSignInLink is secret-bearing and may only cross the operator response

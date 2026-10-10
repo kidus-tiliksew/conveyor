@@ -41,9 +41,9 @@ type recordingInvitationSessionFixture struct {
 	issueEmails []string
 }
 
-func (f *recordingInvitationSessionFixture) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+func (f *recordingInvitationSessionFixture) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
 	f.issueEmails = append(f.issueEmails, email)
-	return f.invitationSessionFixture.IssueSignInLink(ctx, email)
+	return f.invitationSessionFixture.IssueInvitationSignInLink(ctx, workspaceID, email, purpose)
 }
 
 func (f *identityProvisioningFixture) ProvisionIdentityUser(_ context.Context, email, displayName string) (core.IdentityUser, error) {

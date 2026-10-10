@@ -92,7 +92,12 @@ func scanIdentity(row interface{ Scan(...any) error }) (core.IdentityUser, error
 	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.CreatedAt)
 	return u, identityNotFound(err)
 }
-func provisionIdentity(ctx context.Context, tx *sql.Tx, email, name string) (core.IdentityUser, error) {
+
+// provisionIdentity resolves or creates the account and consumes its pending
+// invitations. byLink selects sign-in link redemption, whose grants are
+// attributed to the redeemed account rather than to the inviter
+// (req-accounts-and-membership AC-3.1).
+func provisionIdentity(ctx context.Context, tx *sql.Tx, email, name string, byLink bool) (core.IdentityUser, error) {
 	u, err := scanIdentity(tx.QueryRowContext(ctx, "SELECT id,email,display_name,status,created_at FROM users WHERE email=?", email))
 	if errors.Is(err, store.ErrNotFound) {
 		id, e := randomIdentityID("usr", 12)
@@ -137,8 +142,14 @@ func provisionIdentity(ctx context.Context, tx *sql.Tx, email, name string) (cor
 		if _, err = tx.ExecContext(ctx, "DELETE FROM workspace_membership_invitations WHERE workspace_id=? AND email=?", i.ws, email); err != nil {
 			return u, translateBackendConflict(err)
 		}
-		actorCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID(i.by), Role: core.ActorUser})
-		if _, err = appendWorkspaceEvent(actorCtx, tx, i.ws, "workspace.membership_granted", map[string]any{"workspace_id": i.ws, "user_id": u.ID, "email": u.Email, "role": i.role, "invitation": false, "redemption": true, "granted_by": i.by}); err != nil {
+		actorID := store.UserActorID(i.by)
+		payload := map[string]any{"workspace_id": i.ws, "user_id": u.ID, "email": u.Email, "role": i.role, "invitation": false, "redemption": true, "granted_by": i.by}
+		if byLink {
+			actorID = store.UserActorID(u.ID)
+			payload["invited_by"] = i.by
+		}
+		actorCtx := store.WithActor(ctx, store.Actor{ID: actorID, Role: core.ActorUser})
+		if _, err = appendWorkspaceEvent(actorCtx, tx, i.ws, "workspace.membership_granted", payload); err != nil {
 			return u, translateBackendConflict(err)
 		}
 	}
@@ -170,7 +181,7 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, name string) (
 			return translateBackendConflict(err)
 		}
 		var err error
-		u, err = provisionIdentity(ctx, tx, email, name)
+		u, err = provisionIdentity(ctx, tx, email, name, false)
 		return translateBackendConflict(err)
 	})
 	return u, translateBackendConflict(err)
@@ -247,7 +258,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		}
 		u, err := scanIdentity(tx.QueryRowContext(ctx, "SELECT u.id,u.email,u.display_name,u.status,u.created_at FROM users u JOIN user_tokens t ON t.user_id=u.id WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active' AND EXISTS(SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=u.id AND b.role='operator') ORDER BY t.created_at,t.id LIMIT 1"))
 		if errors.Is(err, store.ErrNotFound) {
-			u, err = provisionIdentity(ctx, tx, email, name)
+			u, err = provisionIdentity(ctx, tx, email, name, false)
 			if err == nil {
 				_, err = tx.ExecContext(ctx, "UPDATE orgs SET name=? WHERE id='deployment' AND name='Conveyor'", org)
 			}

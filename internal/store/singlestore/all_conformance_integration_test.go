@@ -177,7 +177,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				return result, rows.Err()
 			}, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
 				ws, _ := store.WorkspaceFromContext(ctx)
-				rows, err := st.db.QueryContext(ctx, `SELECT id,kind,payload_json,at FROM events WHERE workspace_id=? AND task_id IS NULL AND LEFT(kind,CHAR_LENGTH(?))=? ORDER BY at,id`, ws, kindPrefix, kindPrefix)
+				rows, err := st.db.QueryContext(ctx, `SELECT id,kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IS NULL AND LEFT(kind,CHAR_LENGTH(?))=? ORDER BY at,id`, ws, kindPrefix, kindPrefix)
 				if err != nil {
 					return nil, err
 				}
@@ -186,9 +186,11 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				for rows.Next() {
 					var e core.Event
 					var payload []byte
-					if err := rows.Scan(&e.ID, &e.Kind, &payload, &e.At); err != nil {
+					var role string
+					if err := rows.Scan(&e.ID, &e.Kind, &e.ActorID, &role, &payload, &e.At); err != nil {
 						return nil, err
 					}
+					e.ActorRole = core.ActorRole(role)
 					e.Payload = payload
 					result = append(result, e)
 				}

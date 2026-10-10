@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -28,9 +29,19 @@ func TestMemoryConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) { return st.ListEvents(ctx, "") }, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
+				// The volatile ledger keeps taskless events of every workspace
+				// in one list. An event whose payload names another
+				// workspace_id belongs to that workspace's ledger.
+				ws, _ := store.WorkspaceFromContext(ctx)
 				events, err := st.ListEvents(ctx, "")
 				var out []core.Event
 				for _, event := range events {
+					var scope struct {
+						WorkspaceID string `json:"workspace_id"`
+					}
+					if json.Unmarshal(event.Payload, &scope) == nil && scope.WorkspaceID != "" && scope.WorkspaceID != ws {
+						continue
+					}
 					if strings.HasPrefix(event.Kind, kindPrefix) {
 						out = append(out, event)
 					}

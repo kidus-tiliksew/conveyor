@@ -177,8 +177,9 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 				return err
 			}
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
-			"workspace_id": workspaceID, "email": email, "role": role, "invitation": errors.Is(lookupErr, pgx.ErrNoRows),
+		result.Invitation = errors.Is(lookupErr, pgx.ErrNoRows)
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspaceID, "email": email, "role": role, "invitation": result.Invitation,
 			"granted_by": credential.OwnerUserID,
 		})})
 	})
@@ -201,6 +202,9 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 		if err := lockIdentityEmail(ctx, tx, email); err != nil {
 			return err
 		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationRevokeLocked); err != nil {
+			return err
+		}
 		result, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email)
 		if err != nil {
 			return err
@@ -208,7 +212,7 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 		if result.RowsAffected() == 0 {
 			return fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspaceID, "email": email, "invitation": true, "revoked_by": credential.OwnerUserID,
 		})})
 	})
@@ -254,7 +258,7 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 		if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_revoked"); err != nil {
 			return err
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspaceID, "user_id": userID,
 		})})
 	})

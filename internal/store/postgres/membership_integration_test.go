@@ -83,8 +83,14 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	if err = json.Unmarshal(existing.Body.Bytes(), &existingGrant); err != nil {
 		t.Fatal(err)
 	}
-	if invitedGrant.Email != existingGrant.Email || invitedGrant.Role != existingGrant.Role || invitedGrant.Delivery != "fallback" || existingGrant.Delivery != "fallback" || invitedGrant.SignInURL == "" || existingGrant.SignInURL == "" {
-		t.Fatalf("grant response leaked account existence: invited=%+v existing=%+v", invitedGrant, existingGrant)
+	// Only the invitation receives a sign-in link. A grant to the existing
+	// account reports the binding without a link or delivery outcome
+	// (component-identity-membership; req-invitations-and-sign-in REQ-1).
+	if invitedGrant.Email != existingGrant.Email || invitedGrant.Role != existingGrant.Role || invitedGrant.Delivery != "fallback" || invitedGrant.SignInURL == "" || existingGrant.Delivery != "" || existingGrant.SignInURL != "" {
+		t.Fatalf("grant responses invited=%+v existing=%+v", invitedGrant, existingGrant)
+	}
+	if strings.Contains(existing.Body.String(), "sign_in_url") || strings.Contains(existing.Body.String(), "delivery") || strings.Contains(existing.Body.String(), "invitation") {
+		t.Fatalf("existing-account grant body=%s", existing.Body.String())
 	}
 	var bindings, invitations, redemptionEvents int
 	if err = st.pool.QueryRow(t.Context(), `SELECT
