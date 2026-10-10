@@ -159,6 +159,34 @@ type TaskRunGate struct {
 	SpecVersion       int    `json:"spec_version,omitempty"`
 	PlanVersion       int    `json:"plan_version,omitempty"`
 	Rationale         string `json:"rationale,omitempty"`
+	// MergeReadiness is present only on a merge_execution gate whose
+	// readiness read succeeded; its absence never permits Merge.
+	MergeReadiness *TaskRunMergeReadiness `json:"merge_readiness,omitempty"`
+}
+
+// TaskRunGateMergeExecution is the gate kind of an approved task behind the
+// merge gate: review approval is recorded and the separate merge act remains
+// (req-review-gates-evidence AC-1.1; component-mcp-protocol, Run-order plane).
+const TaskRunGateMergeExecution = "merge_execution"
+
+// TaskRunMergeReadinessMergeable is the only readiness state that offers Merge.
+const TaskRunMergeReadinessMergeable = "MERGEABLE"
+
+// TaskRunMergeReadiness is the run-order wire copy of the merge-readiness read
+// owned by component-submission-merge.
+type TaskRunMergeReadiness struct {
+	State   string `json:"state"`
+	HeadSHA string `json:"head_sha,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Number  int    `json:"number,omitempty"`
+}
+
+// MergeActionAvailable reports whether a client may offer the merge act: the
+// gate is a merge-execution gate, the credential holds operate_gates, and the
+// projected readiness is MERGEABLE. The merge route rechecks every condition.
+func (g TaskRunGate) MergeActionAvailable() bool {
+	return g.Kind == TaskRunGateMergeExecution && g.CanOperate &&
+		g.MergeReadiness != nil && g.MergeReadiness.State == TaskRunMergeReadinessMergeable
 }
 
 // HarnessProbeTarget is one exact harness definition the worker must probe.

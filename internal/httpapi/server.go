@@ -41,9 +41,11 @@ import (
 )
 
 type Server struct {
-	mcpReads    mcpReadCache
-	Store       store.Store
-	Credentials CredentialVerifier
+	mcpReads mcpReadCache
+	// taskRunReadiness bounds run-order merge-readiness reads (component-mcp-protocol).
+	taskRunReadiness taskRunReadinessCache
+	Store            store.Store
+	Credentials      CredentialVerifier
 	// Release is the build-injected binary identity reported by /v1/version.
 	Release                  string
 	planningBundleMu         sync.Mutex
