@@ -11,7 +11,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
+// validateContextRefreshArgs types every refusal as an invalid argument so the
+// REST route answers 400 rather than a lifecycle 409 (component-http-api).
 func validateContextRefreshArgs(args map[string]any) error {
+	return invalidToolArgument(contextRefreshArgsError(args))
+}
+
+func contextRefreshArgsError(args map[string]any) error {
 	b, e := json.Marshal(args)
 	if e != nil || len(b) > 8192 {
 		return fmt.Errorf("invalid context refresh arguments")
@@ -53,7 +59,7 @@ func (s *Server) refreshWorkOrderContext(w http.ResponseWriter, r *http.Request)
 	}
 	result, e := s.callMCPTool(r, "refresh_work_order_context", map[string]any{"workspace_id": body.WorkspaceID, "work_order_id": chi.URLParam(r, "id"), "session_id": body.SessionID, "prior_revision": body.PriorRevision})
 	if e != nil {
-		http.Error(w, e.Error(), http.StatusConflict)
+		writeWorkOrderToolError(w, e)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
