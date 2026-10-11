@@ -22,6 +22,7 @@ func runRecoveryRefusal(t *testing.T, x Fixture) {
 	t.Run("RecoverRequestIDReplayBeforeRefusal", func(t *testing.T) { runRecoverRequestIDReplayBeforeRefusal(t, x) })
 	t.Run("AdvancedStageQueuedClaimRefusal", func(t *testing.T) { runAdvancedStageQueuedClaimRefusal(t, x) })
 	t.Run("ClaimPlanRevisionAfterListing", func(t *testing.T) { runClaimPlanRevisionAfterListing(t, x) })
+	t.Run("DispositionRecoverRefusal", func(t *testing.T) { runDispositionRecoverRefusal(t, x) })
 }
 
 func policyChange(t *testing.T, x Fixture, taskID string, r store.SetupChangeRequest) (store.SetupChangeResult, error) {
@@ -690,5 +691,53 @@ func runClaimPlanRevisionAfterListing(t *testing.T, x Fixture) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "awaits the pending plan-revision decision") {
 		t.Fatalf("claim error=%v", err)
+	}
+}
+
+func runDispositionRecoverRefusal(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageVerify, ReviewedHeadSHA: "head", CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	order := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	requireOK(t, st.CreateTask(ctx, task))
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	persisted, err := st.GetWorkOrder(ctx, order.ID)
+	requireOK(t, err)
+	persisted.State = core.WorkOrderTimedOut
+	requireOK(t, UpdateWorkOrder(ctx, st, persisted, core.WorkOrderCmdTimeout))
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	disposition := &store.VerificationRecoveryDisposition{
+		ContextID: "missing", RunID: "missing", OperationIDs: []string{"op"},
+		InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied",
+		Reason: "Operator inspected provider state and authorizes one retry.",
+	}
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	want := "verify stage is off in task " + task.ID + "'s frozen policy"
+	requestID := "disposition-refuse-" + task.ID
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), st, order.ID, requestID, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("disposition recover err=%v want %q", err, want)
+	}
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+	events, err := st.ListEvents(ctx, task.ID)
+	requireOK(t, err)
+	for _, event := range events {
+		if event.Kind == "verification.recovery_authorized" {
+			t.Fatal("disposition recover wrote verification snapshot")
+		}
+	}
+	_, retry := RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), st, order.ID, requestID, time.Hour)
+	if retry == nil || !strings.Contains(retry.Error(), want) {
+		t.Fatalf("retry disposition recover err=%v", retry)
 	}
 }

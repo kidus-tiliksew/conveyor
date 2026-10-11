@@ -1438,6 +1438,9 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
 	}
 	if store.VerificationRecoveryFromContext(ctx) != nil {
+		if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), store.ProjectWorkOrderAt(order, time.Now().UTC())); err != nil {
+			return core.WorkOrder{}, err
+		}
 		q := s.queries.WithTx(tx)
 		records, e := q.ListVerificationRecords(ctx, workspace(ctx), taskID)
 		if e != nil {
@@ -1477,10 +1480,8 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	now := time.Now().UTC()
 	projected := store.ProjectWorkOrderAt(order, now)
-	if store.VerificationRecoveryFromContext(ctx) == nil {
-		if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), projected); err != nil {
-			return core.WorkOrder{}, err
-		}
+	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), projected); err != nil {
+		return core.WorkOrder{}, err
 	}
 	eligibleQueued := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
 	if !eligibleQueued && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {

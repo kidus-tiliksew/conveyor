@@ -2302,6 +2302,18 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		if actor.Role != core.ActorUser || !m.workspaceMembers[member] || !core.RoleAllows(m.workspaceMemberRoles[member], core.CapabilityOperateGates) {
 			return core.WorkOrder{}, ErrVerificationAccess
 		}
+		var taskOrders []core.WorkOrder
+		for _, candidate := range m.workOrders {
+			if candidate.TaskID == order.TaskID {
+				taskOrders = append(taskOrders, candidate)
+			}
+		}
+		if err = WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
 		verificationRows, verificationEvents, err = PrepareVerificationRecovery(ctx, m.tasks[order.TaskID], order, m.verificationRowsLocked(workspace, order.TaskID), requestID, now)
 		if err != nil {
 			return core.WorkOrder{}, err
@@ -2315,19 +2327,17 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	if _, exists := m.recoveries[key]; exists {
 		return order, nil
 	}
-	if VerificationRecoveryFromContext(ctx) == nil {
-		var taskOrders []core.WorkOrder
-		for _, candidate := range m.workOrders {
-			if candidate.TaskID == order.TaskID {
-				taskOrders = append(taskOrders, candidate)
-			}
+	var taskOrders []core.WorkOrder
+	for _, candidate := range m.workOrders {
+		if candidate.TaskID == order.TaskID {
+			taskOrders = append(taskOrders, candidate)
 		}
-		if err = WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
-			return core.WorkOrder{}, err
-		}
-		if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
-			return core.WorkOrder{}, err
-		}
+	}
+	if err = WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
+		return core.WorkOrder{}, err
+	}
+	if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+		return core.WorkOrder{}, err
 	}
 	eligibleQueued := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
 	if !eligibleQueued && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {
