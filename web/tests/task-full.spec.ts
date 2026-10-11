@@ -6470,17 +6470,17 @@ test('start over blocks loading and failed proposal reads and can retry the prev
   await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
 })
 
-for (const [status, message] of [
-  [403, 'task has pending proposals: confirm_documents capability is required'],
-  [409, 'request_id was already used with a different reason or note'],
-  [409, 'terminal tasks cannot start over; create a task with POST /v1/tasks'],
+for (const [status, code, message] of [
+  [403, 'start_over_confirm_documents', 'task has pending proposals: confirm_documents capability is required'],
+  [409, 'start_over_request_conflict', 'request_id was already used with a different reason or note'],
+  [409, 'task_terminal', 'terminal tasks cannot start over; create a task with POST /v1/tasks'],
 ] as const) {
   test(`start over preserves server refusal: ${message}`, async ({ page }) => {
     await mockRestart(page)
     let calls = 0
     await page.route('**/v1/tasks/restart-source/restart*', (route) => {
       calls++
-      return route.fulfill({ status, body: message })
+      return route.fulfill({ status, json: { error: code, message } })
     })
     const dialog = await openRestart(page)
     await dialog.getByLabel('Reason', { exact: false }).fill('Try again')

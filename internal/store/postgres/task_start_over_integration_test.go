@@ -116,3 +116,22 @@ func (b *lockedBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+func TestPostgresTaskStartOverUniqueConstraintNameIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	var name string
+	if err := st.pool.QueryRow(t.Context(), `
+		SELECT c.conname
+		FROM pg_constraint c
+		JOIN pg_class r ON r.oid=c.conrelid
+		JOIN pg_namespace n ON n.oid=r.relnamespace
+		WHERE n.nspname=current_schema()
+		  AND r.relname='task_start_overs'
+		  AND c.contype='u'
+		  AND pg_get_constraintdef(c.oid) LIKE '%(workspace_id, task_id)%'`).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "task_start_overs_workspace_id_task_id_key" {
+		t.Fatalf("constraint name=%s", name)
+	}
+}

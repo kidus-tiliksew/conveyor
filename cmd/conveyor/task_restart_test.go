@@ -26,10 +26,12 @@ type restartFixture struct {
 	reads       int
 	failPath    string
 	failStatus  int
+	failJSON    bool
 	forgeBody   string
 	forgeStatus int
 	empty       bool
 	task        core.Task
+	drops       []core.TaskStartOverDroppedContext
 }
 
 func newRestartFixture(t *testing.T) *restartFixture {
@@ -41,6 +43,12 @@ func newRestartFixture(t *testing.T) *restartFixture {
 			t.Errorf("missing API authentication/workspace")
 		}
 		if r.URL.Path == f.failPath {
+			if f.failJSON {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(f.failStatus)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "task_terminal", "message": "server refused the operation"})
+				return
+			}
 			http.Error(w, "server refused the operation", f.failStatus)
 			return
 		}
@@ -73,8 +81,11 @@ func newRestartFixture(t *testing.T) *restartFixture {
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Error(err)
 			}
+			if r.Header.Get("X-Request-Id") != request.RequestID {
+				t.Errorf("X-Request-Id=%q request_id=%q", r.Header.Get("X-Request-Id"), request.RequestID)
+			}
 			f.requests = append(f.requests, request)
-			json.NewEncoder(w).Encode(core.TaskStartOverResult{Successor: core.Task{ID: "next", Branch: "conveyor/task-next", Workspace: "demo"}, Created: len(f.requests) == 1})
+			json.NewEncoder(w).Encode(core.TaskStartOverResult{Successor: core.Task{ID: "next", Branch: "conveyor/task-next", Workspace: "demo"}, Created: len(f.requests) == 1, DroppedContext: f.drops})
 		default:
 			t.Errorf("unexpected API read %s", r.URL)
 			http.NotFound(w, r)
@@ -104,12 +115,19 @@ func newRestartFixture(t *testing.T) *restartFixture {
 	})
 	t.Cleanup(func() { original.Transport = oldTransport })
 
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("CONVEYOR_ADDR", server.URL)
 	t.Setenv("CONVEYOR_API_TOKEN", "api-token")
 	t.Setenv("CONVEYOR_GIT_TOKEN", "forge-token")
-	oldWorkspace := workspaceFlag
-	workspaceFlag = "demo"
-	t.Cleanup(func() { workspaceFlag = oldWorkspace })
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+	oldWorkspace, oldServer := workspaceFlag, serverFlag
+	oldWorkspaceExplicit, oldServerExplicit := workspaceFlagExplicit, serverFlagExplicit
+	workspaceFlag, serverFlag = "demo", ""
+	workspaceFlagExplicit, serverFlagExplicit = false, false
+	t.Cleanup(func() {
+		workspaceFlag, serverFlag = oldWorkspace, oldServer
+		workspaceFlagExplicit, serverFlagExplicit = oldWorkspaceExplicit, oldServerExplicit
+	})
 	f.client = &client{base: server.URL, token: "api-token", workspace: "demo"}
 	return f
 }
@@ -328,5 +346,36 @@ func TestTaskRestartCharacterDeviceIsNotTerminal(t *testing.T) {
 	defer file.Close()
 	if restartInputIsTerminal(file) {
 		t.Fatal("/dev/null is not an interactive terminal")
+	}
+}
+
+func TestTaskRestartJSONError(t *testing.T) {
+	f := newRestartFixture(t)
+	f.failPath = "/v1/tasks/old/restart"
+	f.failStatus = http.StatusConflict
+	f.failJSON = true
+	_, err := executeRestart("old", "--reason", "again", "--yes", "--request-id", "retry-key")
+	if err == nil || !strings.Contains(err.Error(), "task_terminal: server refused the operation") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestTaskRestartInternalErrorIncludesRequestID(t *testing.T) {
+	f := newRestartFixture(t)
+	f.failPath = "/v1/tasks/old/restart"
+	f.failStatus = http.StatusInternalServerError
+	f.failJSON = true
+	_, err := executeRestart("old", "--reason", "again", "--yes", "--request-id", "retry-key")
+	if err == nil || !strings.Contains(err.Error(), "request_id retry-key") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestTaskRestartDroppedContext(t *testing.T) {
+	f := newRestartFixture(t)
+	f.drops = []core.TaskStartOverDroppedContext{{Kind: "requirement", ID: "req-1", Reason: "missing"}}
+	output, err := executeRestart("old", "--reason", "again", "--yes")
+	if err != nil || !strings.Contains(output, "Dropped requirement req-1: missing") {
+		t.Fatalf("error=%v output=%s", err, output)
 	}
 }

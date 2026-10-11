@@ -34,6 +34,8 @@ func TestBackendConflictTranslation(t *testing.T) {
 		{"23505", "jobs_pkey", store.ErrDispatchJobConflict},
 		{"23505", "reference_documents_live_name_idx", store.ErrReferenceDocumentNameConflict},
 		{"23505", "tasks_open_repo_branch_idx", store.ErrTaskBranchConflict},
+		{"23505", "tasks_supersedes_unique", store.ErrTaskAlreadyStartedOver},
+		{"23505", "task_start_overs_workspace_id_task_id_key", store.ErrTaskAlreadyStartedOver},
 		{"23505", "requirements_workspace_id_slug_key", store.ErrRequirementSlugConflict},
 		{"23505", "system_designs_pkey", store.ErrSystemDesignIDConflict},
 		{"23505", "system_designs_workspace_id_slug_key", store.ErrSystemDesignSlugConflict},

@@ -192,6 +192,7 @@ export interface TaskRestartResult {
   task: Task
   successor: Task
   created: boolean
+  dropped_context?: Array<{ kind: string; id: string; reason: string }>
 }
 
 export interface PullRequestClose {

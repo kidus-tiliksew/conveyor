@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestTaskStartOverHTTP(t *testing.T) {
@@ -117,6 +119,7 @@ func TestTaskStartOverValidation(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("validation %d: %s", w.Code, w.Body.String())
 		}
+		assertRestartError(t, w, http.StatusBadRequest, "invalid_restart_request")
 	}
 }
 
@@ -174,4 +177,112 @@ func TestTaskStartOverEscapedUnicodeLimit(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
 	}
+}
+
+type startOverErrorStore struct {
+	store.Store
+	err error
+}
+
+func (s startOverErrorStore) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLease, r core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
+	if s.err != nil {
+		return core.TaskStartOverResult{}, s.err
+	}
+	return s.Store.StartOverTaskCommand(ctx, lease, r)
+}
+
+func TestTaskStartOverErrorMapping(t *testing.T) {
+	cases := []struct {
+		err    error
+		status int
+		code   string
+		retry  bool
+	}{
+		{store.ErrTaskTerminal, http.StatusConflict, "task_terminal", false},
+		{store.ErrStartOverRequestConflict, http.StatusConflict, "start_over_request_conflict", false},
+		{store.ErrStartOverConfirmDocuments, http.StatusForbidden, "start_over_confirm_documents", false},
+		{store.NewTaskDependencyError("dep", "is not open"), http.StatusConflict, "task_dependency", false},
+		{&core.ErrInvalidTransition{Space: core.TaskLifecycle, From: string(core.TaskRunning), Command: string(core.TaskStartOver)}, http.StatusConflict, "invalid_transition", false},
+		{&store.RequirementArchivedError{RequirementID: "req-1"}, http.StatusConflict, "requirement_archived", false},
+		{&store.SystemDesignArchivedError{DocumentID: "sd-1"}, http.StatusConflict, "system_design_archived", false},
+		{&store.TaskContextReferenceError{Kind: "requirement", ID: "req-1", Reason: store.ContextReasonNotFound}, http.StatusConflict, "invalid_context_reference", false},
+		{store.ErrTaskBranchConflict, http.StatusConflict, "task_branch_conflict", false},
+		{store.ErrTaskAlreadyStartedOver, http.StatusConflict, "task_already_started_over", false},
+		{store.ErrRetryable, http.StatusServiceUnavailable, "retryable", true},
+		{store.ErrNotFound, http.StatusNotFound, "not_found", false},
+		{errors.New("untyped boom"), http.StatusInternalServerError, "internal_error", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			st := store.NewMemory()
+			if err := st.CreateTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), core.Task{ID: "map-" + tc.code, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
+				t.Fatal(err)
+			}
+			server := NewServer(startOverErrorStore{Store: st, err: tc.err})
+			server.Workspace = "demo"
+			server.Credentials = staticCredentialVerifier{"token": {ID: "pat", OwnerUserID: "usr", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}}
+			r := httptest.NewRequest(http.MethodPost, "/v1/tasks/map-"+tc.code+"/restart", strings.NewReader(`{"request_id":"r","reason":"why"}`))
+			r.Header.Set("Authorization", "Bearer token")
+			r.Header.Set("X-Request-Id", "req-map-"+tc.code)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, r)
+			got := assertRestartError(t, w, tc.status, tc.code)
+			if tc.retry && w.Header().Get("Retry-After") != "1" {
+				t.Fatalf("Retry-After=%q", w.Header().Get("Retry-After"))
+			}
+			if tc.code == "internal_error" && got["message"] != "req-map-"+tc.code {
+				t.Fatalf("internal message=%q", got["message"])
+			}
+			if tc.code == "task_already_started_over" && got["message"] != "task already has a successor; read it with GET /v1/tasks/{id}" {
+				t.Fatalf("already started over message=%q", got["message"])
+			}
+		})
+	}
+}
+
+func TestTaskStartOverDroppedContextHTTP(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	old := core.Task{ID: "drop-http", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, Branch: "conveyor/task-drop-http"}
+	if err := st.CreateTask(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: old.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "missing-restart-requirement"})}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.Credentials = staticCredentialVerifier{"token": {ID: "pat", OwnerUserID: "usr", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}}
+	r := httptest.NewRequest(http.MethodPost, "/v1/tasks/drop-http/restart", strings.NewReader(`{"request_id":"drop","reason":"retry"}`))
+	r.Header.Set("Authorization", "Bearer token")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	var got core.TaskStartOverResult
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.DroppedContext) != 1 || got.DroppedContext[0].Kind != "requirement" || got.DroppedContext[0].ID != "missing-restart-requirement" || got.DroppedContext[0].Reason != "missing" {
+		t.Fatalf("dropped=%+v", got.DroppedContext)
+	}
+}
+
+func assertRestartError(t *testing.T, w *httptest.ResponseRecorder, status int, code string) map[string]string {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status=%d want %d body=%s", w.Code, status, w.Body.String())
+	}
+	if !strings.Contains(w.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("content-type=%q", w.Header().Get("Content-Type"))
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json: %v body=%s", err, w.Body.String())
+	}
+	if body["error"] != code || strings.TrimSpace(body["message"]) == "" {
+		t.Fatalf("envelope=%v", body)
+	}
+	return body
 }

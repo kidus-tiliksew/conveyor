@@ -664,18 +664,18 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	for _, dependencyID := range dependencyIDs {
 		dependencyID = strings.TrimSpace(dependencyID)
 		if dependencyID == "" || seen[dependencyID] {
-			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			return NewTaskDependencyError(dependencyID, "empty or duplicate")
 		}
 		seen[dependencyID] = true
 		dependency, ok := m.tasks[dependencyID]
 		if !ok {
-			return fmt.Errorf("dependency task %s not found", dependencyID)
+			return NewTaskDependencyError(dependencyID, "not found")
 		}
 		if dependency.Workspace != t.Workspace {
-			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+			return NewTaskDependencyError(dependencyID, "belongs to another workspace")
 		}
 		if core.TaskTerminal(dependency.State) {
-			return fmt.Errorf("dependency task %s is not open", dependencyID)
+			return NewTaskDependencyError(dependencyID, "is not open")
 		}
 	}
 	designVersions, err := m.validateTaskContextLocked(t.Workspace, attached)
@@ -733,7 +733,7 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 	for _, id := range input.RequirementIDs {
 		document, ok := m.requirements[memoryScopedKey{workspace: workspace, id: id}]
 		if !ok {
-			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
+			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: ContextReasonNotFound}
 		}
 		if err := ValidateContextDocument("requirement", id, document.CurrentVersion, document.Archived); err != nil {
 			return nil, err
@@ -743,7 +743,7 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 	for _, id := range input.DesignIDs {
 		document, ok := m.systemDesigns[memoryScopedKey{workspace: workspace, id: id}]
 		if !ok {
-			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
+			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: ContextReasonNotFound}
 		}
 		if err := ValidateContextDocument("system design", id, document.CurrentVersion, document.Archived); err != nil {
 			return nil, err

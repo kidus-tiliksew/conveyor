@@ -322,19 +322,54 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		if err := x.Backend.CreateTask(x.Context, old); err != nil {
 			t.Fatal(err)
 		}
-		// An event-proven context reference to an unavailable document forces
-		// successor intake to fail after the existing cancellation span executes.
-		if err := x.Backend.AppendEvent(x.Context, core.Event{TaskID: old.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "missing-restart-requirement"})}); err != nil {
-			t.Fatal(err)
-		}
 		before, _ := x.Backend.ListEvents(x.Context, old.ID)
-		if _, err := taskops.New(x.Backend).StartOver(x.Context, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "rollback", Reason: "retry"}); err == nil {
-			t.Fatal("missing reference accepted")
+		ctx := store.WithTaskStartOverFault(x.Context, func(step string) error {
+			if step == "successor" {
+				return fmt.Errorf("injected successor failure")
+			}
+			return nil
+		})
+		if _, err := taskops.New(x.Backend).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "rollback", Reason: "retry"}); err == nil {
+			t.Fatal("injected successor failure accepted")
 		}
 		after, _ := x.Backend.ListEvents(x.Context, old.ID)
 		got, err := x.Backend.GetTask(x.Context, old.ID)
 		if err != nil || got.State != old.State || got.SupersededBy != "" || len(before) != len(after) {
 			t.Fatalf("partial cancellation task=%+v err=%v", got, err)
+		}
+	})
+
+	t.Run("unavailable_context_dropped", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		old := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", Body: "Drop", Title: "Drop", State: core.TaskRunning}
+		old.Branch = "conveyor/task-" + old.ID
+		if err := x.Backend.CreateTask(x.Context, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := x.Backend.AppendEvent(x.Context, core.Event{TaskID: old.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "missing-restart-requirement"})}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := taskops.New(x.Backend).StartOver(x.Context, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "drop", Reason: "retry"})
+		if err != nil {
+			t.Fatalf("start over: %v", err)
+		}
+		if !result.Created || len(result.DroppedContext) != 1 || result.DroppedContext[0].Kind != "requirement" || result.DroppedContext[0].ID != "missing-restart-requirement" || result.DroppedContext[0].Reason != "missing" {
+			t.Fatalf("result=%+v", result)
+		}
+		retiredEvents, _ := x.Backend.ListEvents(x.Context, old.ID)
+		for _, event := range retiredEvents {
+			if event.Kind == store.TaskStartOverContextDropped {
+				t.Fatalf("drop event on retired task: %+v", event)
+			}
+		}
+		successorEvents, _ := x.Backend.ListEvents(x.Context, result.Successor.ID)
+		drops := store.StartOverDroppedContextFromEvents(successorEvents)
+		if !reflect.DeepEqual(drops, result.DroppedContext) {
+			t.Fatalf("successor drops=%+v", drops)
+		}
+		replay, err := taskops.New(x.Backend).StartOver(x.Context, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "drop", Reason: "retry"})
+		if err != nil || replay.Created || !reflect.DeepEqual(replay.DroppedContext, result.DroppedContext) {
+			t.Fatalf("replay=%+v err=%v", replay, err)
 		}
 	})
 }
