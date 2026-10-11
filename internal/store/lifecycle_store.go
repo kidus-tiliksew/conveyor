@@ -250,6 +250,51 @@ func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders [
 	return nil
 }
 
+// WorkOrderClaimRefusal is the listing/claim predicate: a later same-stage
+// successor (review seats excepted) or ValidateVerifyDispatch. Recover-only
+// refusals (terminal task, past-stage) stay on WorkOrderRecoveryRefusal.
+func WorkOrderClaimRefusal(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+	if order.Stage != core.StageReview {
+		laterThanTarget := func(candidate core.WorkOrder) bool {
+			return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
+		}
+		for _, candidate := range taskOrders {
+			if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
+				continue
+			}
+			if laterThanTarget(candidate) {
+				return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
+			}
+		}
+	}
+	return core.ValidateVerifyDispatch(task, order)
+}
+
+// WorkOrderPlanRevisionRefusal refuses recover and redispatch while the task
+// awaits a plan-revision decision. The event remains the authority because
+// TaskAwaiting is shared by every operator gate.
+func WorkOrderPlanRevisionRefusal(task core.Task, events []core.Event, orderID string) error {
+	if task.State != core.TaskAwaiting {
+		return nil
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if json.Unmarshal(events[i].Payload, &transition) != nil {
+			return nil
+		}
+		if transition.Command != core.TaskGatePlanRevision {
+			return nil
+		}
+		return fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", orderID, task.ID)
+	}
+	return nil
+}
+
 // WorkOrderRecoverySupersessionError is the historical name of
 // WorkOrderRecoveryRefusal. Call sites use WorkOrderRecoveryRefusal.
 func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {

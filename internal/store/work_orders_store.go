@@ -2015,7 +2015,13 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if !core.ValidWorkOrderStage(order.Stage) {
 		return core.WorkOrder{}, fmt.Errorf("invalid work-order stage %s", order.Stage)
 	}
-	if err := core.ValidateVerifyDispatch(m.tasks[order.TaskID], order); err != nil {
+	var claimOrders []core.WorkOrder
+	for _, candidate := range m.workOrders {
+		if candidate.TaskID == order.TaskID {
+			claimOrders = append(claimOrders, candidate)
+		}
+	}
+	if err := WorkOrderClaimRefusal(m.tasks[order.TaskID], order, claimOrders); err != nil {
 		return core.WorkOrder{}, err
 	}
 	for _, other := range m.workOrders {
@@ -2197,6 +2203,9 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	if err := WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
 		return core.WorkOrder{}, err
 	}
+	if err := WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+		return core.WorkOrder{}, err
+	}
 	order = m.refreshWorkOrderLocked(ctx, order, now)
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
@@ -2297,6 +2306,11 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		}
 	} else {
 		projected = ProjectWorkOrderAt(order, now)
+	}
+	if _, exists := m.recoveries[key]; exists {
+		return order, nil
+	}
+	if VerificationRecoveryFromContext(ctx) == nil {
 		var taskOrders []core.WorkOrder
 		for _, candidate := range m.workOrders {
 			if candidate.TaskID == order.TaskID {
@@ -2306,9 +2320,9 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		if err = WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
 			return core.WorkOrder{}, err
 		}
-	}
-	if _, exists := m.recoveries[key]; exists {
-		return order, nil
+		if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	eligibleQueued := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
 	if !eligibleQueued && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {

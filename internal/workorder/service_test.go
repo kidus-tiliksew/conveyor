@@ -3284,17 +3284,11 @@ func TestListRecoveryRefusal(t *testing.T) {
 	order := core.WorkOrder{
 		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
 		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
-		LastAttemptOutcome: core.WorkOrderOutcomeReleased,
 	}
 	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}
 	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
-		return st.ApplyWorkOrderClock(ctx, lease, task.ID, now.Add(time.Hour+time.Second))
-	}); err != nil {
 		t.Fatal(err)
 	}
 	svc := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {

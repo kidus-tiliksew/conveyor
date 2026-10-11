@@ -985,7 +985,25 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
+	orderRows, listErr := tx.Query(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id`, workspace(ctx), order.TaskID)
+	if listErr != nil {
+		return core.WorkOrder{}, listErr
+	}
+	var taskOrders []core.WorkOrder
+	for orderRows.Next() {
+		candidate, scanErr := scanWorkOrder(orderRows)
+		if scanErr != nil {
+			orderRows.Close()
+			return core.WorkOrder{}, scanErr
+		}
+		taskOrders = append(taskOrders, candidate)
+	}
+	if listErr = orderRows.Err(); listErr != nil {
+		orderRows.Close()
+		return core.WorkOrder{}, listErr
+	}
+	orderRows.Close()
+	if err := store.WorkOrderClaimRefusal(taskFromDB(taskRow), order, taskOrders); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if order.Stage != core.StageReview {

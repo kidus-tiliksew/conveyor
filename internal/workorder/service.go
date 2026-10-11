@@ -228,10 +228,7 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 }
 
 func recoverEligible(order core.WorkOrder) bool {
-	if order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
-		return true
-	}
-	return order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
+	return order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut
 }
 
 func ApplyRecoveryRefusal(order *core.WorkOrder, task core.Task, taskOrders []core.WorkOrder, pendingPlanRevision bool) {
@@ -243,7 +240,7 @@ func ApplyRecoveryRefusal(order *core.WorkOrder, task core.Task, taskOrders []co
 	} else if err := store.WorkOrderRecoveryRefusal(task, *order, taskOrders); err != nil {
 		order.RecoveryRefusal = err.Error()
 	}
-	if order.RecoveryRefusal != "" && order.State == core.WorkOrderQueued {
+	if order.State == core.WorkOrderQueued && (pendingPlanRevision || store.WorkOrderClaimRefusal(task, *order, taskOrders) != nil) {
 		order.Claimable = false
 	}
 }
@@ -263,6 +260,24 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	}
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	task, taskErr := s.Store.GetTask(ctx, order.TaskID)
+	if taskErr != nil {
+		return core.WorkOrder{}, taskErr
+	}
+	taskOrders, listErr := s.Store.ListTaskWorkOrders(ctx, order.TaskID)
+	if listErr != nil {
+		return core.WorkOrder{}, listErr
+	}
+	_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+	if gateErr != nil {
+		return core.WorkOrder{}, gateErr
+	}
+	if pendingPlanRevision {
+		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", order.ID, order.TaskID)
+	}
+	if err = store.WorkOrderClaimRefusal(task, order, taskOrders); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
@@ -376,6 +391,13 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	_, pendingPlanRevision, err := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if pendingPlanRevision {
+		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
 	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRedispatch, func(lease taskops.TaskLease) (core.WorkOrder, error) {
 		return s.Store.RedispatchWorkOrderCommand(ctx, lease, id, timeout)

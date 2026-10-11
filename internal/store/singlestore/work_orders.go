@@ -994,11 +994,11 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
-		if err := core.ValidateVerifyDispatch(task, o); err != nil {
-			return err
-		}
 		siblings, err := s.listOrders(ctx, tx, []string{o.TaskID})
 		if err != nil {
+			return err
+		}
+		if err := store.WorkOrderClaimRefusal(task, o, siblings); err != nil {
 			return err
 		}
 		for _, other := range siblings {
@@ -1182,7 +1182,14 @@ func (s *Store) orderSupersessionGuardTx(ctx context.Context, tx *sql.Tx, o core
 	if err != nil {
 		return err
 	}
-	return store.WorkOrderRecoveryRefusal(t, o, orders)
+	if err = store.WorkOrderRecoveryRefusal(t, o, orders); err != nil {
+		return err
+	}
+	events, err := documentTaskEvents(ctx, tx, o.TaskID)
+	if err != nil {
+		return err
+	}
+	return store.WorkOrderPlanRevisionRefusal(t, events, o.ID)
 }
 func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, timeout time.Duration) (core.WorkOrder, error) {
 	if timeout <= 0 {
