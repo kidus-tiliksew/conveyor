@@ -2021,8 +2021,13 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			claimOrders = append(claimOrders, candidate)
 		}
 	}
-	if err := WorkOrderClaimRefusal(m.tasks[order.TaskID], order, claimOrders); err != nil {
-		return core.WorkOrder{}, err
+	if order.State == core.WorkOrderQueued {
+		if err := WorkOrderRecoveryRefusal(m.tasks[order.TaskID], order, claimOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err := WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], order.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	for _, other := range m.workOrders {
 		if core.ConflictingExecutorClaims(order, other) {

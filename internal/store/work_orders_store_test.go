@@ -333,7 +333,7 @@ func TestMemoryAcceptedReviewClearsSubmittedImplementationContinuation(t *testin
 	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	now := time.Now().UTC()
-	task := core.Task{ID: "review-clears-continuation", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: now}
+	task := core.Task{ID: "review-clears-continuation", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, PolicyVersion: 1, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestMemoryWorkOrderRejectsSelfReview(t *testing.T) {
 	t.Parallel()
 	ctx := WithActor(context.Background(), SystemActor())
 	st := NewMemory()
-	if err := st.CreateTask(ctx, core.Task{ID: "task", State: core.TaskRunning}); err != nil {
+	if err := st.CreateTask(ctx, core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}); err != nil {
 		t.Fatal(err)
 	}
 	for _, job := range []core.Job{{ID: "implement", TaskID: "task", Stage: core.StageImplement}, {ID: "review", TaskID: "task", Stage: core.StageReview}} {

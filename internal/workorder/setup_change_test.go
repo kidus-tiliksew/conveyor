@@ -22,7 +22,7 @@ func policyChangeFixture(t *testing.T) (*Service, store.Store, context.Context, 
 	contract := config.ExecutionSetup{Name: "legacy", VerifyStage: true, MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
 		ExecutionSettings: config.ContextualExecutionSettings{Verify: config.ImplementationSettings{TimeoutText: "1h"}, Review: config.ReviewExecutionSettings{TimeoutText: "45m"}}}
 	now := time.Now().UTC()
-	task := core.Task{ID: "policy-change", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupName: "legacy", SetupContract: contract, CreatedAt: now}
+	task := core.Task{ID: "policy-change", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, ReviewedHeadSHA: "head", SetupName: "legacy", SetupContract: contract, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -44,11 +44,19 @@ func policyChangeFixture(t *testing.T) (*Service, store.Store, context.Context, 
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed); err != nil {
 		t.Fatal(err)
 	}
+	if err = storetest.ProjectTaskNextStage(ctx, st, task.ID, core.StageVerify); err != nil {
+		t.Fatal(err)
+	}
+	task, err = st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return &Service{Store: st}, st, ctx, task, claimed, verify
 }
 
 func TestChangeTaskPolicyHandsSubmittedImplementationToEveryReviewSeat(t *testing.T) {
 	service, st, ctx, task, implement, verify := policyChangeFixture(t)
+	beforePipeline, _ := st.CountEvents(ctx, task.ID, "pipeline.transition_decided")
 	disabled := false
 	result, err := service.ChangeTaskPolicy(ctx, task.ID, "skip verification", "policy-disable", store.TaskPolicyChange{VerifyStage: &disabled})
 	if err != nil {
@@ -79,11 +87,15 @@ func TestChangeTaskPolicyHandsSubmittedImplementationToEveryReviewSeat(t *testin
 	if untouched.State != core.WorkOrderSubmitted {
 		t.Fatalf("delivered implementation mutated=%+v", untouched)
 	}
-	for kind, want := range map[string]int{"task.setup.changed": 1, "review.seat.setup_rebuilt": 2, "work_order.cancelled": 1, "pipeline.transition_decided": 1} {
+	for kind, want := range map[string]int{"task.setup.changed": 1, "review.seat.setup_rebuilt": 2, "work_order.cancelled": 1} {
 		if count, countErr := st.CountEvents(ctx, task.ID, kind); countErr != nil || count != want {
 			t.Fatalf("%s events=%d want %d err=%v", kind, count, want, countErr)
 		}
 	}
+	if count, countErr := st.CountEvents(ctx, task.ID, "pipeline.transition_decided"); countErr != nil || count-beforePipeline != 1 {
+		t.Fatalf("pipeline.transition_decided events=%d want %d err=%v", count-beforePipeline, 1, countErr)
+	}
+
 	// A same-input replay returns the recorded result without new writes.
 	before, _ := st.ListEvents(ctx, task.ID)
 	replay, err := service.ChangeTaskPolicy(ctx, task.ID, "skip verification", "policy-disable", store.TaskPolicyChange{VerifyStage: &disabled})

@@ -20,6 +20,8 @@ func runRecoveryRefusal(t *testing.T, x Fixture) {
 	t.Run("RedispatchPlanRevisionGuard", func(t *testing.T) { runRedispatchPlanRevisionGuard(t, x) })
 	t.Run("QueuedStrandedVerifyCancelled", func(t *testing.T) { runQueuedStrandedVerifyCancelled(t, x) })
 	t.Run("RecoverRequestIDReplayBeforeRefusal", func(t *testing.T) { runRecoverRequestIDReplayBeforeRefusal(t, x) })
+	t.Run("AdvancedStageQueuedClaimRefusal", func(t *testing.T) { runAdvancedStageQueuedClaimRefusal(t, x) })
+	t.Run("ClaimPlanRevisionAfterListing", func(t *testing.T) { runClaimPlanRevisionAfterListing(t, x) })
 }
 
 func policyChange(t *testing.T, x Fixture, taskID string, r store.SetupChangeRequest) (store.SetupChangeResult, error) {
@@ -636,5 +638,57 @@ func runRecoverRequestIDReplayBeforeRefusal(t *testing.T, x Fixture) {
 	}
 	if replayed.ID != recovered.ID {
 		t.Fatalf("replayed=%+v", replayed)
+	}
+}
+
+func runAdvancedStageQueuedClaimRefusal(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageReview, CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{
+		ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
+		SessionID: "advanced-stage", ClientToken: "advanced-stage", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "has advanced to review") {
+		t.Fatalf("claim error=%v", err)
+	}
+}
+
+func runClaimPlanRevisionAfterListing(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageImplement, CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{
+		ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	if _, err := st.GetWorkOrder(ctx, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGatePlanRevision}); err != nil {
+		t.Fatalf("plan-revision gate err=%v", err)
+	}
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
+		SessionID: "plan-revision-after-list", ClientToken: "plan-revision-after-list", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "awaits the pending plan-revision decision") {
+		t.Fatalf("claim error=%v", err)
 	}
 }

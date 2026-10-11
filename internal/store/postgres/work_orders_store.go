@@ -1003,8 +1003,33 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		return core.WorkOrder{}, listErr
 	}
 	orderRows.Close()
-	if err := store.WorkOrderClaimRefusal(taskFromDB(taskRow), order, taskOrders); err != nil {
-		return core.WorkOrder{}, err
+	task := taskFromDB(taskRow)
+	if order.State == core.WorkOrderQueued {
+		if err := store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
+		eventRows, eventErr := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspace(ctx), order.TaskID)
+		if eventErr != nil {
+			return core.WorkOrder{}, eventErr
+		}
+		var events []core.Event
+		for eventRows.Next() {
+			var kind string
+			var payload []byte
+			if scanErr := eventRows.Scan(&kind, &payload); scanErr != nil {
+				eventRows.Close()
+				return core.WorkOrder{}, scanErr
+			}
+			events = append(events, core.Event{Kind: kind, Payload: payload})
+		}
+		if eventErr = eventRows.Err(); eventErr != nil {
+			eventRows.Close()
+			return core.WorkOrder{}, eventErr
+		}
+		eventRows.Close()
+		if err := store.WorkOrderPlanRevisionRefusal(task, events, order.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if order.Stage != core.StageReview {
 		var activeSiblingID string

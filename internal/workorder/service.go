@@ -240,7 +240,7 @@ func ApplyRecoveryRefusal(order *core.WorkOrder, task core.Task, taskOrders []co
 	} else if err := store.WorkOrderRecoveryRefusal(task, *order, taskOrders); err != nil {
 		order.RecoveryRefusal = err.Error()
 	}
-	if order.State == core.WorkOrderQueued && (pendingPlanRevision || store.WorkOrderClaimRefusal(task, *order, taskOrders) != nil) {
+	if order.RecoveryRefusal != "" && order.State == core.WorkOrderQueued {
 		order.Claimable = false
 	}
 }
@@ -274,11 +274,13 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if gateErr != nil {
 		return core.WorkOrder{}, gateErr
 	}
-	if pendingPlanRevision {
-		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", order.ID, order.TaskID)
-	}
-	if err = store.WorkOrderClaimRefusal(task, order, taskOrders); err != nil {
-		return core.WorkOrder{}, err
+	if order.State == core.WorkOrderQueued {
+		if pendingPlanRevision {
+			return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", order.ID, order.TaskID)
+		}
+		if err = store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
 		// The listing's read refuses early, before authority is pinned

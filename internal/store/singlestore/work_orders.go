@@ -998,8 +998,17 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
-		if err := store.WorkOrderClaimRefusal(task, o, siblings); err != nil {
-			return err
+		if o.State == core.WorkOrderQueued {
+			if err := store.WorkOrderRecoveryRefusal(task, o, siblings); err != nil {
+				return err
+			}
+			events, err := documentTaskEvents(ctx, tx, o.TaskID)
+			if err != nil {
+				return err
+			}
+			if err = store.WorkOrderPlanRevisionRefusal(task, events, o.ID); err != nil {
+				return err
+			}
 		}
 		for _, other := range siblings {
 			if core.ConflictingExecutorClaims(o, other) {

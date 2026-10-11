@@ -186,7 +186,7 @@ func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stag
 func TestTaskRunHTTPSelectsSpecImplementReviewInPipelineOrder(t *testing.T) {
 	_, st, handler := taskRunHTTPFixture(t)
 	now := time.Now().UTC()
-	for _, stage := range []core.Stage{core.StageReview, core.StageImplement, core.StageSpec, core.StageVerify} {
+	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview} {
 		createTaskRunOrderAtStage(t, st, "target", stage, now.Add(-time.Duration(taskRunStageOrder(stage))*time.Minute))
 	}
 

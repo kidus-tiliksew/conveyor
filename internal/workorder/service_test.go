@@ -1444,7 +1444,7 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
-	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -2224,7 +2224,7 @@ func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
-	task := core.Task{ID: "recover-review-bounce", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now.Add(-time.Hour)}
+	task := core.Task{ID: "recover-review-bounce", Workspace: "test", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now.Add(-time.Hour)}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}

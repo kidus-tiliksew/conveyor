@@ -219,7 +219,8 @@ func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders [
 		}
 		return false
 	}
-	if task.State == core.TaskApproved || task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if (task.State == core.TaskApproved || task.State == core.TaskMerged || task.State == core.TaskClosed) &&
+		(order.State != core.WorkOrderQueued || strings.TrimSpace(order.LastAttemptOutcome) != "") {
 		gate := "terminal task state"
 		if order.Stage == core.StageReview {
 			gate = "merge gate"
@@ -248,26 +249,6 @@ func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders [
 		}
 	}
 	return nil
-}
-
-// WorkOrderClaimRefusal is the listing/claim predicate: a later same-stage
-// successor (review seats excepted) or ValidateVerifyDispatch. Recover-only
-// refusals (terminal task, past-stage) stay on WorkOrderRecoveryRefusal.
-func WorkOrderClaimRefusal(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
-	if order.Stage != core.StageReview {
-		laterThanTarget := func(candidate core.WorkOrder) bool {
-			return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
-		}
-		for _, candidate := range taskOrders {
-			if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
-				continue
-			}
-			if laterThanTarget(candidate) {
-				return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
-			}
-		}
-	}
-	return core.ValidateVerifyDispatch(task, order)
 }
 
 // WorkOrderPlanRevisionRefusal refuses recover and redispatch while the task

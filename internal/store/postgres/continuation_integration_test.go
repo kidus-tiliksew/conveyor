@@ -123,7 +123,7 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 	for _, verdict := range []string{"approve", "changes_requested"} {
 		t.Run(verdict, func(t *testing.T) {
 			now := time.Now().UTC()
-			task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "app", Branch: "conveyor/task-review-continuation-" + verdict, State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: now}
+			task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "app", Branch: "conveyor/task-review-continuation-" + verdict, State: core.TaskRunning, NextStage: core.StageImplement, PolicyVersion: 1, CreatedAt: now}
 			if err := st.CreateTask(ctx, task); err != nil {
 				t.Fatal(err)
 			}
