@@ -66,17 +66,38 @@ func TestTaskGateKindMigrationBackfillsLatestCommandAndReplaysCleanIntegration(t
 		}
 	}
 	mapped, olderWins, unmapped, silent, running := core.NewTaskID(), core.NewTaskID(), core.NewTaskID(), core.NewTaskID(), core.NewTaskID()
+	planRevision, mergeGate, bounce, tie := core.NewTaskID(), core.NewTaskID(), core.NewTaskID(), core.NewTaskID()
 	insertTask(mapped, core.TaskAwaiting)
 	insertTask(olderWins, core.TaskAwaiting)
 	insertTask(unmapped, core.TaskAwaiting)
 	insertTask(silent, core.TaskAwaiting)
 	insertTask(running, core.TaskRunning)
+	insertTask(planRevision, core.TaskAwaiting)
+	insertTask(mergeGate, core.TaskAwaiting)
+	insertTask(bounce, core.TaskAwaiting)
+	insertTask(tie, core.TaskAwaiting)
 	insertEvent(mapped, now.Add(-time.Minute), core.TaskCancel)
 	insertEvent(mapped, now, core.TaskGateSpec)
 	insertEvent(olderWins, now, core.TaskJobFail)
 	insertEvent(olderWins, now.Add(-time.Minute), core.TaskGateMerge)
 	insertEvent(unmapped, now, core.TaskCancel)
 	insertEvent(running, now, core.TaskGateSpec)
+	insertEvent(planRevision, now, core.TaskGatePlanRevision)
+	insertEvent(mergeGate, now, core.TaskGateMerge)
+	insertEvent(bounce, now, core.TaskStageBounceLimit)
+	insertEvent(tie, now, core.TaskJobFail)
+	insertEvent(tie, now, core.TaskGateMerge)
+	var tieLower, tieHigher int64
+	var tieLowerCommand, tieHigherCommand string
+	if err = pool.QueryRow(ctx, `SELECT id, payload_json->>'command' FROM events WHERE task_id=$1 ORDER BY id LIMIT 1`, tie).Scan(&tieLower, &tieLowerCommand); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT id, payload_json->>'command' FROM events WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, tie).Scan(&tieHigher, &tieHigherCommand); err != nil {
+		t.Fatal(err)
+	}
+	if tieHigher <= tieLower || tieLowerCommand != string(core.TaskJobFail) || tieHigherCommand != string(core.TaskGateMerge) {
+		t.Fatalf("equal-at fixture ids=%d/%d commands=%s/%s", tieLower, tieHigher, tieLowerCommand, tieHigherCommand)
+	}
 
 	if err = migrateControlPlane(ctx, pool); err != nil {
 		t.Fatal(err)
@@ -102,11 +123,26 @@ func TestTaskGateKindMigrationBackfillsLatestCommandAndReplaysCleanIntegration(t
 	if got := kind(olderWins); got == nil || *got != string(core.GateKindJobFailure) {
 		t.Fatalf("latest-command gate_kind=%v", got)
 	}
+	if got := kind(planRevision); got == nil || *got != string(core.GateKindPlanRevision) {
+		t.Fatalf("plan revision gate_kind=%v", got)
+	}
+	if got := kind(mergeGate); got == nil || *got != string(core.GateKindMergeApproval) {
+		t.Fatalf("merge gate_kind=%v", got)
+	}
+	if got := kind(bounce); got == nil || *got != string(core.GateKindReviewBounceLimit) {
+		t.Fatalf("bounce gate_kind=%v", got)
+	}
+	if got := kind(tie); got == nil || *got != string(core.GateKindMergeApproval) {
+		t.Fatalf("equal-at higher-id gate_kind=%v, want merge_approval", got)
+	}
 	if kind(unmapped) != nil || kind(silent) != nil || kind(running) != nil {
 		t.Fatalf("unmapped=%v silent=%v running=%v", kind(unmapped), kind(silent), kind(running))
 	}
 	var eventsBefore int
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE workspace_id=$1`, workspace).Scan(&eventsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE tasks SET gate_kind=NULL WHERE id=$1`, mapped); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := migrationFiles.ReadFile("migrations/144_task_gate_kind.sql")

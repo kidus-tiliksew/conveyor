@@ -1482,6 +1482,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 			}
 		}
 		t.State = nextTask
+		t.GateKind = core.GateKindFor(nextTask, core.TaskGatePlanRevision)
 		o, err = getOrderRow(ctx, tx, id)
 		result = store.PlanRevisionRequestResult{WorkOrder: o, Task: t, PlanVersion: version, Rationale: rationale}
 		return err
