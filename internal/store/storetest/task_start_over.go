@@ -453,9 +453,28 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		if !reflect.DeepEqual(drops, result.DroppedContext) {
 			t.Fatalf("successor drops=%+v", drops)
 		}
+		dropEvents := 0
+		for _, event := range successorEvents {
+			if event.Kind == store.TaskStartOverContextDropped {
+				dropEvents++
+			}
+		}
+		if dropEvents != 1 {
+			t.Fatalf("successor drop events=%d", dropEvents)
+		}
 		replay, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "drop", Reason: "retry"})
 		if err != nil || replay.Created || !reflect.DeepEqual(replay.DroppedContext, result.DroppedContext) {
 			t.Fatalf("replay=%+v err=%v", replay, err)
+		}
+		replayEvents, _ := st.ListEvents(ctx, result.Successor.ID)
+		replayDrops := 0
+		for _, event := range replayEvents {
+			if event.Kind == store.TaskStartOverContextDropped {
+				replayDrops++
+			}
+		}
+		if replayDrops != 1 || len(replayEvents) != len(successorEvents) {
+			t.Fatalf("replay drop events=%d events=%d want 1 and %d", replayDrops, len(replayEvents), len(successorEvents))
 		}
 	})
 
