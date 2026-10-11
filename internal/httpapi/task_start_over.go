@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -108,6 +109,7 @@ func writeRestartError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-func writeRestartInternalError(w http.ResponseWriter, _ *http.Request) {
+func writeRestartInternalError(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Request-Id", middleware.GetReqID(r.Context()))
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error", "message": "internal server error"})
 }

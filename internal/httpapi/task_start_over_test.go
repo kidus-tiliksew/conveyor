@@ -230,8 +230,8 @@ func TestTaskStartOverErrorMapping(t *testing.T) {
 			if tc.retry && w.Header().Get("Retry-After") != "1" {
 				t.Fatalf("Retry-After=%q", w.Header().Get("Retry-After"))
 			}
-			if tc.code == "internal_error" && got["message"] != "internal server error" {
-				t.Fatalf("internal message=%q", got["message"])
+			if tc.code == "internal_error" && (got["message"] != "internal server error" || w.Header().Get("X-Request-Id") != "req-map-"+tc.code) {
+				t.Fatalf("internal message=%q request-id=%q", got["message"], w.Header().Get("X-Request-Id"))
 			}
 			if tc.code == "task_already_started_over" && got["message"] != "task already has a successor; read it with GET /v1/tasks/{id}" {
 				t.Fatalf("already started over message=%q", got["message"])
