@@ -243,3 +243,126 @@ func runVerifyAdmission(t *testing.T, x Fixture) {
 	claimed.State = core.WorkOrderCancelled
 	requireOK(t, UpdateWorkOrder(ctx, st, claimed, core.WorkOrderCmdCancel))
 }
+
+func runVerifyPolicyStranded(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	newStranded := func(state core.WorkOrderState) (core.Task, core.WorkOrder) {
+		t.Helper()
+		task := core.Task{
+			ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+			NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
+		}
+		task.Branch = "conveyor/task-" + task.ID
+		task.SetupContract = config.ExecutionSetup{
+			VerifyStage: false,
+			Review:      config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+			ExecutionSettings: config.ContextualExecutionSettings{
+				Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
+				Verify: config.ImplementationSettings{TimeoutText: "30m"},
+			},
+		}
+		requireOK(t, st.CreateTask(ctx, task))
+		source := core.WorkOrder{
+			ID: task.ID + "-review-1", JobID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview,
+			State: core.WorkOrderQueued, BaselineSHA: "submitted-base", HeadSHA: task.ReviewedHeadSHA, ReviewRound: 1,
+			CreatedAt: time.Now().UTC(),
+		}
+		requireOK(t, st.CreateJob(ctx, core.Job{ID: source.JobID, TaskID: task.ID, Stage: source.Stage, State: core.JobPending}))
+		requireOK(t, CreateWorkOrder(ctx, st, source))
+		enabled := true
+		result, err := taskops.ExecuteSetupChange(ctx, st, task.ID, func(l taskops.TaskLease) (store.SetupChangeResult, error) {
+			return st.ChangeTaskPolicyCommand(ctx, l, store.SetupChangeRequest{
+				TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "enable verification",
+				Policy: &store.TaskPolicyChange{VerifyStage: &enabled},
+			})
+		})
+		requireOK(t, err)
+		verify, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
+		requireOK(t, err)
+		switch state {
+		case core.WorkOrderStale:
+			_, err = taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+				return st.ApplyWorkOrderClock(ctx, lease, task.ID, verify.QueueDeadline.Add(time.Second))
+			})
+			requireOK(t, err)
+			verify, err = st.GetWorkOrder(ctx, verify.ID)
+			requireOK(t, err)
+		case core.WorkOrderTimedOut:
+			verify = timeoutQueuedOrder(t, x, verify)
+		}
+		return result.Task, verify
+	}
+	t.Run("enable_queued_claimable", func(t *testing.T) {
+		task, verify := newStranded(core.WorkOrderQueued)
+		if _, err := ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{
+			SessionID: "stranded-claim", ClientToken: "stranded-claim", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		}); err != nil {
+			t.Fatalf("queued verify after enable: %v task=%+v", err, task)
+		}
+	})
+	for _, state := range []core.WorkOrderState{core.WorkOrderStale, core.WorkOrderTimedOut} {
+		t.Run("enable_"+string(state)+"_recoverable", func(t *testing.T) {
+			_, verify := newStranded(state)
+			recovered, err := RecoverWorkOrder(ctx, st, verify.ID, "stranded-recover-"+verify.ID, time.Hour)
+			requireOK(t, err)
+			if _, err = ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
+				SessionID: "stranded-" + string(state), ClientToken: "stranded-" + string(state),
+				ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, state := range []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderStale, core.WorkOrderTimedOut} {
+		t.Run("disable_"+string(state), func(t *testing.T) {
+			task, verify := newStranded(state)
+			disabled := false
+			result, err := taskops.ExecuteSetupChange(ctx, st, task.ID, func(l taskops.TaskLease) (store.SetupChangeResult, error) {
+				return st.ChangeTaskPolicyCommand(ctx, l, store.SetupChangeRequest{
+					TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "disable verification",
+					Policy: &store.TaskPolicyChange{VerifyStage: &disabled},
+				})
+			})
+			requireOK(t, err)
+			if result.Task.NextStage != core.StageReview || len(result.CreatedWorkOrders) != 1 {
+				t.Fatalf("disable result=%+v", result)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			requireOK(t, err)
+			var decided, changed, retired, cancelled bool
+			for _, event := range events {
+				switch event.Kind {
+				case "pipeline.transition_decided":
+					decided = true
+				case "task.setup.changed":
+					changed = true
+				case "work_order.retired":
+					if event.JobID == verify.JobID {
+						retired = true
+					}
+				case "work_order.cancelled":
+					if event.JobID == verify.JobID {
+						cancelled = true
+					}
+				}
+			}
+			if !decided || !changed {
+				t.Fatal("disable missing transition or setup event")
+			}
+			if state == core.WorkOrderStale && !retired {
+				t.Fatal("stale verify was not retired")
+			}
+			if state != core.WorkOrderStale && !cancelled {
+				t.Fatal("verify was not cancelled")
+			}
+			review, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
+			requireOK(t, err)
+			if _, err = ClaimWorkOrder(ctx, st, review.ID, core.WorkOrderClaim{
+				SessionID: "review-" + string(state), ClientToken: "review-" + string(state),
+				ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

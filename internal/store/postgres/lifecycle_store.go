@@ -328,5 +328,5 @@ func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID st
 		return err
 	}
 	rows.Close()
-	return store.WorkOrderRecoverySupersessionError(task, order, taskOrders)
+	return store.WorkOrderRecoveryRefusal(task, order, taskOrders)
 }

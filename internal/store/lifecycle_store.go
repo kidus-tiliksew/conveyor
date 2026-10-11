@@ -182,19 +182,21 @@ func (m *memory) retireWorkOrderSiblingsLocked(ctx context.Context, authoritativ
 	}
 }
 
-// WorkOrderRecoverySupersessionError rejects recovery once another order or
-// task progress has made the target's stage historical. Callers hold the
-// task-operation serialization boundary while evaluating it.
-func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+// WorkOrderRecoveryRefusal is the shared deterministic predicate recover and
+// redispatch apply before any write. Callers hold the task-operation
+// serialization boundary while evaluating it.
+func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
 	laterThanTarget := func(candidate core.WorkOrder) bool {
 		return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
 	}
-	for _, candidate := range taskOrders {
-		if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
-			continue
-		}
-		if laterThanTarget(candidate) {
-			return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
+	if order.Stage != core.StageReview {
+		for _, candidate := range taskOrders {
+			if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
+				continue
+			}
+			if laterThanTarget(candidate) {
+				return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
+			}
 		}
 	}
 	pastStage := func(stage core.Stage) bool {
@@ -224,6 +226,12 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 		}
 		return fmt.Errorf("work order %s cannot be recovered after its task reached the %s", order.ID, gate)
 	}
+	if !core.ValidWorkOrderStage(order.Stage) {
+		return fmt.Errorf("work order %s cannot be recovered because stage %s is not a work-order stage", order.ID, order.Stage)
+	}
+	if err := core.ValidateVerifyDispatch(task, order); err != nil {
+		return err
+	}
 	switch order.Stage {
 	case core.StageSpec:
 		if pastStage(core.StageSpec) || task.NextStage == core.StageImplement || task.NextStage == core.StageVerify || task.NextStage == core.StageReview ||
@@ -231,7 +239,7 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 			return fmt.Errorf("work order %s cannot be recovered because task %s has passed the plan gate", order.ID, task.ID)
 		}
 	case core.StageVerify:
-		if !task.SetupContract.VerifyStage || order.HeadSHA != core.VerifyStageHead(task) || pastStage(core.StageVerify) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
+		if pastStage(core.StageVerify) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
 			return fmt.Errorf("verify work order %s is superseded", order.ID)
 		}
 	case core.StageImplement:
@@ -240,6 +248,12 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 		}
 	}
 	return nil
+}
+
+// WorkOrderRecoverySupersessionError is the historical name of
+// WorkOrderRecoveryRefusal. Call sites use WorkOrderRecoveryRefusal.
+func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+	return WorkOrderRecoveryRefusal(task, order, taskOrders)
 }
 
 // ValidateJobTransition keeps whole-record metadata updates compatible while

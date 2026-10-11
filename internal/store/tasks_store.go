@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -161,11 +160,10 @@ type TaskPage struct {
 	Total int
 }
 
-// RecoveryRefreeze re-freezes a recovered order's pipeline policy and stage
-// timeout. It carries no harness, model, or effort: queue re-entry clears every
-// execution pin (req-worker AC-2.2; DEC-56).
+// RecoveryRefreeze carries the recovered order's execution timeout from the
+// task's frozen per-stage timeout. Recovery never rewrites frozen policy
+// (req-task-lifecycle-and-queue AC-5.1, AC-5.2; DEC-47).
 type RecoveryRefreeze struct {
-	Setup                config.ExecutionSetup
 	ExecutionTimeoutText string
 }
 

@@ -1278,6 +1278,12 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 				return fmt.Errorf("%w: work order %s is not an unclaimed queued order", store.ErrSetupChangeConflict, d.ID)
 			}
 		}
+		for _, id := range r.SupersedeWorkOrderIDs {
+			o, ok := byID[id]
+			if !ok || !store.PolicyHandoffSupersessionAllowed(o, t.NextStage) {
+				return fmt.Errorf("%w: superseded work order %s is invalid", store.ErrSetupChangeConflict, id)
+			}
+		}
 		fromStage := t.NextStage
 		prior := t.SetupContract
 		// The frozen policy changes; the task's legacy setup_name is left as is.
@@ -1330,14 +1336,14 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 			}
 			old := o.State
 			values := map[string]any{"review_superseded": o.Stage == core.StageReview, "updated_at": now}
-			if old == core.WorkOrderQueued {
-				next, err := core.TransitionWorkOrder(old, core.WorkOrderCmdCancel)
+			if command, eventKind, ok := store.PolicyHandoffRetireCommand(o); ok {
+				next, err := core.TransitionWorkOrder(old, command)
 				if err != nil {
 					return err
 				}
 				o.State = next
 				values["state"] = next
-				if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: "work_order.cancelled", At: now, Payload: core.JSONPayload(map[string]any{"id": id, "state": next, "from": old, "command": core.WorkOrderCmdCancel})}); err != nil {
+				if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: eventKind, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "state": next, "from": old, "command": command})}); err != nil {
 					return err
 				}
 				if _, err = writeRow(ctx, tx, rowWrite{table: "jobs", operation: "UPDATE", values: map[string]any{"state": core.JobFailed, "ended_at": now, "updated_at": now}, where: map[string]any{"workspace_id": ws, "id": o.JobID}}); err != nil {

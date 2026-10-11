@@ -2107,6 +2107,12 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if workOrders == nil {
 		workOrders = []core.WorkOrder{}
 	}
+	_, pendingPlanRevision, planErr := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
+	if planErr != nil {
+		log.Printf("handle API request: %v", planErr)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	for index := range workOrders {
 		captures, captureErr := s.Store.ListWorkOrderTranscriptCaptures(r.Context(), workOrders[index].ID)
 		if captureErr != nil {
@@ -2128,6 +2134,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 				workOrders[index].ActivitySnapshot = &snapshot
 			}
 		}
+		workorder.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
 		if workOrders[index].Stage != core.StageImplement {
 			continue
 		}

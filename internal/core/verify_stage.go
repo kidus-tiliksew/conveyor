@@ -30,10 +30,26 @@ func VerifyReviewReady(task Task, orders []WorkOrder) bool {
 }
 
 func ValidateVerifyDispatch(task Task, order WorkOrder) error {
-	if order.Stage == StageVerify {
-		if !task.SetupContract.VerifyStage || task.NextStage != StageVerify || order.HeadSHA == "" || order.HeadSHA != VerifyStageHead(task) {
-			return fmt.Errorf("verify order %s does not match task policy, stage, or submitted head", order.ID)
+	if order.Stage != StageVerify {
+		return nil
+	}
+	prefix := fmt.Sprintf("verify order %s cannot be claimed: ", order.ID)
+	if !task.SetupContract.VerifyStage {
+		return fmt.Errorf("%sverify stage is off in task %s's frozen policy", prefix, task.ID)
+	}
+	if task.NextStage != StageVerify {
+		return fmt.Errorf("%stask %s next_stage is %s, not verify", prefix, task.ID, task.NextStage)
+	}
+	if order.HeadSHA == "" {
+		return fmt.Errorf("%sthe order has no head", prefix)
+	}
+	want := VerifyStageHead(task)
+	if order.HeadSHA != want {
+		suffix := ""
+		if task.ApprovalStale && task.RefreshHeadSHA != "" {
+			suffix = " (the refresh head, because approval_stale is set)"
 		}
+		return fmt.Errorf("%sorder head %s differs from the verify head %s%s", prefix, order.HeadSHA, want, suffix)
 	}
 	return nil
 }

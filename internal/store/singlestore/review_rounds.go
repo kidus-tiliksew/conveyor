@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -728,21 +727,6 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 		result = store.InterruptedReviewRecoveryResult{RequestID: r.RequestID, TaskID: r.TaskID, ReviewRound: r.Round, RecoveredOrders: []core.WorkOrder{}, RetainedOrders: append([]core.WorkOrder{}, recovery.RetainedOrders...)}
 		now := time.Now().UTC()
 		actor := store.ActorFromContext(ctx)
-		for _, o := range recovery.EligibleOrders {
-			if c := r.Refreezes[o.ID]; c != nil {
-				prior := t.SetupContract
-				if err = taskWrite(ctx, tx, t.ID, map[string]any{"setup_contract": core.JSONPayload(c.Setup)}); err != nil {
-					return err
-				}
-				t.SetupContract = c.Setup
-				if !reflect.DeepEqual(prior, c.Setup) {
-					if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: "task.setup.refrozen", At: now, Payload: core.JSONPayload(map[string]any{"prior": prior, "new": c.Setup, "request_id": r.RequestID, "work_order_id": o.ID, "actor": actor.ID})}); err != nil {
-						return err
-					}
-				}
-				break
-			}
-		}
 		for _, o := range recovery.EligibleOrders {
 			prior := o.LastAttemptOutcome
 			o.LastAttemptOutcome = ""

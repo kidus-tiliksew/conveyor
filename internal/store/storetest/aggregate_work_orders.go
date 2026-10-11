@@ -35,6 +35,8 @@ func newAggregateOrder(t *testing.T, x Fixture, stages ...core.Stage) core.WorkO
 func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("VerifyPolicy", func(t *testing.T) { runVerifyPolicy(t, x) })
 	t.Run("VerifyAdmission", func(t *testing.T) { runVerifyAdmission(t, x) })
+	t.Run("RecoveryRefusal", func(t *testing.T) { runRecoveryRefusal(t, x) })
+	t.Run("VerifyPolicyStranded", func(t *testing.T) { runVerifyPolicyStranded(t, x) })
 	t.Run("UsageTokenUpdates", func(t *testing.T) { runUsageTokenUpdates(t, x) })
 	t.Run("ImplementationSubmission", func(t *testing.T) { runImplementationSubmission(t, x) })
 	st, ctx := x.Backend, x.Context
