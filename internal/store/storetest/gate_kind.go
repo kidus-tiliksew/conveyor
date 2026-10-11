@@ -82,25 +82,20 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 		}
 		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
 	})
-	t.Run("request changes parks on the bounce window", func(t *testing.T) {
+	t.Run("request changes parks on an open agent window", func(t *testing.T) {
 		id := createRunningTask(t, st, ctx, workspace)
-		transitionToMergeGate(t, ctx, st, id)
+		accumulateAgentBounces(t, plane, st, ctx, id, 2, 3)
+		reopenMergeGate(t, ctx, st, id)
 		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
-		request := func() core.Task {
-			t.Helper()
-			out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "again", MaxBounces: 3})
-			if err != nil {
-				t.Fatal(err)
-			}
-			return out
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "limit", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
 		}
-		for range 2 {
-			out := request()
-			assertGate(t, st, ctx, id, out, core.TaskQueued, "")
-			reopenMergeGate(t, ctx, st, id)
-		}
-		out := request()
 		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+	})
+	t.Run("request changes requeues after an intervention", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 2, 3)
 		events, err := st.ListEvents(ctx, id)
 		if err != nil {
 			t.Fatal(err)
@@ -109,11 +104,16 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 		if n := len(events); n > 0 && !events[n-1].At.IsZero() {
 			at = events[n-1].At.Add(time.Millisecond)
 		}
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
 		if err = st.CreateIntervention(user, core.Intervention{TaskID: id, Action: core.InterventionRedirect, ReasonCode: "operator_redirect", ActorRole: core.ActorHuman, At: at}); err != nil {
 			t.Fatal(err)
 		}
 		reopenMergeGate(t, ctx, st, id)
-		assertGate(t, st, ctx, id, request(), core.TaskQueued, "")
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "after intervention", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskQueued, "")
 	})
 	for _, exit := range []struct {
 		command core.TaskCommand
@@ -258,6 +258,25 @@ func acceptReviewRound(t *testing.T, st store.Store, ctx context.Context, taskID
 	requireOK(t, CreateReviewRound(ctx, st, taskID, jobs, orders))
 	for i, order := range orders {
 		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(order, i+1)))
+	}
+}
+
+func accumulateAgentBounces(t *testing.T, plane *taskops.Plane, st store.Store, ctx context.Context, id string, n, max int) {
+	t.Helper()
+	for round := 1; round <= n; round++ {
+		if round > 1 {
+			if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		jobs, orders := reviewRound(id, round)
+		requireOK(t, CreateReviewRound(ctx, st, id, jobs, orders))
+		for i, order := range orders {
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{
+				TaskID: id, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: round, ReviewSeat: i + 1,
+				Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: max,
+			}))
+		}
 	}
 }
 
