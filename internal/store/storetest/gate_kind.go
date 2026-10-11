@@ -72,16 +72,37 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 		}
 		assertGate(t, st, ctx, id, stored, core.TaskAwaiting, core.GateKindReviewBounceLimit)
 	})
-	t.Run("request changes leaves the merge gate", func(t *testing.T) {
+	t.Run("request changes bounce limit", func(t *testing.T) {
 		id := createRunningTask(t, st, ctx, workspace)
 		transitionToMergeGate(t, ctx, st, id)
 		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
-		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "redirect", MaxBounces: 5})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "limit", MaxBounces: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertGate(t, st, ctx, id, out, core.TaskQueued, "")
+		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
 	})
+	for _, exit := range []struct {
+		command core.TaskCommand
+		state   core.TaskState
+	}{
+		{core.TaskInterventionApproveSpec, core.TaskQueued},
+		{core.TaskInterventionApproveReview, core.TaskApproved},
+		{core.TaskInterventionRedirect, core.TaskQueued},
+		{core.TaskInterventionReject, core.TaskClosed},
+	} {
+		t.Run(string(exit.command), func(t *testing.T) {
+			id := createRunningTask(t, st, ctx, workspace)
+			if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
+				t.Fatal(err)
+			}
+			out, err := plane.Perform(ctx, id, taskops.Command{Kind: exit.command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGate(t, st, ctx, id, out.Task, exit.state, "")
+		})
+	}
 	t.Run("cancel clears the kind", func(t *testing.T) {
 		id := createRunningTask(t, st, ctx, workspace)
 		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
@@ -154,6 +175,13 @@ func assertGate(t *testing.T, st store.Store, ctx context.Context, id string, re
 	t.Helper()
 	if returned.State != state || returned.GateKind != kind {
 		t.Fatalf("returned state=%s gate_kind=%q, want %s %q", returned.State, returned.GateKind, state, kind)
+	}
+	stored, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != state || stored.GateKind != kind {
+		t.Fatalf("stored state=%s gate_kind=%q, want %s %q", stored.State, stored.GateKind, state, kind)
 	}
 	listed := listedTask(t, st, ctx, id)
 	if listed.State != state || listed.GateKind != kind {
