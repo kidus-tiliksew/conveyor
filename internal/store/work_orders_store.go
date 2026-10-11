@@ -1112,6 +1112,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			if task.State == core.TaskQueued {
 				from := task.State
 				task.State = core.TaskRunning
+				task.GateKind = core.GateKindFor(core.TaskRunning, core.TaskOrderClaim)
 				m.tasks[task.ID] = task
 				m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
 					"from": from, "to": task.State, "command": core.TaskOrderClaim, "claim_authority_work_order_id": order.ID,
@@ -1218,6 +1219,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 	}
 	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
+	task.GateKind = core.GateKindFor(state, command)
 	m.tasks[task.ID] = task
 	// When autoApprove is true, this second projection records an intervention
 	// command without a human intervention. It is the paired gap workaround for
@@ -2174,6 +2176,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			return core.WorkOrder{}, taskErr
 		}
 		task.State = state
+		task.GateKind = core.GateKindFor(state, core.TaskOrderClaim)
 		m.tasks[task.ID] = task
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": state, "command": core.TaskOrderClaim})})
 	}

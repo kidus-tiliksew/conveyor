@@ -32,7 +32,7 @@ func (s *Store) completeVerificationTx(ctx context.Context, tx *sql.Tx, c store.
 	if _, err = writeRow(ctx, tx, rowWrite{table: "jobs", operation: "UPDATE", values: jobValues(v.Job), where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": job.ID}}); err != nil {
 		return err
 	}
-	if err = taskWrite(ctx, tx, task.ID, map[string]any{"state": v.Task.State, "next_stage": v.Task.NextStage, "recovery_stage": v.Task.RecoveryStage}); err != nil {
+	if err = taskWrite(ctx, tx, task.ID, map[string]any{"state": v.Task.State, "gate_kind": string(v.Task.GateKind), "next_stage": v.Task.NextStage, "recovery_stage": v.Task.RecoveryStage}); err != nil {
 		return err
 	}
 	if v.Intervention != nil {

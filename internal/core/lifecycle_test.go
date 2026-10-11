@@ -193,3 +193,38 @@ func TestLifecycleStateDiagramIsGeneratedFromCanonicalTables(t *testing.T) {
 		}
 	}
 }
+
+func TestGateKindForMatchesAwaitingEdges(t *testing.T) {
+	want := map[TaskCommand]GateKind{
+		TaskGateSpec:         GateKindPlanApproval,
+		TaskGatePlanRevision: GateKindPlanRevision,
+		TaskGateMerge:        GateKindMergeApproval,
+		TaskStageBounceLimit: GateKindReviewBounceLimit,
+		TaskJobFail:          GateKindJobFailure,
+	}
+	seenAwaiting := map[TaskCommand]bool{}
+	for from, edges := range taskLifecycleTable {
+		for command, to := range edges {
+			got := GateKindFor(TaskState(to), TaskCommand(command))
+			if TaskState(to) == TaskAwaiting {
+				seenAwaiting[TaskCommand(command)] = true
+				if got == "" || got != want[TaskCommand(command)] {
+					t.Fatalf("%s + %s -> %s gate_kind=%q, want %q", from, command, to, got, want[TaskCommand(command)])
+				}
+				continue
+			}
+			if got != "" {
+				t.Fatalf("%s + %s -> %s gate_kind=%q, want empty", from, command, to, got)
+			}
+		}
+	}
+	if len(seenAwaiting) != len(want) {
+		t.Fatalf("awaiting commands=%v, want %v", seenAwaiting, want)
+	}
+	if got := GateKindFor(TaskAwaiting, TaskCancel); got != "" {
+		t.Fatalf("unmapped awaiting command gate_kind=%q", got)
+	}
+	if got := GateKindFor(TaskRunning, TaskGateSpec); got != "" {
+		t.Fatalf("non-awaiting target kept gate_kind=%q", got)
+	}
+}

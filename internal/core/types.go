@@ -207,6 +207,7 @@ type Task struct {
 	BaseBranch            string                `json:"base_branch"`
 	Branch                string                `json:"branch"` // current assigned branch; intake default is conveyor/task-<id>
 	State                 TaskState             `json:"state"`
+	GateKind              GateKind              `json:"gate_kind,omitempty"`
 	NextStage             Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
 	RecoveryStage         Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
 	ParentTaskID          string                `json:"parent_task_id,omitempty"` // blueprint parent

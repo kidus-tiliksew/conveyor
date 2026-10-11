@@ -453,7 +453,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				return err
 			}
 		}
-		values := map[string]any{"state": state, "next_stage": next, "recovery_stage": recovery}
+		values := map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, command)), "next_stage": next, "recovery_stage": recovery}
 		if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 			values["reviewed_head_sha"] = aggregate.ApprovedHeadSHA
 			if state == core.TaskApproved && !nonAdvancingRefresh {

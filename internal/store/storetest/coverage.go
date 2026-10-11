@@ -64,4 +64,5 @@ var suiteMethods = map[string][]string{
 	"InvitationSessions":         strings.Fields(`BootstrapIdentity BootstrapWorkspaceConfig GetCallerIdentity GrantWorkspaceRole IssueInvitationSignInLink IssueSignInLink ListWorkspaceInvitations ProvisionIdentityUser RedeemSignInLink RevokeDashboardSession RevokeWorkspaceInvitation SetOwnDisplayName SetOwnPassword SignInWithPassword VerifyDashboardSession VerifyPersonalAccessToken`),
 	"GitHubApps":                 strings.Fields(`ConfigureGitHubAppKeyEncryptionKey ListGitHubAppKeysForRedaction StoreWorkspaceGitHubApp RecordWorkspaceGitHubAppInstallation GetWorkspaceGitHubAppStatus GetWorkspaceGitHubAppForUse DeleteWorkspaceGitHubApp`),
 	"Tokens":                     strings.Fields(`BootstrapIdentity IssueAgentCredential IssueOwnPersonalAccessToken ListOwnPersonalAccessTokens RevokeOwnPersonalAccessToken RevokeRunAgentCredential VerifyCredential VerifyPersonalAccessToken`),
+	"GateKind":                   strings.Fields(`ApplyTaskCommand CreateTask GetTask`),
 }

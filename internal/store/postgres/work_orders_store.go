@@ -1267,7 +1267,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if transitionErr != nil {
 			return core.WorkOrder{}, transitionErr
 		}
-		if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, nextTaskState, now, workspace(ctx), order.TaskID, taskState); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,gate_kind=$2,updated_at=$3 WHERE workspace_id=$4 AND id=$5 AND state=$6`, nextTaskState, string(core.GateKindFor(nextTaskState, core.TaskOrderClaim)), now, workspace(ctx), order.TaskID, taskState); err != nil {
 			return core.WorkOrder{}, err
 		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": taskState, "to": nextTaskState, "command": core.TaskOrderClaim}), At: now}); err != nil {
@@ -2059,6 +2059,7 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 			ID: decision.TaskID, WorkspaceID: workspace(ctx), State: string(state),
 			NextStage: string(next), RecoveryStage: string(recovery),
+			GateKind: string(core.GateKindFor(state, command)),
 		}); err != nil {
 			return err
 		}

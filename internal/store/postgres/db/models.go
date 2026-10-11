@@ -290,6 +290,7 @@ type Task struct {
 	OriginSpecVersion       int32              `json:"origin_spec_version"`
 	OriginSubID             string             `json:"origin_sub_id"`
 	AssigneeUserID          pgtype.Text        `json:"assignee_user_id"`
+	GateKind                pgtype.Text        `json:"gate_kind"`
 }
 
 type TaskDependency struct {

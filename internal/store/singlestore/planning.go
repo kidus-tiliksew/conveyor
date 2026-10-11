@@ -673,7 +673,7 @@ func insertPlanningBundleTask(ctx context.Context, tx *sql.Tx, t core.Task) (sql
 		return nil, err
 	}
 	return writeRow(ctx, tx, rowWrite{table: "tasks", operation: "INSERT", values: map[string]any{
-		"workspace_id": t.Workspace, "id": t.ID, "source": t.Source, "mode": string(t.Mode), "intake_key": t.IntakeKey, "title": t.Title, "body": t.Body, "escalation_level": string(t.Level), "spec_approval": t.SpecApproval, "merge_approval": t.MergeApproval, "policy_version": t.PolicyVersion, "setup_contract": setup, "repo_name": t.Repo, "base_branch": t.BaseBranch, "branch": t.Branch, "state": string(t.State), "next_stage": string(t.NextStage), "created_at": t.CreatedAt,
+		"workspace_id": t.Workspace, "id": t.ID, "source": t.Source, "mode": string(t.Mode), "intake_key": t.IntakeKey, "title": t.Title, "body": t.Body, "escalation_level": string(t.Level), "spec_approval": t.SpecApproval, "merge_approval": t.MergeApproval, "policy_version": t.PolicyVersion, "setup_contract": setup, "repo_name": t.Repo, "base_branch": t.BaseBranch, "branch": t.Branch, "state": string(t.State), "gate_kind": string(t.GateKind), "next_stage": string(t.NextStage), "created_at": t.CreatedAt,
 	}})
 }
 

@@ -1154,7 +1154,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			if err != nil {
 				return err
 			}
-			if err = taskWrite(ctx, tx, task.ID, map[string]any{"state": state}); err != nil {
+			if err = taskWrite(ctx, tx, task.ID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, core.TaskOrderClaim))}); err != nil {
 				return err
 			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: task.ID, JobID: o.JobID, Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"from": task.State, "to": state, "command": core.TaskOrderClaim})}); err != nil {
@@ -1472,7 +1472,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 		if err = resetOrderJob(ctx, tx, o, now); err != nil {
 			return err
 		}
-		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": nextTask}); err != nil {
+		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": nextTask, "gate_kind": string(core.GateKindFor(nextTask, core.TaskGatePlanRevision))}); err != nil {
 			return err
 		}
 		eventCtx := workerClaimActorContext(ctx, claim.WorkerID)
@@ -1713,7 +1713,7 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 		if err = taskEvent(ctx, tx, core.Event{TaskID: request.TaskID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
 			return err
 		}
-		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "next_stage": core.StageImplement, "recovery_stage": ""}); err != nil {
+		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, transitionCommand)), "next_stage": core.StageImplement, "recovery_stage": ""}); err != nil {
 			return err
 		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": transitionCommand})}); err != nil {

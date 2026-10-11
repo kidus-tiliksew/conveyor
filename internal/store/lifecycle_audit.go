@@ -189,3 +189,76 @@ func transitionReason(err error, got, want string) string {
 	}
 	return fmt.Sprintf("command resolves to %q, event records %q", got, want)
 }
+
+// TaskGateObservation is one task row's persisted gate kind. The audit compares
+// it with the latest task.state_changed command and writes nothing.
+type TaskGateObservation struct {
+	TaskID   string
+	State    core.TaskState
+	GateKind core.GateKind
+}
+
+// TaskGateAuditViolation is a report-only discrepancy between a task row and
+// the command that last entered its current state. An empty expected kind is
+// never valid for awaiting_human: an unmapped command stays empty on the row
+// and is flagged here.
+type TaskGateAuditViolation struct {
+	TaskID   string `json:"task_id"`
+	State    string `json:"state"`
+	GateKind string `json:"gate_kind"`
+	Command  string `json:"command"`
+	Expected string `json:"expected"`
+	Reason   string `json:"reason"`
+}
+
+// AuditTaskGateKinds reports awaiting rows whose latest command is missing or
+// unmapped, rows whose stored kind disagrees with that command, and non-awaiting
+// rows that still carry a kind. It does not amend history or projections.
+func AuditTaskGateKinds(tasks []TaskGateObservation, events []core.Event) []TaskGateAuditViolation {
+	latest := map[string]core.Event{}
+	for _, event := range events {
+		if event.Kind != "task.state_changed" || event.TaskID == "" {
+			continue
+		}
+		prior, ok := latest[event.TaskID]
+		if !ok || event.At.After(prior.At) || (event.At.Equal(prior.At) && event.ID > prior.ID) {
+			latest[event.TaskID] = event
+		}
+	}
+	var violations []TaskGateAuditViolation
+	for _, task := range tasks {
+		event, ok := latest[task.TaskID]
+		command := taskStateCommand(event)
+		expected := core.GateKind("")
+		if ok {
+			expected = core.GateKindFor(task.State, command)
+		}
+		switch {
+		case task.State == core.TaskAwaiting && !ok:
+			violations = append(violations, taskGateViolation(task, "", "", "no history"))
+		case task.State == core.TaskAwaiting && expected == "":
+			violations = append(violations, taskGateViolation(task, command, expected, "unmapped"))
+		case task.GateKind != expected:
+			reason := "mismatch"
+			if task.State != core.TaskAwaiting {
+				reason = "stale kind"
+			}
+			violations = append(violations, taskGateViolation(task, command, expected, reason))
+		}
+	}
+	return violations
+}
+
+func taskStateCommand(event core.Event) core.TaskCommand {
+	var payload struct {
+		Command core.TaskCommand `json:"command"`
+	}
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return ""
+	}
+	return payload.Command
+}
+
+func taskGateViolation(task TaskGateObservation, command core.TaskCommand, expected core.GateKind, reason string) TaskGateAuditViolation {
+	return TaskGateAuditViolation{TaskID: task.TaskID, State: string(task.State), GateKind: string(task.GateKind), Command: string(command), Expected: string(expected), Reason: reason}
+}

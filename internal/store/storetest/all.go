@@ -113,6 +113,10 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
+	run("GateKind", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunGateKindConformance(t, x.Backend, x.Context, x.Workspace)
+	})
 	run("FeatureRetirement", func(t *testing.T) { RunFeatureRetirementConformance(t, factory.fresh(t, nil)) })
 	run("Requirements", func(t *testing.T) { RunRequirementConformance(t, requirements) })
 	run("VersionDismissal", func(t *testing.T) { RunVersionDismissalConformance(t, requirements) })

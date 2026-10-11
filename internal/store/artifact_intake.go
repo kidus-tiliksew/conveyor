@@ -62,6 +62,7 @@ func (m *memory) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids
 		staged.artifacts[k] = a
 	}
 	t.State = core.TaskClaiming
+	t.GateKind = ""
 	if err = staged.createTaskWithContextLocked(ctx, t, ids, attached, nil); err != nil {
 		return err
 	}
@@ -74,6 +75,7 @@ func (m *memory) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids
 	}
 	t = staged.tasks[t.ID]
 	t.State = core.TaskQueued
+	t.GateKind = core.GateKindFor(core.TaskQueued, core.TaskIntakeFinalize)
 	staged.tasks[t.ID] = t
 	staged.appendEventLocked(ctx, IntakeFinalizedEvent(t))
 	m.tasks, m.dependencies, m.events, m.lineage, m.artifacts, m.repositoryInstalls, m.nextEventID = staged.tasks, staged.dependencies, staged.events, staged.lineage, staged.artifacts, staged.repositoryInstalls, staged.nextEventID

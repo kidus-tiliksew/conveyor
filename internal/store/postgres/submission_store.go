@@ -185,7 +185,7 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
 			return err
 		}
-		if _, err = q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspaceID, State: string(state), NextStage: string(core.StageImplement), RecoveryStage: ""}); err != nil {
+		if _, err = q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspaceID, State: string(state), NextStage: string(core.StageImplement), RecoveryStage: "", GateKind: string(core.GateKindFor(state, transitionCommand))}); err != nil {
 			return err
 		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": transitionCommand})}); err != nil {
