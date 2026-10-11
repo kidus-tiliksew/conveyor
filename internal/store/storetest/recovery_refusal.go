@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -696,48 +697,52 @@ func runClaimPlanRevisionAfterListing(t *testing.T, x Fixture) {
 
 func runDispositionRecoverRefusal(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
-	now := time.Now().UTC()
-	task := core.Task{
-		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
-		NextStage: core.StageVerify, ReviewedHeadSHA: "head", CreatedAt: now,
+	v := newVerificationFixture(t, x)
+	op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "disposition-refusal-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "provider acknowledgement lost"}})
+	for _, run := range v.snapshot(t).Attempts {
+		if run.ID != v.runID {
+			continue
+		}
+		operator, owner := bootstrapOwner(t, x)
+		_, err := st.ApplyVerification(operator, store.VerificationCommand{Access: store.VerificationAccess{UserID: owner.ID, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID}, Kind: store.VerificationRevokePermissions, ContextID: v.contextID, Key: "revoke-before-recovery", Permissions: &store.VerificationPermissionRequest{RevokeGrantID: run.GrantID, Reason: "stop execution"}})
+		requireOK(t, err)
 	}
-	task.Branch = "conveyor/task-" + task.ID
-	order := core.WorkOrder{
-		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
-		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
-	}
-	requireOK(t, st.CreateTask(ctx, task))
-	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
-	requireOK(t, CreateWorkOrder(ctx, st, order))
-	persisted, err := st.GetWorkOrder(ctx, order.ID)
+	order, err := st.GetWorkOrder(ctx, v.access.WorkOrderID)
 	requireOK(t, err)
-	persisted.State = core.WorkOrderTimedOut
-	requireOK(t, UpdateWorkOrder(ctx, st, persisted, core.WorkOrderCmdTimeout))
+	order.State = core.WorkOrderTimedOut
+	requireOK(t, UpdateWorkOrder(ctx, st, order, core.WorkOrderCmdTimeout))
+	order, err = st.GetWorkOrder(ctx, order.ID)
+	requireOK(t, err)
+	now := time.Now().UTC()
+	successorJob := core.Job{ID: v.access.TaskID + "-verify-2", TaskID: v.access.TaskID, Stage: core.StageVerify, State: core.JobPending}
+	successor := core.WorkOrder{
+		ID: successorJob.ID, JobID: successorJob.ID, TaskID: v.access.TaskID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: order.HeadSHA, CreatedAt: now.Add(time.Second),
+		QueueEnteredAt: now.Add(time.Second), QueueDeadline: now.Add(2 * time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, successorJob))
+	requireOK(t, CreateWorkOrder(ctx, st, successor))
 	operator, owner := bootstrapOwner(t, x)
 	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	beforeSnapshot := verificationPublicState(t, &observer)
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, v.access.TaskID, order.ID)
 	disposition := &store.VerificationRecoveryDisposition{
-		ContextID: "missing", RunID: "missing", OperationIDs: []string{"op"},
+		ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{op.ID},
 		InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied",
 		Reason: "Operator inspected provider state and authorizes one retry.",
 	}
-	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
-	want := "verify stage is off in task " + task.ID + "'s frozen policy"
-	requestID := "disposition-refuse-" + task.ID
+	want := "was superseded by same-stage successor"
+	requestID := "disposition-refuse-" + v.access.TaskID
 	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), st, order.ID, requestID, time.Hour)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("disposition recover err=%v want %q", err, want)
 	}
-	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, v.access.TaskID, order.ID)
 	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
-	events, err := st.ListEvents(ctx, task.ID)
-	requireOK(t, err)
-	for _, event := range events {
-		if event.Kind == "verification.recovery_authorized" {
-			t.Fatal("disposition recover wrote verification snapshot")
-		}
-	}
-	_, retry := RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), st, order.ID, requestID, time.Hour)
-	if retry == nil || !strings.Contains(retry.Error(), want) {
-		t.Fatalf("retry disposition recover err=%v", retry)
+	if !reflect.DeepEqual(beforeSnapshot, verificationPublicState(t, &observer)) {
+		t.Fatal("disposition recover changed verification snapshot")
 	}
 }
