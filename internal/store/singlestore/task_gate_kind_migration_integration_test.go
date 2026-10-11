@@ -23,7 +23,7 @@ func TestTaskGateKindCrossWorkspaceBackfillIntegration(t *testing.T) {
 		}
 		if _, err := st.db.ExecContext(ctx, `INSERT INTO tasks
 			(id,workspace_id,source,title,body,class,escalation_level,repo_name,base_branch,branch,state,created_at,mode,spec_approval,merge_approval)
-			VALUES(?,?,'test','gate kind','','','L2','conveyor','main',?,?,'',?,true,true)`,
+			VALUES(?,?,'test','gate kind','','','L2','conveyor','main',?,?,?,'',true,true)`,
 			id, workspace, "conveyor/task-"+workspace+"-"+id, state, at); err != nil {
 			t.Fatal(err)
 		}
