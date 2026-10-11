@@ -454,28 +454,30 @@ func wrapRestartClientError(err error, requestID string) error {
 		return nil
 	}
 	text := err.Error()
+	msg := text
 	_, body, ok := strings.Cut(text, ": ")
-	if !ok {
-		return err
+	if ok {
+		var parsed struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed) == nil && (parsed.Error != "" || parsed.Message != "") {
+			switch {
+			case parsed.Error != "" && parsed.Message != "":
+				msg = parsed.Error + ": " + parsed.Message
+			case parsed.Error != "":
+				msg = parsed.Error
+			default:
+				msg = parsed.Message
+			}
+			prefix, _, _ := strings.Cut(text, ": ")
+			msg = prefix + ": " + msg
+		}
 	}
-	var parsed struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
+	if requestID = strings.TrimSpace(requestID); requestID == "" {
+		return fmt.Errorf("%s", msg)
 	}
-	if json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed) != nil || (parsed.Error == "" && parsed.Message == "") {
-		return err
-	}
-	msg := parsed.Message
-	if parsed.Error != "" && parsed.Message != "" {
-		msg = parsed.Error + ": " + parsed.Message
-	} else if parsed.Error != "" {
-		msg = parsed.Error
-	}
-	prefix, _, _ := strings.Cut(text, ": ")
-	if strings.HasPrefix(prefix, "500") && requestID != "" {
-		return fmt.Errorf("%s: %s (request_id %s)", prefix, msg, requestID)
-	}
-	return fmt.Errorf("%s: %s", prefix, msg)
+	return fmt.Errorf("restart request %s failed: %s", requestID, msg)
 }
 
 func (c *client) restartPullRequest(ctx context.Context, task core.Task) (github.SubmissionPullRequest, error) {

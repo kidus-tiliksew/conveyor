@@ -355,7 +355,7 @@ func TestTaskRestartJSONError(t *testing.T) {
 	f.failStatus = http.StatusConflict
 	f.failJSON = true
 	_, err := executeRestart("old", "--reason", "again", "--yes", "--request-id", "retry-key")
-	if err == nil || !strings.Contains(err.Error(), "task_terminal: server refused the operation") {
+	if err == nil || !strings.Contains(err.Error(), "restart request retry-key failed") || !strings.Contains(err.Error(), "task_terminal: server refused the operation") {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -366,7 +366,7 @@ func TestTaskRestartInternalErrorIncludesRequestID(t *testing.T) {
 	f.failStatus = http.StatusInternalServerError
 	f.failJSON = true
 	_, err := executeRestart("old", "--reason", "again", "--yes", "--request-id", "retry-key")
-	if err == nil || !strings.Contains(err.Error(), "request_id retry-key") {
+	if err == nil || !strings.Contains(err.Error(), "restart request retry-key failed") {
 		t.Fatalf("error=%v", err)
 	}
 }
