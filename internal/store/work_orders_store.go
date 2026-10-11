@@ -1176,6 +1176,9 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			Count: count, Window: window, MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
 			Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
 		})
+		if task.State == core.TaskAwaiting && plan.Command == core.TaskStageBounceLimit {
+			return nil
+		}
 		m.nextReviewID++
 		plan.Intervention.ID = m.nextReviewID
 		m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], plan.Intervention)

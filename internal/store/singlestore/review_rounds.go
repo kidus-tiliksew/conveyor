@@ -412,6 +412,9 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				Count: int(count), Window: int(window), MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
 				Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
 			})
+			if before.State == core.TaskAwaiting && plan.Command == core.TaskStageBounceLimit {
+				return nil
+			}
 			if err = insertInterventionTx(ctx, tx, plan.Intervention); err != nil {
 				return err
 			}

@@ -58,6 +58,11 @@ func TestTaskGateKindCrossWorkspaceBackfillIntegration(t *testing.T) {
 		insertTask("gate-a", gate.id, core.TaskAwaiting)
 		insertEvent("gate-a", gate.id, int64(21+i), at, gate.command)
 	}
+	insertTask("gate-a", "newer", core.TaskAwaiting)
+	insertEvent("gate-a", "newer", 31, at, core.TaskGateMerge)
+	insertEvent("gate-a", "newer", 30, at.Add(time.Minute), core.TaskJobFail)
+	insertTask("gate-a", "running", core.TaskRunning)
+	insertEvent("gate-a", "running", 40, at, core.TaskGateMerge)
 
 	raw, err := migrationFiles.ReadFile("migrations/0019_task_gate_kind.sql")
 	if err != nil {
@@ -89,6 +94,10 @@ func TestTaskGateKindCrossWorkspaceBackfillIntegration(t *testing.T) {
 	want("gate-a", "merge", string(core.GateKindMergeApproval))
 	want("gate-a", "bounce", string(core.GateKindReviewBounceLimit))
 	want("gate-a", "fail", string(core.GateKindJobFailure))
+	want("gate-a", "newer", string(core.GateKindJobFailure))
+	if got := kind("gate-a", "running"); got != nil {
+		t.Fatalf("running gate_kind=%v, want nil", got)
+	}
 	if _, err = st.db.ExecContext(ctx, `UPDATE tasks SET gate_kind=NULL WHERE workspace_id='gate-a' AND id=?`, shared); err != nil {
 		t.Fatal(err)
 	}

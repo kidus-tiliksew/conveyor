@@ -2001,6 +2001,9 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 				Count: int(count), Window: int(window), MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
 				Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
 			})
+			if core.TaskState(before.State) == core.TaskAwaiting && plan.Command == core.TaskStageBounceLimit {
+				return nil
+			}
 			if _, err = q.InsertIntervention(ctx, interventionInsertParams(plan.Intervention)); err != nil {
 				return err
 			}

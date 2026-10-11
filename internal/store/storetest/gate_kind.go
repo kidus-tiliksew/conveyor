@@ -35,6 +35,16 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 			assertGate(t, st, ctx, id, out.Task, core.TaskAwaiting, tc.want)
 		})
 	}
+	for _, tc := range cases {
+		t.Run(string(tc.command)+" project stages", func(t *testing.T) {
+			id := createRunningTask(t, st, ctx, workspace)
+			out, err := plane.Perform(ctx, id, taskops.Command{Kind: tc.command, ProjectStages: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGate(t, st, ctx, id, out.Task, core.TaskAwaiting, tc.want)
+		})
+	}
 	t.Run("plan revision", func(t *testing.T) {
 		fixture := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
 		result, err := requestPlanRevision(ctx, st, fixture.order.TaskID, fixture.order.ID, fixture.workerID, fixture.sessionID, "the API moved")
@@ -114,6 +124,51 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 			t.Fatal(err)
 		}
 		assertGate(t, st, ctx, id, out, core.TaskQueued, "")
+	})
+	t.Run("request changes requeues at cap minus one", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 1, 3)
+		reopenMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "under", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskQueued, "")
+	})
+	t.Run("request changes parks at the cap", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 2, 3)
+		reopenMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "cap", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+	})
+	t.Run("late review verdict keeps an existing human gate", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		jobs, orders := reviewRound(id, 1)
+		requireOK(t, CreateReviewRound(ctx, st, id, jobs, orders))
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{
+			TaskID: id, JobID: orders[0].JobID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 1, ReviewSeat: 1,
+			Verdict: "changes_requested", ReasonCode: "fix", Summary: "late", Feedback: "again", MaxBounces: 1,
+		}))
+		parked, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskJobFail})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, parked.Task, core.TaskAwaiting, core.GateKindJobFailure)
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{
+			TaskID: id, JobID: orders[1].JobID, ReviewWorkOrderID: orders[1].ID, ReviewRound: 1, ReviewSeat: 2,
+			Verdict: "changes_requested", ReasonCode: "fix", Summary: "late", Feedback: "again", MaxBounces: 1,
+		}))
+		stored, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, stored, core.TaskAwaiting, core.GateKindJobFailure)
 	})
 	for _, exit := range []struct {
 		command core.TaskCommand
