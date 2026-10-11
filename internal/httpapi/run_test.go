@@ -978,7 +978,7 @@ func TestTaskRunHTTPProjectsMergeExecutionGateWithReadiness(t *testing.T) {
 		{"MERGEABLE", "ready to merge", core.WorkspaceRoleOperator, true, true},
 		{"MERGEABLE", "ready to merge", core.WorkspaceRoleViewer, false, false},
 		{"STALE", "refresh review replaces this merge", core.WorkspaceRoleOperator, true, false},
-		{"CONFLICTING", "/v1/tasks/approved/merge-conflict-fix", core.WorkspaceRoleOperator, true, false},
+		{"CONFLICTING", "after automatic fixes are exhausted", core.WorkspaceRoleOperator, true, false},
 		{"UNKNOWN", "has not settled mergeability", core.WorkspaceRoleOperator, true, false},
 	}
 	for _, tc := range cases {
