@@ -82,6 +82,39 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 		}
 		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
 	})
+	t.Run("request changes parks on the bounce window", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		transitionToMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		request := func() core.Task {
+			t.Helper()
+			out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "again", MaxBounces: 3})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out
+		}
+		for range 2 {
+			out := request()
+			assertGate(t, st, ctx, id, out, core.TaskQueued, "")
+			reopenMergeGate(t, ctx, st, id)
+		}
+		out := request()
+		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+		events, err := st.ListEvents(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().UTC()
+		if n := len(events); n > 0 && !events[n-1].At.IsZero() {
+			at = events[n-1].At.Add(time.Millisecond)
+		}
+		if err = st.CreateIntervention(user, core.Intervention{TaskID: id, Action: core.InterventionRedirect, ReasonCode: "operator_redirect", ActorRole: core.ActorHuman, At: at}); err != nil {
+			t.Fatal(err)
+		}
+		reopenMergeGate(t, ctx, st, id)
+		assertGate(t, st, ctx, id, request(), core.TaskQueued, "")
+	})
 	for _, exit := range []struct {
 		command core.TaskCommand
 		state   core.TaskState
@@ -248,4 +281,24 @@ func createTask(t *testing.T, st store.Store, ctx context.Context, workspace str
 		t.Fatalf("new task gate_kind=%q", stored.GateKind)
 	}
 	return id
+}
+
+func reopenMergeGate(t *testing.T, ctx context.Context, st store.Store, id string) {
+	t.Helper()
+	task, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane := taskops.New(st)
+	if task.State == core.TaskAwaiting {
+		if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskInterventionRedirect}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
 }

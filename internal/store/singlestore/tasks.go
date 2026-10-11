@@ -1169,14 +1169,14 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return fmt.Errorf("review job %s does not belong to task %s", request.JobID, request.TaskID)
 			}
 		}
-		count, _, err := bounceCountsTx(ctx, tx, request.TaskID)
+		count, window, err := bounceCountsTx(ctx, tx, request.TaskID)
 		if err != nil {
 			return err
 		}
 		plan := store.PlanChangesRequested(store.ChangesRequestedInput{
 			TaskID: request.TaskID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 			ReasonCode: store.UserRequestChangesReason, Feedback: request.Feedback, Source: store.UserRequestChangesSource,
-			Count: int(count) + 1, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
+			Count: count + 1, Window: window + 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 		})
 		state, err := core.TransitionTask(before.State, plan.Command)
 		if err != nil {

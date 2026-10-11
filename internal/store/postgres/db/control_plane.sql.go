@@ -249,7 +249,7 @@ JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND e.kind = $2 AND t.workspace_id = $3
   AND e.at > COALESCE((
       SELECT max(i.at) FROM interventions i
-      WHERE i.task_id = $1 AND i.actor_role = 'human'
+      WHERE i.task_id = $1 AND i.actor_role = 'human' AND i.reason_code <> 'user-request-changes'
   ), '-infinity'::timestamptz)
 `
 

@@ -442,8 +442,9 @@ type ActivityStore interface {
 	CountEvents(ctx context.Context, taskID, kind string) (int, error)
 	// CountEventsSinceHumanIntervention counts task events of the given kind
 	// recorded after the latest human intervention on the task — the check-in
-	// window since the last human intervention. With no human intervention it counts all events
-	// of that kind.
+	// window since the last operator or user intervention. A user-request-changes
+	// row is the bounce being counted, not a check-in. With no check-in it counts
+	// all events of that kind.
 	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
 	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
 	ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error)
@@ -683,7 +684,8 @@ func (m *memory) CountEventsSinceHumanIntervention(_ context.Context, taskID, ki
 func (m *memory) countEventsSinceHumanInterventionLocked(taskID, kind string) int {
 	var since time.Time
 	for _, intervention := range m.interventions[taskID] {
-		if intervention.ActorRole == core.ActorHuman && intervention.At.After(since) {
+		// A user-request-changes row is the bounce being counted, not a check-in.
+		if intervention.ActorRole == core.ActorHuman && intervention.ReasonCode != UserRequestChangesReason && intervention.At.After(since) {
 			since = intervention.At
 		}
 	}

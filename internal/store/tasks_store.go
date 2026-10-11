@@ -1356,10 +1356,11 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 			count++
 		}
 	}
+	window := m.countEventsSinceHumanInterventionLocked(task.ID, "pipeline.bounced") + 1
 	plan := PlanChangesRequested(ChangesRequestedInput{
 		TaskID: task.ID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 		ReasonCode: UserRequestChangesReason, Feedback: request.Feedback, Source: UserRequestChangesSource,
-		Count: count, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
+		Count: count, Window: window, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 	})
 	state, err := core.TransitionTask(task.State, plan.Command)
 	if err != nil {

@@ -489,7 +489,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 
 func bounceCountsTx(ctx context.Context, tx *sql.Tx, id string) (int, int, error) {
 	var last sql.NullTime
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(at) FROM interventions WHERE workspace_id=? AND task_id=? AND actor_role='human'`, documentWorkspace(ctx), id).Scan(&last); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(at) FROM interventions WHERE workspace_id=? AND task_id=? AND actor_role='human' AND reason_code<>'user-request-changes'`, documentWorkspace(ctx), id).Scan(&last); err != nil {
 		return 0, 0, err
 	}
 	cutoff := time.Date(1000, 1, 1, 0, 0, 0, 0, time.UTC)

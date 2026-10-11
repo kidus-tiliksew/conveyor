@@ -402,7 +402,7 @@ func (s *Store) CountEvents(ctx context.Context, id, kind string) (int, error) {
 }
 func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, id, kind string) (int, error) {
 	var n int
-	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events e WHERE workspace_id=? AND task_id=? AND kind=? AND (NOT EXISTS(SELECT 1 FROM interventions i WHERE i.workspace_id=e.workspace_id AND i.task_id=e.task_id AND i.actor_role='human') OR e.at>(SELECT MAX(i.at) FROM interventions i WHERE i.workspace_id=e.workspace_id AND i.task_id=e.task_id AND i.actor_role='human'))`, documentWorkspace(ctx), id, kind).Scan(&n)
+	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events e WHERE workspace_id=? AND task_id=? AND kind=? AND (NOT EXISTS(SELECT 1 FROM interventions i WHERE i.workspace_id=e.workspace_id AND i.task_id=e.task_id AND i.actor_role='human' AND i.reason_code<>'user-request-changes') OR e.at>(SELECT MAX(i.at) FROM interventions i WHERE i.workspace_id=e.workspace_id AND i.task_id=e.task_id AND i.actor_role='human' AND i.reason_code<>'user-request-changes'))`, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
 }
 func (s *Store) ListRequirementEvents(ctx context.Context, id string) ([]core.Event, error) {
