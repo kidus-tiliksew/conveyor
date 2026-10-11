@@ -1313,6 +1313,42 @@ func TestGateOnConflictMergeActReportsUndispatchedReason(t *testing.T) {
 	}
 }
 
+func TestGateOnConflictMergeActNamesBlockedReviewRecovery(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired, CreatedAt: time.Now().UTC()}
+	if err := storetest.For(st).CreateWorkOrder(ctx, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error {
+		merges++
+		return nil
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	err := d.MergeApprovedTask(ctx, task)
+	if err == nil || !strings.Contains(err.Error(), "recovery blocked") || strings.Contains(err.Error(), "budget exhausted") || merges != 0 {
+		t.Fatalf("err=%v merges=%d", err, merges)
+	}
+	if blocked, countErr := st.CountEvents(ctx, task.ID, "merge.conflict_recovery_blocked"); countErr != nil || blocked != 1 {
+		t.Fatalf("recovery-blocked events=%d err=%v", blocked, countErr)
+	}
+	if exhausted, countErr := st.CountEvents(ctx, task.ID, "merge.conflict_dispatch_exhausted"); countErr != nil || exhausted != 0 {
+		t.Fatalf("exhausted events=%d err=%v", exhausted, countErr)
+	}
+}
+
 func TestGateOnConflictFixExhaustionRetriesOnlyOnOperatorRoute(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {

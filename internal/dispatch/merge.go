@@ -523,6 +523,8 @@ func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.
 			return stateErr
 		}
 		switch {
+		case state.RecoveryBlocked:
+			reason = "interrupted review recovery blocked"
 		case state.Exhausted:
 			reason = "budget exhausted"
 		case !state.NextRetryAt.IsZero():
