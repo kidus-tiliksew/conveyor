@@ -175,6 +175,14 @@ func RunAll(t *testing.T, factory Factory) {
 		x := factory.fresh(t, nil)
 		RunAutomaticRecoveryConformance(t, x.Backend, x.Context)
 	})
+	run("AutomaticPublicationRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticPublicationRecoveryConformance(t, x.Backend, x.Context, x.Workspace)
+	})
+	run("AutomaticReviewRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticReviewRecoveryConformance(t, x.Backend, x.Context, x.Workspace)
+	})
 	for _, suite := range []struct {
 		name    string
 		enabled bool
