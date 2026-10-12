@@ -346,6 +346,19 @@ func main() {
 				if publications != 0 {
 					log.Printf("reconciled %d completed review publication(s) in workspace %s", publications, workspace.ID)
 				}
+				// Bounded automatic recovery AR-5 runs last; a failure is logged
+				// so it never blocks the remaining workspaces.
+				now := time.Now().UTC()
+				if reenqueued, reenqueueErr := store.ReconcileFailedPublications(workspaceCtx, st, now); reenqueueErr != nil {
+					log.Printf("automatic publication recovery in workspace %s: %v", workspace.ID, reenqueueErr)
+				} else if reenqueued != 0 {
+					log.Printf("automatically re-enqueued %d failed publication(s) in workspace %s", reenqueued, workspace.ID)
+				}
+				if reviewActs, reviewErr := workOrders.SweepAutomaticReviewRecovery(workspaceCtx, now); reviewErr != nil {
+					log.Printf("automatic review recovery in workspace %s: %v", workspace.ID, reviewErr)
+				} else if reviewActs != 0 {
+					log.Printf("automatically recovered %d review round(s) in workspace %s", reviewActs, workspace.ID)
+				}
 			}
 		}
 		reconcile()

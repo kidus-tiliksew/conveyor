@@ -16,6 +16,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // sharedDatabase is the one isolated SingleStore database a test binary
@@ -147,6 +149,16 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
 			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
 			return pending, err
+		},
+		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
+			service := &workorder.Service{
+				Store:          st,
+				ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+					return githubtrigger.ReviewTarget{Number: 7, HeadSHA: head}, nil
+				},
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
 		},
 		ProductionCapable: true,
 		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},

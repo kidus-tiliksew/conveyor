@@ -47,20 +47,21 @@ func (q *logDispatchQueue) enqueueDispatchTx(ctx context.Context, tx pgx.Tx, wor
 	return inserted, nil
 }
 
-func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) error {
-	_, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+// enqueueReviewPublicationTx reports whether a new job was inserted; false
+// means a job for the same publication is still active on its stream.
+func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) (bool, error) {
+	return logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
 		queue.ReviewPublicationArgs{}.Kind(), reviewWorkOrderID,
 		queue.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: reviewWorkOrderID},
 		publicationMaxAttempts, q.now().UTC())
-	return err
 }
 
-func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) error {
-	_, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+// enqueueGitHubIssuePublicationTx reports whether a new job was inserted.
+func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) (bool, error) {
+	return logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
 		queue.GitHubIssuePublicationArgs{}.Kind(), taskID,
 		queue.GitHubIssuePublicationArgs{WorkspaceID: workspace, TaskID: taskID},
 		publicationMaxAttempts, q.now().UTC())
-	return err
 }
 
 func (q *logDispatchQueue) queuedTasksWithoutActiveDispatch(ctx context.Context, tx pgx.Tx, workspace string) ([]string, error) {

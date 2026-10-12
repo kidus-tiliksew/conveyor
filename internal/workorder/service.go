@@ -487,6 +487,10 @@ func recoveryRefreeze(task core.Task, order core.WorkOrder) *store.RecoveryRefre
 }
 
 func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {
+	return s.recoverInterruptedReviewRound(ctx, taskID, requestID, false)
+}
+
+func (s *Service) recoverInterruptedReviewRound(ctx context.Context, taskID, requestID string, automatic bool) (store.InterruptedReviewRecoveryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery request_id is required")
@@ -521,7 +525,7 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
-	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}}
+	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}, Automatic: automatic}
 	for _, order := range recovery.EligibleOrders {
 		if change := recoveryRefreeze(task, order); change != nil {
 			request.Refreezes[order.ID] = change
@@ -546,6 +550,10 @@ func latestReviewRound(orders []core.WorkOrder) int {
 // round terminally timed out. The current PR head and workspace configuration
 // are verified before the store performs the atomic/idempotent transition.
 func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reason string) (store.ReviewRoundRetryResult, error) {
+	return s.retryReviewRound(ctx, taskID, requestID, reason, false)
+}
+
+func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reason string, automatic bool) (store.ReviewRoundRetryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	reason = strings.TrimSpace(reason)
 	if requestID == "" || reason == "" {
@@ -651,7 +659,7 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA}
+	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA, Automatic: automatic}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
 		return s.Store.RetryReviewRoundCommand(ctx, lease, request, jobs, newOrders)
 	})

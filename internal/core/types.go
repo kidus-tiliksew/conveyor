@@ -312,8 +312,11 @@ type GitHubLifecycle struct {
 	LastError          string                 `json:"last_error,omitempty"`
 	ForgeAuthorClass   ForgeAuthorClass       `json:"forge_author_class,omitempty"`
 	ForgeAuthorUserID  string                 `json:"forge_author_user_id,omitempty"`
-	CreatedAt          time.Time              `json:"created_at"`
-	UpdatedAt          time.Time              `json:"updated_at"`
+	// AutomaticReenqueueAt records the bounded automatic re-enqueue of a failed
+	// publication (AR-5). Zero means no automatic re-enqueue has happened.
+	AutomaticReenqueueAt time.Time `json:"automatic_reenqueue_at,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // Workspace is a durable control-plane boundary. ID and Name are immutable in
@@ -1152,7 +1155,10 @@ type ReviewPublication struct {
 	ForgeAuthorClass   ForgeAuthorClass `json:"forge_author_class,omitempty"`
 	ForgeAuthorUserID  string           `json:"forge_author_user_id,omitempty"`
 	CreatedAt          time.Time        `json:"created_at"`
-	UpdatedAt          time.Time        `json:"updated_at"`
+	// AutomaticReenqueueAt records the bounded automatic re-enqueue of a failed
+	// publication (AR-5). Zero means no automatic re-enqueue has happened.
+	AutomaticReenqueueAt time.Time `json:"automatic_reenqueue_at,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // ReviewDecision is the atomic internal acceptance record for one completed

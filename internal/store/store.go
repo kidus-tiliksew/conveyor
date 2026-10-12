@@ -251,6 +251,13 @@ type WorkOrderStore interface {
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	ReconcileReviewPublications(ctx context.Context) (int, error)
+	// ListAutomaticPublicationRetries lists failed GitHub-issue and review
+	// publications due for their once-per-window automatic re-enqueue (AR-5).
+	ListAutomaticPublicationRetries(ctx context.Context, now time.Time) ([]AutomaticPublicationRetry, error)
+	// AutomaticPublicationRetryCommand re-checks one retry in its transaction,
+	// moves it failed->retrying, stamps it, records the automatic event, and
+	// enqueues its job. It reports false when the row is no longer due.
+	AutomaticPublicationRetryCommand(ctx context.Context, lease taskops.TaskLease, retry AutomaticPublicationRetry, now time.Time) (bool, error)
 	AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error
 	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
 	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)

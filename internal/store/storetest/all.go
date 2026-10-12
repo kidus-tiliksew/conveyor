@@ -59,6 +59,9 @@ type Factory struct {
 	// PlanRevisionGate is dispatch.PendingPlanRevisionGate. storetest cannot
 	// import dispatch: dispatch integration tests import storetest.
 	PlanRevisionGate PlanRevisionGateFunc
+	// ReviewSweep is workorder.Service.SweepAutomaticReviewRecovery. storetest
+	// cannot import workorder: workorder tests import storetest.
+	ReviewSweep ReviewSweepFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -179,6 +182,14 @@ func RunAll(t *testing.T, factory Factory) {
 	run("AutomaticRecovery", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunAutomaticRecoveryConformance(t, x.Backend, x.Context)
+	})
+	run("AutomaticPublicationRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticPublicationRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
+	})
+	run("AutomaticReviewRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticReviewRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
 	})
 	for _, suite := range []struct {
 		name    string
