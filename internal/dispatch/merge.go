@@ -303,7 +303,8 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 	}
 	// A merge-gate wait is read-only except for the merged short-circuit above.
 	// Conflict fixes and stale refreshes would bind an approval the operator never gave.
-	if current.State != core.TaskApproved {
+	// Queued and running reads keep the existing conflict and refresh path.
+	if current.State == core.TaskAwaiting {
 		return result, nil
 	}
 	// A queued or claimed conflict-fix order owns the conflict episode and its
