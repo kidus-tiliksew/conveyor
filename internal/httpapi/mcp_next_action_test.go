@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 // rest serves one GET through the full handler with token and returns the body.
@@ -41,6 +44,16 @@ func decodeJSON(t *testing.T, raw []byte) any {
 func (f *governanceAuthFixture) gateTask(id string, createdAt time.Time) {
 	f.t.Helper()
 	if err := f.store.CreateTask(f.ctx, core.Task{ID: id, Workspace: governanceWorkspace, Repo: "conveyor", Branch: id, State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: createdAt}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// dependentOrder stores a queued implement order whose task depends on
+// dependency, so the store derives the blocker the projection reads.
+func (f *governanceAuthFixture) dependentOrder(name, dependency string) {
+	f.t.Helper()
+	f.order(name, core.StageImplement)
+	if _, err := f.store.AddTaskDependency(f.ctx, store.DependencyAdditionRequest{TaskID: "gov-task-" + name, DependsOnTaskID: dependency, Reason: "dependency first", RequestID: "dep-" + name}); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -103,9 +116,19 @@ func TestMCPGetTaskStatusAdmission(t *testing.T) {
 		}
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: governanceWorkspace}))
-	if _, err := f.server.callMCPTool(request, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-status-claimed", "work_order_id": claimed, "session_id": "claimed-session"}); err == nil {
-		t.Fatal("worker credential read a task status")
+	// A real worker bearer token reaches the tool through the full handler,
+	// holding the order it names, so only the worker refusal can stop it.
+	workerToken := "worker-status-token"
+	sum := sha256.Sum256([]byte(workerToken))
+	if err := createOwnedWorker(f.store, f.ctx, core.Worker{ID: "worker-status", Workspace: governanceWorkspace, OwnerUserID: "usr_status", Name: "worker-status", CredentialHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	workerOrder := f.order("status-worker", core.StageImplement)
+	if _, err := storetest.For(f.store).ClaimWorkOrder(f.ctx, workerOrder, core.WorkOrderClaim{SessionID: "worker-session", ClientToken: "secret-worker-session", ClaimantID: "worker-status", WorkerID: "worker-status", Agent: "codex", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if text, isErr := read(workerToken, map[string]any{"task_id": "gov-task-status-worker", "work_order_id": workerOrder, "session_id": "worker-session"}); !isErr || text != "get_task_status requires a user or agent credential" {
+		t.Fatalf("worker read isError=%v text=%q, want the worker refusal", isErr, text)
 	}
 }
 
@@ -147,11 +170,12 @@ func TestMCPListOperatorInbox(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	f.gateTask("z-gate", now.Add(-time.Hour))
 	f.gateTask("a-gate", now)
-	f.order("inbox-dependent", core.StageImplement)
-	if _, err := f.store.AddTaskDependency(f.ctx, store.DependencyAdditionRequest{TaskID: "gov-task-inbox-dependent", DependsOnTaskID: "z-gate", Reason: "gate first", RequestID: "inbox-dep"}); err != nil {
+	f.dependentOrder("inbox-dependent-b", "z-gate")
+	f.dependentOrder("inbox-dependent-a", "a-gate")
+	f.order("inbox-queued", core.StageImplement)
+	if err := f.store.CreateTask(f.ctx, core.Task{ID: "inbox-merging", Workspace: governanceWorkspace, Repo: "conveyor", Branch: "inbox-merging", State: core.TaskApproved, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	f.order("inbox-queued", core.StageImplement)
 
 	items := func(raw []byte) []any {
 		t.Helper()
@@ -170,6 +194,7 @@ func TestMCPListOperatorInbox(t *testing.T) {
 		{"", map[string]any{}},
 		{"&band=decisions", map[string]any{"band": "decisions"}},
 		{"&band=automatic", map[string]any{"band": "automatic"}},
+		{"&band=blocked", map[string]any{"band": "blocked"}},
 		{"&state=awaiting_human&query=gate", map[string]any{"state": "awaiting_human", "query": "gate"}},
 	} {
 		tc.args["workspace_id"] = governanceWorkspace

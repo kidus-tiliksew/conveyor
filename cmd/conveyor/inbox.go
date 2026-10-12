@@ -32,11 +32,20 @@ type inboxCompact struct {
 	BlockedBy []nextActionBlocker `json:"blocked_by,omitempty"`
 }
 
+// inboxProposalView is the identity of a pending document proposal item.
+type inboxProposalView struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Tier    string `json:"tier"`
+	Version int    `json:"version,omitempty"`
+}
+
 type inboxItemView struct {
 	Kind       string              `json:"kind,omitempty"`
 	Band       string              `json:"band"`
 	Task       *inboxTaskView      `json:"task,omitempty"`
 	NextAction *inboxCompact       `json:"next_action,omitempty"`
+	Proposal   *inboxProposalView  `json:"proposal,omitempty"`
 	Sentence   string              `json:"sentence,omitempty"`
 	Blockers   []nextActionBlocker `json:"blockers,omitempty"`
 	Deadline   *time.Time          `json:"deadline,omitempty"`
@@ -125,6 +134,18 @@ func writeInbox(w io.Writer, page inboxPage, total string, listActs bool) error 
 			fmt.Fprintf(&b, "  %s %s: %s: %s\n", item.Task.ID, item.Task.Title, item.NextAction.Label, item.NextAction.Summary)
 		case item.Task != nil:
 			fmt.Fprintf(&b, "  %s %s\n", item.Task.ID, item.Task.Title)
+		case item.Proposal != nil:
+			line := fmt.Sprintf("  %s proposal %s", item.Proposal.Tier, item.Proposal.ID)
+			if item.Proposal.Version > 0 {
+				line += fmt.Sprintf(" v%d", item.Proposal.Version)
+			}
+			if item.Proposal.Title != "" {
+				line += ": " + item.Proposal.Title
+			}
+			fmt.Fprintln(&b, line)
+			if item.Sentence != "" {
+				fmt.Fprintf(&b, "    %s\n", item.Sentence)
+			}
 		default:
 			fmt.Fprintf(&b, "  %s\n", item.Sentence)
 		}

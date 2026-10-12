@@ -102,3 +102,46 @@ func TestInboxServerOrder(t *testing.T) {
 		t.Fatalf("--band automatic did not list acts:\n%s", out.String())
 	}
 }
+
+// TestInboxPrintsProposalIdentity pins a pending document proposal item to
+// its tier, ID and version, so the operator can tell which document waits.
+func TestInboxPrintsProposalIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       []string
+	}{
+		{
+			name: "single proposal",
+			body: `{"items":[{"kind":"document_proposal","band":"decisions","proposal":{"id":"component-mcp","title":"MCP protocol","tier":"system_design","version":3,"origin_type":"task","proposed_at":"2026-10-12T07:00:00Z"}}],"acts":[]}`,
+			want: []string{"decisions\n  system_design proposal component-mcp v3: MCP protocol\nshowing 1 of 1\n"},
+		},
+		{
+			name: "several versions pending",
+			body: `{"items":[
+			  {"kind":"document_proposal","band":"decisions","proposal":{"id":"req-next","title":"Next action","tier":"requirement","version":2,"origin_type":"task","proposed_at":"2026-10-12T07:00:00Z"},"sentence":"Confirming a later one dismisses the earlier ones."},
+			  {"kind":"document_proposal","band":"decisions","proposal":{"id":"req-next","title":"Next action","tier":"requirement","version":4,"origin_type":"task","proposed_at":"2026-10-12T08:00:00Z"},"sentence":"Confirming a later one dismisses the earlier ones."}
+			],"acts":[]}`,
+			want: []string{"decisions\n" +
+				"  requirement proposal req-next v2: Next action\n    Confirming a later one dismisses the earlier ones.\n" +
+				"  requirement proposal req-next v4: Next action\n    Confirming a later one dismisses the earlier ones.\n" +
+				"showing 2 of 2\n"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			total := "1"
+			if strings.Count(tc.body, "document_proposal") == 2 {
+				total = "2"
+			}
+			c, _ := serveInbox(t, tc.body, total)
+			var out bytes.Buffer
+			if err := runInbox(c, &out, inboxOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range tc.want {
+				if !strings.HasPrefix(out.String(), want) {
+					t.Fatalf("output:\n%s\nwant prefix:\n%s", out.String(), want)
+				}
+			}
+		})
+	}
+}
