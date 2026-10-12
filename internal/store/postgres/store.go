@@ -450,6 +450,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
 	}
+	if before.Recovery.AutomaticRecoveries != after.Recovery.AutomaticRecoveries || before.Recovery.WindowText != after.Recovery.WindowText {
+		sections = append(sections, "recovery")
+	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
 		sections = append(sections, "routing")
 	}
@@ -846,6 +849,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb`
 

@@ -480,6 +480,8 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 					nextRetry = now.Add(delay)
 					suppressed = false
 				}
+			} else {
+				suppressionReason = core.AttemptRetriesExhaustedReason
 			}
 			if transientConnectivity {
 				lastFailureDetail = core.TransientConnectivityFailureDetail(detail, consecutiveTransientFailures, nextRetry)

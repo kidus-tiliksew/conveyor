@@ -563,6 +563,7 @@ type memory struct {
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
+	readClockPolicy             func(workspace string) (config.RecoveryPolicy, time.Duration, error)
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
 	repositories                map[string]map[string]string

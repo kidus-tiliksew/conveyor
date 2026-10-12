@@ -604,75 +604,78 @@ type RateLimitHealth struct {
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent.
 type WorkOrder struct {
-	VerificationContextID         string               `json:"verification_context_id,omitempty"`
-	ID                            string               `json:"id"`
-	TaskID                        string               `json:"task_id"`
-	JobID                         string               `json:"job_id"`
-	Stage                         Stage                `json:"stage"`
-	State                         WorkOrderState       `json:"state"`
-	Claimable                     bool                 `json:"claimable"`
-	ClaimRefusalReason            string               `json:"claim_refusal_reason,omitempty"`
-	RecoveryRefusal               string               `json:"recovery_refusal,omitempty"`
-	BlockingTaskIDs               []string             `json:"blocking_task_ids,omitempty"`
-	Assignee                      *TaskAssignee        `json:"assignee,omitempty"`
-	UnsatisfiableTaskIDs          []string             `json:"unsatisfiable_task_ids,omitempty"`
-	ClaimantID                    string               `json:"claimed_by,omitempty"`
-	SessionID                     string               `json:"session_id,omitempty"`
-	AttemptID                     string               `json:"attempt_id,omitempty"`
-	ClientTokenHash               string               `json:"-"`
-	Agent                         string               `json:"agent,omitempty"`
-	Model                         string               `json:"model,omitempty"`
-	WorkerID                      string               `json:"worker_id,omitempty"`
-	ReviewRound                   int                  `json:"review_round,omitempty"`
-	ReviewSeat                    int                  `json:"review_seat,omitempty"`
-	ReasonCode                    string               `json:"reason_code,omitempty"`
-	ReviewKind                    string               `json:"review_kind,omitempty"`
-	ReviewScope                   string               `json:"review_scope,omitempty"`
-	BaselineSHA                   string               `json:"baseline_sha,omitempty"`
-	HeadSHA                       string               `json:"head_sha,omitempty"`
-	RequiredModel                 string               `json:"required_model,omitempty"`
-	RequiredHarness               string               `json:"required_harness,omitempty"`
-	RequiredEffort                string               `json:"required_effort,omitempty"`
-	RequiredHarnessConfig         *HarnessSnapshot     `json:"required_harness_config,omitempty"`
-	ExecutionTimeoutText          string               `json:"execution_timeout,omitempty"`
-	ModelEnforcement              string               `json:"model_enforcement,omitempty"`
-	LeaseExpiresAt                time.Time            `json:"lease_expires_at,omitempty"`
-	QueueEnteredAt                time.Time            `json:"queue_entered_at"`
-	QueueDeadline                 time.Time            `json:"queue_deadline"`
-	QueueBlockedAt                time.Time            `json:"queue_blocked_at,omitempty"`
-	ExecutionStartedAt            time.Time            `json:"execution_started_at,omitempty"`
-	ExecutionDeadline             time.Time            `json:"execution_deadline,omitempty"`
-	LastAttemptID                 string               `json:"last_attempt_id,omitempty"`
-	LastAttemptOutcome            string               `json:"last_attempt_outcome,omitempty"`
-	LastFailureCategory           string               `json:"last_failure_category,omitempty"`
-	LastFailureMessage            string               `json:"last_failure_message,omitempty"`
-	LastFailureDetail             string               `json:"last_failure_detail,omitempty"`
-	LastFailureExitStatus         *int                 `json:"last_failure_exit_status,omitempty"`
-	LastFailureAt                 time.Time            `json:"last_failure_at,omitempty"`
-	AutomaticRetryCount           int                  `json:"automatic_retry_count"`
-	NextRetryAt                   time.Time            `json:"next_retry_at,omitempty"`
-	RetrySuppressed               bool                 `json:"retry_suppressed"`
-	RetrySuppressionReason        string               `json:"retry_suppression_reason,omitempty"`
-	RedispatchCount               int                  `json:"redispatch_count"`
-	OperatorDirection             string               `json:"operator_direction,omitempty"`
-	Checkpoint                    *WorkOrderCheckpoint `json:"checkpoint,omitempty"`
-	ContinuationSessionID         string               `json:"continuation_session_id,omitempty"`
-	ContinuationAttemptID         string               `json:"continuation_attempt_id,omitempty"`
-	ContinuationHarness           string               `json:"continuation_harness,omitempty"`
-	ContinuationLaunchEnvironment string               `json:"continuation_launch_environment,omitempty"`
-	ContinuationResumeEligible    bool                 `json:"continuation_resume_eligible"`
-	Progress                      string               `json:"progress,omitempty"`
-	CostUSD                       float64              `json:"cost_usd,omitempty"`
-	TokensIn                      int64                `json:"tokens_in"`
-	TokensOut                     int64                `json:"tokens_out"`
-	UsageReported                 bool                 `json:"usage_reported"`
-	SelfReported                  bool                 `json:"self_reported"`
-	RateLimit                     *RateLimitStatus     `json:"rate_limit,omitempty"`
-	RateLimitObservedAt           time.Time            `json:"rate_limit_observed_at,omitempty"`
-	LastAgentActivityAt           time.Time            `json:"last_agent_activity_at,omitempty"`
-	LastAgentActivityLabel        string               `json:"last_agent_activity_label,omitempty"`
-	CreatedAt                     time.Time            `json:"created_at"`
-	UpdatedAt                     time.Time            `json:"updated_at"`
+	VerificationContextID            string               `json:"verification_context_id,omitempty"`
+	ID                               string               `json:"id"`
+	TaskID                           string               `json:"task_id"`
+	JobID                            string               `json:"job_id"`
+	Stage                            Stage                `json:"stage"`
+	State                            WorkOrderState       `json:"state"`
+	Claimable                        bool                 `json:"claimable"`
+	ClaimRefusalReason               string               `json:"claim_refusal_reason,omitempty"`
+	RecoveryRefusal                  string               `json:"recovery_refusal,omitempty"`
+	BlockingTaskIDs                  []string             `json:"blocking_task_ids,omitempty"`
+	Assignee                         *TaskAssignee        `json:"assignee,omitempty"`
+	UnsatisfiableTaskIDs             []string             `json:"unsatisfiable_task_ids,omitempty"`
+	ClaimantID                       string               `json:"claimed_by,omitempty"`
+	SessionID                        string               `json:"session_id,omitempty"`
+	AttemptID                        string               `json:"attempt_id,omitempty"`
+	ClientTokenHash                  string               `json:"-"`
+	Agent                            string               `json:"agent,omitempty"`
+	Model                            string               `json:"model,omitempty"`
+	WorkerID                         string               `json:"worker_id,omitempty"`
+	ReviewRound                      int                  `json:"review_round,omitempty"`
+	ReviewSeat                       int                  `json:"review_seat,omitempty"`
+	ReasonCode                       string               `json:"reason_code,omitempty"`
+	ReviewKind                       string               `json:"review_kind,omitempty"`
+	ReviewScope                      string               `json:"review_scope,omitempty"`
+	BaselineSHA                      string               `json:"baseline_sha,omitempty"`
+	HeadSHA                          string               `json:"head_sha,omitempty"`
+	RequiredModel                    string               `json:"required_model,omitempty"`
+	RequiredHarness                  string               `json:"required_harness,omitempty"`
+	RequiredEffort                   string               `json:"required_effort,omitempty"`
+	RequiredHarnessConfig            *HarnessSnapshot     `json:"required_harness_config,omitempty"`
+	ExecutionTimeoutText             string               `json:"execution_timeout,omitempty"`
+	ModelEnforcement                 string               `json:"model_enforcement,omitempty"`
+	LeaseExpiresAt                   time.Time            `json:"lease_expires_at,omitempty"`
+	QueueEnteredAt                   time.Time            `json:"queue_entered_at"`
+	QueueDeadline                    time.Time            `json:"queue_deadline"`
+	QueueBlockedAt                   time.Time            `json:"queue_blocked_at,omitempty"`
+	ExecutionStartedAt               time.Time            `json:"execution_started_at,omitempty"`
+	ExecutionDeadline                time.Time            `json:"execution_deadline,omitempty"`
+	LastAttemptID                    string               `json:"last_attempt_id,omitempty"`
+	LastAttemptOutcome               string               `json:"last_attempt_outcome,omitempty"`
+	LastFailureCategory              string               `json:"last_failure_category,omitempty"`
+	LastFailureMessage               string               `json:"last_failure_message,omitempty"`
+	LastFailureDetail                string               `json:"last_failure_detail,omitempty"`
+	LastFailureExitStatus            *int                 `json:"last_failure_exit_status,omitempty"`
+	LastFailureAt                    time.Time            `json:"last_failure_at,omitempty"`
+	AutomaticRetryCount              int                  `json:"automatic_retry_count"`
+	NextRetryAt                      time.Time            `json:"next_retry_at,omitempty"`
+	AutomaticRecoveryCount           int                  `json:"automatic_recovery_count"`
+	AutomaticRecoveryWindowStartedAt time.Time            `json:"automatic_recovery_window_started_at,omitempty"`
+	NextAutomaticRecoveryAt          time.Time            `json:"next_automatic_recovery_at,omitempty"`
+	RetrySuppressed                  bool                 `json:"retry_suppressed"`
+	RetrySuppressionReason           string               `json:"retry_suppression_reason,omitempty"`
+	RedispatchCount                  int                  `json:"redispatch_count"`
+	OperatorDirection                string               `json:"operator_direction,omitempty"`
+	Checkpoint                       *WorkOrderCheckpoint `json:"checkpoint,omitempty"`
+	ContinuationSessionID            string               `json:"continuation_session_id,omitempty"`
+	ContinuationAttemptID            string               `json:"continuation_attempt_id,omitempty"`
+	ContinuationHarness              string               `json:"continuation_harness,omitempty"`
+	ContinuationLaunchEnvironment    string               `json:"continuation_launch_environment,omitempty"`
+	ContinuationResumeEligible       bool                 `json:"continuation_resume_eligible"`
+	Progress                         string               `json:"progress,omitempty"`
+	CostUSD                          float64              `json:"cost_usd,omitempty"`
+	TokensIn                         int64                `json:"tokens_in"`
+	TokensOut                        int64                `json:"tokens_out"`
+	UsageReported                    bool                 `json:"usage_reported"`
+	SelfReported                     bool                 `json:"self_reported"`
+	RateLimit                        *RateLimitStatus     `json:"rate_limit,omitempty"`
+	RateLimitObservedAt              time.Time            `json:"rate_limit_observed_at,omitempty"`
+	LastAgentActivityAt              time.Time            `json:"last_agent_activity_at,omitempty"`
+	LastAgentActivityLabel           string               `json:"last_agent_activity_label,omitempty"`
+	CreatedAt                        time.Time            `json:"created_at"`
+	UpdatedAt                        time.Time            `json:"updated_at"`
 	// ServedRequirementSnapshot is the citation authority rendered for this
 	// review order. A non-nil empty slice means the task had no served
 	// requirements; nil is reserved for pre-snapshot compatibility handling.
@@ -807,6 +810,9 @@ const (
 	WorkOrderReleaseCauseOperatorAction             = "operator_action"
 	WorkOrderReleaseCauseLeaseLoss                  = "lease_loss"
 	IdenticalFailureSuppressionReason               = "identical failure output on consecutive attempts"
+	AttemptRetriesExhaustedReason                   = "attempt retries exhausted"
+	AutomaticRecoveryExhaustedReason                = "automatic recovery exhausted"
+	AutomaticRecoveryReason                         = "automatic recovery"
 	WorkOrderFailureProviderUsageLimit              = "provider_usage_limit"
 	WorkOrderFailureTransientConnectivity           = "transient_connectivity"
 	WorkOrderFailureDetailLimit                     = 2 * 1024

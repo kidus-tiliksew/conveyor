@@ -11,14 +11,19 @@ import (
 // control-plane setting leaves the daemon through it (component-http-api;
 // component-runtime; DEC-56).
 type WorkspaceInfo struct {
-	Workspace  string        `json:"workspace"`
-	MaxBounces int           `json:"max_bounces"`
-	Database   string        `json:"database"`
-	Repos      []config.Repo `json:"repos"`
+	Workspace  string                `json:"workspace"`
+	MaxBounces int                   `json:"max_bounces"`
+	Recovery   config.RecoveryPolicy `json:"recovery"`
+	Database   string                `json:"database"`
+	Repos      []config.Repo         `json:"repos"`
 }
 
 func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
-	return &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...)}
+	policy := cfg.Recovery
+	if !policy.Present() {
+		policy = config.DefaultRecoveryPolicy()
+	}
+	return &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Recovery: policy, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...)}
 }
 
 func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) {

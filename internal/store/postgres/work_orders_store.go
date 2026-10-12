@@ -141,6 +141,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
@@ -1353,14 +1354,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
-	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
-		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL, model_enforcement='',
-		`+clearExecutionPinsSQL+`,
-		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
-		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
-		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
-		now, now.Add(queueTimeout), workspace(ctx), id)
-	order, err = scanWorkOrder(row)
+	order, err = writeRedispatchedWorkOrder(ctx, tx, id, now, queueTimeout, 0, time.Time{}, true)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -1524,7 +1518,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		order.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
 	}
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,operator_direction=$3,`+clearExecutionPinsSQL+`,execution_timeout=$4,updated_at=$1 WHERE workspace_id=$5 AND id=$6 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), direction, order.ExecutionTimeoutText, workspace(ctx), id))
+	order, err = writeRecoveredWorkOrder(ctx, tx, id, now, queueTimeout, direction, order.ExecutionTimeoutText, 0, time.Time{})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -1553,12 +1547,20 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT task_id FROM work_orders
+	bound, policyErr := clockPolicyBound(ctx, s)
+	if policyErr != nil {
+		return nil, policyErr
+	}
+	query := `SELECT DISTINCT task_id FROM work_orders
 		WHERE workspace_id=$1 AND (
 			(state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline <= $2)
 			OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2)
-			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)
-		) ORDER BY task_id`, workspace(ctx), now)
+			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)`
+	if bound != 0 {
+		query += automaticRecoveryElapsedSQL
+	}
+	query += `) ORDER BY task_id`
+	rows, err := s.boundary.Query(ctx, query, workspace(ctx), now)
 	if err != nil {
 		return nil, err
 	}
@@ -1656,7 +1658,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 				count++
 			}
 		}
-		return nil
+		acted, recoveryErr := s.applyAutomaticRecoveryTx(ctx, tx, taskID, now)
+		count += acted
+		return recoveryErr
 	})
 	return count, err
 }
@@ -2311,7 +2315,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
-	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
+	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
@@ -2319,6 +2323,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
+		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
@@ -2365,6 +2370,12 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	}
 	if nextRetryAt.Valid {
 		order.NextRetryAt = nextRetryAt.Time
+	}
+	if recoveryWindow.Valid {
+		order.AutomaticRecoveryWindowStartedAt = recoveryWindow.Time
+	}
+	if nextAutomaticRecovery.Valid {
+		order.NextAutomaticRecoveryAt = nextAutomaticRecovery.Time
 	}
 	if len(rateLimit) > 0 && string(rateLimit) != "{}" {
 		var status core.RateLimitStatus
