@@ -41,6 +41,8 @@ func Stall(task core.Task, orders []core.WorkOrder, recovery map[string]Automati
 
 func stallReason(task core.Task, order core.WorkOrder, claimants *ClaimantView, rec AutomaticRecovery) string {
 	switch {
+	case rec.Exhausted:
+		return StallAutomaticRecoveryExhausted
 	case order.RetrySuppressed:
 		return StallRetrySuppressed
 	case order.State == core.WorkOrderStale:
@@ -51,8 +53,6 @@ func stallReason(task core.Task, order core.WorkOrder, claimants *ClaimantView, 
 		return StallUnclaimable
 	case order.AutomaticRetryCount >= 2 && failureText(order) != "":
 		return StallDispatchFailing
-	case rec.Exhausted:
-		return StallAutomaticRecoveryExhausted
 	default:
 		return ""
 	}

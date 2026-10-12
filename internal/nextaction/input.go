@@ -98,10 +98,13 @@ type MergeConflict struct {
 	NextRetryAt time.Time
 }
 
-// AutomaticRecovery is the AR-6 hook. An empty map means the ledger is absent.
+// AutomaticRecovery is the AR-6 hook, keyed by work-order ID. An absent entry
+// means the order has no scheduled or exhausted automatic recovery. Attempt is
+// the window-local number of the scheduled recovery.
 type AutomaticRecovery struct {
 	NextAt    *time.Time
 	Exhausted bool
+	Attempt   int
 }
 
 type SpecRef struct {

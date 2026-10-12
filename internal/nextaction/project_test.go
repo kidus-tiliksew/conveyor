@@ -170,7 +170,7 @@ func scheduled(now, later time.Time) Input {
 }
 
 func recoveryExhausted(now time.Time) Input {
-	return Input{Task: core.Task{State: core.TaskRunning}, Orders: []core.WorkOrder{{ID: "o", State: core.WorkOrderQueued}}, Recovery: map[string]AutomaticRecovery{"o": {Exhausted: true}}, Now: now}
+	return Input{Task: core.Task{State: core.TaskRunning}, Orders: []core.WorkOrder{{ID: "o", State: core.WorkOrderTimedOut, RetrySuppressed: true, RetrySuppressionReason: core.AutomaticRecoveryExhaustedReason}}, Recovery: map[string]AutomaticRecovery{"o": {Exhausted: true}}, Now: now}
 }
 
 func verifyRefused(now time.Time) Input {

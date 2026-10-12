@@ -3,10 +3,14 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -36,6 +40,7 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	if err != nil || scheduled.State != core.WorkOrderTimedOut || scheduled.NextAutomaticRecoveryAt.IsZero() || !scheduled.NextAutomaticRecoveryAt.After(tick) {
 		t.Fatalf("scheduled=%+v err=%v", scheduled, err)
 	}
+	requireRetrying(t, st, ctx, taskID, scheduled, tick, 1)
 	if _, err = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +86,7 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 		if err != nil || scheduled.NextAutomaticRecoveryAt.IsZero() {
 			t.Fatalf("reschedule=%+v err=%v", scheduled, err)
 		}
+		requireRetrying(t, st, ctx, taskID, scheduled, tick, recovered.AutomaticRecoveryCount+1)
 		if _, err = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
 			t.Fatal(err)
 		}
@@ -99,6 +105,13 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	exhausted, err := st.GetWorkOrder(ctx, orderID)
 	if err != nil || exhausted.State != core.WorkOrderTimedOut || !exhausted.RetrySuppressed || exhausted.RetrySuppressionReason != core.AutomaticRecoveryExhaustedReason {
 		t.Fatalf("exhausted=%+v err=%v", exhausted, err)
+	}
+	action, err := store.ReadNextAction(ctx, st, taskID, store.NextActionOptions{Now: tick})
+	if err != nil || action.Actor != nextaction.ActorOperator || action.Kind != nextaction.KindStalled || action.Details.StallReason != nextaction.StallAutomaticRecoveryExhausted || !store.TaskNeedsAttention(action) {
+		t.Fatalf("exhausted next action=%+v err=%v", action, err)
+	}
+	if action.CurrentOrder == nil || action.CurrentOrder.ID != orderID {
+		t.Fatalf("exhausted next action order=%+v", action.CurrentOrder)
 	}
 	reset, err := RecoverWorkOrder(ctx, st, orderID, "operator-reset", time.Hour)
 	if err != nil || reset.State != core.WorkOrderQueued || reset.AutomaticRecoveryCount != 0 || reset.RetrySuppressed || reset.RetrySuppressionReason != "" {
@@ -130,4 +143,29 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 		t.Fatalf("stale redispatch=%+v err=%v", redispatched, err)
 	}
 	runAutomaticRecoveryRemaining(t, st, ctx, workspace)
+}
+
+// requireRetrying asserts the store-backed next action projects the order's
+// scheduled automatic recovery (AR-6) with its window-local attempt.
+func requireRetrying(t *testing.T, st store.Store, ctx context.Context, taskID string, scheduled core.WorkOrder, now time.Time, attempt int) {
+	t.Helper()
+	action, err := store.ReadNextAction(ctx, st, taskID, store.NextActionOptions{Now: now})
+	if err != nil || action.Actor != nextaction.ActorFactory || action.Kind != nextaction.KindRetrying || action.Details.ReasonCode != "automatic_recovery" || store.TaskNeedsAttention(action) {
+		t.Fatalf("scheduled next action=%+v err=%v", action, err)
+	}
+	if action.CurrentOrder == nil || action.CurrentOrder.ID != scheduled.ID || action.Deadline == nil || !action.Deadline.Equal(scheduled.NextAutomaticRecoveryAt) {
+		t.Fatalf("scheduled next action order=%+v deadline=%v want %s at %s", action.CurrentOrder, action.Deadline, scheduled.ID, scheduled.NextAutomaticRecoveryAt)
+	}
+	if !strings.Contains(action.Summary, "(attempt "+strconv.Itoa(attempt)+")") {
+		t.Fatalf("scheduled summary=%q want attempt %d", action.Summary, attempt)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := config.DefaultRecoveryPolicy()
+	flow := store.FoldTaskFlow(events, action, policy)
+	if want := (store.FlowRetrying{Attempt: attempt, Of: policy.AutomaticRecoveries}); flow.Side.Retrying == nil || *flow.Side.Retrying != want {
+		t.Fatalf("side.retrying=%+v want %+v", flow.Side.Retrying, want)
+	}
 }
