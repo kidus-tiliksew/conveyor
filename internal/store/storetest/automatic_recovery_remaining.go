@@ -331,8 +331,13 @@ func runQueuePositionAndIdentity(t *testing.T, st store.Store, ctx context.Conte
 	if recovered.QueueEnteredAt.Before(waiter.QueueEnteredAt) || recovered.Stage != core.StageImplement || recovered.HeadSHA != "head-kept" || recovered.OperatorDirection != "" || recovered.ExecutionTimeoutText != claimed.ExecutionTimeoutText {
 		t.Fatalf("identity recovered=%+v waiting=%+v claimedTimeout=%s", recovered, waiter, claimed.ExecutionTimeoutText)
 	}
-	if after.SetupContract.Name != before.SetupContract.Name || after.SetupContract.Name != "kept" {
-		t.Fatalf("setup contract before=%+v after=%+v", before.SetupContract, after.SetupContract)
+	beforeJSON, err := json.Marshal(before.SetupContract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterJSON, err := json.Marshal(after.SetupContract)
+	if err != nil || string(beforeJSON) != string(afterJSON) || before.SetupContract.Name != after.SetupContract.Name {
+		t.Fatalf("setup contract before=%s after=%s err=%v", beforeJSON, afterJSON, err)
 	}
 	listed, err := st.GetWorkOrder(ctx, moving)
 	if err != nil || listed.AutomaticRecoveryCount != recovered.AutomaticRecoveryCount || !listed.AutomaticRecoveryWindowStartedAt.Equal(recovered.AutomaticRecoveryWindowStartedAt) {
