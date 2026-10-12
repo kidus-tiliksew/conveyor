@@ -129,7 +129,7 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 				"base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": result,
 				"merged_by": pr.MergedBy, "merge_commit_sha": pr.MergeCommitSHA,
 				"factory_review_validated": true,
-				"reviewed_head_sha": task.ReviewedHeadSHA, "approved_head_sha": task.ApprovedHeadSHA,
+				"reviewed_head_sha":        task.ReviewedHeadSHA, "approved_head_sha": task.ApprovedHeadSHA,
 			}
 			if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(payload)}); err != nil {
 				return false, err
@@ -161,8 +161,6 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 	}
 	return false, nil
 }
-
-
 
 func (d *Dispatcher) refreshScope(task core.Task, conflict bool) string {
 	scope := task.SetupContract.RefreshReview
@@ -873,7 +871,6 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 	return reconciled, err
 }
 
-
 // observeConfirmedMerge is deliberately non-gating: merge confirmation stays
 // authoritative when GitHub file retrieval or drift evaluation fails. The
 // observation commit is the PR head SHA recorded in the causal merge event,
@@ -1008,7 +1005,6 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 	}
 	return reconciled, errors.Join(gateOnErrs...)
 }
-
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
 	// The task transition atomically resumes dependent queue clocks. Worker

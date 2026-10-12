@@ -12,6 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -26,9 +27,31 @@ func forbidMergeCalls(t *testing.T, d *Dispatcher) {
 		t.Fatal("RequestMerge called")
 		return nil
 	}
-	d.RequestMergeWithCredential = func(context.Context, string, int, githubtrigger.Credential, string) error {
+	d.RequestMergeWithCredential = func(context.Context, string, int, string) error {
 		t.Fatal("RequestMergeWithCredential called")
 		return nil
+	}
+}
+
+func completeVerificationAtHead(t *testing.T, st store.Store, ctx context.Context, taskID, head string) {
+	t.Helper()
+	jobID := taskID + "-verify"
+	if err := st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageVerify, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: jobID, JobID: jobID, TaskID: taskID, Stage: core.StageVerify, HeadSHA: head, CreatedAt: time.Now().UTC()}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verify-session", ClientToken: "verify-token", WorkerID: "worker-verify", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderCompleted
+	claimed.HeadSHA = head
+	claimed.VerificationContextID = "sealed-context"
+	if err := storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitVerification); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -140,16 +163,17 @@ func TestObservedMergeAtMergeGateReconcilesToMerged(t *testing.T) {
 	t.Run("verify stage does not block an observed merge", func(t *testing.T) {
 		verified := core.Task{
 			ID: "gate-verified", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/gate-verified",
-			State: core.TaskRunning, ReviewedHeadSHA: "verified-head", MergeApproval: true,
+			State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "verified-head", MergeApproval: true,
 			SetupContract: config.ExecutionSetup{VerifyStage: true}, CreatedAt: time.Now().UTC(),
 		}
 		if err := st.CreateTask(ctx, verified); err != nil {
 			t.Fatal(err)
 		}
-		out, err := taskops.New(st).Perform(ctx, verified.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+		out, err := taskops.New(st).Perform(ctx, verified.ID, taskops.Command{Kind: core.TaskGateMerge})
 		if err != nil {
 			t.Fatal(err)
 		}
+		completeVerificationAtHead(t, st, ctx, verified.ID, "verified-head")
 		openPullRequest(t, st, ctx, verified.ID, 14, "verified-head")
 		accepted, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", verified.ID, mergedPull(out.Task, 14, "verified-head", "landed-verified", "github-operator"))
 		if err != nil || !accepted {
@@ -328,13 +352,13 @@ func TestReconcileMergeReadinessReconcilesMergeGateAwaitingMergedPR(t *testing.T
 }
 
 func TestReadMergeReadinessMergedPRAtOtherHeadRecordsDriftNoRefresh(t *testing.T) {
-	assertNoRefresh := func(t *testing.T, current core.Task, st store.Store, ctx context.Context) {
+	assertNoRefresh := func(t *testing.T, current core.Task, st store.Store, ctx context.Context, boundBefore int) {
 		t.Helper()
 		if current.ApprovalStale || current.State == core.TaskQueued {
 			t.Fatalf("refreshed task=%+v", current)
 		}
-		if bound, _ := st.CountEvents(ctx, current.ID, "approval.bound"); bound != 0 {
-			t.Fatalf("approval.bound=%d", bound)
+		if bound, _ := st.CountEvents(ctx, current.ID, "approval.bound"); bound != boundBefore {
+			t.Fatalf("approval.bound=%d before=%d", bound, boundBefore)
 		}
 		if blocked, _ := st.CountEvents(ctx, current.ID, "merge.blocked"); blocked != 0 {
 			t.Fatalf("merge.blocked=%d", blocked)
@@ -353,6 +377,7 @@ func TestReadMergeReadinessMergedPRAtOtherHeadRecordsDriftNoRefresh(t *testing.T
 			return githubtrigger.PullRequest{Number: 61, State: "closed", Merged: true, Mergeable: "UNKNOWN", HeadSHA: "other-head", MergeCommitSHA: "landed"}, nil
 		}
 		forbidMergeCalls(t, d)
+		boundBefore, _ := st.CountEvents(ctx, task.ID, "approval.bound")
 		readiness, err := d.ReadMergeReadiness(ctx, task)
 		if err != nil || readiness.State != "MERGED_HEAD_MISMATCH" {
 			t.Fatalf("readiness=%+v err=%v", readiness, err)
@@ -364,7 +389,7 @@ func TestReadMergeReadinessMergedPRAtOtherHeadRecordsDriftNoRefresh(t *testing.T
 		if err != nil || current.State != core.TaskApproved {
 			t.Fatalf("task=%+v err=%v", current, err)
 		}
-		assertNoRefresh(t, current, st, ctx)
+		assertNoRefresh(t, current, st, ctx, boundBefore)
 		repeat, err := d.ReadMergeReadiness(ctx, task)
 		if err != nil || repeat.State != "MERGED_HEAD_MISMATCH" {
 			t.Fatalf("repeat=%+v err=%v", repeat, err)
@@ -390,7 +415,7 @@ func TestReadMergeReadinessMergedPRAtOtherHeadRecordsDriftNoRefresh(t *testing.T
 		if err != nil || current.State != core.TaskAwaiting {
 			t.Fatalf("task=%+v err=%v", current, err)
 		}
-		assertNoRefresh(t, current, st, ctx)
+		assertNoRefresh(t, current, st, ctx, 0)
 	})
 }
 
@@ -498,7 +523,7 @@ func TestReconcileMergeReadinessGateOnNotStarvedByErrors(t *testing.T) {
 		}
 		return errors.New("gate-off merge failed")
 	}
-	d.RequestMergeWithCredential = func(context.Context, string, int, githubtrigger.Credential, string) error {
+	d.RequestMergeWithCredential = func(context.Context, string, int, string) error {
 		t.Fatal("RequestMergeWithCredential called")
 		return nil
 	}
