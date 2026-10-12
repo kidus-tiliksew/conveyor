@@ -89,17 +89,18 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 }
 
 func orderTask(t *testing.T, st store.Store, ctx context.Context, workspace string, order core.WorkOrder, commands ...core.WorkOrderCommand) string {
-	t.Helper()
 	id := createTask(t, st, ctx, workspace, core.TaskRunning, "")
 	if err := st.CreateJob(ctx, core.Job{ID: "job-" + id, TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("create job: %v", err)
 	}
-	order.ID, order.TaskID, order.JobID, order.Stage, order.State = "order-"+id, id, "job-"+id, core.StageImplement, core.WorkOrderQueued
+	order.ID, order.TaskID, order.JobID, order.Stage, order.State = "order-"+id, id, "job-"+id, core.StageImplement, ""
 	if err := For(st).CreateWorkOrder(ctx, order); err != nil {
-		t.Fatal(err)
+		t.Fatalf("create order: %v", err)
 	}
-	if err := For(st).UpdateWorkOrder(ctx, order, commands...); err != nil {
-		t.Fatal(err)
+	if len(commands) > 0 {
+		if err := For(st).UpdateWorkOrder(ctx, order, commands...); err != nil {
+			t.Fatalf("update order: %v", err)
+		}
 	}
 	return id
 }
