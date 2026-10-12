@@ -231,6 +231,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}", s.getTask)
 			r.Get("/tasks/{id}/next-action", s.getNextAction)
 			r.Get("/inbox", s.listInbox)
+			r.Get("/next-actions", s.listNextActions)
 			r.Get("/inbox/acts", s.listFactoryActs)
 			r.Get("/tasks/{id}/jobs", s.listJobs)
 			r.Get("/tasks/{id}/events", s.listEvents)
@@ -1827,7 +1828,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 			NeedsAttention:       loadedNeedsAttention(task, marker, pendingContext[task.ID]),
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
-			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
+			Plan:                 taskPlanStatusFor(task, latest, hasPlan, events),
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -2003,12 +2004,16 @@ func taskChildRollupFor(children []core.TaskRelation) *taskChildRollup {
 // separates a plan waiting at its gate from one the operator redirected, the
 // same recognition the dispatcher's own spec-gate check performs
 // (component-http-api).
-func taskPlanStatusFor(latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
+func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
 	if !hasPlan {
 		return taskPlanStatus{State: taskPlanNone}
 	}
 	status := taskPlanStatus{State: taskPlanApproved, Version: latest.Version, Legacy: latest.LegacyGate}
 	if latest.Approved {
+		return status
+	}
+	status.State = taskPlanPendingGate
+	if task.State == core.TaskAwaiting && task.GateKind != "" {
 		return status
 	}
 	// A plan version is created at its gate, so pending is the state it

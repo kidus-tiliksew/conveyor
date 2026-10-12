@@ -19,6 +19,7 @@ type pendingProposalItem struct {
 type attentionSummary struct {
 	TaskCount            int `json:"task_count"`
 	PendingProposalCount int `json:"pending_proposal_count"`
+	OperatorDecisions    int `json:"operator_decisions"`
 	Total                int `json:"total"`
 }
 
@@ -46,8 +47,13 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, pendingProposalItem{PendingProposal: proposal, AgeSeconds: int64(age / time.Second)})
 	}
-	taskCount := projection.TaskCount
-	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: taskCount, PendingProposalCount: len(items), Total: taskCount + len(items)}})
+	operatorDecisions, err := store.CountOperatorAttention(r.Context(), s.Store)
+	if err != nil {
+		log.Printf("list pending proposals: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: operatorDecisions, PendingProposalCount: len(items), OperatorDecisions: operatorDecisions, Total: operatorDecisions + len(items)}})
 }
 
 func pendingAuthorityForTask(taskID string, orders []core.WorkOrder, proposals []core.PendingProposal) bool {

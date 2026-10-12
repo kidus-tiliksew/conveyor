@@ -112,28 +112,7 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 	if err != nil {
 		return PendingProposalsProjection{}, err
 	}
-	tasks, err := m.ListTasks(ctx)
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	workspace := workspaceOrDefault(ctx, "")
-	candidates := make([]core.Task, 0, len(tasks))
-	for _, task := range tasks {
-		if task.Workspace == workspace && !core.BlueprintAnchor(task) && !core.TaskTerminal(task.State) {
-			candidates = append(candidates, task)
-		}
-	}
-	projected, err := ReadNextActions(ctx, m, candidates, NextActionOptions{})
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	count := 0
-	for _, task := range candidates {
-		if TaskNeedsAttention(projected[task.ID]) {
-			count++
-		}
-	}
-	return PendingProposalsProjection{Items: proposals, TaskCount: count}, nil
+	return PendingProposalsProjection{Items: proposals}, nil
 }
 
 func pendingTaskContextIDs(proposals []core.PendingProposal) map[string]bool {
@@ -185,6 +164,5 @@ func sortPendingProposals(items []core.PendingProposal) {
 // attention badge. Age remains an HTTP concern so the store returns durable
 // proposal timestamps unchanged.
 type PendingProposalsProjection struct {
-	Items     []core.PendingProposal
-	TaskCount int
+	Items []core.PendingProposal
 }

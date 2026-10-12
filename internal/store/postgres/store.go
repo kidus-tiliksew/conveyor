@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"gopkg.in/yaml.v3"
@@ -511,6 +512,39 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 		result[i] = eventFromDB(rows[i])
 	}
 	return result, nil
+}
+
+func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := s.boundary.Query(ctx, `
+		SELECT e.id, e.task_id, e.kind, e.actor_role, e.payload_json, e.at
+		FROM events e
+		JOIN tasks t ON t.id = e.task_id AND t.workspace_id = e.workspace_id
+		WHERE e.workspace_id = $1
+		  AND e.at >= $2
+		  AND e.kind IN (
+		    'pipeline.bounced','work_order.expired','work_order.released','work_order.requeued',
+		    'merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed')
+		ORDER BY e.at DESC, e.id DESC
+		LIMIT $3`, workspace(ctx), since, limit*8)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &event.ActorRole, &event.Payload, &event.At); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.SelectFactoryActs(events, since, limit), nil
 }
 
 // ListEventsAfter resolves a nonzero afterID as an anchor event owned by the

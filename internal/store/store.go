@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -430,6 +431,9 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListFactoryActs returns the workspace factory log, newest first, after the
+	// Go filter. The query may only narrow candidates.
+	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)
 	// ListEventsAfter treats a nonzero afterID as an anchor event owned by the
 	// requested task and workspace and returns the events strictly after its
 	// (at, id) tuple in ascending (at, id) order. Zero starts at the beginning.
@@ -664,6 +668,20 @@ func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, err
 		return events[i].At.Before(events[j].At)
 	})
 	return events, nil
+}
+
+func (m *memory) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var events []core.Event
+	for id, task := range m.tasks {
+		if task.Workspace != workspace {
+			continue
+		}
+		events = append(events, m.events[id]...)
+	}
+	return SelectFactoryActs(events, since, limit), nil
 }
 
 func (m *memory) CountEvents(_ context.Context, taskID, kind string) (int, error) {

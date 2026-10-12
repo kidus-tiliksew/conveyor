@@ -72,13 +72,22 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 }
 
 func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, opts NextActionOptions) (nextaction.Input, error) {
-	events, err := st.ListEvents(ctx, task.ID)
-	if err != nil {
-		return nextaction.Input{}, err
+	var events []core.Event
+	if task.State == core.TaskParked || task.State == core.TaskApproved || task.State == core.TaskAwaiting {
+		var err error
+		events, err = st.ListEvents(ctx, task.ID)
+		if err != nil {
+			return nextaction.Input{}, err
+		}
 	}
-	spec, found, err := st.GetLatestSpecVersion(ctx, task.ID)
-	if err != nil {
-		return nextaction.Input{}, err
+	var spec core.SpecVersion
+	var found bool
+	if task.State == core.TaskAwaiting {
+		var err error
+		spec, found, err = st.GetLatestSpecVersion(ctx, task.ID)
+		if err != nil {
+			return nextaction.Input{}, err
+		}
 	}
 	blockers, err := blockerRefs(ctx, st, task.ID)
 	if err != nil {
@@ -336,7 +345,50 @@ func FilterFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 	return acts
 }
 
-// TaskNeedsAttention is the operator-actor predicate. Terminal kinds are not attention.
+// TaskNeedsAttention is the operator-actor predicate.
 func TaskNeedsAttention(action nextaction.NextAction) bool {
-	return action.Actor == nextaction.ActorOperator && action.Kind != nextaction.KindTerminal
+	return action.Actor == nextaction.ActorOperator
+}
+
+// CountOperatorAttention is the inbox and badge count. It uses the same predicate as caller attention.
+func CountOperatorAttention(ctx context.Context, st Store) (int, error) {
+	tasks, err := st.ListTasks(ctx)
+	if err != nil {
+		return 0, err
+	}
+	candidates := make([]core.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
+			continue
+		}
+		candidates = append(candidates, task)
+	}
+	page, err := PageOperatorAttention(ctx, st, candidates, 0, len(candidates))
+	if err != nil {
+		return 0, err
+	}
+	return page.Total, nil
+}
+
+// PageOperatorAttention keeps candidate order, then keeps only operator-actor tasks.
+func PageOperatorAttention(ctx context.Context, st Store, candidates []core.Task, offset, limit int) (TaskPage, error) {
+	projected, err := ReadNextActions(ctx, st, candidates, NextActionOptions{})
+	if err != nil {
+		return TaskPage{}, err
+	}
+	attention := make([]core.Task, 0, len(candidates))
+	for _, task := range candidates {
+		if TaskNeedsAttention(projected[task.ID]) {
+			attention = append(attention, task)
+		}
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = len(attention)
+	}
+	start := min(offset, len(attention))
+	end := min(start+limit, len(attention))
+	return TaskPage{Tasks: append([]core.Task(nil), attention[start:end]...), Total: len(attention)}, nil
 }
