@@ -35,7 +35,13 @@ func (s *Server) getTaskFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The one-task batch is exactly ReadNextAction without a second task read.
-	projected, err := store.ReadNextActions(r.Context(), s.Store, []core.Task{task}, s.nextActionOptions(r))
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("task flow next action %s: %v", id, err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	projected, err := store.ReadNextActions(r.Context(), s.Store, []core.Task{task}, opts)
 	if err != nil {
 		log.Printf("task flow next action %s: %v", id, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

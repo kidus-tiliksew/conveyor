@@ -255,6 +255,9 @@ func varsFor(in Input, row built) Vars {
 	if row.order != nil {
 		if next := recoveryNext(in, row.order); next != nil {
 			vars.RetryAt = next.UTC().Format(time.RFC3339)
+			if attempt := in.Recovery[row.order.ID].Attempt; attempt > 0 {
+				vars.Attempts = attempt
+			}
 		}
 	}
 	for i, blocker := range in.Blockers {

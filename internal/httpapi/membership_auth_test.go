@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -682,8 +683,10 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {
 			t.Fatalf("viewer read %s was capability-refused", path)
 		}
+		// Admission asks only for view_workspace; the next-action projection
+		// may then look up the choice capabilities to mark choices allowed.
 		for _, capability := range fixture.capabilityCalls {
-			if capability != core.CapabilityViewWorkspace {
+			if capability != core.CapabilityViewWorkspace && !slices.Contains(nextActionCapabilities, capability) {
 				t.Fatalf("viewer read %s requested capability %q (calls=%v)", path, capability, fixture.capabilityCalls)
 			}
 		}

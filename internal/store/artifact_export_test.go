@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
@@ -72,4 +74,24 @@ func SeedLineageLinkForTest(t *testing.T, st Backend, link core.LineageLink) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lineage[lineageLinkKey(link)] = link
+}
+
+// SeedSetupContractForTest replaces one task's setup contract with the
+// decoding of raw, as the durable backends read a row an earlier encoding
+// wrote; no public writer accepts a raw contract.
+func SeedSetupContractForTest(t *testing.T, st Backend, taskID, raw string) {
+	t.Helper()
+	var setup config.ExecutionSetup
+	if err := json.Unmarshal([]byte(raw), &setup); err != nil {
+		t.Fatal(err)
+	}
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok {
+		t.Fatal("seed requires an existing task")
+	}
+	task.SetupContract = setup
+	m.tasks[taskID] = task
 }

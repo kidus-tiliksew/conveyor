@@ -167,6 +167,26 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		}
 	})
 
+	// A claim times out and its automatic recovery is scheduled in the future:
+	// the factory is retrying (NA-7 side.retrying).
+	pendingID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
+	pendingOrder := flowOrder(t, st, ctx, pendingID, core.StageImplement, "1", time.Hour)
+	flowClaim(t, st, ctx, pendingOrder, "pending", flowShort)
+	pending := flowExpire(t, st, ctx, pendingOrder)
+	if !pending.NextAutomaticRecoveryAt.After(time.Now().UTC()) {
+		t.Fatalf("order %s automatic recovery not scheduled ahead: %+v", pendingOrder, pending)
+	}
+	add("retrying", pendingID, func(t *testing.T, flow store.TaskFlow) {
+		action := flow.NextAction
+		if action.Actor != nextaction.ActorFactory || action.Kind != nextaction.KindRetrying || action.CurrentOrder == nil || action.CurrentOrder.ID != pendingOrder {
+			t.Fatalf("next action = %s/%s order %+v", action.Actor, action.Kind, action.CurrentOrder)
+		}
+		want := store.FlowRetrying{Attempt: 1, Of: config.DefaultRecoveryPolicy().AutomaticRecoveries}
+		if flow.Side.Retrying == nil || *flow.Side.Retrying != want {
+			t.Fatalf("side.retrying = %+v, want %+v", flow.Side.Retrying, want)
+		}
+	})
+
 	// An operator recovers a timed-out order by hand.
 	recoverID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
 	recoverOrder := flowOrder(t, st, ctx, recoverID, core.StageImplement, "1", time.Hour)

@@ -386,7 +386,11 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 		if e != nil {
 			return nil, e
 		}
-		items, e := s.readInbox(ctx, s.nextActionOptionsFor(ctx), readString(a, "band"), filter)
+		opts, e := s.nextActionOptionsFor(ctx)
+		if e != nil {
+			return nil, e
+		}
+		items, e := s.readInbox(ctx, opts, readString(a, "band"), filter)
 		if e != nil {
 			return nil, e
 		}
@@ -400,7 +404,11 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 		}
 		if name == "get_task" {
 			read := taskRead(task, true)
-			action, e := store.ReadNextAction(ctx, s.Store, task.ID, s.nextActionOptionsFor(ctx))
+			opts, e := s.nextActionOptionsFor(ctx)
+			if e != nil {
+				return nil, e
+			}
+			action, e := store.ReadNextAction(ctx, s.Store, task.ID, opts)
 			if e != nil {
 				return nil, e
 			}

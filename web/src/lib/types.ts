@@ -696,7 +696,7 @@ export interface TaskPolicyContract {
   verify_stage?: boolean
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats: WorkspaceReviewSeat[] }
+  review: { seats?: WorkspaceReviewSeat[] }
   refresh_review: 'delta' | 'full' | 'none'
 }
 
@@ -1477,4 +1477,90 @@ export interface VerificationKitRepository {
 
 export interface VerificationKitRegistry {
   repositories: VerificationKitRepository[]
+}
+
+// GET /v1/tasks/{id}/flow (feature-operator-next-action NA-7): the task's
+// position on its stage path, folded on the server from its events. The client
+// draws it and derives nothing from events itself.
+export type TaskFlowStatus = 'done' | 'in_progress' | 'waiting' | 'needs_operator' | 'off' | 'upcoming'
+
+export type TaskFlowStageId = 'triage' | 'spec' | 'implement' | 'verify' | 'review' | 'merge'
+
+// The NA-3 attempt block: who holds the current attempt and how fresh it is.
+export interface TaskFlowAttemptView {
+  harness?: string
+  model?: string
+  user?: string
+  claimed_by?: string
+  session_id?: string
+  attempt_id?: string
+  claimed_at: string | null
+  last_check_in: string | null
+  lease_expires_at: string | null
+  progress?: string
+  elapsed_seconds: number
+}
+
+export interface TaskFlowAttempt {
+  order_id: string
+  attempt_id: string
+  started_at: string | null
+  ended_at: string | null
+  outcome: string
+  superseded: boolean
+  auto: boolean
+}
+
+export interface TaskFlowStage {
+  id: TaskFlowStageId
+  // Null when the stage has no gate or the frozen policy turned it off.
+  gate: 'plan_approval' | 'merge_approval' | null
+  status: TaskFlowStatus
+  attempts: TaskFlowAttempt[]
+  current_attempt: TaskFlowAttemptView | null
+}
+
+export interface TaskFlowLoop {
+  from: TaskFlowStageId
+  to: TaskFlowStageId
+  count: number
+}
+
+export interface TaskFlowBlocker {
+  task_id: string
+  title: string
+  state: string
+}
+
+export interface TaskFlowSide {
+  blocked_by: TaskFlowBlocker[]
+  retrying: { attempt: number; of: number } | null
+  parked: boolean
+  closed: boolean
+  agent_question: boolean
+}
+
+// The NA-3 statement, embedded unchanged. Only the fields the flow reads are
+// typed here; the NA-6 surfaces own the rest of the statement.
+export interface TaskFlowNextAction {
+  label: string
+  actor: string
+  kind: string
+  summary: string
+}
+
+export interface TaskFlowRaw {
+  state: string
+  next_stage: string
+  recovery_stage: string
+  gate_kind: string
+  order_ids: string[]
+}
+
+export interface TaskFlow {
+  stages: TaskFlowStage[]
+  loops: TaskFlowLoop[]
+  side: TaskFlowSide
+  next_action: TaskFlowNextAction
+  raw: TaskFlowRaw
 }

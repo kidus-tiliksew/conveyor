@@ -54,7 +54,8 @@ func seedSweepableReviewRound(t *testing.T, st store.Store, ctx context.Context,
 // runConcurrentReviewSweeps proves D14 for the review rule on every backend:
 // concurrent production sweeps over one due round create exactly one new
 // round, each of its seats once, and one automatic review.round_retried
-// event. The new round's seat count follows the task's frozen setup policy.
+// event. The fixture task has no frozen policy, so the new round has every
+// configured workspace seat.
 func runConcurrentReviewSweeps(t *testing.T, st store.Store, ctx context.Context, workspace string, sweep ReviewSweepFunc) {
 	requireReviewSweep(t, sweep)
 	task, _ := seedSweepableReviewRound(t, st, ctx, workspace)
@@ -82,7 +83,21 @@ func runConcurrentReviewSweeps(t *testing.T, st store.Store, ctx context.Context
 	if retried := automaticRoundEvents(t, st, ctx, task.ID, "review.round_retried"); len(retried) != 1 {
 		t.Fatalf("automatic round_retried events=%+v", retried)
 	}
-	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	seats := reviewSeatsByRound(t, st, ctx, task.ID)
+	if len(seats) != 2 || len(seats[1]) != 2 || len(seats[2]) != len(cfg.Review.Seats) {
+		t.Fatalf("review seats per round=%v, want round 1 and one new round 2 of %d seats", seats, len(cfg.Review.Seats))
+	}
+	for seat, n := range seats[2] {
+		if n != 1 {
+			t.Fatalf("new round seat %d created %d times: %v", seat, n, seats)
+		}
+	}
+}
+
+// reviewSeatsByRound counts the task's review work orders per round and seat.
+func reviewSeatsByRound(t *testing.T, st store.Store, ctx context.Context, taskID string) map[int]map[int]int {
+	t.Helper()
+	orders, err := st.ListTaskWorkOrders(ctx, taskID)
 	requireOK(t, err)
 	seats := map[int]map[int]int{}
 	for _, order := range orders {
@@ -94,14 +109,7 @@ func runConcurrentReviewSweeps(t *testing.T, st store.Store, ctx context.Context
 		}
 		seats[order.ReviewRound][order.ReviewSeat]++
 	}
-	if len(seats) != 2 || len(seats[1]) != 2 || len(seats[2]) == 0 {
-		t.Fatalf("review seats per round=%v, want round 1 and one new round 2", seats)
-	}
-	for seat, n := range seats[2] {
-		if n != 1 {
-			t.Fatalf("new round seat %d created %d times: %v", seat, n, seats)
-		}
-	}
+	return seats
 }
 
 // runNothingDueSweeps proves D15 on every backend: in a workspace where no
