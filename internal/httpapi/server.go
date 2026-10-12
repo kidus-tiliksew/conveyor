@@ -229,6 +229,9 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
+			r.Get("/tasks/{id}/next-action", s.getNextAction)
+			r.Get("/inbox", s.listInbox)
+			r.Get("/inbox/acts", s.listFactoryActs)
 			r.Get("/tasks/{id}/jobs", s.listJobs)
 			r.Get("/tasks/{id}/events", s.listEvents)
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
@@ -1225,7 +1228,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	s.writeTasks(w, r, tasks)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -1240,7 +1243,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	s.writeTask(w, r, t)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -1557,13 +1560,9 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !marker.UserChangesRequested && !pendingAuthority[task.ID] {
 			continue
 		}
-		// Project the existing presentation-only authority signal without
-		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; component-http-api).
-		// proposal_claim_waiting is the narrower read of the claim gate's own
-		// predicate (req-260810-70ce2f REQ-1); attention keeps its broader meaning.
 		item := activityItem{
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
+			NeedsAttention:            loadedNeedsAttention(task, marker, pendingAuthority[task.ID] || pendingContext[task.ID]),
 			PendingAuthority:          pendingAuthority[task.ID],
 			ProposalClaimWaiting:      len(claimWaiting[task.ID]) > 0,
 			ForgeFailure:              marker.ForgeFailure,
@@ -1682,13 +1681,6 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 	_, _ = w.Write(body)
 }
 
-// needsAttention is the one derivation the stage-grouped board and the
-// list-first Tasks view share, so the two surfaces cannot disagree about which
-// work is waiting on a human (component-http-api).
-func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority, pendingContext bool) bool {
-	return store.TaskNeedsAttention(task, marker, pendingAuthority, pendingContext)
-}
-
 // Plan status is the four durable outcomes AC-1.4 names. Each is read off the
 // persisted plan version and the audited task-state command that parked or
 // resumed it; none is inferred when that authority is absent.
@@ -1801,14 +1793,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals, taskIDs)
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
 	pendingContext := pendingTaskContextByTask(proposals)
-	// Blocked stays a derived predicate owned by the dependency substrate
 	// (component-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
@@ -1839,7 +1824,7 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 			LatestStage:          marker.LatestStage,
 			LastEventAt:          marker.LastEventAt,
 			Stalled:              taskStalledSummaryFor(marker.Stalled),
-			NeedsAttention:       needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
+			NeedsAttention:       loadedNeedsAttention(task, marker, pendingContext[task.ID]),
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
 			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
@@ -2134,7 +2119,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 				workOrders[index].ActivitySnapshot = &snapshot
 			}
 		}
-		workorder.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
+		store.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
 		if workOrders[index].Stage != core.StageImplement {
 			continue
 		}
@@ -2224,7 +2209,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, taskDetailProjection{reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority || len(task.Context.Proposals) > 0,
+		NeedsAttention:            loadedNeedsAttention(task, store.ActivityMarker{ForgeFailure: store.LatestForgeFailure(events), ReviewRecovery: store.ReviewRecoveryNeeded(workOrders, events), InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(workOrders, events), events), Stalled: stalled, UserChangesRequested: store.UserRequestChangesPending(events)}, pendingAuthority || len(task.Context.Proposals) > 0),
 		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
 		ProposalClaimWaiting:      len(waitingProposals) > 0,

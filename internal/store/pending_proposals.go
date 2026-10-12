@@ -116,34 +116,20 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 	if err != nil {
 		return PendingProposalsProjection{}, err
 	}
-	markers, err := m.ListActivityMarkers(ctx)
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	orders, err := m.ListWorkOrders(ctx)
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
-	contextAttention := pendingTaskContextIDs(proposals)
-	byTask := make(map[string]ActivityMarker, len(markers))
-	for _, marker := range markers {
-		byTask[marker.TaskID] = marker
-	}
 	workspace := workspaceOrDefault(ctx, "")
-	count := 0
+	candidates := make([]core.Task, 0, len(tasks))
 	for _, task := range tasks {
-		if task.Workspace != workspace {
-			continue
+		if task.Workspace == workspace && !core.BlueprintAnchor(task) && !core.TaskTerminal(task.State) {
+			candidates = append(candidates, task)
 		}
-		if core.BlueprintAnchor(task) {
-			continue
-		}
-		marker := byTask[task.ID]
-		if core.TaskTerminal(task.State) {
-			marker.Stalled = nil
-		}
-		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID], contextAttention[task.ID]) {
+	}
+	projected, err := ReadNextActions(ctx, m, candidates, NextActionOptions{})
+	if err != nil {
+		return PendingProposalsProjection{}, err
+	}
+	count := 0
+	for _, task := range candidates {
+		if TaskNeedsAttention(projected[task.ID]) {
 			count++
 		}
 	}

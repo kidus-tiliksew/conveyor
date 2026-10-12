@@ -829,12 +829,23 @@ func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingPr
 	for _, m := range markers {
 		byID[m.TaskID] = m
 	}
+	candidates := make([]core.Task, 0, len(states))
 	for id, state := range states {
-		m := byID[id]
 		if core.TaskTerminal(state) {
-			m.Stalled = nil
+			continue
 		}
-		if store.TaskNeedsAttention(core.Task{ID: id, State: state}, m, authority[id], pendingContext[id]) {
+		task, taskErr := s.GetTask(ctx, id)
+		if taskErr != nil {
+			return result, taskErr
+		}
+		candidates = append(candidates, task)
+	}
+	projected, err := store.ReadNextActions(ctx, s, candidates, store.NextActionOptions{})
+	if err != nil {
+		return result, err
+	}
+	for _, task := range candidates {
+		if store.TaskNeedsAttention(projected[task.ID]) {
 			result.TaskCount++
 		}
 	}

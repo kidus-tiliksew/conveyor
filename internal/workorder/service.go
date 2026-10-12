@@ -217,7 +217,7 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 			order.Claimable = false
 		}
 		if ctxn, ok := recoveryByTask[order.TaskID]; ok {
-			ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
+			store.ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
 			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
@@ -229,20 +229,6 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 
 func recoverEligible(order core.WorkOrder) bool {
 	return order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut
-}
-
-func ApplyRecoveryRefusal(order *core.WorkOrder, task core.Task, taskOrders []core.WorkOrder, pendingPlanRevision bool) {
-	if !recoverEligible(*order) {
-		return
-	}
-	if pendingPlanRevision {
-		order.RecoveryRefusal = fmt.Sprintf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", order.ID, task.ID)
-	} else if err := store.WorkOrderRecoveryRefusal(task, *order, taskOrders); err != nil {
-		order.RecoveryRefusal = err.Error()
-	}
-	if order.RecoveryRefusal != "" && order.State == core.WorkOrderQueued {
-		order.Claimable = false
-	}
 }
 
 func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {

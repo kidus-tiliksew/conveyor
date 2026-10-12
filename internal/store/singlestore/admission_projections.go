@@ -161,7 +161,7 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 	for _, m := range markers {
 		byID[m.TaskID] = m
 	}
-	matches := []core.Task{}
+	candidates := []core.Task{}
 	for _, t := range tasks {
 		if core.TaskTerminal(t.State) {
 			continue
@@ -173,13 +173,15 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 		if parent {
 			continue
 		}
-		authority := false
-		if origins[t.ID] {
-			if err = documentRow(ctx, s.db, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND ((stage='implement' AND state='submitted') OR (stage='review' AND state IN ('queued','claimed','submitted'))))`, documentWorkspace(ctx), t.ID).Scan(&authority); err != nil {
-				return store.TaskPage{}, err
-			}
-		}
-		if store.TaskNeedsAttention(t, byID[t.ID], authority, pending[t.ID]) {
+		candidates = append(candidates, t)
+	}
+	projected, err := store.ReadNextActions(ctx, s, candidates, store.NextActionOptions{})
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	matches := []core.Task{}
+	for _, t := range candidates {
+		if store.TaskNeedsAttention(projected[t.ID]) {
 			matches = append(matches, t)
 		}
 	}
