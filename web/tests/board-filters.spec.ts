@@ -789,3 +789,66 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
   )
   await testInfo.attach('failed-triage-board', { body: await page.screenshot(), contentType: 'image/png' })
 })
+
+// Every next-action kind lands in the column its server fields name (NA-6):
+// merge work under Merge, recovery holds under Triage, and everything else
+// under the stage the task is in or about to enter.
+const columnCases: Array<{ kind: string; state: string; latest: string; next?: string; column: string }> = [
+  { kind: 'merge_approval', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'merge_execution', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'merge_conflict', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'merging', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'parked', state: 'awaiting_human', latest: 'implement', column: 'Triage' },
+  { kind: 'dispatch_exhausted', state: 'awaiting_human', latest: 'review', column: 'Triage' },
+  { kind: 'job_failure', state: 'awaiting_human', latest: 'implement', column: 'Implement' },
+  { kind: 'plan_approval', state: 'awaiting_human', latest: 'spec', next: 'implement', column: 'Plan' },
+  { kind: 'plan_revision', state: 'awaiting_human', latest: 'spec', column: 'Plan' },
+  { kind: 'review_bounce_limit', state: 'awaiting_human', latest: 'review', column: 'Review' },
+  { kind: 'review_recovery', state: 'awaiting_human', latest: 'review', column: 'Review' },
+  { kind: 'agent_question', state: 'awaiting_human', latest: 'implement', column: 'Implement' },
+  { kind: 'verification_disposition', state: 'awaiting_human', latest: 'verify', column: 'Verify' },
+  { kind: 'forge_failure', state: 'awaiting_human', latest: 'implement', column: 'Implement' },
+  { kind: 'dependency_unsatisfiable', state: 'queued', latest: '', next: 'spec', column: 'Plan' },
+  { kind: 'stalled', state: 'queued', latest: 'spec', next: 'implement', column: 'Implement' },
+  { kind: 'blocked', state: 'queued', latest: '', next: 'spec', column: 'Plan' },
+  { kind: 'working', state: 'running', latest: 'implement', next: 'verify', column: 'Verify' },
+  { kind: 'terminal', state: 'merged', latest: 'review', column: 'Completed' },
+]
+
+test('each next-action kind lands in its stage column', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await routeBoard(page, [])
+  await page.route('**/v1/activity?**', (route) =>
+    route.fulfill({
+      json: columnCases.map((c) => ({
+        ...activity[0],
+        task: {
+          ...activity[0].task,
+          id: `col-${c.kind}`,
+          title: `Column case ${c.kind}`,
+          state: c.state,
+          next_stage: c.next ?? '',
+        },
+        latest_stage: c.latest,
+        next_action: {
+          kind: c.kind,
+          label: c.kind,
+          actor: 'operator',
+          judgment: true,
+          summary: `Summary ${c.kind}`,
+          deadline: null,
+        },
+      })),
+    }),
+  )
+  await page.goto('/')
+  for (const c of columnCases) {
+    await expect(
+      page
+        .getByRole('region', { name: c.column, exact: true })
+        .getByRole('link')
+        .filter({ hasText: `Column case ${c.kind}` }),
+      `${c.kind} under ${c.column}`,
+    ).toHaveCount(1)
+  }
+})

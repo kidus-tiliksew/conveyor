@@ -539,6 +539,8 @@ function proposalFixture(): Fixture {
       proposal('design-dashboard', 'Dashboard architecture', 'system_design', 4, 'other-task'),
       proposal('DEC-16', 'Generate dashboard output from web sources.', 'decision', undefined),
       proposal('req-other', 'Other requirement', 'requirement', 1, 'review-task'),
+      // A tier this client does not know is never offered for confirmation.
+      proposal('charter-x', 'Unknown tier proposal', 'charter', 1, 'review-task'),
     ],
     actions: {},
   }
@@ -567,6 +569,7 @@ test('proposal cards keep the retired queue rules for every tier', async ({ page
   const cards = page.locator('[data-inbox-item="document_proposal"]')
   await expect(cards).toHaveCount(4)
   await expect(cards.first().getByText('Confirming a later one dismisses the earlier ones.')).toBeVisible()
+  await expect(page.getByText('Unknown tier proposal')).toHaveCount(0)
 
   // Confirm reads the current version first and confirms against it.
   await cards.filter({ hasText: 'Operator attention' }).getByRole('button', { name: 'Confirm' }).click()
