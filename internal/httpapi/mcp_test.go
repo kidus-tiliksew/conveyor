@@ -1104,8 +1104,8 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
-	want = append(append(append([]string{}, want[:11]...), verificationTools...), want[11:]...)
+	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict"}
+	want = append(append(append([]string{}, want[:12]...), verificationTools...), want[12:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -1165,7 +1165,7 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 	// exactly this set.
 	literal := []string{
 		"add_task_dependency", "set_assignee", "redispatch_work_order", "attach_task_branch", "report_continuation",
-		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_task_events", "get_task_context",
+		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context",
 		"list_documents", "get_document", "list_document_events", "list_decisions", "get_decision",
 	}
 	for _, name := range literal {
@@ -1336,6 +1336,7 @@ var mcpAgentSafeReasons = map[string]string{
 	"release_work_order":               "releases only the caller's exact execution lease",
 	"request_plan_revision":            "requests an operator-gated plan decision without deciding it",
 	"get_work_order":                   "reads only context authorized for the caller's claimed order",
+	"get_task_status":                  "reads only the next action of the task behind an order the caller's session claimed or submitted, without renewing the lease",
 	"read_artifact":                    "reads only an artifact authorized by claimed-order context",
 	"report_progress":                  "records self-reported progress only after claimant-bound admission",
 	"report_usage":                     "records self-reported observational usage only after claimant-bound admission",

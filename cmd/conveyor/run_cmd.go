@@ -439,7 +439,7 @@ func reportUnattachedRunWait(output io.Writer, taskID string, item *workerservic
 		if item.Gate != nil {
 			label := strings.TrimSpace(item.Gate.Label)
 			if label == "" {
-				label = strings.TrimSpace(item.Gate.Kind) + " gate"
+				label = strings.TrimSpace(item.Gate.Kind)
 			}
 			claimed := "no work order was claimed"
 			if ranStages {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -364,6 +365,8 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, err
 		}
 		return s.Workers.RequestPlanRevisionClaim(ctx, claim, stringArg("work_order_id"), stringArg("rationale"))
+	case "get_task_status":
+		return s.mcpTaskStatus(ctx, workerAuth, stringArg("task_id"), stringArg("work_order_id"), session)
 	case "get_work_order":
 		if workerAuth {
 			workOrderID := stringArg("work_order_id")
@@ -600,6 +603,8 @@ var mcpCapabilities = map[string]core.Capability{
 	"get_task_context":               core.CapabilityViewWorkspace,
 	"list_task_events":               core.CapabilityViewWorkspace,
 	"get_task":                       core.CapabilityViewWorkspace,
+	"get_task_status":                core.CapabilityViewWorkspace,
+	"list_operator_inbox":            core.CapabilityViewWorkspace,
 	"list_tasks":                     core.CapabilityViewWorkspace,
 	"list_repositories":              core.CapabilityViewWorkspace,
 	"list_workspaces":                core.CapabilityViewWorkspace,
@@ -656,6 +661,37 @@ func (s *Server) authorizeWorkerOrder(ctx context.Context, workerAuth bool, work
 		return store.ErrWorkOrderClaimLost
 	}
 	return nil
+}
+
+// mcpTaskStatus returns the next action GET /v1/tasks/{id}/next-action
+// returns (req-operator-next-action AC-5.3, AC-1.7; DEC-61). A user reads any
+// task in the workspace. An agent or run-child credential reads only the task
+// of an order its session claimed or submitted, through get_work_order's
+// observation check without its lease renewal. Every agent refusal is the
+// same error, so it never discloses whether a task exists (DEC-19;
+// feature-operator-next-action NA-8).
+func (s *Server) mcpTaskStatus(ctx context.Context, workerAuth bool, taskID, workOrderID, sessionID string) (nextaction.NextAction, error) {
+	if workerAuth {
+		return nextaction.NextAction{}, fmt.Errorf("get_task_status requires a user or agent credential")
+	}
+	credential, ok := store.CredentialFromContext(ctx)
+	if !ok {
+		return nextaction.NextAction{}, errWorkspaceNotVisible
+	}
+	if credential.Kind != core.CredentialUser {
+		if workOrderID == "" || sessionID == "" || s.WorkOrders == nil {
+			return nextaction.NextAction{}, store.ErrWorkOrderClaimUnauthorized
+		}
+		order, err := s.WorkOrders.ObservableOrder(ctx, workOrderID, sessionID)
+		if err != nil || order.TaskID != taskID {
+			return nextaction.NextAction{}, store.ErrWorkOrderClaimUnauthorized
+		}
+	}
+	task, err := s.Store.GetTask(ctx, taskID)
+	if workspace, _ := store.WorkspaceFromContext(ctx); err != nil || task.Workspace != workspace {
+		return nextaction.NextAction{}, store.ErrNotFound
+	}
+	return store.ReadNextAction(ctx, s.Store, task.ID, s.nextActionOptionsFor(ctx))
 }
 
 func (s *Server) authorizeUserRunMCPOrder(ctx context.Context, workOrderID, sessionID string) error {
@@ -925,6 +961,7 @@ func mcpTools() []map[string]any {
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},
+		{"name": "get_task_status", "description": "Read one task's server-stated next action: its label, who acts next, the kind, whether operator judgment is needed, the summary, the question, each choice with its effect, what happens if nobody acts, the deadline, blockers, and the current order and attempt. A user credential reads any task in the workspace. An agent or run-child credential must pass the work_order_id and session_id of an order its session claimed or submitted for this task. Read-only; it never renews a claim.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "work_order_id": str, "session_id": str}, "task_id")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out spec, implement, and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},

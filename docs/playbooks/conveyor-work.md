@@ -506,6 +506,14 @@ pending proposals, from the `pending_gate` field of `conveyor task wait --json`
 (kind `merge_execution` with its `merge_readiness` for the pending merge act),
 or from a review order that `list_work_orders` reports as unclaimable.
 
+The server states the gate directly. `conveyor task status <task-id>` prints
+the task's next action: who acts, the question, each choice with its effect
+and its command, what happens if nobody acts, and the deadline. Over MCP,
+`get_task_status` returns the same statement; pass the `work_order_id` and
+`session_id` of the order your session claimed or submitted for the task. Quote
+that statement to the operator rather than deriving the gate from the task
+state.
+
 **Offer the decision.** Give the operator a summary of no more than four lines
 and offer to record the decision (req-agent-skills AC-3.7):
 
