@@ -691,7 +691,11 @@ func (s *Server) mcpTaskStatus(ctx context.Context, workerAuth bool, taskID, wor
 	if workspace, _ := store.WorkspaceFromContext(ctx); err != nil || task.Workspace != workspace {
 		return nextaction.NextAction{}, store.ErrNotFound
 	}
-	return store.ReadNextAction(ctx, s.Store, task.ID, s.nextActionOptionsFor(ctx))
+	opts, err := s.nextActionOptionsFor(ctx)
+	if err != nil {
+		return nextaction.NextAction{}, err
+	}
+	return store.ReadNextAction(ctx, s.Store, task.ID, opts)
 }
 
 func (s *Server) authorizeUserRunMCPOrder(ctx context.Context, workOrderID, sessionID string) error {
