@@ -207,6 +207,11 @@ type TaskStore interface {
 	// attempt and persists its redirect, task transition, job, work order, and
 	// dispatch audit. A returned existing order is an idempotent success.
 	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
+	// ClaimBaseConflictCheck stamps base_conflict_checked_at on one submitted
+	// work order in the selected workspace only while it is unset. True means
+	// this caller owns the single pre-dispatch mergeability read for that head
+	// (feature-bounded-automatic-recovery AR-4); updated_at is left alone.
+	ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
 	// CreateClaimedVerificationEvidence atomically derives evidence ownership
 	// from an exact live implement claim (component-artifacts; DEC-53).
