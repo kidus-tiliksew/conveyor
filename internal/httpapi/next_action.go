@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,7 +15,13 @@ import (
 )
 
 func (s *Server) writeTask(w http.ResponseWriter, r *http.Request, task core.Task) {
-	action, err := store.ReadNextAction(r.Context(), s.Store, task.ID, s.nextActionOptions(r))
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("next action options: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	action, err := store.ReadNextAction(r.Context(), s.Store, task.ID, opts)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -26,7 +33,13 @@ func (s *Server) writeTask(w http.ResponseWriter, r *http.Request, task core.Tas
 }
 
 func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, tasks []core.Task) {
-	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, s.nextActionOptions(r))
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("next action options: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
 	if err != nil {
 		writeJSON(w, http.StatusOK, tasks)
 		return
@@ -42,25 +55,40 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, tasks []core
 	writeJSON(w, http.StatusOK, rows)
 }
 
-func (s *Server) nextActionOptions(r *http.Request) store.NextActionOptions {
+func (s *Server) nextActionOptions(r *http.Request) (store.NextActionOptions, error) {
 	return s.nextActionOptionsFor(r.Context())
 }
 
+// nextActionCapabilities are the capabilities that gate next-action choices.
+var nextActionCapabilities = []core.Capability{core.CapabilityOperateGates, core.CapabilityRecoverWork, core.CapabilityRequestChanges, core.CapabilityConfirmDocuments}
+
 // nextActionOptionsFor derives projection options from the request
 // credential, so REST routes and MCP reads state one next action (DEC-61).
-func (s *Server) nextActionOptionsFor(ctx context.Context) store.NextActionOptions {
+// Each capability is granted exactly when route admission would grant it:
+// the caller's workspace role when memberships are configured, otherwise
+// the operator credential scope.
+func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOptions, error) {
 	opts := store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{}}
-	credential, ok := store.CredentialFromContext(ctx)
-	if ok && credential.Kind == core.CredentialUser && credential.Scope == core.CredentialScopeOperator && s.Memberships == nil {
-		for _, capability := range []core.Capability{core.CapabilityOperateGates, core.CapabilityRecoverWork, core.CapabilityRequestChanges, core.CapabilityConfirmDocuments} {
+	for _, capability := range nextActionCapabilities {
+		allowed, err := s.taskRunCapability(ctx, capability)
+		if err != nil {
+			return store.NextActionOptions{}, err
+		}
+		if allowed {
 			opts.Capabilities[capability] = true
 		}
 	}
-	return opts
+	return opts, nil
 }
 
 func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
-	action, err := store.ReadNextAction(r.Context(), s.Store, chi.URLParam(r, "id"), s.nextActionOptions(r))
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("next action options: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	action, err := store.ReadNextAction(r.Context(), s.Store, chi.URLParam(r, "id"), opts)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -84,7 +112,13 @@ func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	projected, err := store.ReadNextActions(r.Context(), s.Store, page.Tasks, s.nextActionOptions(r))
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("next action options: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	projected, err := store.ReadNextActions(r.Context(), s.Store, page.Tasks, opts)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return

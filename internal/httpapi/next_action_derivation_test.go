@@ -50,7 +50,11 @@ func TestNextActionDerivationAndAttentionParity(t *testing.T) {
 		t.Fatalf("inbox status=%d body=%s", inbox.Code, inbox.Body.String())
 	}
 	for _, task := range gates {
-		projected, err := store.ReadNextAction(ctx, st, task.ID, server.nextActionOptions(httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)))
+		opts, err := server.nextActionOptions(httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+		if err != nil {
+			t.Fatal(err)
+		}
+		projected, err := store.ReadNextAction(ctx, st, task.ID, opts)
 		if err != nil {
 			t.Fatal(err)
 		}

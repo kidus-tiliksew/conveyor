@@ -1553,7 +1553,12 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		return
 	}
 	pendingAuthority := pendingAuthorityByTask(orders, proposals)
-	opts := s.nextActionOptions(r)
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	opts.MarkersLoaded, opts.Markers = true, markers
 	opts.OrdersLoaded, opts.Orders = true, orders
 	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
@@ -1810,7 +1815,12 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
-	opts := s.nextActionOptions(r)
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	opts.MarkersLoaded, opts.Markers = true, markers
 	projected, err := store.ReadNextActions(ctx, s.Store, page.Tasks, opts)
 	if err != nil {
@@ -2240,7 +2250,13 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	waitingProposals := claimWaiting[id]
-	action, err := store.ReadNextAction(r.Context(), s.Store, id, s.nextActionOptions(r))
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	action, err := store.ReadNextAction(r.Context(), s.Store, id, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
