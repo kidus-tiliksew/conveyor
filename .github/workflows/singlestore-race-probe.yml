@@ -1,0 +1,150 @@
+# Temporary probe for task 261012-832d9c; deleted before review.
+name: SingleStore race probe
+
+on:
+  push:
+    branches: [conveyor/task-261012-832d9c]
+
+concurrency:
+  group: singlestore-race-probe-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION_FILE: go.mod
+  FAILING_IMAGE: ghcr.io/singlestore-labs/singlestoredb-dev@sha256:23c0c5fd0381dae403234437f89b0b5454bd78d385d6201359acfb98d109291f
+  TARGET: TestGoUniqueWriteRulesSerializeIntegration/deployment
+
+jobs:
+  isolated:
+    name: isolated ${{ matrix.image_label }} shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image_label: [failing-digest, latest]
+        shard: [1, 2, 3, 4]
+        include:
+          - image_label: failing-digest
+            image: ghcr.io/singlestore-labs/singlestoredb-dev@sha256:23c0c5fd0381dae403234437f89b0b5454bd78d385d6201359acfb98d109291f
+          - image_label: latest
+            image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+    services:
+      singlestore:
+        image: ${{ matrix.image }}
+        env:
+          ROOT_PASSWORD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        ports:
+          - 3306:3306
+        options: >-
+          --cpus=4 --memory=4g
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 60
+    env:
+      PLANNED: 10000
+      CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
+      MYSQL_PWD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - name: Require test credentials
+        run: test -n "$MYSQL_PWD" || { echo 'SINGLESTORE_ROOT_PASSWORD missing' >&2; exit 1; }
+      - name: Record image and version
+        run: |
+          mkdir -p probe
+          docker image inspect --format '{{json .RepoDigests}}' "${{ matrix.image }}" | tee probe/image-digest.txt
+          mysql -h127.0.0.1 -P3306 -uroot -N -e 'CREATE DATABASE IF NOT EXISTS conveyor_test; SELECT @@memsql_version' | tee probe/memsql-version.txt
+      - name: Run isolated loop
+        run: |
+          go test -c -o probe.test ./internal/store/singlestore
+          start=$(date +%s)
+          set +e
+          (cd internal/store/singlestore && ../../../probe.test -test.run '^TestGoUniqueWriteRulesSerializeIntegration$' -test.count="$PLANNED" -test.v -test.timeout=40m) > probe/test.log 2>&1
+          echo "exit=$?" > probe/exit.txt
+          echo "wall_seconds=$(( $(date +%s) - start ))" > probe/wall.txt
+      - name: Check counts
+        if: always()
+        run: |
+          log=probe/test.log
+          pass=$(grep -cE -- "--- PASS: ${TARGET} " "$log" || true)
+          fail=$(grep -cE -- "--- FAIL: ${TARGET} " "$log" || true)
+          skip=$(grep -c -- '--- SKIP' "$log" || true)
+          cached=$(grep -c -- '(cached)' "$log" || true)
+          grep -E 'deployment tokens .* lock .* commit|deployment_credential=TRUE row|deployment_credential row|winners=' "$log" > probe/failures.txt || true
+          printf 'planned=%s pass=%s fail=%s skip=%s cached=%s\n' "$PLANNED" "$pass" "$fail" "$skip" "$cached" | tee probe/counts.txt
+          cat probe/wall.txt probe/failures.txt
+          test $((pass + fail)) -eq "$PLANNED" && test "$skip" -eq 0 && test "$cached" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: isolated-${{ matrix.image_label }}-${{ matrix.shard }}
+          path: probe/
+
+  package:
+    name: package shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    services:
+      singlestore:
+        image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
+        env:
+          ROOT_PASSWORD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+        ports:
+          - 3306:3306
+        options: >-
+          --cpus=4 --memory=4g
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 60
+    env:
+      PLANNED: 6
+      CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
+      MYSQL_PWD: ${{ secrets.SINGLESTORE_ROOT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache-dependency-path: go.sum
+      - name: Require test credentials
+        run: test -n "$MYSQL_PWD" || { echo 'SINGLESTORE_ROOT_PASSWORD missing' >&2; exit 1; }
+      - name: Record image and version
+        run: |
+          mkdir -p probe
+          docker image inspect --format '{{json .RepoDigests}}' ghcr.io/singlestore-labs/singlestoredb-dev:latest | tee probe/image-digest.txt
+          mysql -h127.0.0.1 -P3306 -uroot -N -e 'SELECT @@memsql_version' | tee probe/memsql-version.txt
+      - name: Run package loop
+        run: |
+          start=$(date +%s)
+          : > probe/test.log
+          for i in $(seq 1 "$PLANNED"); do
+            echo "=== probe package run $i" >> probe/test.log
+            CONVEYOR_FIXTURE_STATE="$RUNNER_TEMP/fixture-$i" make test-integration-singlestore-ci >> probe/test.log 2>&1
+            echo "probe package run $i exit=$?" | tee -a probe/exit.txt
+          done
+          echo "wall_seconds=$(( $(date +%s) - start ))" > probe/wall.txt
+      - name: Check counts
+        if: always()
+        run: |
+          log=probe/test.log
+          pass=$(grep -cE -- "--- PASS: ${TARGET} " "$log" || true)
+          fail=$(grep -cE -- "--- FAIL: ${TARGET} " "$log" || true)
+          skip=$(grep -c -- '--- SKIP' "$log" || true)
+          cached=$(grep -c -- '(cached)' "$log" || true)
+          grep -E 'deployment tokens .* lock .* commit|deployment_credential=TRUE row|deployment_credential row|winners=' "$log" > probe/failures.txt || true
+          printf 'planned=%s pass=%s fail=%s skip=%s cached=%s\n' "$PLANNED" "$pass" "$fail" "$skip" "$cached" | tee probe/counts.txt
+          cat probe/wall.txt probe/failures.txt
+          test $((pass + fail)) -eq "$PLANNED" && test "$skip" -eq 0 && test "$cached" -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-${{ matrix.shard }}
+          path: probe/
