@@ -23,6 +23,7 @@ func runAutomaticRecoveryRemaining(t *testing.T, st store.Store, ctx context.Con
 	runQueuePositionAndIdentity(t, st, ctx, workspace)
 	runPolicyChangeOnNextTick(t, st, ctx, workspace)
 	runConcurrentDueTicks(t, st, ctx, workspace)
+	runAutomaticRecoveryProperty(t, st, ctx, workspace)
 	if _, err := st.ApplyWorkOrderClock(ctx, taskops.TaskLease{}, "missing", time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "lease") {
 		t.Fatalf("non-command lease err=%v", err)
 	}
@@ -123,6 +124,16 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 		t.Fatal(err)
 	}
 	assertUnscheduled(t, st, ctx, ordinary, time.Now().UTC())
+	refused := seedVerifyRefusal(t, st, ctx, workspace)
+	refusedOrder, err := st.GetWorkOrder(ctx, refused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedOrder.QueueDeadline = time.Now().UTC().Add(-time.Second)
+	if err = UpdateWorkOrder(ctx, st, refusedOrder); err != nil {
+		t.Fatal(err)
+	}
+	assertUnscheduled(t, st, ctx, refused, time.Now().UTC().Add(time.Minute))
 
 	awaiting := core.NewTaskID()
 	now := time.Now().UTC()
@@ -195,6 +206,18 @@ func runWindowRollover(t *testing.T, st store.Store, ctx context.Context, worksp
 	if err != nil || rolled.AutomaticRecoveryCount != 1 {
 		t.Fatalf("rollover=%+v err=%v", rolled, err)
 	}
+	var rolledNumber int
+	var sawRollover bool
+	for _, event := range listAutomaticRecoveryEvents(t, st, ctx, rolled.TaskID) {
+		if event.At.Before(scheduled.NextAutomaticRecoveryAt) || event.Kind == "work_order.recovery_exhausted" {
+			continue
+		}
+		rolledNumber = event.Number
+		sawRollover = true
+	}
+	if !sawRollover || rolledNumber != 1 {
+		t.Fatalf("rollover recovery_number=%d saw=%v", rolledNumber, sawRollover)
+	}
 }
 
 func runOperatorRedispatchReset(t *testing.T, st store.Store, ctx context.Context, workspace string) {
@@ -247,6 +270,7 @@ func runOperatorRedispatchReset(t *testing.T, st store.Store, ctx context.Contex
 	if exhaustedEvents != 1 {
 		t.Fatalf("exhausted events=%d", exhaustedEvents)
 	}
+	beforeIDs := automaticRequestIDs(t, st, ctx, exhausted.TaskID)
 	reset, err := RedispatchWorkOrder(ctx, st, id, time.Hour)
 	if err != nil || reset.AutomaticRecoveryCount != 0 || reset.RetrySuppressed {
 		t.Fatalf("operator redispatch=%+v err=%v", reset, err)
@@ -257,6 +281,20 @@ func runOperatorRedispatchReset(t *testing.T, st store.Store, ctx context.Contex
 	recovered := recoverAutomatically(t, st, ctx, id)
 	if recovered.AutomaticRecoveryCount != 1 {
 		t.Fatalf("recovery after redispatch=%+v", recovered)
+	}
+	afterIDs := automaticRequestIDs(t, st, ctx, recovered.TaskID)
+	seen := map[string]bool{}
+	for _, requestID := range beforeIDs {
+		seen[requestID] = true
+	}
+	var fresh []string
+	for _, requestID := range afterIDs {
+		if !seen[requestID] {
+			fresh = append(fresh, requestID)
+		}
+	}
+	if len(fresh) != 1 {
+		t.Fatalf("post-reset request ids=%v before=%v after=%v", fresh, beforeIDs, afterIDs)
 	}
 }
 
@@ -386,6 +424,8 @@ func runPolicyChangeOnNextTick(t *testing.T, st store.Store, ctx context.Context
 
 func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
+	restoreBound := setAutomaticRecoveryBound(t, st, ctx, 1)
+	defer restoreBound()
 	id := seedRunningOrder(t, st, ctx, workspace)
 	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "race", ClientToken: "race-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
@@ -410,6 +450,32 @@ func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, wo
 	recovered, err := st.GetWorkOrder(ctx, id)
 	if err != nil || recovered.AutomaticRecoveryCount != 1 || recovered.State != core.WorkOrderQueued {
 		t.Fatalf("concurrent=%+v err=%v", recovered, err)
+	}
+	if n := countWorkOrderEvents(t, st, ctx, recovered.TaskID, "work_order.recovered"); n != 1 {
+		t.Fatalf("recovered events=%d", n)
+	}
+	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "race-bound", ClientToken: "race-bound-token", Lease: time.Hour, ExecutionTimeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	exhaustAt := time.Now().UTC().Add(2 * time.Minute)
+	var exhaust sync.WaitGroup
+	exhaust.Add(2)
+	for range 2 {
+		go func() {
+			defer exhaust.Done()
+			_, _ = taskops.New(st).TickOrderClock(ctx, exhaustAt)
+		}()
+	}
+	exhaust.Wait()
+	done, err := st.GetWorkOrder(ctx, id)
+	if err != nil || done.RetrySuppressionReason != core.AutomaticRecoveryExhaustedReason || done.AutomaticRecoveryCount != 1 {
+		t.Fatalf("concurrent exhaust=%+v err=%v", done, err)
+	}
+	if n := countWorkOrderEvents(t, st, ctx, done.TaskID, "work_order.recovered"); n != 1 {
+		t.Fatalf("recovered events=%d", n)
+	}
+	if n := countWorkOrderEvents(t, st, ctx, done.TaskID, "work_order.recovery_exhausted"); n != 1 {
+		t.Fatalf("exhausted events=%d", n)
 	}
 }
 
