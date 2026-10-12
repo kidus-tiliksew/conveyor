@@ -53,13 +53,16 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 			continue
 		}
 		var payload struct {
-			Automatic bool `json:"automatic"`
+			Automatic      bool   `json:"automatic"`
+			RecoveryNumber int    `json:"recovery_number"`
+			WindowStarted  string `json:"window_started_at"`
+			RequestID      string `json:"request_id"`
 		}
 		if err = json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatal(err)
 		}
-		if event.ActorID != "queue:"+orderID || !payload.Automatic {
-			t.Fatalf("event actor=%s automatic=%v", event.ActorID, payload.Automatic)
+		if event.ActorID != "queue:"+orderID || !payload.Automatic || payload.RecoveryNumber != 1 || payload.WindowStarted == "" || payload.RequestID == "" {
+			t.Fatalf("event actor=%s payload=%+v", event.ActorID, payload)
 		}
 		automatic = true
 	}
@@ -126,4 +129,5 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	if err != nil || redispatched.State != core.WorkOrderQueued || redispatched.AutomaticRecoveryCount != 1 {
 		t.Fatalf("stale redispatch=%+v err=%v", redispatched, err)
 	}
+	runAutomaticRecoveryRemaining(t, st, ctx, workspace)
 }

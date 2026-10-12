@@ -91,7 +91,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 			}
 			eventCtx := store.WithActor(ctx, store.SystemActor("queue:"+order.JobID))
 			if err = taskEvent(eventCtx, tx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.recovery_exhausted", Payload: core.JSONPayload(map[string]any{
-				"work_order_id": order.ID, "recovery_count": decision.Number, "window_started_at": decision.WindowStartedAt, "last_failure_message": order.LastFailureMessage,
+				"work_order_id": order.ID, "recovery_count": decision.Number, "window_started_at": decision.WindowStartedAt, "reason": core.AutomaticRecoveryExhaustedReason, "last_failure_message": order.LastFailureMessage,
 			}), At: now}); err != nil {
 				return acted, err
 			}

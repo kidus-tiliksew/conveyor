@@ -82,7 +82,7 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 			m.workOrders[current.ID] = current
 			eventCtx := WithActor(ctx, SystemActor("queue:"+current.JobID))
 			m.appendEventLocked(eventCtx, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.recovery_exhausted", Payload: core.JSONPayload(map[string]any{
-				"work_order_id": current.ID, "recovery_count": decision.Number, "window_started_at": decision.WindowStartedAt, "last_failure_message": current.LastFailureMessage,
+				"work_order_id": current.ID, "recovery_count": decision.Number, "window_started_at": decision.WindowStartedAt, "reason": core.AutomaticRecoveryExhaustedReason, "last_failure_message": current.LastFailureMessage,
 			}), At: now})
 		case AutomaticRecoveryRecover, AutomaticRecoveryRedispatch:
 			requestID := AutomaticRecoveryRequestID(current.ID, current.RedispatchCount)

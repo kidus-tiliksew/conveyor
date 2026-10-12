@@ -244,24 +244,34 @@ func TestAutomaticRecoveryDelay(t *testing.T) {
 func TestDecideAutomaticRecoveryProperty(t *testing.T) {
 	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
 	rng := rand.New(rand.NewPCG(261011, 4))
+	states := []core.TaskState{core.TaskQueued, core.TaskRunning, core.TaskClaiming, core.TaskAwaiting, core.TaskApproved, core.TaskParked, core.TaskMerged, core.TaskClosed}
+	stages := []core.Stage{core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview}
 	for range 200 {
 		bound := rng.IntN(11)
 		count := rng.IntN(12)
 		window := time.Duration(rng.IntN(48)+1) * time.Hour
 		started := now.Add(-time.Duration(rng.IntN(72)) * time.Hour)
+		state := states[rng.IntN(len(states))]
+		stage := stages[rng.IntN(len(stages))]
 		policy := recoveryPolicy(bound, window)
-		order := core.WorkOrder{State: core.WorkOrderTimedOut, Stage: core.StageImplement, AutomaticRecoveryCount: count, AutomaticRecoveryWindowStartedAt: started, NextAutomaticRecoveryAt: now.Add(-time.Minute)}
-		got := DecideAutomaticRecovery(policy, core.Task{State: core.TaskRunning}, order, now)
-		inWindow := !started.IsZero() && !started.Add(window).Before(now)
+		order := core.WorkOrder{State: core.WorkOrderTimedOut, Stage: stage, AutomaticRecoveryCount: count, AutomaticRecoveryWindowStartedAt: started, NextAutomaticRecoveryAt: now.Add(-time.Minute)}
+		got := DecideAutomaticRecovery(policy, core.Task{State: state}, order, now)
+		if state != core.TaskQueued && state != core.TaskRunning || core.TaskTerminal(state) {
+			if got.Kind != AutomaticRecoveryNone {
+				t.Fatalf("state %s kind=%s", state, got.Kind)
+			}
+			continue
+		}
+		inWindow := now.Before(started.Add(window))
 		switch {
 		case bound == 0 && got.Kind != AutomaticRecoveryNone:
 			t.Fatalf("disabled kind=%s", got.Kind)
 		case bound != 0 && !inWindow && got.Kind != AutomaticRecoveryRecover:
-			t.Fatalf("expired window kind=%s", got.Kind)
+			t.Fatalf("expired window stage=%s kind=%s", stage, got.Kind)
 		case bound != 0 && inWindow && count >= bound && got.Kind != AutomaticRecoveryExhausted:
 			t.Fatalf("bound count=%d bound=%d kind=%s", count, bound, got.Kind)
 		case bound != 0 && inWindow && count < bound && got.Kind != AutomaticRecoveryRecover:
-			t.Fatalf("inside bound kind=%s count=%d bound=%d", got.Kind, count, bound)
+			t.Fatalf("inside bound stage=%s kind=%s count=%d bound=%d", stage, got.Kind, count, bound)
 		}
 	}
 }
