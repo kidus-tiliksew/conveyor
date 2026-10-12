@@ -6,7 +6,6 @@ import (
 	"sort"
 	"time"
 
-
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
