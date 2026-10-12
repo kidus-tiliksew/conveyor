@@ -13,6 +13,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
@@ -142,8 +143,13 @@ func resetSharedDatabase(t *testing.T) {
 	t.Logf("fixture reset %d tables in %s", len(sharedDatabase.tables), time.Since(started).Round(time.Millisecond))
 }
 func TestSingleStoreConformanceIntegration(t *testing.T) {
-	storetest.RunAll(t, storetest.Factory{ProductionCapable: true,
-		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
+	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
+		ProductionCapable: true,
+		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
 			ws := "conformance-" + core.NewTaskID()

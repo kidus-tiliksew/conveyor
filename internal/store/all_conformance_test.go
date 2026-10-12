@@ -9,12 +9,17 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestMemoryConformance(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
 		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			t.Helper()

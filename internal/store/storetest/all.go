@@ -56,6 +56,9 @@ type Factory struct {
 	New               func(*testing.T, []config.Repo) Fixture
 	Capabilities      Capabilities
 	ProductionCapable bool
+	// PlanRevisionGate is dispatch.PendingPlanRevisionGate. storetest cannot
+	// import dispatch: dispatch integration tests import storetest.
+	PlanRevisionGate PlanRevisionGateFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -144,6 +147,10 @@ func RunAll(t *testing.T, factory Factory) {
 	} {
 		run(suite.name, func(t *testing.T) { x := factory.fresh(t, nil); suite.run(t, x.Backend, x.Context) })
 	}
+	run("PlanRevisionGatePayload", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunPlanRevisionGatePayloadConformance(t, x.Backend, x.Context, factory.PlanRevisionGate)
+	})
 	run("PlanningBundles", func(t *testing.T) {
 		RunPlanningBundleConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
 			x := factory.fresh(t, nil)

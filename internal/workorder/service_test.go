@@ -3316,3 +3316,45 @@ func TestListRecoveryRefusal(t *testing.T) {
 		t.Fatalf("task listing=%+v", byTask)
 	}
 }
+
+func TestListUnreadablePlanRevisionGateIsRecoveryBlocked(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: "corrupt-gate", Workspace: "demo", Repo: "app", State: core.TaskAwaiting,
+		NextStage: core.StageImplement, CreatedAt: now,
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{
+		TaskID: task.ID, Kind: "task.state_changed", At: now,
+		Payload: json.RawMessage(`{"command":7}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{
+		ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}}
+	listed, err := svc.List(ctx)
+	if err != nil {
+		t.Fatalf("listing err=%v", err)
+	}
+	if len(listed) != 1 || listed[0].RecoveryRefusal == "" || listed[0].Claimable {
+		t.Fatalf("listed=%+v", listed)
+	}
+	if !strings.Contains(listed[0].RecoveryRefusal, "plan-revision decision") {
+		t.Fatalf("recovery_refusal=%q", listed[0].RecoveryRefusal)
+	}
+}
