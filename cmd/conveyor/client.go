@@ -438,8 +438,46 @@ func (c *client) restartTask(request core.TaskStartOverRequest) (core.TaskStartO
 	if err != nil {
 		return result, err
 	}
-	err = c.do(http.MethodPost, "/v1/tasks/"+url.PathEscape(request.TaskID)+"/restart", body, &result)
-	return result, err
+	requestID := strings.TrimSpace(request.RequestID)
+	err = c.doHeaders(http.MethodPost, "/v1/tasks/"+url.PathEscape(request.TaskID)+"/restart", body, &result, map[string]string{
+		"X-Request-Id":      requestID,
+		"X-Idempotency-Key": requestID,
+	})
+	if err != nil {
+		return result, wrapRestartClientError(err, requestID)
+	}
+	return result, nil
+}
+
+func wrapRestartClientError(err error, requestID string) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	msg := text
+	_, body, ok := strings.Cut(text, ": ")
+	if ok {
+		var parsed struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed) == nil && (parsed.Error != "" || parsed.Message != "") {
+			switch {
+			case parsed.Error != "" && parsed.Message != "":
+				msg = parsed.Error + ": " + parsed.Message
+			case parsed.Error != "":
+				msg = parsed.Error
+			default:
+				msg = parsed.Message
+			}
+			prefix, _, _ := strings.Cut(text, ": ")
+			msg = prefix + ": " + msg
+		}
+	}
+	if requestID = strings.TrimSpace(requestID); requestID == "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return fmt.Errorf("restart request %s failed: %s", requestID, msg)
 }
 
 func (c *client) restartPullRequest(ctx context.Context, task core.Task) (github.SubmissionPullRequest, error) {

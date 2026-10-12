@@ -27,14 +27,16 @@ import (
 // uniqueConstraintErrors maps the unique constraints whose violation is a
 // domain conflict. Callers that report an entity ID wrap the sentinel again.
 var uniqueConstraintErrors = map[string]error{
-	"jobs_pkey":                            store.ErrDispatchJobConflict,
-	"reference_documents_live_name_idx":    store.ErrReferenceDocumentNameConflict,
-	"tasks_open_repo_branch_idx":           store.ErrTaskBranchConflict,
-	"requirements_workspace_id_slug_key":   store.ErrRequirementSlugConflict,
-	"system_designs_pkey":                  store.ErrSystemDesignIDConflict,
-	"system_designs_workspace_id_slug_key": store.ErrSystemDesignSlugConflict,
-	"decisions_pkey":                       store.ErrDecisionIDConflict,
-	"decisions_confirmed_supersedes_key":   store.ErrDecisionSupersessionConflict,
+	"jobs_pkey":                                 store.ErrDispatchJobConflict,
+	"reference_documents_live_name_idx":         store.ErrReferenceDocumentNameConflict,
+	"tasks_open_repo_branch_idx":                store.ErrTaskBranchConflict,
+	"tasks_supersedes_unique":                   store.ErrTaskAlreadyStartedOver,
+	"task_start_overs_workspace_id_task_id_key": store.ErrTaskAlreadyStartedOver,
+	"requirements_workspace_id_slug_key":        store.ErrRequirementSlugConflict,
+	"system_designs_pkey":                       store.ErrSystemDesignIDConflict,
+	"system_designs_workspace_id_slug_key":      store.ErrSystemDesignSlugConflict,
+	"decisions_pkey":                            store.ErrDecisionIDConflict,
+	"decisions_confirmed_supersedes_key":        store.ErrDecisionSupersessionConflict,
 	// A case- and space-normalized workspace name collision is the same
 	// generic creation conflict as an ID collision (DEC-63(7)).
 	"workspaces_name_lower_unique": store.ErrWorkspaceConflict,

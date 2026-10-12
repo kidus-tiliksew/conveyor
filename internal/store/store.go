@@ -47,6 +47,10 @@ var (
 	ErrWorkOrderPreempted          = errors.New("work order was preempted by an operator")
 	ErrWorkOrderPreemptConflict    = errors.New("work order preempt conflict")
 	ErrTaskTerminal                = errors.New("task is already terminal")
+	// ErrTaskAlreadyStartedOver reports that the retired task already has a
+	// start-over successor (the tasks.supersedes unique index or task_start_overs
+	// uniqueness).
+	ErrTaskAlreadyStartedOver = errors.New("task already has a start-over successor")
 	// ErrTaskBranchConflict reports that another open task in the same
 	// workspace repository already holds the assigned branch
 	// (req-task-branch-assignment AC-4.1).

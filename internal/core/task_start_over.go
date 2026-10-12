@@ -32,8 +32,15 @@ func (r TaskStartOverRequest) Validate() error {
 	return nil
 }
 
+type TaskStartOverDroppedContext struct {
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
 type TaskStartOverResult struct {
-	Task      Task `json:"task"`
-	Successor Task `json:"successor"`
-	Created   bool `json:"created"`
+	Task           Task                          `json:"task"`
+	Successor      Task                          `json:"successor"`
+	Created        bool                          `json:"created"`
+	DroppedContext []TaskStartOverDroppedContext `json:"dropped_context,omitempty"`
 }

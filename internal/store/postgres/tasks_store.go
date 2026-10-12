@@ -56,19 +56,22 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	for _, dependencyID := range dependencyIDs {
 		dependencyID = strings.TrimSpace(dependencyID)
 		if dependencyID == "" || seen[dependencyID] {
-			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			return store.NewTaskDependencyError(dependencyID, "empty or duplicate")
 		}
 		seen[dependencyID] = true
 		var dependencyWorkspace, dependencyState string
 		if err := tx.QueryRow(ctx, `SELECT workspace_id, state FROM tasks WHERE id=$1`, dependencyID).
 			Scan(&dependencyWorkspace, &dependencyState); err != nil {
-			return notFound(err, "dependency task %s", dependencyID)
+			if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrNotFound) {
+				return store.NewTaskDependencyError(dependencyID, "not found")
+			}
+			return err
 		}
 		if dependencyWorkspace != task.Workspace {
-			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+			return store.NewTaskDependencyError(dependencyID, "belongs to another workspace")
 		}
 		if core.TaskTerminal(core.TaskState(dependencyState)) {
-			return fmt.Errorf("dependency task %s is not open", dependencyID)
+			return store.NewTaskDependencyError(dependencyID, "is not open")
 		}
 	}
 	designVersions, err := validateTaskContextTx(ctx, tx, task.Workspace, attached)

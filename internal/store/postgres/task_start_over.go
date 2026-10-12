@@ -55,7 +55,11 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 			if err != nil {
 				return err
 			}
-			result = core.TaskStartOverResult{Task: old, Successor: taskFromDB(successor)}
+			drops, dropErr := startOverDroppedContextTx(ctx, tx, ws, successorID)
+			if dropErr != nil {
+				return dropErr
+			}
+			result = core.TaskStartOverResult{Task: old, Successor: taskFromDB(successor), DroppedContext: drops}
 			return nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -125,6 +129,13 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		for id := range pinned {
 			attached.DesignIDs = append(attached.DesignIDs, id)
 		}
+		attached, pinned, drops, err := store.PartitionStartOverContext(attached, pinned, func(input store.TaskContextInput) error {
+			_, validateErr := validateTaskContextTx(ctx, tx, ws, input)
+			return validateErr
+		})
+		if err != nil {
+			return err
+		}
 		var dependencies []string
 		rows, err = tx.Query(ctx, `SELECT d.id FROM task_dependencies e JOIN tasks d ON d.workspace_id=e.workspace_id AND d.id=e.depends_on_task_id WHERE e.workspace_id=$1 AND e.task_id=$2 AND d.state NOT IN ('merged','closed') ORDER BY d.id`, ws, r.TaskID)
 		if err != nil {
@@ -165,6 +176,9 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 				return err
 			}
 		}
+		if err := store.TaskStartOverFault(ctx, "successor"); err != nil {
+			return err
+		}
 		if err := s.createTaskTx(ctx, tx, q, next, dependencies, attached, pinned); err != nil {
 			return err
 		}
@@ -187,13 +201,38 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if err := insertEvent(ctx, q, core.Event{TaskID: old.ID, Kind: "task.started_over", At: next.CreatedAt, Payload: core.JSONPayload(map[string]any{"request_id": r.RequestID, "reason": r.Reason, "note": r.Note, "successor_id": next.ID})}); err != nil {
 			return err
 		}
+		if len(drops) > 0 {
+			if err := insertEvent(ctx, q, core.Event{TaskID: next.ID, Kind: store.TaskStartOverContextDropped, At: next.CreatedAt, Payload: store.StartOverDroppedContextPayload(drops)}); err != nil {
+				return err
+			}
+		}
 		old.State = core.TaskClosed
 		old.NextStage = ""
 		old.RecoveryStage = ""
 		old.GateKind = ""
 		old.SupersededBy = next.ID
-		result = core.TaskStartOverResult{Task: old, Successor: next, Created: true}
+		result = core.TaskStartOverResult{Task: old, Successor: next, Created: true, DroppedContext: drops}
 		return nil
 	})
 	return result, err
+}
+
+func startOverDroppedContextTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) ([]core.TaskStartOverDroppedContext, error) {
+	rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspaceID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		if err := rows.Scan(&event.Kind, &event.Payload); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.StartOverDroppedContextFromEvents(events), nil
 }

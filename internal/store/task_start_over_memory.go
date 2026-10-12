@@ -57,7 +57,7 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 				if p.Reason != r.Reason || p.Note != r.Note {
 					return result, ErrStartOverRequestConflict
 				}
-				return core.TaskStartOverResult{Task: old, Successor: m.tasks[p.SuccessorID]}, nil
+				return core.TaskStartOverResult{Task: old, Successor: m.tasks[p.SuccessorID], DroppedContext: StartOverDroppedContextFromEvents(m.events[p.SuccessorID])}, nil
 			}
 		}
 	}
@@ -111,6 +111,13 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	for id := range pinned {
 		attached.DesignIDs = append(attached.DesignIDs, id)
 	}
+	attached, pinned, drops, err := PartitionStartOverContext(attached, pinned, func(input TaskContextInput) error {
+		_, validateErr := staged.validateTaskContextLocked(old.Workspace, input)
+		return validateErr
+	})
+	if err != nil {
+		return result, err
+	}
 	var dependencies []string
 	for id := range staged.dependencies[old.ID] {
 		if !core.TaskTerminal(staged.tasks[id].State) {
@@ -132,6 +139,9 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 			return result, err
 		}
 	}
+	if err := TaskStartOverFault(ctx, "successor"); err != nil {
+		return result, err
+	}
 	if err := staged.createTaskWithContextLocked(ctx, next, dependencies, attached, pinned); err != nil {
 		return result, err
 	}
@@ -150,6 +160,9 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	old.SupersededBy = next.ID
 	staged.tasks[old.ID] = old
 	staged.appendEventLocked(ctx, core.Event{TaskID: old.ID, Kind: "task.started_over", At: next.CreatedAt, Payload: core.JSONPayload(map[string]any{"request_id": r.RequestID, "reason": r.Reason, "note": r.Note, "successor_id": next.ID})})
+	if len(drops) > 0 {
+		staged.appendEventLocked(ctx, core.Event{TaskID: next.ID, Kind: TaskStartOverContextDropped, At: next.CreatedAt, Payload: StartOverDroppedContextPayload(drops)})
+	}
 	m.tasks = staged.tasks
 	m.dependencies = staged.dependencies
 	m.jobs = staged.jobs
@@ -165,5 +178,5 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	m.artifacts = staged.artifacts
 	m.nextEventID = staged.nextEventID
 	m.nextReviewID = staged.nextReviewID
-	return core.TaskStartOverResult{Task: old, Successor: next, Created: true}, nil
+	return core.TaskStartOverResult{Task: old, Successor: next, Created: true, DroppedContext: drops}, nil
 }

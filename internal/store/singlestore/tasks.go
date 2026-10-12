@@ -114,15 +114,18 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" || seen[id] {
-			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			return store.NewTaskDependencyError(id, "empty or duplicate")
 		}
 		seen[id] = true
 		d, err := getTaskRow(ctx, tx, id)
 		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return store.NewTaskDependencyError(id, "not found")
+			}
 			return err
 		}
 		if core.TaskTerminal(d.State) {
-			return fmt.Errorf("dependency task %s is not open", id)
+			return store.NewTaskDependencyError(id, "is not open")
 		}
 	}
 	versions, err := validateTaskContextTx(ctx, tx, ws, attached)

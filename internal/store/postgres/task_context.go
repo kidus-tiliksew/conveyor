@@ -104,7 +104,7 @@ func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, i
 		var archivedAt *time.Time
 		err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=$1 AND id=$2 FOR SHARE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
+			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
 			return nil, err
@@ -119,7 +119,7 @@ func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, i
 		var archivedAt *time.Time
 		err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR SHARE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
+			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
 			return nil, err

@@ -877,5 +877,8 @@ func runTaskRestart(cmd *cobra.Command, c *client, request core.TaskStartOverReq
 		return err
 	}
 	fmt.Fprintf(out, "Successor: %s\nBranch: %s\nRun: conveyor --workspace %s run %s\n", result.Successor.ID, result.Successor.Branch, result.Successor.Workspace, result.Successor.ID)
+	for _, drop := range result.DroppedContext {
+		fmt.Fprintf(out, "Dropped %s %s: %s\n", drop.Kind, drop.ID, drop.Reason)
+	}
 	return nil
 }

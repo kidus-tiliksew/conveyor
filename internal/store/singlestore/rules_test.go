@@ -65,7 +65,7 @@ func TestConflictTranslation(t *testing.T) {
 		code    uint16
 		message string
 		want    error
-	}{{1062, "Duplicate key jobs_pkey", store.ErrDispatchJobConflict}, {1062, "Duplicate key reference_documents_live_name_idx", store.ErrReferenceDocumentNameConflict}, {1205, "lock wait timeout", store.ErrRetryable}, {1213, "deadlock", store.ErrRetryable}} {
+	}{{1062, "Duplicate key jobs_pkey", store.ErrDispatchJobConflict}, {1062, "Duplicate key reference_documents_live_name_idx", store.ErrReferenceDocumentNameConflict}, {1062, "Duplicate entry for key 'task_start_over_task'", store.ErrTaskAlreadyStartedOver}, {1205, "lock wait timeout", store.ErrRetryable}, {1213, "deadlock", store.ErrRetryable}} {
 		err := translateBackendConflict(&mysql.MySQLError{Number: tc.code, Message: tc.message})
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("%d: %v", tc.code, err)
