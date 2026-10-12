@@ -352,12 +352,16 @@ func TaskNeedsAttention(action nextaction.NextAction) bool {
 
 // CountOperatorAttention is the inbox and badge count. It uses the same predicate as caller attention.
 func CountOperatorAttention(ctx context.Context, st Store) (int, error) {
-	tasks, err := st.ListTasks(ctx)
+	tasks, err := st.ListTasksFiltered(ctx, TaskFilter{})
 	if err != nil {
 		return 0, err
 	}
+	workspace, _ := WorkspaceFromContext(ctx)
 	candidates := make([]core.Task, 0, len(tasks))
 	for _, task := range tasks {
+		if workspace != "" && task.Workspace != workspace {
+			continue
+		}
 		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
 			continue
 		}

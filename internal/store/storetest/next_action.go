@@ -13,7 +13,7 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	t.Helper()
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	now := time.Now().UTC().Truncate(time.Second)
-	task := core.Task{ID: "factory-acts-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	task := core.Task{ID: "factory-acts-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "factory-" + core.NewTaskID(), State: core.TaskRunning, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +36,8 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	if err != nil || len(bounded) != 1 {
 		t.Fatalf("limit acts=%+v err=%v", bounded, err)
 	}
-	awaiting := core.Task{ID: "attention-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: now}
-	running := core.Task{ID: "running-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	awaiting := core.Task{ID: "attention-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "attention-" + core.NewTaskID(), State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: now}
+	running := core.Task{ID: "running-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "running-" + core.NewTaskID(), State: core.TaskRunning, CreatedAt: now}
 	if err = st.CreateTask(ctx, awaiting); err != nil {
 		t.Fatal(err)
 	}

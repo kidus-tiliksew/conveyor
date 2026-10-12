@@ -112,7 +112,11 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 	if err != nil {
 		return PendingProposalsProjection{}, err
 	}
-	return PendingProposalsProjection{Items: proposals}, nil
+	decisions, err := CountOperatorAttention(ctx, m)
+	if err != nil {
+		return PendingProposalsProjection{}, err
+	}
+	return PendingProposalsProjection{Items: proposals, OperatorDecisions: decisions}, nil
 }
 
 func pendingTaskContextIDs(proposals []core.PendingProposal) map[string]bool {
@@ -164,5 +168,6 @@ func sortPendingProposals(items []core.PendingProposal) {
 // attention badge. Age remains an HTTP concern so the store returns durable
 // proposal timestamps unchanged.
 type PendingProposalsProjection struct {
-	Items []core.PendingProposal
+	Items             []core.PendingProposal
+	OperatorDecisions int
 }
