@@ -199,6 +199,12 @@ func runWindowRollover(t *testing.T, st store.Store, ctx context.Context, worksp
 	if err != nil || scheduled.NextAutomaticRecoveryAt.IsZero() {
 		t.Fatalf("rollover schedule=%+v err=%v", scheduled, err)
 	}
+	// The schedule resets the rolled window, so the stored count is the one
+	// the scheduled recovery stamps on: next action and flow both say 1.
+	if scheduled.AutomaticRecoveryCount != 0 || !scheduled.AutomaticRecoveryWindowStartedAt.IsZero() {
+		t.Fatalf("rollover schedule kept the stale window: count=%d window=%s", scheduled.AutomaticRecoveryCount, scheduled.AutomaticRecoveryWindowStartedAt)
+	}
+	requireRetrying(t, st, ctx, scheduled.TaskID, scheduled, later, 1)
 	if _, err = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
 		t.Fatal(err)
 	}

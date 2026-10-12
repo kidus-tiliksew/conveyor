@@ -186,6 +186,29 @@ func TestTaskFlowRebuild(t *testing.T) {
 	}
 }
 
+// Every shared scenario's flow facts hold through the real route, including
+// side.retrying for an order whose automatic recovery is scheduled.
+func TestTaskFlowRouteScenarioFacts(t *testing.T) {
+	server, _, _, scenarios := seededFlowServer(t)
+	retrying := false
+	for _, scenario := range scenarios {
+		retrying = retrying || scenario.Name == "retrying"
+		if scenario.Check == nil {
+			continue
+		}
+		t.Run(scenario.Name, func(t *testing.T) {
+			var served store.TaskFlow
+			if err := json.Unmarshal(flowBody(t, server, scenario.TaskID), &served); err != nil {
+				t.Fatal(err)
+			}
+			scenario.Check(t, served)
+		})
+	}
+	if !retrying {
+		t.Fatal("no retrying scenario seeded")
+	}
+}
+
 // replayFixture is a fresh volatile backend whose seeded events are copied
 // verbatim through AppendEvent; only the jobs those events name are created,
 // so no task, order or intervention projection is built by a command.

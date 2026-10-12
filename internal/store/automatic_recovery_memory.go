@@ -72,7 +72,7 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 		decision := DecideAutomaticRecovery(policy, task, current, now)
 		switch decision.Kind {
 		case AutomaticRecoverySchedule:
-			current.NextAutomaticRecoveryAt = decision.At
+			ScheduleAutomaticRecovery(&current, decision)
 			current.UpdatedAt = now
 			m.workOrders[current.ID] = current
 		case AutomaticRecoveryExhausted:

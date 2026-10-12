@@ -33,7 +33,11 @@ export function duration(start: string, end?: string) {
   const from = new Date(start).getTime()
   if (!Number.isFinite(from) || from <= 0) return '—'
   const ms = Math.max(0, new Date(end ?? Date.now()).getTime() - from)
-  const seconds = Math.round(ms / 1000)
+  return formatSeconds(Math.round(ms / 1000))
+}
+
+// The same format for a duration the server already measured.
+export function formatSeconds(seconds: number) {
   const minutes = Math.floor(seconds / 60)
   if (minutes >= 60) {
     const hours = Math.floor(minutes / 60)

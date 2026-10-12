@@ -6,6 +6,7 @@ import { AttachmentsCard } from '../components/task/attachments-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
 import { TaskContextCard } from '../components/task/task-context-card'
+import { TaskFlowChart } from '../components/task/task-flow'
 import { TaskHeader } from '../components/task/task-header'
 import { Timeline } from '../components/task/timeline'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
@@ -107,6 +108,7 @@ function FullBody({ item }: { item: ActivityItem }) {
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
         <section aria-label="Activity" className="space-y-4 px-4 py-4 sm:px-6">
+          <TaskFlowChart taskId={item.task.id} />
           <Timeline item={item} routeVariant="full" />
         </section>
       </div>
