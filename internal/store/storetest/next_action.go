@@ -2,10 +2,12 @@ package storetest
 
 import (
 	"context"
-	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // RunNextActionConformance pins the factory log and the shared attention count.
@@ -36,15 +38,36 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	if err != nil || len(bounded) != 1 {
 		t.Fatalf("limit acts=%+v err=%v", bounded, err)
 	}
-	awaiting := core.Task{ID: "attention-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "attention-" + core.NewTaskID(), State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: now}
-	running := core.Task{ID: "running-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "running-" + core.NewTaskID(), State: core.TaskRunning, CreatedAt: now}
-	if err = st.CreateTask(ctx, awaiting); err != nil {
+	isolated := workspace + "-attention-" + core.NewTaskID()
+	iso := store.WithWorkspace(ctx, isolated)
+	bootstrap, ok := st.(interface {
+		BootstrapWorkspaceConfig(context.Context, *config.Config) (bool, error)
+	})
+	if !ok {
+		t.Fatal("store cannot bootstrap an isolated workspace")
+	}
+	if _, err = bootstrap.BootstrapWorkspaceConfig(iso, &config.Config{Workspace: isolated, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.CreateTask(ctx, running); err != nil {
+	awaiting := core.Task{ID: "attention-" + core.NewTaskID(), Workspace: isolated, Repo: "conveyor", Branch: "attention-" + core.NewTaskID(), State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: now}
+	running := core.Task{ID: "running-" + core.NewTaskID(), Workspace: isolated, Repo: "conveyor", Branch: "running-" + core.NewTaskID(), State: core.TaskRunning, CreatedAt: now}
+	if err = st.CreateTask(iso, awaiting); err != nil {
 		t.Fatal(err)
 	}
-	projected, err := store.ReadNextActions(ctx, st, []core.Task{awaiting, running}, store.NextActionOptions{Now: now})
+	if err = st.CreateTask(iso, running); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := st.ListTasksFiltered(iso, store.TaskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := make([]core.Task, 0, len(listed))
+	for _, task := range listed {
+		if task.Workspace == isolated {
+			candidates = append(candidates, task)
+		}
+	}
+	projected, err := store.ReadNextActions(iso, st, candidates, store.NextActionOptions{Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,11 +77,11 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 			want++
 		}
 	}
-	count, err := st.CountOperatorAttention(ctx)
-	if err != nil || count < want {
+	count, err := st.CountOperatorAttention(iso)
+	if err != nil || count != want {
 		t.Fatalf("attention count=%d projected=%d err=%v", count, want, err)
 	}
-	page, err := store.PageOperatorAttention(ctx, st, []core.Task{awaiting, running}, 0, 10)
+	page, err := store.PageOperatorAttention(iso, st, candidates, 0, 10)
 	if err != nil || page.Total != want {
 		t.Fatalf("page total=%d want=%d err=%v", page.Total, want, err)
 	}
