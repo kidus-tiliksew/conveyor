@@ -52,7 +52,12 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	items, err := s.readInbox(r.Context(), s.nextActionOptions(r), band, filter)
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	items, err := s.readInbox(r.Context(), opts, band, filter)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
