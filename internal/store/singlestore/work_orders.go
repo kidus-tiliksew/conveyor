@@ -994,12 +994,21 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
-		if err := core.ValidateVerifyDispatch(task, o); err != nil {
-			return err
-		}
 		siblings, err := s.listOrders(ctx, tx, []string{o.TaskID})
 		if err != nil {
 			return err
+		}
+		if o.State == core.WorkOrderQueued {
+			if err := store.WorkOrderRecoveryRefusal(task, o, siblings); err != nil {
+				return err
+			}
+			events, err := documentTaskEvents(ctx, tx, o.TaskID)
+			if err != nil {
+				return err
+			}
+			if err = store.WorkOrderPlanRevisionRefusal(task, events, o.ID); err != nil {
+				return err
+			}
 		}
 		for _, other := range siblings {
 			if core.ConflictingExecutorClaims(o, other) {
@@ -1182,7 +1191,14 @@ func (s *Store) orderSupersessionGuardTx(ctx context.Context, tx *sql.Tx, o core
 	if err != nil {
 		return err
 	}
-	return store.WorkOrderRecoverySupersessionError(t, o, orders)
+	if err = store.WorkOrderRecoveryRefusal(t, o, orders); err != nil {
+		return err
+	}
+	events, err := documentTaskEvents(ctx, tx, o.TaskID)
+	if err != nil {
+		return err
+	}
+	return store.WorkOrderPlanRevisionRefusal(t, events, o.ID)
 }
 func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, timeout time.Duration) (core.WorkOrder, error) {
 	if timeout <= 0 {
@@ -1198,6 +1214,16 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		if o.State == core.WorkOrderClaimed && o.LeaseExpiresAt.After(now) {
 			return fmt.Errorf("work order %s has an active claim and cannot be redispatched", id)
 		}
+		projected := store.ProjectWorkOrderAt(o, now)
+		if projected.State != core.WorkOrderStale {
+			return fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
+		}
+		if !projected.ExecutionStartedAt.IsZero() {
+			return fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
+		}
+		if err = s.orderSupersessionGuardTx(ctx, tx, projected); err != nil {
+			return err
+		}
 		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
 			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 			if err != nil {
@@ -1206,12 +1232,6 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		}
 		if o.State != core.WorkOrderStale {
 			return fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
-		}
-		if !o.ExecutionStartedAt.IsZero() {
-			return fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
-		}
-		if err = s.orderSupersessionGuardTx(ctx, tx, o); err != nil {
-			return err
 		}
 		state, err := core.TransitionWorkOrder(o.State, core.WorkOrderCmdRedispatch)
 		if err != nil {
@@ -1275,6 +1295,9 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			return fmt.Errorf("work-order recovery requires a valid taskops lease")
 		}
 		if store.VerificationRecoveryFromContext(ctx) != nil {
+			if err := s.orderSupersessionGuardTx(ctx, tx, store.ProjectWorkOrderAt(o, time.Now().UTC())); err != nil {
+				return err
+			}
 			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
 			if e != nil {
 				return e
@@ -1311,18 +1334,19 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 		now := time.Now().UTC()
 		var err error
+		projected := store.ProjectWorkOrderAt(o, now)
+		if err = s.orderSupersessionGuardTx(ctx, tx, projected); err != nil {
+			return err
+		}
+		eligible := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
+		if !eligible && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {
+			return fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+		}
 		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
 			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 			if err != nil {
 				return err
 			}
-		}
-		eligible := o.State == core.WorkOrderQueued && (o.LastAttemptOutcome != "" || o.RetrySuppressed || !o.NextRetryAt.IsZero())
-		if !eligible && o.State != core.WorkOrderStale && o.State != core.WorkOrderTimedOut {
-			return fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
-		}
-		if err = s.orderSupersessionGuardTx(ctx, tx, o); err != nil {
-			return err
 		}
 		prior := o
 		transient := 0
@@ -1341,25 +1365,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			return err
 		}
 		if len(refreeze) > 0 && refreeze[0] != nil {
-			change := refreeze[0]
-			task, err := getTaskRow(ctx, tx, o.TaskID)
-			if err != nil {
-				return err
-			}
-			setup, err := json.Marshal(change.Setup)
-			if err != nil {
-				return err
-			}
-			if err = taskWrite(ctx, tx, o.TaskID, map[string]any{"setup_contract": setup}); err != nil {
-				return err
-			}
-			o.ExecutionTimeoutText = change.ExecutionTimeoutText
-			if !reflect.DeepEqual(task.SetupContract, change.Setup) {
-				actor := store.ActorFromContext(ctx)
-				if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(map[string]any{"prior": task.SetupContract, "new": change.Setup, "request_id": requestID, "work_order_id": id, "actor": actor.ID})}); err != nil {
-					return err
-				}
-			}
+			o.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
 		}
 		clearOrderClaim(&o)
 		o.ClearExecutionPins()

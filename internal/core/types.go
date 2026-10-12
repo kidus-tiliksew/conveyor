@@ -611,6 +611,7 @@ type WorkOrder struct {
 	State                         WorkOrderState       `json:"state"`
 	Claimable                     bool                 `json:"claimable"`
 	ClaimRefusalReason            string               `json:"claim_refusal_reason,omitempty"`
+	RecoveryRefusal               string               `json:"recovery_refusal,omitempty"`
 	BlockingTaskIDs               []string             `json:"blocking_task_ids,omitempty"`
 	Assignee                      *TaskAssignee        `json:"assignee,omitempty"`
 	UnsatisfiableTaskIDs          []string             `json:"unsatisfiable_task_ids,omitempty"`

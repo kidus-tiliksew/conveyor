@@ -118,6 +118,16 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 			return store.SetupChangeResult{}, fmt.Errorf("%w: work order %s is not an unclaimed queued order", store.ErrSetupChangeConflict, desired.ID)
 		}
 	}
+	ordersByID := map[string]core.WorkOrder{}
+	for _, order := range orders {
+		ordersByID[order.ID] = order
+	}
+	for _, id := range request.SupersedeWorkOrderIDs {
+		order, exists := ordersByID[id]
+		if !exists || order.TaskID != task.ID || !store.PolicyHandoffSupersessionAllowed(order, task.NextStage) {
+			return store.SetupChangeResult{}, fmt.Errorf("%w: superseded work order %s is invalid", store.ErrSetupChangeConflict, id)
+		}
+	}
 	fromStage := task.NextStage
 	priorSetup := task.SetupContract
 	// The frozen policy changes; the task's legacy setup_name is left as is.
@@ -164,17 +174,18 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		if _, err = tx.Exec(ctx, `UPDATE work_orders SET review_superseded=(stage='review'),updated_at=$1 WHERE workspace_id=$2 AND id=$3`, now, workspaceID, id); err != nil {
 			return store.SetupChangeResult{}, err
 		}
-		if state == string(core.WorkOrderQueued) {
-			resulting, transitionErr := core.TransitionWorkOrder(core.WorkOrderState(state), core.WorkOrderCmdCancel)
+		order := core.WorkOrder{ID: id, Stage: core.Stage(stage), State: core.WorkOrderState(state), JobID: jobID}
+		if command, eventKind, ok := store.PolicyHandoffRetireCommand(order); ok {
+			resulting, transitionErr := core.TransitionWorkOrder(order.State, command)
 			if transitionErr != nil {
 				return store.SetupChangeResult{}, transitionErr
 			}
 			resultingState = string(resulting)
-			if _, err = tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state='queued'`, now, workspaceID, id); err != nil {
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET state=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, resultingState, now, workspaceID, id, state); err != nil {
 				return store.SetupChangeResult{}, err
 			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: jobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role,
-				Payload: core.JSONPayload(map[string]any{"id": id, "state": core.WorkOrderCancelled, "from": state, "command": core.WorkOrderCmdCancel}), At: now}); err != nil {
+			if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: jobID, Kind: eventKind, ActorID: actor.ID, ActorRole: actor.Role,
+				Payload: core.JSONPayload(map[string]any{"id": id, "state": resulting, "from": state, "command": command}), At: now}); err != nil {
 				return store.SetupChangeResult{}, err
 			}
 			if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE id=$2`, now, jobID); err != nil {

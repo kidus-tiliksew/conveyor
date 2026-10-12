@@ -176,7 +176,7 @@ func TestMemoryBlueprintClosesAfterRecovery(t *testing.T) {
 func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	ctx := WithWorkspace(WithActor(t.Context(), Actor{ID: "operator", Role: core.ActorHuman}), "demo")
 	st := NewMemory()
-	task := core.Task{ID: "cancel-task", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	task := core.Task{ID: "cancel-task", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "cancel-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	completedJob := core.Job{ID: "completed-order", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -200,6 +200,9 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	}
 	completedOrder.State = core.WorkOrderCompleted
 	if err = storetestFor(st).UpdateWorkOrder(ctx, completedOrder, core.WorkOrderCmdSubmitSpec); err != nil {
+		t.Fatal(err)
+	}
+	if err = projectTaskNextStageForTest(ctx, st, task.ID, core.StageImplement); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
@@ -288,4 +291,12 @@ func TestStalledTaskDerivesOnlyActionableNonTerminalOrders(t *testing.T) {
 			t.Fatalf("%s order stalled=%+v", state, got)
 		}
 	}
+}
+
+func projectTaskNextStageForTest(ctx context.Context, st Store, taskID string, stage core.Stage) error {
+	if _, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskRecoverRefresh}); err != nil {
+		return err
+	}
+	_, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskDispatchStart, NextStage: stage, ProjectStages: true})
+	return err
 }

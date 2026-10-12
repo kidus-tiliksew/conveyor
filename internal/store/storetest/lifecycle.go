@@ -114,6 +114,16 @@ func ClaimWorkOrder(ctx context.Context, st store.Store, id string, claim core.W
 	return taskops.New(st).ClaimWorkOrder(ctx, order.TaskID, id, claim)
 }
 
+// ProjectTaskNextStage moves a running task through recover-refresh and
+// dispatch-start so tests can claim at one stage and then project the next.
+func ProjectTaskNextStage(ctx context.Context, st store.Store, taskID string, stage core.Stage) error {
+	if _, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskRecoverRefresh}); err != nil {
+		return err
+	}
+	_, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskDispatchStart, NextStage: stage, ProjectStages: true})
+	return err
+}
+
 func RedispatchWorkOrder(ctx context.Context, st store.Store, id string, timeout time.Duration) (core.WorkOrder, error) {
 	order, err := st.GetWorkOrder(ctx, id)
 	if err != nil {

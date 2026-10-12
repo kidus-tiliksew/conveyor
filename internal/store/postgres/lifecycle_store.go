@@ -328,5 +328,27 @@ func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID st
 		return err
 	}
 	rows.Close()
-	return store.WorkOrderRecoverySupersessionError(task, order, taskOrders)
+	if err := store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
+		return err
+	}
+	eventRows, err := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspaceID, order.TaskID)
+	if err != nil {
+		return err
+	}
+	var events []core.Event
+	for eventRows.Next() {
+		var kind string
+		var payload []byte
+		if scanErr := eventRows.Scan(&kind, &payload); scanErr != nil {
+			eventRows.Close()
+			return scanErr
+		}
+		events = append(events, core.Event{Kind: kind, Payload: payload})
+	}
+	if err = eventRows.Err(); err != nil {
+		eventRows.Close()
+		return err
+	}
+	eventRows.Close()
+	return store.WorkOrderPlanRevisionRefusal(task, events, order.ID)
 }

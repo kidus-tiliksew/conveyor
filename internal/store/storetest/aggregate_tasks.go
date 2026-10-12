@@ -13,9 +13,12 @@ import (
 func newAggregateTask(t *testing.T, x Fixture, stages ...core.Stage) core.Task {
 	t.Helper()
 	id := core.NewTaskID()
-	task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
-	if len(stages) > 0 && stages[0] == core.StageVerify {
-		task.NextStage = core.StageVerify
+	stage := core.StageImplement
+	if len(stages) > 0 {
+		stage = stages[0]
+	}
+	task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: stage, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	if stage == core.StageVerify {
 		task.ReviewedHeadSHA = "submitted-head"
 		task.SetupContract.VerifyStage = true
 	}

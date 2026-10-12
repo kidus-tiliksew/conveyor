@@ -205,7 +205,7 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-" + core.NewTaskID(), BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now.Add(-time.Hour)}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-" + core.NewTaskID(), BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now.Add(-time.Hour)}
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}

@@ -117,7 +117,7 @@ func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
 	for _, verdict := range []string{"approve", "changes_requested"} {
 		t.Run(verdict, func(t *testing.T) {
 			id := core.NewTaskID()
-			task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: time.Now().UTC()}
+			task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageImplement, PolicyVersion: 1, CreatedAt: time.Now().UTC()}
 			requireOK(t, st.CreateTask(ctx, task))
 			job := core.Job{ID: id + "-implement-1", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
 			requireOK(t, st.CreateJob(ctx, job))

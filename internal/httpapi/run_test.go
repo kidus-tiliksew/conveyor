@@ -161,6 +161,10 @@ func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stag
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, err := st.GetTask(ctx, taskID); err != nil {
 		task := core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: stage, CreatedAt: enteredAt}
+		if stage == core.StageVerify {
+			task.SetupContract.VerifyStage = true
+			task.ReviewedHeadSHA = "head"
+		}
 		if err = st.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
@@ -170,6 +174,9 @@ func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stag
 		t.Fatal(err)
 	}
 	order := core.WorkOrder{ID: job.ID, TaskID: taskID, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued, QueueEnteredAt: enteredAt, QueueDeadline: enteredAt.Add(time.Hour), CreatedAt: enteredAt}
+	if stage == core.StageVerify {
+		order.HeadSHA = "head"
+	}
 	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +186,7 @@ func createTaskRunOrderAtStage(t *testing.T, st store.Store, taskID string, stag
 func TestTaskRunHTTPSelectsSpecImplementReviewInPipelineOrder(t *testing.T) {
 	_, st, handler := taskRunHTTPFixture(t)
 	now := time.Now().UTC()
-	for _, stage := range []core.Stage{core.StageReview, core.StageImplement, core.StageSpec, core.StageVerify} {
+	for _, stage := range []core.Stage{core.StageSpec, core.StageImplement, core.StageVerify, core.StageReview} {
 		createTaskRunOrderAtStage(t, st, "target", stage, now.Add(-time.Duration(taskRunStageOrder(stage))*time.Minute))
 	}
 
@@ -241,7 +248,7 @@ func TestTaskRunEightIdleLauncherBenchmark(t *testing.T) {
 	counter.reset()
 	requests += runRequests()
 	after := counter.operations()
-	if requests != 16 || before != 608 || afterWithoutUnrelated != 40 || after != 40 || counter.workspaceOrders != 0 || counter.workspaceProposals != 0 || counter.taskOrders != 8 || counter.taskProposals != 8 {
+	if requests != 16 || before != 1760 || afterWithoutUnrelated != 56 || after != 56 || counter.workspaceOrders != 0 || counter.workspaceProposals != 0 || counter.taskOrders != 8 || counter.taskProposals != 8 {
 		t.Fatalf("requests=%d store_operations_before=%d after_without_unrelated=%d after=%d counters=%+v", requests, before, afterWithoutUnrelated, after, counter)
 	}
 	t.Logf("eight_idle_launchers one_shot_projection_requests_per_sample=8 store_operations_before=%d store_operations_after=%d unrelated_tasks=64 scoped_operations_without_unrelated=%d", before, after, afterWithoutUnrelated)

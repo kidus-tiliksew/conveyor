@@ -26,7 +26,13 @@ const maxArtifactBytes = core.MaxArtifactBytes
 const maxMultipartTaskIntakeBytes int64 = 256 << 20
 
 func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
-	orders, err := s.Store.ListWorkOrders(r.Context())
+	var orders []core.WorkOrder
+	var err error
+	if s.WorkOrders != nil {
+		orders, err = s.WorkOrders.List(r.Context())
+	} else {
+		orders, err = s.Store.ListWorkOrders(r.Context())
+	}
 	if err != nil {
 		log.Printf("handle work order request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

@@ -1572,7 +1572,7 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "submitted-after-retries", Workspace: "demo", State: core.TaskAwaiting,
-		NextStage: core.StageReview, CreatedAt: time.Now().UTC(),
+		NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
 	}
 	job := core.Job{
 		ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,

@@ -259,6 +259,14 @@ func (s *dependencyBatchObservationStore) ListClaimBlockingProposalsForTask(cont
 	return nil, nil
 }
 
+func (s *dependencyBatchObservationStore) GetTask(_ context.Context, id string) (core.Task, error) {
+	return core.Task{ID: id, State: core.TaskRunning}, nil
+}
+
+func (s *dependencyBatchObservationStore) ListEvents(context.Context, string) ([]core.Event, error) {
+	return nil, nil
+}
+
 func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 	st := &dependencyBatchObservationStore{
 		orders: []core.WorkOrder{
@@ -344,6 +352,14 @@ func (s *scopedListObservationStore) ListClaimBlockingProposalsForTask(_ context
 		return nil, fmt.Errorf("unexpected proposal lookup for %s", taskID)
 	}
 	return []store.ClaimBlockingProposal{{Tier: store.ClaimBlockingTierSystemDesign, ID: "pending-design", Version: 2}}, nil
+}
+
+func (s *scopedListObservationStore) GetTask(_ context.Context, id string) (core.Task, error) {
+	return core.Task{ID: id, State: core.TaskRunning}, nil
+}
+
+func (s *scopedListObservationStore) ListEvents(context.Context, string) ([]core.Event, error) {
+	return nil, nil
 }
 
 func TestListForTaskUsesOnlyScopedReadsAndPreservesProjection(t *testing.T) {
@@ -1428,7 +1444,7 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
-	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -2181,25 +2197,25 @@ func TestRecoverySupersessionGuardNamesSuccessorAndGate(t *testing.T) {
 	now := time.Now().UTC()
 	target := core.WorkOrder{ID: "task-spec-1", TaskID: "task", Stage: core.StageSpec, State: core.WorkOrderStale, CreatedAt: now}
 	successor := core.WorkOrder{ID: "task-spec-2", TaskID: "task", Stage: core.StageSpec, State: core.WorkOrderQueued, CreatedAt: now.Add(time.Second)}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning}, target, []core.WorkOrder{target, successor}); err == nil || !strings.Contains(err.Error(), successor.ID) {
+	if err := store.WorkOrderRecoveryRefusal(core.Task{ID: "task", State: core.TaskRunning}, target, []core.WorkOrder{target, successor}); err == nil || !strings.Contains(err.Error(), successor.ID) {
 		t.Fatalf("successor guard err=%v", err)
 	}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskAwaiting, RecoveryStage: core.StageImplement}, target, []core.WorkOrder{target}); err == nil || !strings.Contains(err.Error(), "plan gate") {
+	if err := store.WorkOrderRecoveryRefusal(core.Task{ID: "task", State: core.TaskAwaiting, RecoveryStage: core.StageImplement}, target, []core.WorkOrder{target}); err == nil || !strings.Contains(err.Error(), "plan gate") {
 		t.Fatalf("gate guard err=%v", err)
 	}
 	latest := core.WorkOrder{ID: "task-implement-1", TaskID: "task", Stage: core.StageImplement, State: core.WorkOrderStale, CreatedAt: now}
 	earlierReview := core.WorkOrder{ID: "task-review-1", TaskID: "task", Stage: core.StageReview, State: core.WorkOrderCompleted, CreatedAt: now.Add(-time.Second)}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}, latest, []core.WorkOrder{latest, earlierReview}); err != nil {
+	if err := store.WorkOrderRecoveryRefusal(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}, latest, []core.WorkOrder{latest, earlierReview}); err != nil {
 		t.Fatalf("latest pending order rejected: %v", err)
 	}
 	laterReview := core.WorkOrder{ID: "task-review-2", TaskID: "task", Stage: core.StageReview, State: core.WorkOrderCompleted, CreatedAt: now.Add(time.Second)}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}, latest, []core.WorkOrder{latest, laterReview}); err != nil {
+	if err := store.WorkOrderRecoveryRefusal(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageImplement}, latest, []core.WorkOrder{latest, laterReview}); err != nil {
 		t.Fatalf("bounce projection contradicted by completed review: %v", err)
 	}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageReview}, latest, []core.WorkOrder{latest, laterReview}); err == nil || !strings.Contains(err.Error(), "advanced to review") {
+	if err := store.WorkOrderRecoveryRefusal(core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageReview}, latest, []core.WorkOrder{latest, laterReview}); err == nil || !strings.Contains(err.Error(), "advanced to review") {
 		t.Fatalf("genuine review advancement err=%v", err)
 	}
-	if err := store.WorkOrderRecoverySupersessionError(core.Task{ID: "task", State: core.TaskClosed}, latest, []core.WorkOrder{latest}); err == nil || !strings.Contains(err.Error(), "terminal task state") {
+	if err := store.WorkOrderRecoveryRefusal(core.Task{ID: "task", State: core.TaskClosed}, latest, []core.WorkOrder{latest}); err == nil || !strings.Contains(err.Error(), "terminal task state") {
 		t.Fatalf("terminal guard err=%v", err)
 	}
 }
@@ -2208,7 +2224,7 @@ func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
-	task := core.Task{ID: "recover-review-bounce", Workspace: "test", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now.Add(-time.Hour)}
+	task := core.Task{ID: "recover-review-bounce", Workspace: "test", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now.Add(-time.Hour)}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -3251,4 +3267,52 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 			t.Fatalf("claim err=%v", err)
 		}
 	})
+}
+
+func TestListRecoveryRefusal(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: "list-refusal", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement,
+		ReviewedHeadSHA: "head", CreatedAt: now,
+	}
+	task.SetupContract.VerifyStage = true
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}}
+	listed, err := svc.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("listed=%d", len(listed))
+	}
+	want := "verify order " + order.ID + " cannot be claimed: task list-refusal next_stage is implement, not verify"
+	if listed[0].RecoveryRefusal != want {
+		t.Fatalf("recovery_refusal=%q want %q", listed[0].RecoveryRefusal, want)
+	}
+	if listed[0].Claimable {
+		t.Fatal("refusal stayed claimable")
+	}
+	byTask, err := svc.ListForTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byTask) != 1 || byTask[0].RecoveryRefusal != want || byTask[0].Claimable {
+		t.Fatalf("task listing=%+v", byTask)
+	}
 }

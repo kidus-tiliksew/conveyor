@@ -285,7 +285,7 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 				// head, so the verify variant carries both (DEC-43).
 				const head = "0123456789abcdef0123456789abcdef01234567"
 				for _, id := range []string{claimParityTask, "claim-parity-other"} {
-					task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: stage, ReviewedHeadSHA: head, CreatedAt: time.Now().UTC()}
+					task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, ReviewedHeadSHA: head, CreatedAt: time.Now().UTC()}
 					task.SetupContract.VerifyStage = stage == core.StageVerify
 					if err := st.CreateTask(ctx, task); err != nil {
 						t.Fatal(err)
@@ -294,6 +294,12 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 				fixture := claimParityFixture{ctx: ctx, st: st, t: t}
 				fixture.submitImplementation(claimParityTask)
 				fixture.submitImplementation("claim-parity-other")
+				if err := storetest.ProjectTaskNextStage(ctx, st, claimParityTask, stage); err != nil {
+					t.Fatal(err)
+				}
+				if err := storetest.ProjectTaskNextStage(ctx, st, "claim-parity-other", stage); err != nil {
+					t.Fatal(err)
+				}
 				want := setup(fixture)
 				orderID := fmt.Sprintf("%s-%s-1", claimParityTask, stage)
 				if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: claimParityTask, Stage: stage, State: core.JobPending}); err != nil {

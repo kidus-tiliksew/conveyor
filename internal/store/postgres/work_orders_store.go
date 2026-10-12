@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -731,28 +730,6 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	}
 	actor := store.ActorFromContext(ctx)
 	for _, eligible := range recovery.EligibleOrders {
-		change := request.Refreezes[eligible.ID]
-		if change == nil {
-			continue
-		}
-		var priorJSON []byte
-		if err = tx.QueryRow(ctx, `SELECT setup_contract FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, request.TaskID).Scan(&priorJSON); err != nil {
-			return store.InterruptedReviewRecoveryResult{}, err
-		}
-		var priorContract config.ExecutionSetup
-		_ = json.Unmarshal(priorJSON, &priorContract)
-		if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_contract=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4`, setupContractJSON(change.Setup), now, workspaceID, request.TaskID); err != nil {
-			return store.InterruptedReviewRecoveryResult{}, err
-		}
-		recoveryTask.SetupContract = change.Setup
-		if !reflect.DeepEqual(priorContract, change.Setup) {
-			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: eligible.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": request.RequestID, "work_order_id": eligible.ID, "actor": actor.ID}), At: now}); err != nil {
-				return store.InterruptedReviewRecoveryResult{}, err
-			}
-		}
-		break
-	}
-	for _, eligible := range recovery.EligibleOrders {
 		priorOutcome := eligible.LastAttemptOutcome
 		eligible.LastAttemptOutcome = ""
 		eligible.RetrySuppressed = false
@@ -1008,8 +985,51 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
-		return core.WorkOrder{}, err
+	orderRows, listErr := tx.Query(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id`, workspace(ctx), order.TaskID)
+	if listErr != nil {
+		return core.WorkOrder{}, listErr
+	}
+	var taskOrders []core.WorkOrder
+	for orderRows.Next() {
+		candidate, scanErr := scanWorkOrder(orderRows)
+		if scanErr != nil {
+			orderRows.Close()
+			return core.WorkOrder{}, scanErr
+		}
+		taskOrders = append(taskOrders, candidate)
+	}
+	if listErr = orderRows.Err(); listErr != nil {
+		orderRows.Close()
+		return core.WorkOrder{}, listErr
+	}
+	orderRows.Close()
+	task := taskFromDB(taskRow)
+	if order.State == core.WorkOrderQueued {
+		if err := store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
+		eventRows, eventErr := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspace(ctx), order.TaskID)
+		if eventErr != nil {
+			return core.WorkOrder{}, eventErr
+		}
+		var events []core.Event
+		for eventRows.Next() {
+			var kind string
+			var payload []byte
+			if scanErr := eventRows.Scan(&kind, &payload); scanErr != nil {
+				eventRows.Close()
+				return core.WorkOrder{}, scanErr
+			}
+			events = append(events, core.Event{Kind: kind, Payload: payload})
+		}
+		if eventErr = eventRows.Err(); eventErr != nil {
+			eventRows.Close()
+			return core.WorkOrder{}, eventErr
+		}
+		eventRows.Close()
+		if err := store.WorkOrderPlanRevisionRefusal(task, events, order.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if order.Stage != core.StageReview {
 		var activeSiblingID string
@@ -1310,6 +1330,16 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if order.State == core.WorkOrderClaimed && order.LeaseExpiresAt.After(now) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s has an active claim and cannot be redispatched", id)
 	}
+	projected := store.ProjectWorkOrderAt(order, now)
+	if projected.State != core.WorkOrderStale {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
+	}
+	if !projected.ExecutionStartedAt.IsZero() {
+		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
+	}
+	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), projected); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
 		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now)
@@ -1319,12 +1349,6 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	}
 	if order.State != core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
-	}
-	if !order.ExecutionStartedAt.IsZero() {
-		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
-	}
-	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), order); err != nil {
-		return core.WorkOrder{}, err
 	}
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
@@ -1414,6 +1438,9 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
 	}
 	if store.VerificationRecoveryFromContext(ctx) != nil {
+		if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), store.ProjectWorkOrderAt(order, time.Now().UTC())); err != nil {
+			return core.WorkOrder{}, err
+		}
 		q := s.queries.WithTx(tx)
 		records, e := q.ListVerificationRecords(ctx, workspace(ctx), taskID)
 		if e != nil {
@@ -1452,19 +1479,20 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return order, nil
 	}
 	now := time.Now().UTC()
+	projected := store.ProjectWorkOrderAt(order, now)
+	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), projected); err != nil {
+		return core.WorkOrder{}, err
+	}
+	eligibleQueued := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
+	if !eligibleQueued && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
 		order, err = s.transitionWorkOrderTx(ctx, tx, order, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 		if err != nil {
 			return core.WorkOrder{}, err
 		}
-	}
-	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
-	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
-	}
-	if err = workOrderSupersessionGuardTx(ctx, tx, workspace(ctx), order); err != nil {
-		return core.WorkOrder{}, err
 	}
 	prior := order.LastAttemptOutcome
 	priorAttemptID := order.LastAttemptID
@@ -1494,24 +1522,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 	}
 	if len(refreeze) != 0 && refreeze[0] != nil {
-		change := refreeze[0]
-		var priorJSON []byte
-		if err = tx.QueryRow(ctx, `SELECT setup_contract FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), order.TaskID).Scan(&priorJSON); err != nil {
-			return core.WorkOrder{}, err
-		}
-		var priorContract config.ExecutionSetup
-		_ = json.Unmarshal(priorJSON, &priorContract)
-		if _, err = tx.Exec(ctx, `UPDATE tasks SET setup_contract=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4`, setupContractJSON(change.Setup), now, workspace(ctx), order.TaskID); err != nil {
-			return core.WorkOrder{}, err
-		}
-		order.ExecutionTimeoutText = change.ExecutionTimeoutText
-		if !reflect.DeepEqual(priorContract, change.Setup) {
-			actor := store.ActorFromContext(ctx)
-			q := s.queries.WithTx(tx)
-			if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": requestID, "work_order_id": order.ID, "actor": actor.ID}), At: now}); err != nil {
-				return core.WorkOrder{}, err
-			}
-		}
+		order.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
 	}
 	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,operator_direction=$3,`+clearExecutionPinsSQL+`,execution_timeout=$4,updated_at=$1 WHERE workspace_id=$5 AND id=$6 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), direction, order.ExecutionTimeoutText, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
