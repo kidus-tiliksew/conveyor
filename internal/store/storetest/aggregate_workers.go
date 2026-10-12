@@ -55,7 +55,10 @@ func EnsureWorkerEnrollment(ctx context.Context, st store.Store, workerID string
 	}
 	workerCtx := store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(workerID), Role: core.ActorWorker})
 	if err := st.CreateWorker(workerCtx, worker); err != nil {
-		return core.Worker{}, fmt.Errorf("enroll fixture worker %s: %w", workerID, err)
+		// Worker IDs are global while the lookup above is workspace-scoped, so
+		// the usual cause is a fixed fixture ID already enrolled in another
+		// workspace of a reused database; fixtures must use per-run IDs.
+		return core.Worker{}, fmt.Errorf("enroll fixture worker %s in workspace %s (worker IDs are global; a fixed ID reused from another workspace collides): %w", workerID, workspace, err)
 	}
 	return worker, nil
 }
