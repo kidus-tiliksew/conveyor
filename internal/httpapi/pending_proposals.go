@@ -47,7 +47,12 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, pendingProposalItem{PendingProposal: proposal, AgeSeconds: int64(age / time.Second)})
 	}
-	decisions := projection.OperatorDecisions
+	decisions, err := s.Store.CountOperatorAttention(r.Context())
+	if err != nil {
+		log.Printf("list pending proposals: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: decisions, PendingProposalCount: len(items), OperatorDecisions: decisions, Total: decisions + len(items)}})
 }
 

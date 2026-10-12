@@ -775,11 +775,11 @@ func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingPr
 	if err != nil {
 		return store.PendingProposalsProjection{}, err
 	}
-	decisions, err := store.CountOperatorAttention(ctx, s)
-	if err != nil {
-		return store.PendingProposalsProjection{}, err
-	}
-	return store.PendingProposalsProjection{Items: items, OperatorDecisions: decisions}, nil
+	return store.PendingProposalsProjection{Items: items}, nil
+}
+
+func (s *Store) CountOperatorAttention(ctx context.Context) (int, error) {
+	return store.CountOperatorAttention(ctx, s)
 }
 
 // Acquisition is bounded independently of the callback lifetime. SingleStore

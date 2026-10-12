@@ -360,6 +360,7 @@ type DocumentStore interface {
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).
 	PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error)
+	CountOperatorAttention(ctx context.Context) (int, error)
 }
 
 // PlanningStore owns the planning-session, bundle and artifact contract.
