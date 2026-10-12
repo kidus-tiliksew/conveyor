@@ -471,7 +471,7 @@ func taskRunMergeReadinessRemedy(state string, task core.Task) string {
 	case "STALE":
 		return "readiness STALE; the branch head moved after approval, so a refresh review replaces this merge"
 	case "CONFLICTING":
-		return "readiness CONFLICTING; the pull request conflicts with its base, and an operator with recover_work starts the conflict fix (dashboard Fix merge conflict, or POST /v1/tasks/" + task.ID + "/merge-conflict-fix)"
+		return "readiness CONFLICTING; the pull request conflicts with its base. Conveyor dispatches the conflict fix automatically; an operator with recover_work retries only after automatic fixes are exhausted (POST /v1/tasks/" + task.ID + "/merge-conflict-fix)"
 	case "UNKNOWN":
 		return "readiness UNKNOWN; GitHub has not settled mergeability, or a conflict fix is in progress"
 	default:

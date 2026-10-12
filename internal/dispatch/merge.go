@@ -185,9 +185,8 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
 			return result, err
 		}
-		if !current.MergeApproval {
-			_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
-		}
+		// Gate-on and gate-off both dispatch. This read never requests a merge.
+		_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg, false)
 		return result, err
 	}
 	if err = d.clearMergeConflictEpisode(ctx, current, result.State, pr.HeadSHA); err != nil {
@@ -363,13 +362,13 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 		if lockedErr = d.recordMergeConflictBlocked(lockedCtx, current, approved, pr.HeadSHA); lockedErr != nil {
 			return lockedErr
 		}
-		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg)
+		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, true)
 		return lockedErr
 	})
 	return result, err
 }
 
-func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config) (core.WorkOrder, error) {
+func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config, operatorRetry bool) (core.WorkOrder, error) {
 	active, ok, err := d.activeImplementationWorkOrder(ctx, current.ID, "merge-conflict")
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -423,7 +422,9 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		}
 		dispatchState.Exhausted = true
 	}
-	if dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt)) {
+	// Automatic readiness and the merge act keep the episode budget. The
+	// operator route retries after exhaustion and during backoff.
+	if !operatorRetry && (dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt))) {
 		return core.WorkOrder{}, nil
 	}
 	if current.ApprovedHeadSHA == "" {
@@ -498,6 +499,39 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		d.Enqueue(systemCtx, current.ID)
 	}
 	return result.WorkOrder, nil
+}
+
+// gateOnConflictMergeError keeps the operator merge act failing closed. A nil
+// return on an unmerged task becomes the misleading 409 "merge was not
+// confirmed by the forge".
+func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.Task, githubRepo string, number int, order core.WorkOrder) error {
+	if order.ID != "" {
+		return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix %s dispatched", githubRepo, number, order.ID)
+	}
+	reason := "budget exhausted"
+	episode, present, err := d.currentMergeConflictEpisode(ctx, current.ID)
+	if err != nil {
+		return err
+	}
+	if present {
+		orders, listErr := d.Store.ListTaskWorkOrders(ctx, current.ID)
+		if listErr != nil {
+			return listErr
+		}
+		state, stateErr := d.conflictDispatchState(ctx, current.ID, episode, orders)
+		if stateErr != nil {
+			return stateErr
+		}
+		switch {
+		case state.RecoveryBlocked:
+			reason = "interrupted review recovery blocked"
+		case state.Exhausted:
+			reason = "budget exhausted"
+		case !state.NextRetryAt.IsZero():
+			reason = "backing off until " + state.NextRetryAt.UTC().Format(time.RFC3339)
+		}
+	}
+	return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix not dispatched (%s)", githubRepo, number, reason)
 }
 
 // MergeApprovedTask performs the final human-gate transition. A durable-store
@@ -585,11 +619,14 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA); err != nil {
 			return err
 		}
+		order, dispatchErr := d.dispatchConflictFixLocked(ctx, current, pr, cfg, false)
 		if !current.MergeApproval {
-			_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
-			return err
+			return dispatchErr
 		}
-		return fmt.Errorf("pull request %s#%d has merge conflicts; dispatch the conflict fix", repo.GitHub, pr.Number)
+		if dispatchErr != nil {
+			return dispatchErr
+		}
+		return d.gateOnConflictMergeError(ctx, current, repo.GitHub, pr.Number, order)
 	}
 	if err = d.clearMergeConflictEpisode(ctx, current, pr.Mergeable, pr.HeadSHA); err != nil {
 		return err
