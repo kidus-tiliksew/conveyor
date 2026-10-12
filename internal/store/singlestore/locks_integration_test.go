@@ -225,10 +225,18 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			start := make(chan struct{})
 			results := make(chan error, 2)
+			type attempt struct {
+				id       string
+				lockAt   time.Time
+				commitAt time.Time
+			}
+			attempts := make([]attempt, 2)
 			for i := range 2 {
 				go func() {
 					<-start
-					results <- st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
+					id := fmt.Sprintf("token-%d", i)
+					writeCtx, observed := observeLockReturn(store.WithActor(t.Context(), store.SystemActor()))
+					err := st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
 						var w rowWrite
 						if kind == "reference" {
 							name := "Same"
@@ -237,14 +245,16 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 							}
 							w = rowWrite{table: "reference_documents", operation: "INSERT", values: map[string]any{"workspace_id": "rules", "id": fmt.Sprintf("ref-%d", i), "name": name, "deleted_at": nil, "current_version": 1, "created_at": now, "updated_at": now}}
 						} else {
-							w = rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": fmt.Sprintf("token-%d", i), "user_id": "fixture", "token_hash": []byte(fmt.Sprintf("synthetic-hash-%d", i)), "deployment_credential": true}}
+							w = rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": id, "user_id": "fixture", "token_hash": []byte(fmt.Sprintf("synthetic-hash-%d", i)), "deployment_credential": true}}
 						}
-						_, err := writeRow(store.WithActor(t.Context(), store.SystemActor()), tx, w)
+						_, err := writeRow(writeCtx, tx, w)
 						if err != nil {
 							t.Logf("fixture %s write: %v", kind, err)
 						}
 						return err
 					})
+					attempts[i] = attempt{id: id, lockAt: observed.at, commitAt: time.Now()}
+					results <- err
 				}()
 			}
 			close(start)
@@ -258,6 +268,27 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				}
 			}
 			if successes != 1 {
+				if kind == "deployment" {
+					t.Logf("deployment tokens %s lock %s commit %s; %s lock %s commit %s", attempts[0].id, attempts[0].lockAt.Format(time.RFC3339Nano), attempts[0].commitAt.Format(time.RFC3339Nano), attempts[1].id, attempts[1].lockAt.Format(time.RFC3339Nano), attempts[1].commitAt.Format(time.RFC3339Nano))
+					rows, err := st.db.QueryContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT id, user_id, deployment_credential FROM user_tokens WHERE deployment_credential=TRUE`)
+					if err != nil {
+						t.Logf("deployment_credential rows: %v", err)
+					} else {
+						defer rows.Close()
+						for rows.Next() {
+							var id, userID string
+							var credential bool
+							if err = rows.Scan(&id, &userID, &credential); err != nil {
+								t.Logf("deployment_credential row: %v", err)
+								break
+							}
+							t.Logf("deployment_credential=TRUE row id=%s user_id=%s", id, userID)
+						}
+						if err = rows.Err(); err != nil {
+							t.Logf("deployment_credential rows: %v", err)
+						}
+					}
+				}
 				t.Fatalf("%s winners=%d", kind, successes)
 			}
 			if kind == "reference" {

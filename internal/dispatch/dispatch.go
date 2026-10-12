@@ -1516,6 +1516,9 @@ func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
+	if task.State != core.TaskAwaiting {
+		return PlanRevisionGateContext{}, false, nil
+	}
 	events, err := st.ListEvents(ctx, taskID)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
