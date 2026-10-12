@@ -153,6 +153,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 19 {
+			if err := s.migrateTaskGateKind(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -214,6 +219,20 @@ func (s *Store) migrateTaskStartOver(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// migrateTaskGateKind adds tasks.gate_kind before the version 19 backfill.
+// SingleStore DDL commits implicitly and has no ADD COLUMN IF NOT EXISTS.
+func (s *Store) migrateTaskGateKind(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='tasks' AND column_name='gate_kind'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN gate_kind VARCHAR(32) NULL`)
+	return err
 }
 
 func (s *Store) migrateOpenTaskBranchUnique(ctx context.Context) error {

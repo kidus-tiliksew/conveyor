@@ -1354,10 +1354,11 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 			count++
 		}
 	}
+	window := m.countEventsSinceHumanInterventionLocked(task.ID, "pipeline.bounced") + 1
 	plan := PlanChangesRequested(ChangesRequestedInput{
 		TaskID: task.ID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 		ReasonCode: UserRequestChangesReason, Feedback: request.Feedback, Source: UserRequestChangesSource,
-		Count: count, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+		Count: count, Window: window, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 	})
 	state, err := core.TransitionTask(task.State, plan.Command)
 	if err != nil {
@@ -1371,6 +1372,7 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 	}
 	fromState, fromStage := task.State, task.NextStage
 	task.State, task.NextStage, task.RecoveryStage = state, plan.NextStage, plan.Recovery
+	task.GateKind = core.GateKindFor(state, plan.Command)
 	if request.Hold {
 		task.Hold = true
 	}
@@ -1460,6 +1462,7 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 	}
 	from := task.State
 	task.State, task.NextStage, task.RecoveryStage = taskState, "", ""
+	task.GateKind = core.GateKindFor(taskState, core.TaskCancel)
 	m.tasks[task.ID] = task
 	m.deleteProposedTaskContextLocked(task.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": from, "to": taskState, "command": core.TaskCancel}), At: intervention.At})

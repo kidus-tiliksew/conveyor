@@ -411,6 +411,9 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				Count: int(count), Window: int(window), MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
 				Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
 			})
+			if before.State == core.TaskAwaiting && plan.Command == core.TaskStageBounceLimit {
+				return nil
+			}
 			if err = insertInterventionTx(ctx, tx, plan.Intervention); err != nil {
 				return err
 			}
@@ -452,7 +455,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				return err
 			}
 		}
-		values := map[string]any{"state": state, "next_stage": next, "recovery_stage": recovery}
+		values := map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, command)), "next_stage": next, "recovery_stage": recovery}
 		if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 			values["reviewed_head_sha"] = aggregate.ApprovedHeadSHA
 			if state == core.TaskApproved && !nonAdvancingRefresh {

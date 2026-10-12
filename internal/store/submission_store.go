@@ -282,6 +282,7 @@ func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.Tas
 
 	fromState, fromStage := task.State, task.NextStage
 	task.State, task.NextStage, task.RecoveryStage = state, core.StageImplement, ""
+	task.GateKind = core.GateKindFor(state, transitionCommand)
 	m.tasks[task.ID] = task
 	m.nextReviewID++
 	intervention.ID = m.nextReviewID

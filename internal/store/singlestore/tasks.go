@@ -45,13 +45,13 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,'')`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection)
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -239,6 +239,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"base_branch":          t.BaseBranch,
 		"branch":               t.Branch,
 		"state":                t.State,
+		"gate_kind":            string(t.GateKind),
 		"next_stage":           t.NextStage,
 		"recovery_stage":       t.RecoveryStage,
 		"parent_task_id":       nullString(t.ParentTaskID),
@@ -848,9 +849,11 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 				command.RecoveryStage = core.StageVerify
 			}
 		}
-		values := map[string]any{"state": state}
+		kind := core.GateKindFor(state, command.Kind)
+		values := map[string]any{"state": state, "gate_kind": string(kind)}
 		result = before
 		result.State = state
+		result.GateKind = kind
 		if command.ProjectStages {
 			values["next_stage"] = command.NextStage
 			values["recovery_stage"] = command.RecoveryStage
@@ -931,7 +934,7 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx *sql.Tx, parentID
 	if childCount == 0 || nonTerminal != 0 {
 		return false, nil
 	}
-	if err = taskWrite(ctx, tx, parentID, map[string]any{"state": closed}); err != nil {
+	if err = taskWrite(ctx, tx, parentID, map[string]any{"state": closed, "gate_kind": string(core.GateKindFor(closed, core.TaskBlueprintClose))}); err != nil {
 		return false, err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, parentID); err != nil {
@@ -1102,7 +1105,7 @@ func (s *Store) cancelTaskTx(ctx context.Context, tx *sql.Tx, i core.Interventio
 			return err
 		}
 	}
-	if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "next_stage": "", "recovery_stage": ""}); err != nil {
+	if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(core.TaskState(state), core.TaskCancel)), "next_stage": "", "recovery_stage": ""}); err != nil {
 		return err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, i.TaskID); err != nil {
@@ -1166,14 +1169,14 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return fmt.Errorf("review job %s does not belong to task %s", request.JobID, request.TaskID)
 			}
 		}
-		count, _, err := bounceCountsTx(ctx, tx, request.TaskID)
+		count, window, err := bounceCountsTx(ctx, tx, request.TaskID)
 		if err != nil {
 			return err
 		}
 		plan := store.PlanChangesRequested(store.ChangesRequestedInput{
 			TaskID: request.TaskID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 			ReasonCode: store.UserRequestChangesReason, Feedback: request.Feedback, Source: store.UserRequestChangesSource,
-			Count: int(count) + 1, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+			Count: count + 1, Window: window + 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 		})
 		state, err := core.TransitionTask(before.State, plan.Command)
 		if err != nil {
@@ -1187,11 +1190,12 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
-		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "next_stage": plan.NextStage, "recovery_stage": plan.Recovery}); err != nil {
+		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, plan.Command)), "next_stage": plan.NextStage, "recovery_stage": plan.Recovery}); err != nil {
 			return err
 		}
 		result = before
 		result.State = state
+		result.GateKind = core.GateKindFor(state, plan.Command)
 		result.NextStage = plan.NextStage
 		result.RecoveryStage = plan.Recovery
 

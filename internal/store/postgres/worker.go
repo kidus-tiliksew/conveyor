@@ -578,7 +578,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
-	updatedTask, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: current.TaskID, WorkspaceID: workspace(ctx), State: string(nextTask)})
+	updatedTask, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: current.TaskID, WorkspaceID: workspace(ctx), State: string(nextTask), GateKind: string(core.GateKindFor(nextTask, core.TaskGatePlanRevision))})
 	if err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}

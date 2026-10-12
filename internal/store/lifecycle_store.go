@@ -99,6 +99,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 		}
 	}
 	task.State = nextTask
+	task.GateKind = core.GateKindFor(nextTask, core.TaskGatePlanRevision)
 	m.tasks[task.ID] = task
 	actor := workerClaimActorContext(ctx, claim.WorkerID)
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
@@ -402,6 +403,7 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		}
 	}
 	task.State = state
+	task.GateKind = core.GateKindFor(state, command.Kind)
 	if command.ProjectStages {
 		task.NextStage = command.NextStage
 		task.RecoveryStage = command.RecoveryStage
@@ -453,6 +455,7 @@ func (m *memory) closeBlueprintParentLocked(ctx context.Context, parentID string
 		return false
 	}
 	parent.State = closed
+	parent.GateKind = core.GateKindFor(closed, core.TaskBlueprintClose)
 	m.tasks[parent.ID] = parent
 	m.deleteProposedTaskContextLocked(parent.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": closed, "command": core.TaskBlueprintClose})})

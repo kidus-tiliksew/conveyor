@@ -191,6 +191,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		old.State = core.TaskClosed
 		old.NextStage = ""
 		old.RecoveryStage = ""
+		old.GateKind = ""
 		old.SupersededBy = next.ID
 		result = core.TaskStartOverResult{Task: old, Successor: next, Created: true}
 		return nil

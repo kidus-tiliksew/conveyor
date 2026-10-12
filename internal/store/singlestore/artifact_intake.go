@@ -56,7 +56,7 @@ func (s *Store) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids 
 		if err != nil {
 			return err
 		}
-		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": state}); err != nil {
+		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, core.TaskIntakeFinalize))}); err != nil {
 			return err
 		}
 		if err = taskEvent(ctx, tx, store.IntakeFinalizedEvent(t)); err != nil {

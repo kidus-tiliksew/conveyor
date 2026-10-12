@@ -672,10 +672,14 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
+		window, err := q.CountEventsSinceHumanIntervention(ctx, db.CountEventsSinceHumanInterventionParams{TaskID: nullableText(request.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return err
+		}
 		plan := store.PlanChangesRequested(store.ChangesRequestedInput{
 			TaskID: request.TaskID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 			ReasonCode: store.UserRequestChangesReason, Feedback: request.Feedback, Source: store.UserRequestChangesSource,
-			Count: int(count) + 1, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+			Count: int(count) + 1, Window: int(window) + 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 		})
 		state, err := core.TransitionTask(before.State, plan.Command)
 		if err != nil {
@@ -689,7 +693,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
-		updated, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(plan.NextStage), RecoveryStage: string(plan.Recovery)})
+		updated, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(plan.NextStage), RecoveryStage: string(plan.Recovery), GateKind: string(core.GateKindFor(state, plan.Command))})
 		if err != nil {
 			return err
 		}
@@ -1474,7 +1478,7 @@ func (s *Store) cancelTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, inte
 			return err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,next_stage='',recovery_stage='',updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND state=$5`, taskState, intervention.At, workspace(ctx), intervention.TaskID, priorState); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE tasks SET state=$1,gate_kind=$2,next_stage='',recovery_stage='',updated_at=$3 WHERE workspace_id=$4 AND id=$5 AND state=$6`, taskState, string(core.GateKindFor(core.TaskState(taskState), core.TaskCancel)), intervention.At, workspace(ctx), intervention.TaskID, priorState); err != nil {
 		return err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, intervention.TaskID); err != nil {
@@ -1543,7 +1547,7 @@ func taskFromDB(task db.Task) core.Task {
 		ReviewedHeadSHA: task.ReviewedHeadSha, ApprovedHeadSHA: task.ApprovedHeadSha, ApprovalStale: task.ApprovalStale,
 		RefreshBaselineSHA: task.RefreshBaselineSha, RefreshHeadSHA: task.RefreshHeadSha, RefreshReviewScope: task.RefreshReviewScope,
 		BaseBranch: task.BaseBranch, Branch: task.Branch,
-		State: core.TaskState(task.State), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage),
+		State: core.TaskState(task.State), GateKind: core.GateKind(task.GateKind.String), NextStage: core.Stage(task.NextStage), RecoveryStage: core.Stage(task.RecoveryStage),
 		ParentTaskID: task.ParentTaskID.String, OriginSpecVersion: int(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
 		CreatedAt: task.CreatedAt.Time,
 	}

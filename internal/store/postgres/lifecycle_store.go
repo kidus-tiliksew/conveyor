@@ -53,13 +53,14 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 				ID: id, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
+				GateKind: string(core.GateKindFor(state, command.Kind)),
 			})
 			if updateErr != nil {
 				return updateErr
 			}
 			result = taskFromDB(updated)
 		} else {
-			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state)})
+			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state), GateKind: string(core.GateKindFor(state, command.Kind))})
 			if updateErr != nil {
 				return updateErr
 			}
@@ -142,7 +143,7 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		return false, nil
 	}
 	if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
-		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed),
+		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed), GateKind: string(core.GateKindFor(closed, core.TaskBlueprintClose)),
 	}); err != nil {
 		return false, err
 	}

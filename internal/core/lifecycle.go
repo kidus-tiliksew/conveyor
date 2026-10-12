@@ -73,6 +73,42 @@ const (
 	TaskBlueprintClose            TaskCommand = "blueprint.close"
 )
 
+// GateKind is the operator wait recorded on the task row when a transition
+// enters awaiting_human. It is a projection of that transition, not a state,
+// command, or event kind (req-operator-next-action AC-1.2).
+type GateKind string
+
+const (
+	GateKindPlanApproval      GateKind = "plan_approval"
+	GateKindPlanRevision      GateKind = "plan_revision"
+	GateKindMergeApproval     GateKind = "merge_approval"
+	GateKindReviewBounceLimit GateKind = "review_bounce_limit"
+	GateKindJobFailure        GateKind = "job_failure"
+)
+
+// GateKindFor returns the gate kind a transition into to records. Every other
+// target, including an unmapped command that cannot occur through
+// TransitionTask, returns the empty kind so the row is cleared.
+func GateKindFor(to TaskState, command TaskCommand) GateKind {
+	if to != TaskAwaiting {
+		return ""
+	}
+	switch command {
+	case TaskGateSpec:
+		return GateKindPlanApproval
+	case TaskGatePlanRevision:
+		return GateKindPlanRevision
+	case TaskGateMerge:
+		return GateKindMergeApproval
+	case TaskStageBounceLimit:
+		return GateKindReviewBounceLimit
+	case TaskJobFail:
+		return GateKindJobFailure
+	default:
+		return ""
+	}
+}
+
 type WorkOrderCommand string
 
 const (
@@ -102,7 +138,7 @@ var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
 	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskDispatchFailFinal): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
-	string(TaskAwaiting): {string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
+	string(TaskAwaiting): {string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskParked):   {string(TaskRecover): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 }
