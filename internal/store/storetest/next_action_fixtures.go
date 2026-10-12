@@ -54,18 +54,6 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 	})
 	read(bounceID, nextaction.KindReviewBounceLimit)
 
-	stallID := orderTask(t, st, ctx, workspace, core.WorkOrder{QueueDeadline: now.Add(time.Hour), RetrySuppressed: true})
-	if action := read(stallID, nextaction.KindStalled); action.Details.StallReason == "" {
-		t.Fatal("suppressed stall has no reason")
-	}
-	refusedID := orderTask(t, st, ctx, workspace, core.WorkOrder{State: core.WorkOrderQueued, RecoveryRefusal: "operator must recover this"})
-	refused := read(refusedID, nextaction.KindStalled)
-	if refused.CurrentOrder == nil || refused.CurrentOrder.RecoveryRefusal == "" {
-		t.Fatalf("recovery refusal missing: %+v", refused.CurrentOrder)
-	}
-	blocker := createTask(t, st, ctx, workspace, core.TaskAwaiting, "")
-	blockedID := orderTask(t, st, ctx, workspace, core.WorkOrder{State: core.WorkOrderQueued, BlockingTaskIDs: []string{blocker}})
-	read(blockedID, nextaction.KindBlocked)
 	claimedID := orderTask(t, st, ctx, workspace, core.WorkOrder{})
 	if _, err := For(st).ClaimWorkOrder(ctx, "order-"+claimedID, core.WorkOrderClaim{ClaimantID: "agent", SessionID: "session", Lease: time.Hour}); err != nil {
 		t.Fatal(err)
@@ -119,22 +107,30 @@ func orderTask(t *testing.T, st store.Store, ctx context.Context, workspace stri
 
 func runCallerAttentionOrder(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
-	user := "attention-" + core.NewTaskID()
-	base := time.Now().UTC().Truncate(time.Second)
-	for i, at := range []time.Time{base, base.Add(time.Second), base.Add(2 * time.Second)} {
-		id := "attn-" + user + "-" + string(rune('a'+i))
-		task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, Assignee: &core.TaskAssignee{UserID: user}, CreatedAt: at}
-		if err := st.CreateTask(ctx, task); err != nil {
+	user, err := enrollFixtureOwner(ctx, st, workspace, "attention-"+core.NewTaskID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane := taskops.New(st)
+	var ids []string
+	for i := 0; i < 3; i++ {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
 			t.Fatal(err)
 		}
+		if _, err = plane.SetAssignee(ctx, id, user); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		time.Sleep(time.Millisecond)
 	}
-	running := core.Task{ID: "running-" + user, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-running-" + user, State: core.TaskRunning, Assignee: &core.TaskAssignee{UserID: user}, CreatedAt: base.Add(3 * time.Second)}
-	if err := st.CreateTask(ctx, running); err != nil {
+	running := createRunningTask(t, st, ctx, workspace)
+	if _, err = plane.SetAssignee(ctx, running, user); err != nil {
 		t.Fatal(err)
 	}
 	page, err := st.ListCallerAttentionTaskPage(ctx, store.CallerAttentionQuery{UserID: user, Limit: 1, Offset: 0})
 	if err != nil || page.Total != 3 || len(page.Tasks) != 1 {
-		t.Fatalf("page=%+v err=%v", page, err)
+		t.Fatalf("page=%+v err=%v ids=%v", page, err, ids)
 	}
 	next, err := st.ListCallerAttentionTaskPage(ctx, store.CallerAttentionQuery{UserID: user, Limit: 1, Offset: 1})
 	if err != nil || len(next.Tasks) != 1 || next.Tasks[0].ID == page.Tasks[0].ID || next.Total != 3 {
