@@ -69,7 +69,9 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 		t.Fatal(err)
 	}
 	st := newStore(pool)
-	workspace := "lineage-query-" + strings.ToLower(t.Name())
+	// A per-run workspace keeps the 50 seeded links from colliding with the
+	// previous run's rows on a kept database.
+	workspace := "lineage-query-" + strings.ToLower(t.Name()) + "-" + core.NewTaskID()
 	if _, err = pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO workspaces (id,name) VALUES ($1,$1) ON CONFLICT DO NOTHING`, workspace); err != nil {
 		t.Fatal(err)
 	}
