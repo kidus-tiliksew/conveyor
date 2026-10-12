@@ -632,3 +632,60 @@ func TestApproveAtMergeGateUnmergedOrUnreadableStaysApproved(t *testing.T) {
 		})
 	}
 }
+
+func TestGateOffRunningAlreadyMergedUsesWriter(t *testing.T) {
+	ctx := forgeReconcileCtx()
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "running-merged", Workspace: "test", Repo: "app", Branch: "conveyor/running-merged",
+		State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, ApprovedHeadSHA: "accepted-head", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"verdict": "approve", "approved_head_sha": "accepted-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	d := newForgeDispatcher(st)
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 44, State: "closed", Merged: true, HeadSHA: "accepted-head", MergedBy: "github-operator"}, nil
+	}
+	forbidMergeCalls(t, d)
+	reconciled, err := d.ReconcileMergeReadiness(ctx)
+	if err != nil || reconciled != 1 {
+		t.Fatalf("reconciled=%d err=%v", reconciled, err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskMerged {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	if reconciledPayload(t, st, ctx, task.ID)["result"] != "already_merged" {
+		t.Fatal("already_merged result missing")
+	}
+}
+
+func TestReadMergeReadinessMergedTaskDoesNotRewriteDrift(t *testing.T) {
+	ctx := forgeReconcileCtx()
+	st := store.NewMemory()
+	task := core.Task{
+		ID: "already-merged", Workspace: "test", Repo: "app", Branch: "conveyor/already-merged",
+		State: core.TaskMerged, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "merged_head_mismatch", "pull_request": 8, "merged_head_sha": "other", "merge_commit_sha": "landed"})}); err != nil {
+		t.Fatal(err)
+	}
+	d := newForgeDispatcher(st)
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 8, State: "closed", Merged: true, HeadSHA: "other", MergeCommitSHA: "landed"}, nil
+	}
+	readiness, err := d.ReadMergeReadiness(ctx, task)
+	if err != nil || readiness.State != "MERGED" {
+		t.Fatalf("readiness=%+v err=%v", readiness, err)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "merge.failed"); count != 1 {
+		t.Fatalf("drift events=%d", count)
+	}
+}
