@@ -696,7 +696,7 @@ export interface TaskPolicyContract {
   verify_stage?: boolean
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats: WorkspaceReviewSeat[] }
+  review: { seats?: WorkspaceReviewSeat[] }
   refresh_review: 'delta' | 'full' | 'none'
 }
 

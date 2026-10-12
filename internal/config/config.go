@@ -661,15 +661,21 @@ type ExecutionSetup struct {
 
 // MarshalJSON persists and serves only the frozen pipeline-policy subset.
 // Legacy execution setups remain YAML-readable for client-local files and are
-// accepted by UnmarshalJSON solely to migrate existing task rows.
+// accepted by UnmarshalJSON solely to migrate existing task rows. Nil seats
+// omit the seats key (no frozen seat count), distinct from an empty frozen
+// panel; historical migration 099 reads an absent key as an empty array.
 func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
-	seats := make([]struct{}, len(s.Review.Seats))
+	var seats *[]struct{}
+	if s.Review.Seats != nil {
+		frozen := make([]struct{}, len(s.Review.Seats))
+		seats = &frozen
+	}
 	return json.Marshal(struct {
 		VerifyStage   bool              `json:"verify_stage,omitempty"`
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
-			Seats []struct{} `json:"seats"`
+			Seats *[]struct{} `json:"seats,omitempty"`
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review,omitempty"`
 	}{
@@ -682,7 +688,7 @@ func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 			"review":    s.ExecutionSettings.Review.TimeoutText,
 		},
 		Review: struct {
-			Seats []struct{} `json:"seats"`
+			Seats *[]struct{} `json:"seats,omitempty"`
 		}{Seats: seats},
 		RefreshReview: s.RefreshReview,
 	})
@@ -719,7 +725,11 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 	s.ExecutionSettings.Spec.TimeoutText = policy.StageTimeouts["spec"]
 	s.ExecutionSettings.Implementation.TimeoutText = policy.StageTimeouts["implement"]
 	s.ExecutionSettings.Review.TimeoutText = policy.StageTimeouts["review"]
-	s.Review.Seats = make([]ReviewSeat, len(policy.Review.Seats))
+	var seats []ReviewSeat
+	if policy.Review.Seats != nil {
+		seats = make([]ReviewSeat, len(policy.Review.Seats))
+	}
+	s.Review.Seats = seats
 	s.MaxBounces = policy.MaxBounces
 	s.RefreshReview = policy.RefreshReview
 	return nil
