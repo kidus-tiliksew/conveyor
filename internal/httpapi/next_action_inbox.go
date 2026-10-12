@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -51,10 +52,32 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	tasks, err := s.Store.ListTasksFiltered(r.Context(), filter)
+	items, err := s.readInbox(r.Context(), s.nextActionOptions(r), band, filter)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	total := len(items)
+	start := min(offset, total)
+	end := min(start+limit, total)
+	acts, err := s.Store.ListFactoryActs(r.Context(), time.Now().UTC().Add(-24*time.Hour), 100)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("X-Conveyor-Total", strconv.Itoa(total))
+	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))
+	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(offset))
+	writeJSON(w, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
+}
+
+// readInbox builds the operator inbox in server order. GET /v1/next-actions
+// and the MCP list_operator_inbox read share it, so the inbox has one
+// derivation (DEC-61; feature-operator-next-action NA-8).
+func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, band string, filter store.TaskFilter) ([]inboxItem, error) {
+	tasks, err := s.Store.ListTasksFiltered(ctx, filter)
+	if err != nil {
+		return nil, err
 	}
 	candidates := make([]core.Task, 0, len(tasks))
 	ids := make([]string, 0, len(tasks))
@@ -65,25 +88,21 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 		candidates = append(candidates, task)
 		ids = append(ids, task.ID)
 	}
-	projected, err := store.ReadNextActions(r.Context(), s.Store, candidates, s.nextActionOptions(r))
+	projected, err := store.ReadNextActions(ctx, s.Store, candidates, opts)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	proposals, err := s.Store.ListPendingProposals(r.Context())
+	proposals, err := s.Store.ListPendingProposals(ctx)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	blockers, err := s.Store.ListDependencyBlockers(r.Context(), ids)
+	blockers, err := s.Store.ListDependencyBlockers(ctx, ids)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	markers, err := s.Store.ListActivityMarkersForTasks(r.Context(), ids)
+	markers, err := s.Store.ListActivityMarkersForTasks(ctx, ids)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	lastEvent := map[string]time.Time{}
 	for _, marker := range markers {
@@ -113,19 +132,9 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 		items = filtered
 	}
 	sortInbox(items)
-	total := len(items)
-	start := min(offset, total)
-	end := min(start+limit, total)
-	acts, err := s.Store.ListFactoryActs(r.Context(), time.Now().UTC().Add(-24*time.Hour), 100)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(total))
-	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))
-	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(offset))
-	writeJSON(w, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
+	return items, nil
 }
+
 func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.NextAction, lastEvent map[string]time.Time, dependedOn, folded map[string]bool) []inboxItem {
 	var items []inboxItem
 	for _, task := range candidates {

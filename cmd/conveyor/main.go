@@ -66,6 +66,8 @@ func main() {
 		skillsCmd(),
 		repoCmd(),
 		taskCmd(),
+		inboxCmd(),
+		orderCmd(),
 		artifactCmd(),
 		kitCmd(),
 		verificationCmd(),
@@ -405,6 +407,7 @@ func taskCmd() *cobra.Command {
 
 	cmd.AddCommand(newCmd, listCmd, showCmd,
 		taskWaitCmd(),
+		taskStatusCmd(),
 		restartTaskCmd(),
 		closeTaskCmd(),
 		addTaskDependencyCmd(),

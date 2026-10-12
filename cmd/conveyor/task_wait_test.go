@@ -44,6 +44,9 @@ type taskWaitStep struct {
 	gate      *workerservice.TaskRunGate
 	order     core.WorkOrder
 	proposals []workerservice.TaskRunProposal
+	// nextAction, when set, is embedded as next_action in the task read, as
+	// GET /v1/tasks/{id} does.
+	nextAction *nextActionView
 }
 
 type taskWaitFixture struct {
@@ -106,6 +109,13 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 			panic(http.ErrAbortHandler)
 		case step.status != 0:
 			http.Error(w, http.StatusText(step.status), step.status)
+			return
+		}
+		if step.nextAction != nil {
+			_ = json.NewEncoder(w).Encode(struct {
+				core.Task
+				NextAction *nextActionView `json:"next_action"`
+			}{core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title}, step.nextAction})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title})
@@ -702,4 +712,174 @@ func TestTaskWaitMergeReadinessChangeEndsWait(t *testing.T) {
 	if !errors.As(err, &timedOut) || !strings.Contains(human.String(), "pending gate:      merge_execution (readiness unavailable)\n") {
 		t.Fatalf("err=%v output:\n%s", err, human.String())
 	}
+}
+
+func untilAction(label, actor, kind, stage string) *nextActionView {
+	action := &nextActionView{Label: label, Actor: actor, Kind: kind}
+	if stage != "" {
+		action.CurrentOrder = &nextActionOrder{ID: "o-" + stage, Stage: stage}
+	}
+	return action
+}
+
+func runTaskWaitUntil(t *testing.T, f *taskWaitFixture, until string, timeout time.Duration) (taskWaitResult, string, error) {
+	t.Helper()
+	var out, progress bytes.Buffer
+	options := taskWaitTestOptions(timeout)
+	options.until = until
+	options.progress = &progress
+	err := runTaskWait(t.Context(), f.client(), &out, taskWaitTestTaskID, true, options)
+	var result taskWaitResult
+	if out.Len() > 0 {
+		if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+			t.Fatalf("decode %q: %v", out.String(), decodeErr)
+		}
+	}
+	return result, progress.String(), err
+}
+
+// TestTaskWaitUntil covers --until targets (req-operator-next-action AC-5.4).
+func TestTaskWaitUntil(t *testing.T) {
+	t.Run("operator reached after intermediate changes", func(t *testing.T) {
+		f := newTaskWaitFixture(t,
+			taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")},
+			// Label-only change: no line, and the wait does not end.
+			taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing (attempt 2)", "agent", "running", "implement")},
+			// State and stage change: one line, still no end.
+			taskWaitStep{state: core.TaskQueued, nextAction: untilAction("Implementing (attempt 2)", "agent", "running", "review")},
+			// Kind change with the same label: one line.
+			taskWaitStep{state: core.TaskQueued, nextAction: untilAction("Implementing (attempt 2)", "agent", "review_pending", "review")},
+			taskWaitStep{state: core.TaskAwaiting, nextAction: untilAction("Merge approval pending", "operator", "merge_approval", "")},
+		)
+		result, progress, err := runTaskWaitUntil(t, f, "operator", 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Reason != taskWaitReasonReached || result.TimedOut || result.Until != "operator" || result.NextAction == nil || result.NextAction.Actor != "operator" {
+			t.Fatalf("result = %+v", result)
+		}
+		want := strings.Join([]string{
+			"2026-10-04T08:00:00Z Implementing: actor=agent kind=running stage=implement",
+			"2026-10-04T08:00:00Z Implementing (attempt 2): actor=agent kind=running stage=review",
+			"2026-10-04T08:00:00Z Implementing (attempt 2): actor=agent kind=review_pending stage=review",
+			"2026-10-04T08:00:00Z Merge approval pending: actor=operator kind=merge_approval stage=none",
+			"",
+		}, "\n")
+		if progress != want {
+			t.Fatalf("progress:\n%s\nwant:\n%s", progress, want)
+		}
+		if f.taskReads() != 5 {
+			t.Fatalf("task reads = %d, want 5", f.taskReads())
+		}
+	})
+	t.Run("terminal reached", func(t *testing.T) {
+		f := newTaskWaitFixture(t,
+			taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")},
+			taskWaitStep{state: core.TaskQueued, nextAction: untilAction("Queued", "agent", "queued", "review")},
+			taskWaitStep{state: core.TaskMerged, nextAction: untilAction("Merged", "none", "merged", "")},
+		)
+		result, _, err := runTaskWaitUntil(t, f, "terminal", 5*time.Second)
+		if err != nil || result.Reason != taskWaitReasonReached || result.State != core.TaskMerged {
+			t.Fatalf("err=%v result=%+v", err, result)
+		}
+	})
+	t.Run("stage reached", func(t *testing.T) {
+		f := newTaskWaitFixture(t,
+			taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Planning", "agent", "running", "spec")},
+			taskWaitStep{state: core.TaskAwaiting, nextAction: untilAction("Plan approval pending", "operator", "plan_approval", "spec")},
+			taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")},
+		)
+		result, _, err := runTaskWaitUntil(t, f, "stage=implement", 5*time.Second)
+		if err != nil || result.Reason != taskWaitReasonReached || result.NextAction == nil || result.NextAction.Stage != "implement" || f.taskReads() != 3 {
+			t.Fatalf("err=%v result=%+v reads=%d", err, result, f.taskReads())
+		}
+	})
+	t.Run("terminal before target ends with terminal", func(t *testing.T) {
+		f := newTaskWaitFixture(t,
+			taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")},
+			taskWaitStep{state: core.TaskClosed, nextAction: untilAction("Closed", "none", "closed", "")},
+		)
+		result, _, err := runTaskWaitUntil(t, f, "operator", 5*time.Second)
+		if err != nil || result.Reason != taskWaitReasonTerminal {
+			t.Fatalf("err=%v result=%+v", err, result)
+		}
+	})
+	t.Run("never reached times out", func(t *testing.T) {
+		f := newTaskWaitFixture(t, taskWaitStep{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")})
+		result, progress, err := runTaskWaitUntil(t, f, "stage=review", 50*time.Millisecond)
+		var timedOut *taskWaitTimeoutError
+		if !errors.As(err, &timedOut) || !result.TimedOut || result.Reason != taskWaitReasonTimeout {
+			t.Fatalf("err=%v result=%+v", err, result)
+		}
+		if strings.Count(progress, "\n") != 1 {
+			t.Fatalf("unchanged polls printed lines:\n%s", progress)
+		}
+	})
+	t.Run("invalid until fails before the first read", func(t *testing.T) {
+		for _, until := range []string{"bogus", "stage=", "stage=deploy", "stage=gate"} {
+			f := newTaskWaitFixture(t, taskWaitStep{state: core.TaskRunning})
+			_, _, err := runTaskWaitUntil(t, f, until, time.Second)
+			if err == nil || !strings.Contains(err.Error(), "--until") || f.taskReads() != 0 {
+				t.Fatalf("until=%q err=%v reads=%d", until, err, f.taskReads())
+			}
+		}
+	})
+	t.Run("failed first read fails", func(t *testing.T) {
+		f := newTaskWaitFixture(t, taskWaitStep{status: http.StatusNotFound})
+		_, _, err := runTaskWaitUntil(t, f, "operator", time.Second)
+		var timedOut *taskWaitTimeoutError
+		if err == nil || errors.As(err, &timedOut) || !strings.Contains(err.Error(), "task not found") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("process exit statuses", func(t *testing.T) {
+		for _, tc := range []struct {
+			args   []string
+			steps  []taskWaitStep
+			status int
+			reads  int
+		}{
+			{[]string{"--until", "operator"}, []taskWaitStep{{state: core.TaskAwaiting, nextAction: untilAction("Plan approval pending", "operator", "plan_approval", "spec")}}, 0, 1},
+			{[]string{"--until", "operator", "--timeout", "200ms"}, []taskWaitStep{{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")}}, 2, -1},
+			{[]string{"--until", "bogus"}, []taskWaitStep{{state: core.TaskRunning}}, 1, 0},
+		} {
+			f := newTaskWaitFixture(t, tc.steps...)
+			_, status := runConveyorMain(t, f.server.URL, append([]string{"task", "wait", taskWaitTestTaskID}, tc.args...)...)
+			if status != tc.status || (tc.reads >= 0 && f.taskReads() != tc.reads) {
+				t.Fatalf("args=%v exit=%d want %d reads=%d", tc.args, status, tc.status, f.taskReads())
+			}
+		}
+	})
+	t.Run("without until output is unchanged", func(t *testing.T) {
+		steps := []taskWaitStep{
+			{state: core.TaskRunning, nextAction: untilAction("Implementing", "agent", "running", "implement")},
+			{state: core.TaskQueued, nextAction: untilAction("Queued", "agent", "queued", "implement")},
+		}
+		var out bytes.Buffer
+		if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, true, taskWaitTestOptions(5*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		wantJSON := `{"task_id":"261004-abc123","state":"queued","pending_gate":null,"next_order":null,"pending_proposals":[],"observed_at":"2026-10-04T08:00:00Z","reason":"changed","timed_out":false}` + "\n"
+		if out.String() != wantJSON {
+			t.Fatalf("json = %q\nwant %q", out.String(), wantJSON)
+		}
+		out.Reset()
+		if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, false, taskWaitTestOptions(5*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		wantHuman := strings.Join([]string{
+			"task:              261004-abc123",
+			"state:             queued",
+			"pending gate:      none",
+			"next order:        none",
+			"pending proposals: none",
+			"observed at:       2026-10-04T08:00:00Z",
+			"wait ended:        changed",
+			"timed out:         false",
+			"",
+		}, "\n")
+		if out.String() != wantHuman {
+			t.Fatalf("human:\n%s\nwant:\n%s", out.String(), wantHuman)
+		}
+	})
 }

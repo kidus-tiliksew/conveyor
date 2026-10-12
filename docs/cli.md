@@ -69,7 +69,8 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--hold`, `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
 | `conveyor task list` | List tasks: ID, state, repo, source, title. |
 | `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
-| `conveyor task wait <id>` | Block until the task's state, pending gate, next claimable order, or pending proposals change, the task is merged, closed, or parked, or the timeout elapses. `--timeout` (default `5m`, must be positive) and `--json`. See [task wait](#task-wait). |
+| `conveyor task status <id>` | Print the server's next-action statement for the task (`GET /v1/tasks/{id}/next-action`). `--json` prints the server body verbatim. See [task status](#task-status). |
+| `conveyor task wait <id>` | Block until the task's state, pending gate, next claimable order, or pending proposals change, the task is merged, closed, or parked, or the timeout elapses. `--timeout` (default `5m`, must be positive), `--json`, and `--until operator\|terminal\|stage=<stage>`. See [task wait](#task-wait). |
 | `conveyor task restart <id>` | Start a non-terminal task over. Required `--reason <text>`; optional `--note <text>` or `--note-file <path>`, `--request-id <id>`, and `--yes`. Preview affected orders, proposals, and the open pull request, then require terminal confirmation. |
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
@@ -101,6 +102,35 @@ server's message and exit non-zero.
 A task carries no execution setup. `conveyor config init-execution` and
 `conveyor setup` manage your local execution settings, and `conveyor run
 --setup <name>` selects one for a run on your machine.
+
+### task status
+
+```sh
+conveyor task status <task-id> [--json]
+```
+
+Reads `GET /v1/tasks/{id}/next-action` and prints, in order: the catalogue
+label and summary, the actor (with `judgment required` when the server says
+so), the question, each offered choice with its effect and CLI equivalent
+(marked `not permitted for this credential` when the server reports
+`allowed: false`), what happens if ignored, the deadline (or `none`),
+blockers, the current work order, the attempt, and refused choices. Machine
+identifiers (`kind`, gate kind, reason code, stall reason, release outcome)
+print last. Only choices present in the payload print; the CLI never
+derives one. `--json` writes the server body verbatim.
+
+| Choice | CLI equivalent |
+|---|---|
+| `approve`, `redirect`, `approve_revision`, `decline` on `/v1/tasks/{id}/review` | `conveyor run <task-id>` (its gate prompt posts the same review act) |
+| `merge` | `conveyor task merge <task-id>` |
+| `request_changes` | `conveyor task request-changes <task-id>` |
+| `start_over` | `conveyor task restart <task-id>` |
+| `close` | `conveyor task close <task-id>` |
+| `remove_dependency` | `conveyor task unlink <task-id> <dependency-id>` |
+| `recover` on `/v1/work-orders/{order_id}/recover` | `conveyor order recover <order-id>` |
+| `answer` | `conveyor order recover <order-id> --direction "<answer>"` |
+| `recover` or `redispatch` on `/v1/tasks/{id}/redispatch` | `conveyor order redispatch <current-order-id>` when a current order exists |
+| any other choice | none; the rendered `method path` prints with "use the dashboard" |
 
 ### task wait
 
@@ -144,11 +174,49 @@ object. On timeout, the values are the last successful observation, and
 `last_read_error` names the most recent failed read when the final poll
 failed.
 
+With `--until operator|terminal|stage=<stage>`, the wait ignores other
+changes and ends with reason `reached` when the task's `next_action.actor`
+is `operator`, when the task is merged, closed, or parked (`terminal`), or
+when `next_action.current_order.stage` equals the named work-order stage
+(`spec`, `implement`, `verify`, or `review`). Each poll decodes the
+`next_action` embedded in `GET /v1/tasks/{id}`; no extra request is made. A
+task that turns terminal before another target ends with reason `terminal`.
+Every observed change of actor, kind, or current-order stage prints one line,
+`<observed_at> <label>: actor=<actor> kind=<kind> stage=<stage>` (to stderr
+under `--json`); label-only changes print nothing. The result adds
+`next_action` and `until`. An invalid `--until` value exits `1` before the
+first read. Without `--until`, output is unchanged.
+
 | Exit status | Meaning |
 |---|---|
-| `0` | The observation changed, or the task is merged, closed, or parked. |
+| `0` | The observation changed, the `--until` target was reached, or the task is merged, closed, or parked. |
 | `2` | The timeout elapsed. The result is printed and nothing is written to stderr. |
 | `1` | Failure: invalid arguments or timeout, configuration, authentication, authorization, not found, malformed response, or a failed first observation. |
+
+## inbox
+
+```sh
+conveyor inbox [--band decisions|blocked|automatic] [--limit N] [--offset N] [--json]
+```
+
+Reads `GET /v1/next-actions`, passing `band`, `limit`, and `offset` through.
+Items print in server order under band headings; the CLI never sorts, bands,
+or filters. Blocked items name each blocker's task ID and title. The listing
+ends with `showing <n> of <total>` (from `X-Conveyor-Total`) and the count of
+recent factory acts; `--band automatic` also lists each act. `--json` writes
+the server body verbatim.
+
+## order
+
+| Command | What it does |
+|---|---|
+| `conveyor order recover <order-id>` | Post `{request_id, direction}` to `POST /v1/work-orders/{id}/recover`. Optional `--direction <text>`, `--request-id <id>`, and `--json`. |
+| `conveyor order redispatch <order-id>` | Resolve the order's task from `GET /v1/work-orders`, then post to `POST /v1/tasks/{task_id}/redispatch`. An order missing from the list exits `1` with `work order <id> not found`. Optional `--request-id <id>` and `--json`. |
+
+Both commands generate a 32-hex request ID unless `--request-id` is given and
+send it as body `request_id` and as `X-Request-Id` and `X-Idempotency-Key`
+headers. The server enforces the `recover_work` capability; a refusal prints
+the server's status and message unchanged and exits `1`.
 
 ## run
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -42,8 +43,14 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, tasks []core
 }
 
 func (s *Server) nextActionOptions(r *http.Request) store.NextActionOptions {
+	return s.nextActionOptionsFor(r.Context())
+}
+
+// nextActionOptionsFor derives projection options from the request
+// credential, so REST routes and MCP reads state one next action (DEC-61).
+func (s *Server) nextActionOptionsFor(ctx context.Context) store.NextActionOptions {
 	opts := store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{}}
-	credential, ok := store.CredentialFromContext(r.Context())
+	credential, ok := store.CredentialFromContext(ctx)
 	if ok && credential.Kind == core.CredentialUser && credential.Scope == core.CredentialScopeOperator && s.Memberships == nil {
 		for _, capability := range []core.Capability{core.CapabilityOperateGates, core.CapabilityRecoverWork, core.CapabilityRequestChanges, core.CapabilityConfirmDocuments} {
 			opts.Capabilities[capability] = true
