@@ -113,7 +113,9 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 		cfg = cfg.WithPolicy(current.SetupContract)
 	}
 	if current.NextStage == core.StageVerify {
-		return d.runTaskForSnapshot(ctx, current)
+		// Readiness has just observed this head and holds the task lock, so
+		// the pre-dispatch base check is skipped here.
+		return d.dispatchSnapshot(ctx, current, false)
 	}
 	return d.createReviewRound(ctx, cfg, current, cfg.Routing.Stages[string(core.StageReview)])
 }
@@ -144,25 +146,9 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 	if !ok || repo.GitHub == "" {
 		return result, fmt.Errorf("repository %q does not configure GitHub", current.Repo)
 	}
-	var pr github.PullRequest
-	for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
-		pr, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
-		if err != nil {
-			if category := github.ErrorCategory(err); category != "" {
-				return result, fmt.Errorf("%s: %w", category, err)
-			}
-			return result, err
-		}
-		if pr.Mergeable != "UNKNOWN" {
-			break
-		}
-		if attempt < 2 {
-			select {
-			case <-ctx.Done():
-				return result, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
+	pr, err := d.readPullRequestMergeability(ctx, repo.GitHub, current.Branch)
+	if err != nil {
+		return result, err
 	}
 	result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
 	// A queued or claimed conflict-fix order owns the conflict episode and its
@@ -182,11 +168,11 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		return result, nil
 	}
 	if result.State == "CONFLICTING" {
-		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
+		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA, "merge-conflict"); err != nil {
 			return result, err
 		}
 		// Gate-on and gate-off both dispatch. This read never requests a merge.
-		_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg, false)
+		_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg, false, "")
 		return result, err
 	}
 	if err = d.clearMergeConflictEpisode(ctx, current, result.State, pr.HeadSHA); err != nil {
@@ -199,6 +185,35 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		result.State = "STALE"
 	}
 	return result, nil
+}
+
+// readPullRequestMergeability reads the branch pull request through the App at
+// most three times, waiting 100ms then 200ms while GitHub still computes
+// mergeability. A forge error is returned with its category; an answer that is
+// still UNKNOWN after the third read is returned as is (component-submission-merge).
+func (d *Dispatcher) readPullRequestMergeability(ctx context.Context, githubRepo, branch string) (github.PullRequest, error) {
+	var pr github.PullRequest
+	var err error
+	for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
+		pr, err = d.ViewPullRequest(ctx, githubRepo, branch)
+		if err != nil {
+			if category := github.ErrorCategory(err); category != "" {
+				return github.PullRequest{}, fmt.Errorf("%s: %w", category, err)
+			}
+			return github.PullRequest{}, err
+		}
+		if pr.Mergeable != "UNKNOWN" {
+			break
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return github.PullRequest{}, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return pr, nil
 }
 
 type mergeConflictEpisode struct {
@@ -309,7 +324,7 @@ func terminalConflictFixAttempt(order core.WorkOrder) bool {
 	}
 }
 
-func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.Task, approvedHead, newHead string) error {
+func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.Task, approvedHead, newHead, reasonCode string) error {
 	episode, active, err := d.currentMergeConflictEpisode(ctx, task.ID)
 	if err != nil {
 		return err
@@ -317,7 +332,7 @@ func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.T
 	if active && episode.ApprovedHead == approvedHead && episode.NewHead == newHead {
 		return nil
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": "merge-conflict", "approved_head": approvedHead, "new_head": newHead})})
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": reasonCode, "approved_head": approvedHead, "new_head": newHead})})
 }
 
 func (d *Dispatcher) clearMergeConflictEpisode(ctx context.Context, task core.Task, readiness, head string) error {
@@ -359,16 +374,21 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 		if approved == "" {
 			approved = current.ReviewedHeadSHA
 		}
-		if lockedErr = d.recordMergeConflictBlocked(lockedCtx, current, approved, pr.HeadSHA); lockedErr != nil {
+		if lockedErr = d.recordMergeConflictBlocked(lockedCtx, current, approved, pr.HeadSHA, "merge-conflict"); lockedErr != nil {
 			return lockedErr
 		}
-		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, true)
+		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, true, "")
 		return lockedErr
 	})
 	return result, err
 }
 
-func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config, operatorRetry bool) (core.WorkOrder, error) {
+// dispatchConflictFixLocked admits one conflict-fix implement order under the
+// episode budget. An empty baselineHead is the approved-task path: the fix's
+// baseline is the approved head, bound first if absent. A non-empty
+// baselineHead is the pre-review path (feature-bounded-automatic-recovery
+// AR-4): the conflicting submitted head is the baseline and no approval is bound.
+func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config, operatorRetry bool, baselineHead string) (core.WorkOrder, error) {
 	active, ok, err := d.activeImplementationWorkOrder(ctx, current.ID, "merge-conflict")
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -384,11 +404,14 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		return core.WorkOrder{}, err
 	}
 	if !present {
-		approved := current.ApprovedHeadSHA
-		if approved == "" {
-			approved = current.ReviewedHeadSHA
+		approved, reasonCode := current.ApprovedHeadSHA, "pre-review-conflict"
+		if baselineHead == "" {
+			reasonCode = "merge-conflict"
+			if approved == "" {
+				approved = current.ReviewedHeadSHA
+			}
 		}
-		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
+		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA, reasonCode); err != nil {
 			return core.WorkOrder{}, err
 		}
 		episode = mergeConflictEpisode{ApprovedHead: approved, NewHead: pr.HeadSHA}
@@ -427,7 +450,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if !operatorRetry && (dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt))) {
 		return core.WorkOrder{}, nil
 	}
-	if current.ApprovedHeadSHA == "" {
+	if baselineHead == "" && current.ApprovedHeadSHA == "" {
 		head := current.ReviewedHeadSHA
 		if head == "" {
 			head = pr.HeadSHA
@@ -438,7 +461,11 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		current.ApprovedHeadSHA = head
 	}
 	systemCtx := store.WithActor(ctx, store.SystemActor("system"))
-	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
+	comment, baseline, newHead := "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review.", current.ApprovedHeadSHA, pr.HeadSHA
+	if baselineHead != "" {
+		comment, baseline, newHead = "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit again for verification and review.", baselineHead, baselineHead
+	}
+	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: comment}
 	if current.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(current.SetupContract)
 	}
@@ -462,8 +489,8 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, ReasonCode: "merge-conflict", BaselineSHA: current.ApprovedHeadSHA, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
-	request := store.ConflictFixRequest{TaskID: current.ID, Job: job, WorkOrder: order, Intervention: intervention, ApprovedHead: current.ApprovedHeadSHA, NewHead: pr.HeadSHA}
+	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, ReasonCode: "merge-conflict", BaselineSHA: baseline, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
+	request := store.ConflictFixRequest{TaskID: current.ID, Job: job, WorkOrder: order, Intervention: intervention, ApprovedHead: current.ApprovedHeadSHA, NewHead: newHead}
 	var result store.ConflictFixResult
 	_, err = taskops.ExecuteWorkOrder(systemCtx, d.Store, current.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
 		var commandErr error
@@ -616,10 +643,10 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return fmt.Errorf("pull request %s#%d merge readiness is still pending", repo.GitHub, pr.Number)
 	}
 	if pr.Mergeable == "CONFLICTING" {
-		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA); err != nil {
+		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA, "merge-conflict"); err != nil {
 			return err
 		}
-		order, dispatchErr := d.dispatchConflictFixLocked(ctx, current, pr, cfg, false)
+		order, dispatchErr := d.dispatchConflictFixLocked(ctx, current, pr, cfg, false, "")
 		if !current.MergeApproval {
 			return dispatchErr
 		}
