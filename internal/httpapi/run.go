@@ -16,6 +16,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
@@ -356,45 +357,23 @@ func (s *Server) taskRunAwaitingGate(ctx context.Context, task core.Task) (*work
 		}
 	}
 
-	if revision, pending, revisionErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, task.ID); revisionErr != nil {
-		return nil, revisionErr
-	} else if pending {
-		return &workerservice.TaskRunGate{
-			Kind: "plan_revision", Label: "plan revision gate",
-			Summary:     fmt.Sprintf("implementation requested revision of execution plan v%d", revision.PlanVersion),
-			PlanVersion: revision.PlanVersion, Rationale: revision.Rationale,
-			CanOperate: canOperate, CanRequestChanges: canOperate,
-		}, nil
-	}
-
-	command, err := latestTaskGateCommand(ctx, s.Store, task.ID)
+	action, err := store.ReadNextAction(ctx, s.Store, task.ID, store.NextActionOptions{Capabilities: map[core.Capability]bool{}})
 	if err != nil {
 		return nil, err
 	}
-	switch command {
-	case core.TaskGateSpec:
-		spec, found, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID)
-		if specErr != nil {
-			return nil, specErr
-		}
-		gate := &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan", CanOperate: canOperate, CanRequestChanges: canOperate}
-		if found {
-			gate.SpecVersion = spec.Version
-			gate.Summary = fmt.Sprintf("submitted execution plan v%d", spec.Version)
-		}
-		return gate, nil
-	case core.TaskGateMerge:
-		summary := "reviewed task branch"
-		if task.Branch != "" {
-			summary = task.Branch
-			if task.BaseBranch != "" {
-				summary += " into " + task.BaseBranch
-			}
-		}
-		return &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: summary, CanOperate: canOperate, CanRequestChanges: canRequestChanges}, nil
-	default:
-		return &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: fmt.Sprintf("task is %s after %s", task.State, task.NextStage), CanOperate: canOperate, CanRequestChanges: canOperate}, nil
+	entry, ok := nextaction.Lookup(action.Kind, action.Details.StallReason, action.Details.ReleaseOutcome, action.Details.GateKind)
+	if !ok || entry.RunGate == nil {
+		return &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: action.Summary, CanOperate: canOperate, CanRequestChanges: canOperate}, nil
 	}
+	gate := &workerservice.TaskRunGate{Kind: entry.RunGate.Kind, Label: entry.RunGate.Label, Summary: action.Summary, CanOperate: canOperate, CanRequestChanges: canOperate || canRequestChanges}
+	if action.Kind == nextaction.KindPlanApproval {
+		if spec, found, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID); specErr != nil {
+			return nil, specErr
+		} else if found {
+			gate.SpecVersion = spec.Version
+		}
+	}
+	return gate, nil
 }
 
 // taskRunMergeReadinessReuse bounds forge reads from polling runs and waits:
@@ -557,26 +536,6 @@ func (s *Server) taskRunCapability(ctx context.Context, capability core.Capabili
 		return s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, capability)
 	}
 	return credential.Scope == core.CredentialScopeOperator, nil
-}
-
-func latestTaskGateCommand(ctx context.Context, st store.Store, taskID string) (core.TaskCommand, error) {
-	events, err := st.ListEvents(ctx, taskID)
-	if err != nil {
-		return "", err
-	}
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].Kind != "task.state_changed" {
-			continue
-		}
-		var transition struct {
-			Command core.TaskCommand `json:"command"`
-		}
-		if err := json.Unmarshal(events[index].Payload, &transition); err != nil {
-			return "", fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
-		}
-		return transition.Command, nil
-	}
-	return "", nil
 }
 
 func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerservice.DispatchOrder, bool, error) {

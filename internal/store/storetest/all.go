@@ -109,6 +109,10 @@ func RunAll(t *testing.T, factory Factory) {
 		x := factory.fresh(t, repos)
 		return RequirementFixture{x.Backend, x.Context, x.Workspace}
 	}
+	run("NextAction", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunNextActionConformance(t, x.Backend, x.Context)
+	})
 	run("Blueprint", func(t *testing.T) {
 		RunBlueprintConformance(t, func(t *testing.T, repos []config.Repo) BlueprintFixture {
 			x := factory.fresh(t, repos)
