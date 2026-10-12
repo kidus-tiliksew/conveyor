@@ -116,7 +116,7 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	}
 	conflict := mergeConflictFromEvents(events, orders)
 	input := nextaction.Input{
-		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders),
+		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
 		ClaimWaiting: claimWaiting(proposals, orders, task.ID),
 		Blockers:     blockers, MergeConflict: conflict, Recovery: map[string]nextaction.AutomaticRecovery{},
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
@@ -142,6 +142,7 @@ func markersFrom(marker ActivityMarker, events []core.Event, orders []core.WorkO
 	for _, order := range orders {
 		if order.Checkpoint != nil && order.Checkpoint.DecisionRequest != "" {
 			out.CheckpointDecision = true
+			out.Checkpoint = order.Checkpoint.DecisionRequest
 		}
 		if order.Checkpoint != nil && order.Checkpoint.Verification != nil {
 			out.VerificationDisposition = true

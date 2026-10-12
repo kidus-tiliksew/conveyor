@@ -191,7 +191,7 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 			t.Fatalf("details missing %s in %s", field, response.Body.String())
 		}
 	}
-	working := core.Task{ID: "working", Workspace: "demo", Repo: "conveyor", Branch: "working", State: core.TaskRunning}
+	working := core.Task{ID: "working", Workspace: "demo", Repo: "conveyor", Branch: "working", State: core.TaskRunning, Assignee: &core.TaskAssignee{UserID: "owner"}}
 	if err := st.CreateTask(ctx, working); err != nil {
 		t.Fatal(err)
 	}
@@ -201,29 +201,89 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "working-order", TaskID: working.ID, JobID: "working-job", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueDeadline: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, "working-order", core.WorkOrderClaim{ClaimantID: "agent", SessionID: "session", Agent: "omp", Model: "model", Lease: time.Hour}); err != nil {
+	claimedOrder, err := storetest.For(st).ClaimWorkOrder(ctx, "working-order", core.WorkOrderClaim{ClaimantID: "agent", OwnerUserID: "owner", SessionID: "session", Agent: "omp", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
 		t.Fatal(err)
 	}
-	claimed := httptest.NewRecorder()
-	server.Handler().ServeHTTP(claimed, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/working/next-action?workspace_id=demo", nil)))
-	var claimedBody map[string]json.RawMessage
-	if claimed.Code != http.StatusOK || json.Unmarshal(claimed.Body.Bytes(), &claimedBody) != nil {
-		t.Fatalf("working status=%d body=%s", claimed.Code, claimed.Body.String())
+	claimedOrder.Progress = "indexing"
+	claimedOrder.LastAgentActivityAt = time.Now().UTC()
+	if err := storetest.For(st).UpdateWorkOrder(ctx, claimedOrder); err != nil {
+		t.Fatal(err)
 	}
-	var order map[string]json.RawMessage
-	var attempt map[string]json.RawMessage
-	if json.Unmarshal(claimedBody["current_order"], &order) != nil || json.Unmarshal(claimedBody["attempt"], &attempt) != nil {
-		t.Fatal(claimed.Body.String())
-	}
+	claimedBody := nextActionObject(t, server, "working")
+	order := objectField(t, claimedBody, "current_order")
+	attempt := objectField(t, claimedBody, "attempt")
+	details = objectField(t, claimedBody, "details")
 	for _, field := range []string{"id", "stage", "state", "queue_deadline", "execution_deadline", "lease_expires_at"} {
-		if _, ok := order[field]; !ok {
-			t.Fatalf("current_order missing %s in %s", field, claimed.Body.String())
-		}
+		requireRaw(t, order, field)
 	}
-	for _, field := range []string{"harness", "model", "session_id", "claimed_at", "last_check_in", "lease_expires_at", "elapsed_seconds"} {
-		if _, ok := attempt[field]; !ok {
-			t.Fatalf("attempt missing %s in %s", field, claimed.Body.String())
-		}
+	for _, field := range []string{"user", "claimed_by", "attempt_id", "progress", "harness", "model", "session_id", "claimed_at", "last_check_in", "lease_expires_at", "elapsed_seconds"} {
+		requireRaw(t, attempt, field)
+	}
+	if string(attempt["user"]) != `"owner"` || string(attempt["claimed_by"]) != `"agent"` || string(attempt["progress"]) != `"indexing"` || string(attempt["attempt_id"]) == `""` {
+		t.Fatalf("attempt identity %s", claimedBody)
+	}
+	requireRaw(t, details, "order_ids")
+
+	if err := st.CreateTask(ctx, core.Task{ID: "stalled", Workspace: "demo", Repo: "conveyor", Branch: "stalled", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "stalled-job", TaskID: "stalled", Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "stalled-order", TaskID: "stalled", JobID: "stalled-job", Stage: core.StageImplement, RecoveryRefusal: "operator must recover this"}); err != nil {
+		t.Fatal(err)
+	}
+	stalledBody := nextActionObject(t, server, "stalled")
+	stalledOrder := objectField(t, stalledBody, "current_order")
+	if string(requireRaw(t, stalledOrder, "recovery_refusal")) != `"operator must recover this"` {
+		t.Fatalf("recovery_refusal %s", stalledBody)
+	}
+	if string(requireRaw(t, objectField(t, stalledBody, "details"), "stall_reason")) != `"unclaimable"` {
+		t.Fatalf("stall_reason %s", stalledBody)
+	}
+
+	if err := st.CreateTask(ctx, core.Task{ID: "question", Workspace: "demo", Repo: "conveyor", Branch: "question", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "question-job", TaskID: "question", Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "question-order", TaskID: "question", JobID: "question-job", Stage: core.StageImplement, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "which API?"}}); err != nil {
+		t.Fatal(err)
+	}
+	questionDetails := objectField(t, nextActionObject(t, server, "question"), "details")
+	if string(requireRaw(t, questionDetails, "release_outcome")) != `"checkpoint"` || string(requireRaw(t, questionDetails, "checkpoint")) != `"which API?"` {
+		t.Fatalf("checkpoint details %s", questionDetails)
+	}
+	requireRaw(t, questionDetails, "order_ids")
+
+	if err := st.CreateTask(ctx, core.Task{ID: "revision-shape", Workspace: "demo", Repo: "conveyor", Branch: "revision-shape", State: core.TaskAwaiting, GateKind: core.GateKindPlanRevision}); err != nil {
+		t.Fatal(err)
+	}
+	refusals := requireRaw(t, objectField(t, nextActionObject(t, server, "revision-shape"), "details"), "refusals")
+	if !strings.Contains(string(refusals), `"choice"`) || !strings.Contains(string(refusals), `"text"`) {
+		t.Fatalf("refusals %s", refusals)
+	}
+
+	requirement, requirementVersion, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-shape", Title: "Shape"}, core.RequirementVersion{
+		Content: "# Shape", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pin the field."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, requirementVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateTask(ctx, core.Task{ID: "proposal", Workspace: "demo", Repo: "conveyor", Branch: "proposal", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: "proposal", TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID, Source: core.TaskContextProposalTriage, Justification: "The task implements REQ-1."}); err != nil || suppressed {
+		t.Fatalf("proposal suppressed=%t err=%v", suppressed, err)
+	}
+	proposals := requireRaw(t, objectField(t, nextActionObject(t, server, "proposal"), "details"), "pending_proposals")
+	if !strings.Contains(string(proposals), `"tier"`) || !strings.Contains(string(proposals), `"id"`) {
+		t.Fatalf("pending_proposals %s", proposals)
 	}
 }
 
@@ -254,4 +314,33 @@ func decodeItems(t *testing.T, response *httptest.ResponseRecorder) map[string]c
 		out[item.Task.ID] = compactView{Actor: item.NextAction.Actor, Kind: item.NextAction.Kind, Label: item.NextAction.Label, Needs: item.NeedsAttention}
 	}
 	return out
+}
+
+func nextActionObject(t *testing.T, server *Server, id string) map[string]json.RawMessage {
+	t.Helper()
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+id+"/next-action?workspace_id=demo", nil)))
+	var body map[string]json.RawMessage
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
+		t.Fatalf("%s status=%d body=%s", id, response.Code, response.Body.String())
+	}
+	return body
+}
+
+func objectField(t *testing.T, body map[string]json.RawMessage, field string) map[string]json.RawMessage {
+	t.Helper()
+	var object map[string]json.RawMessage
+	if json.Unmarshal(requireRaw(t, body, field), &object) != nil {
+		t.Fatalf("%s is not an object", field)
+	}
+	return object
+}
+
+func requireRaw(t *testing.T, body map[string]json.RawMessage, field string) json.RawMessage {
+	t.Helper()
+	value, ok := body[field]
+	if !ok || len(value) == 0 || string(value) == `""` || string(value) == `null` || string(value) == `[]` {
+		t.Fatalf("missing %s in %s", field, body)
+	}
+	return value
 }
