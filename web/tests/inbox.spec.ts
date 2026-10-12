@@ -262,10 +262,13 @@ test('bands render in server order with the decision card the server states', as
   await card.getByText('Show IDs').click()
   await expect(card.getByText('wo-zeta-1')).toBeVisible()
 
-  // A disallowed choice and a choice this client cannot build are absent.
-  await expect(card.getByRole('button', { name: 'Approve plan' })).toBeVisible()
-  await expect(card.getByRole('button', { name: 'Reject plan' })).toHaveCount(0)
-  await expect(card.getByRole('button', { name: 'Summon dragon' })).toHaveCount(0)
+  // Every server choice renders (DEC-61): a disallowed choice and one this
+  // client cannot build are disabled with the reason beside them.
+  await expect(card.getByRole('button', { name: 'Approve plan' })).toBeEnabled()
+  await expect(card.getByRole('button', { name: 'Reject plan' })).toBeDisabled()
+  await expect(card.getByText('Needs the operate tasks capability.')).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Summon dragon' })).toBeDisabled()
+  await expect(card.getByText('Take this from the CLI or MCP; it needs input this page cannot send yet.')).toBeVisible()
   // The null-deadline item states none.
   await expect(decisionCards(page).nth(2).locator('[data-next-action-deadline]')).toHaveCount(0)
 })
@@ -444,6 +447,42 @@ test('View opens the decision context for each kind without leaving the inbox', 
     'Implementer fixed the cache key.',
   )
   await expect(page).toHaveURL(/\/inbox$/)
+})
+
+// The inbox has no stream of its own; a task's event stream moves that task's
+// next action, so it refreshes the inbox listing it (lib/use-task-stream.ts).
+test('a task stream event refreshes the inbox listing while its context is open', async ({ page }) => {
+  const fixture = decisionsFixture()
+  fixture.activity = {
+    'T-zeta': {
+      task: task('T-zeta', 'Zeta plan everyone waits on'),
+      events: [],
+      jobs: [],
+      work_orders: [],
+      interventions: [],
+    },
+  }
+  const harness = await serve(page, fixture)
+  let releaseStream = () => {}
+  const streamReady = new Promise<void>((resolve) => {
+    releaseStream = resolve
+  })
+  await page.route('**/v1/tasks/T-zeta/events/stream*', async (route) => {
+    await streamReady
+    await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
+  })
+  await page.goto('/inbox')
+  await expect(decisionCards(page)).toHaveCount(3)
+  await decisionCards(page).nth(0).getByRole('button', { name: 'View' }).click()
+  await expect(page.getByRole('dialog', { name: 'Decision context' })).toBeVisible()
+
+  // The plan was decided elsewhere; only the stream can tell this page.
+  harness.fixture = { ...fixture, items: fixture.items.filter((item) => item.task?.id !== 'T-zeta') }
+  const before = harness.inboxRequests.length
+  releaseStream()
+  await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(before)
+  await expect(decisionCards(page)).toHaveCount(2)
+  await expect(decisionCards(page).getByText('Zeta plan everyone waits on')).toHaveCount(0)
 })
 
 test('blocked rows link blockers, the automatic band offers its one choice and a collapsed acts log', async ({

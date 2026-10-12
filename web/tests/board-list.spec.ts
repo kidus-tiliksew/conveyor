@@ -886,7 +886,10 @@ test('a run-claimed bounce tells the signed-in user to resume it regardless of h
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
   await expect(attention.getByText(returnedFeedback, { exact: false })).toBeVisible()
-  await expect(attention.getByRole('link', { name: 'Open task' })).toHaveAttribute('href', '/tasks/task-returned?view=list')
+  await expect(attention.getByRole('link', { name: 'Open task' })).toHaveAttribute(
+    'href',
+    '/tasks/task-returned?view=list',
+  )
 
   // Held work was run from someone's own machine, so nothing picks the feedback
   // up until they run it again.

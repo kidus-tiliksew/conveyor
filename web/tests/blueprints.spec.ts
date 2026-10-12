@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // Blueprint presentation surface. The anchor is an intent
 // artifact: it never appears on the board, it lives at its own canonical route
@@ -238,6 +239,7 @@ function activityFeed() {
 }
 
 async function initShell(page: Page) {
+  await serveNextActionsFromActivity(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -291,8 +293,8 @@ test('the board excludes the blueprint anchor from cards and column counts', asy
   await expect(page.getByText('Deliver the planning flow')).toHaveCount(0)
 
   // Merged and closed children archive under Completed; the two live ones sit
-  // in Implementing. Neither count may absorb the anchor.
-  const implementing = page.getByRole('region', { name: 'Implementing' })
+  // in Implement. Neither count may absorb the anchor.
+  const implementing = page.getByRole('region', { name: 'Implement' })
   await expect(implementing.getByRole('link')).toHaveCount(2)
   await expect(implementing.locator('header span').first()).toHaveText('2')
   const completed = page.getByRole('region', { name: 'Completed' })
@@ -301,9 +303,9 @@ test('the board excludes the blueprint anchor from cards and column counts', asy
 })
 
 // AC-4 (second half): only the presentation of a *materialized* anchor moved. A
-// blueprint still awaiting its spec gate has no children yet, so it stays in
-// the inbox column with its approval card intact.
-test('a blueprint awaiting its spec gate stays in the review inbox', async ({ page }) => {
+// blueprint still awaiting its spec gate has no children yet, so it stays on
+// the board in its stage column as an operator item awaiting plan approval.
+test('a blueprint awaiting its spec gate stays an operator item on the board', async ({ page }) => {
   await initShell(page)
   const gated = {
     ...anchorTask(),
@@ -313,14 +315,15 @@ test('a blueprint awaiting its spec gate stays in the review inbox', async ({ pa
     children: [],
   }
   await routeAPI(page, {
-    feed: [{ task: gated, latest_stage: 'spec', last_event_at: createdAt, needs_attention: true }],
+    feed: [{ task: gated, latest_stage: 'spec', last_event_at: createdAt, needs_attention: true, events: [] }],
     blueprints: [],
   })
 
   await page.goto('/')
-  const inbox = page.getByRole('region', { name: 'Needs operator' })
-  await expect(inbox.getByText('Blueprint awaiting approval')).toBeVisible()
-  await expect(inbox.getByText('Awaiting review')).toBeVisible()
+  const card = page.getByRole('region', { name: 'Plan' }).getByRole('link', { name: /Blueprint awaiting approval/ })
+  await expect(card).toHaveAttribute('data-operator', 'true')
+  await expect(card).toContainText('Plan approval')
+  await expect(card).toContainText('The execution plan is waiting for approval.')
 })
 
 // The blueprint history lens outlived its navigation entry: parked planning
@@ -340,8 +343,8 @@ test('the blueprints surface is parked out of navigation and reads as history', 
   await page.goto('/blueprints')
   await expect(page).toHaveURL(/\/blueprints$/)
   await expect(page.getByText('Read-only records of legacy blueprints')).toBeVisible()
-  await page.getByRole('main').getByRole('link', { name: 'Tasks', exact: true }).click()
-  await expect(page).toHaveURL(/\/tasks$/)
+  await page.getByRole('main').getByRole('link', { name: 'the Board', exact: true }).click()
+  await expect(page).toHaveURL(/\/\?view=list$/)
 })
 
 // AC-1 (list half): the planning-side list speaks blueprint vocabulary, keeps

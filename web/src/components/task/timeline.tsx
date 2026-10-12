@@ -159,11 +159,16 @@ export function Timeline({
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
+  // The execution state joins two independently refetched reads (activity and
+  // the server's next action), so a live update can pass through a render
+  // where they disagree and no state derives. The last derived status is the
+  // one a pause interrupts, so that gap neither announces nor resets it.
   useEffect(() => {
-    if (priorExecutionStatus.current === 'progressing' && currentExecution?.status === 'paused') {
+    if (!currentExecution) return
+    if (priorExecutionStatus.current === 'progressing' && currentExecution.status === 'paused') {
       setExecutionAnnouncement(`${currentExecution.title}. ${currentExecution.nextAction}`)
     }
-    priorExecutionStatus.current = currentExecution?.status
+    priorExecutionStatus.current = currentExecution.status
   }, [currentExecution?.status, currentExecution?.title, currentExecution?.nextAction])
 
   // A successful human decision explicitly requests one tail scroll after its

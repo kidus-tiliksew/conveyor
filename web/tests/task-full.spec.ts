@@ -11,6 +11,16 @@ async function showAllBoardTasks(page: Page) {
     localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' })),
   )
 }
+// The compact next action the server puts on a stalled activity item, for
+// board fixtures built by hand.
+const stalledNextAction = {
+  kind: 'stalled',
+  label: 'Stalled',
+  actor: 'operator',
+  judgment: true,
+  summary: 'This order cannot be claimed.',
+  deadline: null,
+}
 const checkpointProgress =
   'Choose whether the recovery should preserve the existing proposal or replace it with the newly confirmed lifecycle direction before implementation continues.'
 let emitLiveScrollEvent = () => {}
@@ -2697,6 +2707,31 @@ test('structured authority checkpoint leads with the decision and resolves throu
       ],
     }),
   )
+  // The inbox lists pending proposals from the server's next-actions listing,
+  // so the checkpoint's "Review or dismiss" path lands on this card.
+  await page.route('**/v1/next-actions*', (route) =>
+    route.fulfill({
+      json: {
+        operator_decisions: 1,
+        items: [
+          {
+            band: 'decisions',
+            kind: 'document_proposal',
+            proposal: {
+              id: 'design-checkpoint',
+              title: 'Checkpoint design',
+              tier: 'system_design',
+              version: 2,
+              origin_type: 'operator',
+              proposed_at: createdAt,
+              age_seconds: 60,
+            },
+          },
+        ],
+        acts: [],
+      },
+    }),
+  )
   await page.route('**/v1/system-designs/design-checkpoint/versions/2/confirm**', async (route) => {
     confirmHeaders = route.request().headers()
     resolved = true
@@ -2820,7 +2855,7 @@ test('structured authority checkpoint omits the standalone card when every propo
   await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
 })
 
-test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
+test('stalled task is labelled on its board card with recover and reasoned cancel controls', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('recovery', false)
   item.task.assignee = {
@@ -2841,6 +2876,7 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
           last_event_at: createdAt,
           needs_attention: true,
           stalled: item.stalled,
+          next_action: stalledNextAction,
         },
       ],
     })
@@ -2858,16 +2894,18 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
     await route.fulfill({ json: { ...item.task, state: 'closed' } })
   })
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray.getByText('Stalled')).toBeVisible()
+  // An operator item stays in its stage column, styled as waiting on a person.
+  const card = page.getByRole('region', { name: 'Implement' }).getByRole('link', { name: /Short task/ })
+  await expect(card).toHaveAttribute('data-operator', 'true')
+  await expect(card.getByText('Stalled')).toBeVisible()
   // The board card carries the shared assignee chip: the name is what shows,
   // and the account identifiers behind it stay in the tooltip.
-  const assignee = tray.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
+  const assignee = card.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
   await expect(assignee).toBeVisible()
   await expect(assignee).toContainText('Assigned User')
   await expect(assignee).toContainText('AU')
-  await expect(tray.getByText('harness exited: status 1')).toBeVisible()
-  await tray.getByText('Short task').click()
+  await expect(card.getByText('harness exited: status 1')).toBeVisible()
+  await card.click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
   await page.getByRole('button', { name: 'Task actions' }).click()
   await page.getByRole('menuitem', { name: 'Cancel task' }).click()
@@ -2971,21 +3009,24 @@ test('the board keeps a superseded task stalled while its sheet offers only Redi
           last_event_at: createdAt,
           needs_attention: true,
           stalled: item.stalled,
+          next_action: stalledNextAction,
         },
       ],
     }),
   )
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray.getByText('Stalled')).toBeVisible()
-  await tray.getByText('Short task').click()
+  const card = page.getByRole('region', { name: 'Plan' }).getByRole('link', { name: /Short task/ })
+  await expect(card).toHaveAttribute('data-operator', 'true')
+  await expect(card.getByText('Stalled')).toBeVisible()
+  await card.click()
   await expectSupersededStaleHistory(page.getByRole('dialog', { name: 'Task detail' }))
 })
 
-test('pending authority moves a live task to Needs operator until the proposal is resolved', async ({ page }) => {
+// A pending proposal is decided in the Inbox; the board does not reroute the
+// task that authored it, so it stays in its stage column either way.
+test('pending authority keeps a live task in its stage column', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('design-proposal', false)
-  let pending = true
   await page.route('**/v1/activity*', async (route) => {
     await route.fulfill({
       json: [
@@ -2993,8 +3034,8 @@ test('pending authority moves a live task to Needs operator until the proposal i
           task: { ...item.task, title: 'Proposal-gated task', next_stage: 'review' },
           latest_stage: 'review',
           last_event_at: createdAt,
-          needs_attention: pending,
-          pending_authority: pending,
+          needs_attention: true,
+          pending_authority: true,
         },
         {
           task: { ...item.task, id: 'resolved-terminal', title: 'Completed proposal task', state: 'merged' },
@@ -3008,28 +3049,13 @@ test('pending authority moves a live task to Needs operator until the proposal i
   })
 
   await page.goto('/')
-  const operator = page.getByRole('region', { name: 'Needs operator' })
-  await expect(operator.getByText('Proposal-gated task')).toBeVisible()
-  await expect(operator.getByText('Awaiting proposal decision')).toBeVisible()
-  await expect(operator.getByText('Completed proposal task')).toHaveCount(0)
+  const review = page.getByRole('region', { name: 'Review' })
+  await expect(review.getByText('Proposal-gated task')).toBeVisible()
+  await expect(review.getByText('Completed proposal task')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Completed' }).getByText('Completed proposal task')).toBeVisible()
-
-  pending = false
-  const refreshedActivity = page.waitForResponse(
-    (response) => response.request().method() === 'GET' && response.url().includes('/v1/activity'),
-  )
-  await page.reload()
-  await refreshedActivity
-  const reviewing = page.getByRole('region', { name: 'Reviewing' })
-  // Wait for the destination card before asserting absence from its prior
-  // region. During a reload, both regions are briefly empty while the
-  // refreshed activity projection is rendered, especially under CI load.
-  await expect(reviewing.getByText('Proposal-gated task')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('region', { name: 'Needs operator' }).getByText('Proposal-gated task')).toHaveCount(0)
-  await expect(reviewing.getByText('Awaiting proposal decision')).toHaveCount(0)
 })
 
-test('forge failure categories render in the needs-operator tray and task activity evidence', async ({ page }) => {
+test('forge failure categories render on the board card and in task activity evidence', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('forge-failure', false)
   await page.route('**/v1/activity*', async (route) => {
@@ -3047,10 +3073,10 @@ test('forge failure categories render in the needs-operator tray and task activi
   })
 
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray.getByText('forge_rate_limited')).toBeVisible()
-  await expect(tray.getByText(/GitHub merge: merge pull request/)).toBeVisible()
-  await tray.getByText('Short task').click()
+  const card = page.getByRole('link', { name: /Short task/ })
+  await expect(card.getByText('forge_rate_limited')).toBeVisible()
+  await expect(card.getByText(/GitHub merge: merge pull request/)).toBeVisible()
+  await card.click()
   await expect(page.getByText(/forge_request · create task issue: request timed out/)).toBeVisible()
   await expect(page.getByText(/forge_permission · publish review comment: resource not accessible/)).toBeVisible()
   await expect(page.getByText(/forge_rate_limited · merge pull request: API rate limit exceeded/)).toBeVisible()
@@ -5977,10 +6003,10 @@ test('a claim refusal names the assignee rather than showing the transport sente
   )
 
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray).toContainText('Assigned to Bo Member — only they can pick this up.')
-  await expect(tray).not.toContainText('only that assignee may claim its work orders')
-  await expect(tray).not.toContainText('usr_bo')
+  const card = page.getByRole('region', { name: 'Implement' }).getByRole('link', { name: /Short task/ })
+  await expect(card).toContainText('Assigned to Bo Member — only they can pick this up.')
+  await expect(card).not.toContainText('only that assignee may claim its work orders')
+  await expect(card).not.toContainText('usr_bo')
 })
 
 for (const withNotes of [true, false]) {
@@ -6953,7 +6979,9 @@ for (const surface of ['full', 'sheet', 'list']) {
     await expect(page.getByRole('button', { name: 'Task status: Triage failed', exact: true })).toBeVisible()
     await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
     await expect(page.getByText('Your review, please')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
+    // The gate's choices are the server's job_failure choices (DEC-61), shown
+    // on the next-action card; the recovery card offers no approval of its own.
+    await expect(recovery.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
     await expect(page.getByText('Factory review approved this')).toHaveCount(0)
     await recovery.scrollIntoViewIfNeeded()
     await testInfo.attach(`failed-triage-${surface}`, { body: await page.screenshot(), contentType: 'image/png' })
@@ -7601,7 +7629,7 @@ test('a request-changes conflict refetches task detail and renders the current g
   await expect(gate.getByRole('region', { name: 'What you are approving' })).toHaveCount(0)
   await expect(gate.getByText('task is not at the merge gate')).toBeVisible()
   // No retry, no success effects: the operator's feedback is kept.
-  await expect(gate.getByLabel('Redirect feedback')).toHaveValue('Keep this exact feedback.')
+  await expect(gate.getByLabel('Changes you want')).toHaveValue('Keep this exact feedback.')
   expect(changeRequests).toBe(1)
 })
 

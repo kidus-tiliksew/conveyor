@@ -156,7 +156,10 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
       .getByRole('region', { name: 'Human gate' })
       .locator('[data-next-action-choices]')
       .getByRole('button')
-    await expect(choices).toHaveText(['Approve plan'])
+    // A disallowed choice and one this page cannot send render disabled.
+    await expect(choices).toHaveText(['Approve plan', 'Reject plan', 'Teleport'])
+    await expect(choices.nth(1)).toBeDisabled()
+    await expect(choices.nth(2)).toBeDisabled()
 
     // Show IDs discloses the server's identifiers verbatim.
     const ids = card.locator('details')
@@ -212,9 +215,13 @@ test('the card carries the choices of an operator action outside the human gate'
   await page.goto(`/tasks/${taskId}`)
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   const card = page.getByRole('region', { name: 'Next action' })
-  // A choice the caller may not take is not offered at all.
+  // Every server choice renders; one the caller may not take is disabled with
+  // the reason beside it, and each carries the server's endpoint.
   const choices = card.locator('[data-next-action-choices]').getByRole('button')
-  await expect(choices).toHaveText(['Answer'])
+  await expect(choices).toHaveText(['Answer', 'Close'])
+  await expect(choices.nth(1)).toBeDisabled()
+  await expect(card.getByText('Needs the operate gates capability.')).toBeVisible()
+  await expect(choices.nth(0)).toHaveAttribute('data-endpoint', 'POST /v1/work-orders/order-impl-1/answer')
 
   // A choice that carries typed input asks for it before sending, and a
   // required input keeps the send disabled while it is empty.
@@ -230,6 +237,40 @@ test('the card carries the choices of an operator action outside the human gate'
   expect(posts[0].path).toBe('/v1/work-orders/order-impl-1/answer')
   expect(posts[0].body).toMatchObject({ direction: 'Target the v2 schema.' })
   expect((posts[0].body as { request_id: string }).request_id).toBeTruthy()
+})
+
+test('a server choice this page cannot send renders disabled with its reason', async ({ page }) => {
+  const stalled: NextAction = {
+    label: 'Start over',
+    actor: 'operator',
+    kind: 'dependency_unsatisfiable',
+    judgment: true,
+    summary: 'A dependency can never be satisfied.',
+    deadline: null,
+    choices: [
+      {
+        id: 'remove_dependency',
+        label: 'Remove dependency',
+        effect: 'Drops the unsatisfiable dependency.',
+        method: 'DELETE',
+        path: `/v1/tasks/${taskId}/dependencies/{dependency_id}`,
+        capability: 'operate_gates',
+        allowed: true,
+      },
+    ],
+    details: {},
+  }
+  await mockAPI(
+    page,
+    () => activity('queued', stalled),
+    () => stalled,
+  )
+  await page.goto(`/tasks/${taskId}`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const button = card.getByRole('button', { name: 'Remove dependency' })
+  await expect(button).toBeDisabled()
+  await expect(button).toHaveAttribute('data-endpoint', `DELETE /v1/tasks/${taskId}/dependencies/{dependency_id}`)
+  await expect(card.getByText(/needs input this page cannot send yet/)).toBeVisible()
 })
 
 test('a terminal next action renders no card', async ({ page }) => {

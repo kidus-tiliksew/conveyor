@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
@@ -283,7 +284,7 @@ test('running cards use the in-flight stage when latest stage is stale', async (
     }),
   )
   await page.goto('/')
-  await expect(page.getByRole('region', { name: 'Reviewing' })).toContainText('Running external review')
+  await expect(page.getByRole('region', { name: 'Review' })).toContainText('Running external review')
   await expect(page.getByRole('region', { name: 'Plan' })).not.toContainText('Running external review')
 })
 
@@ -725,6 +726,9 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
 })
 
 test('failed triage Board badge distinguishes failure from genuine review gates', async ({ page }, testInfo) => {
+  // The card states the server's next action: a failed triage is a job
+  // failure for the operator, never a review gate.
+  await serveNextActionsFromActivity(page)
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await routeBoard(page, [])
   await page.route('**/v1/activity?**', (route) =>
@@ -738,9 +742,11 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
             title: 'Image preparation failed',
             state: 'awaiting_human',
             next_stage: '',
+            recovery_stage: 'triage',
           },
           latest_stage: 'triage',
           needs_attention: true,
+          events: [],
         },
         {
           ...activity[0],
@@ -753,6 +759,7 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
           },
           latest_stage: 'spec',
           needs_attention: true,
+          events: [],
         },
         {
           ...activity[0],
@@ -763,19 +770,22 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
             state: 'awaiting_human',
             next_stage: '',
           },
+          at_merge_gate: true,
           latest_stage: 'review',
           needs_attention: true,
+          events: [],
         },
       ],
     }),
   )
   await page.goto('/')
   const failed = page.getByRole('link').filter({ hasText: 'Image preparation failed' })
-  await expect(failed).toContainText('Triage failed')
-  await expect(failed).not.toContainText('Awaiting review')
-  await expect(page.getByRole('link').filter({ hasText: 'Plan ready for decision' })).toContainText('Awaiting review')
+  await expect(failed).toHaveAttribute('data-operator', 'true')
+  await expect(failed).toContainText('Job failure')
+  await expect(failed).not.toContainText('Plan approval')
+  await expect(page.getByRole('link').filter({ hasText: 'Plan ready for decision' })).toContainText('Plan approval')
   await expect(page.getByRole('link').filter({ hasText: 'Implementation ready for decision' })).toContainText(
-    'Awaiting review',
+    'Merge approval',
   )
   await testInfo.attach('failed-triage-board', { body: await page.screenshot(), contentType: 'image/png' })
 })
