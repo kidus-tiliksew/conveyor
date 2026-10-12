@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +47,15 @@ func runBaseConflictCheck(t *testing.T, x Fixture) {
 	}
 	if !got.UpdatedAt.Equal(before.UpdatedAt) {
 		t.Fatalf("claim moved updated_at from %s to %s", before.UpdatedAt, got.UpdatedAt)
+	}
+	encoded, err := json.Marshal(got)
+	requireOK(t, err)
+	var wire struct {
+		BaseConflictCheckedAt time.Time `json:"base_conflict_checked_at"`
+	}
+	requireOK(t, json.Unmarshal(encoded, &wire))
+	if !wire.BaseConflictCheckedAt.Equal(at) {
+		t.Fatalf("work-order JSON base_conflict_checked_at = %s, want %s", wire.BaseConflictCheckedAt, at)
 	}
 	listed, err := st.ListTaskWorkOrders(ctx, order.TaskID)
 	requireOK(t, err)
