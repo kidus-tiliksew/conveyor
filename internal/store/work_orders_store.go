@@ -639,6 +639,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			}
 		} else {
 			order.RetrySuppressed = true
+			order.RetrySuppressionReason = core.AttemptRetriesExhaustedReason
 		}
 		if release.ModelRejection && order.RequiredHarness != "" && order.RequiredModel != "" && detail != "" {
 			workspace, _ := WorkspaceFromContext(ctx)
@@ -1942,7 +1943,7 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
 		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 			order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
-		if elapsedExecution || elapsedClaim || elapsedQueue {
+		if elapsedExecution || elapsedClaim || elapsedQueue || m.automaticRecoveryCandidateLocked(order, now) {
 			seen[order.TaskID] = struct{}{}
 		}
 	}
@@ -1975,7 +1976,8 @@ func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLeas
 			count++
 		}
 	}
-	return count, nil
+	acted, err := m.applyAutomaticRecoveryLocked(ctx, taskID, now)
+	return count + acted, err
 }
 
 func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {

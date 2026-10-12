@@ -23,8 +23,8 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
 				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
-last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
@@ -53,7 +53,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
-	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt sql.NullTime
+	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, rateLimitObservedAt sql.NullTime
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
@@ -61,6 +61,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
+		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
@@ -107,6 +108,12 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	}
 	if nextRetryAt.Valid {
 		order.NextRetryAt = nextRetryAt.Time
+	}
+	if recoveryWindow.Valid {
+		order.AutomaticRecoveryWindowStartedAt = recoveryWindow.Time
+	}
+	if nextAutomaticRecovery.Valid {
+		order.NextAutomaticRecoveryAt = nextAutomaticRecovery.Time
 	}
 	if len(rateLimit) > 0 && string(rateLimit) != "{}" {
 		var status core.RateLimitStatus
@@ -199,6 +206,9 @@ func orderValues(o core.WorkOrder) map[string]any {
 		"next_retry_at":                   nullableTimeValue(o.NextRetryAt),
 		"retry_suppressed":                o.RetrySuppressed,
 		"retry_suppression_reason":        o.RetrySuppressionReason,
+		"automatic_recovery_count":             o.AutomaticRecoveryCount,
+		"automatic_recovery_window_started_at": nullableTimeValue(o.AutomaticRecoveryWindowStartedAt),
+		"next_automatic_recovery_at":          nullableTimeValue(o.NextAutomaticRecoveryAt),
 		"redispatch_count":                o.RedispatchCount,
 		"operator_direction":              o.OperatorDirection,
 		"checkpoint":                      checkpointJSON(o.Checkpoint),
@@ -206,7 +216,6 @@ func orderValues(o core.WorkOrder) map[string]any {
 		"continuation_attempt_id":         o.ContinuationAttemptID,
 		"continuation_harness":            o.ContinuationHarness,
 		"continuation_launch_environment": o.ContinuationLaunchEnvironment,
-		"progress":                        o.Progress,
 		"cost_usd":                        o.CostUSD,
 		"tokens_in":                       o.TokensIn,
 		"tokens_out":                      o.TokensOut,

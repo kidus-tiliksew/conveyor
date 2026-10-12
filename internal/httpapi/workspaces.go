@@ -36,6 +36,7 @@ type createWorkspaceDocument struct {
 	Workspace                 *string                 `json:"workspace,omitempty"`
 	MaxBounces                *int                    `json:"max_bounces,omitempty"`
 	WorkOrderQueueTimeoutText *string                 `json:"work_order_queue_timeout,omitempty"`
+	Recovery                  *config.RecoveryPolicy  `json:"recovery,omitempty"`
 	StageTimeouts             *map[string]string      `json:"stage_timeouts,omitempty"`
 	Repos                     *[]config.Repo          `json:"repos,omitempty"`
 	Review                    *config.ReviewPanel     `json:"review,omitempty"`
@@ -335,6 +336,9 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 		if partial.WorkOrderQueueTimeoutText != nil {
 			document.WorkOrderQueueTimeoutText = *partial.WorkOrderQueueTimeoutText
+		}
+		if partial.Recovery != nil {
+			document.Recovery = *partial.Recovery
 		}
 		if partial.StageTimeouts != nil {
 			for stage, timeout := range *partial.StageTimeouts {

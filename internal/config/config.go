@@ -742,6 +742,7 @@ const (
 type WorkspaceDocument struct {
 	Workspace                 string                       `yaml:"workspace" json:"workspace"`
 	MaxBounces                int                          `yaml:"max_bounces" json:"max_bounces"`
+	Recovery                  RecoveryPolicy               `yaml:"recovery,omitempty" json:"recovery,omitempty"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
 	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty" json:"execution_settings,omitempty"`
 	Routing                   Routing                      `yaml:"routing" json:"routing"`
@@ -774,13 +775,14 @@ func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Workspace                 string            `json:"workspace"`
 		MaxBounces                int               `json:"max_bounces"`
+		Recovery                  RecoveryPolicy    `json:"recovery"`
 		WorkOrderQueueTimeoutText string            `json:"work_order_queue_timeout"`
 		StageTimeouts             map[string]string `json:"stage_timeouts"`
 		Review                    ReviewPanel       `json:"review"`
 		Execution                 ExecutionPolicy   `json:"execution"`
 		Repos                     []Repo            `json:"repos"`
 		Monitor                   MonitorConfig     `json:"monitor"`
-	}{d.Workspace, d.MaxBounces, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
+	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -807,6 +809,7 @@ type Config struct {
 	PackDir                   string                       `yaml:"pack_dir,omitempty"`
 	packDirSet                bool                         `yaml:"-"`
 	MaxBounces                int                          `yaml:"max_bounces"`
+	Recovery                  RecoveryPolicy               `yaml:"recovery,omitempty" json:"recovery,omitempty"`
 	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
 	PlanningSnapshotMaxBytes  int64                        `yaml:"planning_snapshot_max_bytes,omitempty"`
@@ -856,6 +859,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Workspace = document.Workspace
 	next.MaxBounces = document.MaxBounces
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
+	next.Recovery = document.Recovery
 	policyOnly := document.ExecutionSettings == nil && document.Setups == nil && len(document.Routing.Stages) == 0 && len(document.Harnesses) == 0
 	// A policy-only document deliberately inherits no execution authority
 	// from workspace state. The deployment value is retained only as a
@@ -1010,6 +1014,9 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 		return nil, fmt.Errorf("work_order_queue_timeout must be a positive duration")
 	}
 	next.WorkOrderQueueTimeout = queueTimeout
+	if err = next.Recovery.Normalize(); err != nil {
+		return nil, err
+	}
 	if next.Routing.Stages == nil {
 		next.Routing.Stages = map[string]StageRoute{}
 	}
@@ -1651,6 +1658,9 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		}
 		c.WorkOrderQueueTimeout = parsed
 	}
+	if err := c.Recovery.Normalize(); err != nil {
+		return err
+	}
 	if c.Monitor.PollIntervalText == "" {
 		c.Monitor.PollIntervalText = "1m"
 	}
@@ -1900,6 +1910,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	}
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
+		Recovery:                  c.Recovery,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},

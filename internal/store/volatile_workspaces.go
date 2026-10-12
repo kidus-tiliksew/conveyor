@@ -221,6 +221,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
 	}
+	if before.Recovery.AutomaticRecoveries != after.Recovery.AutomaticRecoveries || before.Recovery.WindowText != after.Recovery.WindowText {
+		sections = append(sections, "recovery")
+	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
 		sections = append(sections, "routing")
 	}
