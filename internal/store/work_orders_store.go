@@ -1838,7 +1838,14 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 		order.Assignee = m.tasks[order.TaskID].Assignee
 		orders = append(orders, ProjectWorkOrderAt(order, now))
 	}
-	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
+	// Ties break by ID, as PostgreSQL's ORDER BY created_at,id does, so the
+	// latest order a reader picks is stable across reads.
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
 	return orders, nil
 }
 

@@ -123,6 +123,7 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
+	run("TaskFlow", func(t *testing.T) { runTaskFlow(t, factory) })
 	run("GateKind", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunGateKindConformance(t, x.Backend, x.Context, x.Workspace)
