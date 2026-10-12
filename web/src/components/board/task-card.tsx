@@ -1,10 +1,11 @@
 import { Link } from '@tanstack/react-router'
-import { gateBadge, humanizeClaimRefusal, taskWasRestarted, reviewDiagnosticBadge } from '../../lib/activity'
+import { humanizeClaimRefusal, reviewDiagnosticBadge, taskWasRestarted } from '../../lib/activity'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceMembers } from '../app-shell'
 import { AssigneeChip } from '../task/assignee-chip'
 import { Badge } from '../ui/badge'
+import { StageStripe } from './stage-stripe'
 
 // Deterministic repo hue so a repo reads consistently across the board.
 const repoHues = ['#3355f5', '#0f766e', '#1a7f37', '#b3540e', '#7c3aed', '#be185d']
@@ -23,7 +24,8 @@ function repoColor(seed: string) {
 export function TaskCard({ item, selected }: { item: ActivitySummary; selected: boolean }) {
   const { data: members = [] } = useWorkspaceMembers()
   const lastAt = item.last_event_at || item.task.created_at
-  const gate = gateBadge(item)
+  const action = item.next_action
+  const operator = action?.actor === 'operator'
   const reviewDiagnostic = reviewDiagnosticBadge(item)
   const unsatisfiable = item.stalled?.unsatisfiable_edge === true
   const blockingIDs = item.stalled?.blocking_task_ids ?? item.task.blocking_task_ids ?? []
@@ -34,7 +36,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
     ? `Needs attention: ${blockingTitles.join(', ')} closed without merging`
     : `Waiting for ${blockingTitles.join(', ')}`
   const restarted = taskWasRestarted(item.task)
-  const chips = Boolean(restarted || gate || reviewDiagnostic || item.task.hold || blockingIDs.length > 0)
+  const chips = Boolean(restarted || reviewDiagnostic || item.task.hold || blockingIDs.length > 0)
   return (
     <Link
       to="/tasks/$taskId"
@@ -42,7 +44,10 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       className={cn(
         'group/card block rounded-lg border bg-card p-3 transition-colors',
         selected ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
+        // An item waiting on an operator reads as such on a calm board (AC-3.1).
+        operator && !selected && 'border-attention/50 bg-attention-soft/30',
       )}
+      data-operator={operator || undefined}
     >
       <p className="line-clamp-2 text-sm font-medium leading-snug">{item.task.title}</p>
       <div className="mt-1.5 flex items-baseline gap-2 font-mono text-[11px] text-faint">
@@ -60,10 +65,23 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       {/* The same chip the Tasks rows carry, so a colleague's assignment reads
           identically on both surfaces (REQ-4, AC-4.3). */}
       {item.task.assignee && <AssigneeChip assignee={item.task.assignee} className="mt-1 text-[11px] text-muted" />}
+      {action && action.kind !== 'terminal' && (
+        <div className="mt-2 space-y-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant={operator ? 'attention' : action.kind === 'merging' ? 'positive' : 'mono'}>
+              {action.label}
+            </Badge>
+            <span data-actor={action.actor} className="text-[11px] text-muted">
+              {action.actor}
+            </span>
+          </div>
+          <p className="line-clamp-2 text-[11px] leading-4 text-muted">{action.summary}</p>
+        </div>
+      )}
+      <StageStripe taskId={item.task.id} />
       {chips && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {restarted && <Badge variant="mono">restarted</Badge>}
-          {gate && <Badge variant={gate.variant}>{gate.label}</Badge>}
           {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
           {item.task.hold && <Badge variant="mono">Held</Badge>}
           {blockingIDs.length > 0 && (

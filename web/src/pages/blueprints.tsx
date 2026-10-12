@@ -28,8 +28,8 @@ export function BlueprintsPage() {
             <p className="mt-1 max-w-2xl text-sm text-muted">
               Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed
               through planning bundles and managed in{' '}
-              <Link to="/tasks" className="text-primary hover:underline">
-                Tasks
+              <Link to="/" search={{ view: 'list' }} className="text-primary hover:underline">
+                the Board
               </Link>
               .
             </p>

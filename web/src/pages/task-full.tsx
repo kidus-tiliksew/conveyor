@@ -3,6 +3,7 @@ import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { AttachmentsCard } from '../components/task/attachments-card'
+import { NextActionCard } from '../components/task/next-action-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SpecCard } from '../components/task/spec-card'
 import { TaskContextCard } from '../components/task/task-context-card'
@@ -108,6 +109,7 @@ function FullBody({ item }: { item: ActivityItem }) {
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
         <section aria-label="Activity" className="space-y-4 px-4 py-4 sm:px-6">
+          <NextActionCard taskId={item.task.id} gateOpen={isReviewable(item)} />
           <TaskFlowChart taskId={item.task.id} />
           <Timeline item={item} routeVariant="full" />
         </section>

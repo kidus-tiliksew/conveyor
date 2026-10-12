@@ -681,12 +681,11 @@ test('primary navigation shows exactly the accepted operating surfaces', async (
   await page.goto('/')
   const nav = page.getByRole('navigation', { name: 'Primary' })
   await expect(nav.getByRole('link')).toHaveText([
-    /^Board/,
-    'Tasks',
+    'Board',
+    /^Inbox/,
     'Workspace',
     'Requirements',
     'System Design',
-    'Pending proposals',
     'Monitor',
     'Settings',
   ])

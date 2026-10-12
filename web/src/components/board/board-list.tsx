@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
   CalendarDays,
   ChevronsUpDown,
@@ -7,17 +7,14 @@ import {
   FileCode2,
   GitBranch,
   ListChecks,
-  Plus,
   UserRound,
   Workflow,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../components/app-shell'
-import { MCPSetup } from '../components/mcp/mcp-setup-dialog'
-import { AssigneeChip } from '../components/task/assignee-chip'
-import { ReturnedForChangesAttention } from '../components/task/returned-for-changes'
-import { TaskCreateSheet } from '../components/task/task-create-sheet'
-import type { TaskFilterState } from '../components/task/task-filters'
+import { useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { AssigneeChip } from '../task/assignee-chip'
+import { ReturnedForChangesAttention } from '../task/returned-for-changes'
+import type { TaskFilterState } from '../task/task-filters'
 import {
   emptyTaskFilter,
   TaskFilters,
@@ -25,19 +22,19 @@ import {
   taskFilterParams,
   taskFilterRangeError,
   useTaskFilters,
-} from '../components/task/task-filters'
-import { TaskSheet } from '../components/task/task-sheet'
-import { Badge } from '../components/ui/badge'
-import { Button } from '../components/ui/button'
-import { Card, CardContent } from '../components/ui/card'
-import { Disclosure } from '../components/ui/disclosure'
-import { Skeleton } from '../components/ui/skeleton'
-import { failedTriageSummary, humanizeClaimRefusal, taskWasRestarted } from '../lib/activity'
-import { fetchCallerIdentity, fetchTaskOperations } from '../lib/api'
-import { stageLabels, taskStateLabels } from '../lib/contracts'
-import { errorMessage } from '../lib/errors'
-import type { TaskOperationsItem, TaskPlanStatus, WorkspaceMembership } from '../lib/types'
-import { relativeTime } from '../lib/utils'
+} from '../task/task-filters'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Card, CardContent } from '../ui/card'
+import { Disclosure } from '../ui/disclosure'
+import { Skeleton } from '../ui/skeleton'
+import { failedTriageSummary, humanizeClaimRefusal, taskWasRestarted } from '../../lib/activity'
+import { fetchCallerIdentity, fetchTaskOperations } from '../../lib/api'
+import { stageLabels, taskStateLabels } from '../../lib/contracts'
+import { errorMessage } from '../../lib/errors'
+import type { TaskOperationsItem, TaskPlanStatus, WorkspaceMembership } from '../../lib/types'
+import { relativeTime } from '../../lib/utils'
+import { type BoardSearch, boardSearchFilter } from './board-search'
 
 const PAGE_SIZE = 25
 
@@ -60,25 +57,33 @@ const MY_TASK_STATES = ['queued', 'running', 'awaiting_human']
 const TASK_COLUMNS =
   'grid-cols-1 gap-y-2 md:grid-cols-[minmax(200px,2.2fr)_116px_192px_minmax(150px,1.4fr)_168px] md:gap-y-0'
 
-// The list-first Tasks view. It reads one
-// paginated projection and renders only what that projection carries: state,
-// repository, dependencies and blockers, child rollups, attached context, and
-// plan status. There is no priority or declared-phase control
+// The Board's list view (REQ-6): the paginated task-operations projection as a
+// table. It reads one page and renders only what that projection carries:
+// state, repository, dependencies and blockers, child rollups, attached
+// context, and plan status. There is no priority or declared-phase control
 // anywhere on this surface, and none may be added to support it (AC-1.5).
-//
-// This is also where tasks are created and inspected (REQ-2): intake opens over
-// the list, and selecting a row opens the task's own detail composition in a
-// right panel without leaving it.
-export function TasksPage() {
+// A row opens the Board's task sheet over the list.
+export function BoardList() {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
-  // The open panel lives in the address, so the view an operator is looking at
-  // is the one a colleague opens from the link they paste (AC-2.2).
-  const { task: selectedId, create } = useSearch({ strict: false }) as { task?: string; create?: boolean }
+  const search = useSearch({ strict: false }) as BoardSearch
+  const { taskId: selectedId } = useParams({ strict: false }) as { taskId?: string }
+  // Saved list filters keep their storage key across the move from /tasks.
   const [filter, setFilter] = useTaskFilters('tasks')
   const [offset, setOffset] = useState(0)
-  // Intake follows its own capability (DEC-60), which the server checks again.
-  const canCreateTasks = useWorkspaceCapability('create_tasks')
+  // A filter named in the address (a redirected /tasks link) wins on arrival,
+  // then leaves the address so the saved filter is the one source of truth.
+  const arrival = boardSearchFilter(search)
+  const arrivalKey = arrival ? JSON.stringify(arrival) : ''
+  useEffect(() => {
+    if (!arrivalKey) return
+    setFilter(JSON.parse(arrivalKey) as TaskFilterState)
+    void navigate({
+      to: '.',
+      replace: true,
+      search: (prev: BoardSearch) => ({ view: prev.view, create: prev.create }),
+    })
+  }, [arrivalKey, setFilter, navigate])
   // Who "my" is. Without an identity the preset has no referent, so it is not
   // offered rather than guessing (REQ-2).
   const { data: me } = useQuery({
@@ -101,7 +106,7 @@ export function TasksPage() {
   } = useQuery({
     queryKey: ['task-operations', workspace, params, offset],
     queryFn: () => fetchTaskOperations({ limit: PAGE_SIZE, offset, filter: params }),
-    enabled: Boolean(workspace) && !rangeError,
+    enabled: Boolean(workspace) && !rangeError && !arrivalKey,
     refetchInterval: 15_000,
   })
   const items = page?.items
@@ -115,31 +120,17 @@ export function TasksPage() {
   }, [filterKey])
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
-        <header>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight">Tasks</h1>
-            {/* The server counts what the filters match, so the badge reports
-                the whole matching set rather than the page in hand. */}
-            <Badge variant="mono">{page?.total ?? 0}</Badge>
-            <div className="ml-auto">
-              <MCPSetup />
-            </div>
-            {/* Intake belongs to the surface where delivery is managed
-                (AC-2.1); it opens over this list, which stays behind it. */}
-            {canCreateTasks && (
-              <Link to="/tasks" search={{ create: true }}>
-                <Button size="sm" tabIndex={-1}>
-                  <Plus />
-                  New task
-                </Button>
-              </Link>
-            )}
-          </div>
-          <p className="mt-1 max-w-2xl text-sm text-muted">
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+        <header className="flex items-center gap-2">
+          <p className="max-w-2xl text-sm text-muted">
             Every task in this workspace with its ordering, attached context, and plan status.
           </p>
+          {/* The server counts what the filters match, so the badge reports
+              the whole matching set rather than the page in hand. */}
+          <Badge variant="mono" className="ml-auto" aria-label="Matching tasks">
+            {page?.total ?? 0}
+          </Badge>
         </header>
 
         {/* What is waiting on me personally leads the surface, above the list
@@ -245,25 +236,6 @@ export function TasksPage() {
           </nav>
         )}
       </div>
-
-      {/* Task intake, opened over the list it files into (AC-2.1). */}
-      {create && canCreateTasks && <TaskCreateSheet />}
-
-      {/* The task's own detail composition, mounted as this surface's panel
-          rather than reimplemented on it (AC-2.2). A blueprint anchor opened
-          here still redirects to its canonical route — that rule belongs to the
-          composition, so hosting it here inherits it. */}
-      {(!create || !canCreateTasks) && selectedId && (
-        <TaskSheet
-          taskId={selectedId}
-          panel={{
-            order: (items ?? []).map((item) => item.task.id),
-            permalink: taskPermalink(selectedId),
-            close: () => void navigate({ to: '/tasks', search: {} }),
-            select: (taskId) => void navigate({ to: '/tasks', search: { task: taskId } }),
-          }}
-        />
-      )}
     </div>
   )
 }
@@ -304,12 +276,6 @@ function MyTasksPreset({
   )
 }
 
-// The panel's address, absolute so it survives being pasted somewhere else.
-function taskPermalink(taskId: string) {
-  const path = `/tasks?task=${encodeURIComponent(taskId)}`
-  return typeof window === 'undefined' ? path : new URL(path, window.location.origin).toString()
-}
-
 function SortHeader({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-1">
@@ -341,8 +307,9 @@ function TaskRow({
         </span>
         <div className="min-w-0">
           <Link
-            to="/tasks"
-            search={{ task: task.id }}
+            to="/tasks/$taskId"
+            params={{ taskId: task.id }}
+            search={{ view: 'list' }}
             aria-current={selected ? 'true' : undefined}
             // A title long enough to be cut by this column stays readable in
             // place rather than only inside the panel it opens.

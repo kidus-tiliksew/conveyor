@@ -447,6 +447,7 @@ export interface ActivitySummary {
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
   stalled?: StalledState
+  next_action?: NextActionCompact
 }
 
 export interface ActivityPage {
@@ -487,6 +488,7 @@ export interface TaskOperationsItem {
   unsatisfiable_task_ids?: string[]
   child_rollup?: TaskChildRollup
   plan: TaskPlanStatus
+  next_action?: NextActionCompact
 }
 
 export interface TaskOperationsPage {
@@ -873,6 +875,7 @@ export interface ActivityItem {
     url?: string
     number?: number
   }
+  next_action?: NextActionCompact
 }
 
 export interface PendingProposal {
@@ -898,8 +901,124 @@ export interface PendingProposalsResponse {
   attention: {
     task_count: number
     pending_proposal_count: number
+    operator_decisions: number
     total: number
   }
+}
+
+// The server's next action for a task (feature-operator-next-action NA-3,
+// DEC-61). Mirrors internal/nextaction: every surface renders these fields and
+// derives none of them.
+export type NextActionActor = 'none' | 'operator' | 'factory' | 'agent' | 'dependency'
+
+export interface NextActionChoice {
+  id: string
+  label: string
+  effect: string
+  method: string
+  path: string
+  capability: string
+  allowed: boolean
+}
+
+export interface NextActionBlocker {
+  task_id: string
+  title: string
+  state: string
+}
+
+export interface NextActionOrder {
+  id: string
+  stage: string
+  state: string
+  queue_deadline: string | null
+  execution_deadline: string | null
+  lease_expires_at: string | null
+  recovery_refusal?: string
+}
+
+export interface NextActionAttempt {
+  harness?: string
+  model?: string
+  user?: string
+  claimed_by?: string
+  session_id?: string
+  attempt_id?: string
+  claimed_at: string | null
+  last_check_in: string | null
+  lease_expires_at: string | null
+  progress?: string
+  elapsed_seconds: number
+}
+
+export interface NextActionDetails {
+  gate_kind?: string
+  reason_code?: string
+  stall_reason?: string
+  release_outcome?: string
+  order_ids?: string[]
+  checkpoint?: string
+  pending_proposals?: { tier: string; id: string; version: number }[]
+  secondary?: { kind: string; reason_code?: string }[]
+  refusals?: { choice: string; text: string }[]
+  merge_readiness?: string
+}
+
+export interface NextActionCompact {
+  label: string
+  actor: NextActionActor
+  kind: string
+  judgment: boolean
+  summary: string
+  deadline: string | null
+  blocked_by?: NextActionBlocker[]
+}
+
+export interface NextAction extends NextActionCompact {
+  question?: string
+  choices: NextActionChoice[]
+  if_ignored?: string
+  current_order?: NextActionOrder
+  attempt?: NextActionAttempt
+  details: NextActionDetails
+}
+
+export type InboxBand = 'decisions' | 'blocked' | 'automatic'
+
+// One GET /v1/next-actions item: a task item carries `task` and its compact
+// next action; a document proposal carries `kind: 'document_proposal'` and
+// `proposal`. The server orders the list.
+export interface InboxItem {
+  kind?: 'document_proposal'
+  band: InboxBand
+  task?: Task
+  next_action?: NextActionCompact
+  pull_request?: GitHubLifecycle
+  serves?: string[]
+  recommendation?: string
+  no_judgment_needed?: boolean
+  proposal?: PendingProposal
+  sentence?: string
+  blockers?: NextActionBlocker[]
+  deadline?: string | null
+  last_event_at?: string
+}
+
+export interface FactoryAct {
+  id: number
+  task_id: string
+  kind: string
+  at: string
+  automatic: boolean
+  summary?: string
+}
+
+export interface NextActionsPage {
+  items: InboxItem[]
+  acts: FactoryAct[]
+  total: number
+  limit: number
+  offset: number
 }
 
 export interface WorkOrder {

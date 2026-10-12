@@ -28,13 +28,7 @@ const DEPENDENCY_RESULT_LIMIT = 20
 // A sheet instead of a page so intake happens over the board, with room for
 // the rich triage context that saves bounce rounds downstream — structured
 // description, base branch, policy overrides, and artifact attachments.
-export function TaskCreateSheet({
-  onClose,
-  onCreated,
-}: {
-  onClose?: () => void
-  onCreated?: (taskId: string) => void
-} = {}) {
+export function TaskCreateSheet() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
@@ -80,10 +74,9 @@ export function TaskCreateSheet({
   const repoName = repo || repos[0]?.name || ''
   const workerExpected = workerHealth.data?.worker_expected === true
   const workerAvailable = workerHealth.data?.worker_available === true
-  // Hosts may keep their own surface mounted while sharing the complete intake
-  // composition. The Tasks list remains the default for legacy `/new` links
-  // and its own create action.
-  const close = onClose ?? (() => void navigate({ to: '/tasks', search: {} }))
+  // Intake is the Board's `create` parameter, so closing drops it and leaves
+  // whichever view the Board was showing.
+  const close = () => void navigate({ to: '/', search: ({ create: _create, ...prev }) => prev })
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -107,12 +100,12 @@ export function TaskCreateSheet({
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
-      if (onCreated) {
-        onCreated(task.id)
-      } else {
-        // The default host opens the new task in the list's own panel.
-        void navigate({ to: '/tasks', search: { task: task.id } })
-      }
+      // The new task opens in the Board's sheet over the view intake came from.
+      void navigate({
+        to: '/tasks/$taskId',
+        params: { taskId: task.id },
+        search: ({ create: _create, ...prev }) => prev,
+      })
     },
     onError: (error) => {
       if (error instanceof TaskIntakeError && error.code === 'invalid_dependencies') setAdvancedOpen(true)
@@ -184,7 +177,7 @@ export function TaskCreateSheet({
       </header>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
-        <EmptyRepositoryNotice onNavigate={onClose} />
+        <EmptyRepositoryNotice />
         <Field
           label="Description"
           hint="AI generates the task title from this context, which also becomes the triage and plan prompt."

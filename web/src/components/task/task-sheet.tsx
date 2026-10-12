@@ -4,10 +4,10 @@ import type { ActivityItem } from '../../lib/types'
 import { useCanonicalBlueprintRedirect } from '../blueprint/use-blueprint-route'
 import { LineageExplorer } from '../lineage/lineage-explorer'
 import { Button } from '../ui/button'
-import { CopyButton } from '../ui/copy-button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
 import { AttachmentsCard } from './attachments-card'
+import { NextActionCard } from './next-action-card'
 import { isReviewable } from './review-panel'
 import { SpecCard } from './spec-card'
 import { TaskContextCard } from './task-context-card'
@@ -16,34 +16,17 @@ import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
-// How a surface other than the board mounts this same composition as its own
-// right panel (AC-2.2). The Tasks list supplies the order it is showing and its
-// own open/close navigation; without it the panel would read the unfiltered
-// board feed to find neighbours, which is exactly the whole-workspace load the
-// list was rewritten to avoid (AC-2.3).
-export interface TaskPanelSurface {
-  order: string[]
-  permalink: string
-  close: () => void
-  select: (taskId: string) => void
-}
-
 // The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
-// reviewer never loses list context. The Tasks list opens the same composition
-// in its own panel rather than forking it (AC-2.2).
-export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanelSurface }) {
+// reviewer never loses list context. The Board's list view opens it the same
+// way, and closing returns to whichever view the Board was showing.
+export function TaskSheet({ taskId }: { taskId: string }) {
   const navigate = useNavigate()
   const { data: item, isLoading, error } = useTaskDetail(taskId)
-  const boardOrder = useTaskOrder(taskId, !panel)
-  const index = panel ? panel.order.indexOf(taskId) : -1
-  const previousId = panel ? (index > 0 ? panel.order[index - 1] : undefined) : boardOrder.previousId
-  const nextId = panel
-    ? index >= 0 && index < panel.order.length - 1
-      ? panel.order[index + 1]
-      : undefined
-    : boardOrder.nextId
-  const close = panel ? panel.close : () => void navigate({ to: '/' })
+  const boardOrder = useTaskOrder(taskId)
+  const previousId = boardOrder.previousId
+  const nextId = boardOrder.nextId
+  const close = () => void navigate({ to: '/', search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
@@ -56,7 +39,7 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}
         <LineageExplorer type="task" id={taskId} />
-        {!panel && boardOrder.windowEdge && (
+        {boardOrder.windowEdge && (
           // Below sm the note takes its own line under the controls so it
           // never squeezes the title out of the header.
           <span
@@ -66,15 +49,8 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
             {boardOrder.windowEdge}
           </span>
         )}
-        <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} panel={panel} />
-        <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} panel={panel} />
-        {/* The panel's own address is shareable, so it is offered as one
-            (AC-2.2); the full route stays one click away for the deep link. */}
-        {panel && (
-          <span className="flex shrink-0">
-            <CopyButton value={panel.permalink} label="Copy link to this task" />
-          </span>
-        )}
+        <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
+        <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
         <Link to="/tasks/$taskId/full" params={{ taskId }} aria-label="Open full task page" className="shrink-0">
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <Maximize2 />
@@ -99,17 +75,7 @@ export function TaskSheet({ taskId, panel }: { taskId: string; panel?: TaskPanel
   )
 }
 
-function SheetNavButton({
-  targetId,
-  label,
-  icon,
-  panel,
-}: {
-  targetId?: string
-  label: string
-  icon: React.ReactNode
-  panel?: TaskPanelSurface
-}) {
+function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: string; icon: React.ReactNode }) {
   if (!targetId) {
     return (
       <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
@@ -117,23 +83,14 @@ function SheetNavButton({
       </Button>
     )
   }
-  // On a hosting surface, stepping through neighbours moves the panel rather
-  // than leaving for the board's own sheet route.
-  if (panel) {
-    return (
-      <Button
-        variant="ghost"
-        size="icon"
-        className="shrink-0"
-        aria-label={label}
-        onClick={() => panel.select(targetId)}
-      >
-        {icon}
-      </Button>
-    )
-  }
   return (
-    <Link to="/tasks/$taskId" params={{ taskId: targetId }} aria-label={label} className="shrink-0">
+    <Link
+      to="/tasks/$taskId"
+      params={{ taskId: targetId }}
+      search={(prev) => prev}
+      aria-label={label}
+      className="shrink-0"
+    >
       <Button variant="ghost" size="icon" tabIndex={-1}>
         {icon}
       </Button>
@@ -162,6 +119,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
       <AttachmentsCard attachments={item.attachments ?? []} />
       {/* Relationships are read in the explorer panel, not inline: the panel
           is the one rendering of this task's lineage. */}
+      <NextActionCard taskId={item.task.id} gateOpen={isReviewable(item)} />
       <TaskFlowChart taskId={item.task.id} />
       <Timeline item={item} routeVariant="sheet" />
     </div>

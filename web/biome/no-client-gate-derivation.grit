@@ -1,0 +1,20 @@
+// The browser never derives a task's gate from its events: which decision is
+// open, who owns it and what may be done is the server's next action
+// (feature-operator-next-action NA-9). Scoped to src/lib/activity.ts, where the
+// event-walking gate derivation used to live.
+or {
+  `export function gateBadge($params) { $body }` as $match where {
+    register_diagnostic(span=$match, message="gateBadge is deleted: read the server's next_action instead of deriving a gate from events.", severity="error")
+  },
+  `export const gateBadge = $value` as $match where {
+    register_diagnostic(span=$match, message="gateBadge is deleted: read the server's next_action instead of deriving a gate from events.", severity="error")
+  },
+  binary_expression(left=$left, right=$right) as $match where {
+    $match <: or { `$_ === $_`, `$_ == $_`, `$_ !== $_`, `$_ != $_` },
+    or {
+      and { $left <: or { `$_.kind`, `$_.command`, `kind`, `command` }, $right <: or { `'gate.spec'`, `'gate.merge'`, `'gate.plan_revision'`, `'stage.bounce_limit'`, `'job.fail'` } },
+      and { $right <: or { `$_.kind`, `$_.command`, `kind`, `command` }, $left <: or { `'gate.spec'`, `'gate.merge'`, `'gate.plan_revision'`, `'stage.bounce_limit'`, `'job.fail'` } }
+    },
+    register_diagnostic(span=$match, message="Gate-entering commands are the server's to interpret: read next_action.kind instead of comparing an event's kind or command.", severity="error")
+  }
+}

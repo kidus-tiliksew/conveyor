@@ -275,8 +275,8 @@ async function routeTasksSurface(page: Page) {
 
 async function openTasks(page: Page) {
   await routeTasksSurface(page)
-  await page.goto('/tasks')
-  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+  await page.goto('/?view=list')
+  await expect(page.getByRole('button', { name: 'List', pressed: true })).toBeVisible()
 }
 
 function rows(page: Page) {
@@ -359,11 +359,11 @@ test('tasks view links attached requirements and design documents', async ({ pag
     'href',
     '/system-design?document=design-lifecycle',
   )
-  // Each row hands off to the task's own detail composition rather than
-  // restating it, and does so at an address that can be shared (AC-2.2).
+  // Each row hands off to the task's own detail sheet over the list rather
+  // than restating it, at an address that can be shared.
   await expect(blocked.getByRole('link', { name: 'Wire the Tasks view' })).toHaveAttribute(
     'href',
-    '/tasks?task=task-blocked',
+    '/tasks/task-blocked?view=list',
   )
 
   await expect(rows(page).filter({ hasText: 'Shipped web change' }).getByText('No attached context')).toBeVisible()
@@ -450,7 +450,7 @@ test('tasks view distinguishes an empty workspace from a failed load', async ({ 
   )
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [] }))
-  await page.goto('/tasks')
+  await page.goto('/?view=list')
   await expect(page.getByRole('heading', { name: 'No tasks yet' })).toBeVisible()
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
@@ -513,71 +513,110 @@ test('tasks view exposes no priority or declared-phase field', async ({ page }) 
   await expect(page.getByLabel('Filter by priority')).toHaveCount(0)
 })
 
-// AC-2.1: intake lives on the surface where delivery is managed. The legacy
-// address and the Board entry point both hand off to that single surface.
-test('tasks view is where a task is created', async ({ page }) => {
+// REQ-6 AC-6.1: the Board shows kanban by default and the list on request;
+// the choice lives in the address, so a reload keeps it.
+test('the board view switch keeps its view across a reload', async ({ page }) => {
+  await routeTasksSurface(page)
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'Kanban', pressed: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Task board' })).toBeVisible()
+  expect(new URL(page.url()).search).toBe('')
+
+  await page.getByRole('button', { name: 'List' }).click()
+  await expect(page).toHaveURL(/\/\?view=list$/)
+  await expect(page.getByRole('region', { name: 'Tasks table' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Task board' })).toHaveCount(0)
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'List', pressed: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Tasks table' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Kanban' }).click()
+  await expect(page.getByRole('region', { name: 'Task board' })).toBeVisible()
+  expect(new URL(page.url()).search).toBe('')
+})
+
+// REQ-6 AC-6.3: the retired Tasks address lands on the list view, keeping
+// intake and every filter it names and dropping anything else.
+test('the tasks address redirects to the list view with its filters and intake', async ({ page }) => {
+  await routeTasksSurface(page)
+  const requests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/v1/task-operations?')) requests.push(request.url())
+  })
+  await page.goto('/tasks?create=true&q=shipped&state=queued&assignee=user-ada&serves_requirement=REQ-2&bogus=1')
+  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
+  const url = new URL(page.url())
+  expect(url.pathname).toBe('/')
+  expect(url.searchParams.get('view')).toBe('list')
+  expect(url.searchParams.get('create')).toBe('true')
+  expect(url.searchParams.has('bogus')).toBe(false)
+  // The filter reached the server: the list reads it from the address once,
+  // then the saved filter carries it and the address keeps only the view.
+  await expect
+    .poll(() =>
+      requests.some((request) => {
+        const params = new URL(request).searchParams
+        return (
+          params.get('q') === 'shipped' &&
+          params.getAll('state').includes('queued') &&
+          params.get('assignee') === 'user-ada' &&
+          params.getAll('serves_requirement').includes('REQ-2')
+        )
+      }),
+    )
+    .toBe(true)
+  await expect(page).not.toHaveURL(/q=shipped/)
+})
+
+// REQ-6: intake opens over whichever Board view asked for it, from the Board
+// header and from the legacy /new address.
+test('task intake opens over the board list view', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('link', { name: 'New task' }).click()
   const intake = page.getByRole('dialog', { name: 'New task' })
   await expect(intake).toBeVisible()
   await expect(intake.getByText(/triage and plan prompt/)).toBeVisible()
   await expect(intake.getByText(/Designs, plans, logs .* triage and plan agents/)).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/tasks')
   // The list it files into stays behind the sheet rather than being replaced.
-  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'List', pressed: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
+  await expect(page).toHaveURL(/\/\?view=list$/)
 
   await routeTasksSurface(page)
   await page.goto('/new')
   await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/tasks')
-
-  // The board mounts the same intake composition locally instead of handing
-  // off to the Tasks route.
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
-  await page.getByRole('button', { name: 'New task' }).click()
-  await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/')
+  expect(new URL(page.url()).searchParams.get('view')).toBe('list')
 })
 
-// AC-2.2: a row opens the task's own detail composition beside the list, at an
-// address that survives being shared, while the full route stays the deep link.
-test('selecting a row opens the task detail panel with a permalink', async ({ page }) => {
+// A row opens the Board's task sheet over the list, and the legacy panel
+// permalink lands on the same sheet.
+test('selecting a row opens the task sheet over the list view', async ({ page }) => {
   await openTasks(page)
   await page.getByRole('link', { name: 'Shipped web change' }).click()
   const panel = page.getByRole('dialog', { name: 'Task detail' })
   await expect(panel).toBeVisible()
-  expect(new URL(page.url()).search).toBe('?task=task-shipped')
-  // The list stays behind the panel — this is a panel on the Tasks view, not a
-  // navigation away from it.
-  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
-  await expect(panel.getByRole('button', { name: 'Copy link to this task' })).toBeVisible()
-  // Exactly the open row is announced as current — the rows all point at the
-  // same path, so the search value is what distinguishes them.
+  await expect(page).toHaveURL(/\/tasks\/task-shipped\?view=list$/)
+  // The list stays behind the sheet.
+  await expect(page.getByRole('region', { name: 'Tasks table' })).toBeVisible()
   await expect(page.getByRole('list', { name: 'Tasks' }).locator('a[aria-current]')).toHaveCount(1)
   await expect(panel.getByRole('link', { name: 'Open full task page' })).toHaveAttribute(
     'href',
     '/tasks/task-shipped/full',
   )
 
-  // Stepping through neighbours moves the panel along the list that is showing.
-  await panel.getByRole('button', { name: 'Previous task' }).click()
-  await expect(page).toHaveURL(/\?task=task-anchor$/)
-
   await panel.getByRole('button', { name: 'Close panel' }).click()
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toHaveCount(0)
-  expect(new URL(page.url()).search).toBe('')
+  await expect(page).toHaveURL(/\/\?view=list$/)
 
-  // The panel's address is a permalink: opening it cold restores the panel.
   await routeTasksSurface(page)
   await page.goto('/tasks?task=task-bounced')
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+  await expect(page).toHaveURL(/\/tasks\/task-bounced\?view=list$/)
 
-  // …and the full route remains reachable for the deep links that already
-  // point at it.
+  // The full route is unchanged.
   await page.goto('/tasks/task-bounced/full')
   await expect(page.getByRole('link', { name: 'Back to board' })).toBeVisible()
   expect(new URL(page.url()).pathname).toBe('/tasks/task-bounced/full')
@@ -838,8 +877,8 @@ async function openTasksWithReturn(page: Page, options: { hold: boolean; claiman
   await page.route('**/v1/tasks/task-returned/activity**', (route) =>
     route.fulfill({ json: returnedDetail(options.hold, options.claimantID, options.claimedAfter) }),
   )
-  await page.goto('/tasks')
-  await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+  await page.goto('/?view=list')
+  await expect(page.getByRole('button', { name: 'List', pressed: true })).toBeVisible()
 }
 
 test('a run-claimed bounce tells the signed-in user to resume it regardless of hold', async ({ page }) => {
@@ -847,7 +886,7 @@ test('a run-claimed bounce tells the signed-in user to resume it regardless of h
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
   await expect(attention.getByText(returnedFeedback, { exact: false })).toBeVisible()
-  await expect(attention.getByRole('link', { name: 'Open task' })).toHaveAttribute('href', '/tasks?task=task-returned')
+  await expect(attention.getByRole('link', { name: 'Open task' })).toHaveAttribute('href', '/tasks/task-returned?view=list')
 
   // Held work was run from someone's own machine, so nothing picks the feedback
   // up until they run it again.
@@ -881,7 +920,7 @@ test('start over markers identify both retired and successor Tasks rows', async 
     { ...operations[2], task: { ...operations[2].task, supersedes: null, superseded_by: '' } },
   ]
   await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: items }))
-  await page.goto('/tasks')
+  await page.goto('/?view=list')
   await expect(rows(page).filter({ hasText: 'Wire the Tasks view' })).toContainText('restarted')
   await expect(rows(page).filter({ hasText: 'Historical anchor' })).toContainText('restarted')
   await expect(rows(page).filter({ hasText: 'Shipped web change' })).not.toContainText('restarted')
@@ -1018,7 +1057,7 @@ test('failed triage Tasks row uses recorded stages and keeps truthful plan state
     plan: { state: 'pending_gate', version: 1 },
   }
   await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [failed, gate] }))
-  await page.goto('/tasks')
+  await page.goto('/?view=list')
   const failedRow = rows(page).filter({ hasText: 'Triage failed before planning' })
   await expect(failedRow.getByText('Triage failed', { exact: true })).toBeVisible()
   await expect(failedRow).toContainText('No plan')
@@ -1057,7 +1096,7 @@ test('Tasks and Board share Updated range parameters', async ({ page }) => {
       },
     })
   })
-  await page.goto('/tasks')
+  await page.goto('/?view=list')
   await expect(rows(page)).toHaveCount(2)
   // Tasks opens on any time: no Updated bound at all.
   expect(taskRequests.at(-1)?.searchParams.has('updated_from')).toBe(false)

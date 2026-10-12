@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { type CurrentExecutionState, deriveCurrentExecutionState, pendingPlanRevisionRequest } from '../../lib/activity'
+import type { CurrentExecutionState } from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
@@ -14,10 +14,12 @@ import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 import { VerificationCheckpointGrounds } from './verification-checkpoint-grounds'
 
-export function hasWorkerRecovery(item: ActivityItem) {
-  const state = deriveCurrentExecutionState(item)
+// Whether the current order needs a worker-recovery act. The current order and
+// its state come from the server's next action (deriveCurrentExecutionState);
+// a plan revision is decided at the gate, never recovered here.
+export function hasWorkerRecovery(item: ActivityItem, state: CurrentExecutionState | undefined) {
   return (
-    pendingPlanRevisionRequest(item.events) == null &&
+    item.next_action?.kind !== 'plan_revision' &&
     state != null &&
     state.kind !== 'running' &&
     state.kind !== 'dependency_waiting' &&
@@ -138,11 +140,7 @@ export function CheckpointProposalRecoveryCard({
           <Check aria-hidden />
           {mutation.isPending ? 'Confirming and recovering…' : actionLabel}
         </Button>
-        <Link
-          to="/pending-proposals"
-          search={{ task: item.task.id }}
-          className="text-xs font-medium text-primary hover:underline"
-        >
+        <Link to="/inbox" search={{ task: item.task.id }} className="text-xs font-medium text-primary hover:underline">
           Review or dismiss proposals
         </Link>
       </div>
@@ -157,19 +155,12 @@ export function CheckpointProposalRecoveryCard({
 
 export function WorkOrderRecoveryCard({
   item,
-  state = deriveCurrentExecutionState(item),
+  state,
 }: {
   item: ActivityItem
-  state?: CurrentExecutionState
+  state: CurrentExecutionState | undefined
 }) {
-  if (
-    pendingPlanRevisionRequest(item.events) != null ||
-    !state ||
-    state.kind === 'running' ||
-    state.kind === 'dependency_waiting' ||
-    state.kind === 'dependency_attention'
-  )
-    return null
+  if (!state || !hasWorkerRecovery(item, state)) return null
   return <RecoveryState item={item} state={state} />
 }
 
@@ -573,7 +564,7 @@ function CheckpointCitation({
                   </Button>
                   {canConfirm && (
                     <Link
-                      to="/pending-proposals"
+                      to="/inbox"
                       search={{ document: citation.document_id, tier: citation.document_kind }}
                       className="text-xs font-medium text-primary hover:underline"
                     >

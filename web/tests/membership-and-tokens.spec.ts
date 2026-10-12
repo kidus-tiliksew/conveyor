@@ -358,7 +358,7 @@ test('a signed-in viewer sees the workspace and role but no mutation affordances
   await page.goto('/tasks')
   await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
-  await page.goto('/pending-proposals')
+  await page.goto('/inbox')
   await expect(page.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
 })
 

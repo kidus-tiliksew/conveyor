@@ -121,7 +121,12 @@ async function mockShell(page: Page) {
         json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] },
       })
     if (path === '/v1/pending-proposals')
-      return route.fulfill({ json: { items: [], attention: { task_count: 1, pending_proposal_count: 0, total: 1 } } })
+      return route.fulfill({
+        json: {
+          items: [],
+          attention: { task_count: 1, pending_proposal_count: 0, operator_decisions: 1, total: 1 },
+        },
+      })
     if (path === '/v1/activity') return paged(activity)
     if (path === '/v1/task-operations') return paged(operations)
     if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary] })
@@ -362,7 +367,7 @@ test.describe('phone', () => {
     await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Workspaces' })).toBeHidden()
     await expect(page.getByRole('navigation', { name: 'Primary' })).toBeHidden()
-    await expect(page.getByRole('link', { name: '1 items need attention' })).toBeVisible()
+    await expect(page.getByRole('link', { name: '1 decisions waiting in the Inbox' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: 'test-results/shots/responsive-phone-board.png', animations: 'disabled' })
 
@@ -372,9 +377,9 @@ test.describe('phone', () => {
     await expect(drawer.getByRole('button', { name: 'Switch to Other' })).toBeVisible()
     await page.screenshot({ path: 'test-results/shots/responsive-phone-drawer.png', animations: 'disabled' })
 
-    await drawer.getByRole('link', { name: 'Tasks' }).click()
+    await drawer.getByRole('link', { name: /Inbox/ }).click()
     await expect(drawer).toBeHidden()
-    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
   })
 
   test('the tasks list stacks each row and keeps the page inside the viewport', async ({ page }) => {
