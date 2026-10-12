@@ -315,12 +315,40 @@ func (c *client) do(method, path string, body []byte, out any) error {
 }
 
 func (c *client) doHeaders(method, path string, body []byte, out any, headers map[string]string) error {
+	resp, err := c.send(method, path, body, headers)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// getRawWithHeader is a GET that returns the body bytes and response headers.
+func (c *client) getRawWithHeader(path string) ([]byte, http.Header, error) {
+	resp, err := c.send(http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, resp.Header, nil
+}
+
+// send issues one authenticated request. A status of 300 or above becomes an
+// error carrying the server's text; otherwise the caller owns the open body.
+func (c *client) send(method, path string, body []byte, headers map[string]string) (*http.Response, error) {
 	if c.configErr != nil {
-		return c.configErr
+		return nil, c.configErr
 	}
 	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -336,20 +364,17 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s (is conveyord running? set CONVEYOR_ADDR if not on :8080)", err)
+		return nil, fmt.Errorf("%s (is conveyord running? set CONVEYOR_ADDR if not on :8080)", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
 		msg, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())
+			return nil, fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())
 		}
-		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
+		return nil, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
 	}
-	if resp.StatusCode == http.StatusNoContent || out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return resp, nil
 }
 
 // credentialDiagnostic names the credential source and whether a stored

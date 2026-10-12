@@ -1698,6 +1698,13 @@ func (s *Service) authorizedForObservation(ctx context.Context, id, session stri
 	return s.authorizedSession(ctx, id, session, true)
 }
 
+// ObservableOrder applies get_work_order's observation check (same session,
+// claimed with a live lease, or submitted) without renewing the lease or
+// recording a context observation, so a status read never mutates.
+func (s *Service) ObservableOrder(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	return s.authorizedForObservation(ctx, id, session)
+}
+
 func (s *Service) authorized(ctx context.Context, id, session string) (core.WorkOrder, error) {
 	return s.authorizedSession(ctx, id, session, false)
 }

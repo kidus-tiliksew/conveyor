@@ -69,9 +69,13 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	blockers, err := st.ListDependencyBlockers(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 	ordersByTask := map[string][]core.WorkOrder{}
 	for _, order := range orders {
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockers[order.TaskID]))
 	}
 	markerByTask := map[string]ActivityMarker{}
 	for _, marker := range markers {
@@ -86,6 +90,21 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		out[task.ID] = nextaction.Project(input)
 	}
 	return out, nil
+}
+
+// withDependencyBlockers returns an implement or verify order carrying the
+// task's unmerged dependencies, which also make it unclaimable. Other stages
+// return unchanged.
+func withDependencyBlockers(order core.WorkOrder, blockers DependencyBlockers) core.WorkOrder {
+	if order.Stage != core.StageImplement && order.Stage != core.StageVerify {
+		return order
+	}
+	order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
+	order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
+	if len(order.BlockingTaskIDs) > 0 {
+		order.Claimable = false
+	}
+	return order
 }
 
 func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, opts NextActionOptions) (nextaction.Input, error) {
