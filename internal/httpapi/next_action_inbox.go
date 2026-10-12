@@ -101,30 +101,7 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 			folded[task.ID] = true
 		}
 	}
-	var items []inboxItem
-	for _, task := range candidates {
-		action := projected[task.ID]
-		if folded[task.ID] {
-			continue
-		}
-		item := inboxItem{
-			Task: &task, NextAction: compactPtr(action), PullRequest: task.GitHub,
-			Serves: serves(task), Deadline: action.Deadline, LastEventAt: lastEvent[task.ID],
-			DependentsFirst: dependedOn[task.ID], SortID: task.ID, Blockers: action.BlockedBy,
-		}
-		switch {
-		case action.Actor == nextaction.ActorOperator && action.Judgment:
-			item.Band = "decisions"
-		case action.Actor == nextaction.ActorDependency:
-			item.Band = "blocked"
-		case action.Actor == nextaction.ActorFactory || (action.Actor == nextaction.ActorOperator && !action.Judgment):
-			item.Band = "automatic"
-			item.NoJudgmentNeeded = action.Actor == nextaction.ActorOperator && !action.Judgment
-		default:
-			continue
-		}
-		items = append(items, item)
-	}
+	items := inboxTaskItems(candidates, projected, lastEvent, dependedOn, folded)
 	items = append(items, documentProposalItems(proposals)...)
 	if band != "" {
 		filtered := make([]inboxItem, 0, len(items))
@@ -148,6 +125,33 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))
 	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(offset))
 	writeJSON(w, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
+}
+func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.NextAction, lastEvent map[string]time.Time, dependedOn, folded map[string]bool) []inboxItem {
+	var items []inboxItem
+	for _, task := range candidates {
+		if folded[task.ID] {
+			continue
+		}
+		action := projected[task.ID]
+		item := inboxItem{
+			Task: &task, NextAction: compactPtr(action), PullRequest: task.GitHub,
+			Serves: serves(task), Deadline: action.Deadline, LastEventAt: lastEvent[task.ID],
+			DependentsFirst: dependedOn[task.ID], SortID: task.ID, Blockers: action.BlockedBy,
+		}
+		switch {
+		case action.Actor == nextaction.ActorOperator && action.Judgment:
+			item.Band = "decisions"
+		case action.Actor == nextaction.ActorDependency:
+			item.Band = "blocked"
+		case action.Actor == nextaction.ActorFactory || (action.Actor == nextaction.ActorOperator && !action.Judgment):
+			item.Band = "automatic"
+			item.NoJudgmentNeeded = action.Actor == nextaction.ActorOperator && !action.Judgment
+		default:
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func compactPtr(action nextaction.NextAction) *nextaction.Compact {

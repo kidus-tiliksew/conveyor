@@ -16,6 +16,7 @@ func TestSelectFactoryActsBoundsAndRole(t *testing.T) {
 		{ID: 4, TaskID: "t", Kind: "merge.confirmed", ActorRole: core.ActorRunner, At: now.Add(time.Second)},
 		{ID: 5, TaskID: "t", Kind: "work_order.expired", ActorRole: core.ActorSystem, At: now.Add(2 * time.Second)},
 		{ID: 6, TaskID: "t", Kind: "work_order.requeued", ActorRole: core.ActorSystem, At: now.Add(3 * time.Second), Payload: core.JSONPayload(map[string]any{"automatic_retry_count": 1})},
+		{ID: 7, TaskID: "t", Kind: "review.seat_recovered", ActorRole: core.ActorAgent, At: now.Add(4 * time.Second)},
 	}
 	acts := SelectFactoryActs(events, now, 100)
 	if len(acts) != 4 {
