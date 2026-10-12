@@ -1,0 +1,146 @@
+package storetest
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+)
+
+func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	read := func(id, kind string) nextaction.NextAction {
+		t.Helper()
+		action, err := store.ReadNextAction(ctx, st, id, store.NextActionOptions{Now: now})
+		if err != nil || action.Kind != kind || action.Label == "" {
+			t.Fatalf("task %s kind=%s label=%q want %s err=%v", id, action.Kind, action.Label, kind, err)
+		}
+		return action
+	}
+	plane := taskops.New(st)
+	for _, tc := range []struct {
+		command core.TaskCommand
+		kind    string
+	}{
+		{core.TaskGateSpec, nextaction.KindPlanApproval},
+		{core.TaskJobFail, nextaction.KindJobFailure},
+	} {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: tc.command}); err != nil {
+			t.Fatal(err)
+		}
+		if action := read(id, tc.kind); action.Details.GateKind == "" {
+			t.Fatalf("%s missing gate kind", tc.kind)
+		}
+	}
+	revision := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
+	if _, err := requestPlanRevision(ctx, st, revision.order.TaskID, revision.order.ID, revision.workerID, revision.sessionID, "the API moved"); err != nil {
+		t.Fatal(err)
+	}
+	read(revision.order.TaskID, nextaction.KindPlanRevision)
+	mergeID := createRunningTask(t, st, ctx, workspace)
+	acceptReviewRound(t, st, ctx, mergeID, func(order core.WorkOrder, seat int) core.ReviewDecision {
+		return core.ReviewDecision{TaskID: mergeID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat, Verdict: "approve", ReasonCode: "verified", Summary: "merge gate", ReviewedCommitSHA: "head", PolicyVersion: 1, MergeApproval: true, MaxBounces: 3}
+	})
+	read(mergeID, nextaction.KindMergeApproval)
+	bounceID := createRunningTask(t, st, ctx, workspace)
+	acceptReviewRound(t, st, ctx, bounceID, func(order core.WorkOrder, seat int) core.ReviewDecision {
+		return core.ReviewDecision{TaskID: bounceID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat, Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: 1}
+	})
+	read(bounceID, nextaction.KindReviewBounceLimit)
+
+	stallID := orderTask(t, st, ctx, workspace, core.WorkOrder{QueueDeadline: now.Add(time.Hour), RetrySuppressed: true})
+	if action := read(stallID, nextaction.KindStalled); action.Details.StallReason == "" {
+		t.Fatal("suppressed stall has no reason")
+	}
+	refusedID := orderTask(t, st, ctx, workspace, core.WorkOrder{State: core.WorkOrderQueued, RecoveryRefusal: "operator must recover this"})
+	refused := read(refusedID, nextaction.KindStalled)
+	if refused.CurrentOrder == nil || refused.CurrentOrder.RecoveryRefusal == "" {
+		t.Fatalf("recovery refusal missing: %+v", refused.CurrentOrder)
+	}
+	blocker := createTask(t, st, ctx, workspace, core.TaskAwaiting, "")
+	blockedID := orderTask(t, st, ctx, workspace, core.WorkOrder{State: core.WorkOrderQueued, BlockingTaskIDs: []string{blocker}})
+	read(blockedID, nextaction.KindBlocked)
+	claimedID := orderTask(t, st, ctx, workspace, core.WorkOrder{})
+	if _, err := For(st).ClaimWorkOrder(ctx, "order-"+claimedID, core.WorkOrderClaim{ClaimantID: "agent", SessionID: "session", Lease: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	read(claimedID, nextaction.KindWorking)
+	for _, command := range []string{"triage.park", "dispatch.fail_final"} {
+		id := createTask(t, st, ctx, workspace, core.TaskParked, "")
+		if err := st.AppendEvent(ctx, core.Event{TaskID: id, Kind: "task.state_changed", ActorRole: core.ActorSystem, At: now, Payload: core.JSONPayload(map[string]any{"command": command})}); err != nil {
+			t.Fatal(err)
+		}
+		want := nextaction.KindParked
+		if command == "dispatch.fail_final" {
+			want = nextaction.KindDispatchExhausted
+		}
+		read(id, want)
+	}
+	read(createTask(t, st, ctx, workspace, core.TaskMerged, ""), nextaction.KindTerminal)
+
+	listed, err := st.ListTasksFiltered(ctx, store.TaskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := store.ReadNextActions(ctx, st, listed, store.NextActionOptions{Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range listed {
+		one, err := store.ReadNextAction(ctx, st, task.ID, store.NextActionOptions{Now: now})
+		if err != nil || one.Kind != batch[task.ID].Kind || one.Label != batch[task.ID].Label {
+			t.Fatalf("batch drift %s one=%s batch=%s err=%v", task.ID, one.Kind, batch[task.ID].Kind, err)
+		}
+	}
+	runCallerAttentionOrder(t, st, ctx, workspace)
+}
+
+func orderTask(t *testing.T, st store.Store, ctx context.Context, workspace string, order core.WorkOrder, commands ...core.WorkOrderCommand) string {
+	t.Helper()
+	id := createTask(t, st, ctx, workspace, core.TaskRunning, "")
+	if err := st.CreateJob(ctx, core.Job{ID: "job-" + id, TaskID: id, Stage: core.StageImplement, State: core.JobRunning}); err != nil {
+		t.Fatal(err)
+	}
+	order.ID, order.TaskID, order.JobID, order.Stage, order.State = "order-"+id, id, "job-"+id, core.StageImplement, core.WorkOrderQueued
+	if err := For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if err := For(st).UpdateWorkOrder(ctx, order, commands...); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func runCallerAttentionOrder(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	user := "attention-" + core.NewTaskID()
+	base := time.Now().UTC().Truncate(time.Second)
+	for i, at := range []time.Time{base, base.Add(time.Second), base.Add(2 * time.Second)} {
+		id := "attn-" + user + "-" + string(rune('a'+i))
+		task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, Assignee: &core.TaskAssignee{UserID: user}, CreatedAt: at}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	running := core.Task{ID: "running-" + user, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-running-" + user, State: core.TaskRunning, Assignee: &core.TaskAssignee{UserID: user}, CreatedAt: base.Add(3 * time.Second)}
+	if err := st.CreateTask(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.ListCallerAttentionTaskPage(ctx, store.CallerAttentionQuery{UserID: user, Limit: 1, Offset: 0})
+	if err != nil || page.Total != 3 || len(page.Tasks) != 1 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	next, err := st.ListCallerAttentionTaskPage(ctx, store.CallerAttentionQuery{UserID: user, Limit: 1, Offset: 1})
+	if err != nil || len(next.Tasks) != 1 || next.Tasks[0].ID == page.Tasks[0].ID || next.Total != 3 {
+		t.Fatalf("offset page=%+v err=%v", next, err)
+	}
+	if page.Tasks[0].CreatedAt.Before(next.Tasks[0].CreatedAt) {
+		t.Fatalf("created_at order first=%s second=%s", page.Tasks[0].ID, next.Tasks[0].ID)
+	}
+}

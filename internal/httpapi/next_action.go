@@ -52,23 +52,6 @@ func (s *Server) nextActionOptions(r *http.Request) store.NextActionOptions {
 	return opts
 }
 
-func loadedNeedsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority bool) bool {
-	var waiting []nextaction.ProposalRef
-	if pendingAuthority {
-		waiting = []nextaction.ProposalRef{{Tier: "requirement", ID: "pending"}}
-	}
-	action := nextaction.Project(nextaction.Input{
-		Task: task,
-		Markers: nextaction.Markers{
-			ForgeFailure: marker.ForgeFailure != nil, ReviewRecovery: marker.ReviewRecovery != nil,
-			InterruptedReview: marker.InterruptedReviewRecovery != nil, UserChangesRequested: marker.UserChangesRequested,
-			ParkCommand: "triage.park",
-		},
-		ClaimWaiting: waiting, Now: time.Now().UTC(),
-	})
-	return store.TaskNeedsAttention(action) || marker.Stalled != nil
-}
-
 func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
 	action, err := store.ReadNextAction(r.Context(), s.Store, chi.URLParam(r, "id"), s.nextActionOptions(r))
 	if err != nil {

@@ -85,4 +85,5 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	if err != nil || page.Total != want {
 		t.Fatalf("page total=%d want=%d err=%v", page.Total, want, err)
 	}
+	runNextActionReadFixtures(t, st, ctx, workspace)
 }

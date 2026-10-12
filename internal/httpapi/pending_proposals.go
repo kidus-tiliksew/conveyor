@@ -53,7 +53,7 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: decisions, PendingProposalCount: len(items), OperatorDecisions: decisions, Total: decisions + len(items)}})
+	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: decisions, PendingProposalCount: len(items), OperatorDecisions: decisions, Total: decisions}})
 }
 
 func pendingAuthorityForTask(taskID string, orders []core.WorkOrder, proposals []core.PendingProposal) bool {

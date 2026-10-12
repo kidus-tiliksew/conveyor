@@ -16,7 +16,7 @@ func TestOverlappingRowsKeepEarlierWinner(t *testing.T) {
 		absent                string
 	}{
 		{
-			name: "rows 5 and 6", kind: KindMergeConflict, absent: KindRetrying,
+			name: "rows 5 and 6", kind: KindMergeConflict, secondary: KindMergeExecution,
 			in: conflictInput(true, now),
 		},
 		{

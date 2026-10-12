@@ -16,6 +16,12 @@ type NextActionOptions struct {
 	Capabilities    map[core.Capability]bool
 	CanChangePolicy bool
 	LiveClaimants   *nextaction.ClaimantView
+	// MarkersLoaded skips a second marker read when the caller already has them.
+	MarkersLoaded bool
+	Markers       []ActivityMarker
+	// OrdersLoaded skips a second order read when the caller already has them.
+	OrdersLoaded bool
+	Orders       []core.WorkOrder
 }
 
 // ReadNextAction projects one task. Missing tasks return the store's not-found error.
@@ -40,13 +46,24 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	for i := range tasks {
 		ids[i] = tasks[i].ID
 	}
-	orders, err := st.ListWorkOrdersForTasks(ctx, ids)
-	if err != nil {
-		return nil, err
+	var orders []core.WorkOrder
+	var err error
+	if opts.OrdersLoaded {
+		orders = opts.Orders
+	} else {
+		orders, err = st.ListWorkOrdersForTasks(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
-	markers, err := st.ListActivityMarkersForTasks(ctx, ids)
-	if err != nil {
-		return nil, err
+	var markers []ActivityMarker
+	if opts.MarkersLoaded {
+		markers = opts.Markers
+	} else {
+		markers, err = st.ListActivityMarkersForTasks(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
 	}
 	proposals, err := st.ListPendingProposals(ctx)
 	if err != nil {
