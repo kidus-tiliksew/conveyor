@@ -19,7 +19,7 @@ import (
 // round holding an AR-3-exhausted seat is replaced by one automatic round
 // retry while that seat stays unchanged, an automatic in-place recovery
 // never re-queues an exhausted seat, and each round gets one automatic act.
-func RunAutomaticReviewRecoveryConformance(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+func RunAutomaticReviewRecoveryConformance(t *testing.T, st store.Store, ctx context.Context, workspace string, sweep ReviewSweepFunc) {
 	restore := setAutomaticRecoveryBound(t, st, ctx, 1)
 	defer restore()
 	t.Run("ExhaustedSeatRetriedOnce", func(t *testing.T) {
@@ -95,6 +95,9 @@ func RunAutomaticReviewRecoveryConformance(t *testing.T, st store.Store, ctx con
 		if recovered := automaticRoundEvents(t, st, ctx, task.ID, "review.round_recovered"); len(recovered) != 1 {
 			t.Fatalf("automatic round_recovered events=%+v", recovered)
 		}
+	})
+	t.Run("ConcurrentSweepsActOnce", func(t *testing.T) {
+		runConcurrentReviewSweeps(t, st, ctx, workspace, sweep)
 	})
 }
 

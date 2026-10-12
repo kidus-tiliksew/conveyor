@@ -68,30 +68,36 @@ func AutomaticPublicationActor(taskID string) Actor {
 	return SystemActor("queue:auto-publication:" + taskID)
 }
 
+// The automatic re-enqueue opens the row's recovery window: the next one is
+// due one window after window_started_at, the stamp written with it.
 type automaticGitHubIssueRetryPayload struct {
 	core.GitHubLifecycle
-	Automatic bool   `json:"automatic"`
-	RequestID string `json:"request_id"`
+	Automatic       bool      `json:"automatic"`
+	RequestID       string    `json:"request_id"`
+	WindowStartedAt time.Time `json:"window_started_at"`
 }
 
 type automaticReviewRetryPayload struct {
 	core.ReviewPublication
-	Automatic bool   `json:"automatic"`
-	RequestID string `json:"request_id"`
+	Automatic       bool      `json:"automatic"`
+	RequestID       string    `json:"request_id"`
+	WindowStartedAt time.Time `json:"window_started_at"`
 }
 
 // AutomaticGitHubIssueRetryEvent is the audit event of one automatic
-// GitHub-issue re-enqueue (AR-6). The lifecycle carries the new state.
+// GitHub-issue re-enqueue (AR-6). The lifecycle carries the new state; at is
+// the re-enqueue stamp and so the start of the row's recovery window.
 func AutomaticGitHubIssueRetryEvent(lifecycle core.GitHubLifecycle, requestID string, at time.Time) core.Event {
 	return core.Event{TaskID: lifecycle.TaskID, Kind: "github_issue.publication_retry", At: at,
-		Payload: core.JSONPayload(automaticGitHubIssueRetryPayload{GitHubLifecycle: lifecycle, Automatic: true, RequestID: requestID})}
+		Payload: core.JSONPayload(automaticGitHubIssueRetryPayload{GitHubLifecycle: lifecycle, Automatic: true, RequestID: requestID, WindowStartedAt: at})}
 }
 
 // AutomaticReviewRetryEvent is the audit event of one automatic review
-// publication re-enqueue (AR-6). The verdict fields are copied unchanged.
+// publication re-enqueue (AR-6). The verdict fields are copied unchanged; at
+// is the re-enqueue stamp and so the start of the row's recovery window.
 func AutomaticReviewRetryEvent(publication core.ReviewPublication, requestID string, at time.Time) core.Event {
 	return core.Event{TaskID: publication.TaskID, JobID: publication.JobID, Kind: "review.publication_retry", At: at,
-		Payload: core.JSONPayload(automaticReviewRetryPayload{ReviewPublication: publication, Automatic: true, RequestID: requestID})}
+		Payload: core.JSONPayload(automaticReviewRetryPayload{ReviewPublication: publication, Automatic: true, RequestID: requestID, WindowStartedAt: at})}
 }
 
 // ReconcileFailedPublications runs one AR-5 publication sweep. Each due row

@@ -244,6 +244,27 @@ func TestSweepAutomaticReviewRecoveryRetriesExhaustedRoundOnce(t *testing.T) {
 	}
 }
 
+// D16: the operator's round retry stays operator-attributed: its
+// review.round_retried event carries no automatic key and is acted by the
+// caller, never the automatic actor.
+func TestRetryReviewRoundOperatorCarriesNoAutomaticKey(t *testing.T) {
+	h := newAutomaticReviewHarness(t)
+	h.expireSeat(t, "first")
+	h.exhaustSeat(t)
+	if _, err := h.service.RetryReviewRound(h.ctx, h.task.ID, "operator-retry", "operator reason"); err != nil {
+		t.Fatal(err)
+	}
+	retried := h.roundEvents(t, "review.round_retried")
+	if len(retried) != 1 {
+		t.Fatalf("round_retried events=%+v", retried)
+	}
+	got := retried[0]
+	if got.hasKey || got.RequestID != "operator-retry" || got.Reason != "operator reason" ||
+		got.ActorID != store.SystemActor().ID || got.PriorRound != 1 || got.NewRound != 2 {
+		t.Fatalf("operator retry event=%+v", got)
+	}
+}
+
 func mustOrders(t *testing.T, h *automaticReviewHarness) []core.WorkOrder {
 	t.Helper()
 	orders, err := h.st.ListTaskWorkOrders(h.ctx, h.task.ID)
