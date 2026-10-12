@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
@@ -161,6 +162,10 @@ func conformanceStore(t *testing.T) *Store {
 func TestPostgresConformanceIntegration(t *testing.T) {
 	integrationDatabaseURL(t)
 	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
 		ProductionCapable: true,
 		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {

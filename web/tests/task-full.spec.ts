@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, type Locator, type Page, type Route, test } from '@playwright/test'
-import { waitForSheetSettled } from './helpers/sheet'
 import { callerIdentity } from './helpers/caller-identity'
+import { waitForSheetSettled } from './helpers/sheet'
 
 const createdAt = '2026-07-15T12:00:00Z'
 
@@ -6490,6 +6490,24 @@ for (const [status, code, message] of [
     await expect(page).toHaveURL(/restart-source\/full$/)
   })
 }
+
+test('start over shows the restart request ID without putting it in the message', async ({ page }) => {
+  await mockRestart(page)
+  await page.route('**/v1/tasks/restart-source/restart?*', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    await route.fulfill({
+      status: 500,
+      headers: { 'X-Request-Id': 'req-restart-500' },
+      json: { error: 'internal_error', message: 'internal server error' },
+    })
+  })
+  const dialog = await openRestart(page)
+  await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
+  await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toHaveText('internal server error')
+  await expect(dialog.getByTestId('task-restart-request-id')).toHaveText('Request ID: req-restart-500')
+  await expect(dialog.getByRole('alert')).not.toContainText('req-restart-500')
+})
 
 for (const [state, message] of [
   ['closed', 'Pull request closed.'],

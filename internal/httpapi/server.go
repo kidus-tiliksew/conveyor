@@ -2108,6 +2108,10 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		workOrders = []core.WorkOrder{}
 	}
 	_, pendingPlanRevision, planErr := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
+	if errors.Is(planErr, store.ErrPlanRevisionGateUnreadable) {
+		pendingPlanRevision = true
+		planErr = nil
+	}
 	if planErr != nil {
 		log.Printf("handle API request: %v", planErr)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

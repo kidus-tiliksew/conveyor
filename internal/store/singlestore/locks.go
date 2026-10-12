@@ -7,13 +7,32 @@ import (
 	"encoding/hex"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const lockSchema = "CREATE ROWSTORE TABLE IF NOT EXISTS conveyor_locks (`key` VARCHAR(64) NOT NULL, PRIMARY KEY (`key`), SHARD KEY (`key`))"
 
+// lockReturnObserver records when lockKey returns. Tests set it; production
+// callers leave it unset.
+type lockReturnObserver struct{ at time.Time }
+
+type lockReturnKey struct{}
+
+func observeLockReturn(ctx context.Context) (context.Context, *lockReturnObserver) {
+	obs := &lockReturnObserver{}
+	return context.WithValue(ctx, lockReturnKey{}, obs), obs
+}
+
+func noteLockReturn(ctx context.Context) {
+	if obs, ok := ctx.Value(lockReturnKey{}).(*lockReturnObserver); ok {
+		obs.at = time.Now()
+	}
+}
+
 // lockKey serializes one key until the caller transaction ends. Hashing gives
 // arbitrary caller keys a fixed width with no collation-dependent equivalence.
 func lockKey(ctx context.Context, tx *sql.Tx, key string) error {
+	defer noteLockReturn(ctx)
 	sum := sha256.Sum256([]byte(key))
 	key = hex.EncodeToString(sum[:])
 	if _, err := tx.ExecContext(ctx, "INSERT INTO conveyor_locks (`key`) VALUES (?) ON DUPLICATE KEY UPDATE `key`=`key`", key); err != nil {

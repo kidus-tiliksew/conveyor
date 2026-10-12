@@ -87,6 +87,10 @@ var (
 	// owned claim into one response so the upload route cannot disclose another
 	// task's ownership.
 	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
+	// ErrPlanRevisionGateUnreadable marks an awaiting plan-revision gate whose
+	// latest transition or request payload cannot be read. Listings treat it as
+	// pending; writes stay refused.
+	ErrPlanRevisionGateUnreadable = errors.New("plan-revision gate is unreadable")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
