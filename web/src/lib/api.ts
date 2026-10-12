@@ -4,9 +4,13 @@ import type {
   ActivitySummary,
   Artifact,
   BlueprintView,
+  InboxBand,
   InterventionAction,
   LineageGraph,
   LineageNodeType,
+  NextAction,
+  NextActionChoice,
+  NextActionsPage,
   MonitorDriftOutcome,
   MonitorStatus,
   PendingProposalsResponse,
@@ -269,6 +273,52 @@ export function fetchCallerAttentionTasks(input: { limit: number; offset: number
 
 export function fetchPendingProposals() {
   return getJSON<PendingProposalsResponse>(workspaceURL('/v1/pending-proposals'))
+}
+
+// The full next action for one task (DEC-61), read in the query's workspace.
+export function fetchNextAction(workspace: string, taskId: string, signal?: AbortSignal) {
+  return getJSON<NextAction>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/next-action`, workspace), signal)
+}
+
+// The operator inbox in server order (feature-operator-next-action NA-6).
+export async function fetchNextActions(
+  workspace: string,
+  input: { band?: InboxBand; limit: number; offset: number },
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
+  if (input.band) query.set('band', input.band)
+  const response = await fetch(workspaceURL(`/v1/next-actions?${query}`, workspace), { signal })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  const body = (await response.json()) as {
+    items: NextActionsPage['items'] | null
+    acts: NextActionsPage['acts'] | null
+  }
+  const items = body.items ?? []
+  return {
+    items,
+    acts: body.acts ?? [],
+    total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
+    limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
+    offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
+  } satisfies NextActionsPage
+}
+
+// Sends a server-stated choice exactly as stated: its method to its path, under
+// the caller's own session, so the act is the same audited operator act the
+// task page records (AC-2.2, DEC-45).
+export async function postNextActionChoice(
+  workspace: string,
+  choice: NextActionChoice,
+  body: Record<string, unknown> | undefined,
+  idempotencyKey?: string,
+) {
+  const response = await fetch(workspaceURL(choice.path, workspace), {
+    method: choice.method,
+    headers: { ...mutationHeaders(), ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) throw await gateMutationError(response)
 }
 
 export function fetchTaskActivity(taskId: string) {

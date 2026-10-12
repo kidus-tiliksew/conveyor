@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // component-verification-service and component-web-task-surfaces: a verify
 // order released at its operator checkpoint is labelled
@@ -250,6 +251,7 @@ async function fixture(
     work_orders: [order],
     spec: { task_id: taskId, version: 1, content: 'Verify the checkpoint.', approved: true, created_at: at },
   }
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname

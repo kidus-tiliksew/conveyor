@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 const at = '2026-09-20T10:00:00Z'
 const sha = 'a'.repeat(40)
@@ -162,6 +163,7 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
       created_at: at,
     },
   }
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url()),
       path = url.pathname

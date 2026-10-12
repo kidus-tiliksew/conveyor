@@ -53,6 +53,7 @@ import type {
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
+import { useNextAction } from '../inbox/use-next-actions'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
@@ -60,7 +61,6 @@ import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-ca
 import {
   changesComposerHint,
   type GateTone,
-  gateNeedsRecoveryCapability,
   gateTone,
   isReviewable,
   ReviewPanel,
@@ -119,11 +119,12 @@ export function Timeline({
   const canRequestChanges = useCanRequestTaskChanges(item.task)
   const members = useWorkspaceMembers()
   const entries = buildTimeline(item, members.data ?? [])
-  const currentExecution = deriveCurrentExecutionState(item)
+  const nextAction = useNextAction(item.task.id).data
+  const currentExecution = deriveCurrentExecutionState(item, nextAction)
   const technicalEvents = technicalActivity(item)
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)
   const showGate = isReviewable(item)
-  const recoveryGate = gateNeedsRecoveryCapability(item.task, item.events, item.merge_readiness)
+  const recoveryGate = item.next_action?.kind === 'merge_conflict'
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
@@ -152,17 +153,22 @@ export function Timeline({
   const standaloneDesignProposals = designProposals.filter((proposal) => !citedSystemDesigns.has(proposal.document.id))
   const combineCheckpointProposal =
     !structuredCheckpoint &&
-    hasWorkerRecovery(item) &&
+    hasWorkerRecovery(item, currentExecution) &&
     isCheckpointReleasedRecovery(currentExecution) &&
     designProposals.length > 0
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
+  // The execution state joins two independently refetched reads (activity and
+  // the server's next action), so a live update can pass through a render
+  // where they disagree and no state derives. The last derived status is the
+  // one a pause interrupts, so that gap neither announces nor resets it.
   useEffect(() => {
-    if (priorExecutionStatus.current === 'progressing' && currentExecution?.status === 'paused') {
+    if (!currentExecution) return
+    if (priorExecutionStatus.current === 'progressing' && currentExecution.status === 'paused') {
       setExecutionAnnouncement(`${currentExecution.title}. ${currentExecution.nextAction}`)
     }
-    priorExecutionStatus.current = currentExecution?.status
+    priorExecutionStatus.current = currentExecution.status
   }, [currentExecution?.status, currentExecution?.title, currentExecution?.nextAction])
 
   // A successful human decision explicitly requests one tail scroll after its
@@ -218,14 +224,14 @@ export function Timeline({
               card: <ReviewRoundRetryCard item={item} />,
             },
           canRecover &&
-            hasWorkerRecovery(item) && {
+            hasWorkerRecovery(item, currentExecution) && {
               key: 'order-recovery',
               dot: 'bg-attention-dot',
               card:
                 combineCheckpointProposal && currentExecution ? (
                   <CheckpointProposalRecoveryCard item={item} state={currentExecution} proposals={designProposals} />
                 ) : (
-                  <WorkOrderRecoveryCard item={item} />
+                  <WorkOrderRecoveryCard item={item} state={currentExecution} />
                 ),
             },
           canOperate &&
@@ -298,9 +304,7 @@ export function Timeline({
           ))}
           {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
             <li ref={gateRef} className="relative pl-7">
-              <TimelineDot
-                className={cn('animate-pulse', gateDots[gateTone(item.task, item.events, item.merge_readiness)])}
-              />
+              <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
               <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
             </li>
           )}
