@@ -731,7 +731,8 @@ function ReadOnly({ snapshot }: { snapshot: NonNullable<ReturnType<typeof useWor
         <CardContent>
           <p className="text-sm text-muted">
             {snapshot.repos?.length ?? 0} repositories · {snapshot.database} · check-in after {snapshot.max_bounces}{' '}
-            review rounds · {snapshot.recovery?.automatic_recoveries ?? 2} automatic recoveries / {snapshot.recovery?.window ?? '24h'}
+            review rounds · {snapshot.recovery?.automatic_recoveries ?? 2} automatic recoveries /{' '}
+            {snapshot.recovery?.window ?? '24h'}
           </p>
         </CardContent>
       </Card>
