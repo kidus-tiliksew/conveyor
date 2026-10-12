@@ -113,6 +113,7 @@ type taskFlowOrder struct {
 	retired        bool
 	claim          *nextaction.AttemptView
 	recoveryNumber int
+	recoveryWindow string
 	retryCount     int
 }
 
@@ -140,6 +141,7 @@ type taskFlowOrderPayload struct {
 	AutomaticRetryCount *int       `json:"automatic_retry_count"`
 	Automatic           bool       `json:"automatic"`
 	RecoveryNumber      int        `json:"recovery_number"`
+	WindowStartedAt     string     `json:"window_started_at"`
 	// Successor names the order whose creation retired this one.
 	Successor string `json:"authoritative_work_order_id"`
 }
@@ -337,8 +339,12 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			}
 			if taskFlowOpening[event.Kind] {
 				openEntry(order, event, payload.Automatic)
-				if payload.Automatic && payload.RecoveryNumber > 0 && event.Kind != "work_order.created" {
-					order.recoveryNumber = payload.RecoveryNumber
+				switch {
+				case payload.Automatic && payload.RecoveryNumber > 0 && event.Kind != "work_order.created":
+					order.recoveryNumber, order.recoveryWindow = payload.RecoveryNumber, payload.WindowStartedAt
+				case !payload.Automatic:
+					// An operator recovery or redispatch resets the ledger window.
+					order.recoveryNumber, order.recoveryWindow = 0, ""
 				}
 			}
 			switch event.Kind {
@@ -502,7 +508,9 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		if action.CurrentOrder != nil {
 			if order := orders[action.CurrentOrder.ID]; order != nil {
 				retrying.Attempt = order.recoveryNumber
-				if retrying.Attempt == 0 {
+				if action.Details.ReasonCode == "automatic_recovery" {
+					retrying.Attempt = scheduledRecoveryAttempt(order, action.Deadline, recovery.Window)
+				} else if retrying.Attempt == 0 {
 					retrying.Attempt = order.retryCount
 				}
 			}
@@ -531,6 +539,21 @@ func flowTime(at time.Time) *time.Time {
 	}
 	at = at.UTC()
 	return &at
+}
+
+// scheduledRecoveryAttempt is the window-local number the scheduled automatic
+// recovery will stamp: one past the order's last automatic recovery, or the
+// first of a new window when the window has rolled by the scheduled time, as
+// store.StampAutomaticRecovery counts it.
+func scheduledRecoveryAttempt(order *taskFlowOrder, at *time.Time, window time.Duration) int {
+	if order.recoveryNumber == 0 {
+		return 1
+	}
+	started, err := time.Parse(time.RFC3339Nano, order.recoveryWindow)
+	if at != nil && window > 0 && err == nil && !at.Before(started.Add(window)) {
+		return 1
+	}
+	return order.recoveryNumber + 1
 }
 
 func withoutString(values []string, value string) []string {

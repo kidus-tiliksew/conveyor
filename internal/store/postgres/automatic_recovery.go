@@ -126,7 +126,12 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, taskID 
 		decision := store.DecideAutomaticRecovery(policy, task, order, now)
 		switch decision.Kind {
 		case store.AutomaticRecoverySchedule:
-			if _, err = tx.Exec(ctx, `UPDATE work_orders SET next_automatic_recovery_at=$1,updated_at=$2 WHERE workspace_id=$3 AND id=$4`, decision.At, now, workspace(ctx), order.ID); err != nil {
+			store.ScheduleAutomaticRecovery(&order, decision)
+			var window any
+			if !order.AutomaticRecoveryWindowStartedAt.IsZero() {
+				window = order.AutomaticRecoveryWindowStartedAt
+			}
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET next_automatic_recovery_at=$1,automatic_recovery_count=$2,automatic_recovery_window_started_at=$3,updated_at=$4 WHERE workspace_id=$5 AND id=$6`, order.NextAutomaticRecoveryAt, order.AutomaticRecoveryCount, window, now, workspace(ctx), order.ID); err != nil {
 				return acted, err
 			}
 		case store.AutomaticRecoveryExhausted:

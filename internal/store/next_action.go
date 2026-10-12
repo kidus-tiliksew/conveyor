@@ -137,7 +137,7 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
 		ClaimWaiting: claimWaiting(proposals, orders, task.ID),
-		Blockers:     blockers, MergeConflict: conflict, Recovery: map[string]nextaction.AutomaticRecovery{},
+		Blockers:     blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
 	}
 	if found {
@@ -145,6 +145,28 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 		input.GateSpecVersion = spec.Version
 	}
 	return input, nil
+}
+
+// AutomaticRecoveryFor projects the durable AR-3 ledger on each order: a
+// scheduled next_automatic_recovery_at is the retry time of the order's next
+// window-local attempt, and the exhaustion suppression reason marks the order
+// the operator must recover. Orders with neither are absent.
+func AutomaticRecoveryFor(orders []core.WorkOrder) map[string]nextaction.AutomaticRecovery {
+	out := map[string]nextaction.AutomaticRecovery{}
+	for _, order := range orders {
+		exhausted := order.RetrySuppressed && order.RetrySuppressionReason == core.AutomaticRecoveryExhaustedReason
+		if order.NextAutomaticRecoveryAt.IsZero() && !exhausted {
+			continue
+		}
+		rec := nextaction.AutomaticRecovery{Exhausted: exhausted}
+		if !order.NextAutomaticRecoveryAt.IsZero() {
+			next := order.NextAutomaticRecoveryAt
+			rec.NextAt = &next
+			rec.Attempt = order.AutomaticRecoveryCount + 1
+		}
+		out[order.ID] = rec
+	}
+	return out
 }
 
 func markersFrom(marker ActivityMarker, events []core.Event, orders []core.WorkOrder) nextaction.Markers {
