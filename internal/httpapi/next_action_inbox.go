@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -54,6 +55,7 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
+		log.Printf("next action options: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
