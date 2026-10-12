@@ -48,6 +48,10 @@ type Fixture struct {
 	// deactivation operation, such as SingleStore. Others use their
 	// DeactivateIdentityUser method (component-work-orders, Workers).
 	DeactivateUser func(t *testing.T, ctx context.Context, userID string)
+	// SeedSetupContract replaces one task's stored setup contract with raw
+	// JSON, modelling rows an earlier encoding wrote. No public writer accepts
+	// a raw contract; the volatile backend decodes it into the task.
+	SeedSetupContract func(t *testing.T, ctx context.Context, taskID, raw string)
 }
 
 // Factory creates an isolated backend and workspace on every call. Cleanup
@@ -190,6 +194,9 @@ func RunAll(t *testing.T, factory Factory) {
 	run("AutomaticReviewRecovery", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunAutomaticReviewRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
+	})
+	run("ZeroSetupReviewSeats", func(t *testing.T) {
+		RunZeroSetupReviewSeatsConformance(t, factory.fresh(t, nil), factory.ReviewSweep)
 	})
 	for _, suite := range []struct {
 		name    string

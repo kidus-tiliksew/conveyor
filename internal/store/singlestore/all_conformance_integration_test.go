@@ -230,6 +230,10 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return singlestoreSeedEvents(t, st, ctx, base, events)
+			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
+				if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET setup_contract=? WHERE workspace_id=? AND id=?`, raw, ws, taskID); err != nil {
+					t.Fatal(err)
+				}
 			}}
 		}})
 }

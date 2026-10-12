@@ -71,4 +71,5 @@ var suiteMethods = map[string][]string{
 	"AutomaticRecovery":            strings.Fields(`CreateTask CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand GetWorkOrder ListEvents ApplyWorkOrderClock ListElapsedWorkOrderTaskIDs RecoverWorkOrderCommand RedispatchWorkOrderCommand`),
 	"AutomaticPublicationRecovery": strings.Fields(`AutomaticPublicationRetryCommand CreateJob CreateTask GetGitHubLifecycle GetReviewPublication ListAutomaticPublicationRetries ListEvents QueueGitHubLifecycle QueueReviewPublication UpdateGitHubLifecycle UpdateReviewPublication`),
 	"AutomaticReviewRecovery":      strings.Fields(`ApplyWorkOrderClock ClaimWorkOrderCommand CreateJob CreateReviewRoundCommand CreateTask GetWorkOrder ListElapsedWorkOrderTaskIDs ListEvents ListTaskWorkOrders RecoverInterruptedReviewRoundCommand RetryReviewRoundCommand UpdateWorkOrderCommand`),
+	"ZeroSetupReviewSeats":         strings.Fields(`AppendEvent ApplyWorkOrderClock ClaimWorkOrderCommand CreateJob CreateReviewRoundCommand CreateTask GetTask GetWorkOrder ListElapsedWorkOrderTaskIDs ListEvents ListTaskWorkOrders RetryReviewRoundCommand UpdateWorkOrderCommand`),
 }
