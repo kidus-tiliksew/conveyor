@@ -229,6 +229,11 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				id       string
 				lockAt   time.Time
 				commitAt time.Time
+				startAt  time.Time
+				count    int
+				countAt  time.Time
+				conn     int64
+				err      error
 			}
 			attempts := make([]attempt, 2)
 			for i := range 2 {
@@ -236,7 +241,11 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 					<-start
 					id := fmt.Sprintf("token-%d", i)
 					writeCtx, observed := observeLockReturn(store.WithActor(t.Context(), store.SystemActor()))
+					var startAt time.Time
+					var conn int64
 					err := st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
+						_ = tx.QueryRowContext(writeCtx, "SELECT CONNECTION_ID()").Scan(&conn)
+						defer func() { startAt = time.Now() }()
 						var w rowWrite
 						if kind == "reference" {
 							name := "Same"
@@ -253,7 +262,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 						}
 						return err
 					})
-					attempts[i] = attempt{id: id, lockAt: observed.at, commitAt: time.Now()}
+					attempts[i] = attempt{id: id, lockAt: observed.at, commitAt: time.Now(), startAt: startAt, count: observed.count, countAt: observed.countAt, conn: conn, err: err}
 					results <- err
 				}()
 			}
@@ -268,6 +277,9 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				}
 			}
 			if successes != 1 {
+				for _, a := range attempts {
+					t.Logf("PROBE %s attempt %s conn %d lock %s count %d countAt %s commitStart %s commitReturn %s err %v", kind, a.id, a.conn, a.lockAt.Format(time.RFC3339Nano), a.count, a.countAt.Format(time.RFC3339Nano), a.startAt.Format(time.RFC3339Nano), a.commitAt.Format(time.RFC3339Nano), a.err)
+				}
 				if kind == "deployment" {
 					t.Logf("deployment tokens %s lock %s commit %s; %s lock %s commit %s", attempts[0].id, attempts[0].lockAt.Format(time.RFC3339Nano), attempts[0].commitAt.Format(time.RFC3339Nano), attempts[1].id, attempts[1].lockAt.Format(time.RFC3339Nano), attempts[1].commitAt.Format(time.RFC3339Nano))
 					rows, err := st.db.QueryContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT id, user_id, deployment_credential FROM user_tokens WHERE deployment_credential=TRUE`)

@@ -14,7 +14,19 @@ const lockSchema = "CREATE ROWSTORE TABLE IF NOT EXISTS conveyor_locks (`key` VA
 
 // lockReturnObserver records when lockKey returns. Tests set it; production
 // callers leave it unset.
-type lockReturnObserver struct{ at time.Time }
+type lockReturnObserver struct {
+	at      time.Time
+	count   int
+	countAt time.Time
+}
+
+// PROBE-ONLY: temporary instrumentation for task 261012-832d9c.
+func noteCount(ctx context.Context, n int) {
+	if obs, ok := ctx.Value(lockReturnKey{}).(*lockReturnObserver); ok {
+		obs.count = n
+		obs.countAt = time.Now()
+	}
+}
 
 type lockReturnKey struct{}
 

@@ -136,6 +136,7 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_tokens WHERE deployment_credential=TRUE AND id<>?`, id).Scan(&count); err != nil {
 				return nil, err
 			}
+			noteCount(ctx, count)
 			if err := checkDeploymentCredential(true, count); err != nil {
 				return nil, err
 			}
@@ -186,6 +187,7 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reference_documents WHERE workspace_id=? AND LOWER(name)=LOWER(?) AND deleted_at IS NULL AND id<>?`, ws, name, id).Scan(&count); err != nil {
 				return nil, err
 			}
+			noteCount(ctx, count)
 			if err := checkReferenceName(true, count); err != nil {
 				return nil, err
 			}
