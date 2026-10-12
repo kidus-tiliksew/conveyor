@@ -241,6 +241,23 @@ func TestAutomaticRecoveryDelay(t *testing.T) {
 	}
 }
 
+func TestStampAutomaticRecoveryRollsAtWindowEnd(t *testing.T) {
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	window := 24 * time.Hour
+	policy := recoveryPolicy(2, window)
+	order := core.WorkOrder{AutomaticRecoveryCount: 2, AutomaticRecoveryWindowStartedAt: now.Add(-window)}
+	number, start := StampAutomaticRecovery(&order, policy, now)
+	if number != 1 || order.AutomaticRecoveryCount != 1 || !start.Equal(now) || !order.AutomaticRecoveryWindowStartedAt.Equal(now) {
+		t.Fatalf("at window end number=%d count=%d start=%s window=%s", number, order.AutomaticRecoveryCount, start, order.AutomaticRecoveryWindowStartedAt)
+	}
+	original := now.Add(-window + time.Nanosecond)
+	inside := core.WorkOrder{AutomaticRecoveryCount: 2, AutomaticRecoveryWindowStartedAt: original}
+	number, start = StampAutomaticRecovery(&inside, policy, now)
+	if number != 3 || inside.AutomaticRecoveryCount != 3 || !start.Equal(original) {
+		t.Fatalf("inside window number=%d count=%d start=%s", number, inside.AutomaticRecoveryCount, start)
+	}
+}
+
 func TestDecideAutomaticRecoveryProperty(t *testing.T) {
 	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
 	rng := rand.New(rand.NewPCG(261011, 4))

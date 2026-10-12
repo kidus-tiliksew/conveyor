@@ -298,6 +298,9 @@ func configCmd() *cobra.Command {
 			if err := decoder.Decode(&document); err != nil {
 				return fmt.Errorf("parse workspace config: %w", err)
 			}
+			if err := document.Recovery.Normalize(); err != nil {
+				return fmt.Errorf("parse workspace config: %w", err)
+			}
 			client := newClient()
 			current, err := client.getWorkspaceConfig()
 			if err != nil {
