@@ -1354,14 +1354,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
-	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
-		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL, model_enforcement='',
-		`+clearExecutionPinsSQL+`,
-		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
-		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
-		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
-		now, now.Add(queueTimeout), workspace(ctx), id)
-	order, err = scanWorkOrder(row)
+	order, err = writeRedispatchedWorkOrder(ctx, tx, id, now, queueTimeout, 0, time.Time{}, true)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -1525,7 +1518,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		order.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
 	}
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,operator_direction=$3,`+clearExecutionPinsSQL+`,execution_timeout=$4,updated_at=$1 WHERE workspace_id=$5 AND id=$6 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), direction, order.ExecutionTimeoutText, workspace(ctx), id))
+	order, err = writeRecoveredWorkOrder(ctx, tx, id, now, queueTimeout, direction, order.ExecutionTimeoutText, 0, time.Time{})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -1554,12 +1547,20 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT task_id FROM work_orders
+	bound, policyErr := clockPolicyBound(ctx, s)
+	if policyErr != nil {
+		return nil, policyErr
+	}
+	query := `SELECT DISTINCT task_id FROM work_orders
 		WHERE workspace_id=$1 AND (
 			(state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline <= $2)
 			OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2)
-			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)
-		) ORDER BY task_id`, workspace(ctx), now)
+			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)`
+	if bound != 0 {
+		query += automaticRecoveryElapsedSQL
+	}
+	query += `) ORDER BY task_id`
+	rows, err := s.boundary.Query(ctx, query, workspace(ctx), now)
 	if err != nil {
 		return nil, err
 	}
@@ -1657,7 +1658,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 				count++
 			}
 		}
-		return nil
+		acted, recoveryErr := s.applyAutomaticRecoveryTx(ctx, tx, taskID, now)
+		count += acted
+		return recoveryErr
 	})
 	return count, err
 }

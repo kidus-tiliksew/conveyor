@@ -1,0 +1,69 @@
+package storetest
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+)
+
+func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.Context) {
+	now := time.Now().UTC()
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	taskID := core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	orderID := taskID + "-implement"
+	if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	tick := now.Add(2 * time.Minute)
+	if _, err := taskops.New(st).TickOrderClock(ctx, tick); err != nil {
+		t.Fatal(err)
+	}
+	scheduled, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || scheduled.State != core.WorkOrderTimedOut || scheduled.NextAutomaticRecoveryAt.IsZero() || !scheduled.NextAutomaticRecoveryAt.After(tick) {
+		t.Fatalf("scheduled=%+v err=%v", scheduled, err)
+	}
+	if _, err = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || recovered.State != core.WorkOrderQueued || recovered.AutomaticRecoveryCount != 1 || recovered.AutomaticRecoveryWindowStartedAt.IsZero() || !recovered.NextAutomaticRecoveryAt.IsZero() || recovered.RetrySuppressed {
+		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var automatic bool
+	for _, event := range events {
+		if event.Kind != "work_order.recovered" {
+			continue
+		}
+		var payload struct {
+			Automatic bool `json:"automatic"`
+		}
+		if err = json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if event.ActorID != "queue:"+orderID || !payload.Automatic {
+			t.Fatalf("event actor=%s automatic=%v", event.ActorID, payload.Automatic)
+		}
+		automatic = true
+	}
+	if !automatic {
+		t.Fatal("automatic recovery event missing")
+	}
+}

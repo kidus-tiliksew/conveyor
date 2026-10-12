@@ -600,7 +600,20 @@ func reviewSeatAcceptedTx(ctx context.Context, tx *sql.Tx, ws, task, id string) 
 	return accepted, err
 }
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)) ORDER BY task_id`, documentWorkspace(ctx), now, now, now)
+	bound := 0
+	if policy, _, policyErr := s.readClockPolicy(ctx); policyErr != nil {
+		return nil, policyErr
+	} else {
+		bound = policy.AutomaticRecoveries
+	}
+	query := `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)`
+	args := []any{documentWorkspace(ctx), now, now, now}
+	if bound != 0 {
+		query += automaticRecoveryElapsedSQL
+		args = append(args, now, now)
+	}
+	query += `) ORDER BY task_id`
+	rows, err := documentRows(ctx, s.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -667,7 +680,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			}
 			count++
 		}
-		return nil
+		acted, recoveryErr := s.applyAutomaticRecoveryTx(ctx, tx, id, now)
+		count += acted
+		return recoveryErr
 	})
 	return count, err
 }
@@ -1254,6 +1269,8 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		o.ExecutionStartedAt = time.Time{}
 		o.ExecutionDeadline = time.Time{}
 		o.RedispatchCount++
+		store.ResetAutomaticRecoveryLedger(&o)
+		store.ClearAutomaticRecoveryExhaustion(&o)
 		o.Progress = ""
 		o.UpdatedAt = now
 		if err = orderWrite(ctx, tx, o); err != nil {
@@ -1389,6 +1406,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		o.QueueEnteredAt = now
 		o.QueueDeadline = now.Add(timeout)
 		o.RedispatchCount++
+		store.ResetAutomaticRecoveryLedger(&o)
 		o.OperatorDirection = direction
 		o.UpdatedAt = now
 		if err = orderWrite(ctx, tx, o); err != nil {

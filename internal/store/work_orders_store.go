@@ -2223,31 +2223,7 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch)
-	if transitionErr != nil {
-		return core.WorkOrder{}, transitionErr
-	}
-	order.State, order.Claimable = next, true
-	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
-	order.Agent, order.Model, order.WorkerID, order.Progress = "", "", "", ""
-	order.ModelEnforcement = ""
-	order.LeaseExpiresAt = time.Time{}
-	order.ClearExecutionPins()
-	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
-	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
-	order.RedispatchCount++
-	order.UpdatedAt = now
-	if order.Stage == core.StageImplement {
-		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
-	}
-	m.workOrders[id] = order
-	if job, index, exists := m.findJobLocked(order.JobID); exists {
-		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
-		m.jobs[job.TaskID][index] = job
-	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now})
-	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stale redispatch", now, false)
-	return order, nil
+	return m.redispatchOrderLocked(ctx, order, queueTimeout, now, false, config.RecoveryPolicy{}, "")
 }
 
 func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
@@ -2355,62 +2331,17 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	if VerificationRecoveryFromContext(ctx) == nil {
 		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
-	prior := order.LastAttemptOutcome
-	priorAttemptID := order.LastAttemptID
-	priorState := order.State
-	priorFailureCategory := order.LastFailureCategory
-	priorTransientFailures := m.previousTransientFailuresLocked(order)
-	priorNextRetryAt := order.NextRetryAt
-	clearActiveAttempt(&order)
-	lifecycleCommand := core.WorkOrderCmdRecover
-	eventKind := "work_order.recovered"
-	if priorState == core.WorkOrderQueued {
-		// Resetting retry metadata on an already-queued order is not a lifecycle
-		// transition. Keep the historical event kind without mislabeling this
-		// operator action as W14.
-		lifecycleCommand = ""
-		eventKind = "work_order.redispatched"
-	}
-	next := priorState
-	if lifecycleCommand != "" {
-		var transitionErr error
-		next, transitionErr = core.TransitionWorkOrder(priorState, lifecycleCommand)
-		if transitionErr != nil {
-			return core.WorkOrder{}, transitionErr
-		}
-	}
-	order.State = next
-	order.LastAttemptOutcome = ""
-	order.RetrySuppressed = false
-	order.RetrySuppressionReason = ""
-	order.AutomaticRetryCount = 0
-	order.NextRetryAt = time.Time{}
-	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
-	order.RedispatchCount++
-	order.OperatorDirection = direction
-	order.UpdatedAt = now
-	order.Claimable = true
-	order.ClearExecutionPins()
-	if order.Stage == core.StageImplement {
-		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
-	}
-	if len(refreeze) != 0 && refreeze[0] != nil {
-		order.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
-	}
 	for _, row := range verificationRows {
 		m.verificationRows[workspace+"\x00"+row.Table+"\x00"+row.ID] = row
 	}
 	for _, event := range verificationEvents {
 		m.appendEventLocked(ctx, event)
 	}
-	m.workOrders[id] = order
-	if job, index, exists := m.findJobLocked(order.JobID); exists {
-		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
-		m.jobs[job.TaskID][index] = job
+	var freeze *RecoveryRefreeze
+	if len(refreeze) != 0 {
+		freeze = refreeze[0]
 	}
-	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction, "failure_category": priorFailureCategory, "consecutive_transient_failures": priorTransientFailures, "next_retry_at": priorNextRetryAt}), At: now})
-	return order, nil
+	return m.recoverOrderLocked(ctx, order, requestID, direction, queueTimeout, now, freeze, false, config.RecoveryPolicy{})
 }
 
 func (m *memory) repinTaskDesignContextLocked(ctx context.Context, taskID string, at time.Time) {

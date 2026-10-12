@@ -65,4 +65,5 @@ var suiteMethods = map[string][]string{
 	"GitHubApps":                 strings.Fields(`ConfigureGitHubAppKeyEncryptionKey ListGitHubAppKeysForRedaction StoreWorkspaceGitHubApp RecordWorkspaceGitHubAppInstallation GetWorkspaceGitHubAppStatus GetWorkspaceGitHubAppForUse DeleteWorkspaceGitHubApp`),
 	"Tokens":                     strings.Fields(`BootstrapIdentity IssueAgentCredential IssueOwnPersonalAccessToken ListOwnPersonalAccessTokens RevokeOwnPersonalAccessToken RevokeRunAgentCredential VerifyCredential VerifyPersonalAccessToken`),
 	"GateKind":                   strings.Fields(`ApplyTaskCommand CreateTask GetTask`),
+	"AutomaticRecovery":          strings.Fields(`CreateTask CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand GetWorkOrder ListEvents ApplyWorkOrderClock ListElapsedWorkOrderTaskIDs RecoverWorkOrderCommand RedispatchWorkOrderCommand`),
 }

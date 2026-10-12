@@ -1,6 +1,7 @@
 package store
 
 import (
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -237,6 +238,31 @@ func TestAutomaticRecoveryDelay(t *testing.T) {
 	}
 	if AutomaticRecoveryDelay(4) != time.Hour || AutomaticRecoveryDelay(10) != time.Hour {
 		t.Fatalf("cap n4=%s n10=%s", AutomaticRecoveryDelay(4), AutomaticRecoveryDelay(10))
+	}
+}
+
+func TestDecideAutomaticRecoveryProperty(t *testing.T) {
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	rng := rand.New(rand.NewPCG(261011, 4))
+	for range 200 {
+		bound := rng.IntN(11)
+		count := rng.IntN(12)
+		window := time.Duration(rng.IntN(48)+1) * time.Hour
+		started := now.Add(-time.Duration(rng.IntN(72)) * time.Hour)
+		policy := recoveryPolicy(bound, window)
+		order := core.WorkOrder{State: core.WorkOrderTimedOut, Stage: core.StageImplement, AutomaticRecoveryCount: count, AutomaticRecoveryWindowStartedAt: started, NextAutomaticRecoveryAt: now.Add(-time.Minute)}
+		got := DecideAutomaticRecovery(policy, core.Task{State: core.TaskRunning}, order, now)
+		inWindow := !started.IsZero() && !started.Add(window).Before(now)
+		switch {
+		case bound == 0 && got.Kind != AutomaticRecoveryNone:
+			t.Fatalf("disabled kind=%s", got.Kind)
+		case bound != 0 && !inWindow && got.Kind != AutomaticRecoveryRecover:
+			t.Fatalf("expired window kind=%s", got.Kind)
+		case bound != 0 && inWindow && count >= bound && got.Kind != AutomaticRecoveryExhausted:
+			t.Fatalf("bound count=%d bound=%d kind=%s", count, bound, got.Kind)
+		case bound != 0 && inWindow && count < bound && got.Kind != AutomaticRecoveryRecover:
+			t.Fatalf("inside bound kind=%s count=%d bound=%d", got.Kind, count, bound)
+		}
 	}
 }
 
