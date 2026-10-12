@@ -21,6 +21,51 @@ const (
 	FlowUpcoming      = "upcoming"
 )
 
+// flowStageNames, flowStageDescriptions and flowStatusCopy are the task flow's
+// server-stated copy (NA-7): the client prints these sentences and carries none.
+var flowStageNames = map[core.Stage]string{
+	core.StageTriage:    "Triage",
+	core.StageSpec:      "Plan",
+	core.StageImplement: "Implement",
+	core.StageVerify:    "Verify",
+	core.StageReview:    "Code review",
+	core.StageMerge:     "Merge",
+}
+
+var flowStageDescriptions = map[core.Stage]string{
+	core.StageTriage:    "Triage reads the task and writes the brief the later stages work from.",
+	core.StageSpec:      "An agent writes the execution plan, which the operator approves when the plan gate is on.",
+	core.StageImplement: "An agent makes the change on the task branch and opens the pull request.",
+	core.StageVerify:    "A verifier runs the task's verification kit against the change and records the evidence.",
+	core.StageReview:    "Independent reviewers judge the pull request and approve it or send it back.",
+	core.StageMerge:     "The pull request merges into the base branch, after the operator approves when the merge gate is on.",
+}
+
+type flowStatusText struct {
+	label    string
+	sentence func(name string) string
+}
+
+var flowStatusCopy = map[string]flowStatusText{
+	FlowDone:          {"Done", func(name string) string { return name + " is done." }},
+	FlowInProgress:    {"In progress", func(name string) string { return name + " is running now." }},
+	FlowWaiting:       {"Waiting", func(name string) string { return name + " is queued, waiting for a worker to claim it." }},
+	FlowNeedsOperator: {"Needs you", func(name string) string { return name + " is waiting on you; the next action says what to decide." }},
+	FlowOff:           {"Off for this task", func(name string) string { return "This task's policy turned " + name + " off." }},
+	FlowUpcoming:      {"Upcoming", func(name string) string { return name + " has not started yet." }},
+}
+
+// flowGateWaitText names the gate when the operator's decision is the gate
+// the stage carries.
+var flowGateWaitText = map[core.GateKind]string{
+	core.GateKindPlanApproval:  "Plan is waiting for you to approve the plan.",
+	core.GateKindMergeApproval: "Merge is waiting for you to approve the merge.",
+}
+
+// flowMissedCheckInLayout is the absolute UTC time in the missed check-in
+// sentence, so the sentence does not go stale between reads.
+const flowMissedCheckInLayout = "2006-01-02 15:04 UTC"
+
 // TaskFlow is the task's position on its stage path, folded from its events.
 // NextAction is the NA-3 statement embedded unchanged.
 type TaskFlow struct {
@@ -32,11 +77,17 @@ type TaskFlow struct {
 }
 
 // FlowStage is one main stage. Gate is null when the stage has no gate or the
-// frozen policy turned that gate off for this task.
+// frozen policy turned that gate off for this task. Description, StatusLabel,
+// StatusText and MissedCheckIn are server-stated copy; MissedCheckIn is empty
+// unless the current attempt's lease is past due.
 type FlowStage struct {
 	ID             core.Stage              `json:"id"`
 	Gate           *string                 `json:"gate"`
 	Status         string                  `json:"status"`
+	Description    string                  `json:"description"`
+	StatusLabel    string                  `json:"status_label"`
+	StatusText     string                  `json:"status_text"`
+	MissedCheckIn  string                  `json:"missed_check_in"`
 	Attempts       []FlowAttempt           `json:"attempts"`
 	CurrentAttempt *nextaction.AttemptView `json:"current_attempt"`
 }
@@ -148,11 +199,13 @@ type taskFlowOrderPayload struct {
 
 // FoldTaskFlow folds one task's events into its stage flow. It reads no store,
 // task row, work-order row, job, intervention or clock, so replaying the same
-// history reproduces it (req-operator-next-action AC-4.3). action is the
-// task's NA-3 next action: needs_operator and the side states NA-3 owns come
-// from it, so the flow never derives a second actor or kind (DEC-61).
-// recovery supplies the automatic-recovery bound shown as retrying.of.
-func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery config.RecoveryPolicy) TaskFlow {
+// history with the same now reproduces it (req-operator-next-action AC-4.3).
+// action is the task's NA-3 next action: needs_operator and the side states
+// NA-3 owns come from it, so the flow never derives a second actor or kind
+// (DEC-61). recovery supplies the automatic-recovery bound shown as
+// retrying.of. now is the instant the next action was projected at; it alone
+// decides whether a current attempt's lease is past due.
+func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery config.RecoveryPolicy, now time.Time) TaskFlow {
 	ordered := append([]core.Event(nil), events...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].At.Equal(ordered[j].At) {
@@ -496,6 +549,17 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			row.Status = FlowDone
 		default:
 			row.Status = FlowUpcoming
+		}
+		name := flowStageNames[stage]
+		statusCopy := flowStatusCopy[row.Status]
+		row.Description = flowStageDescriptions[stage]
+		row.StatusLabel = statusCopy.label
+		row.StatusText = statusCopy.sentence(name)
+		if text, ok := flowGateWaitText[gateKind]; ok && row.Status == FlowNeedsOperator {
+			row.StatusText = text
+		}
+		if attempt := row.CurrentAttempt; attempt != nil && attempt.LeaseExpiresAt != nil && now.After(*attempt.LeaseExpiresAt) {
+			row.MissedCheckIn = "Missed check-in: the lease expired at " + attempt.LeaseExpiresAt.UTC().Format(flowMissedCheckInLayout) + " and the agent has not renewed it."
 		}
 		flow.Stages = append(flow.Stages, row)
 	}

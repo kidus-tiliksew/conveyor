@@ -8,7 +8,7 @@ import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Sheet } from '../ui/sheet'
 
-// The badge tone for each server status word; the word itself is shown as sent.
+// The badge tone for each server status; the label itself is the server's.
 export const flowStatusBadge: Record<TaskFlowStatus, 'positive' | 'accent' | 'attention' | 'default' | 'outline'> = {
   done: 'positive',
   in_progress: 'accent',
@@ -19,8 +19,8 @@ export const flowStatusBadge: Record<TaskFlowStatus, 'positive' | 'accent' | 'at
 }
 
 // One stage of the flow, opened from the chart (NA-7). It stacks over the task
-// detail sheet or panel, so Escape closes only this sheet. The status is the
-// server's word as sent. The client adds no stage descriptions.
+// detail sheet or panel, so Escape closes only this sheet. Every sentence is
+// the server's, printed as sent; the client carries no stage copy.
 export function TaskFlowStageSheet({
   stage,
   raw,
@@ -40,16 +40,24 @@ export function TaskFlowStageSheet({
       <header className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
         <h2 className="mr-auto truncate text-sm font-medium">{label}</h2>
         {stage.status === 'off' ? (
-          <span className="text-xs text-faint">off for this task</span>
+          <span className="text-xs text-faint">{stage.status_label}</span>
         ) : (
-          <Badge variant={flowStatusBadge[stage.status]}>{stage.status}</Badge>
+          <Badge variant={flowStatusBadge[stage.status]}>{stage.status_label}</Badge>
         )}
         <Button variant="ghost" size="icon" aria-label="Close stage" onClick={onClose}>
           <X />
         </Button>
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
-        {stage.current_attempt && <CurrentAttempt attempt={stage.current_attempt} />}
+        <section aria-label="Stage" className="space-y-1 text-sm">
+          <p data-flow-description className="text-muted">
+            {stage.description}
+          </p>
+          <p data-flow-status-text>{stage.status_text}</p>
+        </section>
+        {stage.current_attempt && (
+          <CurrentAttempt attempt={stage.current_attempt} missedCheckIn={stage.missed_check_in} />
+        )}
         <section aria-label="Attempts" className="space-y-2">
           <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Attempts</h3>
           {stage.attempts.length === 0 && <p className="text-sm text-faint">—</p>}
@@ -85,8 +93,7 @@ export function TaskFlowStageSheet({
   )
 }
 
-function CurrentAttempt({ attempt }: { attempt: TaskFlowAttemptView }) {
-  const leaseExpiry = attempt.lease_expires_at ? new Date(attempt.lease_expires_at).getTime() : Number.NaN
+function CurrentAttempt({ attempt, missedCheckIn }: { attempt: TaskFlowAttemptView; missedCheckIn: string }) {
   return (
     <section aria-label="Current attempt" className="space-y-2">
       <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Current attempt</h3>
@@ -102,9 +109,13 @@ function CurrentAttempt({ attempt }: { attempt: TaskFlowAttemptView }) {
         </Field>
         <Field term="Claimed at">{attempt.claimed_at ? absoluteTime(attempt.claimed_at) : '—'}</Field>
         <Field term="Last check-in">
-          <span className="flex flex-wrap items-center gap-2">
+          <span className="flex min-w-0 flex-col gap-0.5">
             {relativeTime(attempt.last_check_in ?? undefined)}
-            {leaseExpiry < Date.now() && <Badge variant="attention">missed check-in</Badge>}
+            {missedCheckIn && (
+              <span data-flow-missed-check-in className="text-xs font-medium text-attention">
+                {missedCheckIn}
+              </span>
+            )}
           </span>
         </Field>
         <Field term="Lease">{relativeTime(attempt.lease_expires_at ?? undefined)}</Field>

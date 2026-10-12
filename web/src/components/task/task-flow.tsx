@@ -197,9 +197,9 @@ function StageNode({ stage, onSelect }: { stage: TaskFlowStage; onSelect: (id: T
       )}
       <span className="ml-auto shrink-0">
         {off ? (
-          <span className="text-xs font-normal text-faint">off for this task</span>
+          <span className="text-xs font-normal text-faint">{stage.status_label}</span>
         ) : (
-          <Badge variant={flowStatusBadge[stage.status]}>{stage.status}</Badge>
+          <Badge variant={flowStatusBadge[stage.status]}>{stage.status_label}</Badge>
         )}
       </span>
     </Button>

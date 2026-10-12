@@ -171,7 +171,7 @@ func TestTaskFlowRebuild(t *testing.T) {
 			if err := json.Unmarshal(body, &served); err != nil {
 				t.Fatal(err)
 			}
-			replayed, err := json.Marshal(storetest.ReplayTaskFlow(t, server.Store, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), replayFixture(t), scenario.TaskID, served.NextAction))
+			replayed, err := json.Marshal(storetest.ReplayTaskFlow(t, server.Store, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), replayFixture(t), scenario.TaskID, served.NextAction, time.Now().UTC()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,5 +282,72 @@ func TestTaskFlowRecoveryBound(t *testing.T) {
 		if (err != nil) != tc.fails || !tc.fails && got.AutomaticRecoveries != tc.want {
 			t.Fatalf("%s: policy=%+v err=%v, want bound %d", name, got, err, tc.want)
 		}
+	}
+}
+
+// The flow payload carries the fold's server-stated copy on every stage: the
+// stage description, the status label and sentence, and a missed check-in
+// sentence judged at the request's own instant (feature-operator-next-action
+// NA-7).
+func TestTaskFlowRouteStatesStageCopy(t *testing.T) {
+	fixture := replayFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	seed := func(id string, lease time.Time) {
+		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskRunning,
+			MergeApproval: true, SetupContract: config.ExecutionSetup{VerifyStage: true}, CreatedAt: now.Add(-3 * time.Hour)}
+		if err := fixture.Backend.CreateTask(fixture.Context, task); err != nil {
+			t.Fatal(err)
+		}
+		at := func(minutes int) time.Time { return now.Add(-2*time.Hour + time.Duration(minutes)*time.Minute) }
+		order := core.WorkOrder{ID: id + "-impl", JobID: id + "-job", TaskID: id, Stage: core.StageImplement, State: core.WorkOrderQueued}
+		claimed := order
+		claimed.State, claimed.AttemptID, claimed.SessionID, claimed.Agent, claimed.Model = core.WorkOrderClaimed, "attempt-1", "session-1", "omp", "opus"
+		claimed.ExecutionStartedAt, claimed.LastAgentActivityAt, claimed.LeaseExpiresAt = at(3), at(3), lease
+		fixture.SeedEvents(t, fixture.Context, 0, []core.Event{
+			{ID: 1, TaskID: id, Kind: "task.created", ActorRole: core.ActorHuman, Payload: core.JSONPayload(task), At: at(0)},
+			{ID: 2, TaskID: id, Kind: "pipeline.transition_decided", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"from_stage": core.StageTriage, "next_stage": core.StageImplement}), At: at(1)},
+			{ID: 3, TaskID: id, JobID: order.JobID, Kind: "work_order.created", ActorRole: core.ActorSystem, Payload: core.JSONPayload(order), At: at(2)},
+			{ID: 4, TaskID: id, JobID: order.JobID, Kind: "work_order.claimed", ActorRole: core.ActorAgent, Payload: core.JSONPayload(claimed), At: at(3)},
+		})
+	}
+	lapsed := now.Add(-time.Hour)
+	seed("lapsed", lapsed)
+	seed("live", now.Add(time.Hour))
+	server := NewServer(struct{ store.Store }{fixture.Backend})
+	server.BearerToken, server.Workspace = "token", "demo"
+
+	read := func(id string) map[string]map[string]any {
+		var flow struct {
+			Stages []map[string]any `json:"stages"`
+		}
+		if err := json.Unmarshal(flowBody(t, server, id), &flow); err != nil {
+			t.Fatal(err)
+		}
+		stages := map[string]map[string]any{}
+		for _, stage := range flow.Stages {
+			for _, field := range []string{"description", "status_label", "status_text", "missed_check_in"} {
+				if _, ok := stage[field].(string); !ok {
+					t.Fatalf("%s stage %v: %s is not a string field: %v", id, stage["id"], field, stage)
+				}
+			}
+			stages[stage["id"].(string)] = stage
+		}
+		return stages
+	}
+	stages := read("lapsed")
+	want := map[string]map[string]any{
+		"spec":      {"status": "off", "status_label": "Off for this task", "status_text": "This task's policy turned Plan off.", "missed_check_in": ""},
+		"implement": {"status": "in_progress", "status_label": "In progress", "status_text": "Implement is running now.", "description": "An agent makes the change on the task branch and opens the pull request.", "missed_check_in": "Missed check-in: the lease expired at " + lapsed.Format("2006-01-02 15:04") + " UTC and the agent has not renewed it."},
+		"review":    {"status": "upcoming", "status_label": "Upcoming", "status_text": "Code review has not started yet.", "missed_check_in": ""},
+	}
+	for id, fields := range want {
+		for field, value := range fields {
+			if stages[id][field] != value {
+				t.Fatalf("lapsed %s.%s = %v, want %v", id, field, stages[id][field], value)
+			}
+		}
+	}
+	if got := read("live")["implement"]["missed_check_in"]; got != "" {
+		t.Fatalf("live lease: missed_check_in = %v, want empty", got)
 	}
 }

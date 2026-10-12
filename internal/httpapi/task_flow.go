@@ -56,7 +56,7 @@ func (s *Server) getTaskFlow(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Flow store.TaskFlow `json:"flow"`
-	}{Flow: store.FoldTaskFlow(events, action, recovery)})
+	}{Flow: store.FoldTaskFlow(events, action, recovery, opts.Now)})
 }
 
 // recoveryPolicy reads the workspace's automatic-recovery bound, defaulting
