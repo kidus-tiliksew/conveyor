@@ -12,7 +12,6 @@ import (
 )
 
 func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context, workspace string) {
-	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	read := func(id, kind string) nextaction.NextAction {
 		t.Helper()
@@ -55,8 +54,8 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 	read(bounceID, nextaction.KindReviewBounceLimit)
 
 	claimedID := orderTask(t, st, ctx, workspace, core.WorkOrder{})
-	if _, err := For(st).ClaimWorkOrder(ctx, "order-"+claimedID, core.WorkOrderClaim{ClaimantID: "agent", SessionID: "session", Lease: time.Hour}); err != nil {
-		t.Fatal(err)
+	if _, err := For(st).ClaimWorkOrder(ctx, "order-"+claimedID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatalf("claim: %v", err)
 	}
 	read(claimedID, nextaction.KindWorking)
 	for _, command := range []string{"triage.park", "dispatch.fail_final"} {
@@ -92,7 +91,7 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 func orderTask(t *testing.T, st store.Store, ctx context.Context, workspace string, order core.WorkOrder, commands ...core.WorkOrderCommand) string {
 	t.Helper()
 	id := createTask(t, st, ctx, workspace, core.TaskRunning, "")
-	if err := st.CreateJob(ctx, core.Job{ID: "job-" + id, TaskID: id, Stage: core.StageImplement, State: core.JobRunning}); err != nil {
+	if err := st.CreateJob(ctx, core.Job{ID: "job-" + id, TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}
 	order.ID, order.TaskID, order.JobID, order.Stage, order.State = "order-"+id, id, "job-"+id, core.StageImplement, core.WorkOrderQueued
