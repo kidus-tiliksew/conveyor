@@ -81,6 +81,7 @@ func TestConfigExportImportRoundTripsContextualSettings(t *testing.T) {
 func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 	return config.WorkspaceDocument{
 		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h",
+		Recovery: config.RecoveryPolicy{AutomaticRecoveries: 2, WindowText: "24h"},
 		ExecutionSettings: &config.ContextualExecutionSettings{
 			ControlPlane: config.ControlPlaneSettings{
 				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
@@ -110,6 +111,9 @@ func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 
 func assertContextualCLIConfig(t *testing.T, document config.WorkspaceDocument, step string) {
 	t.Helper()
+	if document.Recovery.AutomaticRecoveries != 2 || document.Recovery.WindowText != "24h" {
+		t.Fatalf("%s lost recovery: %+v", step, document.Recovery)
+	}
 	if document.ExecutionSettings == nil || document.ExecutionSettings.Implementation.Harness != "codex" || document.ExecutionSettings.Review.FallbackHarness != "codex" {
 		t.Fatalf("%s lost execution_settings: %+v", step, document.ExecutionSettings)
 	}

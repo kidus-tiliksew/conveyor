@@ -66,4 +66,39 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	if !automatic {
 		t.Fatal("automatic recovery event missing")
 	}
+	for recovered.AutomaticRecoveryCount < 2 {
+		if _, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session-" + recovered.ID, ClientToken: "token-" + recovered.ID, Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+		tick = time.Now().UTC().Add(2 * time.Minute)
+		if _, err = taskops.New(st).TickOrderClock(ctx, tick); err != nil {
+			t.Fatal(err)
+		}
+		scheduled, err = st.GetWorkOrder(ctx, orderID)
+		if err != nil || scheduled.NextAutomaticRecoveryAt.IsZero() {
+			t.Fatalf("reschedule=%+v err=%v", scheduled, err)
+		}
+		if _, err = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
+			t.Fatal(err)
+		}
+		recovered, err = st.GetWorkOrder(ctx, orderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session-last", ClientToken: "token-last", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	tick = time.Now().UTC().Add(2 * time.Minute)
+	if _, err = taskops.New(st).TickOrderClock(ctx, tick); err != nil {
+		t.Fatal(err)
+	}
+	exhausted, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || exhausted.State != core.WorkOrderTimedOut || !exhausted.RetrySuppressed || exhausted.RetrySuppressionReason != core.AutomaticRecoveryExhaustedReason {
+		t.Fatalf("exhausted=%+v err=%v", exhausted, err)
+	}
+	reset, err := RecoverWorkOrder(ctx, st, orderID, "operator-reset", time.Hour)
+	if err != nil || reset.State != core.WorkOrderQueued || reset.AutomaticRecoveryCount != 0 || reset.RetrySuppressed || reset.RetrySuppressionReason != "" {
+		t.Fatalf("operator reset=%+v err=%v", reset, err)
+	}
 }
