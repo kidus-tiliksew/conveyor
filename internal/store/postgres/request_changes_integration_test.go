@@ -68,7 +68,8 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 		t.Fatalf("interventions=%+v err=%v", interventions, err)
 	}
 	markers, err := st.ListActivityMarkersForTasks(ctx, []string{task.ID})
-	if err != nil || len(markers) != 1 || !markers[0].UserChangesRequested || !store.TaskNeedsAttention(updated, markers[0], false, false) {
+	action, actionErr := store.ReadNextAction(ctx, st, updated.ID, store.NextActionOptions{})
+	if err != nil || actionErr != nil || len(markers) != 1 || !markers[0].UserChangesRequested || action.Label == "" || store.TaskNeedsAttention(action) != (action.Actor == "operator") {
 		t.Fatalf("markers=%+v err=%v", markers, err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)

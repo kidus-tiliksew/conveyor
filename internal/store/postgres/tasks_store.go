@@ -378,25 +378,16 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, query store.Cal
 	if err := query.Validate(); err != nil {
 		return store.TaskPage{}, err
 	}
-	cte := attentionTasksCTE()
-	filter := `
-FROM attention_tasks attention
-JOIN tasks t ON t.workspace_id=$1 AND t.id=attention.task_id
-WHERE t.assignee_user_id=$2
+	rows, err := s.boundary.Query(ctx, `
+SELECT t.*
+FROM tasks t
+WHERE t.workspace_id=$1 AND t.assignee_user_id=$2
   AND t.state NOT IN ('merged','closed')
   AND NOT EXISTS (
       SELECT 1 FROM tasks child
       WHERE child.workspace_id=t.workspace_id AND child.parent_task_id=t.id
-  )`
-	var total int64
-	if err := s.boundary.QueryRow(ctx, cte+"\nSELECT count(*)::bigint "+filter, workspace(ctx), query.UserID).Scan(&total); err != nil {
-		return store.TaskPage{}, err
-	}
-	rows, err := s.boundary.Query(ctx, cte+`
-SELECT t.*
-`+filter+`
-ORDER BY t.created_at DESC,t.id
-LIMIT $3 OFFSET $4`, workspace(ctx), query.UserID, query.Limit, query.Offset)
+  )
+ORDER BY t.created_at DESC, t.id`, workspace(ctx), query.UserID)
 	if err != nil {
 		return store.TaskPage{}, err
 	}
@@ -417,7 +408,7 @@ LIMIT $3 OFFSET $4`, workspace(ctx), query.UserID, query.Limit, query.Offset)
 	if err = s.hydrateGitHubLifecyclesBatch(ctx, tasks); err != nil {
 		return store.TaskPage{}, err
 	}
-	return store.TaskPage{Tasks: tasks, Total: int(total)}, nil
+	return store.PageOperatorAttention(ctx, s, tasks, query.Offset, query.Limit)
 }
 
 func (s *Store) hydrateTaskRelations(ctx context.Context, task *core.Task) error {

@@ -6,6 +6,7 @@ import "strings"
 // its shared fixtures and taskops command adapters. Additions to Backend
 // require an explicit declaration and a behavioral case (DEC-38).
 var suiteMethods = map[string][]string{
+	"NextAction":                 strings.Fields(`ListFactoryActs CountOperatorAttention CreateTask AppendEvent GetTask ListTasks`),
 	"Verification":               strings.Fields(`ApplyVerification CreateReviewRoundCommand ExpireVerificationChunks ListJobs ListTaskWorkOrders MarkTaskApprovalStale ReadVerification ReadVerificationArtifact ReconcileVerificationClaims ReconcileVerificationDeliveries RecordVerificationPullRequest RunVerificationDelivery TranslateVerificationPublication`),
 	"ArtifactRepair":             strings.Fields(`RepairArtifactMetadata CreateArtifact GetArtifact ListArtifacts ListEvents`),
 	"ArtifactIntake":             strings.Fields(`CreateTaskWithAttachments GetTask ListArtifacts ListEvents`),
@@ -66,4 +67,5 @@ var suiteMethods = map[string][]string{
 	"GitHubApps":                 strings.Fields(`ConfigureGitHubAppKeyEncryptionKey ListGitHubAppKeysForRedaction StoreWorkspaceGitHubApp RecordWorkspaceGitHubAppInstallation GetWorkspaceGitHubAppStatus GetWorkspaceGitHubAppForUse DeleteWorkspaceGitHubApp`),
 	"Tokens":                     strings.Fields(`BootstrapIdentity IssueAgentCredential IssueOwnPersonalAccessToken ListOwnPersonalAccessTokens RevokeOwnPersonalAccessToken RevokeRunAgentCredential VerifyCredential VerifyPersonalAccessToken`),
 	"GateKind":                   strings.Fields(`ApplyTaskCommand CreateTask GetTask`),
+	"AutomaticRecovery":          strings.Fields(`CreateTask CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand GetWorkOrder ListEvents ApplyWorkOrderClock ListElapsedWorkOrderTaskIDs RecoverWorkOrderCommand RedispatchWorkOrderCommand`),
 }

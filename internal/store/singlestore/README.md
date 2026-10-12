@@ -78,7 +78,7 @@ on other partitions become visible. The next holder may then acquire the lock
 and miss those rows (task 261012-832d9c measured this in CI). A rule that must
 see its predecessor's rows uses `claimKey` instead: it locks the same row and
 returns the `holder` column, which `setClaim` writes on the locked row itself
-and therefore commits atomically with the release. Migration 0020 adds the
+and therefore commits atomically with the release. Migration 0022 adds the
 column. Rows written before claims existed are covered by the rules' counts.
 
 The event log uses `s2log.WithTx(ctx, tx)` to bind its reads and appends to the

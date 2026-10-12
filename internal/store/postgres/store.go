@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"gopkg.in/yaml.v3"
@@ -450,6 +451,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
 	}
+	if before.Recovery.AutomaticRecoveries != after.Recovery.AutomaticRecoveries || before.Recovery.WindowText != after.Recovery.WindowText {
+		sections = append(sections, "recovery")
+	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
 		sections = append(sections, "routing")
 	}
@@ -511,6 +515,39 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 		result[i] = eventFromDB(rows[i])
 	}
 	return result, nil
+}
+
+func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := s.boundary.Query(ctx, `
+		SELECT e.id, e.task_id, e.kind, e.actor_role, e.payload_json, e.at
+		FROM events e
+		JOIN tasks t ON t.id = e.task_id AND t.workspace_id = e.workspace_id
+		WHERE e.workspace_id = $1
+		  AND e.at >= $2
+		  AND e.kind IN (
+		    'pipeline.bounced','work_order.expired','work_order.released','work_order.requeued',
+		    'merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed')
+		ORDER BY e.at DESC, e.id DESC
+		LIMIT $3`, workspace(ctx), since, limit*8)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &event.ActorRole, &event.Payload, &event.At); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.SelectFactoryActs(events, since, limit), nil
 }
 
 // ListEventsAfter resolves a nonzero afterID as an anchor event owned by the
@@ -846,6 +883,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb`
 

@@ -577,6 +577,7 @@ export interface WorkspaceRepo {
 export interface WorkspaceInfo {
   workspace: string
   max_bounces: number
+  recovery?: { automatic_recoveries: number; window: string }
   database: string
   repos: WorkspaceRepo[] | null
 }

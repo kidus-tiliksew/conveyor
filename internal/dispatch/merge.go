@@ -248,54 +248,8 @@ func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, e
 	if err != nil {
 		return mergeConflictDispatchState{}, err
 	}
-	state := mergeConflictDispatchState{}
-	inside := false
-	dispatched := map[string]bool{}
-	for _, event := range events {
-		switch event.Kind {
-		case "merge.conflict_cleared":
-			inside, state = false, mergeConflictDispatchState{}
-		case "merge.blocked":
-			inside = sameConflictEpisode(event.Payload, episode)
-			state = mergeConflictDispatchState{}
-		case "merge.conflict_fix_dispatched":
-			if inside && sameConflictEpisode(event.Payload, episode) {
-				var payload struct {
-					WorkOrderID string `json:"work_order_id"`
-				}
-				if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID != "" {
-					dispatched[payload.WorkOrderID] = true
-				}
-				state.NextRetryAt = time.Time{}
-			}
-		case "merge.conflict_dispatch_failed":
-			if !inside || !sameConflictEpisode(event.Payload, episode) {
-				continue
-			}
-			var payload struct {
-				FailureCount int       `json:"failure_count"`
-				NextRetryAt  time.Time `json:"next_retry_at"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.Failures++
-				state.NextRetryAt = payload.NextRetryAt
-			}
-		case "merge.conflict_dispatch_exhausted":
-			if inside && sameConflictEpisode(event.Payload, episode) {
-				state.Exhausted = true
-			}
-		case "merge.conflict_recovery_blocked":
-			if inside && sameConflictEpisode(event.Payload, episode) {
-				state.RecoveryBlocked = true
-			}
-		}
-	}
-	for _, order := range orders {
-		if dispatched[order.ID] && terminalConflictFixAttempt(order) {
-			state.Failures++
-		}
-	}
-	return state, nil
+	state := store.MergeConflictDispatchState(events, episode.ApprovedHead, episode.NewHead, orders)
+	return mergeConflictDispatchState{Failures: state.Failures, NextRetryAt: state.NextRetryAt, Exhausted: state.Exhausted, RecoveryBlocked: state.RecoveryBlocked}, nil
 }
 
 func terminalConflictFixAttempt(order core.WorkOrder) bool {

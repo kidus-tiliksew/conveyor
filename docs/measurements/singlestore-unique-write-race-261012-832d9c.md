@@ -131,7 +131,7 @@ second `lockKey` in 400 of 400 trials, with fresh and pre-existing lock rows.
 ## Fix and regression evidence
 
 `claimKey` locks the same `conveyor_locks` row and reads its new `holder`
-column (migration 0020). `setClaim` writes it, so the claim commits on the
+column (migration 0022). `setClaim` writes it, so the claim commits on the
 lock row atomically with the release. `writeRow` claims
 `one-deployment-credential` or the workspace's `LOWER(name)`. It counts a
 claim held by another token or document as a conflict alongside the committed

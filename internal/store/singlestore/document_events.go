@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -331,6 +332,29 @@ func (s *Store) AppendEvent(ctx context.Context, e core.Event) error {
 }
 func (s *Store) ListEvents(ctx context.Context, id string) ([]core.Event, error) {
 	return documentTaskEvents(ctx, s.db, id)
+}
+
+func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),kind,actor_role,payload_json,at FROM events WHERE workspace_id=? AND at>=? AND kind IN ('pipeline.bounced','work_order.expired','work_order.released','work_order.requeued','merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed') ORDER BY at DESC, id DESC LIMIT ?`, documentWorkspace(ctx), since, limit*8)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []core.Event
+	for rows.Next() {
+		var event core.Event
+		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &event.ActorRole, &event.Payload, &event.At); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.SelectFactoryActs(events, since, limit), nil
 }
 
 // ListEventsAfter resolves a nonzero anchor owned by the task in this

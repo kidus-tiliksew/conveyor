@@ -159,6 +159,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 		if file.version == 20 {
+			if err := s.migrateAutomaticRecoveryLedger(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
+		if file.version == 22 {
 			if err := s.migrateLockClaims(ctx); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
@@ -251,6 +256,32 @@ func (s *Store) migrateTaskGateKind(ctx context.Context) error {
 	}
 	_, err := s.db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN gate_kind VARCHAR(32) NULL`)
 	return err
+}
+
+// migrateAutomaticRecoveryLedger adds the AR-2 nullable columns before the
+// version 20 file. Replay is a no-op once each column exists. There is no
+// backfill; counts are read as COALESCE(..., 0).
+func (s *Store) migrateAutomaticRecoveryLedger(ctx context.Context) error {
+	columns := []struct{ table, name, definition string }{
+		{"work_orders", "automatic_recovery_count", "INT NULL"},
+		{"work_orders", "automatic_recovery_window_started_at", "DATETIME(6) NULL"},
+		{"work_orders", "next_automatic_recovery_at", "DATETIME(6) NULL"},
+		{"github_lifecycles", "automatic_reenqueue_at", "DATETIME(6) NULL"},
+		{"review_publications", "automatic_reenqueue_at", "DATETIME(6) NULL"},
+	}
+	for _, column := range columns {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, column.table, column.name).Scan(&exists); err != nil {
+			return err
+		}
+		if exists != 0 {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+column.table+" ADD COLUMN "+column.name+" "+column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) migrateOpenTaskBranchUnique(ctx context.Context) error {

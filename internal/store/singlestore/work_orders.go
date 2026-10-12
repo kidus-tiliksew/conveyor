@@ -25,6 +25,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
@@ -53,7 +54,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
-	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt sql.NullTime
+	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, rateLimitObservedAt sql.NullTime
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
@@ -61,6 +62,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
+		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
@@ -107,6 +109,12 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	}
 	if nextRetryAt.Valid {
 		order.NextRetryAt = nextRetryAt.Time
+	}
+	if recoveryWindow.Valid {
+		order.AutomaticRecoveryWindowStartedAt = recoveryWindow.Time
+	}
+	if nextAutomaticRecovery.Valid {
+		order.NextAutomaticRecoveryAt = nextAutomaticRecovery.Time
 	}
 	if len(rateLimit) > 0 && string(rateLimit) != "{}" {
 		var status core.RateLimitStatus
@@ -156,68 +164,70 @@ func rateLimitJSON(status *core.RateLimitStatus) []byte {
 
 func orderValues(o core.WorkOrder) map[string]any {
 	return map[string]any{
-		"id":                              o.ID,
-		"task_id":                         o.TaskID,
-		"job_id":                          o.JobID,
-		"stage":                           o.Stage,
-		"state":                           o.State,
-		"claimant_id":                     o.ClaimantID,
-		"session_id":                      o.SessionID,
-		"attempt_id":                      o.AttemptID,
-		"client_token_hash":               o.ClientTokenHash,
-		"agent":                           o.Agent,
-		"model":                           o.Model,
-		"worker_id":                       o.WorkerID,
-		"lease_expires_at":                nullableTimeValue(o.LeaseExpiresAt),
-		"review_round":                    o.ReviewRound,
-		"review_seat":                     o.ReviewSeat,
-		"required_model":                  o.RequiredModel,
-		"required_harness":                o.RequiredHarness,
-		"required_effort":                 o.RequiredEffort,
-		"required_harness_config":         harnessSnapshotJSON(o.RequiredHarnessConfig),
-		"execution_timeout":               o.ExecutionTimeoutText,
-		"model_enforcement":               o.ModelEnforcement,
-		"reason_code":                     o.ReasonCode,
-		"review_kind":                     o.ReviewKind,
-		"review_scope":                    o.ReviewScope,
-		"baseline_sha":                    o.BaselineSHA,
-		"head_sha":                        o.HeadSHA,
-		"verification_context_id":         o.VerificationContextID,
-		"queue_entered_at":                nullableTimeValue(o.QueueEnteredAt),
-		"queue_deadline":                  nullableTimeValue(o.QueueDeadline),
-		"queue_blocked_at":                nullableTimeValue(o.QueueBlockedAt),
-		"execution_started_at":            nullableTimeValue(o.ExecutionStartedAt),
-		"execution_deadline":              nullableTimeValue(o.ExecutionDeadline),
-		"last_attempt_id":                 o.LastAttemptID,
-		"last_attempt_outcome":            o.LastAttemptOutcome,
-		"last_failure_category":           o.LastFailureCategory,
-		"last_failure_message":            o.LastFailureMessage,
-		"last_failure_detail":             o.LastFailureDetail,
-		"last_failure_exit_status":        o.LastFailureExitStatus,
-		"last_failure_at":                 nullableTimeValue(o.LastFailureAt),
-		"automatic_retry_count":           o.AutomaticRetryCount,
-		"next_retry_at":                   nullableTimeValue(o.NextRetryAt),
-		"retry_suppressed":                o.RetrySuppressed,
-		"retry_suppression_reason":        o.RetrySuppressionReason,
-		"redispatch_count":                o.RedispatchCount,
-		"operator_direction":              o.OperatorDirection,
-		"checkpoint":                      checkpointJSON(o.Checkpoint),
-		"continuation_session_id":         o.ContinuationSessionID,
-		"continuation_attempt_id":         o.ContinuationAttemptID,
-		"continuation_harness":            o.ContinuationHarness,
-		"continuation_launch_environment": o.ContinuationLaunchEnvironment,
-		"progress":                        o.Progress,
-		"cost_usd":                        o.CostUSD,
-		"tokens_in":                       o.TokensIn,
-		"tokens_out":                      o.TokensOut,
-		"usage_reported":                  o.UsageReported,
-		"self_reported":                   o.SelfReported,
-		"rate_limit":                      rateLimitJSON(o.RateLimit),
-		"rate_limit_observed_at":          nullableTimeValue(o.RateLimitObservedAt),
-		"created_at":                      o.CreatedAt,
-		"updated_at":                      o.UpdatedAt,
-		"served_requirement_snapshot":     servedRequirementSnapshotJSON(o.ServedRequirementSnapshot),
-		"governance_snapshot":             governanceSnapshotJSON(o.GovernanceSnapshot),
+		"id":                                   o.ID,
+		"task_id":                              o.TaskID,
+		"job_id":                               o.JobID,
+		"stage":                                o.Stage,
+		"state":                                o.State,
+		"claimant_id":                          o.ClaimantID,
+		"session_id":                           o.SessionID,
+		"attempt_id":                           o.AttemptID,
+		"client_token_hash":                    o.ClientTokenHash,
+		"agent":                                o.Agent,
+		"model":                                o.Model,
+		"worker_id":                            o.WorkerID,
+		"lease_expires_at":                     nullableTimeValue(o.LeaseExpiresAt),
+		"review_round":                         o.ReviewRound,
+		"review_seat":                          o.ReviewSeat,
+		"required_model":                       o.RequiredModel,
+		"required_harness":                     o.RequiredHarness,
+		"required_effort":                      o.RequiredEffort,
+		"required_harness_config":              harnessSnapshotJSON(o.RequiredHarnessConfig),
+		"execution_timeout":                    o.ExecutionTimeoutText,
+		"model_enforcement":                    o.ModelEnforcement,
+		"reason_code":                          o.ReasonCode,
+		"review_kind":                          o.ReviewKind,
+		"review_scope":                         o.ReviewScope,
+		"baseline_sha":                         o.BaselineSHA,
+		"head_sha":                             o.HeadSHA,
+		"verification_context_id":              o.VerificationContextID,
+		"queue_entered_at":                     nullableTimeValue(o.QueueEnteredAt),
+		"queue_deadline":                       nullableTimeValue(o.QueueDeadline),
+		"queue_blocked_at":                     nullableTimeValue(o.QueueBlockedAt),
+		"execution_started_at":                 nullableTimeValue(o.ExecutionStartedAt),
+		"execution_deadline":                   nullableTimeValue(o.ExecutionDeadline),
+		"last_attempt_id":                      o.LastAttemptID,
+		"last_attempt_outcome":                 o.LastAttemptOutcome,
+		"last_failure_category":                o.LastFailureCategory,
+		"last_failure_message":                 o.LastFailureMessage,
+		"last_failure_detail":                  o.LastFailureDetail,
+		"last_failure_exit_status":             o.LastFailureExitStatus,
+		"last_failure_at":                      nullableTimeValue(o.LastFailureAt),
+		"automatic_retry_count":                o.AutomaticRetryCount,
+		"next_retry_at":                        nullableTimeValue(o.NextRetryAt),
+		"retry_suppressed":                     o.RetrySuppressed,
+		"retry_suppression_reason":             o.RetrySuppressionReason,
+		"automatic_recovery_count":             o.AutomaticRecoveryCount,
+		"automatic_recovery_window_started_at": nullableTimeValue(o.AutomaticRecoveryWindowStartedAt),
+		"next_automatic_recovery_at":           nullableTimeValue(o.NextAutomaticRecoveryAt),
+		"redispatch_count":                     o.RedispatchCount,
+		"operator_direction":                   o.OperatorDirection,
+		"checkpoint":                           checkpointJSON(o.Checkpoint),
+		"continuation_session_id":              o.ContinuationSessionID,
+		"continuation_attempt_id":              o.ContinuationAttemptID,
+		"continuation_harness":                 o.ContinuationHarness,
+		"continuation_launch_environment":      o.ContinuationLaunchEnvironment,
+		"cost_usd":                             o.CostUSD,
+		"tokens_in":                            o.TokensIn,
+		"tokens_out":                           o.TokensOut,
+		"usage_reported":                       o.UsageReported,
+		"self_reported":                        o.SelfReported,
+		"rate_limit":                           rateLimitJSON(o.RateLimit),
+		"rate_limit_observed_at":               nullableTimeValue(o.RateLimitObservedAt),
+		"created_at":                           o.CreatedAt,
+		"updated_at":                           o.UpdatedAt,
+		"served_requirement_snapshot":          servedRequirementSnapshotJSON(o.ServedRequirementSnapshot),
+		"governance_snapshot":                  governanceSnapshotJSON(o.GovernanceSnapshot),
 	}
 }
 func getOrderRow(ctx context.Context, db s2log.Executor, id string) (core.WorkOrder, error) {
@@ -591,7 +601,20 @@ func reviewSeatAcceptedTx(ctx context.Context, tx *sql.Tx, ws, task, id string) 
 	return accepted, err
 }
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)) ORDER BY task_id`, documentWorkspace(ctx), now, now, now)
+	bound := 0
+	if policy, _, policyErr := s.readClockPolicy(ctx); policyErr != nil {
+		return nil, policyErr
+	} else {
+		bound = policy.AutomaticRecoveries
+	}
+	query := `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)`
+	args := []any{documentWorkspace(ctx), now, now, now}
+	if bound != 0 {
+		query += automaticRecoveryElapsedSQL
+		args = append(args, now, now)
+	}
+	query += `) ORDER BY task_id`
+	rows, err := documentRows(ctx, s.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -658,7 +681,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			}
 			count++
 		}
-		return nil
+		acted, recoveryErr := s.applyAutomaticRecoveryTx(ctx, tx, id, now)
+		count += acted
+		return recoveryErr
 	})
 	return count, err
 }
@@ -1245,6 +1270,8 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		o.ExecutionStartedAt = time.Time{}
 		o.ExecutionDeadline = time.Time{}
 		o.RedispatchCount++
+		store.ResetAutomaticRecoveryLedger(&o)
+		store.ClearAutomaticRecoveryExhaustion(&o)
 		o.Progress = ""
 		o.UpdatedAt = now
 		if err = orderWrite(ctx, tx, o); err != nil {
@@ -1380,6 +1407,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		o.QueueEnteredAt = now
 		o.QueueDeadline = now.Add(timeout)
 		o.RedispatchCount++
+		store.ResetAutomaticRecoveryLedger(&o)
 		o.OperatorDirection = direction
 		o.UpdatedAt = now
 		if err = orderWrite(ctx, tx, o); err != nil {
