@@ -101,4 +101,29 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	if err != nil || reset.State != core.WorkOrderQueued || reset.AutomaticRecoveryCount != 0 || reset.RetrySuppressed || reset.RetrySuppressionReason != "" {
 		t.Fatalf("operator reset=%+v err=%v", reset, err)
 	}
+	staleTask := core.NewTaskID()
+	if err = st.CreateTask(ctx, core.Task{ID: staleTask, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + staleTask, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	staleID := staleTask + "-implement"
+	if err = st.CreateJob(ctx, core.Job{ID: staleID, TaskID: staleTask, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = CreateWorkOrder(ctx, st, core.WorkOrder{ID: staleID, TaskID: staleTask, JobID: staleID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-time.Minute), QueueDeadline: now.Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(st).TickOrderClock(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := st.GetWorkOrder(ctx, staleID)
+	if err != nil || stale.State != core.WorkOrderStale || stale.NextAutomaticRecoveryAt.IsZero() {
+		t.Fatalf("stale schedule=%+v err=%v", stale, err)
+	}
+	if _, err = taskops.New(st).TickOrderClock(ctx, stale.NextAutomaticRecoveryAt); err != nil {
+		t.Fatal(err)
+	}
+	redispatched, err := st.GetWorkOrder(ctx, staleID)
+	if err != nil || redispatched.State != core.WorkOrderQueued || redispatched.AutomaticRecoveryCount != 1 {
+		t.Fatalf("stale redispatch=%+v err=%v", redispatched, err)
+	}
 }
