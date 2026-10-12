@@ -90,6 +90,16 @@ func DecideAutomaticRecovery(policy config.RecoveryPolicy, task core.Task, order
 	return AutomaticRecoveryDecision{Kind: kind, At: now, Number: number, WindowStartedAt: windowStart}
 }
 
+// ScheduleAutomaticRecovery applies a schedule decision to the ledger. A
+// window that rolled before the decision is reset here, as the decision
+// counted it, so the stored count is the one the scheduled recovery stamps
+// on and the projection's attempt is count+1 on every backend.
+func ScheduleAutomaticRecovery(order *core.WorkOrder, decision AutomaticRecoveryDecision) {
+	order.NextAutomaticRecoveryAt = decision.At
+	order.AutomaticRecoveryCount = decision.Number - 1
+	order.AutomaticRecoveryWindowStartedAt = decision.WindowStartedAt
+}
+
 // AutomaticRecoveryDelay is one minute times five to the power of n-1, capped
 // at one hour. The loop refuses to multiply past the cap.
 func AutomaticRecoveryDelay(n int) time.Duration {

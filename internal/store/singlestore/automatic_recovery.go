@@ -77,7 +77,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 		decision := store.DecideAutomaticRecovery(policy, task, order, now)
 		switch decision.Kind {
 		case store.AutomaticRecoverySchedule:
-			order.NextAutomaticRecoveryAt = decision.At
+			store.ScheduleAutomaticRecovery(&order, decision)
 			order.UpdatedAt = now
 			if err = orderWrite(ctx, tx, order); err != nil {
 				return acted, err
