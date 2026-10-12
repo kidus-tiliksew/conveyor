@@ -22,6 +22,7 @@ import type {
   Task,
   TaskAuditKind,
   TaskAuditResponse,
+  TaskFlow,
   TaskOperationsItem,
   TaskOperationsPage,
   TaskRestartInput,
@@ -272,6 +273,15 @@ export function fetchPendingProposals() {
 
 export function fetchTaskActivity(taskId: string) {
   return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
+}
+
+// The flow projection for task detail (NA-7), read in the query's workspace.
+export async function fetchTaskFlow(workspace: string, taskId: string, signal?: AbortSignal) {
+  const body = await getJSON<{ flow: TaskFlow }>(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/flow`, workspace),
+    signal,
+  )
+  return body.flow
 }
 
 // Use the query's workspace and cancellation signal, never a later selection.
