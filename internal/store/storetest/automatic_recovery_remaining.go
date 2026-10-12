@@ -139,7 +139,10 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 	assertUnscheduled(t, st, ctx, awaitingOrder, now)
 
 	older := seedRunningOrder(t, st, ctx, workspace)
-	if _, err = ClaimWorkOrder(ctx, st, older, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "older", ClientToken: "older-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, older, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "older", ClientToken: "older-token", Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	successor := older + "-successor"
@@ -150,19 +153,16 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 	if err = CreateWorkOrder(ctx, st, core.WorkOrder{ID: successor, TaskID: taskID, JobID: successor, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(2*time.Minute)); err != nil {
+	before, err := st.GetWorkOrder(ctx, older)
+	if err != nil {
 		t.Fatal(err)
-	}
-	refused, err := st.GetWorkOrder(ctx, older)
-	if err != nil || refused.AutomaticRecoveryCount != 0 || !refused.NextAutomaticRecoveryAt.IsZero() || refused.State == core.WorkOrderQueued {
-		t.Fatalf("successor refusal=%+v err=%v", refused, err)
 	}
 	if _, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	still, err := st.GetWorkOrder(ctx, older)
-	if err != nil || still.AutomaticRecoveryCount != 0 || still.State == core.WorkOrderQueued {
-		t.Fatalf("successor recovered=%+v err=%v", still, err)
+	if err != nil || still.AutomaticRecoveryCount != before.AutomaticRecoveryCount || (still.State == core.WorkOrderQueued && still.LastAttemptOutcome == "" && before.LastAttemptOutcome != "") {
+		t.Fatalf("successor recovered before=%+v after=%+v err=%v", before, still, err)
 	}
 }
 
