@@ -123,6 +123,9 @@ type InterruptedReviewRecoveryState struct {
 	Reason         string           `json:"reason"`
 	EligibleOrders []core.WorkOrder `json:"eligible_orders"`
 	RetainedOrders []core.WorkOrder `json:"retained_orders"`
+	// AutomaticRetryExhausted is true when this round already had its one
+	// automatic act (feature-bounded-automatic-recovery AR-5).
+	AutomaticRetryExhausted bool `json:"automatic_retry_exhausted"`
 }
 
 type InterruptedReviewRecoveryRequest struct {
@@ -130,6 +133,8 @@ type InterruptedReviewRecoveryRequest struct {
 	RequestID string
 	Round     int
 	Refreezes map[string]*RecoveryRefreeze
+	// Automatic marks the AR-5 sweep's act; its audit payload records it.
+	Automatic bool
 }
 
 type InterruptedReviewRecoveryResult struct {
@@ -170,6 +175,8 @@ func InterruptedReviewRecoveryNeeded(task core.Task, orders []core.WorkOrder, ev
 		Reason:         "latest review round has interrupted seats whose claims are no longer authorized",
 		EligibleOrders: make([]core.WorkOrder, 0),
 		RetainedOrders: make([]core.WorkOrder, 0),
+		// One automatic act per round (AR-5); later acts are operator-only.
+		AutomaticRetryExhausted: AutomaticReviewAct(events, latest),
 	}
 	verdicts := completedReviewWorkOrderIDs(events, latest)
 	for _, order := range orders {
@@ -230,6 +237,12 @@ type ReviewRecoveryState struct {
 	Reason             string           `json:"reason"`
 	TimedOutOrders     []core.WorkOrder `json:"timed_out_orders"`
 	InconsistentOrders []core.WorkOrder `json:"inconsistent_orders"`
+	// ExhaustedOrders are queued seats whose bounded automatic recovery is
+	// exhausted. A retry replaces them with a new round; they stay unchanged.
+	ExhaustedOrders []core.WorkOrder `json:"exhausted_orders"`
+	// AutomaticRetryExhausted is true when this round already had its one
+	// automatic act (feature-bounded-automatic-recovery AR-5).
+	AutomaticRetryExhausted bool `json:"automatic_retry_exhausted"`
 }
 
 type ReviewRoundRetryRequest struct {
@@ -238,6 +251,8 @@ type ReviewRoundRetryRequest struct {
 	Reason     string
 	PriorRound int
 	PRHead     string
+	// Automatic marks the AR-5 sweep's act; its audit payload records it.
+	Automatic bool
 }
 
 type ReviewRoundRetryResult struct {
@@ -285,9 +300,19 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *R
 		Reason:             "latest review round is terminal after a reviewer timed out",
 		TimedOutOrders:     make([]core.WorkOrder, 0),
 		InconsistentOrders: make([]core.WorkOrder, 0),
+		ExhaustedOrders:    make([]core.WorkOrder, 0),
+	}
+	for _, events := range eventSets {
+		if AutomaticReviewAct(events, latest) {
+			state.AutomaticRetryExhausted = true
+		}
 	}
 	for _, order := range orders {
 		if order.Stage != core.StageReview || order.ReviewRound != latest {
+			continue
+		}
+		if ReviewSeatRecoveryExhausted(order) {
+			state.ExhaustedOrders = append(state.ExhaustedOrders, order)
 			continue
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
@@ -304,11 +329,13 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *R
 			}
 		}
 	}
-	if len(state.TimedOutOrders) == 0 && len(state.InconsistentOrders) == 0 {
+	if len(state.TimedOutOrders) == 0 && len(state.InconsistentOrders) == 0 && len(state.ExhaustedOrders) == 0 {
 		return nil
 	}
 	if len(state.InconsistentOrders) > 0 {
 		state.Reason = "latest review round is non-progressing because a completed seat has a contradictory failed child outcome"
+	} else if len(state.TimedOutOrders) == 0 {
+		state.Reason = "latest review round cannot finish because a seat's automatic recovery is exhausted"
 	}
 	return state
 }
@@ -1630,6 +1657,9 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	if recovery == nil || recovery.PriorRound != request.PriorRound {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching terminal timed-out review round", ErrReviewRetryConflict, request.TaskID)
 	}
+	if err := AutomaticReviewRetryRefusal(request, recovery); err != nil {
+		return ReviewRoundRetryResult{}, err
+	}
 	newRound := request.PriorRound + 1
 	for i, job := range jobs {
 		order := orders[i]
@@ -1675,7 +1705,14 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	for _, order := range recovery.InconsistentOrders {
 		inconsistentIDs = append(inconsistentIDs, order.ID)
 	}
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
+	exhaustedIDs := make([]string, 0, len(recovery.ExhaustedOrders))
+	for _, order := range recovery.ExhaustedOrders {
+		exhaustedIDs = append(exhaustedIDs, order.ID)
+	}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "exhausted_work_order_ids": exhaustedIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
+	if request.Automatic {
+		payload["automatic"] = true
+	}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
@@ -1736,6 +1773,9 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching interrupted review round", ErrReviewRetryConflict, request.TaskID)
 	}
+	if err := AutomaticInterruptedRecoveryRefusal(request, recovery); err != nil {
+		return InterruptedReviewRecoveryResult{}, err
+	}
 	result := InterruptedReviewRecoveryResult{
 		RequestID:       request.RequestID,
 		TaskID:          request.TaskID,
@@ -1766,7 +1806,11 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	for _, retained := range recovery.RetainedOrders {
 		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed", "setup_name": task.SetupName, "setup_contract": task.SetupContract}), At: now})
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now})
+	recoveredPayload := map[string]any{"workspace_id": workspace, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}
+	if request.Automatic {
+		recoveredPayload["automatic"] = true
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(recoveredPayload), At: now})
 	m.interruptedReviewRecoveries[key] = memoryInterruptedReviewRecovery{Workspace: workspace, Request: request, Result: result}
 	return result, nil
 }

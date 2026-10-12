@@ -22,13 +22,14 @@ const githubLifecycleColumns = `task_id, repository, spec_version, source,
 source_issue_number, issue_number, issue_url, outcome, state, create_state,
 create_attempts, reconcile_misses, attempts, forge_error_category, last_error,
 forge_author_class, forge_author_user_id,
-created_at, updated_at`
+created_at, updated_at, automatic_reenqueue_at`
 
 const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict,
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
 reviewer_session, same_model_as_implementer, review_round, review_seat,
 required_model, required_harness, required_effort, model_enforcement, state, attempts, check_run_id,
-comment_id, forge_error_category, last_error, forge_author_class, forge_author_user_id, created_at, updated_at`
+comment_id, forge_error_category, last_error, forge_author_class, forge_author_user_id, created_at, updated_at,
+automatic_reenqueue_at`
 
 func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
 	lifecycle, err := scanGitHubLifecycle(documentRow(ctx, s.db, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=? AND task_id=?", documentWorkspace(ctx), taskID))
@@ -93,9 +94,11 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 	})
 }
 
+// ReconcileGitHubLifecycles repairs queued or retrying outbox rows whose job
+// is missing. A failed row is re-enqueued only by the bounded AR-5 sweep.
 func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 	rows, err := documentRows(ctx, s.db, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
-		WHERE workspace_id=? AND state <> 'published' ORDER BY created_at`, documentWorkspace(ctx))
+		WHERE workspace_id=? AND state IN ('queued','retrying') ORDER BY created_at`, documentWorkspace(ctx))
 	if err != nil {
 		return 0, err
 	}
@@ -124,15 +127,19 @@ func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecycle, error) {
 	var lifecycle core.GitHubLifecycle
 	var state, createState string
+	var reenqueuedAt sql.NullTime
 	err := row.Scan(&lifecycle.TaskID, &lifecycle.Repository, &lifecycle.SpecVersion,
 		&lifecycle.Source, &lifecycle.SourceIssueNumber, &lifecycle.IssueNumber,
 		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &createState,
 		&lifecycle.CreateAttempts, &lifecycle.ReconcileMisses, &lifecycle.Attempts,
 		&lifecycle.ForgeErrorCategory, &lifecycle.LastError,
 		&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID,
-		&lifecycle.CreatedAt, &lifecycle.UpdatedAt)
+		&lifecycle.CreatedAt, &lifecycle.UpdatedAt, &reenqueuedAt)
 	lifecycle.State = core.GitHubPublicationState(state)
 	lifecycle.CreateState = core.GitHubCreateState(createState)
+	if reenqueuedAt.Valid {
+		lifecycle.AutomaticReenqueueAt = reenqueuedAt.Time.UTC()
+	}
 	return lifecycle, err
 }
 
@@ -288,6 +295,7 @@ func (s *Store) repairPublishedReviewPublication(ctx context.Context, publicatio
 func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPublication, error) {
 	var publication core.ReviewPublication
 	var state string
+	var reenqueuedAt sql.NullTime
 	err := row.Scan(&publication.ReviewWorkOrderID, &publication.TaskID, &publication.JobID,
 		&publication.Verdict, &publication.ReasonCode, &publication.Summary,
 		&publication.Feedback, &publication.ReviewedCommitSHA, &publication.ReviewerModel,
@@ -296,8 +304,11 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 		&publication.RequiredHarness, &publication.RequiredEffort, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
 		&publication.ForgeErrorCategory, &publication.LastError, &publication.ForgeAuthorClass, &publication.ForgeAuthorUserID,
-		&publication.CreatedAt, &publication.UpdatedAt)
+		&publication.CreatedAt, &publication.UpdatedAt, &reenqueuedAt)
 	publication.State = core.ReviewPublicationState(state)
+	if reenqueuedAt.Valid {
+		publication.AutomaticReenqueueAt = reenqueuedAt.Time.UTC()
+	}
 	return publication, err
 }
 
@@ -320,8 +331,19 @@ func (s *Store) QueueReviewPublication(ctx context.Context, publication core.Rev
 	return s.taskTx(ctx, publication.TaskID, func(tx *sql.Tx) error { return s.queueReviewPublicationTx(ctx, tx, publication) })
 }
 func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx *sql.Tx, id string) error {
-	_, err := logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), id, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: id}, 5, time.Now().UTC())
+	_, err := s.enqueueReviewPublicationTx(ctx, tx, id)
 	return err
+}
+
+// enqueueReviewPublicationTx reports whether a new job was inserted; false
+// means a job for the same publication is still active on its stream.
+func (s *Store) enqueueReviewPublicationTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	return logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), id, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: id}, 5, time.Now().UTC())
+}
+
+// enqueueGitHubIssuePublicationTx reports whether a new job was inserted.
+func (s *Store) enqueueGitHubIssuePublicationTx(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {
+	return logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.GitHubIssuePublicationArgs{}.Kind(), taskID, queue.GitHubIssuePublicationArgs{WorkspaceID: documentWorkspace(ctx), TaskID: taskID}, 5, time.Now().UTC())
 }
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle) error {
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&p.ForgeAuthorClass, &p.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -356,7 +378,7 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle
 				return err
 			}
 		}
-		_, err := logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.GitHubIssuePublicationArgs{}.Kind(), p.TaskID, queue.GitHubIssuePublicationArgs{WorkspaceID: documentWorkspace(ctx), TaskID: p.TaskID}, 5, time.Now().UTC())
+		_, err := s.enqueueGitHubIssuePublicationTx(ctx, tx, p.TaskID)
 		return err
 	})
 }

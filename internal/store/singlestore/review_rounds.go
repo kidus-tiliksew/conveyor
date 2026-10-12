@@ -606,7 +606,13 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 		active, recoverable := 0, 0
 		var timedOutIDs, inconsistentIDs []string
+		exhaustedIDs := []string{}
 		for _, o := range old {
+			if store.ReviewSeatRecoveryExhausted(o) {
+				recoverable++
+				exhaustedIDs = append(exhaustedIDs, o.ID)
+				continue
+			}
 			if o.State == core.WorkOrderQueued || o.State == core.WorkOrderClaimed || o.State == core.WorkOrderSubmitted {
 				active++
 			}
@@ -625,6 +631,15 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if latest == 0 || latest != r.PriorRound || recoverable == 0 || active != 0 || resolved {
 			return fmt.Errorf("%w: task has no matching recoverable non-progressing review round", store.ErrReviewRetryConflict)
+		}
+		if r.Automatic {
+			events, eventsErr := documentTaskEvents(ctx, tx, r.TaskID)
+			if eventsErr != nil {
+				return eventsErr
+			}
+			if err = store.AutomaticReviewRetryRefusal(r, &store.ReviewRecoveryState{AutomaticRetryExhausted: store.AutomaticReviewAct(events, latest)}); err != nil {
+				return err
+			}
 		}
 		next = r.PriorRound + 1
 		for i, j := range jobs {
@@ -647,7 +662,11 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_retries(workspace_id,request_id,task_id,reason,prior_round,new_round,pr_head,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, ws, r.RequestID, r.TaskID, r.Reason, r.PriorRound, next, r.PRHead, actor.ID, now); err != nil {
 			return err
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_retried", At: now, Payload: core.JSONPayload(map[string]any{"request_id": r.RequestID, "workspace_id": ws, "task_id": r.TaskID, "actor": actor.ID, "reason": r.Reason, "prior_round": r.PriorRound, "new_round": next, "pr_head": r.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": t.SetupName, "setup_contract": t.SetupContract})}); err != nil {
+		retriedPayload := map[string]any{"request_id": r.RequestID, "workspace_id": ws, "task_id": r.TaskID, "actor": actor.ID, "reason": r.Reason, "prior_round": r.PriorRound, "new_round": next, "pr_head": r.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "exhausted_work_order_ids": exhaustedIDs, "setup_name": t.SetupName, "setup_contract": t.SetupContract}
+		if r.Automatic {
+			retriedPayload["automatic"] = true
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_retried", At: now, Payload: core.JSONPayload(retriedPayload)}); err != nil {
 			return err
 		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(map[string]any{"review_round": next, "seat_count": len(created), "retry_request_id": r.RequestID})}); err != nil {
@@ -727,6 +746,9 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 		if recovery == nil || recovery.ReviewRound != r.Round {
 			return fmt.Errorf("%w: task has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict)
 		}
+		if err = store.AutomaticInterruptedRecoveryRefusal(r, recovery); err != nil {
+			return err
+		}
 		result = store.InterruptedReviewRecoveryResult{RequestID: r.RequestID, TaskID: r.TaskID, ReviewRound: r.Round, RecoveredOrders: []core.WorkOrder{}, RetainedOrders: append([]core.WorkOrder{}, recovery.RetainedOrders...)}
 		now := time.Now().UTC()
 		actor := store.ActorFromContext(ctx)
@@ -759,7 +781,11 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 				return err
 			}
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_recovered", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "review_round": r.Round, "request_id": r.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)})}); err != nil {
+		recoveredPayload := map[string]any{"workspace_id": ws, "review_round": r.Round, "request_id": r.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}
+		if r.Automatic {
+			recoveredPayload["automatic"] = true
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_recovered", At: now, Payload: core.JSONPayload(recoveredPayload)}); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO interrupted_review_recoveries(workspace_id,request_id,task_id,review_round,actor_id,result_json,created_at) VALUES(?,?,?,?,?,?,?)`, ws, r.RequestID, t.ID, r.Round, actor.ID, core.JSONPayload(result), now)

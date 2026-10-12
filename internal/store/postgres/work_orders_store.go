@@ -462,6 +462,10 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 	return created, err
 }
 
+// reviewSeatRecoveryExhaustedSQL mirrors store.ReviewSeatRecoveryExhausted
+// for a review work_orders row.
+const reviewSeatRecoveryExhaustedSQL = `state='queued' AND retry_suppressed AND retry_suppression_reason='` + core.AutomaticRecoveryExhaustedReason + `' AND session_id='' AND worker_id=''`
+
 func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
@@ -516,8 +520,8 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		SELECT COALESCE(max(review_round),0) AS review_round FROM work_orders
 		WHERE workspace_id=$1 AND task_id=$2 AND stage='review'
 	) SELECT latest.review_round,
-		count(*) FILTER (WHERE state IN ('queued','claimed','submitted')),
-		count(*) FILTER (WHERE state='timed_out' OR (state='completed' AND (last_attempt_outcome<>'' OR retry_suppressed OR last_failure_message<>'') AND (attempt_id='' OR last_attempt_id=attempt_id)))
+		count(*) FILTER (WHERE state IN ('queued','claimed','submitted') AND NOT (`+reviewSeatRecoveryExhaustedSQL+`)),
+		count(*) FILTER (WHERE state='timed_out' OR (`+reviewSeatRecoveryExhaustedSQL+`) OR (state='completed' AND (last_attempt_outcome<>'' OR retry_suppressed OR last_failure_message<>'') AND (attempt_id='' OR last_attempt_id=attempt_id)))
 	FROM latest LEFT JOIN work_orders ON workspace_id=$1 AND task_id=$2 AND stage='review' AND work_orders.review_round=latest.review_round
 	GROUP BY latest.review_round`, workspaceID, request.TaskID).Scan(&latestRound, &activeCount, &recoverableCount); err != nil {
 		return store.ReviewRoundRetryResult{}, err
@@ -534,6 +538,19 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	}
 	if latestRound == 0 || latestRound != request.PriorRound || recoverableCount == 0 || activeCount != 0 || resolved {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching recoverable non-progressing review round", store.ErrReviewRetryConflict, request.TaskID)
+	}
+	if request.Automatic {
+		automaticRows, listErr := q.ListEvents(ctx, db.ListEventsParams{TaskID: nullableText(request.TaskID), WorkspaceID: workspaceID})
+		if listErr != nil {
+			return store.ReviewRoundRetryResult{}, listErr
+		}
+		events := make([]core.Event, len(automaticRows))
+		for i := range automaticRows {
+			events[i] = eventFromDB(automaticRows[i])
+		}
+		if err = store.AutomaticReviewRetryRefusal(request, &store.ReviewRecoveryState{AutomaticRetryExhausted: store.AutomaticReviewAct(events, latestRound)}); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
 	}
 	newRound := request.PriorRound + 1
 	for i, job := range jobs {
@@ -600,7 +617,11 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	}
 	var timedOutIDs []string
 	var inconsistentIDs []string
+	exhaustedIDs := []string{}
 	for _, order := range timedOutOrders {
+		if store.ReviewSeatRecoveryExhausted(order) {
+			exhaustedIDs = append(exhaustedIDs, order.ID)
+		}
 		if order.State == core.WorkOrderTimedOut {
 			timedOutIDs = append(timedOutIDs, order.ID)
 		}
@@ -609,7 +630,10 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 	}
 	retryTask := taskFromDB(before)
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "exhausted_work_order_ids": exhaustedIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
+	if request.Automatic {
+		payload["automatic"] = true
+	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -721,6 +745,9 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict, request.TaskID)
 	}
+	if err = store.AutomaticInterruptedRecoveryRefusal(request, recovery); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
 	now := time.Now().UTC()
 	result := store.InterruptedReviewRecoveryResult{
 		RequestID:       request.RequestID,
@@ -765,7 +792,11 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 			return store.InterruptedReviewRecoveryResult{}, err
 		}
 	}
-	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now}); err != nil {
+	recoveredPayload := map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}
+	if request.Automatic {
+		recoveredPayload["automatic"] = true
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(recoveredPayload), At: now}); err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
 	resultJSON, err := json.Marshal(result)
