@@ -2,10 +2,24 @@ package postgres
 
 import (
 	"context"
+	_ "embed"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
+
+//go:embed pending_proposals_attention.sql
+var pendingProposalsAttentionSQL string
+
+func attentionTasksCTE() string {
+	const marker = "\nSELECT count(*)::bigint"
+	index := strings.LastIndex(pendingProposalsAttentionSQL, marker)
+	if index < 0 {
+		panic("pending proposals attention SQL lost its terminal count query")
+	}
+	return pendingProposalsAttentionSQL[:index]
+}
 
 // ListPendingProposals is one workspace-scoped read over the three durable
 // authority tiers. Confirmation/dismissal changes the source rows, so the
@@ -107,25 +121,10 @@ func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingPr
 	if err != nil {
 		return store.PendingProposalsProjection{}, err
 	}
-	tasks, err := s.ListTasks(ctx)
+	var count int64
+	err = s.boundary.QueryRow(ctx, pendingProposalsAttentionSQL, workspace(ctx)).Scan(&count)
 	if err != nil {
 		return store.PendingProposalsProjection{}, err
 	}
-	candidates := make([]core.Task, 0, len(tasks))
-	for _, task := range tasks {
-		if !core.TaskTerminal(task.State) && !core.BlueprintAnchor(task) {
-			candidates = append(candidates, task)
-		}
-	}
-	projected, err := store.ReadNextActions(ctx, s, candidates, store.NextActionOptions{})
-	if err != nil {
-		return store.PendingProposalsProjection{}, err
-	}
-	count := 0
-	for _, task := range candidates {
-		if store.TaskNeedsAttention(projected[task.ID]) {
-			count++
-		}
-	}
-	return store.PendingProposalsProjection{Items: items, TaskCount: count}, nil
+	return store.PendingProposalsProjection{Items: items, TaskCount: int(count)}, nil
 }

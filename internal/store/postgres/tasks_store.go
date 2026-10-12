@@ -378,16 +378,25 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, query store.Cal
 	if err := query.Validate(); err != nil {
 		return store.TaskPage{}, err
 	}
-	rows, err := s.boundary.Query(ctx, `
-SELECT t.*
-FROM tasks t
-WHERE t.workspace_id=$1 AND t.assignee_user_id=$2
+	cte := attentionTasksCTE()
+	filter := `
+FROM attention_tasks attention
+JOIN tasks t ON t.workspace_id=$1 AND t.id=attention.task_id
+WHERE t.assignee_user_id=$2
   AND t.state NOT IN ('merged','closed')
   AND NOT EXISTS (
       SELECT 1 FROM tasks child
       WHERE child.workspace_id=t.workspace_id AND child.parent_task_id=t.id
-  )
-ORDER BY t.created_at DESC, t.id`, workspace(ctx), query.UserID)
+  )`
+	var total int64
+	if err := s.boundary.QueryRow(ctx, cte+"\nSELECT count(*)::bigint "+filter, workspace(ctx), query.UserID).Scan(&total); err != nil {
+		return store.TaskPage{}, err
+	}
+	rows, err := s.boundary.Query(ctx, cte+`
+SELECT t.*
+`+filter+`
+ORDER BY t.created_at DESC,t.id
+LIMIT $3 OFFSET $4`, workspace(ctx), query.UserID, query.Limit, query.Offset)
 	if err != nil {
 		return store.TaskPage{}, err
 	}
@@ -408,21 +417,7 @@ ORDER BY t.created_at DESC, t.id`, workspace(ctx), query.UserID)
 	if err = s.hydrateGitHubLifecyclesBatch(ctx, tasks); err != nil {
 		return store.TaskPage{}, err
 	}
-	projected, err := store.ReadNextActions(ctx, s, tasks, store.NextActionOptions{})
-	if err != nil {
-		return store.TaskPage{}, err
-	}
-	attention := make([]core.Task, 0, len(tasks))
-	for _, task := range tasks {
-		if store.TaskNeedsAttention(projected[task.ID]) {
-			attention = append(attention, task)
-		}
-	}
-	page := store.TaskPage{Total: len(attention)}
-	start := min(query.Offset, len(attention))
-	end := min(start+query.Limit, len(attention))
-	page.Tasks = append([]core.Task(nil), attention[start:end]...)
-	return page, nil
+	return store.TaskPage{Tasks: tasks, Total: int(total)}, nil
 }
 
 func (s *Store) hydrateTaskRelations(ctx context.Context, task *core.Task) error {
