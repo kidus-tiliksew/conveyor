@@ -1509,57 +1509,27 @@ type PlanRevisionGateContext struct {
 
 // PendingPlanRevisionGate recognizes the latest audited gate command and
 // returns its matching request payload for HTTP validation and dispatch.
+// PlanRevisionGateContext keeps its fields. Unreadable gates return pending
+// with ErrPlanRevisionGateUnreadable so listings can continue and writes refuse.
 func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string) (PlanRevisionGateContext, bool, error) {
 	task, err := st.GetTask(ctx, taskID)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
-	if task.State != core.TaskAwaiting {
-		return PlanRevisionGateContext{}, false, nil
-	}
 	events, err := st.ListEvents(ctx, taskID)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
-	gateAt := -1
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != "task.state_changed" {
-			continue
-		}
-		var transition struct {
-			Command core.TaskCommand `json:"command"`
-		}
-		if err = json.Unmarshal(events[i].Payload, &transition); err != nil {
-			return PlanRevisionGateContext{}, false, fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
-		}
-		if transition.Command != core.TaskGatePlanRevision {
-			return PlanRevisionGateContext{}, false, nil
-		}
-		gateAt = i
-		break
+	request, pending, err := store.PlanRevisionGateState(task, events)
+	if err != nil || !pending {
+		return PlanRevisionGateContext{}, pending, err
 	}
-	if gateAt < 0 {
-		return PlanRevisionGateContext{}, false, nil
-	}
-	for i := gateAt - 1; i >= 0; i-- {
-		if events[i].Kind != "work_order.plan_revision_requested" {
-			continue
-		}
-		var request struct {
-			WorkOrderID string `json:"work_order_id"`
-			AttemptID   string `json:"attempt_id"`
-			Rationale   string `json:"rationale"`
-			PlanVersion int    `json:"plan_version"`
-		}
-		if err = json.Unmarshal(events[i].Payload, &request); err != nil {
-			return PlanRevisionGateContext{}, false, fmt.Errorf("decode plan-revision request for %s: %w", taskID, err)
-		}
-		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
-			return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision request for %s is incomplete", taskID)
-		}
-		return PlanRevisionGateContext{WorkOrderID: request.WorkOrderID, AttemptID: request.AttemptID, Rationale: request.Rationale, PlanVersion: request.PlanVersion}, true, nil
-	}
-	return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision gate for %s has no request event", taskID)
+	return PlanRevisionGateContext{
+		WorkOrderID: request.WorkOrderID,
+		AttemptID:   request.AttemptID,
+		Rationale:   request.Rationale,
+		PlanVersion: request.PlanVersion,
+	}, true, nil
 }
 
 // pendingSpecGate recognizes the exact lifecycle command that parked the task.

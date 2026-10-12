@@ -246,19 +246,34 @@ func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders [
 		}
 	case core.StageImplement:
 		if pastStage(core.StageImplement) || task.NextStage == core.StageVerify || task.NextStage == core.StageReview || task.RecoveryStage == core.StageVerify || task.RecoveryStage == core.StageReview {
-			return fmt.Errorf("work order %s cannot be recovered because task %s has advanced to review", order.ID, task.ID)
+			reached := "review"
+			if !pastStage(core.StageImplement) && task.NextStage != core.StageReview && task.RecoveryStage != core.StageReview {
+				reached = "verify"
+			}
+			return fmt.Errorf("work order %s cannot be recovered because task %s has advanced to %s", order.ID, task.ID, reached)
 		}
 	}
 	return nil
 }
 
-// WorkOrderPlanRevisionRefusal refuses recover and redispatch while the task
-// awaits a plan-revision decision. The event remains the authority because
-// TaskAwaiting is shared by every operator gate.
-func WorkOrderPlanRevisionRefusal(task core.Task, events []core.Event, orderID string) error {
+// PlanRevisionRequest is the readable work_order.plan_revision_requested
+// payload bound to a pending plan-revision gate.
+type PlanRevisionRequest struct {
+	WorkOrderID string
+	AttemptID   string
+	Rationale   string
+	PlanVersion int
+}
+
+// PlanRevisionGateState is the scan shared by recover/redispatch refusal and
+// dispatch.PendingPlanRevisionGate. An awaiting task whose latest transition
+// is undecodable, or whose latest transition is the plan-revision gate with a
+// missing, undecodable, or incomplete request, is pending and unreadable.
+func PlanRevisionGateState(task core.Task, events []core.Event) (PlanRevisionRequest, bool, error) {
 	if task.State != core.TaskAwaiting {
-		return nil
+		return PlanRevisionRequest{}, false, nil
 	}
+	gateAt := -1
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != "task.state_changed" {
 			continue
@@ -266,15 +281,56 @@ func WorkOrderPlanRevisionRefusal(task core.Task, events []core.Event, orderID s
 		var transition struct {
 			Command core.TaskCommand `json:"command"`
 		}
-		if json.Unmarshal(events[i].Payload, &transition) != nil {
-			return nil
+		if err := json.Unmarshal(events[i].Payload, &transition); err != nil {
+			return PlanRevisionRequest{}, true, fmt.Errorf("decode latest task transition for %s: %w", task.ID, ErrPlanRevisionGateUnreadable)
 		}
 		if transition.Command != core.TaskGatePlanRevision {
-			return nil
+			return PlanRevisionRequest{}, false, nil
 		}
-		return fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", orderID, task.ID)
+		gateAt = i
+		break
 	}
-	return nil
+	if gateAt < 0 {
+		return PlanRevisionRequest{}, false, nil
+	}
+	for i := gateAt - 1; i >= 0; i-- {
+		if events[i].Kind != "work_order.plan_revision_requested" {
+			continue
+		}
+		var request struct {
+			WorkOrderID string `json:"work_order_id"`
+			AttemptID   string `json:"attempt_id"`
+			Rationale   string `json:"rationale"`
+			PlanVersion int    `json:"plan_version"`
+		}
+		if err := json.Unmarshal(events[i].Payload, &request); err != nil {
+			return PlanRevisionRequest{}, true, fmt.Errorf("decode plan-revision request for %s: %w", task.ID, ErrPlanRevisionGateUnreadable)
+		}
+		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
+			return PlanRevisionRequest{}, true, fmt.Errorf("plan-revision request for %s is incomplete: %w", task.ID, ErrPlanRevisionGateUnreadable)
+		}
+		return PlanRevisionRequest{
+			WorkOrderID: request.WorkOrderID,
+			AttemptID:   request.AttemptID,
+			Rationale:   request.Rationale,
+			PlanVersion: request.PlanVersion,
+		}, true, nil
+	}
+	return PlanRevisionRequest{}, true, fmt.Errorf("plan-revision gate for %s has no request event: %w", task.ID, ErrPlanRevisionGateUnreadable)
+}
+
+// WorkOrderPlanRevisionRefusal refuses recover and redispatch while the task
+// awaits a plan-revision decision. The event remains the authority because
+// TaskAwaiting is shared by every operator gate.
+func WorkOrderPlanRevisionRefusal(task core.Task, events []core.Event, orderID string) error {
+	_, pending, err := PlanRevisionGateState(task, events)
+	if !pending {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("work order %s cannot be recovered while task %s has an unreadable plan-revision request; use the plan-revision decision gate", orderID, task.ID)
+	}
+	return fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", orderID, task.ID)
 }
 
 // WorkOrderRecoverySupersessionError is the historical name of

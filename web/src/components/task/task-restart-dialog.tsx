@@ -2,7 +2,7 @@ import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/reac
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useId, useState } from 'react'
 import { restartOrderCount, restartPullRequestURL, taskPendingRestartProposals } from '../../lib/activity'
-import { restartTask } from '../../lib/api'
+import { restartTask, TaskRestartError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, TaskRestartInput } from '../../lib/types'
@@ -181,9 +181,16 @@ function TaskRestartDialog({
           )}
         </div>
         {mutation.isError && (
-          <p role="alert" className="text-sm text-failure">
-            {errorMessage(mutation.error)}
-          </p>
+          <>
+            <p role="alert" className="text-sm text-failure">
+              {errorMessage(mutation.error)}
+            </p>
+            {mutation.error instanceof TaskRestartError && mutation.error.requestId ? (
+              <p className="text-sm text-failure" data-testid="task-restart-request-id">
+                Request ID: {mutation.error.requestId}
+              </p>
+            ) : null}
+          </>
         )}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" disabled={mutation.isPending} onClick={onClose}>

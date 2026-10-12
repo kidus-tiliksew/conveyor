@@ -480,6 +480,18 @@ export class GateMutationError extends Error {
   }
 }
 
+// TaskRestartError is a failed restart. The message is the decoded API text
+// and never includes the request ID; that stays in requestId for the dialog.
+export class TaskRestartError extends Error {
+  constructor(
+    message: string,
+    readonly requestId: string | null,
+  ) {
+    super(message)
+    this.name = 'TaskRestartError'
+  }
+}
+
 async function gateMutationError(response: Response) {
   return new GateMutationError(apiErrorMessage(await response.text(), response.statusText), response.status)
 }
@@ -1512,6 +1524,11 @@ export async function restartTask(taskId: string, input: TaskRestartInput) {
     headers: { ...mutationHeaders(), 'X-Idempotency-Key': input.request_id },
     body: JSON.stringify(input),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    throw new TaskRestartError(
+      apiErrorMessage(await response.text(), response.statusText),
+      response.headers.get('X-Request-Id'),
+    )
+  }
   return response.json() as Promise<TaskRestartResult>
 }

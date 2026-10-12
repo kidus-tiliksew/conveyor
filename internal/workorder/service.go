@@ -198,6 +198,10 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 			return nil, taskErr
 		}
 		_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+		if errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) {
+			pendingPlanRevision = true
+			gateErr = nil
+		}
 		if gateErr != nil {
 			return nil, gateErr
 		}
