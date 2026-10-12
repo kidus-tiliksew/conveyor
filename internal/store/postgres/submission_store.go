@@ -107,6 +107,17 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason stri
 	})
 }
 
+// ClaimBaseConflictCheck is a single conditional UPDATE, so concurrent
+// dispatchers race on the row and exactly one sees RowsAffected()==1.
+func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error) {
+	tag, err := s.boundary.Exec(ctx, `UPDATE work_orders SET base_conflict_checked_at=$3
+		WHERE workspace_id=$1 AND id=$2 AND base_conflict_checked_at IS NULL`, workspace(ctx), workOrderID, at.UTC())
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request store.ConflictFixRequest) (store.ConflictFixResult, error) {
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ConflictFixResult{}, fmt.Errorf("conflict-fix create requires a valid taskops lease")
