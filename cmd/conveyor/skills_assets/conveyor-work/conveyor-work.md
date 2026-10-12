@@ -595,7 +595,7 @@ the task stays `approved` until an operator runs the merge act
   instruction runs only `conveyor task merge <task-id>`. Without that
   instruction, summarize the pending merge act with the task's dashboard link
   and wait.
-- When `pending_gate.merge_readiness` is `STALE`, `CONFLICTING`, or `UNKNOWN`,
+- When `pending_gate.merge_readiness` is `STALE`, `CONFLICTING`, `UNKNOWN`, or `MERGED_HEAD_MISMATCH`,
   or absent, report that state and the remedy the gate summary names instead
   of merging.
 - `conveyor task merge` prints the server's refusal and exits non-zero. After

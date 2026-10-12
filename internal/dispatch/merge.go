@@ -51,6 +51,119 @@ func (d *Dispatcher) reviewedHeadFromEvents(ctx context.Context, taskID string) 
 	return ""
 }
 
+// observedMergeExpectedHead is the head an observed forge merge must match.
+// Callers decide eligibility; the writer has no state filter.
+func (d *Dispatcher) observedMergeExpectedHead(ctx context.Context, task core.Task) (string, bool) {
+	switch task.State {
+	case core.TaskApproved:
+		if task.ApprovalStale {
+			return "", false
+		}
+		head := task.ApprovedHeadSHA
+		if head == "" {
+			head = task.ReviewedHeadSHA
+		}
+		return head, head != ""
+	case core.TaskAwaiting:
+		if task.GateKind != core.GateKindMergeApproval {
+			return "", false
+		}
+		head := task.ReviewedHeadSHA
+		if head == "" {
+			head = d.reviewedHeadFromEvents(ctx, task.ID)
+		}
+		return head, head != ""
+	default:
+		return "", false
+	}
+}
+
+func forgeMergeReconciled(events []core.Event, repository string, pr github.PullRequest) bool {
+	for _, event := range events {
+		if event.Kind != "merge.reconciled" {
+			continue
+		}
+		var prior struct {
+			Repository string `json:"repository"`
+			Number     int    `json:"pull_request"`
+			Head       string `json:"head_sha"`
+			Merge      string `json:"merge_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &prior) == nil && prior.Repository == repository && prior.Number == pr.Number && prior.Head == pr.HeadSHA && prior.Merge == pr.MergeCommitSHA {
+			return true
+		}
+	}
+	return false
+}
+
+func mergedHeadMismatchRecorded(events []core.Event, pr github.PullRequest) bool {
+	for _, event := range events {
+		if event.Kind != "merge.failed" {
+			continue
+		}
+		var prior struct {
+			Reason string `json:"reason_code"`
+			Number int    `json:"pull_request"`
+			Merged string `json:"merged_head_sha"`
+			Commit string `json:"merge_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &prior) == nil && prior.Reason == "merged_head_mismatch" && prior.Number == pr.Number && prior.Merged == pr.HeadSHA && prior.Commit == pr.MergeCommitSHA {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileForgeMergeLocked records an observed forge merge. The caller holds
+// the task side-effect lock, pr.Merged is true, and the task is not merged.
+// A match confirms the merge. A mismatch records drift and leaves the state.
+func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Task, githubRepo string, pr github.PullRequest, expectedHead, result string) (bool, error) {
+	if expectedHead != "" && expectedHead == pr.HeadSHA {
+		events, err := d.Store.ListEvents(ctx, task.ID)
+		if err != nil {
+			return false, err
+		}
+		if !forgeMergeReconciled(events, githubRepo, pr) {
+			payload := map[string]any{
+				"repository": githubRepo, "pull_request": pr.Number, "url": pr.URL,
+				"base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": result,
+				"merged_by": pr.MergedBy, "merge_commit_sha": pr.MergeCommitSHA,
+				"factory_review_validated": true,
+				"reviewed_head_sha": task.ReviewedHeadSHA, "approved_head_sha": task.ApprovedHeadSHA,
+			}
+			if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(payload)}); err != nil {
+				return false, err
+			}
+		}
+		d.observeConfirmedMerge(ctx, task, githubRepo, pr, "merge.reconciled")
+		if err := d.confirmTaskMerged(ctx, task.ID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	events, err := d.Store.ListEvents(ctx, task.ID)
+	if err != nil {
+		return false, err
+	}
+	if mergedHeadMismatchRecorded(events, pr) {
+		return false, nil
+	}
+	mismatch := fmt.Sprintf("pull request %s#%d merged at %s, which does not match expected head %s", githubRepo, pr.Number, pr.HeadSHA, expectedHead)
+	payload := map[string]any{
+		"reason_code": "merged_head_mismatch", "forge_error_category": "merged_head_mismatch",
+		"pull_request": pr.Number, "url": pr.URL,
+		"merged_head_sha": pr.HeadSHA, "expected_head_sha": expectedHead,
+		"merge_commit_sha": pr.MergeCommitSHA, "merged_by": pr.MergedBy,
+		"error": mismatch,
+	}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(payload)}); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+
+
 func (d *Dispatcher) refreshScope(task core.Task, conflict bool) string {
 	scope := task.SetupContract.RefreshReview
 	if scope == "" {
@@ -153,7 +266,7 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 			}
 			return result, err
 		}
-		if pr.Mergeable != "UNKNOWN" {
+		if pr.Merged || pr.Mergeable != "UNKNOWN" {
 			break
 		}
 		if attempt < 2 {
@@ -165,6 +278,36 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		}
 	}
 	result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
+	if pr.Merged {
+		if current.State == core.TaskMerged {
+			result.State = "MERGED"
+			return result, nil
+		}
+		if pr.MergeCommitSHA == "" {
+			result.State = "UNKNOWN"
+			return result, nil
+		}
+		head, eligible := d.observedMergeExpectedHead(ctx, current)
+		if !eligible {
+			result.State = "MERGED_HEAD_MISMATCH"
+			return result, nil
+		}
+		matched, matchErr := d.reconcileForgeMergeLocked(ctx, current, repo.GitHub, pr, head, "merged_outside_conveyor")
+		if matchErr != nil {
+			return result, matchErr
+		}
+		if matched {
+			result.State = "MERGED"
+		} else {
+			result.State = "MERGED_HEAD_MISMATCH"
+		}
+		return result, nil
+	}
+	// A merge-gate wait is read-only except for the merged short-circuit above.
+	// Conflict fixes and stale refreshes would bind an approval the operator never gave.
+	if current.State != core.TaskApproved {
+		return result, nil
+	}
 	// A queued or claimed conflict-fix order owns the conflict episode and its
 	// refresh: readiness stays pending and mutates nothing until the order's
 	// own submission (component-work-orders).
@@ -582,7 +725,21 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err), author)
 	}
 	if pr.Merged {
-		return d.reconcileObservedMergeLocked(ctx, current, repo.GitHub, pr)
+		if current.ApprovalStale {
+			return fmt.Errorf("approval is stale for task %s; refresh review before reconciling the merged pull request", current.ID)
+		}
+		expected := current.ApprovedHeadSHA
+		if expected == "" {
+			expected = current.ReviewedHeadSHA
+		}
+		matched, reconcileErr := d.reconcileForgeMergeLocked(ctx, current, repo.GitHub, pr, expected, "already_merged")
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		if !matched {
+			return fmt.Errorf("observed merge head %s does not match expected head %s for task %s", pr.HeadSHA, expected, current.ID)
+		}
+		return nil
 	}
 	// A queued or claimed conflict-fix order defers conflict clearing,
 	// refresh, and merge requests; its own submission drives the refresh
@@ -666,8 +823,8 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	return d.confirmTaskMerged(ctx, current.ID)
 }
 
-// ReconcileObservedPullRequest accepts only approved, recorded lineage. The
-// monitor reports evidence; the dispatcher retains transition authority (AC-3.5).
+// ReconcileObservedPullRequest records a forge merge at the reviewed head.
+// The monitor reports evidence; the dispatcher retains transition authority (AC-3.5).
 func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repository, githubRepo, taskID string, pr github.PullRequest) (bool, error) {
 	reconciled := false
 	err := d.Store.WithTaskSideEffectLock(ctx, taskID, func(lockedCtx context.Context) error {
@@ -678,7 +835,7 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 		if err != nil {
 			return err
 		}
-		if !pr.Merged || (task.State != core.TaskApproved && task.State != core.TaskMerged) || task.ApprovalStale {
+		if !pr.Merged {
 			return nil
 		}
 		events, err := d.Store.ListEvents(lockedCtx, taskID)
@@ -693,63 +850,29 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 		if !ok || repo.GitHub != githubRepo || !monitor.RecordedLineage(task, events, repository, githubRepo, taskID, pr.HeadRef, pr.Number, pr.HeadSHA) {
 			return nil
 		}
-		head := task.ApprovedHeadSHA
-		if head == "" {
-			head = task.ReviewedHeadSHA
-		}
-		if head == "" || head != pr.HeadSHA || pr.MergeCommitSHA == "" {
+		if pr.MergeCommitSHA == "" {
 			return nil
 		}
 		if task.State == core.TaskMerged {
-			reconciled = true
+			if pr.HeadSHA != "" && (pr.HeadSHA == task.ApprovedHeadSHA || pr.HeadSHA == task.ReviewedHeadSHA) {
+				reconciled = true
+			}
 			return nil
 		}
-		if err := d.reconcileObservedMergeLocked(lockedCtx, task, githubRepo, pr); err != nil {
-			return err
+		head, eligible := d.observedMergeExpectedHead(lockedCtx, task)
+		if !eligible {
+			return nil
 		}
-		reconciled = true
+		matched, matchErr := d.reconcileForgeMergeLocked(lockedCtx, task, githubRepo, pr, head, "merged_outside_conveyor")
+		if matchErr != nil {
+			return matchErr
+		}
+		reconciled = matched
 		return nil
 	})
 	return reconciled, err
 }
 
-func (d *Dispatcher) reconcileObservedMergeLocked(ctx context.Context, task core.Task, repository string, pr github.PullRequest) error {
-	head := task.ApprovedHeadSHA
-	if head == "" {
-		head = task.ReviewedHeadSHA
-	}
-	if head == "" || head != pr.HeadSHA || task.ApprovalStale {
-		return fmt.Errorf("observed merge does not match the approved head for task %s", task.ID)
-	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
-	if err != nil {
-		return err
-	}
-	recorded := false
-	for _, event := range events {
-		if event.Kind != "merge.reconciled" {
-			continue
-		}
-		var prior struct {
-			Repository string `json:"repository"`
-			Number     int    `json:"pull_request"`
-			Head       string `json:"head_sha"`
-			Merge      string `json:"merge_commit_sha"`
-		}
-		if json.Unmarshal(event.Payload, &prior) == nil && prior.Repository == repository && prior.Number == pr.Number && prior.Head == pr.HeadSHA && prior.Merge == pr.MergeCommitSHA {
-			recorded = true
-			break
-		}
-	}
-	if !recorded {
-		payload := map[string]any{"repository": repository, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged", "merged_by": pr.MergedBy, "merge_commit_sha": pr.MergeCommitSHA, "factory_review_validated": true, "reviewed_head_sha": task.ReviewedHeadSHA, "approved_head_sha": task.ApprovedHeadSHA}
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(payload)}); err != nil {
-			return err
-		}
-	}
-	d.observeConfirmedMerge(ctx, task, repository, pr, "merge.reconciled")
-	return d.confirmTaskMerged(ctx, task.ID)
-}
 
 // observeConfirmedMerge is deliberately non-gating: merge confirmation stays
 // authoritative when GitHub file retrieval or drift evaluation fails. The
@@ -818,15 +941,35 @@ func (d *Dispatcher) hasRecoverableApprovedReview(ctx context.Context, task core
 	return false, nil
 }
 
-// ReconcileMergeReadiness is a level-triggered sweep for accepted review
-// evidence whose approved-to-merge edge was interrupted. Every candidate is
-// revalidated under the task side-effect lock before a forge mutation.
+// ReconcileMergeReadiness sweeps gate-on approved and merge-gate tasks for an
+// already-merged pull request, then recovers gate-off accepted reviews whose
+// approved-to-merge edge was interrupted. The gate-on pass never requests a
+// merge. Every candidate is revalidated under the task side-effect lock.
 func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 	tasks, err := d.Store.ListTasks(ctx)
 	if err != nil {
 		return 0, err
 	}
 	reconciled := 0
+	var gateOnErrs []error
+	for _, task := range tasks {
+		if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
+			continue
+		}
+		before := task.State
+		if _, readErr := d.ReadMergeReadiness(ctx, task); readErr != nil {
+			gateOnErrs = append(gateOnErrs, fmt.Errorf("task %s: %w", task.ID, readErr))
+			continue
+		}
+		after, getErr := d.Store.GetTask(ctx, task.ID)
+		if getErr != nil {
+			gateOnErrs = append(gateOnErrs, fmt.Errorf("task %s: %w", task.ID, getErr))
+			continue
+		}
+		if before != after.State {
+			reconciled++
+		}
+	}
 	for _, task := range tasks {
 		if task.MergeApproval || task.State == core.TaskMerged || task.State == core.TaskClosed || task.State == core.TaskParked || task.State == core.TaskAwaiting {
 			continue
@@ -834,7 +977,7 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		if task.State != core.TaskApproved {
 			recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
 			if evidenceErr != nil {
-				return reconciled, evidenceErr
+				return reconciled, errors.Join(append(gateOnErrs, evidenceErr)...)
 			}
 			if !recoverable {
 				continue
@@ -847,24 +990,25 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 			}
 			after, getErr := d.Store.GetTask(ctx, task.ID)
 			if getErr != nil {
-				return reconciled, getErr
+				return reconciled, errors.Join(append(gateOnErrs, getErr)...)
 			}
 			if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
 				reconciled++
 				continue
 			}
-			return reconciled, err
+			return reconciled, errors.Join(append(gateOnErrs, err)...)
 		}
 		after, getErr := d.Store.GetTask(ctx, task.ID)
 		if getErr != nil {
-			return reconciled, getErr
+			return reconciled, errors.Join(append(gateOnErrs, getErr)...)
 		}
 		if before != after.State || after.State == core.TaskMerged {
 			reconciled++
 		}
 	}
-	return reconciled, nil
+	return reconciled, errors.Join(gateOnErrs...)
 }
+
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
 	// The task transition atomically resumes dependent queue clocks. Worker

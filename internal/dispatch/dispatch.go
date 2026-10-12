@@ -1443,17 +1443,49 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			}
 			return nil
 		}
-		head := task.ReviewedHeadSHA
-		if head == "" {
-			head = d.reviewedHeadFromEvents(ctx, task.ID)
-		}
-		if strings.TrimSpace(head) == "" {
-			return fmt.Errorf("%w for task %s; publish and review a task head before approving", ErrReviewedHeadUnavailable, task.ID)
-		}
-		if err := d.transition(ctx, task.ID, core.TaskInterventionApproveReview, "", ""); err != nil {
-			return err
-		}
-		return d.Store.BindTaskApproval(ctx, task.ID, head)
+		return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+			current, err := d.Store.GetTask(lockedCtx, task.ID)
+			if err != nil {
+				return err
+			}
+			if current.State == core.TaskMerged {
+				return nil
+			}
+			head := current.ReviewedHeadSHA
+			if head == "" {
+				head = d.reviewedHeadFromEvents(lockedCtx, current.ID)
+			}
+			if strings.TrimSpace(head) == "" {
+				return fmt.Errorf("%w for task %s; publish and review a task head before approving", ErrReviewedHeadUnavailable, current.ID)
+			}
+			if err = d.transition(lockedCtx, current.ID, core.TaskInterventionApproveReview, "", ""); err != nil {
+				return err
+			}
+			if err = d.Store.BindTaskApproval(lockedCtx, current.ID, head); err != nil {
+				return err
+			}
+			bound, err := d.Store.GetTask(lockedCtx, current.ID)
+			if err != nil {
+				return err
+			}
+			if bound.State == core.TaskMerged || !bound.MergeApproval {
+				return nil
+			}
+			cfg, cfgErr := d.currentConfig(lockedCtx)
+			if cfgErr != nil {
+				return cfgErr
+			}
+			repo, ok := cfg.Repo(bound.Repo)
+			if !ok || repo.GitHub == "" {
+				return nil
+			}
+			pr, viewErr := d.ViewPullRequest(lockedCtx, repo.GitHub, bound.Branch)
+			if viewErr != nil || !pr.Merged || pr.MergeCommitSHA == "" {
+				return nil
+			}
+			_, reconcileErr := d.reconcileForgeMergeLocked(lockedCtx, bound, repo.GitHub, pr, head, "merged_outside_conveyor")
+			return reconcileErr
+		})
 	case core.InterventionRedirect:
 		target := task.RecoveryStage
 		if target == "" {
