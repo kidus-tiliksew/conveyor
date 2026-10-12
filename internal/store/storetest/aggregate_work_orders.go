@@ -39,6 +39,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("VerifyPolicyStranded", func(t *testing.T) { runVerifyPolicyStranded(t, x) })
 	t.Run("UsageTokenUpdates", func(t *testing.T) { runUsageTokenUpdates(t, x) })
 	t.Run("ImplementationSubmission", func(t *testing.T) { runImplementationSubmission(t, x) })
+	t.Run("BaseConflictCheck", func(t *testing.T) { runBaseConflictCheck(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}

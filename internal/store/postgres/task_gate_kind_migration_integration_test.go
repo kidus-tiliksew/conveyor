@@ -106,8 +106,8 @@ func TestTaskGateKindMigrationBackfillsLatestCommandAndReplaysCleanIntegration(t
 	if err = pool.QueryRow(ctx, `SELECT max(version) FROM conveyor_schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 145 {
-		t.Fatalf("schema version=%d, want 145", version)
+	if version != 146 {
+		t.Fatalf("schema version=%d, want 146", version)
 	}
 	kind := func(id string) *string {
 		t.Helper()
