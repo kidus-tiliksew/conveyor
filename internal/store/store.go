@@ -748,7 +748,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	for _, order := range orders {
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], WithDependencyBlockers(order, blockersByTask[order.TaskID]))
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockersByTask[order.TaskID]))
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()

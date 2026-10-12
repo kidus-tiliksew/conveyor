@@ -75,7 +75,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	}
 	ordersByTask := map[string][]core.WorkOrder{}
 	for _, order := range orders {
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], WithDependencyBlockers(order, blockers[order.TaskID]))
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockers[order.TaskID]))
 	}
 	markerByTask := map[string]ActivityMarker{}
 	for _, marker := range markers {
@@ -92,10 +92,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	return out, nil
 }
 
-// WithDependencyBlockers returns an implement or verify order carrying the
+// withDependencyBlockers returns an implement or verify order carrying the
 // task's unmerged dependencies, which also make it unclaimable. Other stages
 // return unchanged.
-func WithDependencyBlockers(order core.WorkOrder, blockers DependencyBlockers) core.WorkOrder {
+func withDependencyBlockers(order core.WorkOrder, blockers DependencyBlockers) core.WorkOrder {
 	if order.Stage != core.StageImplement && order.Stage != core.StageVerify {
 		return order
 	}
