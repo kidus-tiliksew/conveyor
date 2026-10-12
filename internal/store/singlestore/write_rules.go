@@ -88,7 +88,8 @@ func sortedColumns(values map[string]any) ([]string, error) {
 }
 
 // writeRow enforces the rules that SingleStore cannot express as constraints.
-// Unique checks and the write share transaction-scoped lock rows.
+// A unique rule claims its value on a lock row (claimKey) and also counts the
+// committed rows, which covers rows written before claims existed.
 func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if err := checkWrite(w); err != nil {
 		return nil, err
@@ -110,41 +111,53 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if w.operation != "INSERT" && len(w.where) == 0 {
 		return nil, fmt.Errorf("write predicate is required")
 	}
+	if w.operation == "DELETE" && (w.table == "user_tokens" || w.table == "reference_documents") {
+		// Claims on lock rows track these rows; a hard delete would orphan one.
+		return nil, fmt.Errorf("%s rows are retired, not deleted", w.table)
+	}
 	if w.table == "user_tokens" {
 		value, present := w.values["deployment_credential"]
 		deployment, valid := value.(bool)
 		if present && !valid {
 			return nil, fmt.Errorf("deployment_credential must be boolean")
 		}
-		if deployment {
+		if deployment || (present && w.operation == "UPDATE") {
+			id, _ := w.values["id"].(string)
 			if w.operation == "UPDATE" {
-				if id, ok := w.where["id"].(string); !ok || id == "" {
-					return nil, fmt.Errorf("credential update requires one token id")
+				id, _ = w.where["id"].(string)
+			}
+			if id == "" {
+				return nil, fmt.Errorf("credential write requires one token id")
+			}
+			holder, err := claimKey(ctx, tx, "one-deployment-credential")
+			if err != nil {
+				return nil, err
+			}
+			if deployment {
+				var count int
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_tokens WHERE deployment_credential=TRUE AND id<>?`, id).Scan(&count); err != nil {
+					return nil, err
 				}
-			}
-			if err := lockKey(ctx, tx, "one-deployment-credential"); err != nil {
-				return nil, err
-			}
-			var count int
-			id := w.values["id"]
-			if id == nil {
-				id = w.where["id"]
-			}
-			if id == nil {
-				id = ""
-			}
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_tokens WHERE deployment_credential=TRUE AND id<>?`, id).Scan(&count); err != nil {
-				return nil, err
-			}
-			noteCount(ctx, count)
-			if err := checkDeploymentCredential(true, count); err != nil {
-				return nil, err
+				if holder != "" && holder != id {
+					count++
+				}
+				if err := checkDeploymentCredential(true, count); err != nil {
+					return nil, err
+				}
+				if err := setClaim(ctx, tx, "one-deployment-credential", id); err != nil {
+					return nil, err
+				}
+			} else if holder == id {
+				if err := setClaim(ctx, tx, "one-deployment-credential", ""); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
-	if w.table == "reference_documents" && w.operation != "DELETE" {
-		// A reference writer supplies the complete name/deleted_at projection, so
-		// rename and restore receive the same uniqueness check as insertion.
+	if w.table == "reference_documents" {
+		// A reference writer supplies the complete name/deleted_at projection.
+		// Documents are created live and only soft-deleted afterwards, so each
+		// live name has exactly one claim to take and release.
 		name, ok := w.values["name"].(string)
 		if !ok {
 			return nil, fmt.Errorf("reference write requires name")
@@ -159,36 +172,54 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		if _, ok := w.values["deleted_at"]; !ok {
 			return nil, fmt.Errorf("reference write requires deleted_at")
 		}
+		var live bool
 		switch w.values["deleted_at"].(type) {
-		case nil, time.Time:
+		case nil:
+			live = true
+		case time.Time:
 		default:
 			return nil, fmt.Errorf("deleted_at must be a time or untyped nil")
 		}
+		id, _ := w.values["id"].(string)
 		if w.operation == "UPDATE" {
-			if id, ok := w.where["id"].(string); !ok || id == "" {
+			if live {
+				return nil, fmt.Errorf("reference update must soft-delete")
+			}
+			id, _ = w.where["id"].(string)
+			if id == "" {
 				return nil, fmt.Errorf("reference update requires one document id")
 			}
 			if scoped, ok := w.where["workspace_id"].(string); !ok || scoped == "" || scoped != ws {
 				return nil, store.ErrWorkspaceRequired
 			}
+		} else if !live || id == "" {
+			return nil, fmt.Errorf("reference insert requires a live document id")
 		}
-		if w.values["deleted_at"] == nil {
-			if err := lockKey(ctx, tx, fmt.Sprintf("reference-names:%s", ws)); err != nil {
-				return nil, err
-			}
-			id := w.values["id"]
-			if id == nil {
-				id = w.where["id"]
-			}
-			if id == nil {
-				id = ""
-			}
+		var folded string
+		if err := tx.QueryRowContext(ctx, `SELECT LOWER(?)`, name).Scan(&folded); err != nil {
+			return nil, err
+		}
+		claim := fmt.Sprintf("reference-name:%v:%s", ws, folded)
+		holder, err := claimKey(ctx, tx, claim)
+		if err != nil {
+			return nil, err
+		}
+		if live {
 			var count int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reference_documents WHERE workspace_id=? AND LOWER(name)=LOWER(?) AND deleted_at IS NULL AND id<>?`, ws, name, id).Scan(&count); err != nil {
 				return nil, err
 			}
-			noteCount(ctx, count)
+			if holder != "" && holder != id {
+				count++
+			}
 			if err := checkReferenceName(true, count); err != nil {
+				return nil, err
+			}
+			if err := setClaim(ctx, tx, claim, id); err != nil {
+				return nil, err
+			}
+		} else if holder == id {
+			if err := setClaim(ctx, tx, claim, ""); err != nil {
 				return nil, err
 			}
 		}

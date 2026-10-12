@@ -158,15 +158,16 @@ func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID stri
 func (s *Store) DeleteReferenceDocument(ctx context.Context, documentID string) error {
 	return s.documentTx(ctx, func(tx *sql.Tx) error {
 		var currentVersion int
+		var name string
 		var deleted *time.Time
-		if err := documentRow(ctx, tx, `SELECT current_version,deleted_at FROM reference_documents WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), documentID).Scan(&currentVersion, &deleted); err != nil {
+		if err := documentRow(ctx, tx, `SELECT current_version,name,deleted_at FROM reference_documents WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), documentID).Scan(&currentVersion, &name, &deleted); err != nil {
 			return notFound(err, "reference document %s", documentID)
 		}
 		if deleted != nil {
 			return nil
 		}
 		now := time.Now().UTC()
-		if _, err := documentExec(ctx, tx, `UPDATE reference_documents SET deleted_at=?,updated_at=? WHERE workspace_id=? AND id=?`, now, now, documentWorkspace(ctx), documentID); err != nil {
+		if _, err := writeRow(ctx, tx, rowWrite{table: "reference_documents", operation: "UPDATE", values: map[string]any{"name": name, "deleted_at": now, "updated_at": now}, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": documentID}}); err != nil {
 			return err
 		}
 		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "reference_document.deleted", Payload: core.JSONPayload(map[string]any{"workspace_id": documentWorkspace(ctx), "document_id": documentID, "version": currentVersion})})

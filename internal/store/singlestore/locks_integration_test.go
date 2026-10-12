@@ -229,11 +229,6 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				id       string
 				lockAt   time.Time
 				commitAt time.Time
-				startAt  time.Time
-				count    int
-				countAt  time.Time
-				conn     int64
-				err      error
 			}
 			attempts := make([]attempt, 2)
 			for i := range 2 {
@@ -241,11 +236,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 					<-start
 					id := fmt.Sprintf("token-%d", i)
 					writeCtx, observed := observeLockReturn(store.WithActor(t.Context(), store.SystemActor()))
-					var startAt time.Time
-					var conn int64
 					err := st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
-						_ = tx.QueryRowContext(writeCtx, "SELECT CONNECTION_ID()").Scan(&conn)
-						defer func() { startAt = time.Now() }()
 						var w rowWrite
 						if kind == "reference" {
 							name := "Same"
@@ -262,7 +253,7 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 						}
 						return err
 					})
-					attempts[i] = attempt{id: id, lockAt: observed.at, commitAt: time.Now(), startAt: startAt, count: observed.count, countAt: observed.countAt, conn: conn, err: err}
+					attempts[i] = attempt{id: id, lockAt: observed.at, commitAt: time.Now()}
 					results <- err
 				}()
 			}
@@ -277,9 +268,6 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				}
 			}
 			if successes != 1 {
-				for _, a := range attempts {
-					t.Logf("PROBE %s attempt %s conn %d lock %s count %d countAt %s commitStart %s commitReturn %s err %v", kind, a.id, a.conn, a.lockAt.Format(time.RFC3339Nano), a.count, a.countAt.Format(time.RFC3339Nano), a.startAt.Format(time.RFC3339Nano), a.commitAt.Format(time.RFC3339Nano), a.err)
-				}
 				if kind == "deployment" {
 					t.Logf("deployment tokens %s lock %s commit %s; %s lock %s commit %s", attempts[0].id, attempts[0].lockAt.Format(time.RFC3339Nano), attempts[0].commitAt.Format(time.RFC3339Nano), attempts[1].id, attempts[1].lockAt.Format(time.RFC3339Nano), attempts[1].commitAt.Format(time.RFC3339Nano))
 					rows, err := st.db.QueryContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT id, user_id, deployment_credential FROM user_tokens WHERE deployment_credential=TRUE`)
@@ -385,4 +373,68 @@ func TestArtifactLinkSchemaAllowsMultipleLinksIntegration(t *testing.T) {
 	if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT COUNT(*) FROM artifact_links WHERE workspace_id='links'`).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("artifact links: count=%d err=%v", count, err)
 	}
+}
+
+// A commit spanning partitions can release its lock row before its guarded row
+// is visible on another partition (task 261012-832d9c). Deleting the committed
+// winner's row leaves exactly that view: the lock row committed, the guarded
+// row unseen. The next writer must still lose to the claim on the lock row.
+func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := store.WithActor(t.Context(), store.SystemActor())
+	now := time.Date(2026, time.October, 12, 0, 0, 0, 0, time.UTC)
+	token := func(id string, deployment bool) rowWrite {
+		return rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": id, "user_id": "fixture", "token_hash": []byte("hash-" + id), "deployment_credential": deployment}}
+	}
+	reference := func(id, name string) rowWrite {
+		return rowWrite{table: "reference_documents", operation: "INSERT", values: map[string]any{"workspace_id": "claims", "id": id, "name": name, "deleted_at": nil, "current_version": 1, "created_at": now, "updated_at": now}}
+	}
+	write := func(w rowWrite) error {
+		return st.withTx(ctx, func(tx *sql.Tx) error { _, err := writeRow(ctx, tx, w); return err })
+	}
+	hide := func(query, id string) {
+		if _, err := st.db.ExecContext(ctx, query, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("deployment", func(t *testing.T) {
+		if err := write(token("winner", true)); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM user_tokens WHERE id=?`, "winner")
+		if err := write(token("late", true)); err == nil || !strings.Contains(err.Error(), "deployment credential already exists") {
+			t.Fatalf("second deployment credential against an unseen winner: %v", err)
+		}
+	})
+	t.Run("deployment release", func(t *testing.T) {
+		if err := write(token("retired", true)); err == nil {
+			t.Fatal("claim held by winner was not enforced")
+		}
+		if err := write(rowWrite{table: "user_tokens", operation: "UPDATE", values: map[string]any{"deployment_credential": false}, where: map[string]any{"id": "winner"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(token("reissued", true)); err != nil {
+			t.Fatalf("retiring the holder must release its claim: %v", err)
+		}
+	})
+	t.Run("reference", func(t *testing.T) {
+		if err := write(reference("ref-winner", "Claimed")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM reference_documents WHERE id=?`, "ref-winner")
+		if err := write(reference("ref-late", "claimed")); !errors.Is(err, store.ErrReferenceDocumentNameConflict) {
+			t.Fatalf("second live name against an unseen winner: %v", err)
+		}
+	})
+	t.Run("reference release", func(t *testing.T) {
+		if err := write(reference("ref-held", "Released")); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(rowWrite{table: "reference_documents", operation: "UPDATE", values: map[string]any{"name": "Released", "deleted_at": now, "updated_at": now}, where: map[string]any{"workspace_id": "claims", "id": "ref-held"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(reference("ref-reused", "released")); err != nil {
+			t.Fatalf("soft delete must release the name claim: %v", err)
+		}
+	})
 }

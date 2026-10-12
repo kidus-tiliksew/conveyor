@@ -1,4 +1,4 @@
-# Temporary instrumented probe (second run) for task 261012-832d9c; deleted before review.
+# Temporary post-fix confirmation probe for task 261012-832d9c; deleted before review.
 name: SingleStore race probe
 
 on:
@@ -24,7 +24,7 @@ jobs:
       matrix:
         image_label: [latest]
         image: [ghcr.io/singlestore-labs/singlestoredb-dev:latest]
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4]
     services:
       singlestore:
         image: ${{ matrix.image }}
@@ -70,7 +70,7 @@ jobs:
           fail=$(grep -cE -- "--- FAIL: ${TARGET} " "$log" || true)
           skip=$(grep -c -- '--- SKIP' "$log" || true)
           cached=$(grep -c -- '(cached)' "$log" || true)
-          grep -E 'PROBE |deployment tokens .* lock .* commit|deployment_credential=TRUE row|deployment_credential row|winners=' "$log" > probe/failures.txt || true
+          grep -E 'deployment tokens .* lock .* commit|deployment_credential=TRUE row|deployment_credential row|winners=' "$log" > probe/failures.txt || true
           printf 'planned=%s pass=%s fail=%s skip=%s cached=%s\n' "$PLANNED" "$pass" "$fail" "$skip" "$cached" | tee probe/counts.txt
           cat probe/wall.txt probe/failures.txt
           test $((pass + fail)) -eq "$PLANNED" && test "$skip" -eq 0 && test "$cached" -eq 0

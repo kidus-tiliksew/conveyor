@@ -158,6 +158,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 20 {
+			if err := s.migrateLockClaims(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -184,6 +189,19 @@ func (s *Store) migrateRepositoryInstallColumn(ctx context.Context) error {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `ALTER TABLE repos ADD COLUMN install_conveyor BOOLEAN NOT NULL DEFAULT false`)
+	return err
+}
+
+// conveyor_locks exists before the ledger, so its claim column arrives here.
+func (s *Store) migrateLockClaims(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='conveyor_locks' AND column_name='holder'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE conveyor_locks ADD COLUMN holder VARCHAR(255) NOT NULL DEFAULT ''`)
 	return err
 }
 
