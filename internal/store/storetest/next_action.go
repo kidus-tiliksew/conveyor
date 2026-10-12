@@ -54,7 +54,7 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 			want++
 		}
 	}
-	count, err := store.CountOperatorAttention(ctx, st)
+	count, err := st.CountOperatorAttention(ctx)
 	if err != nil || count < want {
 		t.Fatalf("attention count=%d projected=%d err=%v", count, want, err)
 	}
