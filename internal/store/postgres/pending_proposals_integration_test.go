@@ -271,7 +271,7 @@ func TestTerminalTaskContextProposalsStayOutOfPendingProjectionIntegration(t *te
 	}
 
 	projection, err := st.PendingProposalsProjection(ctx)
-	if err != nil || len(projection.Items) != 1 || projection.Items[0].OriginID != taskIDs["open"] || projection.TaskCount != 1 {
+	if err != nil || len(projection.Items) != 1 || projection.Items[0].OriginID != taskIDs["open"] {
 		t.Fatalf("projection=%+v err=%v", projection, err)
 	}
 	for _, label := range []string{"merged", "closed"} {
@@ -441,15 +441,15 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 		if projectionErr != nil {
 			t.Fatal(projectionErr)
 		}
-		if projection.TaskCount != 1 || len(projection.Items) != 1 {
+		if len(projection.Items) != 1 {
 			t.Fatalf("%s projection=%+v", label, projection)
 		}
 		queries := recorder.snapshot()
-		if len(queries) != 2 {
-			t.Fatalf("%s query count=%d want 2: %v", label, len(queries), queries)
+		if len(queries) != 1 {
+			t.Fatalf("%s query count=%d want 1: %v", label, len(queries), queries)
 		}
-		if !strings.Contains(queries[1], "WITH pending_origin_tasks") || strings.Contains(queries[1], "served_requirement_snapshot") || strings.Contains(queries[1], "governance_snapshot") {
-			t.Fatalf("%s attention query is not the narrow projection: %s", label, queries[1])
+		if strings.Contains(queries[0], "pending_origin_tasks") || strings.Contains(queries[0], "attention_tasks") {
+			t.Fatalf("%s still uses the SQL attention predicate: %s", label, queries[0])
 		}
 	}
 	assertProjection("baseline")
@@ -600,8 +600,8 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projection.TaskCount != 11 || len(projection.Items) != 5 {
-		t.Fatalf("projection=%+v want task_count=11 proposals=5", projection)
+	if len(projection.Items) != 5 {
+		t.Fatalf("projection=%+v want proposals=5", projection)
 	}
 
 	sibling := "pending-truth-sibling-" + core.NewTaskID()
@@ -631,7 +631,7 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 		t.Fatalf("sibling suppressed=%t err=%v", suppressed, proposeErr)
 	}
 	projection, err = st.PendingProposalsProjection(ctx)
-	if err != nil || projection.TaskCount != 11 || len(projection.Items) != 5 {
+	if err != nil || len(projection.Items) != 5 {
 		t.Fatalf("workspace isolation projection=%+v err=%v", projection, err)
 	}
 }

@@ -392,7 +392,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatalf("pending proposals=%+v", pending)
 		}
 		projection, err := st.PendingProposalsProjection(ctx)
-		if err != nil || len(projection.Items) != len(pending) || projection.TaskCount != 1 {
+		if err != nil || len(projection.Items) != len(pending) {
 			t.Fatalf("projection=%+v err=%v", projection, err)
 		}
 		if _, err = st.ConfirmTaskContextProposal(ctx, taskID, core.TaskContextProposalRequirement, requirement.ID); err != nil {
@@ -415,7 +415,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			}
 		}
 		projection, err = st.PendingProposalsProjection(ctx)
-		if err != nil || projection.TaskCount != 0 {
+		if err != nil || len(projection.Items) != len(pending) {
 			t.Fatalf("resolved projection=%+v err=%v", projection, err)
 		}
 	})
@@ -2255,7 +2255,7 @@ func RunRequirementConformance(t *testing.T, factory RequirementFactory) {
 			t.Fatal(err)
 		}
 		projection, err := st.PendingProposalsProjection(ctx)
-		if err != nil || projection.TaskCount != 1 {
+		if err != nil || len(projection.Items) == 0 {
 			t.Fatalf("task-authored requirement attention=%+v err=%v", projection, err)
 		}
 		if _, err = For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "blocked", ClientToken: "blocked-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), requirement.ID) {

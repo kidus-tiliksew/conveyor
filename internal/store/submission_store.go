@@ -299,6 +299,23 @@ func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.Tas
 	return ConflictFixResult{WorkOrder: order, Created: true}, nil
 }
 
+// ClaimBaseConflictCheck is a compare-and-set on base_conflict_checked_at. A
+// missing, foreign-workspace, or already-stamped order is not claimed.
+func (m *memory) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.workOrders[workOrderID]
+	if !ok || !order.BaseConflictCheckedAt.IsZero() {
+		return false, nil
+	}
+	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && m.tasks[order.TaskID].Workspace != selected {
+		return false, nil
+	}
+	order.BaseConflictCheckedAt = at.UTC()
+	m.workOrders[workOrderID] = order
+	return true, nil
+}
+
 // SubmitImplementationCommand validates the exact job before any write, so
 // the memory backend's single mutation lock gives the same all-or-nothing
 // result as the SQL transactions.

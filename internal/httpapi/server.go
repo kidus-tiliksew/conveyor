@@ -31,6 +31,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -229,6 +230,10 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
+			r.Get("/tasks/{id}/next-action", s.getNextAction)
+			r.Get("/inbox", s.listInbox)
+			r.Get("/next-actions", s.listNextActions)
+			r.Get("/inbox/acts", s.listFactoryActs)
 			r.Get("/tasks/{id}/jobs", s.listJobs)
 			r.Get("/tasks/{id}/events", s.listEvents)
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
@@ -1225,7 +1230,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	s.writeTasks(w, r, tasks)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -1240,7 +1245,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	s.writeTask(w, r, t)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -1343,6 +1348,7 @@ type reviewItem struct {
 	CheckoutAvailable         bool                                  `json:"checkout_available"`
 	CheckoutGuidance          string                                `json:"checkout_guidance"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	NextAction                *nextaction.Compact                   `json:"next_action,omitempty"`
 	AtMergeGate               bool                                  `json:"at_merge_gate"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
 	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
@@ -1365,6 +1371,7 @@ type activityItem struct {
 	LatestStage               core.Stage                            `json:"latest_stage,omitempty"`
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	NextAction                *nextaction.Compact                   `json:"next_action,omitempty"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
 	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
@@ -1532,13 +1539,28 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, claimWaiting, err := s.proposalSignals(r.Context(), proposals, taskIDs)
+	orders, err := s.Store.ListWorkOrdersForTasks(r.Context(), taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingContext := pendingTaskContextByTask(proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders, proposals)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	pendingAuthority := pendingAuthorityByTask(orders, proposals)
+	opts := s.nextActionOptions(r)
+	opts.MarkersLoaded, opts.Markers = true, markers
+	opts.OrdersLoaded, opts.Orders = true, orders
+	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	items := make([]activityItem, 0, len(tasks))
 	fullItems := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
@@ -1557,13 +1579,11 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !marker.UserChangesRequested && !pendingAuthority[task.ID] {
 			continue
 		}
-		// Project the existing presentation-only authority signal without
-		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; component-http-api).
-		// proposal_claim_waiting is the narrower read of the claim gate's own
-		// predicate (req-260810-70ce2f REQ-1); attention keeps its broader meaning.
+		compact := nextaction.CompactFrom(projected[task.ID])
 		item := activityItem{
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
+			NeedsAttention:            projected[task.ID].Actor == nextaction.ActorOperator,
+			NextAction:                &compact,
 			PendingAuthority:          pendingAuthority[task.ID],
 			ProposalClaimWaiting:      len(claimWaiting[task.ID]) > 0,
 			ForgeFailure:              marker.ForgeFailure,
@@ -1682,13 +1702,6 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 	_, _ = w.Write(body)
 }
 
-// needsAttention is the one derivation the stage-grouped board and the
-// list-first Tasks view share, so the two surfaces cannot disagree about which
-// work is waiting on a human (component-http-api).
-func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority, pendingContext bool) bool {
-	return store.TaskNeedsAttention(task, marker, pendingAuthority, pendingContext)
-}
-
 // Plan status is the four durable outcomes AC-1.4 names. Each is read off the
 // persisted plan version and the audited task-state command that parked or
 // resumed it; none is inferred when that authority is absent.
@@ -1735,6 +1748,7 @@ type taskOperationsItem struct {
 	// fields a list row states travel with it.
 	Stalled              *taskStalledSummary `json:"stalled,omitempty"`
 	NeedsAttention       bool                `json:"needs_attention"`
+	NextAction           *nextaction.Compact `json:"next_action,omitempty"`
 	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids,omitempty"`
 	ChildRollup          *taskChildRollup    `json:"child_rollup,omitempty"`
 	Plan                 taskPlanStatus      `json:"plan"`
@@ -1795,20 +1809,14 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
-	proposals, err := s.Store.ListPendingProposals(ctx)
+	opts := s.nextActionOptions(r)
+	opts.MarkersLoaded, opts.Markers = true, markers
+	projected, err := store.ReadNextActions(ctx, s.Store, page.Tasks, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals, taskIDs)
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	pendingContext := pendingTaskContextByTask(proposals)
-	// Blocked stays a derived predicate owned by the dependency substrate
 	// (component-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
@@ -1834,15 +1842,17 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
+		compact := nextaction.CompactFrom(projected[task.ID])
 		items = append(items, taskOperationsItem{
 			Task:                 task,
 			LatestStage:          marker.LatestStage,
 			LastEventAt:          marker.LastEventAt,
 			Stalled:              taskStalledSummaryFor(marker.Stalled),
-			NeedsAttention:       needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
+			NeedsAttention:       projected[task.ID].Actor == nextaction.ActorOperator,
+			NextAction:           &compact,
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
-			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
+			Plan:                 taskPlanStatusFor(task, latest, hasPlan, events),
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -2018,12 +2028,16 @@ func taskChildRollupFor(children []core.TaskRelation) *taskChildRollup {
 // separates a plan waiting at its gate from one the operator redirected, the
 // same recognition the dispatcher's own spec-gate check performs
 // (component-http-api).
-func taskPlanStatusFor(latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
+func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
 	if !hasPlan {
 		return taskPlanStatus{State: taskPlanNone}
 	}
 	status := taskPlanStatus{State: taskPlanApproved, Version: latest.Version, Legacy: latest.LegacyGate}
 	if latest.Approved {
+		return status
+	}
+	status.State = taskPlanPendingGate
+	if task.State == core.TaskAwaiting && task.GateKind != "" {
 		return status
 	}
 	// A plan version is created at its gate, so pending is the state it
@@ -2138,7 +2152,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 				workOrders[index].ActivitySnapshot = &snapshot
 			}
 		}
-		workorder.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
+		store.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
 		if workOrders[index].Stage != core.StageImplement {
 			continue
 		}
@@ -2225,10 +2239,18 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	waitingProposals := claimWaiting[id]
+	action, err := store.ReadNextAction(r.Context(), s.Store, id, s.nextActionOptions(r))
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	compact := nextaction.CompactFrom(action)
 	writeJSON(w, http.StatusOK, taskDetailProjection{reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority || len(task.Context.Proposals) > 0,
+		NeedsAttention:            action.Actor == nextaction.ActorOperator,
+		NextAction:                &compact,
 		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
 		ProposalClaimWaiting:      len(waitingProposals) > 0,

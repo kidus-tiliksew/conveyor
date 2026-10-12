@@ -112,42 +112,11 @@ func (m *memory) PendingProposalsProjection(ctx context.Context) (PendingProposa
 	if err != nil {
 		return PendingProposalsProjection{}, err
 	}
-	tasks, err := m.ListTasks(ctx)
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	markers, err := m.ListActivityMarkers(ctx)
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	orders, err := m.ListWorkOrders(ctx)
-	if err != nil {
-		return PendingProposalsProjection{}, err
-	}
-	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
-	contextAttention := pendingTaskContextIDs(proposals)
-	byTask := make(map[string]ActivityMarker, len(markers))
-	for _, marker := range markers {
-		byTask[marker.TaskID] = marker
-	}
-	workspace := workspaceOrDefault(ctx, "")
-	count := 0
-	for _, task := range tasks {
-		if task.Workspace != workspace {
-			continue
-		}
-		if core.BlueprintAnchor(task) {
-			continue
-		}
-		marker := byTask[task.ID]
-		if core.TaskTerminal(task.State) {
-			marker.Stalled = nil
-		}
-		if TaskNeedsAttention(task, marker, pendingAuthority[task.ID], contextAttention[task.ID]) {
-			count++
-		}
-	}
-	return PendingProposalsProjection{Items: proposals, TaskCount: count}, nil
+	return PendingProposalsProjection{Items: proposals}, nil
+}
+
+func (m *memory) CountOperatorAttention(ctx context.Context) (int, error) {
+	return CountOperatorAttention(ctx, m)
 }
 
 func pendingTaskContextIDs(proposals []core.PendingProposal) map[string]bool {
@@ -199,6 +168,5 @@ func sortPendingProposals(items []core.PendingProposal) {
 // attention badge. Age remains an HTTP concern so the store returns durable
 // proposal timestamps unchanged.
 type PendingProposalsProjection struct {
-	Items     []core.PendingProposal
-	TaskCount int
+	Items []core.PendingProposal
 }

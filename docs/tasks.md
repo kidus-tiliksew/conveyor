@@ -324,6 +324,12 @@ endpoint returns the whole picture in one read: jobs, events, work orders
 with checkpoints and transcripts, interventions, review diagnostics, merge
 readiness, and attention state.
 
+`GET /v1/tasks/{id}/next-action` returns the full next action, including `label`.
+`GET /v1/next-actions` returns the inbox: `decisions`, `blocked`, and `automatic`
+bands, paging headers, `document_proposal` items, and an `acts` log. Pending
+proposals expose `attention.task_count` and `attention.operator_decisions` from
+that same projection.
+
 ### Operator reasons in work-order context
 
 Review orders and later implement attempts receive `operator_notes` when an

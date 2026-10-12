@@ -657,6 +657,7 @@ type WorkOrder struct {
 	AutomaticRecoveryCount           int                  `json:"automatic_recovery_count"`
 	AutomaticRecoveryWindowStartedAt time.Time            `json:"automatic_recovery_window_started_at,omitempty"`
 	NextAutomaticRecoveryAt          time.Time            `json:"next_automatic_recovery_at,omitempty"`
+	BaseConflictCheckedAt            time.Time            `json:"base_conflict_checked_at,omitempty"`
 	RetrySuppressed                  bool                 `json:"retry_suppressed"`
 	RetrySuppressionReason           string               `json:"retry_suppression_reason,omitempty"`
 	RedispatchCount                  int                  `json:"redispatch_count"`

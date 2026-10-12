@@ -16,15 +16,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// TaskNeedsAttention is the shared operator-attention truth table. Keeping it
-// at the store boundary lets the memory projection match the HTTP activity
-// surfaces while PostgreSQL computes the same predicates from narrow columns.
-func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority, pendingContext bool) bool {
-	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
-		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
-		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority || pendingContext || marker.UserChangesRequested
-}
-
 // TaskFilter is the one predicate set the Tasks list and the Board both send
 // to the server (AC-2.4). It is shared rather than duplicated so the two
 // surfaces cannot drift into filtering differently, and every member is
@@ -1071,30 +1062,20 @@ func (m *memory) ListCallerAttentionTaskPage(ctx context.Context, query CallerAt
 	if err != nil {
 		return TaskPage{}, err
 	}
-	markers, err := m.ListActivityMarkers(ctx)
-	if err != nil {
-		return TaskPage{}, err
-	}
-	proposals, err := m.ListPendingProposals(ctx)
-	if err != nil {
-		return TaskPage{}, err
-	}
-	orders, err := m.ListWorkOrders(ctx)
-	if err != nil {
-		return TaskPage{}, err
-	}
-	markerByTask := make(map[string]ActivityMarker, len(markers))
-	for _, marker := range markers {
-		markerByTask[marker.TaskID] = marker
-	}
-	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
-	pendingContext := pendingTaskContextIDs(proposals)
-	attention := make([]core.Task, 0, len(tasks))
+	candidates := make([]core.Task, 0, len(tasks))
 	for _, task := range tasks {
 		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
 			continue
 		}
-		if TaskNeedsAttention(task, markerByTask[task.ID], pendingAuthority[task.ID], pendingContext[task.ID]) {
+		candidates = append(candidates, task)
+	}
+	projected, err := ReadNextActions(ctx, m, candidates, NextActionOptions{})
+	if err != nil {
+		return TaskPage{}, err
+	}
+	attention := make([]core.Task, 0, len(candidates))
+	for _, task := range candidates {
+		if TaskNeedsAttention(projected[task.ID]) {
 			attention = append(attention, task)
 		}
 	}

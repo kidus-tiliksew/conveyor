@@ -258,6 +258,14 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 }
 
 func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
+	return d.dispatchSnapshot(ctx, task, true)
+}
+
+// dispatchSnapshot dispatches the task's next stage. checkBase enables the
+// once-per-submission mergeability pre-check before verify or review
+// (feature-bounded-automatic-recovery AR-4); callers that have just read
+// readiness under the task lock pass false.
+func (d *Dispatcher) dispatchSnapshot(ctx context.Context, task core.Task, checkBase bool) error {
 	if isBlueprintAnchor(task) {
 		// A blueprint parent is a batch anchor, never implementation work
 		// Its children own the implement orders.
@@ -287,6 +295,9 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		}
 	}
 	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
+		if routed, checkErr := d.preDispatchConflictCheck(ctx, cfg, task, checkBase); checkErr != nil || routed {
+			return checkErr
+		}
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
 	// Newly dispatched specs are always MCP work orders, even when a stale
@@ -299,9 +310,83 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		} else if active {
 			return nil
 		}
+		if task.NextStage == core.StageVerify {
+			if routed, checkErr := d.preDispatchConflictCheck(ctx, cfg, task, checkBase); checkErr != nil || routed {
+				return checkErr
+			}
+		}
 		return d.createWorkOrder(ctx, cfg, task, route, "")
 	}
 	return d.runInProcess(ctx, cfg, task, route)
+}
+
+// preDispatchConflictCheck reads the pull request's mergeability once per
+// submission before verify or review dispatch (feature-bounded-automatic-recovery
+// AR-4; req-bounded-automatic-recovery AC-3.2). A conflicting head routes to a
+// conflict-fix implement order and returns true; every other outcome, including
+// a forge error or an unresolved answer, returns false so dispatch proceeds as
+// today and merge readiness keeps the check.
+func (d *Dispatcher) preDispatchConflictCheck(ctx context.Context, cfg *config.Config, task core.Task, checkBase bool) (bool, error) {
+	if !checkBase || d.ViewPullRequest == nil {
+		return false, nil
+	}
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok || repo.GitHub == "" {
+		return false, nil
+	}
+	head := core.VerifyStageHead(task)
+	if head == "" {
+		return false, nil
+	}
+	orders, err := d.Store.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		return false, err
+	}
+	var submission core.WorkOrder
+	for _, order := range orders {
+		if order.Stage != core.StageImplement || order.HeadSHA != head || (order.State != core.WorkOrderSubmitted && order.State != core.WorkOrderCompleted) {
+			continue
+		}
+		if submission.ID == "" || order.CreatedAt.After(submission.CreatedAt) {
+			submission = order
+		}
+	}
+	if submission.ID == "" {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	if d.Now != nil {
+		now = d.Now().UTC()
+	}
+	claimed, err := d.Store.ClaimBaseConflictCheck(ctx, submission.ID, now)
+	if err != nil || !claimed {
+		return false, err
+	}
+	pr, err := d.readPullRequestMergeability(ctx, repo.GitHub, task.Branch)
+	if err != nil {
+		log.Printf("[task %s] pre-dispatch base check for %s: %v", task.ID, head, err)
+		return false, nil
+	}
+	if pr.Mergeable != "CONFLICTING" || pr.HeadSHA != head {
+		return false, nil
+	}
+	routed := false
+	err = d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		current, lockedErr := d.Store.GetTask(lockedCtx, task.ID)
+		if lockedErr != nil {
+			return lockedErr
+		}
+		if current.NextStage != task.NextStage || core.VerifyStageHead(current) != head {
+			return nil
+		}
+		if lockedErr = d.Store.AppendEvent(lockedCtx, core.Event{TaskID: current.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "pre-review-conflict", "approved_head": current.ApprovedHeadSHA, "new_head": head, "work_order_id": submission.ID})}); lockedErr != nil {
+			return lockedErr
+		}
+		routed = true
+		_, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, false, head)
+		return lockedErr
+	})
+	return routed, err
 }
 
 func isBlueprintAnchor(task core.Task) bool {
