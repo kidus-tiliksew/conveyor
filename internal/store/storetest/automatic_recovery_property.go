@@ -109,7 +109,7 @@ func runAutomaticRecoveryProperty(t *testing.T, st store.Store, ctx context.Cont
 			default:
 				due = now.Add(time.Second)
 			}
-			if next.IsZero() || due.Before(next) {
+			if next.IsZero() || due.After(next) {
 				next = due
 			}
 		}
