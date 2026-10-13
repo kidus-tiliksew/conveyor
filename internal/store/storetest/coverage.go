@@ -44,6 +44,7 @@ var suiteMethods = map[string][]string{
 	"TaskOperationsPagination":     strings.Fields(`CreateTask ListTaskOperations ListTasks ListTasksFiltered`),
 	"TaskLifecycle":                strings.Fields(`CancelTaskCommand CreateTask GetTask ListEvents ListInterventions ListJobs SetTaskHold UpdateTaskClassification`),
 	"TaskBranchUniqueness":         strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents`),
+	"TaskBranchConcurrentClaims":   strings.Fields(`AttachTaskBranch CreateTask GetTask ListEvents`),
 	"TaskBranchAttach":             strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents AppendEvent CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand`),
 	"TaskCreationProvenance":       strings.Fields(`ConfirmSystemDesignVersion CreateSystemDesign CreateTaskWithDependenciesAndContext GetTask GetTaskByIntakeKey ListEvents Log IsDurable`),
 	"TaskEventAtomicity":           strings.Fields(`ApplyTaskCommand CreateTask CreateWorkspace GetTask ListEvents SetTaskHold WithTaskSideEffectLock`),

@@ -206,6 +206,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskOperationsPagination", true, runTaskPagination},
 		{"TaskLifecycle", true, runTaskLifecycle},
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
+		{"TaskBranchConcurrentClaims", true, runTaskBranchConcurrentClaims},
 		{"TaskBranchAttach", true, runTaskBranchAttach},
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
 		{"TaskCreationProvenance", true, runTaskCreationProvenance},

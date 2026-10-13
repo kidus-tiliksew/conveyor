@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestKeyLocksIntegration(t *testing.T) {
@@ -140,9 +142,7 @@ func TestSessionLockCancellationAndCallbackCleanupIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if count := st.db.Stats().InUse; count != 0 {
-		t.Fatalf("leaked %d connections", count)
-	}
+	requireNoConnectionsInUse(t, st.db)
 }
 func TestTransactionRollbackAndWorkspaceAtomicityIntegration(t *testing.T) {
 	st := integrationStore(t)
@@ -436,5 +436,60 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		if err := write(reference("ref-reused", "released")); err != nil {
 			t.Fatalf("soft delete must release the name claim: %v", err)
 		}
+	})
+	// Open-task branch claims (req-task-branch-assignment AC-4.1, AC-4.2;
+	// DEC-68, component-persistence Lock and transaction contract).
+	tasks := store.WithWorkspace(ctx, "branch-claims")
+	if _, err := st.CreateWorkspace(tasks, "branch-claims", "Branch claims", &config.Config{Workspace: "branch-claims"}); err != nil {
+		t.Fatal(err)
+	}
+	task := func(id, branch string) core.Task {
+		return core.Task{ID: id, Workspace: "branch-claims", Repo: "repo", Branch: branch, Title: id, State: core.TaskRunning, NextStage: core.StageImplement}
+	}
+	refusedBy := func(t *testing.T, err error, winner string) {
+		t.Helper()
+		var inUse *store.BranchInUseError
+		if !errors.Is(err, store.ErrTaskBranchConflict) || !errors.As(err, &inUse) || inUse.OtherTaskID != winner {
+			t.Fatalf("want branch conflict naming %s, got %v", winner, err)
+		}
+	}
+	t.Run("task branch", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("branch-winner", "claimed")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "branch-winner")
+		refusedBy(t, st.CreateTask(tasks, task("branch-late", "claimed")), "branch-winner")
+	})
+	t.Run("task branch attach", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("attach-late", "attach-own")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := st.AttachTaskBranch(tasks, "attach-late", "claimed")
+		refusedBy(t, err, "branch-winner")
+	})
+	t.Run("task branch terminal release", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("cancelled", "reused")); err != nil {
+			t.Fatal(err)
+		}
+		refusedBy(t, st.CreateTask(tasks, task("early", "reused")), "cancelled")
+		if _, err := taskops.New(st).Cancel(tasks, core.Intervention{TaskID: "cancelled", Action: core.InterventionCancel, ReasonCode: "obsolete"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(tasks, task("successor", "reused")); err != nil {
+			t.Fatalf("a terminal task must release its branch claim: %v", err)
+		}
+	})
+	t.Run("task branch attach release", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("mover", "b1")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AttachTaskBranch(tasks, "mover", "b2"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(tasks, task("b1-taker", "b1")); err != nil {
+			t.Fatalf("attach must release the previous branch claim: %v", err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "mover")
+		refusedBy(t, st.CreateTask(tasks, task("b2-taker", "b2")), "mover")
 	})
 }
