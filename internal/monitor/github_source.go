@@ -79,7 +79,11 @@ type failedCheckRun struct {
 // RecordedLineage verifies that an observed pull request is the one Conveyor
 // recorded for this task in this repository. Current Task.Branch must equal
 // the observed head ref; a reconstructed default name is not identity
-// (req-task-branch-assignment AC-3.4; component-monitor-drift).
+// (req-task-branch-assignment AC-3.4; component-monitor-drift). Identity is a
+// recorded pull_request.opened for the number and repository; the merged head
+// must then be one Conveyor recorded for that pull request, which survives a
+// head moved by refresh or base merge (RecordedPullRequestHead;
+// component-submission-merge "Observed merges"; DEC-64(5)).
 func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug, taskID, observedHeadRef string, pullRequestNumber int, headSHA string) bool {
 	if task.ID != taskID || task.Repo != repository || task.Branch != observedHeadRef ||
 		strings.TrimSpace(headSHA) == "" ||
@@ -90,17 +94,65 @@ func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug
 		if event.Kind != "pull_request.opened" {
 			continue
 		}
-		var opened struct {
-			Repository string `json:"repository"`
-			Number     int    `json:"number"`
-			HeadSHA    string `json:"head_sha"`
-		}
-		if json.Unmarshal(event.Payload, &opened) == nil &&
-			opened.Number == pullRequestNumber && opened.HeadSHA == headSHA && (opened.Repository == "" || opened.Repository == githubSlug) {
-			return true
+		if opened, ok := decodeOpenedPullRequest(event); ok && opened.Number == pullRequestNumber && openedInRepository(opened, githubSlug) {
+			return RecordedPullRequestHead(task, events, githubSlug, pullRequestNumber, headSHA)
 		}
 	}
 	return false
+}
+
+// RecordedPullRequestHead reports whether headSHA is a head Conveyor recorded
+// for pull request number in githubSlug: (a) the head of a pull_request.opened
+// for it, (b) the head of a merge.confirmed or merge.reconciled for it, or (c)
+// the task's approved or reviewed head when number is the task's latest
+// recorded pull_request.opened. A task-level approval never vouches for an
+// older or foreign pull request. Empty heads never match (AC-3.5; AC-4.3;
+// component-submission-merge "Observed merges"; DEC-64(5)).
+func RecordedPullRequestHead(task core.Task, events []core.Event, githubSlug string, pullRequestNumber int, headSHA string) bool {
+	if strings.TrimSpace(headSHA) == "" {
+		return false
+	}
+	latest := 0
+	for _, event := range events {
+		switch event.Kind {
+		case "pull_request.opened":
+			opened, ok := decodeOpenedPullRequest(event)
+			if !ok || !openedInRepository(opened, githubSlug) {
+				continue
+			}
+			latest = opened.Number
+			if opened.Number == pullRequestNumber && opened.HeadSHA == headSHA {
+				return true
+			}
+		case "merge.confirmed", "merge.reconciled":
+			var merged struct {
+				Repository string `json:"repository"`
+				Number     int    `json:"pull_request"`
+				HeadSHA    string `json:"head_sha"`
+			}
+			if json.Unmarshal(event.Payload, &merged) == nil && merged.Repository == githubSlug &&
+				merged.Number == pullRequestNumber && merged.HeadSHA == headSHA {
+				return true
+			}
+		}
+	}
+	return latest != 0 && latest == pullRequestNumber &&
+		(headSHA == task.ApprovedHeadSHA || headSHA == task.ReviewedHeadSHA)
+}
+
+type openedPullRequest struct {
+	Repository string `json:"repository"`
+	Number     int    `json:"number"`
+	HeadSHA    string `json:"head_sha"`
+}
+
+func decodeOpenedPullRequest(event core.Event) (openedPullRequest, bool) {
+	var opened openedPullRequest
+	return opened, json.Unmarshal(event.Payload, &opened) == nil
+}
+
+func openedInRepository(opened openedPullRequest, githubSlug string) bool {
+	return opened.Repository == "" || opened.Repository == githubSlug
 }
 
 // MatchObservedTask ranks workspace tasks for an observed pull. Recorded

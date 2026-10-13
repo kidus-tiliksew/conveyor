@@ -119,6 +119,54 @@ func reconciledPayload(t *testing.T, st store.Store, ctx context.Context, taskID
 	return payload
 }
 
+// A merged task accepts its own recorded merge.confirmed after the approval
+// moved; a different merge commit or pull request does not match
+// (component-submission-merge "Observed merges"; AC-3.5).
+func TestObservedMergeOfMergedTaskAcceptsRecordedMergeConfirmed(t *testing.T) {
+	ctx, st := forgeReconcileCtx(), store.NewMemory()
+	task := core.Task{ID: "merged", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merged", State: core.TaskMerged, ApprovedHeadSHA: "later", ReviewedHeadSHA: "later", CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	openPullRequest(t, st, ctx, task.ID, 12, "opened-head")
+	// Only the first merge.confirmed names this repository, pull request, and
+	// head; the others differ in exactly one identity field.
+	for _, confirmed := range []map[string]any{
+		{"repository": "acme/app", "pull_request": 12, "head_sha": "merged-head", "merge_commit_sha": "landed"},
+		{"repository": "acme/other", "pull_request": 12, "head_sha": "opened-head", "merge_commit_sha": "landed"},
+		{"repository": "acme/app", "pull_request": 13, "head_sha": "opened-head", "merge_commit_sha": "landed"},
+	} {
+		if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(confirmed)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seeded, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(seeded)
+	d := newForgeDispatcher(st)
+	forbidMergeCalls(t, d)
+	cases := []struct {
+		name string
+		pr   githubtrigger.PullRequest
+		want bool
+	}{
+		{"recorded merge", mergedPull(task, 12, "merged-head", "landed", "conveyor"), true},
+		{"other merge commit", mergedPull(task, 12, "merged-head", "other", "conveyor"), false},
+		{"opened head without its merge.confirmed", mergedPull(task, 12, "opened-head", "landed", "conveyor"), false},
+	}
+	for _, tc := range cases {
+		accepted, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", task.ID, tc.pr)
+		if err != nil || accepted != tc.want {
+			t.Fatalf("%s: accepted=%t err=%v, want %t", tc.name, accepted, err, tc.want)
+		}
+	}
+	if events, err := st.ListEvents(ctx, task.ID); err != nil || len(events) != before {
+		t.Fatalf("merged-task reconcile wrote events %d -> %d err=%v", before, len(events), err)
+	}
+}
+
 func assertNoApprovalBound(t *testing.T, st store.Store, ctx context.Context, taskID string) {
 	t.Helper()
 	if count, _ := st.CountEvents(ctx, taskID, "approval.bound"); count != 0 {

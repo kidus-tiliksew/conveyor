@@ -436,6 +436,66 @@ func TestRecordedLineageRejectsUnrelatedRepositoryAndUnrecordedHead(t *testing.T
 	}
 }
 
+// A head Conveyor recorded for the pull request after it moved is lineage;
+// an approval never vouches for an older or foreign pull request
+// (component-submission-merge "Observed merges"; AC-4.3).
+func TestRecordedLineageAcceptsHeadsConveyorRecordedForThePullRequest(t *testing.T) {
+	opened := func(number int, head string) core.Event {
+		return core.Event{Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": number, "head_sha": head})}
+	}
+	merge := func(kind, repository string, number int, head string) core.Event {
+		return core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{"repository": repository, "pull_request": number, "head_sha": head, "merge_commit_sha": "landed"})}
+	}
+	base := core.Task{ID: "t", Repo: "app", Branch: "conveyor/t", GitHub: &core.GitHubLifecycle{Repository: "acme/app"}}
+	approved := base
+	approved.ApprovedHeadSHA, approved.ReviewedHeadSHA = "approved", "reviewed"
+	cases := []struct {
+		name   string
+		task   core.Task
+		events []core.Event
+		branch string
+		number int
+		head   string
+		want   bool
+	}{
+		{"opened head", base, []core.Event{opened(12, "a")}, "conveyor/t", 12, "a", true},
+		{"merge.confirmed head", base, []core.Event{opened(12, "a"), merge("merge.confirmed", "acme/app", 12, "b")}, "conveyor/t", 12, "b", true},
+		{"merge.reconciled head", base, []core.Event{opened(12, "a"), merge("merge.reconciled", "acme/app", 12, "b")}, "conveyor/t", 12, "b", true},
+		{"approved head on latest PR", approved, []core.Event{opened(11, "a"), opened(12, "c")}, "conveyor/t", 12, "approved", true},
+		{"reviewed head on latest PR", approved, []core.Event{opened(12, "a")}, "conveyor/t", 12, "reviewed", true},
+		{"approved head on older PR", approved, []core.Event{opened(11, "a"), opened(12, "c")}, "conveyor/t", 11, "approved", false},
+		{"approved head on foreign latest PR", approved, []core.Event{opened(12, "a"), {Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/other", "number": 13, "head_sha": "x"})}}, "conveyor/t", 12, "approved", true},
+		{"approved head without opened PR", approved, []core.Event{merge("merge.confirmed", "acme/app", 12, "b")}, "conveyor/t", 12, "approved", false},
+		{"merge event of another repository", base, []core.Event{opened(12, "a"), merge("merge.confirmed", "acme/other", 12, "b")}, "conveyor/t", 12, "b", false},
+		{"merge event of another PR", base, []core.Event{opened(12, "a"), merge("merge.reconciled", "acme/app", 13, "b")}, "conveyor/t", 12, "b", false},
+		{"merge event of another kind", base, []core.Event{opened(12, "a"), merge("merge.requested", "acme/app", 12, "b")}, "conveyor/t", 12, "b", false},
+		{"unrecorded head", approved, []core.Event{opened(12, "a"), merge("merge.confirmed", "acme/app", 12, "b")}, "conveyor/t", 12, "c", false},
+		{"empty head", base, []core.Event{opened(12, "")}, "conveyor/t", 12, "", false},
+		{"empty head with empty approval", base, []core.Event{opened(12, "a")}, "conveyor/t", 12, " ", false},
+		{"branch that is not Task.Branch", approved, []core.Event{opened(12, "a")}, "conveyor/other", 12, "a", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RecordedLineage(tc.task, tc.events, "app", "acme/app", "t", tc.branch, tc.number, tc.head); got != tc.want {
+				t.Fatalf("RecordedLineage=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// RecordedPullRequestHead is also called without RecordedLineage's guards
+// (261013-9f494b): an empty head and an unrecorded pull request never match.
+func TestRecordedPullRequestHeadRejectsEmptyHeadAndUnrecordedPullRequest(t *testing.T) {
+	task := core.Task{ID: "t"}
+	opened := []core.Event{{Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 12, "head_sha": "a"})}}
+	if RecordedPullRequestHead(task, opened, "acme/app", 12, "") {
+		t.Fatal("empty head matched an empty approved head")
+	}
+	if RecordedPullRequestHead(task, nil, "acme/app", 0, "") || RecordedPullRequestHead(core.Task{ApprovedHeadSHA: "x"}, nil, "acme/app", 0, "x") {
+		t.Fatal("approved head vouched for a pull request Conveyor never recorded")
+	}
+}
+
 func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *testing.T) {
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprint(approved), func(t *testing.T) {
