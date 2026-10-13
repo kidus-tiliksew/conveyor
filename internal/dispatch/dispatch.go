@@ -405,9 +405,16 @@ func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage c
 	if err != nil {
 		return core.WorkOrder{}, false, err
 	}
+	if reasonCode == "" {
+		// Stale and timed-out orders block minting so the order clock's bounded
+		// recovery owns them instead of a daily same-stage reissue (DEC-62;
+		// component-work-orders "Stages and order minting").
+		order, active := core.WorkOrderBlocksStageMint(orders, stage)
+		return order, active, nil
+	}
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
-		if order.Stage != stage || (reasonCode != "" && order.ReasonCode != reasonCode) {
+		if order.Stage != stage || order.ReasonCode != reasonCode {
 			continue
 		}
 		active := order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed

@@ -64,6 +64,27 @@ func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, 
 		publicationMaxAttempts, q.now().UTC())
 }
 
+// blockingOrderSQL is the SQL form of core.WorkOrderBlocksStageMint for the
+// stages whose dispatch is a work order: the task's latest order is at its
+// next_stage in a state that holds the stage open. Read-time stale and
+// timed_out projections are stored as queued or claimed, so the stored set
+// covers them. Such a task is waiting for a claim or for the order clock,
+// not drifting, so reconcile leaves it alone (component-durable-queue
+// "Reconciliation between tasks and jobs"; DEC-62).
+func blockingOrderSQL(task string) string {
+	return task + `.next_stage IN ('spec','implement','verify') AND EXISTS (
+      SELECT 1 FROM work_orders wo
+      WHERE wo.workspace_id=` + task + `.workspace_id AND wo.task_id=` + task + `.id
+        AND wo.stage=` + task + `.next_stage
+        AND wo.state IN ('queued','claimed','stale','timed_out')
+        AND NOT EXISTS (
+            SELECT 1 FROM work_orders later
+            WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id
+              AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id))
+        )
+  )`
+}
+
 func (q *logDispatchQueue) queuedTasksWithoutActiveDispatch(ctx context.Context, tx pgx.Tx, workspace string) ([]string, error) {
 	rows, err := tx.Query(ctx, `
 SELECT t.id
@@ -79,6 +100,7 @@ WHERE t.workspace_id = $1
             AND child.parent_task_id=t.id
       )
   )
+  AND NOT (`+blockingOrderSQL("t")+`)
 ORDER BY t.created_at, t.id`, workspace)
 	if err != nil {
 		return nil, err

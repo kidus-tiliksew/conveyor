@@ -563,6 +563,39 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 	return order.State == WorkOrderQueued && !order.RetrySuppressed
 }
 
+// WorkOrderBlocksStageMint is the single admission definition for minting a
+// new <task>-<stage>-N order outside merge-conflict work. orders are one
+// task's orders sorted by (created_at, id). The task's latest order blocks a
+// successor at stage while it is queued, claimed, stale, or timed_out: those
+// are recoverable stops that the order clock redispatches or recovers under
+// the DEC-62 bound, and past the bound they wait for the operator
+// (component-work-orders "Stages and order minting"; feature-bounded-automatic-recovery
+// AR-3). The rule holds even when automatic recovery is disabled. An order at
+// another stage created later means the task moved on and bounced back, so the
+// older order no longer blocks. Stored and read-time projected states map onto
+// the same set, so durable reconcile filters use the same predicate
+// (component-durable-queue "Reconciliation between tasks and jobs").
+func WorkOrderBlocksStageMint(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
+	if len(orders) == 0 {
+		return WorkOrder{}, false
+	}
+	latest := orders[len(orders)-1]
+	if latest.Stage != stage || !WorkOrderStateBlocksMint(latest.State) {
+		return WorkOrder{}, false
+	}
+	return latest, true
+}
+
+// WorkOrderStateBlocksMint lists the order states that hold a stage open:
+// every state that is not submitted, completed, or cancelled.
+func WorkOrderStateBlocksMint(state WorkOrderState) bool {
+	switch state {
+	case WorkOrderQueued, WorkOrderClaimed, WorkOrderStale, WorkOrderTimedOut:
+		return true
+	}
+	return false
+}
+
 // HarnessSnapshot is legacy server-pinned execution metadata that older orders
 // persisted. The control plane no longer creates, resolves, or refreshes
 // one: queue re-entry clears it, and the claiming machine's local execution

@@ -1189,6 +1189,15 @@ func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 		if t.State != core.TaskQueued {
 			return fmt.Errorf("task %s is not queued", id)
 		}
+		// A task held by a mint-blocking order waits for its claim or the order
+		// clock; there is no drift to repair or record (component-durable-queue).
+		var waiting bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.workspace_id=? AND t.id=? AND `+blockingOrderSQL("t")+`)`, t.Workspace, id).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting {
+			return nil
+		}
 		inserted, err := s.enqueueTaskTx(ctx, tx, id, t.Workspace)
 		if err != nil || !inserted {
 			return err
