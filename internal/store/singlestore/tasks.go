@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -179,7 +180,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 }
 
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
-	lockKeys := []string{"task-id:" + t.ID, "task-open-branch:" + t.Workspace + ":" + t.Repo + ":" + t.Branch}
+	lockKeys := []string{"task-id:" + t.ID, taskBranchClaimKey(t.Workspace, t.Repo, t.Branch)}
 	if t.IntakeKey != "" {
 		lockKeys = append(lockKeys, "task-intake:"+t.Workspace+":"+t.IntakeKey)
 	}
@@ -202,14 +203,6 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		if count > 0 {
 			return fmt.Errorf("task identifier, branch or intake key already exists")
 		}
-	}
-	var occupant string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') LIMIT 1`, t.Workspace, t.Repo, t.Branch).Scan(&occupant)
-	if err == nil {
-		return store.TaskBranchInUseError(t.Branch, occupant)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
 	}
 	setup, err := json.Marshal(t.SetupContract)
 	if err != nil {
@@ -386,8 +379,15 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed'), EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='pull_request.opened')`, ws, taskID, ws, taskID).Scan(&claimed, &prOpened); err != nil {
 					return err
 				}
-				if err := lockKey(ctx, tx, "task-open-branch:"+ws+":"+result.Repo+":"+branch); err != nil {
-					return err
+				// Lock the old and new branch rows in one order so concurrent swaps
+				// cannot deadlock; writeRow then releases and claims them (DEC-68,
+				// component-persistence Lock and transaction contract).
+				keys := []string{taskBranchClaimKey(ws, result.Repo, result.Branch), taskBranchClaimKey(ws, result.Repo, branch)}
+				sort.Strings(keys)
+				for _, key := range keys {
+					if err := lockKey(ctx, tx, key); err != nil {
+						return err
+					}
 				}
 				var occupant string
 				err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, result.Repo, branch, taskID).Scan(&occupant)

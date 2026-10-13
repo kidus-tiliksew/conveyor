@@ -86,10 +86,10 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	} else if occupant != "" {
 		return store.TaskBranchInUseError(task.Branch, occupant)
 	}
-	if _, err := q.InsertTask(ctx, taskInsertParams(task)); err != nil {
-		if occupant, lookErr := occupyingOpenTaskID(ctx, tx, task.Repo, task.Branch, task.ID); lookErr == nil && occupant != "" {
-			return store.TaskBranchInUseError(task.Branch, occupant)
-		}
+	if err := writeOccupyingBranch(ctx, tx, task.Repo, task.Branch, task.ID, func(sp pgx.Tx) error {
+		_, err := q.WithTx(sp).InsertTask(ctx, taskInsertParams(task))
+		return err
+	}); err != nil {
 		return err
 	}
 	if task.Supersedes != "" || task.SupersededBy != "" || task.IntakeOperatorDirection != "" {

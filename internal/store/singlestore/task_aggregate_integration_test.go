@@ -107,9 +107,7 @@ func TestTaskCallbackCleanupIntegration(t *testing.T) {
 			return nil
 		}))
 	})
-	if got := s.db.Stats().InUse; got != 0 {
-		t.Fatalf("callback leaked %d connections", got)
-	}
+	requireNoConnectionsInUse(t, s.db)
 }
 
 func TestTaskAggregateConstraintsIntegration(t *testing.T) {

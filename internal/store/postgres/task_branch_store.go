@@ -25,6 +25,27 @@ func occupyingOpenTaskID(ctx context.Context, tx pgx.Tx, repo, branch, exceptID 
 	return id, err
 }
 
+// writeOccupyingBranch runs write under a savepoint. A concurrent winner makes
+// tasks_open_repo_branch_idx fail the write and aborts the savepoint only, so
+// tx can still read and name the committed occupant
+// (req-task-branch-assignment AC-4.1; component-persistence error translation).
+func writeOccupyingBranch(ctx context.Context, tx pgx.Tx, repo, branch, id string, write func(pgx.Tx) error) error {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	if err := write(sp); err != nil {
+		if rollbackErr := sp.Rollback(ctx); rollbackErr != nil {
+			return err
+		}
+		if occupant, lookErr := occupyingOpenTaskID(ctx, tx, repo, branch, id); lookErr == nil && occupant != "" {
+			return store.TaskBranchInUseError(branch, occupant)
+		}
+		return err
+	}
+	return sp.Commit(ctx)
+}
+
 func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
 	branch = strings.TrimSpace(branch)
 	if !gitx.LegalBranchName(branch) {
@@ -65,10 +86,10 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 					result = taskFromDB(loaded)
 					return nil
 				}
-				if _, err := tx.Exec(ctx, `UPDATE tasks SET branch=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID, branch); err != nil {
-					if occupant, lookErr := occupyingOpenTaskID(ctx, tx, currentRepo, branch, taskID); lookErr == nil && occupant != "" {
-						return store.TaskBranchInUseError(branch, occupant)
-					}
+				if err := writeOccupyingBranch(ctx, tx, currentRepo, branch, taskID, func(sp pgx.Tx) error {
+					_, err := sp.Exec(ctx, `UPDATE tasks SET branch=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID, branch)
+					return err
+				}); err != nil {
 					return err
 				}
 				loaded, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
