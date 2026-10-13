@@ -257,6 +257,40 @@ func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, w
 			t.Fatalf("seeded audit=%+v", violations)
 		}
 	})
+	t.Run("merge recover clears the kind and a dependent block", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		dependent := createTask(t, st, ctx, workspace, core.TaskQueued, core.StageImplement)
+		orderID := dependent + "-implement"
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: dependent, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		queuedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+		if err := For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, JobID: orderID, TaskID: dependent, Stage: core.StageImplement, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(time.Hour), CreatedAt: queuedAt}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent, DependsOnTaskID: id, Reason: "merge first", RequestID: "merge-recover-" + id}); err != nil {
+			t.Fatal(err)
+		}
+		blocked, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil || blocked.QueueBlockedAt.IsZero() {
+			t.Fatalf("dependent block=%+v err=%v", blocked, err)
+		}
+		out, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskMergeRecover})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out.Task, core.TaskMerged, "")
+		if violations := auditTask(t, st, ctx, id); len(violations) != 0 {
+			t.Fatalf("audit=%+v", violations)
+		}
+		resumed, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil || !resumed.QueueBlockedAt.IsZero() || !resumed.Claimable {
+			t.Fatalf("resumed order=%+v err=%v", resumed, err)
+		}
+	})
 }
 
 func assertGate(t *testing.T, st store.Store, ctx context.Context, id string, returned core.Task, state core.TaskState, kind core.GateKind) {

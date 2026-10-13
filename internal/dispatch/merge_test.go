@@ -367,11 +367,12 @@ func TestMergeApprovedTaskRefusesChangedObservedHead(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "outside-head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err == nil {
-		t.Fatal("changed head completed")
+	err := d.MergeApprovedTask(ctx, task)
+	if err == nil || !strings.Contains(err.Error(), "outside-head") || !strings.Contains(err.Error(), "reviewed-head") {
+		t.Fatalf("changed head error=%v", err)
 	}
-	if count, _ := st.CountEvents(ctx, task.ID, "merge.reconciled"); count != 0 {
-		t.Fatal("changed head reconciled")
+	if count, _ := st.CountEvents(ctx, task.ID, "merge.failed"); count != 1 {
+		t.Fatalf("drift events=%d", count)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
 	if current.State != core.TaskApproved {

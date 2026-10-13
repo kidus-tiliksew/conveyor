@@ -300,8 +300,9 @@ func main() {
 				reconcileWorkspaceVerification(workspaceCtx, workOrders, workspace.ID, log.Printf)
 				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
 				if mergeErr != nil {
+					// A readiness failure is logged and never skips the later
+					// lifecycle and publication reconciles in this tick.
 					log.Printf("reconcile merge readiness: %v", mergeErr)
-					return
 				}
 				if mergeReadiness != 0 {
 					log.Printf("reconciled %d merge-ready task(s) in workspace %s", mergeReadiness, workspace.ID)

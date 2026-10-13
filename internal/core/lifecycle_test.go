@@ -32,6 +32,7 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T16", TaskAwaiting, TaskInterventionApproveReview, TaskApproved},
 		{"T17", TaskAwaiting, TaskInterventionRedirect, TaskQueued},
 		{"T18", TaskApproved, TaskMergeConfirm, TaskMerged},
+		{"T18 gate recover", TaskAwaiting, TaskMergeRecover, TaskMerged},
 		{"T19", TaskApproved, TaskRefreshReview, TaskQueued},
 		{"T20", TaskApproved, TaskConflictDispatch, TaskQueued},
 		{"T21", TaskParked, TaskRecover, TaskQueued},
@@ -51,6 +52,12 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		if got, err := TransitionTask(from, TaskCancel); err != nil || got != TaskClosed {
 			t.Fatalf("T22 from %q = %q, %v", from, got, err)
 		}
+	}
+	if _, err := TransitionTask(TaskAwaiting, TaskMergeConfirm); err == nil {
+		t.Fatal("awaiting_human accepted merge.confirm")
+	}
+	if got := GateKindFor(TaskMerged, TaskMergeRecover); got != "" {
+		t.Fatalf("merged merge.recover gate_kind=%q", got)
 	}
 	if _, err := TransitionTask(TaskRunning, TaskCommand("triage.route_human")); err == nil {
 		t.Fatal("retired triage.route_human command remains in the current lifecycle")

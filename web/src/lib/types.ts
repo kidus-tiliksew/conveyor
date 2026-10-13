@@ -870,7 +870,7 @@ export interface ActivityItem {
   stalled?: StalledState
   worker_status?: TaskWorkerStatus
   merge_readiness?: {
-    state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE'
+    state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE' | 'MERGED' | 'MERGED_HEAD_MISMATCH'
     head_sha?: string
     url?: string
     number?: number

@@ -453,6 +453,10 @@ func taskRunMergeReadinessRemedy(state string, task core.Task) string {
 		return "readiness CONFLICTING; the pull request conflicts with its base. Conveyor dispatches the conflict fix automatically; an operator with recover_work retries only after automatic fixes are exhausted (POST /v1/tasks/" + task.ID + "/merge-conflict-fix)"
 	case "UNKNOWN":
 		return "readiness UNKNOWN; GitHub has not settled mergeability, or a conflict fix is in progress"
+	case "MERGED":
+		return "readiness MERGED; the pull request is already merged"
+	case "MERGED_HEAD_MISMATCH":
+		return "readiness MERGED_HEAD_MISMATCH; the pull request merged at a head that does not match the reviewed head, so merge is not offered"
 	default:
 		return "readiness " + state + "; merge is not offered"
 	}
