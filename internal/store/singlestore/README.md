@@ -104,6 +104,8 @@ checks because the schema lacks a PostgreSQL constraint.
 | One deployment credential | `writeRow` claims `one-deployment-credential`, counts other deployment credentials plus a claim held by another token, calls `checkDeploymentCredential`, then records the token as holder; setting the holder's `deployment_credential` false releases the claim | `TestOneDeploymentCredential`, `TestUniqueClaimsOutliveUnseenRowsIntegration` |
 | Live reference-document name | `writeRow` requires name, workspace, and explicit deleted_at, claims the workspace's `LOWER(name)`, counts other live case-insensitive names plus a claim held by another document, calls `checkReferenceName`, then records the document as holder; a soft delete releases the claim | `TestLiveReferenceName`, `TestUniqueClaimsOutliveUnseenRowsIntegration` |
 | `tasks_open_repo_branch_idx` partial unique index | `writeRow` claims `taskBranchClaimKey(workspace, repo, branch)` when a task row starts occupying an open branch (non-terminal insert, reopen, or branch/repo change), refuses a claim held by another task or another committed open row with `store.TaskBranchInUseError`, then records the task as holder; a terminal state or a branch change releases the old claim when the task holds it. Every `tasks` write that sets `state`, `branch` or `repo_name` must go through `writeRow` | `TestUniqueRuleInputsFailBeforeSQL`, `TestUniqueClaimsOutliveUnseenRowsIntegration`, `TaskBranchConcurrentClaims` conformance |
+| `tasks_workspace_intake_key_idx` (non-null intake key) | `writeRow` claims `taskIntakeClaimKey(workspace, intake_key)`, counts other committed rows, and records the task as holder; non-empty intake keys are immutable and task hard deletes are refused, so claims are never released | `TestUniqueClaimsOutliveUnseenRowsIntegration`, `TaskCreationProvenance` conformance |
+| `workspaces_name_lower_unique` | `writeRow` folds `LOWER(TRIM(name))`, claims `workspace-name:<folded>`, counts other committed rows and records the workspace as holder; workspace name updates and hard deletes are refused, so claims are never released | `TestUniqueClaimsOutliveUnseenRowsIntegration`, `WorkspaceNameUniqueness` conformance |
 
 Reference documents are inserted live and updated only to soft-delete, with
 the complete name/deleted-at projection. Credential writes must pass a boolean
@@ -121,13 +123,14 @@ express the PostgreSQL constraints:
 - One confirmed successor per superseded decision.
 - One dependency-unsatisfiable event per edge outcome.
 - Positive GitHub issue-number uniqueness within a repository and workspace.
-- Non-null task intake-key uniqueness and live blueprint-origin uniqueness.
+- Non-null task intake-key uniqueness and live blueprint-origin uniqueness;
+  the intake key is an immutable lock-row claim.
 - Unsuperseded review-seat uniqueness for positive review rounds.
 - Dependency-cycle rejection, immutable version rows, supported event and
   intervention vocabularies, singleton organization protection, and parent
   consistency formerly supplied by triggers, CHECKs and foreign keys.
-- Case-insensitive trimmed workspace-name uniqueness, implemented here under
-  the workspace-registry lock.
+- Case-insensitive trimmed workspace-name uniqueness, implemented by a
+  lock-row claim in `writeRow` after the `workspace-registry` lock.
 
 The schema cannot synthesize `work_orders.queue_deadline`; its writer supplies
 the frozen queue deadline. Deferred uniqueness must be checked at the command

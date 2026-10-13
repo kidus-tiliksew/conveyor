@@ -69,14 +69,13 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err = checkWorkspaceName(ctx, tx, cfg.Workspace); err != nil {
-			return err
-		}
 		var existingWorkspaces int
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspaces`).Scan(&existingWorkspaces); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO workspaces(id,name,config_yaml) VALUES(?,?,?)`, cfg.Workspace, cfg.Workspace, string(data)); err != nil {
+		if _, err = writeRow(ctx, tx, rowWrite{table: "workspaces", operation: "INSERT", values: map[string]any{
+			"id": cfg.Workspace, "name": cfg.Workspace, "config_yaml": string(data),
+		}}); err != nil {
 			return err
 		}
 		if err = upsertRepos(ctx, tx, cfg.Workspace, cfg.Repos); err != nil {
@@ -102,17 +101,6 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	})
 	return seeded && err == nil, err
 }
-func checkWorkspaceName(ctx context.Context, tx *sql.Tx, name string) error {
-	var count int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspaces WHERE LOWER(TRIM(name))=LOWER(TRIM(?))`, name).Scan(&count)
-	if err != nil {
-		return err
-	}
-	if count > 0 {
-		return store.ErrWorkspaceConflict
-	}
-	return nil
-}
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
 	if id == "" || strings.TrimSpace(name) == "" || cfg == nil {
 		return core.Workspace{}, fmt.Errorf("workspace id, name and configuration are required")
@@ -133,11 +121,10 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 		if count > 0 {
 			return store.ErrWorkspaceConflict
 		}
-		if err := checkWorkspaceName(ctx, tx, name); err != nil {
-			return err
-		}
 		now := time.Now().UTC().Truncate(time.Microsecond)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workspaces(id,name,config_yaml,created_at) VALUES(?,?,?,?)`, id, name, string(data), now); err != nil {
+		if _, err := writeRow(ctx, tx, rowWrite{table: "workspaces", operation: "INSERT", values: map[string]any{
+			"id": id, "name": name, "config_yaml": string(data), "created_at": now,
+		}}); err != nil {
 			return err
 		}
 		if err := upsertRepos(ctx, tx, id, cfg.Repos); err != nil {

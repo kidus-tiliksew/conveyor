@@ -492,4 +492,105 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "mover")
 		refusedBy(t, st.CreateTask(tasks, task("b2-taker", "b2")), "mover")
 	})
+	intakeWorkspace := "intake-claims"
+	intakeCtx := store.WithWorkspace(ctx, intakeWorkspace)
+	if _, err := st.CreateWorkspace(intakeCtx, intakeWorkspace, "Intake claims", &config.Config{Workspace: intakeWorkspace}); err != nil {
+		t.Fatal(err)
+	}
+	intakeTask := func(id, key, branch string) core.Task {
+		return core.Task{ID: id, Workspace: intakeWorkspace, Repo: "repo", Branch: branch, IntakeKey: key, Title: id, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	}
+	t.Run("intake key", func(t *testing.T) {
+		if err := st.CreateTask(intakeCtx, intakeTask("intake-winner", "duplicate", "intake-a")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='intake-claims' AND id=?`, "intake-winner")
+		err := st.CreateTask(intakeCtx, intakeTask("intake-late", "duplicate", "intake-b"))
+		if err == nil || !strings.Contains(err.Error(), "intake key") {
+			t.Fatalf("second intake key against an unseen winner: %v", err)
+		}
+	})
+	t.Run("intake key planning bundle", func(t *testing.T) {
+		first := intakeTask("planning-winner", "planning-duplicate", "planning-a")
+		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
+			_, err := insertPlanningBundleTask(intakeCtx, tx, first)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='intake-claims' AND id=?`, first.ID)
+		second := intakeTask("planning-late", "planning-duplicate", "planning-b")
+		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
+			_, err := insertPlanningBundleTask(intakeCtx, tx, second)
+			return err
+		}); err == nil || !strings.Contains(err.Error(), "intake key") {
+			t.Fatalf("planning bundle intake key against an unseen winner: %v", err)
+		}
+	})
+	t.Run("intake key predating claims", func(t *testing.T) {
+		first := intakeTask("predating-winner", "predating", "predating-a")
+		if err := st.CreateTask(intakeCtx, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
+			return setClaim(intakeCtx, tx, taskIntakeClaimKey(intakeWorkspace, first.IntakeKey), "")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		err := st.CreateTask(intakeCtx, intakeTask("predating-late", "predating", "predating-b"))
+		if err == nil || !strings.Contains(err.Error(), "intake key") {
+			t.Fatalf("intake key row without claim was accepted: %v", err)
+		}
+	})
+	t.Run("intake key retry resolves", func(t *testing.T) {
+		first := intakeTask("retry-winner", "retry", "retry-a")
+		if err := st.CreateTask(intakeCtx, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(intakeCtx, intakeTask("retry-late", "retry", "retry-b")); err == nil {
+			t.Fatal("duplicate intake key was accepted")
+		}
+		got, ok, err := st.GetTaskByIntakeKey(intakeCtx, first.IntakeKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || got.ID != first.ID {
+			t.Fatalf("retry lookup got ok=%v id=%q, want %q", ok, got.ID, first.ID)
+		}
+	})
+
+	t.Run("workspace name", func(t *testing.T) {
+		if _, err := st.CreateWorkspace(ctx, "wn-a", "Alpha", &config.Config{Workspace: "wn-a"}); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM workspaces WHERE id=?`, "wn-a")
+		_, err := st.CreateWorkspace(ctx, "wn-b", " alpha ", &config.Config{Workspace: "wn-b"})
+		if !errors.Is(err, store.ErrWorkspaceConflict) {
+			t.Fatalf("second workspace name against an unseen winner: %v", err)
+		}
+	})
+	t.Run("workspace name bootstrap", func(t *testing.T) {
+		if _, err := st.CreateWorkspace(ctx, "wn-c", "Gamma", &config.Config{Workspace: "wn-c"}); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM workspaces WHERE id=?`, "wn-c")
+		seeded, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: "gamma"})
+		if !errors.Is(err, store.ErrWorkspaceConflict) {
+			t.Fatalf("bootstrap workspace name against an unseen winner: seeded=%v err=%v", seeded, err)
+		}
+	})
+	t.Run("workspace name predating claims", func(t *testing.T) {
+		if _, err := st.CreateWorkspace(ctx, "wn-d", "Delta", &config.Config{Workspace: "wn-d"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.withTx(ctx, func(tx *sql.Tx) error {
+			return setClaim(ctx, tx, "workspace-name:delta", "")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := st.CreateWorkspace(ctx, "wn-e", " delta ", &config.Config{Workspace: "wn-e"})
+		if !errors.Is(err, store.ErrWorkspaceConflict) {
+			t.Fatalf("workspace name row without claim was accepted: %v", err)
+		}
+	})
 }

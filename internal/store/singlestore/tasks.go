@@ -182,7 +182,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 	lockKeys := []string{"task-id:" + t.ID, taskBranchClaimKey(t.Workspace, t.Repo, t.Branch)}
 	if t.IntakeKey != "" {
-		lockKeys = append(lockKeys, "task-intake:"+t.Workspace+":"+t.IntakeKey)
+		lockKeys = append(lockKeys, taskIntakeClaimKey(t.Workspace, t.IntakeKey))
 	}
 	for _, key := range lockKeys {
 		if err := lockKey(ctx, tx, key); err != nil {
@@ -195,14 +195,6 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 	}
 	if count > 0 {
 		return fmt.Errorf("task identifier already exists")
-	}
-	if t.IntakeKey != "" {
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE workspace_id=? AND intake_key=?`, t.Workspace, t.IntakeKey).Scan(&count); err != nil {
-			return err
-		}
-		if count > 0 {
-			return fmt.Errorf("task identifier, branch or intake key already exists")
-		}
 	}
 	setup, err := json.Marshal(t.SetupContract)
 	if err != nil {
