@@ -1635,6 +1635,12 @@ export interface TaskFlowStage {
   // Null when the stage has no gate or the frozen policy turned it off.
   gate: 'plan_approval' | 'merge_approval' | null
   status: TaskFlowStatus
+  // Server-stated copy, printed as sent. missed_check_in is empty unless the
+  // current attempt's lease is past due.
+  description: string
+  status_label: string
+  status_text: string
+  missed_check_in: string
   attempts: TaskFlowAttempt[]
   current_attempt: TaskFlowAttemptView | null
 }

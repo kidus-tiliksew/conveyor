@@ -53,8 +53,13 @@ func (l *flowLedger) claim(id string, stage core.Stage, attempt string) *flowLed
 	})
 }
 
+// fold folds at flowT0, before any lease in these ledgers runs out.
 func (l *flowLedger) fold(action nextaction.NextAction) TaskFlow {
-	return FoldTaskFlow(l.events, action, config.DefaultRecoveryPolicy())
+	return l.foldAt(action, flowT0)
+}
+
+func (l *flowLedger) foldAt(action nextaction.NextAction, now time.Time) TaskFlow {
+	return FoldTaskFlow(l.events, action, config.DefaultRecoveryPolicy(), now)
 }
 
 func flowStage(t *testing.T, flow TaskFlow, id core.Stage) FlowStage {
@@ -406,11 +411,11 @@ func TestFoldTaskFlowSide(t *testing.T) {
 	if err := policy.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	retrying := FoldTaskFlow(retry.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}, policy)
+	retrying := FoldTaskFlow(retry.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}, policy, flowT0)
 	if retrying.Side.Retrying == nil || *retrying.Side.Retrying != (FlowRetrying{Attempt: 2, Of: 3}) {
 		t.Fatalf("retrying = %+v, want 2 of 3", retrying.Side.Retrying)
 	}
-	if got := FoldTaskFlow(retry.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindQueued}, policy).Side.Retrying; got != nil {
+	if got := FoldTaskFlow(retry.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindQueued}, policy, flowT0).Side.Retrying; got != nil {
 		t.Fatalf("retrying without a retrying next action: %+v", got)
 	}
 }
@@ -459,7 +464,7 @@ func TestFoldTaskFlowDeterministic(t *testing.T) {
 	for i, event := range ledger.events {
 		reversed[len(reversed)-1-i] = event
 	}
-	first, err := json.Marshal(FoldTaskFlow(reversed, action, config.DefaultRecoveryPolicy()))
+	first, err := json.Marshal(FoldTaskFlow(reversed, action, config.DefaultRecoveryPolicy(), flowT0))
 	if err != nil {
 		t.Fatal(err)
 	}

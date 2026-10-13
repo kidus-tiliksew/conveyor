@@ -32,14 +32,41 @@ const activity = {
   needs_attention: false,
 }
 
-function stage(id: TaskFlowStage['id'], status: TaskFlowStage['status'], extra: Partial<TaskFlowStage> = {}) {
-  return { id, gate: null, status, attempts: [], current_attempt: null, ...extra } satisfies TaskFlowStage
+// The server states every sentence on a stage. These mock sentences differ
+// from any wording the client could carry, so an assertion on them proves the
+// chart prints what it was sent.
+function serverCopy(id: TaskFlowStage['id'], status: TaskFlowStage['status']) {
+  return {
+    description: `Server description of ${id}.`,
+    status_label: `Server ${status} label`,
+    status_text: `Server sentence: ${id} is ${status}.`,
+    missed_check_in: '',
+  }
 }
 
+function stage(id: TaskFlowStage['id'], status: TaskFlowStage['status'], extra: Partial<TaskFlowStage> = {}) {
+  return {
+    id,
+    gate: null,
+    status,
+    ...serverCopy(id, status),
+    attempts: [],
+    current_attempt: null,
+    ...extra,
+  } satisfies TaskFlowStage
+}
+
+// The same stage in another status, restated by the server.
+function restated(row: TaskFlowStage, status: TaskFlowStage['status'], extra: Partial<TaskFlowStage> = {}) {
+  return { ...row, ...serverCopy(row.id, status), status, ...extra }
+}
+
+const missedCheckIn = 'Server says the lease ran out at 2026-10-12 10:20 UTC.'
+
 // One task in implementation after review bounced it twice. The plan gate has
-// passed, verify is off by policy, a prerequisite blocks it, and an agent's
-// claimed attempt has missed its check-in.
-function claimedFlow(leaseExpiresAt = '2026-10-12T10:20:00Z'): TaskFlow {
+// passed, verify is off by policy, a prerequisite blocks it, and the server
+// says the agent's claimed attempt has missed its check-in.
+function claimedFlow(leaseExpiresAt = '2026-10-12T10:20:00Z', missed = missedCheckIn): TaskFlow {
   return {
     stages: [
       stage('triage', 'done'),
@@ -58,6 +85,7 @@ function claimedFlow(leaseExpiresAt = '2026-10-12T10:20:00Z'): TaskFlow {
         ],
       }),
       stage('implement', 'in_progress', {
+        missed_check_in: missed,
         attempts: [
           {
             order_id: 'flow-task-implement-1',
@@ -237,8 +265,8 @@ test('draws stages top to bottom with the server status word, and both approval 
     'gate:merge_approval',
     'merge',
   ])
-  await expect(node(flow, 'implement')).toContainText('in_progress')
-  await expect(node(flow, 'merge')).toContainText('upcoming')
+  await expect(node(flow, 'implement')).toContainText('Server in_progress label')
+  await expect(node(flow, 'merge')).toContainText('Server upcoming label')
   const boxes = await flow
     .locator('[data-flow-stage]')
     .evaluateAll((items) => items.map((item) => item.getBoundingClientRect().top))
@@ -252,7 +280,7 @@ test('marks the waiting gate and omits a gate the policy turned off', async ({ p
   await expect(gate).toBeVisible()
   await expect(gate.getByText('plan_approval')).toHaveClass(/bg-attention-soft/)
   await expect(flow.locator('[data-flow-gate="merge_approval"]')).toHaveCount(0)
-  await expect(node(flow, 'spec')).toContainText('needs_operator')
+  await expect(node(flow, 'spec')).toContainText('Server needs_operator label')
   await expect(flow.locator('[data-flow-side="retrying"]')).toHaveText('retrying2/3')
   // Nothing past the gate has been reached, so every edge after it is dashed.
   await expect(flow.locator('[data-flow-edge]')).toHaveCount(6)
@@ -329,14 +357,14 @@ test('a stage whose order waits to be claimed has been reached', async ({ page }
     ...flow,
     stages: flow.stages.map((row) =>
       row.id === 'implement'
-        ? { ...row, status: 'done', current_attempt: null }
+        ? restated(row, 'done', { current_attempt: null })
         : row.id === 'review'
-          ? { ...row, status: 'waiting' }
+          ? restated(row, 'waiting')
           : row,
     ),
   }))
   const chart = await openFlow(page, `/tasks/${taskId}/full`)
-  await expect(node(chart, 'review')).toContainText('waiting')
+  await expect(node(chart, 'review')).toContainText('Server waiting label')
   expect(await edgeKinds(chart)).toEqual([
     'visited',
     'visited',
@@ -354,9 +382,9 @@ test('a merge waiting on its approval has reached the gate but not the merge', a
     ...flow,
     stages: flow.stages.map((row) =>
       row.id === 'implement'
-        ? { ...row, status: 'done', current_attempt: null }
+        ? restated(row, 'done', { current_attempt: null })
         : row.id === 'merge'
-          ? { ...row, status: 'needs_operator' }
+          ? restated(row, 'needs_operator')
           : row,
     ),
   }))
@@ -375,12 +403,12 @@ test('a merge waiting on its approval has reached the gate but not the merge', a
   ])
 })
 
-test('greys an off stage and says it is off for this task', async ({ page }) => {
+test('greys an off stage and prints the label the server sent for it', async ({ page }) => {
   await mockAPI(page, () => claimedFlow())
   const flow = await openFlow(page, `/tasks/${taskId}/full`)
   const verify = node(flow, 'verify')
-  await expect(verify).toContainText('off for this task')
-  await expect(verify).not.toContainText(/\boff\b(?! for)/)
+  await expect(verify).toContainText('Server off label')
+  await expect(flow).not.toContainText('off for this task')
   expect(await verify.evaluate((item) => Number(getComputedStyle(item).opacity))).toBeLessThan(1)
   expect(await node(flow, 'review').evaluate((item) => Number(getComputedStyle(item).opacity))).toBe(1)
 })
@@ -418,7 +446,9 @@ test('opens the stage sheet with the current attempt, a missed check-in, and cop
   await node(flow, 'implement').click()
   const sheet = page.getByRole('dialog', { name: 'Implement stage' })
   await expect(sheet.getByRole('heading', { name: 'Implement' })).toBeVisible()
-  await expect(sheet.locator('header')).toContainText('in_progress')
+  await expect(sheet.locator('header')).toContainText('Server in_progress label')
+  await expect(sheet.locator('[data-flow-description]')).toHaveText('Server description of implement.')
+  await expect(sheet.locator('[data-flow-status-text]')).toHaveText('Server sentence: implement is in_progress.')
   const attempt = sheet.getByRole('region', { name: 'Current attempt' })
   const field = (term: string) =>
     attempt.locator('dt', { hasText: new RegExp(`^${term}$`) }).locator('xpath=following-sibling::dd[1]')
@@ -430,7 +460,7 @@ test('opens the stage sheet with the current attempt, a missed check-in, and cop
   await expect(field('Progress')).toHaveText('Wiring the chart into task detail')
   await expect(field('Elapsed')).toHaveText('1h 02m')
   await expect(field('Claimed at')).not.toHaveText('—')
-  await expect(field('Last check-in')).toContainText('missed check-in')
+  await expect(field('Last check-in').locator('[data-flow-missed-check-in]')).toHaveText(missedCheckIn)
   await attempt.getByRole('button', { name: 'Copy session ID' }).click()
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('session-7f3a')
   await attempt.getByRole('button', { name: 'Copy attempt ID' }).click()
@@ -441,13 +471,23 @@ test('opens the stage sheet with the current attempt, a missed check-in, and cop
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
 })
 
-test('a live lease shows no missed check-in note', async ({ page }) => {
-  await mockAPI(page, () => claimedFlow(new Date(Date.now() + 30 * 60_000).toISOString()))
+// The client judges no lease: a lease long past with no server sentence shows
+// no note, and the off stage's sheet prints the server's words too.
+test('a lapsed lease the server sent no sentence for shows no missed check-in note', async ({ page }) => {
+  await mockAPI(page, () => claimedFlow('2026-10-12T10:20:00Z', ''))
   const flow = await openFlow(page, `/tasks/${taskId}/full`)
   await node(flow, 'implement').click()
-  const attempt = page.getByRole('dialog', { name: 'Implement stage' }).getByRole('region', { name: 'Current attempt' })
+  const sheet = page.getByRole('dialog', { name: 'Implement stage' })
+  const attempt = sheet.getByRole('region', { name: 'Current attempt' })
   await expect(attempt).toContainText('session-7f3a')
-  await expect(attempt).not.toContainText('missed check-in')
+  await expect(attempt.locator('[data-flow-missed-check-in]')).toHaveCount(0)
+  await expect(attempt).not.toContainText(/missed check-in/i)
+  await sheet.getByRole('button', { name: 'Close stage' }).click()
+  await node(flow, 'verify').click()
+  const off = page.getByRole('dialog', { name: 'Verify stage' })
+  await expect(off.locator('header')).toContainText('Server off label')
+  await expect(off.locator('[data-flow-status-text]')).toHaveText('Server sentence: verify is off.')
+  await expect(off).not.toContainText('off for this task')
 })
 
 test('collapses superseded attempts, and Show raw state reveals the raw projection', async ({ page }) => {
@@ -500,7 +540,7 @@ test('a detail refresh refreshes the flow', async ({ page }) => {
         ? {
             ...claimedFlow(),
             stages: claimedFlow().stages.map((row) =>
-              row.id === 'implement' ? { ...row, status: 'done', current_attempt: null } : row,
+              row.id === 'implement' ? restated(row, 'done', { current_attempt: null }) : row,
             ),
           }
         : claimedFlow(),

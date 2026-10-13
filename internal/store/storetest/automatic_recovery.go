@@ -164,7 +164,7 @@ func requireRetrying(t *testing.T, st store.Store, ctx context.Context, taskID s
 		t.Fatal(err)
 	}
 	policy := config.DefaultRecoveryPolicy()
-	flow := store.FoldTaskFlow(events, action, policy)
+	flow := store.FoldTaskFlow(events, action, policy, now)
 	if want := (store.FlowRetrying{Attempt: attempt, Of: policy.AutomaticRecoveries}); flow.Side.Retrying == nil || *flow.Side.Retrying != want {
 		t.Fatalf("side.retrying=%+v want %+v", flow.Side.Retrying, want)
 	}

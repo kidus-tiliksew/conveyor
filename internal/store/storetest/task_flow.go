@@ -263,21 +263,22 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	return scenarios
 }
 
-// ReadTaskFlow is the store half of GET /v1/tasks/{id}/flow.
-func ReadTaskFlow(t *testing.T, st store.Store, ctx context.Context, id string) store.TaskFlow {
+// ReadTaskFlow is the store half of GET /v1/tasks/{id}/flow: the next action
+// and the fold both read at now.
+func ReadTaskFlow(t *testing.T, st store.Store, ctx context.Context, id string, now time.Time) store.TaskFlow {
 	t.Helper()
-	action, err := store.ReadNextAction(ctx, st, id, store.NextActionOptions{Now: time.Now().UTC()})
+	action, err := store.ReadNextAction(ctx, st, id, store.NextActionOptions{Now: now})
 	requireOK(t, err)
 	events, err := st.ListEvents(ctx, id)
 	requireOK(t, err)
-	return store.FoldTaskFlow(events, action, config.DefaultRecoveryPolicy())
+	return store.FoldTaskFlow(events, action, config.DefaultRecoveryPolicy(), now)
 }
 
 // ReplayTaskFlow copies a task's ledger verbatim into a fresh bare task on
 // replay, whose task, work-order, job and intervention projections were never
 // built by commands, and folds what replay stores. replay may be the source
 // fixture: the copy lives under its own task ID.
-func ReplayTaskFlow(t *testing.T, source store.Store, ctx context.Context, replay Fixture, id string, action nextaction.NextAction) store.TaskFlow {
+func ReplayTaskFlow(t *testing.T, source store.Store, ctx context.Context, replay Fixture, id string, action nextaction.NextAction, now time.Time) store.TaskFlow {
 	t.Helper()
 	events, err := source.ListEvents(ctx, id)
 	requireOK(t, err)
@@ -304,7 +305,7 @@ func ReplayTaskFlow(t *testing.T, source store.Store, ctx context.Context, repla
 	if len(replayed) != len(events) {
 		t.Fatalf("replay stored %d of %d events", len(replayed), len(events))
 	}
-	return store.FoldTaskFlow(replayed, action, config.DefaultRecoveryPolicy())
+	return store.FoldTaskFlow(replayed, action, config.DefaultRecoveryPolicy(), now)
 }
 
 func runTaskFlow(t *testing.T, factory Factory) {
@@ -313,7 +314,8 @@ func runTaskFlow(t *testing.T, factory Factory) {
 	scenarios := SeedTaskFlowScenarios(t, st, ctx, x.Workspace)
 	for _, scenario := range scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
-			flow := ReadTaskFlow(t, st, ctx, scenario.TaskID)
+			now := time.Now().UTC()
+			flow := ReadTaskFlow(t, st, ctx, scenario.TaskID, now)
 			stages := make([]core.Stage, len(flow.Stages))
 			for i, stage := range flow.Stages {
 				stages[i] = stage.ID
@@ -345,13 +347,13 @@ func runTaskFlow(t *testing.T, factory Factory) {
 			want, err := json.Marshal(flow)
 			requireOK(t, err)
 			for range 50 {
-				again, err := json.Marshal(ReadTaskFlowWith(t, st, ctx, scenario.TaskID, flow.NextAction))
+				again, err := json.Marshal(ReadTaskFlowWith(t, st, ctx, scenario.TaskID, flow.NextAction, now))
 				requireOK(t, err)
 				if string(again) != string(want) {
 					t.Fatalf("fold is not deterministic:\n%s\nwant\n%s", again, want)
 				}
 			}
-			rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, scenario.TaskID, flow.NextAction))
+			rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, scenario.TaskID, flow.NextAction, now))
 			requireOK(t, err)
 			if string(rebuilt) != string(want) {
 				t.Fatalf("replayed ledger folds differently:\n%s\nwant\n%s", rebuilt, want)
@@ -380,19 +382,20 @@ func runTaskFlow(t *testing.T, factory Factory) {
 			t.Fatal("redirect intervention event missing")
 		}
 		x.SeedEvents(t, ctx, 0, []core.Event{{ID: 1, TaskID: redirect, Kind: "pipeline.bounced", Payload: core.JSONPayload(map[string]any{"from": "review", "to": "implement"}), At: at}})
-		flow := ReadTaskFlow(t, st, ctx, redirect)
+		flow := ReadTaskFlow(t, st, ctx, redirect, time.Now().UTC())
 		if count := flowBounceCount(t, st, ctx, redirect); count != 1 || len(flow.Loops) != 1 || flow.Loops[0].Count != 1 {
 			t.Fatalf("store count %d, loops %+v; want 1", count, flow.Loops)
 		}
 	})
 }
 
-// ReadTaskFlowWith folds the task's current ledger against a fixed next action.
-func ReadTaskFlowWith(t *testing.T, st store.Store, ctx context.Context, id string, action nextaction.NextAction) store.TaskFlow {
+// ReadTaskFlowWith folds the task's current ledger against a fixed next action
+// at now.
+func ReadTaskFlowWith(t *testing.T, st store.Store, ctx context.Context, id string, action nextaction.NextAction, now time.Time) store.TaskFlow {
 	t.Helper()
 	events, err := st.ListEvents(ctx, id)
 	requireOK(t, err)
-	return store.FoldTaskFlow(events, action, config.DefaultRecoveryPolicy())
+	return store.FoldTaskFlow(events, action, config.DefaultRecoveryPolicy(), now)
 }
 
 func taskFlowStage(t *testing.T, flow store.TaskFlow, id core.Stage) store.FlowStage {
