@@ -167,6 +167,23 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		}
 	})
 
+	// The same recovery, but the order is read only after its execution
+	// deadline has passed, so the read projects it as timed_out
+	// (component-work-orders v42). flowExpire must still wait on the
+	// execution deadline, not the hour-long queue deadline. DEC-38: this
+	// scenario extends the conformance flow and replaces none.
+	lateID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
+	lateOrder := flowOrder(t, st, ctx, lateID, core.StageImplement, "1", time.Hour)
+	flowClaim(t, st, ctx, lateOrder, "late", flowShort)
+	time.Sleep(2 * flowShort)
+	flowRecover(t, st, ctx, lateOrder)
+	add("late expiry read", lateID, func(t *testing.T, flow store.TaskFlow) {
+		attempts := taskFlowStage(t, flow, core.StageImplement).Attempts
+		if len(attempts) != 2 || attempts[0].Outcome != "timed_out" || attempts[0].Auto || !attempts[1].Auto || attempts[1].EndedAt != nil {
+			t.Fatalf("attempts = %+v", attempts)
+		}
+	})
+
 	// A claim times out and its automatic recovery is scheduled in the future:
 	// the factory is retrying (NA-7 side.retrying).
 	pendingID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
@@ -451,6 +468,11 @@ func flowOrder(t *testing.T, st store.Store, ctx context.Context, taskID string,
 // clock ticks at the real time, so every event keeps its ledger order.
 const flowShort = 50 * time.Millisecond
 
+// flowMaxWait bounds any single flowExpire wait. Every legitimate wait is at
+// most flowShort; a longer one means the harness picked the wrong deadline,
+// so the flow fails fast instead of sleeping into the package timeout.
+const flowMaxWait = 5 * time.Second
+
 func flowClaim(t *testing.T, st store.Store, ctx context.Context, id, session string, bound time.Duration) core.WorkOrder {
 	t.Helper()
 	order, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker-flow", ClaimantID: "worker-flow", SessionID: "session-" + session, ClientToken: "token-" + session, Lease: time.Hour, ExecutionTimeout: bound, Agent: "omp", Model: "opus"})
@@ -458,17 +480,25 @@ func flowClaim(t *testing.T, st store.Store, ctx context.Context, id, session st
 	return order
 }
 
-// flowExpire waits past the order's own deadline and ticks the order clock,
-// so a claimed order times out and a queued one goes stale.
+// flowExpire waits past the order's execution deadline when one is set,
+// whatever its projected state, and its queue deadline otherwise, then ticks
+// the order clock, so a claimed order times out and a queued one goes stale.
 func flowExpire(t *testing.T, st store.Store, ctx context.Context, id string) core.WorkOrder {
 	t.Helper()
 	order, err := st.GetWorkOrder(ctx, id)
 	requireOK(t, err)
+	// A read after the execution deadline projects a claimed order as
+	// timed_out without writing (component-work-orders v42) and keeps
+	// ExecutionDeadline, so select by the deadline, not the projected state.
 	deadline := order.QueueDeadline
-	if order.State == core.WorkOrderClaimed {
+	if !order.ExecutionDeadline.IsZero() {
 		deadline = order.ExecutionDeadline
 	}
-	time.Sleep(time.Until(deadline) + time.Millisecond)
+	wait := time.Until(deadline) + time.Millisecond
+	if wait > flowMaxWait {
+		t.Fatalf("flowExpire: order %s (state %s, execution_deadline %s, queue_deadline %s) would wait %s, over flowMaxWait %s", id, order.State, order.ExecutionDeadline, order.QueueDeadline, wait, flowMaxWait)
+	}
+	time.Sleep(wait)
 	_, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
 	requireOK(t, err)
 	order, err = st.GetWorkOrder(ctx, id)
