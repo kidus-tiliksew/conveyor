@@ -578,6 +578,22 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 // Stored and read-time projected states map onto the same set, so durable
 // reconcile filters use the same predicate (component-durable-queue
 // "Reconciliation between tasks and jobs").
+// WorkOrderHoldsStage is the creation-guard definition for a task stage.
+// Unlike WorkOrderBlocksStageMint, it examines stored state across the whole
+// task history: any same-stage claimed order holds the stage for executor
+// exclusivity, even when a newer stage is current. A dead claim must remain a
+// hold until the order clock persists its expiry; projecting it first would
+// turn it into queued or timed_out history and lose that distinction
+// (component-work-orders "Stages and order minting"; DEC-62).
+func WorkOrderHoldsStage(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
+	for _, order := range orders {
+		if order.Stage == stage && order.State == WorkOrderClaimed {
+			return order, true
+		}
+	}
+	return WorkOrderBlocksStageMint(orders, stage)
+}
+
 func WorkOrderBlocksStageMint(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
 	if len(orders) == 0 {
 		return WorkOrder{}, false

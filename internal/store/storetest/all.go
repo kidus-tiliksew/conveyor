@@ -191,6 +191,9 @@ func RunAll(t *testing.T, factory Factory) {
 		x := factory.fresh(t, nil)
 		RunReconcileWaitingOrderConformance(t, x.Backend, x.Context, x.Workspace, factory.ProductionCapable)
 	})
+	run("TimedOutSiblingRetirement", func(t *testing.T) {
+		RunTimedOutSiblingRetirementConformance(t, factory.fresh(t, nil))
+	})
 	run("AutomaticPublicationRecovery", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunAutomaticPublicationRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)

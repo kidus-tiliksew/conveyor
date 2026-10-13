@@ -1550,23 +1550,18 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if err := core.ValidateVerifyDispatch(task, order); err != nil {
 		return false, err
 	}
-	// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
-	// refuses only while it is the task's latest order in a holding state,
-	// or holds a claim (executor exclusivity). An older queued or stale
-	// order behind a newer stage is history and is retired below
-	// (component-work-orders "Stages and order minting"; DEC-62).
+	// Creation agrees with core.WorkOrderHoldsStage: a stored same-stage claim
+	// refuses creation for executor exclusivity even behind a newer stage. In
+	// the absence of a claim, the latest-order holding predicate governs
+	// admission (component-work-orders "Stages and order minting"; DEC-62).
 	var taskOrders []core.WorkOrder
 	for _, existing := range m.workOrders {
-		if existing.TaskID != job.TaskID {
-			continue
+		if existing.TaskID == job.TaskID {
+			taskOrders = append(taskOrders, existing)
 		}
-		if existing.Stage == job.Stage && existing.State == core.WorkOrderClaimed {
-			return false, nil
-		}
-		taskOrders = append(taskOrders, existing)
 	}
 	sortWorkOrders(taskOrders)
-	if _, held := core.WorkOrderBlocksStageMint(taskOrders, job.Stage); held {
+	if _, held := core.WorkOrderHoldsStage(taskOrders, job.Stage); held {
 		return false, nil
 	}
 	if _, exists := m.workOrders[order.ID]; exists {

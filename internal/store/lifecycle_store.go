@@ -159,7 +159,7 @@ func (m *memory) retireWorkOrderSiblingsLocked(ctx context.Context, authoritativ
 	}
 	for id, sibling := range m.workOrders {
 		if id == authoritative.ID || sibling.TaskID != authoritative.TaskID || sibling.Stage != authoritative.Stage ||
-			(sibling.State != core.WorkOrderQueued && sibling.State != core.WorkOrderStale) {
+			(sibling.State != core.WorkOrderQueued && sibling.State != core.WorkOrderStale && sibling.State != core.WorkOrderTimedOut) {
 			continue
 		}
 		if olderOnly && !(sibling.CreatedAt.Before(authoritative.CreatedAt) || sibling.CreatedAt.Equal(authoritative.CreatedAt) && sibling.ID < authoritative.ID) {
