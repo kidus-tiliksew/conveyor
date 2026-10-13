@@ -241,6 +241,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"EventRecency", true, runEventRecency},
 		{"PopulatedProjections", factory.Capabilities.Membership, runPopulatedProjections},
 		{"WorkspaceControl", true, runWorkspaceControl},
+		{"WorkspaceNameUniqueness", true, runWorkspaceNameUniqueness},
 		{"RepositoryInstall", true, runRepositoryInstall},
 		{"CommandRefusals", true, runCommandRefusals},
 		{"ApprovalRefresh", true, runApprovalRefresh},

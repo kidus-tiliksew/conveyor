@@ -180,4 +180,18 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 			t.Fatalf("first provenance changed: %+v", provenance)
 		}
 	})
+	t.Run("padded intake keys remain distinct", func(t *testing.T) {
+		baseKey := "provenance-padded-" + core.NewTaskID()
+		padded := newTask("mcp", baseKey+" ")
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, padded, nil, store.TaskContextInput{}))
+		unpadded := newTask("mcp", baseKey)
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, unpadded, nil, store.TaskContextInput{}))
+		for _, want := range []core.Task{padded, unpadded} {
+			got, found, err := st.GetTaskByIntakeKey(base, want.IntakeKey)
+			requireOK(t, err)
+			if !found || got.ID != want.ID {
+				t.Fatalf("intake key %q resolves to %+v found=%t, want %q", want.IntakeKey, got, found, want.ID)
+			}
+		}
+	})
 }
