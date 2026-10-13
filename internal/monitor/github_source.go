@@ -30,6 +30,10 @@ type GitHubSource struct {
 	ReconcileMerged func(context.Context, string, githubtrigger.PullRequest) (bool, error)
 	LoadHints       func(context.Context, string) (*HintContext, error)
 	OnSuppressed    func(context.Context, map[string]any) error
+	// MergeCommitState classifies DirectPush and ExternalPRMerge commits
+	// against recorded and in-flight Conveyor merges. Nil keeps today's
+	// classification (component-monitor-drift; req-260811-228be6).
+	MergeCommitState func(context.Context, string, string, time.Time) (MergeState, string, error)
 }
 
 type githubCommit struct {
@@ -138,6 +142,44 @@ func RecordedPullRequestHead(task core.Task, events []core.Event, githubSlug str
 	}
 	return latest != 0 && latest == pullRequestNumber &&
 		(headSHA == task.ApprovedHeadSHA || headSHA == task.ReviewedHeadSHA)
+}
+
+// RecordedMergeCommit reports whether event is merge.confirmed or
+// merge.reconciled whose merge_commit_sha or head_sha equals commitSHA.
+// Approvals and pull_request.opened heads are not evidence of a Conveyor
+// merge (AC-4.3; component-monitor-drift; 261013-9f494b).
+func RecordedMergeCommit(event core.Event, commitSHA string) bool {
+	if strings.TrimSpace(commitSHA) == "" || (event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled") {
+		return false
+	}
+	var merged struct {
+		HeadSHA  string `json:"head_sha"`
+		MergeSHA string `json:"merge_commit_sha"`
+	}
+	return json.Unmarshal(event.Payload, &merged) == nil && (merged.MergeSHA == commitSHA || merged.HeadSHA == commitSHA)
+}
+
+// RecordedMergeHead reports whether commitSHA is the merge_commit_sha or
+// head_sha of a merge.confirmed or merge.reconciled for this repository and
+// pull request. Rule (b) of RecordedPullRequestHead only; stale approvals
+// never match (AC-4.3; component-submission-merge "Observed merges").
+func RecordedMergeHead(events []core.Event, githubSlug string, pullRequestNumber int, commitSHA string) bool {
+	if strings.TrimSpace(commitSHA) == "" || strings.TrimSpace(githubSlug) == "" || pullRequestNumber == 0 {
+		return false
+	}
+	for _, event := range events {
+		if !RecordedMergeCommit(event, commitSHA) {
+			continue
+		}
+		var merged struct {
+			Repository string `json:"repository"`
+			Number     int    `json:"pull_request"`
+		}
+		if json.Unmarshal(event.Payload, &merged) == nil && merged.Repository == githubSlug && merged.Number == pullRequestNumber {
+			return true
+		}
+	}
+	return false
 }
 
 type openedPullRequest struct {
@@ -389,6 +431,11 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				}
 			}
 		}
+		if skip, skipErr := s.suppressMergeCommit(ctx, kind, commit); skipErr != nil {
+			return nil, skipErr
+		} else if skip {
+			continue
+		}
 		// Every out-of-pipeline kind (direct push, external pull-request
 		// merge at a head no task approval covers, revert) carries the
 		// observed commit's first-parent paths so governed-scope evaluation
@@ -424,6 +471,32 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		})
 	}
 	return observations, nil
+}
+
+func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, commit githubCommit) (bool, error) {
+	if s.MergeCommitState == nil || (kind != DirectPush && kind != ExternalPRMerge) {
+		return false, nil
+	}
+	state, taskID, err := s.MergeCommitState(ctx, s.Repository, commit.SHA, commit.Commit.Committer.Date)
+	if err != nil {
+		return false, err
+	}
+	var reason string
+	switch state {
+	case MergeRecorded:
+		reason = "conveyor_merge_recorded"
+	case MergeInFlight:
+		reason = "merge_in_flight"
+	default:
+		return false, nil
+	}
+	if s.OnSuppressed != nil {
+		_ = s.OnSuppressed(ctx, map[string]any{
+			"reason": reason, "repository": s.Repository,
+			"commit_sha": commit.SHA, "task_id": taskID,
+		})
+	}
+	return true, nil
 }
 
 // Carry the first-parent paths into governed-scope evaluation instead of only

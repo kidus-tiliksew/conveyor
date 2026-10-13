@@ -51,12 +51,45 @@ type Repo struct {
 // no credentials; the GitHub boundary uses the daemon's least-privilege
 // environment and records only stable error categories (component-harness-execution).
 type MonitorConfig struct {
-	Enabled           bool          `yaml:"enabled" json:"enabled"`
-	Repositories      []string      `yaml:"repositories,omitempty" json:"repositories"`
-	PollInterval      time.Duration `yaml:"-" json:"-"`
-	PollIntervalText  string        `yaml:"poll_interval" json:"poll_interval"`
-	StartupWindow     time.Duration `yaml:"-" json:"-"`
-	StartupWindowText string        `yaml:"startup_window" json:"startup_window"`
+	Enabled                bool          `yaml:"enabled" json:"enabled"`
+	Repositories           []string      `yaml:"repositories,omitempty" json:"repositories"`
+	PollInterval           time.Duration `yaml:"-" json:"-"`
+	PollIntervalText       string        `yaml:"poll_interval" json:"poll_interval"`
+	StartupWindow          time.Duration `yaml:"-" json:"-"`
+	StartupWindowText      string        `yaml:"startup_window" json:"startup_window"`
+	MergeDeferralBound     time.Duration `yaml:"-" json:"-"`
+	MergeDeferralBoundText string        `yaml:"merge_deferral_bound" json:"merge_deferral_bound"`
+}
+
+func normalizeMonitorConfig(m *MonitorConfig) error {
+	if m.PollIntervalText == "" {
+		m.PollIntervalText = "1m"
+	}
+	poll, err := time.ParseDuration(m.PollIntervalText)
+	if err != nil || poll <= 0 {
+		return fmt.Errorf("monitor.poll_interval must be a positive duration")
+	}
+	m.PollInterval = poll
+	if m.StartupWindowText == "" {
+		m.StartupWindowText = "24h"
+	}
+	window, err := time.ParseDuration(m.StartupWindowText)
+	if err != nil || window <= 0 {
+		return fmt.Errorf("monitor.startup_window must be a positive duration")
+	}
+	m.StartupWindow = window
+	if m.MergeDeferralBoundText == "" {
+		m.MergeDeferralBoundText = "10m"
+	}
+	bound, err := time.ParseDuration(m.MergeDeferralBoundText)
+	if err != nil || bound <= 0 {
+		return fmt.Errorf("monitor.merge_deferral_bound must be a positive duration")
+	}
+	if bound >= window {
+		return fmt.Errorf("monitor.merge_deferral_bound must be less than monitor.startup_window")
+	}
+	m.MergeDeferralBound = bound
+	return nil
 }
 
 // DatabaseForURL selects the durable backend for host-side CLI commands and
@@ -1050,17 +1083,8 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 	if next.Review.Seats == nil {
 		next.Review.Seats = []ReviewSeat{{}}
 	}
-	if next.Monitor.PollIntervalText == "" {
-		next.Monitor.PollIntervalText = "1m"
-	}
-	if next.Monitor.StartupWindowText == "" {
-		next.Monitor.StartupWindowText = "24h"
-	}
-	if next.Monitor.PollInterval, err = time.ParseDuration(next.Monitor.PollIntervalText); err != nil || next.Monitor.PollInterval <= 0 {
-		return nil, fmt.Errorf("monitor.poll_interval must be a positive duration")
-	}
-	if next.Monitor.StartupWindow, err = time.ParseDuration(next.Monitor.StartupWindowText); err != nil || next.Monitor.StartupWindow <= 0 {
-		return nil, fmt.Errorf("monitor.startup_window must be a positive duration")
+	if err = normalizeMonitorConfig(&next.Monitor); err != nil {
+		return nil, err
 	}
 	seen := map[string]bool{}
 	for i, repo := range next.Repos {
@@ -1671,22 +1695,9 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 	if err := c.Recovery.Normalize(); err != nil {
 		return err
 	}
-	if c.Monitor.PollIntervalText == "" {
-		c.Monitor.PollIntervalText = "1m"
+	if err := normalizeMonitorConfig(&c.Monitor); err != nil {
+		return err
 	}
-	monitorPoll, err := time.ParseDuration(c.Monitor.PollIntervalText)
-	if err != nil || monitorPoll <= 0 {
-		return fmt.Errorf("monitor.poll_interval must be a positive duration")
-	}
-	c.Monitor.PollInterval = monitorPoll
-	if c.Monitor.StartupWindowText == "" {
-		c.Monitor.StartupWindowText = "24h"
-	}
-	startupWindow, err := time.ParseDuration(c.Monitor.StartupWindowText)
-	if err != nil || startupWindow <= 0 {
-		return fmt.Errorf("monitor.startup_window must be a positive duration")
-	}
-	c.Monitor.StartupWindow = startupWindow
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -1941,6 +1952,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	}
 	document.Monitor.PollInterval = 0
 	document.Monitor.StartupWindow = 0
+	document.Monitor.MergeDeferralBound = 0
 	document.Monitor.Repositories = append(make([]string, 0, len(c.Monitor.Repositories)), c.Monitor.Repositories...)
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0

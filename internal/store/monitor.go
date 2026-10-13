@@ -79,6 +79,50 @@ func (m *memory) FindOpenMonitorTask(ctx context.Context, repository string, kin
 	return selected.ID, selected.ID != "", nil
 }
 
+func (m *memory) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	commitSHA = strings.TrimSpace(commitSHA)
+	if commitSHA == "" {
+		return monitor.MergeNone, "", nil
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	var recordedTask string
+	var recordedEvent core.Event
+	var inFlightTask string
+	var inFlightEvent core.Event
+	for taskID, events := range m.events {
+		if taskID == "" {
+			continue
+		}
+		task, ok := m.tasks[taskID]
+		if !ok || task.Workspace != workspace || task.Repo != repository {
+			continue
+		}
+		var latest core.Event
+		for _, event := range events {
+			if monitor.RecordedMergeCommit(event, commitSHA) {
+				if recordedTask == "" || TaskEventBefore(event, recordedEvent) {
+					recordedTask, recordedEvent = taskID, event
+				}
+			}
+			switch event.Kind {
+			case "merge.requested", "merge.confirmed", "merge.reconciled", "merge.failed":
+				if latest.Kind == "" || TaskEventBefore(latest, event) {
+					latest = event
+				}
+			}
+		}
+		if latest.Kind == "merge.requested" {
+			if inFlightTask == "" || TaskEventBefore(latest, inFlightEvent) {
+				inFlightTask, inFlightEvent = taskID, latest
+			}
+		}
+	}
+	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, now, bound)
+	return state, taskID, nil
+}
+
 func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

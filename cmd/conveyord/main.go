@@ -451,6 +451,11 @@ func main() {
 								return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)
 							},
 						}
+						bound := current.Monitor.MergeDeferralBound
+						monitorStore := srv.Monitor.Store
+						source.MergeCommitState = func(ctx context.Context, repository, commitSHA string, committedAt time.Time) (monitor.MergeState, string, error) {
+							return monitorStore.MonitorMergeCommitState(ctx, repository, commitSHA, committedAt, time.Now().UTC(), bound)
+						}
 						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
 							return srv.Monitor.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
 						}

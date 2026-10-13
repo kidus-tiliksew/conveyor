@@ -207,6 +207,30 @@ type IntakeResult struct {
 	Created bool
 }
 
+// MergeState is the monitor's view of whether an observed default-branch
+// commit is a recorded Conveyor merge, an in-flight merge, or neither
+// (component-monitor-drift; req-260811-228be6).
+type MergeState int
+
+const (
+	MergeNone MergeState = iota
+	MergeInFlight
+	MergeRecorded
+)
+
+// DecideMergeState prefers a recorded Conveyor merge over an in-flight
+// request. Deferral is keyed on commit age, not merge age, so a stuck
+// merge.requested cannot suppress reports past MergeDeferralBound.
+func DecideMergeState(recordedTaskID, inFlightTaskID string, committedAt, now time.Time, bound time.Duration) (MergeState, string) {
+	if recordedTaskID != "" {
+		return MergeRecorded, recordedTaskID
+	}
+	if inFlightTaskID != "" && bound > 0 && now.Sub(committedAt) < bound {
+		return MergeInFlight, inFlightTaskID
+	}
+	return MergeNone, ""
+}
+
 type Store interface {
 	RequirementExists(context.Context, string) (bool, error)
 	Observe(context.Context, Observation) (ObservationRecord, bool, error)
@@ -221,6 +245,11 @@ type Store interface {
 	AuditMonitor(context.Context, string, map[string]any) error
 	WithMonitorSignalClassLock(context.Context, string, SignalKind, func(context.Context) error) error
 	FindOpenMonitorTask(context.Context, string, SignalKind) (string, bool, error)
+	// MonitorMergeCommitState classifies an observed commit against recorded
+	// and in-flight merges in this workspace repository. Only merge.confirmed
+	// or merge.reconciled whose merge_commit_sha or head_sha matches is
+	// MergeRecorded; stale approvals are not evidence (AC-4.3; DEC-39).
+	MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (MergeState, string, error)
 	ListSystemDesigns(context.Context, bool) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)
 	// ResolveCausalSystemDesignMerge atomically resolves the delivering task's
