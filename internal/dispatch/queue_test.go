@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -409,6 +410,96 @@ func TestDispatchJobCompletesWhileTaskWaitsForAClaim(t *testing.T) {
 	task, err := st.GetTask(ctx, taskID)
 	if err != nil || task.State != core.TaskQueued || task.NextStage != core.StageSpec {
 		t.Fatalf("task=%+v err=%v, want still queued at spec", task, err)
+	}
+}
+
+// TestDispatchJobCompletesForHistoricalClaim: a claimed implement order may
+// sit behind a later review order after a bounce. The historical claim still
+// owns executor exclusivity, so queue dispatch completes rather than returning
+// a one-second snooze for every redelivery (component-durable-queue; DEC-62).
+func TestDispatchJobCompletesForHistoricalClaim(t *testing.T) {
+	t.Parallel()
+	runHistoricalClaimDispatch(t, false)
+}
+
+func TestDispatchJobCompletesForExpiredHistoricalClaim(t *testing.T) {
+	t.Parallel()
+	runHistoricalClaimDispatch(t, true)
+}
+
+func runHistoricalClaimDispatch(t *testing.T, expired bool) {
+	t.Helper()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	cfg := &config.Config{
+		Workspace: "test",
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"review":    {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+		}},
+		Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}},
+	}
+	st := store.NewMemoryWithConfig(cfg)
+	taskID := "dispatch-historical-claim-" + core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	first := taskID + "-implement-1"
+	if err := st.CreateJob(ctx, core.Job{ID: first, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: first, TaskID: taskID, JobID: first, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.ClaimWorkOrder(ctx, st, first, core.WorkOrderClaim{SessionID: "historical-claim-session", ClientToken: "historical-claim-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if expired {
+		order, err := st.GetWorkOrder(ctx, first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order.LeaseExpiresAt = time.Now().UTC().Add(-time.Second)
+		if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	later := taskID + "-review-1-seat-1"
+	if err := st.CreateJob(ctx, core.Job{ID: later, TaskID: taskID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: later, TaskID: taskID, JobID: later, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	ops := taskops.New(st)
+	if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	worker := &dispatchTaskWorker{dispatcher: New(st, cfg, nil), shutdown: &ShutdownMarker{}}
+	for round := 1; round <= 3; round++ {
+		if err := worker.Work(ctx, dispatchTaskJob(taskID, round, queue.DispatchTaskMaxAttempts)); err != nil {
+			var snooze *queue.SnoozeError
+			if errors.As(err, &snooze) {
+				t.Fatalf("round %d returned snooze %s for historical claim", round, snooze.Duration)
+			}
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+	if got, err := st.CountEvents(ctx, taskID, "dispatch.reconciled"); err != nil || got != 0 {
+		t.Fatalf("dispatch.reconciled=%d err=%v, want no queue churn", got, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, taskID)
+	if err != nil || len(orders) != 2 {
+		t.Fatalf("orders=%+v err=%v, want only historical and review orders", orders, err)
+	}
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil || task.State != core.TaskQueued || task.NextStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v, want queued implement task", task, err)
 	}
 }
 

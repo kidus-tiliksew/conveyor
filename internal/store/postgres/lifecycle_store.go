@@ -263,7 +263,7 @@ func retireWorkOrderSiblingsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, wo
 		return nil
 	}
 	rows, err := tx.Query(ctx, `SELECT id,job_id,state FROM work_orders
-		WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND id<>$4 AND state IN ('queued','stale')
+		WHERE workspace_id=$1 AND task_id=$2 AND stage=$3 AND id<>$4 AND state IN ('queued','stale','timed_out')
 		AND (NOT $5 OR (created_at,id)<($6,$4))
 		ORDER BY created_at,id FOR UPDATE`, workspaceID, authoritative.TaskID, authoritative.Stage, authoritative.ID, olderOnly, authoritative.CreatedAt)
 	if err != nil {

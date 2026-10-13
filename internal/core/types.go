@@ -563,6 +563,28 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 	return order.State == WorkOrderQueued && !order.RetrySuppressed
 }
 
+// WorkOrderHoldsStage is the creation-guard definition for a task stage.
+// For non-review stages, orders are one task's stored orders sorted by
+// (created_at, id), so the newest same-stage claimed order is selected first.
+// A claimed order holds even when a newer stage is current. A dead claim must
+// remain a hold until the order clock persists its expiry; projecting it first
+// would turn it into queued or timed_out history and lose that distinction.
+// Review rounds own their latest-round admission, so review delegates to
+// WorkOrderBlocksStageMint rather than treating an older claimed seat as a
+// cross-round hold (component-work-orders "Stages and order minting"; DEC-62).
+func WorkOrderHoldsStage(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
+	if stage == StageReview {
+		return WorkOrderBlocksStageMint(orders, stage)
+	}
+	for i := len(orders) - 1; i >= 0; i-- {
+		order := orders[i]
+		if order.Stage == stage && order.State == WorkOrderClaimed {
+			return order, true
+		}
+	}
+	return WorkOrderBlocksStageMint(orders, stage)
+}
+
 // WorkOrderBlocksStageMint is the single admission definition for minting a
 // new <task>-<stage>-N order outside merge-conflict work. orders are one
 // task's orders sorted by (created_at, id). The task's latest order blocks a
@@ -578,6 +600,7 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 // Stored and read-time projected states map onto the same set, so durable
 // reconcile filters use the same predicate (component-durable-queue
 // "Reconciliation between tasks and jobs").
+
 func WorkOrderBlocksStageMint(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
 	if len(orders) == 0 {
 		return WorkOrder{}, false

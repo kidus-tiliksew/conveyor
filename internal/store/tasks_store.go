@@ -1195,15 +1195,14 @@ func (m *memory) EnsureTaskEnqueued(_ context.Context, id string) error {
 	}
 	// Same rule as the durable backends: a held stage is moved through its
 	// order, not a task redispatch (component-durable-queue; DEC-62).
-	now := time.Now().UTC()
 	orders := make([]core.WorkOrder, 0)
 	for _, order := range m.workOrders {
 		if order.TaskID == id {
-			orders = append(orders, ProjectWorkOrderAt(order, now))
+			orders = append(orders, order)
 		}
 	}
 	sortWorkOrders(orders)
-	if holding, held := core.WorkOrderBlocksStageMint(orders, task.NextStage); held {
+	if holding, held := core.WorkOrderHoldsStage(orders, task.NextStage); held {
 		return fmt.Errorf("%w: task %s waits on work order %s", ErrTaskHeldByWorkOrder, id, holding.ID)
 	}
 	return nil

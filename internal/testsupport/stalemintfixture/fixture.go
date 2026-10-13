@@ -2,12 +2,15 @@
 // prove the stage-mint predicate and the atomic stage-creation guards agree:
 // a historical order behind a newer stage never blocks a bounce-back mint, and
 // a recoverable stop the clock will not move stays an operator stop with no
-// successor (core.WorkOrderBlocksStageMint; component-work-orders "Stages and
-// order minting"; component-durable-queue; DEC-62).
+// successor (core.WorkOrderHoldsStage for non-review stages, and
+// core.WorkOrderBlocksStageMint for review rounds; component-work-orders
+// "Stages and order minting"; component-durable-queue; DEC-62).
 package stalemintfixture
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +30,9 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 	t.Run("RecoveryDisabledStaleHoldsStage", func(t *testing.T) { runRecoveryDisabled(t, factory(t)) })
 	t.Run("PolicyRefusedVerifyHoldsStage", func(t *testing.T) { runRefusedVerify(t, factory(t)) })
 	t.Run("ClaimedOrderBehindLaterStageKeepsExclusivity", func(t *testing.T) { runClaimedExclusivity(t, factory(t)) })
+	t.Run("DeadClaimBehindReviewReportsHoldLease", func(t *testing.T) { runDeadClaimBehindReview(t, factory(t), false) })
+	t.Run("DeadClaimBehindReviewReportsHoldExecutionDeadline", func(t *testing.T) { runDeadClaimBehindReview(t, factory(t), true) })
+	t.Run("OlderRoundStopDoesNotHoldReview", func(t *testing.T) { runOlderRoundStop(t, factory(t)) })
 }
 
 type harness struct {
@@ -159,6 +165,126 @@ func runBounce(t *testing.T, st store.Backend, stale bool) {
 	h.dispatch(t)
 	if _, extra := h.orders(t)[h.task.ID+"-implement-3"]; extra {
 		t.Fatal("redelivered dispatch minted implement-3")
+	}
+}
+
+// runDeadClaimBehindReview proves that a stored claim remains the stage holder
+// after a bounce until the order clock persists its elapsed lease or execution
+// deadline. The clock then settles the claim and dispatch mints the successor.
+func runDeadClaimBehindReview(t *testing.T, st store.Backend, executionDeadline bool) {
+	h := newHarness(t, st, "dead-claim", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageImplement})
+	first := h.task.ID + "-implement-1"
+	h.dispatch(t)
+	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, first, core.WorkOrderClaim{
+		SessionID: "dead-claim-session", ClientToken: "dead-claim-token",
+		Lease: time.Hour, ExecutionTimeout: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	order, err := h.st.GetWorkOrder(h.ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if executionDeadline {
+		order.ExecutionDeadline = now.Add(-time.Second)
+	} else {
+		order.LeaseExpiresAt = now.Add(-time.Second)
+	}
+	if err = storetest.UpdateWorkOrder(h.ctx, h.st, order); err != nil {
+		t.Fatal(err)
+	}
+	h.perform(t, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
+	h.dispatch(t)
+	h.running(t)
+	h.perform(t, taskops.Command{Kind: core.TaskStageBounce, NextStage: core.StageImplement, ProjectStages: true})
+	err = h.st.EnsureTaskEnqueued(h.ctx, h.task.ID)
+	if !errors.Is(err, store.ErrTaskHeldByWorkOrder) || !strings.Contains(err.Error(), first) {
+		t.Fatalf("dead claim enqueue err=%v, want holder %s", err, first)
+	}
+	if _, exists := h.orders(t)[h.task.ID+"-implement-2"]; exists {
+		t.Fatal("dead claim was bypassed before the order clock")
+	}
+	if _, err = taskops.New(h.st).TickOrderClock(h.ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	events, err := h.st.ListEvents(h.ctx, h.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantClockEvent := "work_order.expired"
+	if executionDeadline {
+		wantClockEvent = "work_order.timed_out"
+	}
+	foundClockEvent := false
+	for _, event := range events {
+		if event.Kind == wantClockEvent {
+			foundClockEvent = true
+			break
+		}
+	}
+	if !foundClockEvent {
+		t.Fatalf("clock event %q missing", wantClockEvent)
+	}
+	h.dispatch(t)
+	orders := h.orders(t)
+	fresh, ok := orders[h.task.ID+"-implement-2"]
+	if !ok || fresh.State != core.WorkOrderQueued {
+		t.Fatalf("clock-settled bounce did not mint implement-2: %+v", orders)
+	}
+	if old := orders[first]; old.State != core.WorkOrderCancelled || old.RetrySuppressionReason != "superseded" {
+		t.Fatalf("dead claim was not retired as superseded: %+v", old)
+	}
+}
+
+// runOlderRoundStop proves that a timed-out seat from an older review round
+// does not hold review after a later round has completed. A bounce back to
+// review must mint the next round rather than redispatch the old seat.
+func runOlderRoundStop(t *testing.T, st store.Backend) {
+	h := newHarness(t, st, "older-round", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageImplement})
+	h.dispatch(t)
+	h.running(t)
+	h.perform(t, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
+	h.dispatch(t)
+	roundOne := h.task.ID + "-review-1-seat-1"
+	claimed, err := storetest.ClaimWorkOrder(h.ctx, h.st, roundOne, core.WorkOrderClaim{
+		SessionID: "older-round-session", ClientToken: "older-round-token",
+		Lease: time.Hour, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.State = core.WorkOrderTimedOut
+	if err = storetest.UpdateWorkOrder(h.ctx, h.st, claimed, core.WorkOrderCmdTimeout); err != nil {
+		t.Fatal(err)
+	}
+	roundTwo := h.task.ID + "-review-2-seat-1"
+	if err = h.st.CreateJob(h.ctx, core.Job{ID: roundTwo, TaskID: h.task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.CreateWorkOrder(h.ctx, h.st, core.WorkOrder{
+		ID: roundTwo, TaskID: h.task.ID, JobID: roundTwo, Stage: core.StageReview,
+		ReviewRound: 2, ReviewSeat: 1, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	roundTwoClaimed, err := storetest.ClaimWorkOrder(h.ctx, h.st, roundTwo, core.WorkOrderClaim{
+		SessionID: "round-two-session", ClientToken: "round-two-token",
+		Lease: time.Hour, ExecutionTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTwoClaimed.State = core.WorkOrderCompleted
+	if err = storetest.UpdateWorkOrder(h.ctx, h.st, roundTwoClaimed, core.WorkOrderCmdSubmitReviewVerdict); err != nil {
+		t.Fatal(err)
+	}
+	h.perform(t, taskops.Command{Kind: core.TaskStageBounce, NextStage: core.StageImplement, ProjectStages: true})
+	h.running(t)
+	h.perform(t, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
+	h.dispatch(t)
+	if _, ok := h.orders(t)[h.task.ID+"-review-3-seat-1"]; !ok {
+		t.Fatalf("completed round 2 did not permit round 3: %+v", h.orders(t))
 	}
 }
 

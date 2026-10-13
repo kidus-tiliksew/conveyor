@@ -387,11 +387,11 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
 			return err
 		}
-		// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
-		// refuses only while it is the task's latest order in a holding state,
-		// or holds a claim (executor exclusivity). An older queued or stale
-		// order behind a newer stage is history and is retired below
-		// (component-work-orders "Stages and order minting"; DEC-62).
+		// Creation agrees with core.WorkOrderHoldsStage: for non-review stages,
+		// a stored same-stage claim refuses creation for executor exclusivity
+		// even behind a newer stage. Without a claim, the latest-order holding
+		// predicate governs admission; review rounds use their own latest-round
+		// predicate (component-work-orders "Stages and order minting"; DEC-62).
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM work_orders wo
@@ -957,6 +957,22 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 			return nil, scanErr
 		}
 		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
+	}
+	return orders, rows.Err()
+}
+func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := make([]core.WorkOrder, 0)
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, order)
 	}
 	return orders, rows.Err()
 }

@@ -1550,23 +1550,20 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if err := core.ValidateVerifyDispatch(task, order); err != nil {
 		return false, err
 	}
-	// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
-	// refuses only while it is the task's latest order in a holding state,
-	// or holds a claim (executor exclusivity). An older queued or stale
-	// order behind a newer stage is history and is retired below
-	// (component-work-orders "Stages and order minting"; DEC-62).
+	// Creation agrees with core.WorkOrderHoldsStage: for non-review stages, a
+	// stored same-stage claim refuses creation for executor exclusivity even
+	// behind a newer stage. In the absence of a claim, the latest-order
+	// holding predicate governs admission; review rounds use their own
+	// latest-round predicate (component-work-orders "Stages and order minting";
+	// DEC-62).
 	var taskOrders []core.WorkOrder
 	for _, existing := range m.workOrders {
-		if existing.TaskID != job.TaskID {
-			continue
+		if existing.TaskID == job.TaskID {
+			taskOrders = append(taskOrders, existing)
 		}
-		if existing.Stage == job.Stage && existing.State == core.WorkOrderClaimed {
-			return false, nil
-		}
-		taskOrders = append(taskOrders, existing)
 	}
 	sortWorkOrders(taskOrders)
-	if _, held := core.WorkOrderBlocksStageMint(taskOrders, job.Stage); held {
+	if _, held := core.WorkOrderHoldsStage(taskOrders, job.Stage); held {
 		return false, nil
 	}
 	if _, exists := m.workOrders[order.ID]; exists {
@@ -1906,6 +1903,23 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 	return result, nil
 }
 
+type storedWorkOrderReader interface {
+	ListTaskWorkOrdersStored(context.Context, string) ([]core.WorkOrder, error)
+}
+
+// ListTaskWorkOrdersStored returns persisted work-order states without applying
+// read-time clock projection. Dispatch uses this to preserve a historical
+// claimed hold until the order clock commits its expiry (component-work-orders
+// "Stages and order minting"; DEC-62).
+func ListTaskWorkOrdersStored(ctx context.Context, backend Store, taskID string) ([]core.WorkOrder, error) {
+	if reader, ok := backend.(storedWorkOrderReader); ok {
+		return reader.ListTaskWorkOrdersStored(ctx, taskID)
+	}
+	// Test doubles that override ListTaskWorkOrders already provide their
+	// stored fixture rows; retain that fallback without widening Store.
+	return backend.ListTaskWorkOrders(ctx, taskID)
+}
+
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
 // observational responses. It performs no store writes; the queue order clock
 // persists the same canonical commands asynchronously.
@@ -1960,6 +1974,27 @@ func (m *memory) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.
 		}
 		order.Assignee = task.Assignee
 		out = append(out, ProjectWorkOrderAt(order, now))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+func (m *memory) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, workspaceSelected := WorkspaceFromContext(ctx)
+	out := make([]core.WorkOrder, 0)
+	for _, order := range m.workOrders {
+		task, ok := m.tasks[order.TaskID]
+		if !ok || order.TaskID != taskID || workspaceSelected && workspace != "" && task.Workspace != workspace {
+			continue
+		}
+		order.Assignee = task.Assignee
+		out = append(out, order)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {

@@ -319,6 +319,10 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, id string) ([]core.WorkO
 	projectOrders(orders)
 	return orders, err
 }
+func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, id string) ([]core.WorkOrder, error) {
+	return s.listOrders(ctx, s.db, []string{id})
+}
+
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, id string) ([]core.WorkOrder, error) {
 	orders, err := s.listOrders(ctx, s.db, []string{id})
 	projectOrders(orders)
@@ -460,11 +464,11 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		if err := core.ValidateVerifyDispatch(task, o); err != nil {
 			return err
 		}
-		// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
-		// refuses only while it is the task's latest order in a holding state,
-		// or holds a claim (executor exclusivity). An older queued or stale
-		// order behind a newer stage is history and is retired below
-		// (component-work-orders "Stages and order minting"; DEC-62).
+		// Creation agrees with core.WorkOrderHoldsStage: for non-review stages,
+		// a stored same-stage claim refuses creation for executor exclusivity
+		// even behind a newer stage. Without a claim, the latest-order holding
+		// predicate governs admission; review rounds use their own latest-round
+		// predicate (component-work-orders "Stages and order minting"; DEC-62).
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders wo WHERE wo.workspace_id=? AND wo.task_id=? AND wo.stage=? AND (wo.state='claimed' OR (wo.state IN ('queued','stale','timed_out') AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id))))))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
 			return err
@@ -497,7 +501,7 @@ func (s *Store) retireOrderSiblingsTx(ctx context.Context, tx *sql.Tx, authorita
 		return err
 	}
 	for _, o := range orders {
-		if o.Stage != authoritative.Stage || o.ID == authoritative.ID || (o.State != core.WorkOrderQueued && o.State != core.WorkOrderStale) {
+		if o.Stage != authoritative.Stage || o.ID == authoritative.ID || (o.State != core.WorkOrderQueued && o.State != core.WorkOrderStale && o.State != core.WorkOrderTimedOut) {
 			continue
 		}
 		if olderOnly && (!o.CreatedAt.Before(authoritative.CreatedAt) && (!o.CreatedAt.Equal(authoritative.CreatedAt) || o.ID >= authoritative.ID)) {

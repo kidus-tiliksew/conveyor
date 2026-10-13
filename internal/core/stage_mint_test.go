@@ -29,3 +29,39 @@ func TestWorkOrderBlocksStageMintReviewRound(t *testing.T) {
 		})
 	}
 }
+
+// WorkOrderHoldsStage keeps stored claims exclusive across non-review stage
+// history, preferring the newest claimed order, and delegates projected-state
+// admission for review and non-claimed states.
+func TestWorkOrderHoldsStage(t *testing.T) {
+	orders := func(state WorkOrderState, stage Stage) []WorkOrder {
+		return []WorkOrder{
+			{ID: "order-1", Stage: stage, State: state},
+			{ID: "review-1", Stage: StageReview, ReviewRound: 1, State: WorkOrderCompleted},
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		orders []WorkOrder
+		stage  Stage
+		holder string
+	}{
+		{"claimed history holds", orders(WorkOrderClaimed, StageImplement), StageImplement, "order-1"},
+		{"newest claimed history wins", []WorkOrder{
+			{ID: "older", Stage: StageImplement, State: WorkOrderClaimed},
+			{ID: "newer", Stage: StageImplement, State: WorkOrderClaimed},
+			{ID: "review", Stage: StageReview, ReviewRound: 1, State: WorkOrderCompleted},
+		}, StageImplement, "newer"},
+		{"queued history does not hold", orders(WorkOrderQueued, StageImplement), StageImplement, ""},
+		{"stale history does not hold", orders(WorkOrderStale, StageImplement), StageImplement, ""},
+		{"timed-out history does not hold", orders(WorkOrderTimedOut, StageImplement), StageImplement, ""},
+		{"claimed review history delegates to round predicate", orders(WorkOrderClaimed, StageReview), StageReview, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holder, held := WorkOrderHoldsStage(tc.orders, tc.stage)
+			if held != (tc.holder != "") || holder.ID != tc.holder {
+				t.Fatalf("holder=%q held=%v want %q", holder.ID, held, tc.holder)
+			}
+		})
+	}
+}
