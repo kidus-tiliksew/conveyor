@@ -283,7 +283,7 @@ describes scratch space and retained evidence for work on this repository.
 
 ## Acknowledgements
 
-Supported by the awesome [FunnelFlux](https://funnelflux.com) team.
+Supported by the awesome [FunnelFlux](https://funnelflux.com) team ❤️
 
 ## License
 
