@@ -247,9 +247,10 @@ type Store interface {
 	WithMonitorSignalClassLock(context.Context, string, SignalKind, func(context.Context) error) error
 	FindOpenMonitorTask(context.Context, string, SignalKind) (string, bool, error)
 	// MonitorMergeCommitState classifies an observed commit against recorded
-	// and in-flight merges in this workspace repository. Only merge.confirmed
-	// or merge.reconciled whose merge_commit_sha or head_sha matches is
-	// MergeRecorded; stale approvals are not evidence (AC-4.3; DEC-39).
+	// and in-flight merges in this workspace. Only merge.confirmed or
+	// merge.reconciled whose payload.repository equals the observed GitHub
+	// slug and whose merge_commit_sha matches is MergeRecorded; head_sha
+	// and stale approvals are not evidence (AC-4.3; DEC-39).
 	MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (MergeState, string, error)
 	ListSystemDesigns(context.Context, bool) ([]core.SystemDesign, error)
 	GetSystemDesignVersion(context.Context, string, int) (core.SystemDesignVersion, error)

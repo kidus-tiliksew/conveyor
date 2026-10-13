@@ -302,6 +302,21 @@ func runMonitorMergeCommitState(t *testing.T, x Fixture) {
 		t.Fatalf("future-dated commit state=%v task=%s", futureState, futureTask)
 	}
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: stuck.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+	staleReq := newAggregateTask(t, x)
+	freshReq := newAggregateTask(t, x)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: staleReq.ID, Kind: "merge.requested", At: now.Add(-20 * time.Minute), Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 32})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: freshReq.ID, Kind: "merge.requested", At: now.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 33})}))
+	staleThenFresh, staleThenFreshTask, err := ms.MonitorMergeCommitState(ctx, "acme/conveyor", "stale-then-fresh-sha", now.Add(-30*time.Second), now, bound)
+	requireOK(t, err)
+	if staleThenFresh != monitor.MergeInFlight || staleThenFreshTask != freshReq.ID {
+		t.Fatalf("stale then fresh state=%v task=%s want in-flight %s", staleThenFresh, staleThenFreshTask, freshReq.ID)
+	}
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: staleReq.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: freshReq.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+
+	otherRepo := newAggregateTask(t, x)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: otherRepo.ID, Kind: "merge.requested", At: committed, Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "pull_request": 41})}))
+	assertState(t, "cross-repo-inflight-sha", committed.Add(time.Minute), monitor.MergeNone, "")
 
 	recorded := newAggregateTask(t, x)
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: recorded.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 2})}))
@@ -349,7 +364,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 	clock := now
 	const sha = "inflight-then-confirmed"
 	task := newAggregateTask(t, x)
-	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 12})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.requested", At: now, Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 12})}))
 
 	var suppressed []string
 	source := mergeDeferralGitHubSource(x, sha, committed, func() time.Time { return clock }, bound, "", &suppressed)
@@ -404,7 +419,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 
 	const delayed = "stuck-merge-push"
 	stuck := newAggregateTask(t, x)
-	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: stuck.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 13})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: stuck.ID, Kind: "merge.requested", At: committed, Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 13})}))
 	before := committed.Add(bound - time.Second)
 	clock = before
 	delayedSuppressed := []string{}

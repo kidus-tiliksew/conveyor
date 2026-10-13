@@ -425,6 +425,16 @@ func TestMonitorConfigurationIsExplicitAndRepositoryScoped(t *testing.T) {
 	if want := 5*time.Minute - time.Minute - 5*time.Second; shortNorm.Monitor.MergeDeferralBound != want {
 		t.Fatalf("derived bound=%s want %s", shortNorm.Monitor.MergeDeferralBound, want)
 	}
+	equal := validConfig()
+	equal.Monitor = MonitorConfig{StartupWindowText: "5m", MergeDeferralBoundText: "3m55s"}
+	equalNorm, err := normalize(equal, "/tmp/conveyor.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equalNorm.Monitor.MergeDeferralBound != 3*time.Minute+55*time.Second {
+		t.Fatalf("explicit derived bound=%s", equalNorm.Monitor.MergeDeferralBound)
+	}
+
 	disabled := validConfig()
 	disabled.Monitor = MonitorConfig{PollIntervalText: "1m", StartupWindowText: "1m"}
 	disabledNorm, err := normalize(disabled, "/tmp/conveyor.yaml")

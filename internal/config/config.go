@@ -98,8 +98,8 @@ func normalizeMonitorConfig(m *MonitorConfig) error {
 	if err != nil || bound <= 0 {
 		return fmt.Errorf("monitor.merge_deferral_bound must be a positive duration")
 	}
-	if bound+poll+mergeDeferralWindowSlack >= window {
-		return fmt.Errorf("monitor.merge_deferral_bound plus poll_interval plus 5s must be less than monitor.startup_window")
+	if bound+poll+mergeDeferralWindowSlack > window {
+		return fmt.Errorf("monitor.merge_deferral_bound plus poll_interval plus 5s must not exceed monitor.startup_window")
 	}
 	m.MergeDeferralBound = bound
 	return nil

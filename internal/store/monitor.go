@@ -120,6 +120,9 @@ func (m *memory) MonitorMergeCommitState(ctx context.Context, repository, commit
 			if ended {
 				continue
 			}
+			if bound <= 0 || !event.At.After(now.Add(-bound)) {
+				continue
+			}
 			if inFlightTask == "" || TaskEventBefore(event, inFlightEvent) {
 				inFlightTask, inFlightEvent = taskID, event
 			}
