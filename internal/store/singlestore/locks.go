@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,30 @@ func observeLockReturn(ctx context.Context) (context.Context, *lockReturnObserve
 func noteLockReturn(ctx context.Context) {
 	if obs, ok := ctx.Value(lockReturnKey{}).(*lockReturnObserver); ok {
 		obs.at = time.Now()
+	}
+}
+
+// taskTxCommitObserver is a test-only hook; production callers leave it unset.
+type taskTxCommitObserver struct {
+	at    time.Time
+	calls atomic.Int32
+	hook  func()
+}
+
+type taskTxCommitKey struct{}
+
+func observeTaskTxCommit(ctx context.Context, hook func()) (context.Context, *taskTxCommitObserver) {
+	obs := &taskTxCommitObserver{hook: hook}
+	return context.WithValue(ctx, taskTxCommitKey{}, obs), obs
+}
+
+func noteTaskTxCommit(ctx context.Context) {
+	if obs, ok := ctx.Value(taskTxCommitKey{}).(*taskTxCommitObserver); ok {
+		obs.at = time.Now()
+		obs.calls.Add(1)
+		if obs.hook != nil {
+			obs.hook()
+		}
 	}
 }
 
@@ -116,6 +141,7 @@ type taskLockOwnerKey struct{}
 type taskLockOwner struct {
 	store           *Store
 	workspace, task string
+	tx              *sql.Tx
 	active          atomic.Bool
 	parent          *taskLockOwner
 }
@@ -129,6 +155,22 @@ func (s *Store) ownsTaskLock(ctx context.Context, ws, task string) bool {
 	}
 	return false
 }
+func (s *Store) lockOnTaskSession(ctx context.Context, ws, task, key string) error {
+	if s.ownsTaskLock(ctx, ws, key) {
+		return nil
+	}
+	owner, _ := ctx.Value(taskLockOwnerKey{}).(*taskLockOwner)
+	for ; owner != nil; owner = owner.parent {
+		if owner.store == s && owner.workspace == ws && owner.task == task && owner.active.Load() {
+			if owner.tx == nil {
+				return fmt.Errorf("task lock session has no transaction")
+			}
+			return lockKey(ctx, owner.tx, "task-operation:"+ws+":"+key)
+		}
+	}
+	return fmt.Errorf("task lock session required")
+}
+
 func (s *Store) lockTaskOperation(ctx context.Context, tx *sql.Tx, ws, task string) error {
 	if s.ownsTaskLock(ctx, ws, task) {
 		return nil
@@ -159,7 +201,7 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 		return translateBackendConflict(err)
 	}
 	parent, _ := ctx.Value(taskLockOwnerKey{}).(*taskLockOwner)
-	owner := &taskLockOwner{store: s, workspace: ws, task: taskID, parent: parent}
+	owner := &taskLockOwner{store: s, workspace: ws, task: taskID, tx: tx, parent: parent}
 	owner.active.Store(true)
 	defer owner.active.Store(false)
 	return fn(context.WithValue(ctx, taskLockOwnerKey{}, owner))

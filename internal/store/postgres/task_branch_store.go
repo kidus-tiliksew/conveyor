@@ -53,11 +53,19 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 	}
 	var result core.Task
 	err := s.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
-		task, err := s.GetTask(ctx, taskID)
-		if err != nil {
+		// Keep the repository read on the task-lock session; a pool read would self-starve a one-connection pool (DEC-38; component-persistence).
+		var repo string
+		if err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+			loaded, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+			if err != nil {
+				return notFound(err, "task %s", taskID)
+			}
+			repo = taskFromDB(loaded).Repo
+			return nil
+		}); err != nil {
 			return err
 		}
-		return s.WithTaskSideEffectLock(ctx, store.BranchCloseLockKey(task.Repo, branch), func(ctx context.Context) error {
+		return s.WithTaskSideEffectLock(ctx, store.BranchCloseLockKey(repo, branch), func(ctx context.Context) error {
 			return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 				var currentBranch, currentState, currentRepo, currentBase string
 				err := tx.QueryRow(ctx, `SELECT branch, state, repo_name, base_branch FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&currentBranch, &currentState, &currentRepo, &currentBase)
