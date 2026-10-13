@@ -1190,13 +1190,15 @@ func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 			return fmt.Errorf("task %s is not queued", id)
 		}
 		// A task held by a mint-blocking order waits for its claim or the order
-		// clock; there is no drift to repair or record (component-durable-queue).
-		var waiting bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks t WHERE t.workspace_id=? AND t.id=? AND `+blockingOrderSQL("t")+`)`, t.Workspace, id).Scan(&waiting); err != nil {
-			return err
+		// clock; a task redispatch cannot move it, so the operator is pointed at
+		// the order (component-durable-queue; DEC-62).
+		var holding string
+		err = tx.QueryRowContext(ctx, `SELECT wo.id FROM tasks t JOIN work_orders wo ON wo.workspace_id=t.workspace_id AND wo.task_id=t.id WHERE t.workspace_id=? AND t.id=? AND `+blockingOrderSQL("t")+` AND wo.state IN ('queued','claimed','stale','timed_out') ORDER BY wo.created_at DESC, wo.id DESC LIMIT 1`, t.Workspace, id).Scan(&holding)
+		if err == nil {
+			return fmt.Errorf("%w: task %s waits on work order %s", store.ErrTaskHeldByWorkOrder, id, holding)
 		}
-		if waiting {
-			return nil
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 		inserted, err := s.enqueueTaskTx(ctx, tx, id, t.Workspace)
 		if err != nil || !inserted {

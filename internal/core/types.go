@@ -572,18 +572,30 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 // (component-work-orders "Stages and order minting"; feature-bounded-automatic-recovery
 // AR-3). The rule holds even when automatic recovery is disabled. An order at
 // another stage created later means the task moved on and bounced back, so the
-// older order no longer blocks. Stored and read-time projected states map onto
-// the same set, so durable reconcile filters use the same predicate
-// (component-durable-queue "Reconciliation between tasks and jobs").
+// older order no longer blocks. For review the latest order is one seat of
+// the latest round, and any seat of that round in a holding state holds the
+// stage, so a stale or timed-out seat is redispatched rather than re-rounded.
+// Stored and read-time projected states map onto the same set, so durable
+// reconcile filters use the same predicate (component-durable-queue
+// "Reconciliation between tasks and jobs").
 func WorkOrderBlocksStageMint(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
 	if len(orders) == 0 {
 		return WorkOrder{}, false
 	}
 	latest := orders[len(orders)-1]
-	if latest.Stage != stage || !WorkOrderStateBlocksMint(latest.State) {
+	if latest.Stage != stage {
 		return WorkOrder{}, false
 	}
-	return latest, true
+	if stage != StageReview {
+		return latest, WorkOrderStateBlocksMint(latest.State)
+	}
+	for i := len(orders) - 1; i >= 0; i-- {
+		seat := orders[i]
+		if seat.Stage == StageReview && seat.ReviewRound == latest.ReviewRound && WorkOrderStateBlocksMint(seat.State) {
+			return seat, true
+		}
+	}
+	return WorkOrder{}, false
 }
 
 // WorkOrderStateBlocksMint lists the order states that hold a stage open:

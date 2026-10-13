@@ -3,6 +3,9 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,10 +25,11 @@ type durableQueue interface {
 }
 
 // RunReconcileWaitingOrderConformance: a queued task whose current stage is
-// held by a mint-blocking order (queued, or stale past its queue deadline) is
-// waiting for a claim or the order clock, not drifting. Reconcile and
-// EnsureTaskEnqueued neither re-enqueue it nor append dispatch.reconciled on
-// any tick, while a queued task with no order and a completed job is still
+// held by a mint-blocking order (queued, or stale past its queue deadline; for
+// review, any seat of the latest round) is waiting for a claim or the order
+// clock, not drifting. Reconcile neither re-enqueues it nor appends
+// dispatch.reconciled on any tick, EnsureTaskEnqueued refuses with
+// store.ErrTaskHeldByWorkOrder naming the order, while a queued task with no order and a completed job is still
 // repaired exactly once (component-durable-queue "Reconciliation between
 // tasks and jobs"; DEC-62).
 func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx context.Context, workspace string, production bool) {
@@ -66,9 +70,29 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 	bounced := newQueued(core.StageImplement)
 	withOrder(bounced, core.StageImplement, now.Add(time.Hour))
 	withOrder(bounced, core.StageReview, now.Add(time.Hour))
+	// A review task holds its stage through any seat of its latest round:
+	// seat 1 reads stale while seat 2, the latest order, is cancelled.
+	review := newQueued(core.StageReview)
+	for seat := range 2 {
+		orderID := fmt.Sprintf("%s-review-1-seat-%d", review, seat+1)
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: review, Stage: core.StageReview, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: review, JobID: orderID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: seat + 1, QueueEnteredAt: now.Add(-48 * time.Hour), QueueDeadline: now.Add(-time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cancelled, err := st.GetWorkOrder(ctx, review+"-review-1-seat-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled.State = core.WorkOrderCancelled
+	if err = UpdateWorkOrder(ctx, st, cancelled, core.WorkOrderCmdCancel); err != nil {
+		t.Fatal(err)
+	}
 
 	// The dispatch job ran and completed, as it does once an order exists.
-	for _, id := range []string{waiting, stale, drifted, bounced} {
+	for _, id := range []string{waiting, stale, review, drifted, bounced} {
 		completeDispatchJob(t, ctx, durable.Log(), workspace, id)
 	}
 	for tick := range 5 {
@@ -84,18 +108,19 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 			t.Fatalf("tick %d repaired=%d want %d", tick, repaired, want)
 		}
 	}
-	for _, id := range []string{waiting, stale} {
-		if err := st.EnsureTaskEnqueued(ctx, id); err != nil {
-			t.Fatal(err)
+	// Operator task redispatch cannot move a held stage; it names the order.
+	for _, id := range []string{waiting, stale, review} {
+		if err := st.EnsureTaskEnqueued(ctx, id); !errors.Is(err, store.ErrTaskHeldByWorkOrder) || !strings.Contains(err.Error(), id+"-") {
+			t.Fatalf("task %s redispatch err=%v", id, err)
 		}
 	}
-	for id, want := range map[string]int{waiting: 0, stale: 0, drifted: 1, bounced: 1} {
+	for id, want := range map[string]int{waiting: 0, stale: 0, review: 0, drifted: 1, bounced: 1} {
 		if n, err := st.CountEvents(ctx, id, "dispatch.reconciled"); err != nil || n != want {
 			t.Fatalf("task %s dispatch.reconciled=%d want %d err=%v", id, n, want, err)
 		}
 	}
 	kind := queue.DispatchTaskArgs{}.Kind()
-	for id, wantActive := range map[string]bool{waiting: false, stale: false, drifted: true, bounced: true} {
+	for id, wantActive := range map[string]bool{waiting: false, stale: false, review: false, drifted: true, bounced: true} {
 		job, err := logqueue.Load(ctx, durable.Log(), workspace, logqueue.StreamFor(kind, id))
 		if err != nil || job.Active() != wantActive {
 			t.Fatalf("task %s job active=%v want %v err=%v", id, job.Active(), wantActive, err)

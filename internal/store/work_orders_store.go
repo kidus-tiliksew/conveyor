@@ -1550,11 +1550,24 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if err := core.ValidateVerifyDispatch(task, order); err != nil {
 		return false, err
 	}
+	// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
+	// refuses only while it is the task's latest order in a holding state,
+	// or holds a claim (executor exclusivity). An older queued or stale
+	// order behind a newer stage is history and is retired below
+	// (component-work-orders "Stages and order minting"; DEC-62).
+	var taskOrders []core.WorkOrder
 	for _, existing := range m.workOrders {
-		if existing.TaskID == job.TaskID && existing.Stage == job.Stage &&
-			(existing.State == core.WorkOrderQueued || existing.State == core.WorkOrderClaimed) {
+		if existing.TaskID != job.TaskID {
+			continue
+		}
+		if existing.Stage == job.Stage && existing.State == core.WorkOrderClaimed {
 			return false, nil
 		}
+		taskOrders = append(taskOrders, existing)
+	}
+	sortWorkOrders(taskOrders)
+	if _, held := core.WorkOrderBlocksStageMint(taskOrders, job.Stage); held {
+		return false, nil
 	}
 	if _, exists := m.workOrders[order.ID]; exists {
 		return false, nil
@@ -1585,7 +1598,19 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stage re-entry", now, true)
 	return true, nil
+}
+
+// sortWorkOrders orders one task's orders by (created_at, id), the order
+// core.WorkOrderBlocksStageMint expects.
+func sortWorkOrders(orders []core.WorkOrder) {
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
 }
 
 func (m *memory) taskBlockedLocked(taskID string) bool {

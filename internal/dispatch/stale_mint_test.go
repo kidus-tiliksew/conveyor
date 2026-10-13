@@ -19,6 +19,11 @@ import (
 
 func staleMintFixture(t *testing.T, id string) (context.Context, store.Store, *Dispatcher, core.Task) {
 	t.Helper()
+	return staleMintFixtureAt(t, id, core.StageImplement)
+}
+
+func staleMintFixtureAt(t *testing.T, id string, stage core.Stage) (context.Context, store.Store, *Dispatcher, core.Task) {
+	t.Helper()
 	settings := config.ContextualExecutionSettings{
 		ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
 		Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"},
@@ -29,7 +34,7 @@ func staleMintFixture(t *testing.T, id string) (context.Context, store.Store, *D
 	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Setups: []config.ExecutionSetup{setup}, DefaultSetup: "backend"}).WithSetup(setup)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: id, Workspace: "demo", Title: "Stale", SetupName: setup.Name, SetupContract: setup, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	task := core.Task{ID: id, Workspace: "demo", Title: "Stale", SetupName: setup.Name, SetupContract: setup, State: core.TaskQueued, NextStage: stage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +42,11 @@ func staleMintFixture(t *testing.T, id string) (context.Context, store.Store, *D
 	if err := d.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	requireOrderIDs(t, ctx, st, task.ID, task.ID+"-implement-1")
+	first := task.ID + "-implement-1"
+	if stage == core.StageReview {
+		first = task.ID + "-review-1-seat-1"
+	}
+	requireOrderIDs(t, ctx, st, task.ID, first)
 	return ctx, st, d, task
 }
 
@@ -189,8 +198,10 @@ func TestTimedOutOrderIsRecoveredNotReissued(t *testing.T) {
 	requireOrderIDs(t, ctx, st, task.ID, orderID)
 }
 
-// A task that moved past the stage and bounced back gets a fresh order: the
-// old stale order is history, not a recoverable stop at the current stage.
+// Risk 2 of the approved plan: a task that moved past the stage and bounced
+// back through a real stage.bounce gets a fresh order. The old stale order is
+// history behind the later review order, not a recoverable stop at the
+// current stage, so it neither blocks the mint nor stays live beside it.
 func TestBounceBackPastStaleOrderMintsFreshOrder(t *testing.T) {
 	ctx, st, d, task := staleMintFixture(t, "bounce-stale")
 	first := task.ID + "-implement-1"
@@ -203,19 +214,47 @@ func TestBounceBackPastStaleOrderMintsFreshOrder(t *testing.T) {
 	if err = storetest.UpdateWorkOrder(ctx, st, stale, core.WorkOrderCmdMarkStale); err != nil {
 		t.Fatal(err)
 	}
+	ops := taskops.New(st)
+	perform := func(command taskops.Command) {
+		t.Helper()
+		if _, err := ops.Perform(ctx, task.ID, command); err != nil {
+			t.Fatalf("%s: %v", command.Kind, err)
+		}
+	}
+	// The task leaves implement for review and a review order is minted there.
+	perform(taskops.Command{Kind: core.TaskDispatchStart})
+	perform(taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
 	later := task.ID + "-review-1"
-	if err := st.CreateJob(ctx, core.Job{ID: later, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+	if err = st.CreateJob(ctx, core.Job{ID: later, TaskID: task.ID, Stage: core.StageReview, State: core.JobDone}); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: later, TaskID: task.ID, JobID: later, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}); err != nil {
+	if err = storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: later, TaskID: task.ID, JobID: later, Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.DispatchNow(ctx, task.ID); err != nil {
+	// Review bounces the task back to implement.
+	perform(taskops.Command{Kind: core.TaskDispatchStart})
+	perform(taskops.Command{Kind: core.TaskStageBounce, NextStage: core.StageImplement, ProjectStages: true})
+	bounced, err := st.GetTask(ctx, task.ID)
+	if err != nil || bounced.State != core.TaskQueued || bounced.NextStage != core.StageImplement {
+		t.Fatalf("bounced task=%+v err=%v", bounced, err)
+	}
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
-	orders := requireOrderIDs(t, ctx, st, task.ID, first, later, task.ID+"-implement-2")
-	if orders[2].State != core.WorkOrderQueued {
-		t.Fatalf("fresh order=%+v", orders[2])
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]core.WorkOrder{}
+	for _, order := range orders {
+		byID[order.ID] = order
+	}
+	fresh, ok := byID[task.ID+"-implement-2"]
+	if !ok || fresh.State != core.WorkOrderQueued {
+		t.Fatalf("no fresh implement order after bounce: %+v", orders)
+	}
+	if old := byID[first]; old.State != core.WorkOrderCancelled || old.RetrySuppressionReason != "superseded" {
+		t.Fatalf("implement-1 was not retired as superseded: %+v", old)
 	}
 }
 
@@ -255,4 +294,36 @@ type fixedOrders struct {
 
 func (f fixedOrders) ListTaskWorkOrders(context.Context, string) ([]core.WorkOrder, error) {
 	return f.orders, nil
+}
+
+// A stale review seat is a recoverable stop like any other order: redelivered
+// dispatch reuses the round and the order clock redispatches the seat, so no
+// second live round is minted (component-work-orders; DEC-62).
+func TestStaleReviewSeatIsRedispatchedNotReRounded(t *testing.T) {
+	ctx, st, d, task := staleMintFixtureAt(t, "stale-seat", core.StageReview)
+	seat := task.ID + "-review-1-seat-1"
+	expireQueue(t, ctx, st, seat)
+	if err := d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireOrderIDs(t, ctx, st, task.ID, seat)
+	clock := taskops.New(st)
+	if _, err := clock.TickOrderClock(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	scheduled, err := st.GetWorkOrder(ctx, seat)
+	if err != nil || scheduled.NextAutomaticRecoveryAt.IsZero() {
+		t.Fatalf("seat not scheduled=%+v err=%v", scheduled, err)
+	}
+	if _, err = clock.TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := st.GetWorkOrder(ctx, seat)
+	if err != nil || recovered.State != core.WorkOrderQueued || recovered.AutomaticRecoveryCount != 1 {
+		t.Fatalf("seat recovered=%+v err=%v", recovered, err)
+	}
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireOrderIDs(t, ctx, st, task.ID, seat)
 }

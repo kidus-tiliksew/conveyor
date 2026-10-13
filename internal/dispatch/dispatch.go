@@ -446,6 +446,12 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			latestRound = order.ReviewRound
 		}
 	}
+	// A stale or timed-out seat of the latest round is a recoverable stop the
+	// order clock redispatches under the DEC-62 bound; a second live round
+	// would race it (component-work-orders "Stages and order minting").
+	if _, held := core.WorkOrderBlocksStageMint(prior, core.StageReview); held {
+		return nil
+	}
 	// Durable queue redelivery must reuse any active snapshotted round. The task
 	// remains queued until the first seat claim issues order.claim (component-work-orders).
 	for _, order := range prior {
