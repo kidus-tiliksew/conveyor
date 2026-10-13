@@ -460,8 +460,13 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		if err := core.ValidateVerifyDispatch(task, o); err != nil {
 			return err
 		}
+		// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
+		// refuses only while it is the task's latest order in a holding state,
+		// or holds a claim (executor exclusivity). An older queued or stale
+		// order behind a newer stage is history and is retired below
+		// (component-work-orders "Stages and order minting"; DEC-62).
 		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND stage=? AND state IN ('queued','claimed'))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders wo WHERE wo.workspace_id=? AND wo.task_id=? AND wo.stage=? AND (wo.state='claimed' OR (wo.state IN ('queued','stale','timed_out') AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id))))))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -479,7 +484,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			return err
 		}
 		created = true
-		return nil
+		return s.retireOrderSiblingsTx(ctx, tx, o, "superseded by stage re-entry", time.Now().UTC(), true)
 	})
 	return created, err
 }

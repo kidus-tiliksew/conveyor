@@ -41,13 +41,18 @@ var (
 	ErrRequirementServesTransition = ErrTaskContextProposalTransition
 	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
 	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
-	ErrReviewRetryConflict         = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid              = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized          = errors.New("worker credential is invalid or revoked")
-	ErrWorkOrderCancelled          = errors.New("work order was cancelled")
-	ErrWorkOrderPreempted          = errors.New("work order was preempted by an operator")
-	ErrWorkOrderPreemptConflict    = errors.New("work order preempt conflict")
-	ErrTaskTerminal                = errors.New("task is already terminal")
+	// ErrTaskHeldByWorkOrder: a queued task's current stage is held by a
+	// queued, claimed, stale, or timed_out order (core.WorkOrderBlocksStageMint).
+	// Task redispatch cannot help; the operator redispatches or recovers the
+	// order itself (component-durable-queue; DEC-62).
+	ErrTaskHeldByWorkOrder      = errors.New("task stage is held by a work order; redispatch or recover the work order instead")
+	ErrReviewRetryConflict      = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid           = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized       = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled       = errors.New("work order was cancelled")
+	ErrWorkOrderPreempted       = errors.New("work order was preempted by an operator")
+	ErrWorkOrderPreemptConflict = errors.New("work order preempt conflict")
+	ErrTaskTerminal             = errors.New("task is already terminal")
 	// ErrTaskAlreadyStartedOver reports that the retired task already has a
 	// start-over successor (the tasks.supersedes unique index or task_start_overs
 	// uniqueness).

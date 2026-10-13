@@ -563,6 +563,51 @@ func WorkOrderActiveForConflictDispatch(order WorkOrder) bool {
 	return order.State == WorkOrderQueued && !order.RetrySuppressed
 }
 
+// WorkOrderBlocksStageMint is the single admission definition for minting a
+// new <task>-<stage>-N order outside merge-conflict work. orders are one
+// task's orders sorted by (created_at, id). The task's latest order blocks a
+// successor at stage while it is queued, claimed, stale, or timed_out: those
+// are recoverable stops that the order clock redispatches or recovers under
+// the DEC-62 bound, and past the bound they wait for the operator
+// (component-work-orders "Stages and order minting"; feature-bounded-automatic-recovery
+// AR-3). The rule holds even when automatic recovery is disabled. An order at
+// another stage created later means the task moved on and bounced back, so the
+// older order no longer blocks. For review the latest order is one seat of
+// the latest round, and any seat of that round in a holding state holds the
+// stage, so a stale or timed-out seat is redispatched rather than re-rounded.
+// Stored and read-time projected states map onto the same set, so durable
+// reconcile filters use the same predicate (component-durable-queue
+// "Reconciliation between tasks and jobs").
+func WorkOrderBlocksStageMint(orders []WorkOrder, stage Stage) (WorkOrder, bool) {
+	if len(orders) == 0 {
+		return WorkOrder{}, false
+	}
+	latest := orders[len(orders)-1]
+	if latest.Stage != stage {
+		return WorkOrder{}, false
+	}
+	if stage != StageReview {
+		return latest, WorkOrderStateBlocksMint(latest.State)
+	}
+	for i := len(orders) - 1; i >= 0; i-- {
+		seat := orders[i]
+		if seat.Stage == StageReview && seat.ReviewRound == latest.ReviewRound && WorkOrderStateBlocksMint(seat.State) {
+			return seat, true
+		}
+	}
+	return WorkOrder{}, false
+}
+
+// WorkOrderStateBlocksMint lists the order states that hold a stage open:
+// every state that is not submitted, completed, or cancelled.
+func WorkOrderStateBlocksMint(state WorkOrderState) bool {
+	switch state {
+	case WorkOrderQueued, WorkOrderClaimed, WorkOrderStale, WorkOrderTimedOut:
+		return true
+	}
+	return false
+}
+
 // HarnessSnapshot is legacy server-pinned execution metadata that older orders
 // persisted. The control plane no longer creates, resolves, or refreshes
 // one: queue re-entry clears it, and the claiming machine's local execution
