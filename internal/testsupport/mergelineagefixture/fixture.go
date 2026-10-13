@@ -93,12 +93,14 @@ func RunHeadMoved(t *testing.T, open func(*testing.T) store.Store) {
 func RunUnapprovedHead(t *testing.T, open func(*testing.T) store.Store) {
 	t.Helper()
 	s := setup(t, open(t))
-	s.expectExternal(t, headC, core.TaskApproved)
+	s.expectExternal(t, headC, false, core.TaskApproved)
 }
 
 // RunStaleApproval: approval at B goes stale toward C with no refresh
 // approval. A merge at C (unrecorded) and a merge at B (recorded, but the
 // stale approval is ineligible) both stay external without a state change.
+// The head-B case is intentionally an eligibility negative: lineage is true,
+// but stale approval keeps the merge external.
 func RunStaleApproval(t *testing.T, open func(*testing.T) store.Store) {
 	t.Helper()
 	for _, merged := range []string{headC, headB} {
@@ -107,18 +109,19 @@ func RunStaleApproval(t *testing.T, open func(*testing.T) store.Store) {
 			if _, err := s.st.MarkTaskApprovalStale(s.ctx, s.task.ID, headB, headC, config.RefreshReviewDelta, "head-changed"); err != nil {
 				t.Fatal(err)
 			}
-			s.expectExternal(t, merged, core.TaskApproved)
+			s.expectExternal(t, merged, merged == headB, core.TaskApproved)
 		})
 	}
 }
 
-func (s scenario) expectExternal(t *testing.T, merged string, state core.TaskState) {
+func (s scenario) expectExternal(t *testing.T, merged string, lineaged bool, state core.TaskState) {
 	t.Helper()
 	s.d.RequestMerge = func(context.Context, string, int) error {
 		t.Fatal("RequestMerge called")
 		return nil
 	}
 	checks := 0
+	failedBefore := countKind(t, s, "merge.failed")
 	observations, err := s.source(t, merged, &checks).Observations(s.ctx, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +131,20 @@ func (s scenario) expectExternal(t *testing.T, merged string, state core.TaskSta
 	}
 	if got := countKind(t, s, "merge.reconciled"); got != 0 {
 		t.Fatalf("merge at %s wrote %d merge.reconciled", merged, got)
+	}
+	if got := countKind(t, s, "merge.failed"); got != failedBefore {
+		t.Fatalf("merge at %s wrote %d merge.failed events (was %d)", merged, got-failedBefore, failedBefore)
+	}
+	task, err := s.st.GetTask(s.ctx, s.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.st.ListEvents(s.ctx, s.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := monitor.RecordedLineage(task, events, repository, githubSlug, s.task.ID, s.task.Branch, number, merged); got != lineaged {
+		t.Fatalf("merge at %s RecordedLineage=%t, want %t", merged, got, lineaged)
 	}
 	if got := taskState(t, s); got != state {
 		t.Fatalf("merge at %s moved task to %s", merged, got)
