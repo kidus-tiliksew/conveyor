@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -111,8 +112,9 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if w.operation != "INSERT" && len(w.where) == 0 {
 		return nil, fmt.Errorf("write predicate is required")
 	}
-	if w.operation == "DELETE" && (w.table == "user_tokens" || w.table == "reference_documents") {
-		// Claims on lock rows track these rows; a hard delete would orphan one.
+	if w.operation == "DELETE" && (w.table == "user_tokens" || w.table == "reference_documents" || w.table == "tasks") {
+		// Claims on lock rows track these rows; a hard delete would orphan one
+		// (DEC-68, component-persistence Lock and transaction contract).
 		return nil, fmt.Errorf("%s rows are retired, not deleted", w.table)
 	}
 	if w.table == "user_tokens" {
@@ -224,6 +226,11 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 			}
 		}
 	}
+	if w.table == "tasks" {
+		if err := taskBranchRule(ctx, tx, w); err != nil {
+			return nil, err
+		}
+	}
 	names, err := sortedColumns(w.values)
 	if err != nil {
 		return nil, err
@@ -267,4 +274,115 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	return tx.ExecContext(ctx, query, args...)
+}
+
+// taskBranchClaimKey names the lock row that serializes and claims one open
+// task branch. AttachTaskBranch, insertTaskRow and writeRow address the same
+// row through it (DEC-68, component-persistence Lock and transaction contract).
+func taskBranchClaimKey(ws, repo, branch string) string {
+	return "task-open-branch:" + ws + ":" + repo + ":" + branch
+}
+
+// taskBranchRule keeps one open task per workspace, repo and branch
+// (req-task-branch-assignment AC-4.1, AC-4.2). SingleStore has no partial
+// unique index, and the lock row and task row live on different partitions,
+// so the occupant is claimed on the lock row and released only by the write
+// that ends its occupancy: a terminal state or a branch change (DEC-68,
+// component-persistence Lock and transaction contract).
+func taskBranchRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
+	switch w.operation {
+	case "INSERT":
+		id, _ := w.values["id"].(string)
+		ws, _ := w.values["workspace_id"].(string)
+		repo, okRepo := w.values["repo_name"].(string)
+		branch, okBranch := w.values["branch"].(string)
+		state, okState := w.values["state"]
+		if id == "" || ws == "" || !okRepo || !okBranch || !okState {
+			return fmt.Errorf("task insert requires id, workspace_id, repo_name, branch and state")
+		}
+		if core.TaskTerminal(core.TaskState(fmt.Sprint(state))) {
+			return nil
+		}
+		return claimTaskBranch(ctx, tx, ws, repo, branch, id)
+	case "UPDATE":
+		state, setsState := w.values["state"]
+		branch, setsBranch := w.values["branch"]
+		repo, setsRepo := w.values["repo_name"]
+		if !setsState && !setsBranch && !setsRepo {
+			return nil
+		}
+		ws, _ := w.where["workspace_id"].(string)
+		id, _ := w.where["id"].(string)
+		if ws == "" || id == "" {
+			return fmt.Errorf("task state or branch write requires one task id")
+		}
+		if _, ok := branch.(string); setsBranch && !ok {
+			return fmt.Errorf("task branch must be a string")
+		}
+		if _, ok := repo.(string); setsRepo && !ok {
+			return fmt.Errorf("task repo_name must be a string")
+		}
+		var oldRepo, oldBranch, oldState sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT repo_name, branch, state FROM tasks WHERE workspace_id=? AND id=?`, ws, id).Scan(&oldRepo, &oldBranch, &oldState)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		newRepo, newBranch, newState := oldRepo.String, oldBranch.String, oldState.String
+		if setsRepo {
+			newRepo = repo.(string)
+		}
+		if setsBranch {
+			newBranch = branch.(string)
+		}
+		if setsState {
+			newState = fmt.Sprint(state)
+		}
+		wasOpen := !core.TaskTerminal(core.TaskState(oldState.String))
+		isOpen := !core.TaskTerminal(core.TaskState(newState))
+		moved := oldRepo.String != newRepo || oldBranch.String != newBranch
+		if wasOpen && (!isOpen || moved) {
+			if err := releaseTaskBranch(ctx, tx, taskBranchClaimKey(ws, oldRepo.String, oldBranch.String), id); err != nil {
+				return err
+			}
+		}
+		if isOpen && (!wasOpen || moved) {
+			return claimTaskBranch(ctx, tx, ws, newRepo, newBranch, id)
+		}
+	}
+	return nil
+}
+
+// claimTaskBranch refuses a branch whose claim or committed open row belongs
+// to another task, then records id as the holder.
+func claimTaskBranch(ctx context.Context, tx *sql.Tx, ws, repo, branch, id string) error {
+	key := taskBranchClaimKey(ws, repo, branch)
+	holder, err := claimKey(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if holder != "" && holder != id {
+		return store.TaskBranchInUseError(branch, holder)
+	}
+	var occupant string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, repo, branch, id).Scan(&occupant)
+	if err == nil {
+		return store.TaskBranchInUseError(branch, occupant)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return setClaim(ctx, tx, key, id)
+}
+
+// releaseTaskBranch clears key only when id holds it, so a stale read of the
+// task's own row can never free another task's claim.
+func releaseTaskBranch(ctx context.Context, tx *sql.Tx, key, id string) error {
+	holder, err := claimKey(ctx, tx, key)
+	if err != nil || holder != id {
+		return err
+	}
+	return setClaim(ctx, tx, key, "")
 }

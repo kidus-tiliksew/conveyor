@@ -103,11 +103,12 @@ checks because the schema lacks a PostgreSQL constraint.
 | `work_orders.state` CHECK | `checkWrite` validates `core.WorkOrderStates()` | `TestWorkOrderStates` |
 | One deployment credential | `writeRow` claims `one-deployment-credential`, counts other deployment credentials plus a claim held by another token, calls `checkDeploymentCredential`, then records the token as holder; setting the holder's `deployment_credential` false releases the claim | `TestOneDeploymentCredential`, `TestUniqueClaimsOutliveUnseenRowsIntegration` |
 | Live reference-document name | `writeRow` requires name, workspace, and explicit deleted_at, claims the workspace's `LOWER(name)`, counts other live case-insensitive names plus a claim held by another document, calls `checkReferenceName`, then records the document as holder; a soft delete releases the claim | `TestLiveReferenceName`, `TestUniqueClaimsOutliveUnseenRowsIntegration` |
+| `tasks_open_repo_branch_idx` partial unique index | `writeRow` claims `taskBranchClaimKey(workspace, repo, branch)` when a task row starts occupying an open branch (non-terminal insert, reopen, or branch/repo change), refuses a claim held by another task or another committed open row with `store.TaskBranchInUseError`, then records the task as holder; a terminal state or a branch change releases the old claim when the task holds it. Every `tasks` write that sets `state`, `branch` or `repo_name` must go through `writeRow` | `TestUniqueRuleInputsFailBeforeSQL`, `TestUniqueClaimsOutliveUnseenRowsIntegration`, `TaskBranchConcurrentClaims` conformance |
 
 Reference documents are inserted live and updated only to soft-delete, with
 the complete name/deleted-at projection. Credential writes must pass a boolean
 `deployment_credential` and one token id. `writeRow` refuses hard deletes of
-`user_tokens` and `reference_documents`, which would orphan a claim.
+`user_tokens`, `reference_documents` and `tasks`, which would orphan a claim.
 Task and work-order inserts must pass their canonical state. Aggregate implementations call these write paths or enforce the matching
 checks inside their command transaction.
 
