@@ -126,6 +126,18 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		}
 		return
 	}
+	for tick := range 3 {
+		repaired, err := durable.ReconcileQueuedTasks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if repaired != 0 {
+			t.Fatalf("claimed historical tick %d repaired=%d want 0", tick, repaired)
+		}
+	}
+	if got, err := st.CountEvents(ctx, claimed, "dispatch.reconciled"); err != nil || got != claimedReconciled {
+		t.Fatalf("claimed historical dispatch.reconciled=%d err=%v, want %d", got, err, claimedReconciled)
+	}
 	waiting := newQueued(core.StageSpec)
 	withOrder(waiting, core.StageSpec, now.Add(time.Hour))
 	stale := newQueued(core.StageImplement)
