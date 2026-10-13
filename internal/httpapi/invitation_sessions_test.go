@@ -14,18 +14,32 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type invitationSessionFixture struct {
 	credential core.AuthenticatedCredential
 	issued     []string
 	deliveries []string
+	// scoped records every IssueInvitationSignInLink call as
+	// "workspace|email|purpose". refuse, when set, decides whether a scoped
+	// call answers store.ErrNotFound.
+	scoped []string
+	refuse func(workspaceID, email string) bool
 }
 
 func (f *invitationSessionFixture) IssueSignInLink(_ context.Context, email string) (core.IssuedSignInLink, error) {
 	value := fmt.Sprintf("cv_signin_secret-%d", len(f.issued)+1)
 	f.issued = append(f.issued, value)
 	return core.IssuedSignInLink{Email: email, Value: value, ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+
+func (f *invitationSessionFixture) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	f.scoped = append(f.scoped, workspaceID+"|"+email+"|"+string(purpose))
+	if f.refuse != nil && f.refuse(workspaceID, email) {
+		return core.IssuedSignInLink{}, store.ErrNotFound
+	}
+	return f.IssueSignInLink(ctx, email)
 }
 
 func (f *invitationSessionFixture) RedeemSignInLink(context.Context, string) (core.DashboardSession, core.IdentityUser, error) {
@@ -59,7 +73,7 @@ func TestInvitationLinkResponsePolicyAndFragmentFormat(t *testing.T) {
 		server := NewServer(nil)
 		server.InvitationSessions = fixture
 		request := httptest.NewRequest("POST", "http://conveyor.example/v1/workspaces/demo/members", nil)
-		result, err := server.issueAndDeliverSignInLink(request, "invitee@example.test")
+		result, err := server.issueAndDeliverSignInLink(request, "demo", "invitee@example.test", store.SignInLinkResend)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,11 +97,11 @@ func TestInvitationLinkResponsePolicyAndFragmentFormat(t *testing.T) {
 		server.InvitationSessions = fixture
 		server.InvitationDelivery = config.InvitationDelivery{Host: host, Port: port, From: "conveyor@example.test", PublicURL: "https://conveyor.example"}
 		request := httptest.NewRequest("POST", "https://conveyor.example/v1/workspaces/demo/members", nil)
-		first, err := server.issueAndDeliverSignInLink(request, "invitee@example.test")
+		first, err := server.issueAndDeliverSignInLink(request, "demo", "invitee@example.test", store.SignInLinkResend)
 		if err != nil {
 			t.Fatal(err)
 		}
-		second, err := server.issueAndDeliverSignInLink(request, "invitee@example.test")
+		second, err := server.issueAndDeliverSignInLink(request, "demo", "invitee@example.test", store.SignInLinkResend)
 		if err != nil {
 			t.Fatal(err)
 		}

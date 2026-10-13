@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 async function routeDashboard(page: Page) {
   await page.addInitScript(() => {
@@ -18,7 +19,12 @@ async function routeDashboard(page: Page) {
     }
     if (path === '/v1/me') {
       return route.fulfill({
-        json: { id: 'usr-operator', email: 'operator@example.test', display_name: 'Operator', role: 'operator' },
+        json: callerIdentity({
+          id: 'usr-operator',
+          email: 'operator@example.test',
+          display_name: 'Operator',
+          role: 'operator',
+        }),
       })
     }
     if (path === '/v1/pending-proposals') {

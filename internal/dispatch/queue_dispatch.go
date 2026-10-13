@@ -20,7 +20,7 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 	if err != nil {
 		return err
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: fmt.Sprintf("queue:%s", job.ID), Role: core.ActorSystem})
+	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	err = w.dispatcher.runTask(ctx, args.TaskID)
 	if err == nil {

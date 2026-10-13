@@ -15,7 +15,7 @@ import (
 
 func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,10 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: queueEnteredAt, QueueDeadline: queueDeadline, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "pg-preempt-session", ClientToken: "secret", ClaimantID: "pg-worker", WorkerID: "pg-worker", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	// Worker IDs are global; per-workspace IDs keep reruns on a kept database
+	// from colliding. Each worker variable is reused wherever that worker acts.
+	workerID, successorID := "pg-worker-"+workspace, "pg-worker-2-"+workspace
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "pg-preempt-session", ClientToken: "secret", ClaimantID: workerID, WorkerID: workerID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +58,10 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	}
 
 	service := &workorder.Service{Store: st}
-	result, err := service.Preempt(ctx, job.ID, "replace execution setup", "pg-preempt-request")
+	// Preempt request IDs are global idempotency keys; a per-workspace key keeps
+	// a rerun on a kept database from replaying the previous run's request.
+	requestID := "pg-preempt-request-" + workspace
+	result, err := service.Preempt(ctx, job.ID, "replace execution setup", requestID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,25 +71,25 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 		preempted.AutomaticRetryCount != 2 || preempted.CostUSD != 2.5 || preempted.TokensIn != 200 || preempted.TokensOut != 80 || !preempted.UsageReported || !preempted.SelfReported {
 		t.Fatalf("preempted=%+v", preempted)
 	}
-	if duplicate, duplicateErr := service.Preempt(ctx, job.ID, "replace execution setup", "pg-preempt-request"); duplicateErr != nil || duplicate.RevokedAttemptID != result.RevokedAttemptID {
+	if duplicate, duplicateErr := service.Preempt(ctx, job.ID, "replace execution setup", requestID); duplicateErr != nil || duplicate.RevokedAttemptID != result.RevokedAttemptID {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, duplicateErr)
 	}
-	if _, err = storetest.For(st).RenewWorkerClaim(ctx, job.ID, "pg-worker", "pg-preempt-session", time.Minute); !errors.Is(err, store.ErrWorkOrderPreempted) {
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, job.ID, workerID, "pg-preempt-session", time.Minute); !errors.Is(err, store.ErrWorkOrderPreempted) {
 		t.Fatalf("preempt renewal err=%v", err)
 	}
 	checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "pg-preempt-session", AttemptID: claimed.AttemptID, TerminationReason: "work order was preempted by an operator", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PushResult: "pushed"}
-	if created, checkpointErr := st.RecordWorkOrderAttemptCheckpoint(ctx, job.ID, "pg-worker", checkpoint); checkpointErr != nil || !created {
+	if created, checkpointErr := st.RecordWorkOrderAttemptCheckpoint(ctx, job.ID, workerID, checkpoint); checkpointErr != nil || !created {
 		t.Fatalf("checkpoint created=%v err=%v", created, checkpointErr)
 	}
 
-	successor, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "pg-successor", ClientToken: "successor-secret", ClaimantID: "pg-worker-2", WorkerID: "pg-worker-2", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	successor, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "pg-successor", ClientToken: "successor-secret", ClaimantID: successorID, WorkerID: successorID, Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.For(st).RenewWorkerClaim(ctx, job.ID, "pg-worker", "pg-preempt-session", time.Minute); !errors.Is(err, store.ErrWorkOrderPreempted) {
+	if _, err = storetest.For(st).RenewWorkerClaim(ctx, job.ID, workerID, "pg-preempt-session", time.Minute); !errors.Is(err, store.ErrWorkOrderPreempted) {
 		t.Fatalf("stale preempted renewal against successor err=%v", err)
 	}
-	if renewed, renewErr := storetest.For(st).RenewWorkerClaim(ctx, job.ID, "pg-worker-2", "pg-successor", time.Minute); renewErr != nil || renewed.AttemptID != successor.AttemptID {
+	if renewed, renewErr := storetest.For(st).RenewWorkerClaim(ctx, job.ID, successorID, "pg-successor", time.Minute); renewErr != nil || renewed.AttemptID != successor.AttemptID {
 		t.Fatalf("successor renewal=%+v err=%v", renewed, renewErr)
 	}
 	if count, countErr := st.CountEvents(ctx, task.ID, "work_order.preempted"); countErr != nil || count != 1 {
@@ -97,7 +103,7 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 
 func TestWorkOrderPreemptionRetiresExpiredQueuedClaim(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,16 +127,18 @@ func TestWorkOrderPreemptionRetiresExpiredQueuedClaim(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", WorkerID: "dead-worker", Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour})
+	// Worker IDs are global; a per-workspace ID keeps reruns from colliding.
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker-" + workspace, WorkerID: "dead-worker-" + workspace, Agent: "codex", Model: "gpt", Lease: time.Nanosecond, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)
 	service := &workorder.Service{Store: st}
-	if _, err = service.Preempt(ctx, job.ID, "worker is gone", "expired-preempt-request"); !errors.Is(err, store.ErrWorkOrderPreemptConflict) {
+	requestID := "expired-preempt-request-" + workspace
+	if _, err = service.Preempt(ctx, job.ID, "worker is gone", requestID); !errors.Is(err, store.ErrWorkOrderPreemptConflict) {
 		t.Fatalf("initial expired preempt err=%v", err)
 	}
-	if _, err = service.Preempt(ctx, job.ID, "worker is gone", "expired-preempt-request"); err != nil {
+	if _, err = service.Preempt(ctx, job.ID, "worker is gone", requestID); err != nil {
 		t.Fatalf("queued retirement retry err=%v", err)
 	}
 	expired, err := st.GetWorkOrder(ctx, job.ID)

@@ -25,6 +25,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
@@ -53,7 +54,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
-	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt sql.NullTime
+	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, baseConflictChecked, rateLimitObservedAt sql.NullTime
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
@@ -61,6 +62,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
+		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
@@ -107,6 +109,15 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	}
 	if nextRetryAt.Valid {
 		order.NextRetryAt = nextRetryAt.Time
+	}
+	if recoveryWindow.Valid {
+		order.AutomaticRecoveryWindowStartedAt = recoveryWindow.Time
+	}
+	if nextAutomaticRecovery.Valid {
+		order.NextAutomaticRecoveryAt = nextAutomaticRecovery.Time
+	}
+	if baseConflictChecked.Valid {
+		order.BaseConflictCheckedAt = baseConflictChecked.Time
 	}
 	if len(rateLimit) > 0 && string(rateLimit) != "{}" {
 		var status core.RateLimitStatus
@@ -156,68 +167,70 @@ func rateLimitJSON(status *core.RateLimitStatus) []byte {
 
 func orderValues(o core.WorkOrder) map[string]any {
 	return map[string]any{
-		"id":                              o.ID,
-		"task_id":                         o.TaskID,
-		"job_id":                          o.JobID,
-		"stage":                           o.Stage,
-		"state":                           o.State,
-		"claimant_id":                     o.ClaimantID,
-		"session_id":                      o.SessionID,
-		"attempt_id":                      o.AttemptID,
-		"client_token_hash":               o.ClientTokenHash,
-		"agent":                           o.Agent,
-		"model":                           o.Model,
-		"worker_id":                       o.WorkerID,
-		"lease_expires_at":                nullableTimeValue(o.LeaseExpiresAt),
-		"review_round":                    o.ReviewRound,
-		"review_seat":                     o.ReviewSeat,
-		"required_model":                  o.RequiredModel,
-		"required_harness":                o.RequiredHarness,
-		"required_effort":                 o.RequiredEffort,
-		"required_harness_config":         harnessSnapshotJSON(o.RequiredHarnessConfig),
-		"execution_timeout":               o.ExecutionTimeoutText,
-		"model_enforcement":               o.ModelEnforcement,
-		"reason_code":                     o.ReasonCode,
-		"review_kind":                     o.ReviewKind,
-		"review_scope":                    o.ReviewScope,
-		"baseline_sha":                    o.BaselineSHA,
-		"head_sha":                        o.HeadSHA,
-		"verification_context_id":         o.VerificationContextID,
-		"queue_entered_at":                nullableTimeValue(o.QueueEnteredAt),
-		"queue_deadline":                  nullableTimeValue(o.QueueDeadline),
-		"queue_blocked_at":                nullableTimeValue(o.QueueBlockedAt),
-		"execution_started_at":            nullableTimeValue(o.ExecutionStartedAt),
-		"execution_deadline":              nullableTimeValue(o.ExecutionDeadline),
-		"last_attempt_id":                 o.LastAttemptID,
-		"last_attempt_outcome":            o.LastAttemptOutcome,
-		"last_failure_category":           o.LastFailureCategory,
-		"last_failure_message":            o.LastFailureMessage,
-		"last_failure_detail":             o.LastFailureDetail,
-		"last_failure_exit_status":        o.LastFailureExitStatus,
-		"last_failure_at":                 nullableTimeValue(o.LastFailureAt),
-		"automatic_retry_count":           o.AutomaticRetryCount,
-		"next_retry_at":                   nullableTimeValue(o.NextRetryAt),
-		"retry_suppressed":                o.RetrySuppressed,
-		"retry_suppression_reason":        o.RetrySuppressionReason,
-		"redispatch_count":                o.RedispatchCount,
-		"operator_direction":              o.OperatorDirection,
-		"checkpoint":                      checkpointJSON(o.Checkpoint),
-		"continuation_session_id":         o.ContinuationSessionID,
-		"continuation_attempt_id":         o.ContinuationAttemptID,
-		"continuation_harness":            o.ContinuationHarness,
-		"continuation_launch_environment": o.ContinuationLaunchEnvironment,
-		"progress":                        o.Progress,
-		"cost_usd":                        o.CostUSD,
-		"tokens_in":                       o.TokensIn,
-		"tokens_out":                      o.TokensOut,
-		"usage_reported":                  o.UsageReported,
-		"self_reported":                   o.SelfReported,
-		"rate_limit":                      rateLimitJSON(o.RateLimit),
-		"rate_limit_observed_at":          nullableTimeValue(o.RateLimitObservedAt),
-		"created_at":                      o.CreatedAt,
-		"updated_at":                      o.UpdatedAt,
-		"served_requirement_snapshot":     servedRequirementSnapshotJSON(o.ServedRequirementSnapshot),
-		"governance_snapshot":             governanceSnapshotJSON(o.GovernanceSnapshot),
+		"id":                                   o.ID,
+		"task_id":                              o.TaskID,
+		"job_id":                               o.JobID,
+		"stage":                                o.Stage,
+		"state":                                o.State,
+		"claimant_id":                          o.ClaimantID,
+		"session_id":                           o.SessionID,
+		"attempt_id":                           o.AttemptID,
+		"client_token_hash":                    o.ClientTokenHash,
+		"agent":                                o.Agent,
+		"model":                                o.Model,
+		"worker_id":                            o.WorkerID,
+		"lease_expires_at":                     nullableTimeValue(o.LeaseExpiresAt),
+		"review_round":                         o.ReviewRound,
+		"review_seat":                          o.ReviewSeat,
+		"required_model":                       o.RequiredModel,
+		"required_harness":                     o.RequiredHarness,
+		"required_effort":                      o.RequiredEffort,
+		"required_harness_config":              harnessSnapshotJSON(o.RequiredHarnessConfig),
+		"execution_timeout":                    o.ExecutionTimeoutText,
+		"model_enforcement":                    o.ModelEnforcement,
+		"reason_code":                          o.ReasonCode,
+		"review_kind":                          o.ReviewKind,
+		"review_scope":                         o.ReviewScope,
+		"baseline_sha":                         o.BaselineSHA,
+		"head_sha":                             o.HeadSHA,
+		"verification_context_id":              o.VerificationContextID,
+		"queue_entered_at":                     nullableTimeValue(o.QueueEnteredAt),
+		"queue_deadline":                       nullableTimeValue(o.QueueDeadline),
+		"queue_blocked_at":                     nullableTimeValue(o.QueueBlockedAt),
+		"execution_started_at":                 nullableTimeValue(o.ExecutionStartedAt),
+		"execution_deadline":                   nullableTimeValue(o.ExecutionDeadline),
+		"last_attempt_id":                      o.LastAttemptID,
+		"last_attempt_outcome":                 o.LastAttemptOutcome,
+		"last_failure_category":                o.LastFailureCategory,
+		"last_failure_message":                 o.LastFailureMessage,
+		"last_failure_detail":                  o.LastFailureDetail,
+		"last_failure_exit_status":             o.LastFailureExitStatus,
+		"last_failure_at":                      nullableTimeValue(o.LastFailureAt),
+		"automatic_retry_count":                o.AutomaticRetryCount,
+		"next_retry_at":                        nullableTimeValue(o.NextRetryAt),
+		"retry_suppressed":                     o.RetrySuppressed,
+		"retry_suppression_reason":             o.RetrySuppressionReason,
+		"automatic_recovery_count":             o.AutomaticRecoveryCount,
+		"automatic_recovery_window_started_at": nullableTimeValue(o.AutomaticRecoveryWindowStartedAt),
+		"next_automatic_recovery_at":           nullableTimeValue(o.NextAutomaticRecoveryAt),
+		"redispatch_count":                     o.RedispatchCount,
+		"operator_direction":                   o.OperatorDirection,
+		"checkpoint":                           checkpointJSON(o.Checkpoint),
+		"continuation_session_id":              o.ContinuationSessionID,
+		"continuation_attempt_id":              o.ContinuationAttemptID,
+		"continuation_harness":                 o.ContinuationHarness,
+		"continuation_launch_environment":      o.ContinuationLaunchEnvironment,
+		"cost_usd":                             o.CostUSD,
+		"tokens_in":                            o.TokensIn,
+		"tokens_out":                           o.TokensOut,
+		"usage_reported":                       o.UsageReported,
+		"self_reported":                        o.SelfReported,
+		"rate_limit":                           rateLimitJSON(o.RateLimit),
+		"rate_limit_observed_at":               nullableTimeValue(o.RateLimitObservedAt),
+		"created_at":                           o.CreatedAt,
+		"updated_at":                           o.UpdatedAt,
+		"served_requirement_snapshot":          servedRequirementSnapshotJSON(o.ServedRequirementSnapshot),
+		"governance_snapshot":                  governanceSnapshotJSON(o.GovernanceSnapshot),
 	}
 }
 func getOrderRow(ctx context.Context, db s2log.Executor, id string) (core.WorkOrder, error) {
@@ -447,8 +460,13 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		if err := core.ValidateVerifyDispatch(task, o); err != nil {
 			return err
 		}
+		// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
+		// refuses only while it is the task's latest order in a holding state,
+		// or holds a claim (executor exclusivity). An older queued or stale
+		// order behind a newer stage is history and is retired below
+		// (component-work-orders "Stages and order minting"; DEC-62).
 		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND stage=? AND state IN ('queued','claimed'))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders wo WHERE wo.workspace_id=? AND wo.task_id=? AND wo.stage=? AND (wo.state='claimed' OR (wo.state IN ('queued','stale','timed_out') AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=wo.workspace_id AND later.task_id=wo.task_id AND (later.created_at > wo.created_at OR (later.created_at = wo.created_at AND later.id > wo.id))))))`, documentWorkspace(ctx), j.TaskID, o.Stage).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -466,7 +484,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			return err
 		}
 		created = true
-		return nil
+		return s.retireOrderSiblingsTx(ctx, tx, o, "superseded by stage re-entry", time.Now().UTC(), true)
 	})
 	return created, err
 }
@@ -591,7 +609,20 @@ func reviewSeatAcceptedTx(ctx context.Context, tx *sql.Tx, ws, task, id string) 
 	return accepted, err
 }
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)) ORDER BY task_id`, documentWorkspace(ctx), now, now, now)
+	bound := 0
+	if policy, _, policyErr := s.readClockPolicy(ctx); policyErr != nil {
+		return nil, policyErr
+	} else {
+		bound = policy.AutomaticRecoveries
+	}
+	query := `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline<=?) OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?) OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline<=?)`
+	args := []any{documentWorkspace(ctx), now, now, now}
+	if bound != 0 {
+		query += automaticRecoveryElapsedSQL
+		args = append(args, now, now)
+	}
+	query += `) ORDER BY task_id`
+	rows, err := documentRows(ctx, s.db, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -658,7 +689,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 			}
 			count++
 		}
-		return nil
+		acted, recoveryErr := s.applyAutomaticRecoveryTx(ctx, tx, id, now)
+		count += acted
+		return recoveryErr
 	})
 	return count, err
 }
@@ -839,35 +872,47 @@ func (s *Store) claimOwnerTx(ctx context.Context, tx *sql.Tx, claim *core.WorkOr
 		}
 	}
 	if claim.WorkerID != "" {
+		// A missing worker row, a revoked worker, a null owner, a missing or
+		// inactive owner user, and a missing binding are all refused. The row
+		// locks serialize the claim against identity deactivation and
+		// membership revocation (component-work-orders, Worker owner admission).
 		var owner sql.NullString
 		var revoked sql.NullTime
 		err := tx.QueryRowContext(ctx, `SELECT owner_user_id,revoked_at FROM workers WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), claim.WorkerID).Scan(&owner, &revoked)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: worker %s is not enrolled", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err != nil {
+			return err
+		}
+		if revoked.Valid {
+			return fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if !owner.Valid || strings.TrimSpace(owner.String) == "" {
+			return fmt.Errorf("%w: worker %s has no owner", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err = store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerRead); err != nil {
+			return err
+		}
+		claim.OwnerUserID = owner.String
+		var status string
+		err = tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=? FOR UPDATE`, owner.String).Scan(&status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err == nil {
-			if revoked.Valid {
-				return fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
-			}
-			claim.OwnerUserID = owner.String
-			if owner.Valid {
-				var status string
-				err = tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=? FOR UPDATE`, owner.String).Scan(&status)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
-					return err
-				}
-				if err != nil || status != "active" {
-					return store.ErrWorkerUnauthorized
-				}
-				var exists int
-				err = tx.QueryRowContext(ctx, `SELECT 1 FROM workspace_role_bindings WHERE workspace_id=? AND user_id=? FOR UPDATE`, documentWorkspace(ctx), owner.String).Scan(&exists)
-				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
-				}
-				if err != nil {
-					return err
-				}
-			}
+		if err != nil || status != "active" {
+			return fmt.Errorf("%w: worker %s owner is not active", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		var exists int
+		err = tx.QueryRowContext(ctx, `SELECT 1 FROM workspace_role_bindings WHERE workspace_id=? AND user_id=? FOR UPDATE`, documentWorkspace(ctx), owner.String).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err != nil {
+			return err
+		}
+		if err = store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerLocked); err != nil {
+			return err
 		}
 	}
 	if task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
@@ -982,12 +1027,21 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
-		if err := core.ValidateVerifyDispatch(task, o); err != nil {
-			return err
-		}
 		siblings, err := s.listOrders(ctx, tx, []string{o.TaskID})
 		if err != nil {
 			return err
+		}
+		if o.State == core.WorkOrderQueued {
+			if err := store.WorkOrderRecoveryRefusal(task, o, siblings); err != nil {
+				return err
+			}
+			events, err := documentTaskEvents(ctx, tx, o.TaskID)
+			if err != nil {
+				return err
+			}
+			if err = store.WorkOrderPlanRevisionRefusal(task, events, o.ID); err != nil {
+				return err
+			}
 		}
 		for _, other := range siblings {
 			if core.ConflictingExecutorClaims(o, other) {
@@ -1142,7 +1196,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			if err != nil {
 				return err
 			}
-			if err = taskWrite(ctx, tx, task.ID, map[string]any{"state": state}); err != nil {
+			if err = taskWrite(ctx, tx, task.ID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, core.TaskOrderClaim))}); err != nil {
 				return err
 			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: task.ID, JobID: o.JobID, Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"from": task.State, "to": state, "command": core.TaskOrderClaim})}); err != nil {
@@ -1170,7 +1224,14 @@ func (s *Store) orderSupersessionGuardTx(ctx context.Context, tx *sql.Tx, o core
 	if err != nil {
 		return err
 	}
-	return store.WorkOrderRecoverySupersessionError(t, o, orders)
+	if err = store.WorkOrderRecoveryRefusal(t, o, orders); err != nil {
+		return err
+	}
+	events, err := documentTaskEvents(ctx, tx, o.TaskID)
+	if err != nil {
+		return err
+	}
+	return store.WorkOrderPlanRevisionRefusal(t, events, o.ID)
 }
 func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, timeout time.Duration) (core.WorkOrder, error) {
 	if timeout <= 0 {
@@ -1186,6 +1247,16 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		if o.State == core.WorkOrderClaimed && o.LeaseExpiresAt.After(now) {
 			return fmt.Errorf("work order %s has an active claim and cannot be redispatched", id)
 		}
+		projected := store.ProjectWorkOrderAt(o, now)
+		if projected.State != core.WorkOrderStale {
+			return fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
+		}
+		if !projected.ExecutionStartedAt.IsZero() {
+			return fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
+		}
+		if err = s.orderSupersessionGuardTx(ctx, tx, projected); err != nil {
+			return err
+		}
 		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
 			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 			if err != nil {
@@ -1194,12 +1265,6 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		}
 		if o.State != core.WorkOrderStale {
 			return fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
-		}
-		if !o.ExecutionStartedAt.IsZero() {
-			return fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
-		}
-		if err = s.orderSupersessionGuardTx(ctx, tx, o); err != nil {
-			return err
 		}
 		state, err := core.TransitionWorkOrder(o.State, core.WorkOrderCmdRedispatch)
 		if err != nil {
@@ -1213,6 +1278,8 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 		o.ExecutionStartedAt = time.Time{}
 		o.ExecutionDeadline = time.Time{}
 		o.RedispatchCount++
+		store.ResetAutomaticRecoveryLedger(&o)
+		store.ClearAutomaticRecoveryExhaustion(&o)
 		o.Progress = ""
 		o.UpdatedAt = now
 		if err = orderWrite(ctx, tx, o); err != nil {
@@ -1263,6 +1330,9 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			return fmt.Errorf("work-order recovery requires a valid taskops lease")
 		}
 		if store.VerificationRecoveryFromContext(ctx) != nil {
+			if err := s.orderSupersessionGuardTx(ctx, tx, store.ProjectWorkOrderAt(o, time.Now().UTC())); err != nil {
+				return err
+			}
 			rows, e := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
 			if e != nil {
 				return e
@@ -1299,18 +1369,19 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 		now := time.Now().UTC()
 		var err error
+		projected := store.ProjectWorkOrderAt(o, now)
+		if err = s.orderSupersessionGuardTx(ctx, tx, projected); err != nil {
+			return err
+		}
+		eligible := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
+		if !eligible && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {
+			return fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+		}
 		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
 			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)
 			if err != nil {
 				return err
 			}
-		}
-		eligible := o.State == core.WorkOrderQueued && (o.LastAttemptOutcome != "" || o.RetrySuppressed || !o.NextRetryAt.IsZero())
-		if !eligible && o.State != core.WorkOrderStale && o.State != core.WorkOrderTimedOut {
-			return fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
-		}
-		if err = s.orderSupersessionGuardTx(ctx, tx, o); err != nil {
-			return err
 		}
 		prior := o
 		transient := 0
@@ -1329,25 +1400,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			return err
 		}
 		if len(refreeze) > 0 && refreeze[0] != nil {
-			change := refreeze[0]
-			task, err := getTaskRow(ctx, tx, o.TaskID)
-			if err != nil {
-				return err
-			}
-			setup, err := json.Marshal(change.Setup)
-			if err != nil {
-				return err
-			}
-			if err = taskWrite(ctx, tx, o.TaskID, map[string]any{"setup_contract": setup}); err != nil {
-				return err
-			}
-			o.ExecutionTimeoutText = change.ExecutionTimeoutText
-			if !reflect.DeepEqual(task.SetupContract, change.Setup) {
-				actor := store.ActorFromContext(ctx)
-				if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(map[string]any{"prior": task.SetupContract, "new": change.Setup, "request_id": requestID, "work_order_id": id, "actor": actor.ID})}); err != nil {
-					return err
-				}
-			}
+			o.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
 		}
 		clearOrderClaim(&o)
 		o.ClearExecutionPins()
@@ -1362,6 +1415,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		o.QueueEnteredAt = now
 		o.QueueDeadline = now.Add(timeout)
 		o.RedispatchCount++
+		store.ResetAutomaticRecoveryLedger(&o)
 		o.OperatorDirection = direction
 		o.UpdatedAt = now
 		if err = orderWrite(ctx, tx, o); err != nil {
@@ -1460,7 +1514,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 		if err = resetOrderJob(ctx, tx, o, now); err != nil {
 			return err
 		}
-		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": nextTask}); err != nil {
+		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": nextTask, "gate_kind": string(core.GateKindFor(nextTask, core.TaskGatePlanRevision))}); err != nil {
 			return err
 		}
 		eventCtx := workerClaimActorContext(ctx, claim.WorkerID)
@@ -1470,6 +1524,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 			}
 		}
 		t.State = nextTask
+		t.GateKind = core.GateKindFor(nextTask, core.TaskGatePlanRevision)
 		o, err = getOrderRow(ctx, tx, id)
 		result = store.PlanRevisionRequestResult{WorkOrder: o, Task: t, PlanVersion: version, Rationale: rationale}
 		return err
@@ -1640,6 +1695,23 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	return result, err
 }
+
+// ClaimBaseConflictCheck is a single conditional UPDATE, so concurrent
+// dispatchers race on the row and exactly one sees one affected row.
+func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error) {
+	ws, err := workspace(ctx)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE work_orders SET base_conflict_checked_at=?
+		WHERE workspace_id=? AND id=? AND base_conflict_checked_at IS NULL`, at.UTC(), ws, workOrderID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
 func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request store.ConflictFixRequest) (store.ConflictFixResult, error) {
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ConflictFixResult{}, fmt.Errorf("conflict-fix create requires a valid taskops lease")
@@ -1701,7 +1773,7 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 		if err = taskEvent(ctx, tx, core.Event{TaskID: request.TaskID, Kind: "intervention.redirect", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
 			return err
 		}
-		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "next_stage": core.StageImplement, "recovery_stage": ""}); err != nil {
+		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, transitionCommand)), "next_stage": core.StageImplement, "recovery_stage": ""}); err != nil {
 			return err
 		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": transitionCommand})}); err != nil {

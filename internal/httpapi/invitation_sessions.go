@@ -67,8 +67,13 @@ func (s *Server) signOutDashboardSession(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) issueAndDeliverSignInLink(r *http.Request, email string) (core.MembershipGrant, error) {
-	issued, err := s.InvitationSessions.IssueSignInLink(r.Context(), email)
+// issueAndDeliverSignInLink issues a link for a pending invitation in
+// workspaceID and delivers it. The purpose is chosen by the calling handler,
+// never by request input; the store refuses with ErrNotFound unless that
+// workspace holds a pending invitation for the email
+// (component-identity-membership).
+func (s *Server) issueAndDeliverSignInLink(r *http.Request, workspaceID, email string, purpose store.SignInLinkPurpose) (core.MembershipGrant, error) {
+	issued, err := s.InvitationSessions.IssueInvitationSignInLink(r.Context(), workspaceID, email, purpose)
 	if err != nil {
 		return core.MembershipGrant{}, err
 	}
@@ -111,12 +116,18 @@ func (s *Server) signInURL(r *http.Request, token string) string {
 	return base + "#token=" + url.QueryEscape(token)
 }
 
+// resendWorkspaceInvitation re-issues the sign-in link of one pending
+// invitation in the request workspace. Every email without such an invitation
+// receives the same 404 workspace_not_found, so the route cannot confirm that
+// an account exists elsewhere (req-accounts-and-membership AC-4.2, AC-4.3;
+// req-invitations-and-sign-in AC-1.3).
 func (s *Server) resendWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	if s.InvitationSessions == nil {
 		http.Error(w, "sign-in unavailable", http.StatusNotFound)
 		return
 	}
-	result, err := s.issueAndDeliverSignInLink(r, chiURLParamEmail(r))
+	workspaceID, _ := store.WorkspaceFromContext(r.Context())
+	result, err := s.issueAndDeliverSignInLink(r, workspaceID, chiURLParamEmail(r), store.SignInLinkResend)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeWorkspaceNotFound(w)

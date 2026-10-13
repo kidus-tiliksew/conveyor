@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 // Workspace verification tab (component-web-dashboard) against a
 // mocked workspace kit registry projection (component-verification-kit-contract).
@@ -149,7 +150,7 @@ async function mockAPIs(page: Page, role = 'operator', body: unknown = registry)
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: `usr_${role}`, role } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }) })
     if (path === '/v1/workspaces/demo/verification-kits') {
       calls.registry++
       return route.fulfill({ json: body })

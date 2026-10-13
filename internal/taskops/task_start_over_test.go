@@ -9,7 +9,7 @@ import (
 
 func TestTaskStartOverRequiresCompoundCommand(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "restart-command", Workspace: "demo", State: core.TaskRunning}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)

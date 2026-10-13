@@ -32,7 +32,7 @@ func (s *recordingLineageStore) ListLineageNodeRecords(ctx context.Context, node
 }
 
 func TestLineageLabelsUseBoundedNodesAndReusePlanningSessions(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	memory := store.NewMemory()
 	if err := memory.CreateTask(ctx, core.Task{ID: "task-bounded", Workspace: "demo", Title: "Bounded task", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestLineageLabelsUseBoundedNodesAndReusePlanningSessions(t *testing.T) {
 }
 
 func TestLineageSystemDesignDecisionAndRepositoryNodesResolveDirectlyWithLabels(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-labelled", Title: "Labelled architecture", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Labelled architecture\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
 	if err != nil {
@@ -96,7 +96,7 @@ func (s failingLineageStore) RebuildLineage(context.Context, core.LineageRebuild
 }
 
 func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "task-lineage-api", Workspace: "demo", Title: "Trace delivery", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-lineage-api", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -159,7 +159,7 @@ func TestLineageHTTPHidesConfigurationProviderDetails(t *testing.T) {
 }
 
 func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	root := core.Task{ID: "large-root", Workspace: "demo", Title: "Human root title", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, root); err != nil {
@@ -245,7 +245,7 @@ func TestLineageRebuildRequiresOperatorAndAuditInput(t *testing.T) {
 }
 
 func TestLineageHTTPQueriesPlanningThroughDeliveryEvidenceEndToEnd(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	blueprint := core.Task{ID: "blueprint-e2e", Workspace: "demo", Title: "Blueprint", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	child := core.Task{ID: "child-e2e", Workspace: "demo", Title: "Child", Repo: "conveyor", ParentTaskID: blueprint.ID, OriginSpecVersion: 1, State: core.TaskMerged, CreatedAt: time.Now().UTC()}

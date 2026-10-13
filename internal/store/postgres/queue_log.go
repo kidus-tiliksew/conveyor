@@ -47,20 +47,47 @@ func (q *logDispatchQueue) enqueueDispatchTx(ctx context.Context, tx pgx.Tx, wor
 	return inserted, nil
 }
 
-func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) error {
-	_, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+// enqueueReviewPublicationTx reports whether a new job was inserted; false
+// means a job for the same publication is still active on its stream.
+func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) (bool, error) {
+	return logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
 		queue.ReviewPublicationArgs{}.Kind(), reviewWorkOrderID,
 		queue.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: reviewWorkOrderID},
 		publicationMaxAttempts, q.now().UTC())
-	return err
 }
 
-func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) error {
-	_, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+// enqueueGitHubIssuePublicationTx reports whether a new job was inserted.
+func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) (bool, error) {
+	return logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
 		queue.GitHubIssuePublicationArgs{}.Kind(), taskID,
 		queue.GitHubIssuePublicationArgs{WorkspaceID: workspace, TaskID: taskID},
 		publicationMaxAttempts, q.now().UTC())
-	return err
+}
+
+// blockingOrderSQL is the SQL form of core.WorkOrderBlocksStageMint: the
+// task's latest order is at its next_stage and holds it (itself, or for
+// review any seat of its round, is queued, claimed, stale, or timed_out).
+// Read-time stale and timed_out projections are stored as queued or claimed,
+// so the stored set covers them. Such a task is waiting for a claim or for
+// the order clock, not drifting, so reconcile leaves it alone
+// (component-durable-queue "Reconciliation between tasks and jobs"; DEC-62).
+func blockingOrderSQL(task string) string {
+	return `EXISTS (
+      SELECT 1 FROM work_orders latest
+      WHERE latest.workspace_id=` + task + `.workspace_id AND latest.task_id=` + task + `.id
+        AND latest.stage=` + task + `.next_stage
+        AND NOT EXISTS (
+            SELECT 1 FROM work_orders later
+            WHERE later.workspace_id=latest.workspace_id AND later.task_id=latest.task_id
+              AND (later.created_at > latest.created_at OR (later.created_at = latest.created_at AND later.id > latest.id))
+        )
+        AND EXISTS (
+            SELECT 1 FROM work_orders wo
+            WHERE wo.workspace_id=latest.workspace_id AND wo.task_id=latest.task_id
+              AND (wo.id=latest.id OR (latest.stage='review' AND wo.stage='review' AND wo.review_round=latest.review_round))
+              AND wo.state IN ('queued','claimed','stale','timed_out')
+        )
+  )`
 }
 
 func (q *logDispatchQueue) queuedTasksWithoutActiveDispatch(ctx context.Context, tx pgx.Tx, workspace string) ([]string, error) {
@@ -78,6 +105,7 @@ WHERE t.workspace_id = $1
             AND child.parent_task_id=t.id
       )
   )
+  AND NOT (`+blockingOrderSQL("t")+`)
 ORDER BY t.created_at, t.id`, workspace)
 	if err != nil {
 		return nil, err

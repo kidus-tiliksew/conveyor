@@ -7,20 +7,71 @@ import (
 	"encoding/hex"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const lockSchema = "CREATE ROWSTORE TABLE IF NOT EXISTS conveyor_locks (`key` VARCHAR(64) NOT NULL, PRIMARY KEY (`key`), SHARD KEY (`key`))"
 
+// lockReturnObserver records when lockKey returns. Tests set it; production
+// callers leave it unset.
+type lockReturnObserver struct{ at time.Time }
+
+type lockReturnKey struct{}
+
+func observeLockReturn(ctx context.Context) (context.Context, *lockReturnObserver) {
+	obs := &lockReturnObserver{}
+	return context.WithValue(ctx, lockReturnKey{}, obs), obs
+}
+
+func noteLockReturn(ctx context.Context) {
+	if obs, ok := ctx.Value(lockReturnKey{}).(*lockReturnObserver); ok {
+		obs.at = time.Now()
+	}
+}
+
 // lockKey serializes one key until the caller transaction ends. Hashing gives
 // arbitrary caller keys a fixed width with no collation-dependent equivalence.
 func lockKey(ctx context.Context, tx *sql.Tx, key string) error {
-	sum := sha256.Sum256([]byte(key))
-	key = hex.EncodeToString(sum[:])
-	if _, err := tx.ExecContext(ctx, "INSERT INTO conveyor_locks (`key`) VALUES (?) ON DUPLICATE KEY UPDATE `key`=`key`", key); err != nil {
+	defer noteLockReturn(ctx)
+	key = lockRowKey(key)
+	if err := upsertLockRow(ctx, tx, key); err != nil {
 		return err
 	}
 	var held string
 	return tx.QueryRowContext(ctx, "SELECT `key` FROM conveyor_locks WHERE `key`=? FOR UPDATE", key).Scan(&held)
+}
+
+// claimKey locks key like lockKey and returns the holder recorded on its lock
+// row. A commit spanning partitions can release the lock row before rows on
+// other partitions are visible, so the next holder may miss the rows its
+// predecessor wrote. The holder commits on the locked row itself, atomically
+// with the release, so a unique rule reads it instead of trusting only a count
+// over other partitions.
+func claimKey(ctx context.Context, tx *sql.Tx, key string) (string, error) {
+	defer noteLockReturn(ctx)
+	key = lockRowKey(key)
+	if err := upsertLockRow(ctx, tx, key); err != nil {
+		return "", err
+	}
+	var holder string
+	err := tx.QueryRowContext(ctx, "SELECT holder FROM conveyor_locks WHERE `key`=? FOR UPDATE", key).Scan(&holder)
+	return holder, err
+}
+
+// setClaim records holder on a lock row the transaction claimed; "" releases it.
+func setClaim(ctx context.Context, tx *sql.Tx, key, holder string) error {
+	_, err := tx.ExecContext(ctx, "UPDATE conveyor_locks SET holder=? WHERE `key`=?", holder, lockRowKey(key))
+	return err
+}
+
+func lockRowKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+func upsertLockRow(ctx context.Context, tx *sql.Tx, key string) error {
+	_, err := tx.ExecContext(ctx, "INSERT INTO conveyor_locks (`key`) VALUES (?) ON DUPLICATE KEY UPDATE `key`=`key`", key)
+	return err
 }
 
 // sessionLock reserves a connection until release. database/sql rolls the

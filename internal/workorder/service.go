@@ -176,6 +176,37 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 		}
 		pendingReviewTasks[order.TaskID] = len(blocking) > 0
 	}
+	type recoveryContext struct {
+		task                core.Task
+		orders              []core.WorkOrder
+		pendingPlanRevision bool
+	}
+	recoveryByTask := map[string]recoveryContext{}
+	ordersByTask := map[string][]core.WorkOrder{}
+	for _, order := range orders {
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+	}
+	for _, order := range orders {
+		if !recoverEligible(order) {
+			continue
+		}
+		if _, ok := recoveryByTask[order.TaskID]; ok {
+			continue
+		}
+		task, taskErr := s.Store.GetTask(ctx, order.TaskID)
+		if taskErr != nil {
+			return nil, taskErr
+		}
+		_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+		if errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) {
+			pendingPlanRevision = true
+			gateErr = nil
+		}
+		if gateErr != nil {
+			return nil, gateErr
+		}
+		recoveryByTask[order.TaskID] = recoveryContext{task: task, orders: ordersByTask[order.TaskID], pendingPlanRevision: pendingPlanRevision}
+	}
 	out := orders[:0]
 	for _, order := range orders {
 		blockers := blockersByTask[order.TaskID]
@@ -189,12 +220,19 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 		if (order.Stage == core.StageReview || order.Stage == core.StageVerify) && pendingReviewTasks[order.TaskID] {
 			order.Claimable = false
 		}
+		if ctxn, ok := recoveryByTask[order.TaskID]; ok {
+			store.ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
+		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
 			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
 			out = append(out, order)
 		}
 	}
 	return out, nil
+}
+
+func recoverEligible(order core.WorkOrder) bool {
+	return order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut
 }
 
 func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
@@ -213,6 +251,26 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	order, err := s.Store.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
+	}
+	task, taskErr := s.Store.GetTask(ctx, order.TaskID)
+	if taskErr != nil {
+		return core.WorkOrder{}, taskErr
+	}
+	taskOrders, listErr := s.Store.ListTaskWorkOrders(ctx, order.TaskID)
+	if listErr != nil {
+		return core.WorkOrder{}, listErr
+	}
+	_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+	if gateErr != nil {
+		return core.WorkOrder{}, gateErr
+	}
+	if order.State == core.WorkOrderQueued {
+		if pendingPlanRevision {
+			return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", order.ID, order.TaskID)
+		}
+		if err = store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
 		// The listing's read refuses early, before authority is pinned
@@ -326,6 +384,13 @@ func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, er
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	_, pendingPlanRevision, err := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	if pendingPlanRevision {
+		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
+	}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRedispatch, func(lease taskops.TaskLease) (core.WorkOrder, error) {
 		return s.Store.RedispatchWorkOrderCommand(ctx, lease, id, timeout)
 	})
@@ -384,7 +449,7 @@ func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDir
 		// component-work-orders). Generic recovery must not bypass that gate.
 		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
 	}
-	if change := recoveryRefreeze(cfg, task, order); change != nil {
+	if change := recoveryRefreeze(task, order); change != nil {
 		return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
 			return s.Store.RecoverWorkOrderCommand(ctx, lease, id, requestID, direction, timeout, change)
 		})
@@ -394,20 +459,38 @@ func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDir
 	})
 }
 
-func recoveryRefreeze(cfg *config.Config, task core.Task, order core.WorkOrder) *store.RecoveryRefreeze {
-	_ = task
-	route, ok := cfg.Routing.Stages[string(order.Stage)]
-	if !ok {
+func frozenStageTimeout(task core.Task, stage core.Stage) string {
+	settings := task.SetupContract.ExecutionSettings
+	switch stage {
+	case core.StageSpec:
+		return strings.TrimSpace(settings.Spec.TimeoutText)
+	case core.StageImplement:
+		return strings.TrimSpace(settings.Implementation.TimeoutText)
+	case core.StageVerify:
+		return strings.TrimSpace(settings.Verify.TimeoutText)
+	case core.StageReview:
+		return strings.TrimSpace(settings.Review.TimeoutText)
+	default:
+		return ""
+	}
+}
+
+func recoveryRefreeze(task core.Task, order core.WorkOrder) *store.RecoveryRefreeze {
+	timeout := frozenStageTimeout(task, order.Stage)
+	if timeout == "" {
+		timeout = order.ExecutionTimeoutText
+	}
+	if timeout == "" {
 		return nil
 	}
-	change := &store.RecoveryRefreeze{Setup: cfg.FreezePolicy(), ExecutionTimeoutText: route.TimeoutText}
-	if change.ExecutionTimeoutText == "" {
-		change.ExecutionTimeoutText = order.ExecutionTimeoutText
-	}
-	return change
+	return &store.RecoveryRefreeze{ExecutionTimeoutText: timeout}
 }
 
 func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {
+	return s.recoverInterruptedReviewRound(ctx, taskID, requestID, false)
+}
+
+func (s *Service) recoverInterruptedReviewRound(ctx context.Context, taskID, requestID string, automatic bool) (store.InterruptedReviewRecoveryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery request_id is required")
@@ -442,9 +525,9 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
-	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}}
+	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}, Automatic: automatic}
 	for _, order := range recovery.EligibleOrders {
-		if change := recoveryRefreeze(cfg, task, order); change != nil {
+		if change := recoveryRefreeze(task, order); change != nil {
 			request.Refreezes[order.ID] = change
 		}
 	}
@@ -467,6 +550,10 @@ func latestReviewRound(orders []core.WorkOrder) int {
 // round terminally timed out. The current PR head and workspace configuration
 // are verified before the store performs the atomic/idempotent transition.
 func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reason string) (store.ReviewRoundRetryResult, error) {
+	return s.retryReviewRound(ctx, taskID, requestID, reason, false)
+}
+
+func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reason string, automatic bool) (store.ReviewRoundRetryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	reason = strings.TrimSpace(reason)
 	if requestID == "" || reason == "" {
@@ -572,7 +659,7 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA}
+	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA, Automatic: automatic}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
 		return s.Store.RetryReviewRoundCommand(ctx, lease, request, jobs, newOrders)
 	})
@@ -1609,6 +1696,13 @@ func (s *Service) authorizedForAwait(ctx context.Context, id, session string) (c
 
 func (s *Service) authorizedForObservation(ctx context.Context, id, session string) (core.WorkOrder, error) {
 	return s.authorizedSession(ctx, id, session, true)
+}
+
+// ObservableOrder applies get_work_order's observation check (same session,
+// claimed with a live lease, or submitted) without renewing the lease or
+// recording a context observation, so a status read never mutates.
+func (s *Service) ObservableOrder(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	return s.authorizedForObservation(ctx, id, session)
 }
 
 func (s *Service) authorized(ctx context.Context, id, session string) (core.WorkOrder, error) {

@@ -28,7 +28,7 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 		return out
 	}
 	snapshot := call("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "permission-route"}).(store.VerificationSnapshot)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	_, err := b.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}, "permission-route-token")
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +41,11 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 		return store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "route-user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser, OwnerUserID: id}), store.Actor{ID: store.UserActorID(id), Role: core.ActorUser})
 	}
 	operator := user(owner.ID)
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	if _, err = b.GrantWorkspaceRole(operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	member, err := b.ProvisionIdentityUser(operator, "maintainer@example.test", "Maintainer")
 	if err != nil {
 		t.Fatal(err)

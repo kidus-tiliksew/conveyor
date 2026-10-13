@@ -1,0 +1,757 @@
+package storetest
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+)
+
+func runRecoveryRefusal(t *testing.T, x Fixture) {
+	t.Run("PolicyEnableThenRecover", func(t *testing.T) { runRecoveryKeepsEnabledPolicy(t, x) })
+	t.Run("IntakeVerifyIgnoresWorkspaceOff", func(t *testing.T) { runRecoveryKeepsIntakePolicy(t, x) })
+	t.Run("RefuseWriteFree", func(t *testing.T) { runRecoveryRefuseWriteFree(t, x) })
+	t.Run("PredicateMatrix", func(t *testing.T) { runRecoveryRefusalMatrix(t, x) })
+	t.Run("PlainQueuedClaimRefusal", func(t *testing.T) { runPlainQueuedClaimRefusal(t, x) })
+	t.Run("RedispatchPlanRevisionGuard", func(t *testing.T) { runRedispatchPlanRevisionGuard(t, x) })
+	t.Run("QueuedStrandedVerifyCancelled", func(t *testing.T) { runQueuedStrandedVerifyCancelled(t, x) })
+	t.Run("RecoverRequestIDReplayBeforeRefusal", func(t *testing.T) { runRecoverRequestIDReplayBeforeRefusal(t, x) })
+	t.Run("AdvancedStageQueuedClaimRefusal", func(t *testing.T) { runAdvancedStageQueuedClaimRefusal(t, x) })
+	t.Run("ClaimPlanRevisionAfterListing", func(t *testing.T) { runClaimPlanRevisionAfterListing(t, x) })
+	t.Run("DispositionRecoverRefusal", func(t *testing.T) { runDispositionRecoverRefusal(t, x) })
+}
+
+func policyChange(t *testing.T, x Fixture, taskID string, r store.SetupChangeRequest) (store.SetupChangeResult, error) {
+	t.Helper()
+	return taskops.ExecuteSetupChange(x.Context, x.Backend, taskID, func(l taskops.TaskLease) (store.SetupChangeResult, error) {
+		return x.Backend.ChangeTaskPolicyCommand(x.Context, l, r)
+	})
+}
+
+func snapshotRecovery(t *testing.T, x Fixture, taskID, orderID string) (core.WorkOrder, core.Job, core.Task, int) {
+	t.Helper()
+	order, err := x.Backend.GetWorkOrder(x.Context, orderID)
+	requireOK(t, err)
+	jobs, err := x.Backend.ListJobs(x.Context, taskID)
+	requireOK(t, err)
+	var job core.Job
+	for _, candidate := range jobs {
+		if candidate.ID == order.JobID {
+			job = candidate
+			break
+		}
+	}
+	task, err := x.Backend.GetTask(x.Context, taskID)
+	requireOK(t, err)
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	return order, job, task, len(events)
+}
+
+func requireNoSetupRefreeze(t *testing.T, x Fixture, taskID string) {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	for _, event := range events {
+		if event.Kind == "task.setup.refrozen" {
+			t.Fatalf("recovery rewrote frozen policy: %+v", event)
+		}
+	}
+}
+
+func timeoutQueuedOrder(t *testing.T, x Fixture, order core.WorkOrder) core.WorkOrder {
+	t.Helper()
+	claim := core.WorkOrderClaim{
+		SessionID: "timeout-" + order.ID, ClientToken: "timeout-" + order.ID,
+		ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Nanosecond,
+	}
+	claimed, err := ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
+	requireOK(t, err)
+	_, err = taskops.New(x.Backend).TickOrderClock(x.Context, time.Now().UTC())
+	requireOK(t, err)
+	timedOut, err := x.Backend.GetWorkOrder(x.Context, claimed.ID)
+	requireOK(t, err)
+	if timedOut.State != core.WorkOrderTimedOut {
+		t.Fatalf("clock state=%s, want timed_out", timedOut.State)
+	}
+	return timedOut
+}
+
+func createReviewSource(t *testing.T, x Fixture, task core.Task) {
+	t.Helper()
+	source := core.WorkOrder{
+		ID: task.ID + "-review-1", JobID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview,
+		State: core.WorkOrderQueued, BaselineSHA: "submitted-base", HeadSHA: task.ReviewedHeadSHA, ReviewRound: 1,
+		CreatedAt: time.Now().UTC(),
+	}
+	requireOK(t, x.Backend.CreateJob(x.Context, core.Job{ID: source.JobID, TaskID: task.ID, Stage: source.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(x.Context, x.Backend, source))
+}
+
+func runRecoveryKeepsEnabledPolicy(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	task.SetupContract = config.ExecutionSetup{
+		MaxBounces: 3,
+		Review:     config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		ExecutionSettings: config.ContextualExecutionSettings{
+			Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
+		},
+	}
+	requireOK(t, st.CreateTask(ctx, task))
+	createReviewSource(t, x, task)
+	enabled := true
+	result, err := policyChange(t, x, task.ID, store.SetupChangeRequest{
+		TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "enable verification",
+		Policy: &store.TaskPolicyChange{VerifyStage: &enabled, StageTimeouts: map[string]string{"verify": "45m"}},
+	})
+	requireOK(t, err)
+	verify, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
+	requireOK(t, err)
+	timeoutQueuedOrder(t, x, verify)
+	recovered, err := RecoverWorkOrder(ctx, st, verify.ID, "recover-enabled-"+task.ID, time.Hour)
+	requireOK(t, err)
+	if recovered.State != core.WorkOrderQueued || recovered.ExecutionTimeoutText != "45m" {
+		t.Fatalf("recovered=%+v", recovered)
+	}
+	stored, err := st.GetTask(ctx, task.ID)
+	requireOK(t, err)
+	if !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+		t.Fatalf("frozen policy changed: %+v", stored.SetupContract)
+	}
+	requireNoSetupRefreeze(t, x, task.ID)
+	claimed, err := ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
+		SessionID: "claim-enabled", ClientToken: "claim-enabled", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	requireOK(t, err)
+	if claimed.HeadSHA != "submitted-head" || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("claim=%+v", claimed)
+	}
+}
+
+func runRecoveryKeepsIntakePolicy(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageVerify, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	task.SetupContract = config.ExecutionSetup{
+		VerifyStage: true,
+		ExecutionSettings: config.ContextualExecutionSettings{
+			Verify: config.ImplementationSettings{TimeoutText: "45m"},
+		},
+	}
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, CreatedAt: time.Now().UTC(),
+		QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), ExecutionTimeoutText: "45m",
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	timeoutQueuedOrder(t, x, order)
+	recovered, err := RecoverWorkOrder(ctx, st, order.ID, "recover-intake-"+task.ID, time.Hour)
+	requireOK(t, err)
+	if recovered.ExecutionTimeoutText != "45m" {
+		t.Fatalf("timeout drifted: %+v", recovered)
+	}
+	stored, err := st.GetTask(ctx, task.ID)
+	requireOK(t, err)
+	if !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+		t.Fatalf("intake policy changed: %+v", stored.SetupContract)
+	}
+	requireNoSetupRefreeze(t, x, task.ID)
+	if _, err = ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
+		SessionID: "claim-intake", ClientToken: "claim-intake", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertUnchanged(t *testing.T, beforeOrder, afterOrder core.WorkOrder, beforeJob, afterJob core.Job, beforeTask, afterTask core.Task, beforeEvents, afterEvents int) {
+	t.Helper()
+	if afterOrder.State != beforeOrder.State || afterOrder.UpdatedAt != beforeOrder.UpdatedAt || afterOrder.RedispatchCount != beforeOrder.RedispatchCount {
+		t.Fatalf("order mutated: before=%+v after=%+v", beforeOrder, afterOrder)
+	}
+	if afterJob.State != beforeJob.State {
+		t.Fatalf("job mutated: before=%+v after=%+v", beforeJob, afterJob)
+	}
+	if afterTask.SetupContract.VerifyStage != beforeTask.SetupContract.VerifyStage || afterTask.NextStage != beforeTask.NextStage {
+		t.Fatalf("task mutated: before=%+v after=%+v", beforeTask, afterTask)
+	}
+	if afterEvents != beforeEvents {
+		t.Fatalf("events %d -> %d", beforeEvents, afterEvents)
+	}
+}
+
+func runRecoveryRefuseWriteFree(t *testing.T, x Fixture) {
+	cases := []struct {
+		name   string
+		mutate func(*core.Task, *core.WorkOrder)
+		want   string
+	}{
+		{
+			name: "approval_stale_refresh_head",
+			mutate: func(task *core.Task, order *core.WorkOrder) {
+				task.SetupContract.VerifyStage = true
+				task.NextStage = core.StageVerify
+				task.ReviewedHeadSHA = "reviewed"
+				task.ApprovalStale = true
+				task.RefreshHeadSHA = "refresh-head"
+				order.HeadSHA = "order-head"
+			},
+			want: "differs from the verify head refresh-head (the refresh head, because approval_stale is set)",
+		},
+		{
+			name: "next_stage_implement",
+			mutate: func(task *core.Task, order *core.WorkOrder) {
+				task.SetupContract.VerifyStage = true
+				task.NextStage = core.StageImplement
+				task.ReviewedHeadSHA = "head"
+				order.HeadSHA = "head"
+			},
+			want: "next_stage is implement, not verify",
+		},
+		{
+			name: "missing_head",
+			mutate: func(task *core.Task, order *core.WorkOrder) {
+				task.SetupContract.VerifyStage = true
+				task.NextStage = core.StageVerify
+				task.ReviewedHeadSHA = ""
+				order.HeadSHA = ""
+			},
+			want: "the order has no head",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/recover", func(t *testing.T) { refuseRecoverWriteFree(t, x, tc.mutate, tc.want) })
+		t.Run(tc.name+"/redispatch", func(t *testing.T) { refuseRedispatchWriteFree(t, x, tc.mutate, tc.want) })
+	}
+}
+
+func refuseRecoverWriteFree(t *testing.T, x Fixture, mutate func(*core.Task, *core.WorkOrder), want string) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	order := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	mutate(&task, &order)
+	requireOK(t, st.CreateTask(ctx, task))
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	persisted, err := st.GetWorkOrder(ctx, order.ID)
+	requireOK(t, err)
+	persisted.State = core.WorkOrderTimedOut
+	requireOK(t, UpdateWorkOrder(ctx, st, persisted, core.WorkOrderCmdTimeout))
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	requestID := "refuse-recover-" + task.ID
+	_, err = RecoverWorkOrder(ctx, st, order.ID, requestID, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("recover err=%v want %q", err, want)
+	}
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+	_, retry := RecoverWorkOrder(ctx, st, order.ID, requestID, time.Hour)
+	if retry == nil || !strings.Contains(retry.Error(), want) {
+		t.Fatalf("retry recover err=%v", retry)
+	}
+	afterRetry, _, _, afterRetryEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	if afterRetry.State != beforeOrder.State || afterRetryEvents != beforeEvents {
+		t.Fatal("retry recorded recovery")
+	}
+}
+
+func refuseRedispatchWriteFree(t *testing.T, x Fixture, mutate func(*core.Task, *core.WorkOrder), want string) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	order := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now.Add(-2 * time.Hour), QueueDeadline: now.Add(-time.Hour),
+	}
+	mutate(&task, &order)
+	requireOK(t, st.CreateTask(ctx, task))
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	_, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("redispatch err=%v want %q", err, want)
+	}
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+}
+
+func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	type cell struct {
+		name        string
+		task        core.Task
+		order       core.WorkOrder
+		successor   bool
+		clock       core.WorkOrderState
+		queuedRetry bool
+		want        func(taskID, orderID, successorID string) string
+	}
+	cells := []cell{
+		{
+			name:        "running/verify-on/equal/verify/queued",
+			task:        core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order:       core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
+			clock:       core.WorkOrderQueued,
+			queuedRetry: true,
+			want:        func(string, string, string) string { return "" },
+		},
+		{
+			name:  "running/verify-on/equal/verify/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
+			clock: core.WorkOrderStale,
+			want:  func(string, string, string) string { return "" },
+		},
+		{
+			name:  "running/verify-off/equal/verify/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head"},
+			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
+			clock: core.WorkOrderStale,
+			want: func(taskID, orderID, _ string) string {
+				return "verify order " + orderID + " cannot be claimed: verify stage is off in task " + taskID + "'s frozen policy"
+			},
+		},
+		{
+			name:  "running/verify-on/mismatch/verify/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "task-head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order-head"},
+			clock: core.WorkOrderStale,
+			want: func(_, orderID, _ string) string {
+				return "verify order " + orderID + " cannot be claimed: order head order-head differs from the verify head task-head"
+			},
+		},
+		{
+			name:  "running/verify-on/empty/verify/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order: core.WorkOrder{Stage: core.StageVerify},
+			clock: core.WorkOrderStale,
+			want: func(_, orderID, _ string) string {
+				return "verify order " + orderID + " cannot be claimed: the order has no head"
+			},
+		},
+		{
+			name:  "running/verify-on/refresh/verify/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "reviewed", ApprovalStale: true, RefreshHeadSHA: "refresh", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order"},
+			clock: core.WorkOrderStale,
+			want: func(_, orderID, _ string) string {
+				return "verify order " + orderID + " cannot be claimed: order head order differs from the verify head refresh (the refresh head, because approval_stale is set)"
+			},
+		},
+		{
+			name:  "running/next-review/verify/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
+			clock: core.WorkOrderStale,
+			want: func(taskID, orderID, _ string) string {
+				return "verify order " + orderID + " cannot be claimed: task " + taskID + " next_stage is review, not verify"
+			},
+		},
+		{
+			name:  "awaiting/recovery-implement/spec/stale",
+			task:  core.Task{State: core.TaskAwaiting, RecoveryStage: core.StageImplement, NextStage: core.StageSpec},
+			order: core.WorkOrder{Stage: core.StageSpec},
+			clock: core.WorkOrderStale,
+			want: func(taskID, orderID, _ string) string {
+				return "work order " + orderID + " cannot be recovered because task " + taskID + " has passed the plan gate"
+			},
+		},
+		{
+			name:  "running/implement-advanced/implement/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview},
+			order: core.WorkOrder{Stage: core.StageImplement},
+			clock: core.WorkOrderStale,
+			want: func(taskID, orderID, _ string) string {
+				return "work order " + orderID + " cannot be recovered because task " + taskID + " has advanced to review"
+			},
+		},
+		{
+			name:  "running/implement-advanced-verify/implement/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify},
+			order: core.WorkOrder{Stage: core.StageImplement},
+			clock: core.WorkOrderStale,
+			want: func(taskID, orderID, _ string) string {
+				return "work order " + orderID + " cannot be recovered because task " + taskID + " has advanced to verify"
+			},
+		},
+		{
+			name:      "running/verify-on/equal/verify/stale/successor",
+			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			order:     core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
+			clock:     core.WorkOrderStale,
+			successor: true,
+			want: func(_, orderID, successorID string) string {
+				return "work order " + orderID + " was superseded by same-stage successor " + successorID
+			},
+		},
+	}
+	for _, item := range cells {
+		item := item
+		t.Run(item.name, func(t *testing.T) {
+			task := item.task
+			task.ID = core.NewTaskID()
+			task.Workspace = x.Workspace
+			task.Repo = "conveyor"
+			task.CreatedAt = now
+			task.Branch = "conveyor/task-" + task.ID
+			requireOK(t, st.CreateTask(ctx, task))
+			order := item.order
+			order.ID = task.ID + "-" + string(order.Stage) + "-1"
+			order.JobID = order.ID
+			order.TaskID = task.ID
+			order.State = core.WorkOrderQueued
+			order.CreatedAt = now
+			order.QueueEnteredAt = now
+			order.QueueDeadline = now.Add(time.Hour)
+			requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+			requireOK(t, CreateWorkOrder(ctx, st, order))
+			if item.queuedRetry {
+				claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
+					SessionID: "retry-" + order.ID, ClientToken: "retry-" + order.ID,
+					ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+				})
+				requireOK(t, err)
+				_, err = ReleaseWorkerClaim(ctx, st, order.ID, claimed.WorkerID, core.WorkOrderRelease{SessionID: claimed.SessionID})
+				requireOK(t, err)
+			}
+			if item.clock == core.WorkOrderStale {
+				_, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+					return st.ApplyWorkOrderClock(ctx, lease, task.ID, order.QueueDeadline.Add(time.Second))
+				})
+				requireOK(t, err)
+			}
+			successorID := ""
+			if item.successor {
+				later := core.WorkOrder{
+					ID: task.ID + "-" + string(order.Stage) + "-2", JobID: task.ID + "-" + string(order.Stage) + "-2",
+					TaskID: task.ID, Stage: order.Stage, State: core.WorkOrderQueued, HeadSHA: order.HeadSHA,
+					CreatedAt: now.Add(time.Second), QueueEnteredAt: now.Add(time.Second), QueueDeadline: now.Add(2 * time.Hour),
+				}
+				requireOK(t, st.CreateJob(ctx, core.Job{ID: later.JobID, TaskID: task.ID, Stage: later.Stage, State: core.JobPending}))
+				requireOK(t, CreateWorkOrder(ctx, st, later))
+				successorID = later.ID
+			}
+			current, err := st.GetWorkOrder(ctx, order.ID)
+			requireOK(t, err)
+			want := item.want(task.ID, current.ID, successorID)
+			_, recoverErr := RecoverWorkOrder(ctx, st, current.ID, "matrix-"+current.ID, time.Hour)
+			if want != "" {
+				if recoverErr == nil || recoverErr.Error() != want {
+					t.Fatalf("recover err=%v want %q", recoverErr, want)
+				}
+			} else if recoverErr != nil {
+				t.Fatalf("recover err=%v", recoverErr)
+			}
+			if item.clock == core.WorkOrderStale {
+				currentAfter, getErr := st.GetWorkOrder(ctx, current.ID)
+				requireOK(t, getErr)
+				if currentAfter.State == core.WorkOrderStale {
+					_, redispatchErr := RedispatchWorkOrder(ctx, st, current.ID, time.Hour)
+					if want != "" {
+						if redispatchErr == nil || redispatchErr.Error() != want {
+							t.Fatalf("redispatch err=%v want %q", redispatchErr, want)
+						}
+					} else if redispatchErr != nil && !strings.Contains(redispatchErr.Error(), "already claimed") {
+						t.Fatalf("redispatch err=%v", redispatchErr)
+					}
+				}
+			}
+			if recoverErr != nil {
+				return
+			}
+			recovered, getErr := st.GetWorkOrder(ctx, current.ID)
+			requireOK(t, getErr)
+			_, claimErr := ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
+				SessionID: "matrix-claim-" + recovered.ID, ClientToken: "matrix-claim-" + recovered.ID,
+				ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+			})
+			if claimErr != nil && deterministicClaimRefusal(claimErr) {
+				t.Fatalf("claim refused after successful recover: %v", claimErr)
+			}
+		})
+	}
+}
+
+func deterministicClaimRefusal(err error) bool {
+	text := err.Error()
+	return strings.Contains(text, "cannot be claimed") ||
+		strings.Contains(text, "cannot be recovered") ||
+		strings.Contains(text, "was superseded") ||
+		strings.Contains(text, "is superseded")
+}
+
+func runPlainQueuedClaimRefusal(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageImplement, ReviewedHeadSHA: "head", CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	task.SetupContract.VerifyStage = true
+	requireOK(t, st.CreateTask(ctx, task))
+	older := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	newer := older
+	newer.ID, newer.JobID = task.ID+"-verify-2", task.ID+"-verify-2"
+	newer.CreatedAt = now.Add(time.Second)
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: newer.JobID, TaskID: task.ID, Stage: newer.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, newer))
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: older.JobID, TaskID: task.ID, Stage: older.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, older))
+	_, err := ClaimWorkOrder(ctx, st, older.ID, core.WorkOrderClaim{
+		SessionID: "plain-queued", ClientToken: "plain-queued", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "was superseded by same-stage successor") {
+		t.Fatalf("claim err=%v", err)
+	}
+	_, err = ClaimWorkOrder(ctx, st, newer.ID, core.WorkOrderClaim{
+		SessionID: "plain-queued-next", ClientToken: "plain-queued-next", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "next_stage is implement, not verify") {
+		t.Fatalf("newer claim err=%v", err)
+	}
+}
+
+func runRedispatchPlanRevisionGuard(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskAwaiting, CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	requireOK(t, st.CreateTask(ctx, task))
+	requireOK(t, st.AppendEvent(ctx, core.Event{
+		TaskID: task.ID, Kind: "task.state_changed", At: now,
+		Payload: core.JSONPayload(map[string]any{"command": core.TaskGatePlanRevision, "from": core.TaskRunning, "to": core.TaskAwaiting}),
+	}))
+	order := core.WorkOrder{
+		ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now.Add(-2 * time.Hour), QueueDeadline: now.Add(-time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	_, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "unreadable plan-revision request") {
+		t.Fatalf("redispatch err=%v", err)
+	}
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
+	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+}
+
+func runQueuedStrandedVerifyCancelled(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	task.SetupContract = config.ExecutionSetup{
+		VerifyStage: false,
+		Review:      config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		ExecutionSettings: config.ContextualExecutionSettings{
+			Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
+			Verify: config.ImplementationSettings{TimeoutText: "30m"},
+		},
+	}
+	requireOK(t, st.CreateTask(ctx, task))
+	createReviewSource(t, x, task)
+	enabled := true
+	result, err := policyChange(t, x, task.ID, store.SetupChangeRequest{
+		TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "enable verification",
+		Policy: &store.TaskPolicyChange{VerifyStage: &enabled},
+	})
+	requireOK(t, err)
+	verify, err := st.GetWorkOrder(ctx, result.CreatedWorkOrders[0])
+	requireOK(t, err)
+	disabled := false
+	result, err = policyChange(t, x, task.ID, store.SetupChangeRequest{
+		TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "disable verification",
+		Policy: &store.TaskPolicyChange{VerifyStage: &disabled},
+	})
+	requireOK(t, err)
+	events, err := st.ListEvents(ctx, task.ID)
+	requireOK(t, err)
+	var cancelled, retired bool
+	for _, event := range events {
+		if event.JobID != verify.JobID {
+			continue
+		}
+		switch event.Kind {
+		case "work_order.cancelled":
+			cancelled = true
+		case "work_order.retired":
+			retired = true
+		}
+	}
+	if !cancelled || retired {
+		t.Fatalf("queued stranded verify cancelled=%v retired=%v", cancelled, retired)
+	}
+}
+
+func runRecoverRequestIDReplayBeforeRefusal(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageVerify, ReviewedHeadSHA: "head", CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	task.SetupContract.VerifyStage = true
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{
+		ID: task.ID + "-verify-1", JobID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	persisted, err := st.GetWorkOrder(ctx, order.ID)
+	requireOK(t, err)
+	persisted.State = core.WorkOrderTimedOut
+	requireOK(t, UpdateWorkOrder(ctx, st, persisted, core.WorkOrderCmdTimeout))
+	requestID := "replay-before-refusal-" + task.ID
+	recovered, err := RecoverWorkOrder(ctx, st, order.ID, requestID, time.Hour)
+	requireOK(t, err)
+	successor := core.WorkOrder{
+		ID: task.ID + "-verify-2", JobID: task.ID + "-verify-2", TaskID: task.ID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now.Add(time.Second), QueueEnteredAt: now.Add(time.Second), QueueDeadline: now.Add(2 * time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: successor.JobID, TaskID: task.ID, Stage: successor.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, successor))
+	replayed, err := RecoverWorkOrder(ctx, st, recovered.ID, requestID, time.Hour)
+	if err != nil {
+		t.Fatalf("replay after successor err=%v", err)
+	}
+	if replayed.ID != recovered.ID {
+		t.Fatalf("replayed=%+v", replayed)
+	}
+}
+
+func runAdvancedStageQueuedClaimRefusal(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageReview, CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{
+		ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
+		SessionID: "advanced-stage", ClientToken: "advanced-stage", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "has advanced to review") {
+		t.Fatalf("claim error=%v", err)
+	}
+}
+
+func runClaimPlanRevisionAfterListing(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{
+		ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning,
+		NextStage: core.StageImplement, CreatedAt: now,
+	}
+	task.Branch = "conveyor/task-" + task.ID
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{
+		ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+		State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	if _, err := st.GetWorkOrder(ctx, order.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGatePlanRevision}); err != nil {
+		t.Fatalf("plan-revision gate err=%v", err)
+	}
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
+		SessionID: "plan-revision-after-list", ClientToken: "plan-revision-after-list", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+	})
+	if err == nil || !strings.Contains(err.Error(), "unreadable plan-revision request") {
+		t.Fatalf("claim error=%v", err)
+	}
+}
+
+func runDispositionRecoverRefusal(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	v := newVerificationFixture(t, x)
+	op := v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "disposition-refusal-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "provider acknowledgement lost"}})
+	for _, run := range v.snapshot(t).Attempts {
+		if run.ID != v.runID {
+			continue
+		}
+		operator, owner := bootstrapOwner(t, x)
+		_, err := st.ApplyVerification(operator, store.VerificationCommand{Access: store.VerificationAccess{UserID: owner.ID, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID}, Kind: store.VerificationRevokePermissions, ContextID: v.contextID, Key: "revoke-before-recovery", Permissions: &store.VerificationPermissionRequest{RevokeGrantID: run.GrantID, Reason: "stop execution"}})
+		requireOK(t, err)
+	}
+	order, err := st.GetWorkOrder(ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	order.State = core.WorkOrderTimedOut
+	requireOK(t, UpdateWorkOrder(ctx, st, order, core.WorkOrderCmdTimeout))
+	order, err = st.GetWorkOrder(ctx, order.ID)
+	requireOK(t, err)
+	now := time.Now().UTC()
+	successorJob := core.Job{ID: v.access.TaskID + "-verify-2", TaskID: v.access.TaskID, Stage: core.StageVerify, State: core.JobPending}
+	successor := core.WorkOrder{
+		ID: successorJob.ID, JobID: successorJob.ID, TaskID: v.access.TaskID, Stage: core.StageVerify,
+		State: core.WorkOrderQueued, HeadSHA: order.HeadSHA, CreatedAt: now.Add(time.Second),
+		QueueEnteredAt: now.Add(time.Second), QueueDeadline: now.Add(2 * time.Hour),
+	}
+	requireOK(t, st.CreateJob(ctx, successorJob))
+	requireOK(t, CreateWorkOrder(ctx, st, successor))
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	observer := v
+	observer.ctx, observer.access.UserID = operator, owner.ID
+	beforeSnapshot := verificationPublicState(t, &observer)
+	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, v.access.TaskID, order.ID)
+	disposition := &store.VerificationRecoveryDisposition{
+		ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{op.ID},
+		InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied",
+		Reason: "Operator inspected provider state and authorizes one retry.",
+	}
+	want := "was superseded by same-stage successor"
+	requestID := "disposition-refuse-" + v.access.TaskID
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), st, order.ID, requestID, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("disposition recover err=%v want %q", err, want)
+	}
+	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, v.access.TaskID, order.ID)
+	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+	if !reflect.DeepEqual(beforeSnapshot, verificationPublicState(t, &observer)) {
+		t.Fatal("disposition recover changed verification snapshot")
+	}
+}

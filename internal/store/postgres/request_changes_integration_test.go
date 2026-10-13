@@ -12,14 +12,14 @@ import (
 )
 
 func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
 	workspace := "request-changes-" + core.NewTaskID()
 	cfg := isolationConfig(workspace)
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID("requester"), Role: core.ActorUser})
 	if seeded, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil || !seeded {
 		t.Fatalf("workspace seeded=%t err=%v", seeded, err)
@@ -68,7 +68,8 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 		t.Fatalf("interventions=%+v err=%v", interventions, err)
 	}
 	markers, err := st.ListActivityMarkersForTasks(ctx, []string{task.ID})
-	if err != nil || len(markers) != 1 || !markers[0].UserChangesRequested || !store.TaskNeedsAttention(updated, markers[0], false, false) {
+	action, actionErr := store.ReadNextAction(ctx, st, updated.ID, store.NextActionOptions{})
+	if err != nil || actionErr != nil || len(markers) != 1 || !markers[0].UserChangesRequested || action.Label == "" || store.TaskNeedsAttention(action) != (action.Actor == "operator") {
 		t.Fatalf("markers=%+v err=%v", markers, err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
@@ -88,7 +89,7 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 }
 
 func TestWorkerRequestChangesBounceIsClaimableAndClearsAttentionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,10 @@ func TestWorkerRequestChangesBounceIsClaimableAndClearsAttentionIntegration(t *t
 	if err != nil || len(orders) != 1 || !orders[0].Claimable {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{ClaimantID: "worker-2", WorkerID: "worker-2", SessionID: "worker-session", ClientToken: "worker-secret", Agent: "codex", Model: "test", Lease: time.Minute})
+	// Worker IDs are global; a per-workspace ID keeps reruns on a kept
+	// database from colliding.
+	workerID := "worker-2-" + workspace
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{ClaimantID: workerID, WorkerID: workerID, SessionID: "worker-session", ClientToken: "worker-secret", Agent: "codex", Model: "test", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

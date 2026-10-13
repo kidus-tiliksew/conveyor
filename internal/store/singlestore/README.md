@@ -73,6 +73,14 @@ release or context cancellation. Callbacks must obey cancellation. Lock rows
 remain as reusable coordination records. The caller takes locks in a stable
 order; callbacks may perform writes on separate connections.
 
+A commit that spans partitions can release a lock row before the rows it wrote
+on other partitions become visible. The next holder may then acquire the lock
+and miss those rows (task 261012-832d9c measured this in CI). A rule that must
+see its predecessor's rows uses `claimKey` instead: it locks the same row and
+returns the `holder` column, which `setClaim` writes on the locked row itself
+and therefore commits atomically with the release. Migration 0022 adds the
+column. Rows written before claims existed are covered by the rules' counts.
+
 The event log uses `s2log.WithTx(ctx, tx)` to bind its reads and appends to the
 same `*sql.Tx` as an aggregate mutation. The caller owns commit and rollback.
 Position locks precede stream locks, preserving committed workspace order.
@@ -93,11 +101,14 @@ checks because the schema lacks a PostgreSQL constraint.
 | `interventions` append-only trigger | `checkWrite` permits inserts only | `TestInterventionsAppendOnly` |
 | `tasks.state` CHECK | `checkWrite` validates `core.TaskStates()` | `TestTaskStates` |
 | `work_orders.state` CHECK | `checkWrite` validates `core.WorkOrderStates()` | `TestWorkOrderStates` |
-| One deployment credential | `writeRow` locks `one-deployment-credential`, counts other deployment credentials, then calls `checkDeploymentCredential` | `TestOneDeploymentCredential` |
-| Live reference-document name | `writeRow` requires name, workspace, and explicit deleted_at, locks workspace reference names, counts other live case-insensitive names, then calls `checkReferenceName` | `TestLiveReferenceName` |
+| One deployment credential | `writeRow` claims `one-deployment-credential`, counts other deployment credentials plus a claim held by another token, calls `checkDeploymentCredential`, then records the token as holder; setting the holder's `deployment_credential` false releases the claim | `TestOneDeploymentCredential`, `TestUniqueClaimsOutliveUnseenRowsIntegration` |
+| Live reference-document name | `writeRow` requires name, workspace, and explicit deleted_at, claims the workspace's `LOWER(name)`, counts other live case-insensitive names plus a claim held by another document, calls `checkReferenceName`, then records the document as holder; a soft delete releases the claim | `TestLiveReferenceName`, `TestUniqueClaimsOutliveUnseenRowsIntegration` |
+| `tasks_open_repo_branch_idx` partial unique index | `writeRow` claims `taskBranchClaimKey(workspace, repo, branch)` when a task row starts occupying an open branch (non-terminal insert, reopen, or branch/repo change), refuses a claim held by another task or another committed open row with `store.TaskBranchInUseError`, then records the task as holder; a terminal state or a branch change releases the old claim when the task holds it. Every `tasks` write that sets `state`, `branch` or `repo_name` must go through `writeRow` | `TestUniqueRuleInputsFailBeforeSQL`, `TestUniqueClaimsOutliveUnseenRowsIntegration`, `TaskBranchConcurrentClaims` conformance |
 
-Reference updates must pass the complete name/deleted-at projection, including
-restore. Credential writes must pass a boolean `deployment_credential`.
+Reference documents are inserted live and updated only to soft-delete, with
+the complete name/deleted-at projection. Credential writes must pass a boolean
+`deployment_credential` and one token id. `writeRow` refuses hard deletes of
+`user_tokens`, `reference_documents` and `tasks`, which would orphan a claim.
 Task and work-order inserts must pass their canonical state. Aggregate implementations call these write paths or enforce the matching
 checks inside their command transaction.
 

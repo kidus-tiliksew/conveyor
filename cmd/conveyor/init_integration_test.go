@@ -71,7 +71,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 		t.Fatalf("generated config: %v", err)
 	}
 	var rerunOutput strings.Builder
-	if err = initializeDeployment(t.Context(), &rerunOutput, configPath, answers); err != nil {
+	if err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &rerunOutput, configPath, answers); err != nil {
 		t.Fatalf("safe rerun: %v", err)
 	}
 	secondInitToken := signInTokenFromOutput(t, rerunOutput.String())
@@ -86,7 +86,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var legacyOutput strings.Builder
-	if err = initializeDeployment(t.Context(), &legacyOutput, legacyPath, answers); err != nil {
+	if err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &legacyOutput, legacyPath, answers); err != nil {
 		t.Fatalf("rerun over a legacy executor config: %v", err)
 	}
 	if after, readErr := os.ReadFile(legacyPath); readErr != nil || string(after) != string(legacy) {
@@ -96,19 +96,19 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 		t.Fatalf("legacy rerun output=%q", legacyOutput.String())
 	}
 
-	st, err := postgresstore.Open(t.Context(), databaseURL)
+	st, err := postgresstore.Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if _, err = st.VerifyPersonalAccessToken(t.Context(), "fresh-init-operator-token"); err != nil {
+	if _, err = st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "fresh-init-operator-token"); err != nil {
 		t.Fatalf("operator token: %v", err)
 	}
-	if _, _, err = st.RedeemSignInLink(t.Context(), firstInitToken); err == nil {
+	if _, _, err = st.RedeemSignInLink(store.WithActor(t.Context(), store.SystemActor()), firstInitToken); err == nil {
 		t.Fatal("init rerun did not invalidate the prior unredeemed link")
 	}
 
-	owner, err := st.VerifyPersonalAccessToken(t.Context(), "fresh-init-operator-token")
+	owner, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), "fresh-init-operator-token")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if firstActiveToken == secondActiveToken {
 		t.Fatal("reissue returned the prior token")
 	}
-	if _, _, err = st.RedeemSignInLink(t.Context(), firstActiveToken); err == nil {
+	if _, _, err = st.RedeemSignInLink(store.WithActor(t.Context(), store.SystemActor()), firstActiveToken); err == nil {
 		t.Fatal("reissue did not invalidate prior active-account link")
 	}
 	if pendingToken, pendingErr := issue("pending@example.test"); pendingErr != nil || pendingToken == "" {
@@ -159,7 +159,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 		t.Fatalf("deactivated email error=%v", deactivatedErr)
 	}
 	var cliEvents, leakedSecrets int
-	if err = st.Pool().QueryRow(t.Context(), `SELECT
+	if err = st.Pool().QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT
 		count(*) FILTER (WHERE actor_id=$1 AND actor_role='system' AND kind IN ('identity.signin_link_issued','identity.invitation_delivery_fallback')),
 		count(*) FILTER (WHERE payload_json::text LIKE '%cv_signin_%')
 		FROM deployment_events`, hostLocalSignInLinkActorID).Scan(&cliEvents, &leakedSecrets); err != nil {
@@ -168,7 +168,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if cliEvents < 8 || leakedSecrets != 0 {
 		t.Fatalf("CLI audit events=%d leaked secret payloads=%d", cliEvents, leakedSecrets)
 	}
-	workspaces, err := st.ListWorkspaces(t.Context())
+	workspaces, err := st.ListWorkspaces(store.WithActor(t.Context(), store.SystemActor()))
 	if err != nil || len(workspaces) != 1 || workspaces[0].ID != "fresh" {
 		t.Fatalf("workspaces=%+v err=%v", workspaces, err)
 	}

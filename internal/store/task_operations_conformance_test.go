@@ -13,7 +13,7 @@ func TestMemoryTaskAssigneeMembershipConformance(t *testing.T) {
 	t.Parallel()
 	workspace := "task-assignee-" + core.NewTaskID()
 	st := store.NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}})
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	taskID := "task-" + core.NewTaskID()
 	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)

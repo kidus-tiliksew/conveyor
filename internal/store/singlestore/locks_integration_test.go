@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestKeyLocksIntegration(t *testing.T) {
@@ -33,7 +35,7 @@ func TestKeyLocksIntegration(t *testing.T) {
 			}
 			for _, same := range []bool{true, false} {
 				t.Run(map[bool]string{true: "same-key-serializes", false: "different-keys-interleave"}[same], func(t *testing.T) {
-					ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 5*time.Second)
 					defer cancel()
 					firstHeld := make(chan struct{})
 					releaseFirst := make(chan struct{})
@@ -105,7 +107,7 @@ func TestKeyLocksIntegration(t *testing.T) {
 }
 func TestSessionLockCancellationAndCallbackCleanupIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(store.WithActor(t.Context(), store.SystemActor()))
 	release, err := st.sessionLock(ctx, "cancelled-owner")
 	if err != nil {
 		t.Fatal(err)
@@ -114,39 +116,37 @@ func TestSessionLockCancellationAndCallbackCleanupIntegration(t *testing.T) {
 	if err = release(); err != nil {
 		t.Fatal(err)
 	}
-	next, err := st.sessionLock(t.Context(), "cancelled-owner")
+	next, err := st.sessionLock(store.WithActor(t.Context(), store.SystemActor()), "cancelled-owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = next(); err != nil {
 		t.Fatal(err)
 	}
-	held, err := st.sessionLock(t.Context(), "cancelled-waiter")
+	held, err := st.sessionLock(store.WithActor(t.Context(), store.SystemActor()), "cancelled-waiter")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer held()
-	waitCtx, stop := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	waitCtx, stop := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), 100*time.Millisecond)
 	defer stop()
 	if _, err = st.sessionLock(waitCtx, "cancelled-waiter"); err == nil {
 		t.Fatal("cancelled waiter acquired held lock")
 	}
 	held()
 	callbackError := errors.New("callback")
-	scoped := store.WithWorkspace(t.Context(), "locks")
+	scoped := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "locks")
 	for _, result := range []error{callbackError, nil, callbackError} {
 		err = st.WithTaskSideEffectLock(scoped, "task", func(context.Context) error { return result })
 		if !errors.Is(err, result) {
 			t.Fatal(err)
 		}
 	}
-	if count := st.db.Stats().InUse; count != 0 {
-		t.Fatalf("leaked %d connections", count)
-	}
+	requireNoConnectionsInUse(t, st.db)
 }
 func TestTransactionRollbackAndWorkspaceAtomicityIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := store.WithWorkspace(t.Context(), "atomic")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "atomic")
 	cfg := &config.Config{Workspace: "atomic"}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -199,21 +199,21 @@ func TestMigrationRefusalsIntegration(t *testing.T) {
 		{"checksum", `UPDATE conveyor_singlestore_migrations SET checksum='changed' WHERE version=?`, []any{file.version}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := st.db.ExecContext(t.Context(), tc.query, tc.args...); err != nil {
+			if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), tc.query, tc.args...); err != nil {
 				t.Fatal(err)
 			}
-			if err := st.migrate(t.Context()); err == nil {
+			if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err == nil {
 				t.Fatal("mismatched ledger accepted")
 			}
-			if _, err := st.db.ExecContext(t.Context(), `DELETE FROM conveyor_singlestore_migrations WHERE version=99999`); err != nil {
+			if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `DELETE FROM conveyor_singlestore_migrations WHERE version=99999`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := st.db.ExecContext(t.Context(), `UPDATE conveyor_singlestore_migrations SET name=?,checksum=? WHERE version=?`, file.name, file.checksum, file.version); err != nil {
+			if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `UPDATE conveyor_singlestore_migrations SET name=?,checksum=? WHERE version=?`, file.name, file.checksum, file.version); err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
-	if err := st.migrate(t.Context()); err != nil {
+	if err := st.migrate(store.WithActor(t.Context(), store.SystemActor())); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -225,10 +225,18 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			start := make(chan struct{})
 			results := make(chan error, 2)
+			type attempt struct {
+				id       string
+				lockAt   time.Time
+				commitAt time.Time
+			}
+			attempts := make([]attempt, 2)
 			for i := range 2 {
 				go func() {
 					<-start
-					results <- st.withTx(t.Context(), func(tx *sql.Tx) error {
+					id := fmt.Sprintf("token-%d", i)
+					writeCtx, observed := observeLockReturn(store.WithActor(t.Context(), store.SystemActor()))
+					err := st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
 						var w rowWrite
 						if kind == "reference" {
 							name := "Same"
@@ -237,14 +245,16 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 							}
 							w = rowWrite{table: "reference_documents", operation: "INSERT", values: map[string]any{"workspace_id": "rules", "id": fmt.Sprintf("ref-%d", i), "name": name, "deleted_at": nil, "current_version": 1, "created_at": now, "updated_at": now}}
 						} else {
-							w = rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": fmt.Sprintf("token-%d", i), "user_id": "fixture", "token_hash": []byte(fmt.Sprintf("synthetic-hash-%d", i)), "deployment_credential": true}}
+							w = rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": id, "user_id": "fixture", "token_hash": []byte(fmt.Sprintf("synthetic-hash-%d", i)), "deployment_credential": true}}
 						}
-						_, err := writeRow(t.Context(), tx, w)
+						_, err := writeRow(writeCtx, tx, w)
 						if err != nil {
 							t.Logf("fixture %s write: %v", kind, err)
 						}
 						return err
 					})
+					attempts[i] = attempt{id: id, lockAt: observed.at, commitAt: time.Now()}
+					results <- err
 				}()
 			}
 			close(start)
@@ -258,11 +268,32 @@ func TestGoUniqueWriteRulesSerializeIntegration(t *testing.T) {
 				}
 			}
 			if successes != 1 {
+				if kind == "deployment" {
+					t.Logf("deployment tokens %s lock %s commit %s; %s lock %s commit %s", attempts[0].id, attempts[0].lockAt.Format(time.RFC3339Nano), attempts[0].commitAt.Format(time.RFC3339Nano), attempts[1].id, attempts[1].lockAt.Format(time.RFC3339Nano), attempts[1].commitAt.Format(time.RFC3339Nano))
+					rows, err := st.db.QueryContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT id, user_id, deployment_credential FROM user_tokens WHERE deployment_credential=TRUE`)
+					if err != nil {
+						t.Logf("deployment_credential rows: %v", err)
+					} else {
+						defer rows.Close()
+						for rows.Next() {
+							var id, userID string
+							var credential bool
+							if err = rows.Scan(&id, &userID, &credential); err != nil {
+								t.Logf("deployment_credential row: %v", err)
+								break
+							}
+							t.Logf("deployment_credential=TRUE row id=%s user_id=%s", id, userID)
+						}
+						if err = rows.Err(); err != nil {
+							t.Logf("deployment_credential rows: %v", err)
+						}
+					}
+				}
 				t.Fatalf("%s winners=%d", kind, successes)
 			}
 			if kind == "reference" {
 				var stored time.Time
-				if err := st.db.QueryRowContext(t.Context(), `SELECT created_at FROM reference_documents WHERE workspace_id='rules'`).Scan(&stored); err != nil {
+				if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT created_at FROM reference_documents WHERE workspace_id='rules'`).Scan(&stored); err != nil {
 					t.Fatal(err)
 				}
 				if !stored.Equal(now.Truncate(time.Microsecond)) {
@@ -284,7 +315,7 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			results <- st.migrate(t.Context())
+			results <- st.migrate(store.WithActor(t.Context(), store.SystemActor()))
 		}()
 	}
 	close(start)
@@ -295,7 +326,7 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 	}
 	f.assertConverged(t, st, before)
 	var zone, mode string
-	if err := st.db.QueryRowContext(t.Context(), `SELECT @@system_time_zone,@@sql_mode`).Scan(&zone, &mode); err != nil {
+	if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT @@system_time_zone,@@sql_mode`).Scan(&zone, &mode); err != nil {
 		t.Fatal(err)
 	}
 	if zone != "UTC" || !strings.Contains(mode, "STRICT_ALL_TABLES") {
@@ -305,7 +336,7 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 		t.Fatal("unbounded pool")
 	}
 	st.Close()
-	if err := st.db.PingContext(t.Context()); err == nil {
+	if err := st.db.PingContext(store.WithActor(t.Context(), store.SystemActor())); err == nil {
 		t.Fatal("closed pool remained usable")
 	}
 }
@@ -313,10 +344,13 @@ func TestConcurrentStartupAndConnectionSettingsIntegration(t *testing.T) {
 func TestNamedJobConflictCrossesTransactionBoundaryIntegration(t *testing.T) {
 	st := integrationStore(t)
 	query := `INSERT INTO jobs(workspace_id,id,task_id,stage,harness,runner,confinement_tier,state) VALUES('conflict','job','task','implement','fixture','fixture','fixture','pending')`
-	if _, err := st.db.ExecContext(t.Context(), query); err != nil {
+	if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), query); err != nil {
 		t.Fatal(err)
 	}
-	err := st.withTx(t.Context(), func(tx *sql.Tx) error { _, err := tx.ExecContext(t.Context(), query); return err })
+	err := st.withTx(store.WithActor(t.Context(), store.SystemActor()), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(store.WithActor(t.Context(), store.SystemActor()), query)
+		return err
+	})
 	if !errors.Is(err, store.ErrDispatchJobConflict) {
 		t.Fatalf("named job conflict escaped: %v", err)
 	}
@@ -331,12 +365,131 @@ func TestArtifactLinkSchemaAllowsMultipleLinksIntegration(t *testing.T) {
 		{"artifact-b", "task-a"},
 		{"artifact-a", "task-b"},
 	} {
-		if _, err := st.db.ExecContext(t.Context(), `INSERT INTO artifact_links(workspace_id,artifact_id,task_id) VALUES('links',?,?)`, link.artifact, link.task); err != nil {
+		if _, err := st.db.ExecContext(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO artifact_links(workspace_id,artifact_id,task_id) VALUES('links',?,?)`, link.artifact, link.task); err != nil {
 			t.Fatalf("insert distinct artifact link: %v", err)
 		}
 	}
 	var count int
-	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM artifact_links WHERE workspace_id='links'`).Scan(&count); err != nil || count != 3 {
+	if err := st.db.QueryRowContext(store.WithActor(t.Context(), store.SystemActor()), `SELECT COUNT(*) FROM artifact_links WHERE workspace_id='links'`).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("artifact links: count=%d err=%v", count, err)
 	}
+}
+
+// A commit spanning partitions can release its lock row before its guarded row
+// is visible on another partition (task 261012-832d9c). Deleting the committed
+// winner's row leaves exactly that view: the lock row committed, the guarded
+// row unseen. The next writer must still lose to the claim on the lock row.
+func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := store.WithActor(t.Context(), store.SystemActor())
+	now := time.Date(2026, time.October, 12, 0, 0, 0, 0, time.UTC)
+	token := func(id string, deployment bool) rowWrite {
+		return rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": id, "user_id": "fixture", "token_hash": []byte("hash-" + id), "deployment_credential": deployment}}
+	}
+	reference := func(id, name string) rowWrite {
+		return rowWrite{table: "reference_documents", operation: "INSERT", values: map[string]any{"workspace_id": "claims", "id": id, "name": name, "deleted_at": nil, "current_version": 1, "created_at": now, "updated_at": now}}
+	}
+	write := func(w rowWrite) error {
+		return st.withTx(ctx, func(tx *sql.Tx) error { _, err := writeRow(ctx, tx, w); return err })
+	}
+	hide := func(query, id string) {
+		if _, err := st.db.ExecContext(ctx, query, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("deployment", func(t *testing.T) {
+		if err := write(token("winner", true)); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM user_tokens WHERE id=?`, "winner")
+		if err := write(token("late", true)); err == nil || !strings.Contains(err.Error(), "deployment credential already exists") {
+			t.Fatalf("second deployment credential against an unseen winner: %v", err)
+		}
+	})
+	t.Run("deployment release", func(t *testing.T) {
+		if err := write(token("retired", true)); err == nil {
+			t.Fatal("claim held by winner was not enforced")
+		}
+		if err := write(rowWrite{table: "user_tokens", operation: "UPDATE", values: map[string]any{"deployment_credential": false}, where: map[string]any{"id": "winner"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(token("reissued", true)); err != nil {
+			t.Fatalf("retiring the holder must release its claim: %v", err)
+		}
+	})
+	t.Run("reference", func(t *testing.T) {
+		if err := write(reference("ref-winner", "Claimed")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM reference_documents WHERE id=?`, "ref-winner")
+		if err := write(reference("ref-late", "claimed")); !errors.Is(err, store.ErrReferenceDocumentNameConflict) {
+			t.Fatalf("second live name against an unseen winner: %v", err)
+		}
+	})
+	t.Run("reference release", func(t *testing.T) {
+		if err := write(reference("ref-held", "Released")); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(rowWrite{table: "reference_documents", operation: "UPDATE", values: map[string]any{"name": "Released", "deleted_at": now, "updated_at": now}, where: map[string]any{"workspace_id": "claims", "id": "ref-held"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(reference("ref-reused", "released")); err != nil {
+			t.Fatalf("soft delete must release the name claim: %v", err)
+		}
+	})
+	// Open-task branch claims (req-task-branch-assignment AC-4.1, AC-4.2;
+	// DEC-68, component-persistence Lock and transaction contract).
+	tasks := store.WithWorkspace(ctx, "branch-claims")
+	if _, err := st.CreateWorkspace(tasks, "branch-claims", "Branch claims", &config.Config{Workspace: "branch-claims"}); err != nil {
+		t.Fatal(err)
+	}
+	task := func(id, branch string) core.Task {
+		return core.Task{ID: id, Workspace: "branch-claims", Repo: "repo", Branch: branch, Title: id, State: core.TaskRunning, NextStage: core.StageImplement}
+	}
+	refusedBy := func(t *testing.T, err error, winner string) {
+		t.Helper()
+		var inUse *store.BranchInUseError
+		if !errors.Is(err, store.ErrTaskBranchConflict) || !errors.As(err, &inUse) || inUse.OtherTaskID != winner {
+			t.Fatalf("want branch conflict naming %s, got %v", winner, err)
+		}
+	}
+	t.Run("task branch", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("branch-winner", "claimed")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "branch-winner")
+		refusedBy(t, st.CreateTask(tasks, task("branch-late", "claimed")), "branch-winner")
+	})
+	t.Run("task branch attach", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("attach-late", "attach-own")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := st.AttachTaskBranch(tasks, "attach-late", "claimed")
+		refusedBy(t, err, "branch-winner")
+	})
+	t.Run("task branch terminal release", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("cancelled", "reused")); err != nil {
+			t.Fatal(err)
+		}
+		refusedBy(t, st.CreateTask(tasks, task("early", "reused")), "cancelled")
+		if _, err := taskops.New(st).Cancel(tasks, core.Intervention{TaskID: "cancelled", Action: core.InterventionCancel, ReasonCode: "obsolete"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(tasks, task("successor", "reused")); err != nil {
+			t.Fatalf("a terminal task must release its branch claim: %v", err)
+		}
+	})
+	t.Run("task branch attach release", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("mover", "b1")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AttachTaskBranch(tasks, "mover", "b2"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(tasks, task("b1-taker", "b1")); err != nil {
+			t.Fatalf("attach must release the previous branch claim: %v", err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "mover")
+		refusedBy(t, st.CreateTask(tasks, task("b2-taker", "b2")), "mover")
+	})
 }

@@ -192,6 +192,7 @@ export interface TaskRestartResult {
   task: Task
   successor: Task
   created: boolean
+  dropped_context?: Array<{ kind: string; id: string; reason: string }>
 }
 
 export interface PullRequestClose {
@@ -446,6 +447,7 @@ export interface ActivitySummary {
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
   stalled?: StalledState
+  next_action?: NextActionCompact
 }
 
 export interface ActivityPage {
@@ -486,6 +488,7 @@ export interface TaskOperationsItem {
   unsatisfiable_task_ids?: string[]
   child_rollup?: TaskChildRollup
   plan: TaskPlanStatus
+  next_action?: NextActionCompact
 }
 
 export interface TaskOperationsPage {
@@ -576,6 +579,7 @@ export interface WorkspaceRepo {
 export interface WorkspaceInfo {
   workspace: string
   max_bounces: number
+  recovery?: { automatic_recoveries: number; window: string }
   database: string
   repos: WorkspaceRepo[] | null
 }
@@ -587,15 +591,24 @@ export interface WorkspaceRecord {
   created_at: string
 }
 
-export type WorkspaceRole = 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
+// Roles and capabilities are server-defined strings. The dashboard keeps no
+// role-to-capability table: GET /v1/me serves the caller's capability list and
+// the ordered role chain, both derived from the Go bundle table, so a role or
+// capability added on the server needs no client edit
+// (req-accounts-and-membership AC-5.1; component-web-dashboard).
+export type WorkspaceRole = string
+export type WorkspaceCapability = string
 
 // The self-identity projection behind GET /v1/me: deliberately narrow, and
-// carrying a role only when the request supplied authorized workspace context.
+// carrying role, capabilities, and the ascending role chain only when the
+// request supplied authorized workspace context.
 export interface CallerIdentity {
   id: string
   email: string
   display_name: string
   role?: WorkspaceRole
+  capabilities?: WorkspaceCapability[]
+  roles?: WorkspaceRole[]
 }
 
 export interface WorkspaceMembership {
@@ -616,6 +629,11 @@ export interface WorkspaceInvitation {
   created_at: string
 }
 
+/**
+ * A membership grant or invitation resend result. `delivery` and
+ * `sign_in_url` are present only for an invitation; a grant to an existing
+ * account records the binding and issues no sign-in link.
+ */
 export interface MembershipGrant {
   email: string
   role: WorkspaceRole
@@ -680,7 +698,7 @@ export interface TaskPolicyContract {
   verify_stage?: boolean
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats: WorkspaceReviewSeat[] }
+  review: { seats?: WorkspaceReviewSeat[] }
   refresh_review: 'delta' | 'full' | 'none'
 }
 
@@ -692,7 +710,13 @@ export interface WorkspaceConfigDocument {
   review: { seats: WorkspaceReviewSeat[] }
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
-  monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string }
+  monitor?: {
+    enabled: boolean
+    repositories: string[]
+    poll_interval: string
+    startup_window: string
+    merge_deferral_bound?: string
+  }
 }
 
 export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'lineaged_merge' | 'revert'
@@ -852,11 +876,12 @@ export interface ActivityItem {
   stalled?: StalledState
   worker_status?: TaskWorkerStatus
   merge_readiness?: {
-    state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE'
+    state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE' | 'MERGED' | 'MERGED_HEAD_MISMATCH'
     head_sha?: string
     url?: string
     number?: number
   }
+  next_action?: NextActionCompact
 }
 
 export interface PendingProposal {
@@ -882,8 +907,124 @@ export interface PendingProposalsResponse {
   attention: {
     task_count: number
     pending_proposal_count: number
+    operator_decisions: number
     total: number
   }
+}
+
+// The server's next action for a task (feature-operator-next-action NA-3,
+// DEC-61). Mirrors internal/nextaction: every surface renders these fields and
+// derives none of them.
+export type NextActionActor = 'none' | 'operator' | 'factory' | 'agent' | 'dependency'
+
+export interface NextActionChoice {
+  id: string
+  label: string
+  effect: string
+  method: string
+  path: string
+  capability: string
+  allowed: boolean
+}
+
+export interface NextActionBlocker {
+  task_id: string
+  title: string
+  state: string
+}
+
+export interface NextActionOrder {
+  id: string
+  stage: string
+  state: string
+  queue_deadline: string | null
+  execution_deadline: string | null
+  lease_expires_at: string | null
+  recovery_refusal?: string
+}
+
+export interface NextActionAttempt {
+  harness?: string
+  model?: string
+  user?: string
+  claimed_by?: string
+  session_id?: string
+  attempt_id?: string
+  claimed_at: string | null
+  last_check_in: string | null
+  lease_expires_at: string | null
+  progress?: string
+  elapsed_seconds: number
+}
+
+export interface NextActionDetails {
+  gate_kind?: string
+  reason_code?: string
+  stall_reason?: string
+  release_outcome?: string
+  order_ids?: string[]
+  checkpoint?: string
+  pending_proposals?: { tier: string; id: string; version: number }[]
+  secondary?: { kind: string; reason_code?: string }[]
+  refusals?: { choice: string; text: string }[]
+  merge_readiness?: string
+}
+
+export interface NextActionCompact {
+  label: string
+  actor: NextActionActor
+  kind: string
+  judgment: boolean
+  summary: string
+  deadline: string | null
+  blocked_by?: NextActionBlocker[]
+}
+
+export interface NextAction extends NextActionCompact {
+  question?: string
+  choices: NextActionChoice[]
+  if_ignored?: string
+  current_order?: NextActionOrder
+  attempt?: NextActionAttempt
+  details: NextActionDetails
+}
+
+export type InboxBand = 'decisions' | 'blocked' | 'automatic'
+
+// One GET /v1/next-actions item: a task item carries `task` and its compact
+// next action; a document proposal carries `kind: 'document_proposal'` and
+// `proposal`. The server orders the list.
+export interface InboxItem {
+  kind?: 'document_proposal'
+  band: InboxBand
+  task?: Task
+  next_action?: NextActionCompact
+  pull_request?: GitHubLifecycle
+  serves?: string[]
+  recommendation?: string
+  no_judgment_needed?: boolean
+  proposal?: PendingProposal
+  sentence?: string
+  blockers?: NextActionBlocker[]
+  deadline?: string | null
+  last_event_at?: string
+}
+
+export interface FactoryAct {
+  id: number
+  task_id: string
+  kind: string
+  at: string
+  automatic: boolean
+  summary?: string
+}
+
+export interface NextActionsPage {
+  items: InboxItem[]
+  acts: FactoryAct[]
+  total: number
+  limit: number
+  offset: number
 }
 
 export interface WorkOrder {
@@ -1461,4 +1602,96 @@ export interface VerificationKitRepository {
 
 export interface VerificationKitRegistry {
   repositories: VerificationKitRepository[]
+}
+
+// GET /v1/tasks/{id}/flow (feature-operator-next-action NA-7): the task's
+// position on its stage path, folded on the server from its events. The client
+// draws it and derives nothing from events itself.
+export type TaskFlowStatus = 'done' | 'in_progress' | 'waiting' | 'needs_operator' | 'off' | 'upcoming'
+
+export type TaskFlowStageId = 'triage' | 'spec' | 'implement' | 'verify' | 'review' | 'merge'
+
+// The NA-3 attempt block: who holds the current attempt and how fresh it is.
+export interface TaskFlowAttemptView {
+  harness?: string
+  model?: string
+  user?: string
+  claimed_by?: string
+  session_id?: string
+  attempt_id?: string
+  claimed_at: string | null
+  last_check_in: string | null
+  lease_expires_at: string | null
+  progress?: string
+  elapsed_seconds: number
+}
+
+export interface TaskFlowAttempt {
+  order_id: string
+  attempt_id: string
+  started_at: string | null
+  ended_at: string | null
+  outcome: string
+  superseded: boolean
+  auto: boolean
+}
+
+export interface TaskFlowStage {
+  id: TaskFlowStageId
+  // Null when the stage has no gate or the frozen policy turned it off.
+  gate: 'plan_approval' | 'merge_approval' | null
+  status: TaskFlowStatus
+  // Server-stated copy, printed as sent. missed_check_in is empty unless the
+  // current attempt's lease is past due.
+  description: string
+  status_label: string
+  status_text: string
+  missed_check_in: string
+  attempts: TaskFlowAttempt[]
+  current_attempt: TaskFlowAttemptView | null
+}
+
+export interface TaskFlowLoop {
+  from: TaskFlowStageId
+  to: TaskFlowStageId
+  count: number
+}
+
+export interface TaskFlowBlocker {
+  task_id: string
+  title: string
+  state: string
+}
+
+export interface TaskFlowSide {
+  blocked_by: TaskFlowBlocker[]
+  retrying: { attempt: number; of: number } | null
+  parked: boolean
+  closed: boolean
+  agent_question: boolean
+}
+
+// The NA-3 statement, embedded unchanged. Only the fields the flow reads are
+// typed here; the NA-6 surfaces own the rest of the statement.
+export interface TaskFlowNextAction {
+  label: string
+  actor: string
+  kind: string
+  summary: string
+}
+
+export interface TaskFlowRaw {
+  state: string
+  next_stage: string
+  recovery_stage: string
+  gate_kind: string
+  order_ids: string[]
+}
+
+export interface TaskFlow {
+  stages: TaskFlowStage[]
+  loops: TaskFlowLoop[]
+  side: TaskFlowSide
+  next_action: TaskFlowNextAction
+  raw: TaskFlowRaw
 }

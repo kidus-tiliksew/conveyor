@@ -28,6 +28,7 @@ func runCmd() *cobra.Command {
 	setupName := ""
 	step := false
 	raw := false
+	mergeYes := false
 	cmd := &cobra.Command{
 		Use:   "run <task-id>",
 		Short: "Explicitly claim and execute one task on this machine",
@@ -44,7 +45,7 @@ func runCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			ctx, stop := signal.NotifyContext(withRunMergeYes(cmd.Context(), mergeYes), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			input := cmd.InOrStdin()
 			output := cmd.OutOrStdout()
@@ -57,6 +58,7 @@ func runCmd() *cobra.Command {
 	cmd.Flags().Bool("auto", false, "deprecated compatibility flag")
 	_ = cmd.Flags().MarkHidden("auto")
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the raw harness event stream")
+	cmd.Flags().BoolVar(&mergeYes, "yes", false, "merge at the merge_approval gate without the confirmation prompt")
 	return cmd
 }
 
@@ -439,7 +441,7 @@ func reportUnattachedRunWait(output io.Writer, taskID string, item *workerservic
 		if item.Gate != nil {
 			label := strings.TrimSpace(item.Gate.Label)
 			if label == "" {
-				label = strings.TrimSpace(item.Gate.Kind) + " gate"
+				label = strings.TrimSpace(item.Gate.Kind)
 			}
 			claimed := "no work order was claimed"
 			if ranStages {
@@ -672,6 +674,11 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 	} else if gate.CanRequestChanges {
 		actions = "changes/wait"
 	}
+	// The merge_approval gate also offers the one-act merge at MERGEABLE;
+	// approve alone stays available (DEC-64(1,3)).
+	if gate.Kind == workerservice.TaskRunGateMergeApproval && gate.MergeActionAvailable() {
+		actions = "merge/" + actions
+	}
 	for {
 		answer, polled, err := readRunPromptOrPoll(ctx, answers, output, fmt.Sprintf("Gate action [%s]: ", actions), styled, pollDelay)
 		if err != nil {
@@ -689,6 +696,24 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 				return runGateStop, "", nil
 			case <-time.After(pollDelay):
 				return runGatePoll, "", nil
+			}
+		case "merge":
+			if gate.Kind == workerservice.TaskRunGateMergeApproval && gate.MergeActionAvailable() {
+				// The one-act merge names the reviewed head and pull request
+				// and needs a typed yes unless --yes (DEC-64(3)).
+				_, _ = fmt.Fprintln(output, taskRunGateMergeSummary(*gate))
+				if runMergeYes(ctx) {
+					return runGateMerge, "", nil
+				}
+				confirm, confirmErr := readRunPrompt(ctx, answers, output, "Type yes to approve and merge: ", styled)
+				if confirmErr != nil {
+					return runGateStop, "", confirmErr
+				}
+				if strings.TrimSpace(confirm) == "yes" {
+					return runGateMerge, "", nil
+				}
+				_, _ = fmt.Fprintln(output, "Not merged.")
+				continue
 			}
 		case "approve":
 			if gate.CanOperate {
@@ -1163,4 +1188,35 @@ func contextFreshnessSummary(f core.ContextFreshness) (string, string) {
 		summary += " Diagnostic: " + f.Diagnostic + "."
 	}
 	return core.ContextDigest([]string{f.ObservationRevision, summary}), summary
+}
+
+type runMergeYesKey struct{}
+
+// withRunMergeYes carries `conveyor run --yes` to the plain and TUI gate
+// prompts, which then skip the merge_approval merge confirmation (DEC-64(3)).
+func withRunMergeYes(ctx context.Context, yes bool) context.Context {
+	return context.WithValue(ctx, runMergeYesKey{}, yes)
+}
+
+func runMergeYes(ctx context.Context) bool {
+	yes, _ := ctx.Value(runMergeYesKey{}).(bool)
+	return yes
+}
+
+// taskRunGateMergeSummary names what the one-act gate merge lands: the
+// reviewed head and pull request from the gate's readiness peek (DEC-64(3)).
+func taskRunGateMergeSummary(gate workerservice.TaskRunGate) string {
+	head, pull := "(unknown)", "pull request (unknown)"
+	if r := gate.MergeReadiness; r != nil {
+		if r.HeadSHA != "" {
+			head = r.HeadSHA
+		}
+		if r.Number > 0 {
+			pull = fmt.Sprintf("pull request #%d", r.Number)
+		}
+		if r.URL != "" {
+			pull += " " + r.URL
+		}
+	}
+	return fmt.Sprintf("Merge reviewed head %s, %s.", head, pull)
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,146 @@ func (d *Dispatcher) reviewedHeadFromEvents(ctx context.Context, taskID string) 
 		}
 	}
 	return ""
+}
+
+// observedMergeExpectedHead is the head an observed forge merge must match.
+// Callers decide eligibility; the writer has no state filter.
+func (d *Dispatcher) observedMergeExpectedHead(ctx context.Context, task core.Task) (string, bool) {
+	switch task.State {
+	case core.TaskApproved:
+		if task.ApprovalStale {
+			return "", false
+		}
+		head := task.ApprovedHeadSHA
+		if head == "" {
+			head = task.ReviewedHeadSHA
+		}
+		return head, head != ""
+	case core.TaskAwaiting:
+		if task.GateKind != core.GateKindMergeApproval {
+			return "", false
+		}
+		head := task.ReviewedHeadSHA
+		if head == "" {
+			head = d.reviewedHeadFromEvents(ctx, task.ID)
+		}
+		return head, head != ""
+	default:
+		return "", false
+	}
+}
+
+func forgeMergeReconciled(events []core.Event, repository string, pr github.PullRequest) bool {
+	for _, event := range events {
+		if event.Kind != "merge.reconciled" {
+			continue
+		}
+		var prior struct {
+			Repository string `json:"repository"`
+			Number     int    `json:"pull_request"`
+			Head       string `json:"head_sha"`
+			Merge      string `json:"merge_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &prior) == nil && prior.Repository == repository && prior.Number == pr.Number && prior.Head == pr.HeadSHA && prior.Merge == pr.MergeCommitSHA {
+			return true
+		}
+	}
+	return false
+}
+
+// forgeMergeConfirmed reports a Conveyor merge.confirmed for this pull request
+// at this head; a recorded merge commit must also match. It accepts a merged
+// task whose approval moved after Conveyor merged (component-submission-merge
+// "Observed merges"; AC-3.5). Dedupe keeps using forgeMergeReconciled only.
+func forgeMergeConfirmed(events []core.Event, repository string, pr github.PullRequest) bool {
+	for _, event := range events {
+		if event.Kind != "merge.confirmed" {
+			continue
+		}
+		var prior struct {
+			Repository string `json:"repository"`
+			Number     int    `json:"pull_request"`
+			Head       string `json:"head_sha"`
+			Merge      string `json:"merge_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &prior) == nil && prior.Repository == repository && prior.Number == pr.Number &&
+			prior.Head != "" && prior.Head == pr.HeadSHA && (prior.Merge == "" || prior.Merge == pr.MergeCommitSHA) {
+			return true
+		}
+	}
+	return false
+}
+
+func mergedHeadMismatchRecorded(events []core.Event, pr github.PullRequest) bool {
+	for _, event := range events {
+		if event.Kind != "merge.failed" {
+			continue
+		}
+		var prior struct {
+			Reason string `json:"reason_code"`
+			Number int    `json:"pull_request"`
+			Merged string `json:"merged_head_sha"`
+			Commit string `json:"merge_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &prior) == nil && prior.Reason == "merged_head_mismatch" && prior.Number == pr.Number && prior.Merged == pr.HeadSHA && prior.Commit == pr.MergeCommitSHA {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileForgeMergeLocked records an observed forge merge. The caller holds
+// the task side-effect lock, pr.Merged is true, and the task is not merged.
+// A match confirms the merge. A mismatch records drift and leaves the state.
+func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Task, githubRepo string, pr github.PullRequest, expectedHead, result string) (bool, error) {
+	if expectedHead != "" && expectedHead == pr.HeadSHA {
+		events, err := d.Store.ListEvents(ctx, task.ID)
+		if err != nil {
+			return false, err
+		}
+		// A pending one-act request at this head is the operator's merge, not a
+		// merge outside Conveyor: it completes through intervention.merge and
+		// writes no merge.reconciled or merge.recover (DEC-64(7)).
+		if credited, creditErr := d.creditPendingGateMergeLocked(ctx, task, githubRepo, pr, events); creditErr != nil || credited {
+			return credited, creditErr
+		}
+		if !forgeMergeReconciled(events, githubRepo, pr) {
+			payload := map[string]any{
+				"repository": githubRepo, "pull_request": pr.Number, "url": pr.URL,
+				"base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": result,
+				"merged_by": pr.MergedBy, "merge_commit_sha": pr.MergeCommitSHA,
+				"factory_review_validated": true,
+				"reviewed_head_sha":        task.ReviewedHeadSHA, "approved_head_sha": task.ApprovedHeadSHA,
+			}
+			if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(payload)}); err != nil {
+				return false, err
+			}
+		}
+		d.observeConfirmedMerge(ctx, task, githubRepo, pr, "merge.reconciled")
+		if err := d.confirmTaskMerged(ctx, task.ID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	events, err := d.Store.ListEvents(ctx, task.ID)
+	if err != nil {
+		return false, err
+	}
+	if mergedHeadMismatchRecorded(events, pr) {
+		return false, nil
+	}
+	mismatch := fmt.Sprintf("pull request %s#%d merged at %s, which does not match expected head %s", githubRepo, pr.Number, pr.HeadSHA, expectedHead)
+	payload := map[string]any{
+		"reason_code": "merged_head_mismatch", "forge_error_category": "merged_head_mismatch",
+		"pull_request": pr.Number, "url": pr.URL,
+		"merged_head_sha": pr.HeadSHA, "expected_head_sha": expectedHead,
+		"merge_commit_sha": pr.MergeCommitSHA, "merged_by": pr.MergedBy,
+		"error": mismatch,
+	}
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.failed", Payload: core.JSONPayload(payload)}); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (d *Dispatcher) refreshScope(task core.Task, conflict bool) string {
@@ -113,7 +254,9 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, new
 		cfg = cfg.WithPolicy(current.SetupContract)
 	}
 	if current.NextStage == core.StageVerify {
-		return d.runTaskForSnapshot(ctx, current)
+		// Readiness has just observed this head and holds the task lock, so
+		// the pre-dispatch base check is skipped here.
+		return d.dispatchSnapshot(ctx, current, false)
 	}
 	return d.createReviewRound(ctx, cfg, current, cfg.Routing.Stages[string(core.StageReview)])
 }
@@ -124,13 +267,16 @@ func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (Me
 	var result MergeReadiness
 	err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		var lockedErr error
-		result, lockedErr = d.readMergeReadinessLocked(lockedCtx, task)
+		result, lockedErr = d.readMergeReadinessLocked(lockedCtx, task, false)
 		return lockedErr
 	})
 	return result, err
 }
 
-func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Task) (MergeReadiness, error) {
+// mergedOnly limits the read to the merged short-circuit: the gate-on sweep
+// never dispatches a conflict fix, begins a refresh, or appends merge.blocked
+// (component-submission-merge).
+func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Task, mergedOnly bool) (MergeReadiness, error) {
 	var result MergeReadiness
 	current, err := d.Store.GetTask(ctx, task.ID)
 	if err != nil {
@@ -144,27 +290,49 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 	if !ok || repo.GitHub == "" {
 		return result, fmt.Errorf("repository %q does not configure GitHub", current.Repo)
 	}
-	var pr github.PullRequest
-	for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
-		pr, err = d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
-		if err != nil {
-			if category := github.ErrorCategory(err); category != "" {
-				return result, fmt.Errorf("%s: %w", category, err)
-			}
-			return result, err
-		}
-		if pr.Mergeable != "UNKNOWN" {
-			break
-		}
-		if attempt < 2 {
-			select {
-			case <-ctx.Done():
-				return result, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
+	pr, err := d.readPullRequestMergeability(ctx, repo.GitHub, current.Branch)
+	if err != nil {
+		return result, err
 	}
 	result = MergeReadiness{State: pr.Mergeable, HeadSHA: pr.HeadSHA, URL: pr.URL, Number: pr.Number}
+	if pr.Merged {
+		if current.State == core.TaskMerged {
+			result.State = "MERGED"
+			return result, nil
+		}
+		if pr.MergeCommitSHA == "" {
+			result.State = "UNKNOWN"
+			return result, nil
+		}
+		head, eligible := d.observedMergeExpectedHead(ctx, current)
+		if !eligible {
+			result.State = "MERGED_HEAD_MISMATCH"
+			return result, nil
+		}
+		matched, matchErr := d.reconcileForgeMergeLocked(ctx, current, repo.GitHub, pr, head, "merged_outside_conveyor")
+		if matchErr != nil {
+			return result, matchErr
+		}
+		if matched {
+			result.State = "MERGED"
+		} else {
+			result.State = "MERGED_HEAD_MISMATCH"
+		}
+		return result, nil
+	}
+	// A merge_approval gate answers the side-effect-free peek, which offers
+	// the one-act merge only at MERGEABLE (DEC-64(2,3)).
+	if !mergedOnly && current.State == core.TaskAwaiting && current.GateKind == core.GateKindMergeApproval {
+		result.State, err = d.peekGateMergeReadinessLocked(ctx, current, pr)
+		return result, err
+	}
+	// The gate-on sweep (mergedOnly) and a merge-gate wait are read-only except
+	// for the merged short-circuit above: conflict fixes and stale refreshes
+	// would bind an approval the operator never gave. Other reads keep the
+	// existing conflict and refresh path.
+	if mergedOnly || current.State == core.TaskAwaiting {
+		return result, nil
+	}
 	// A queued or claimed conflict-fix order owns the conflict episode and its
 	// refresh: readiness stays pending and mutates nothing until the order's
 	// own submission (component-work-orders).
@@ -182,12 +350,11 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		return result, nil
 	}
 	if result.State == "CONFLICTING" {
-		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
+		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA, "merge-conflict"); err != nil {
 			return result, err
 		}
-		if !current.MergeApproval {
-			_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
-		}
+		// Gate-on and gate-off both dispatch. This read never requests a merge.
+		_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg, false, "")
 		return result, err
 	}
 	if err = d.clearMergeConflictEpisode(ctx, current, result.State, pr.HeadSHA); err != nil {
@@ -200,6 +367,35 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		result.State = "STALE"
 	}
 	return result, nil
+}
+
+// readPullRequestMergeability reads the branch pull request through the App at
+// most three times, waiting 100ms then 200ms while GitHub still computes
+// mergeability. A forge error is returned with its category; an answer that is
+// still UNKNOWN after the third read is returned as is (component-submission-merge).
+func (d *Dispatcher) readPullRequestMergeability(ctx context.Context, githubRepo, branch string) (github.PullRequest, error) {
+	var pr github.PullRequest
+	var err error
+	for attempt, delay := 0, 100*time.Millisecond; attempt < 3; attempt, delay = attempt+1, delay*2 {
+		pr, err = d.ViewPullRequest(ctx, githubRepo, branch)
+		if err != nil {
+			if category := github.ErrorCategory(err); category != "" {
+				return github.PullRequest{}, fmt.Errorf("%s: %w", category, err)
+			}
+			return github.PullRequest{}, err
+		}
+		if pr.Merged || pr.Mergeable != "UNKNOWN" {
+			break
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return github.PullRequest{}, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return pr, nil
 }
 
 type mergeConflictEpisode struct {
@@ -249,54 +445,8 @@ func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, e
 	if err != nil {
 		return mergeConflictDispatchState{}, err
 	}
-	state := mergeConflictDispatchState{}
-	inside := false
-	dispatched := map[string]bool{}
-	for _, event := range events {
-		switch event.Kind {
-		case "merge.conflict_cleared":
-			inside, state = false, mergeConflictDispatchState{}
-		case "merge.blocked":
-			inside = sameConflictEpisode(event.Payload, episode)
-			state = mergeConflictDispatchState{}
-		case "merge.conflict_fix_dispatched":
-			if inside && sameConflictEpisode(event.Payload, episode) {
-				var payload struct {
-					WorkOrderID string `json:"work_order_id"`
-				}
-				if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID != "" {
-					dispatched[payload.WorkOrderID] = true
-				}
-				state.NextRetryAt = time.Time{}
-			}
-		case "merge.conflict_dispatch_failed":
-			if !inside || !sameConflictEpisode(event.Payload, episode) {
-				continue
-			}
-			var payload struct {
-				FailureCount int       `json:"failure_count"`
-				NextRetryAt  time.Time `json:"next_retry_at"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				state.Failures++
-				state.NextRetryAt = payload.NextRetryAt
-			}
-		case "merge.conflict_dispatch_exhausted":
-			if inside && sameConflictEpisode(event.Payload, episode) {
-				state.Exhausted = true
-			}
-		case "merge.conflict_recovery_blocked":
-			if inside && sameConflictEpisode(event.Payload, episode) {
-				state.RecoveryBlocked = true
-			}
-		}
-	}
-	for _, order := range orders {
-		if dispatched[order.ID] && terminalConflictFixAttempt(order) {
-			state.Failures++
-		}
-	}
-	return state, nil
+	state := store.MergeConflictDispatchState(events, episode.ApprovedHead, episode.NewHead, orders)
+	return mergeConflictDispatchState{Failures: state.Failures, NextRetryAt: state.NextRetryAt, Exhausted: state.Exhausted, RecoveryBlocked: state.RecoveryBlocked}, nil
 }
 
 func terminalConflictFixAttempt(order core.WorkOrder) bool {
@@ -310,7 +460,7 @@ func terminalConflictFixAttempt(order core.WorkOrder) bool {
 	}
 }
 
-func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.Task, approvedHead, newHead string) error {
+func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.Task, approvedHead, newHead, reasonCode string) error {
 	episode, active, err := d.currentMergeConflictEpisode(ctx, task.ID)
 	if err != nil {
 		return err
@@ -318,7 +468,7 @@ func (d *Dispatcher) recordMergeConflictBlocked(ctx context.Context, task core.T
 	if active && episode.ApprovedHead == approvedHead && episode.NewHead == newHead {
 		return nil
 	}
-	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": "merge-conflict", "approved_head": approvedHead, "new_head": newHead})})
+	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": reasonCode, "approved_head": approvedHead, "new_head": newHead})})
 }
 
 func (d *Dispatcher) clearMergeConflictEpisode(ctx context.Context, task core.Task, readiness, head string) error {
@@ -360,16 +510,21 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 		if approved == "" {
 			approved = current.ReviewedHeadSHA
 		}
-		if lockedErr = d.recordMergeConflictBlocked(lockedCtx, current, approved, pr.HeadSHA); lockedErr != nil {
+		if lockedErr = d.recordMergeConflictBlocked(lockedCtx, current, approved, pr.HeadSHA, "merge-conflict"); lockedErr != nil {
 			return lockedErr
 		}
-		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg)
+		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, true, "")
 		return lockedErr
 	})
 	return result, err
 }
 
-func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config) (core.WorkOrder, error) {
+// dispatchConflictFixLocked admits one conflict-fix implement order under the
+// episode budget. An empty baselineHead is the approved-task path: the fix's
+// baseline is the approved head, bound first if absent. A non-empty
+// baselineHead is the pre-review path (feature-bounded-automatic-recovery
+// AR-4): the conflicting submitted head is the baseline and no approval is bound.
+func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core.Task, pr github.PullRequest, cfg *config.Config, operatorRetry bool, baselineHead string) (core.WorkOrder, error) {
 	active, ok, err := d.activeImplementationWorkOrder(ctx, current.ID, "merge-conflict")
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -385,11 +540,14 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		return core.WorkOrder{}, err
 	}
 	if !present {
-		approved := current.ApprovedHeadSHA
-		if approved == "" {
-			approved = current.ReviewedHeadSHA
+		approved, reasonCode := current.ApprovedHeadSHA, "pre-review-conflict"
+		if baselineHead == "" {
+			reasonCode = "merge-conflict"
+			if approved == "" {
+				approved = current.ReviewedHeadSHA
+			}
 		}
-		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA); err != nil {
+		if err = d.recordMergeConflictBlocked(ctx, current, approved, pr.HeadSHA, reasonCode); err != nil {
 			return core.WorkOrder{}, err
 		}
 		episode = mergeConflictEpisode{ApprovedHead: approved, NewHead: pr.HeadSHA}
@@ -423,10 +581,12 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		}
 		dispatchState.Exhausted = true
 	}
-	if dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt)) {
+	// Automatic readiness and the merge act keep the episode budget. The
+	// operator route retries after exhaustion and during backoff.
+	if !operatorRetry && (dispatchState.Exhausted || (!dispatchState.NextRetryAt.IsZero() && now.Before(dispatchState.NextRetryAt))) {
 		return core.WorkOrder{}, nil
 	}
-	if current.ApprovedHeadSHA == "" {
+	if baselineHead == "" && current.ApprovedHeadSHA == "" {
 		head := current.ReviewedHeadSHA
 		if head == "" {
 			head = pr.HeadSHA
@@ -436,8 +596,12 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		}
 		current.ApprovedHeadSHA = head
 	}
-	systemCtx := store.WithActor(ctx, store.Actor{ID: "system", Role: core.ActorSystem})
-	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review."}
+	systemCtx := store.WithActor(ctx, store.SystemActor("system"))
+	comment, baseline, newHead := "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit for refresh review.", current.ApprovedHeadSHA, pr.HeadSHA
+	if baselineHead != "" {
+		comment, baseline, newHead = "Merge the base branch into the task branch, resolve conflicts, validate, push, and submit again for verification and review.", baselineHead, baselineHead
+	}
+	intervention := core.Intervention{TaskID: current.ID, ActorID: "system", ActorRole: core.ActorSystem, Action: core.InterventionRedirect, ReasonCode: "merge-conflict", Comment: comment}
 	if current.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(current.SetupContract)
 	}
@@ -461,8 +625,8 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, ReasonCode: "merge-conflict", BaselineSHA: current.ApprovedHeadSHA, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
-	request := store.ConflictFixRequest{TaskID: current.ID, Job: job, WorkOrder: order, Intervention: intervention, ApprovedHead: current.ApprovedHeadSHA, NewHead: pr.HeadSHA}
+	order := core.WorkOrder{ID: jobID, TaskID: current.ID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, ReasonCode: "merge-conflict", BaselineSHA: baseline, ExecutionTimeoutText: route.TimeoutText, QueueEnteredAt: now, QueueDeadline: now.Add(queueTimeout), CreatedAt: now}
+	request := store.ConflictFixRequest{TaskID: current.ID, Job: job, WorkOrder: order, Intervention: intervention, ApprovedHead: current.ApprovedHeadSHA, NewHead: newHead}
 	var result store.ConflictFixResult
 	_, err = taskops.ExecuteWorkOrder(systemCtx, d.Store, current.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (bool, error) {
 		var commandErr error
@@ -498,6 +662,39 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		d.Enqueue(systemCtx, current.ID)
 	}
 	return result.WorkOrder, nil
+}
+
+// gateOnConflictMergeError keeps the operator merge act failing closed. A nil
+// return on an unmerged task becomes the misleading 409 "merge was not
+// confirmed by the forge".
+func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.Task, githubRepo string, number int, order core.WorkOrder) error {
+	if order.ID != "" {
+		return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix %s dispatched", githubRepo, number, order.ID)
+	}
+	reason := "budget exhausted"
+	episode, present, err := d.currentMergeConflictEpisode(ctx, current.ID)
+	if err != nil {
+		return err
+	}
+	if present {
+		orders, listErr := d.Store.ListTaskWorkOrders(ctx, current.ID)
+		if listErr != nil {
+			return listErr
+		}
+		state, stateErr := d.conflictDispatchState(ctx, current.ID, episode, orders)
+		if stateErr != nil {
+			return stateErr
+		}
+		switch {
+		case state.RecoveryBlocked:
+			reason = "interrupted review recovery blocked"
+		case state.Exhausted:
+			reason = "budget exhausted"
+		case !state.NextRetryAt.IsZero():
+			reason = "backing off until " + state.NextRetryAt.UTC().Format(time.RFC3339)
+		}
+	}
+	return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix not dispatched (%s)", githubRepo, number, reason)
 }
 
 // MergeApprovedTask performs the final human-gate transition. A durable-store
@@ -548,7 +745,21 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err), author)
 	}
 	if pr.Merged {
-		return d.reconcileObservedMergeLocked(ctx, current, repo.GitHub, pr)
+		if current.ApprovalStale {
+			return fmt.Errorf("approval is stale for task %s; refresh review before reconciling the merged pull request", current.ID)
+		}
+		expected := current.ApprovedHeadSHA
+		if expected == "" {
+			expected = current.ReviewedHeadSHA
+		}
+		matched, reconcileErr := d.reconcileForgeMergeLocked(ctx, current, repo.GitHub, pr, expected, "already_merged")
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		if !matched {
+			return fmt.Errorf("observed merge head %s does not match expected head %s for task %s", pr.HeadSHA, expected, current.ID)
+		}
+		return nil
 	}
 	// A queued or claimed conflict-fix order defers conflict clearing,
 	// refresh, and merge requests; its own submission drives the refresh
@@ -582,14 +793,17 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return fmt.Errorf("pull request %s#%d merge readiness is still pending", repo.GitHub, pr.Number)
 	}
 	if pr.Mergeable == "CONFLICTING" {
-		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA); err != nil {
+		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA, "merge-conflict"); err != nil {
 			return err
 		}
+		order, dispatchErr := d.dispatchConflictFixLocked(ctx, current, pr, cfg, false, "")
 		if !current.MergeApproval {
-			_, err = d.dispatchConflictFixLocked(ctx, current, pr, cfg)
-			return err
+			return dispatchErr
 		}
-		return fmt.Errorf("pull request %s#%d has merge conflicts; dispatch the conflict fix", repo.GitHub, pr.Number)
+		if dispatchErr != nil {
+			return dispatchErr
+		}
+		return d.gateOnConflictMergeError(ctx, current, repo.GitHub, pr.Number, order)
 	}
 	if err = d.clearMergeConflictEpisode(ctx, current, pr.Mergeable, pr.HeadSHA); err != nil {
 		return err
@@ -609,7 +823,8 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return err
 	}
 	requestMerge := d.RequestMerge
-	ctx = github.WithMergeMessage(ctx, mergeMessage)
+	// The forge merges only the approved head (DEC-64(5); component-submission-merge step 6).
+	ctx = github.WithExpectedHead(github.WithMergeMessage(ctx, mergeMessage), approvedHead)
 	if err := requestMerge(ctx, repo.GitHub, pr.Number); err != nil {
 		return d.recordMergeFailureWithAuthor(ctx, current, "forge_merge_failed", fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, err), author)
 	}
@@ -629,8 +844,11 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	return d.confirmTaskMerged(ctx, current.ID)
 }
 
-// ReconcileObservedPullRequest accepts only approved, recorded lineage. The
-// monitor reports evidence; the dispatcher retains transition authority (AC-3.5).
+// ReconcileObservedPullRequest records a forge merge at the reviewed head.
+// Lineage accepts any head Conveyor recorded for the pull request
+// (monitor.RecordedPullRequestHead); completion still needs an eligible
+// expected head. The monitor reports evidence; the dispatcher retains
+// transition authority (AC-3.5; component-submission-merge "Observed merges").
 func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repository, githubRepo, taskID string, pr github.PullRequest) (bool, error) {
 	reconciled := false
 	err := d.Store.WithTaskSideEffectLock(ctx, taskID, func(lockedCtx context.Context) error {
@@ -641,7 +859,7 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 		if err != nil {
 			return err
 		}
-		if !pr.Merged || (task.State != core.TaskApproved && task.State != core.TaskMerged) || task.ApprovalStale {
+		if !pr.Merged {
 			return nil
 		}
 		events, err := d.Store.ListEvents(lockedCtx, taskID)
@@ -656,62 +874,29 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 		if !ok || repo.GitHub != githubRepo || !monitor.RecordedLineage(task, events, repository, githubRepo, taskID, pr.HeadRef, pr.Number, pr.HeadSHA) {
 			return nil
 		}
-		head := task.ApprovedHeadSHA
-		if head == "" {
-			head = task.ReviewedHeadSHA
-		}
-		if head == "" || head != pr.HeadSHA || pr.MergeCommitSHA == "" {
+		if pr.MergeCommitSHA == "" {
 			return nil
 		}
 		if task.State == core.TaskMerged {
-			reconciled = true
+			// A merge reconciled through the review-event head fallback leaves
+			// ReviewedHeadSHA empty; its merge.reconciled record still matches (AC-3.5).
+			if pr.HeadSHA != "" && (pr.HeadSHA == task.ApprovedHeadSHA || pr.HeadSHA == task.ReviewedHeadSHA || forgeMergeReconciled(events, githubRepo, pr) || forgeMergeConfirmed(events, githubRepo, pr)) {
+				reconciled = true
+			}
 			return nil
 		}
-		if err := d.reconcileObservedMergeLocked(lockedCtx, task, githubRepo, pr); err != nil {
-			return err
+		head, eligible := d.observedMergeExpectedHead(lockedCtx, task)
+		if !eligible {
+			return nil
 		}
-		reconciled = true
+		matched, matchErr := d.reconcileForgeMergeLocked(lockedCtx, task, githubRepo, pr, head, "merged_outside_conveyor")
+		if matchErr != nil {
+			return matchErr
+		}
+		reconciled = matched
 		return nil
 	})
 	return reconciled, err
-}
-
-func (d *Dispatcher) reconcileObservedMergeLocked(ctx context.Context, task core.Task, repository string, pr github.PullRequest) error {
-	head := task.ApprovedHeadSHA
-	if head == "" {
-		head = task.ReviewedHeadSHA
-	}
-	if head == "" || head != pr.HeadSHA || task.ApprovalStale {
-		return fmt.Errorf("observed merge does not match the approved head for task %s", task.ID)
-	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
-	if err != nil {
-		return err
-	}
-	recorded := false
-	for _, event := range events {
-		if event.Kind != "merge.reconciled" {
-			continue
-		}
-		var prior struct {
-			Repository string `json:"repository"`
-			Number     int    `json:"pull_request"`
-			Head       string `json:"head_sha"`
-			Merge      string `json:"merge_commit_sha"`
-		}
-		if json.Unmarshal(event.Payload, &prior) == nil && prior.Repository == repository && prior.Number == pr.Number && prior.Head == pr.HeadSHA && prior.Merge == pr.MergeCommitSHA {
-			recorded = true
-			break
-		}
-	}
-	if !recorded {
-		payload := map[string]any{"repository": repository, "pull_request": pr.Number, "url": pr.URL, "base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "result": "already_merged", "merged_by": pr.MergedBy, "merge_commit_sha": pr.MergeCommitSHA, "factory_review_validated": true, "reviewed_head_sha": task.ReviewedHeadSHA, "approved_head_sha": task.ApprovedHeadSHA}
-		if err := d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(payload)}); err != nil {
-			return err
-		}
-	}
-	d.observeConfirmedMerge(ctx, task, repository, pr, "merge.reconciled")
-	return d.confirmTaskMerged(ctx, task.ID)
 }
 
 // observeConfirmedMerge is deliberately non-gating: merge confirmation stays
@@ -781,15 +966,40 @@ func (d *Dispatcher) hasRecoverableApprovedReview(ctx context.Context, task core
 	return false, nil
 }
 
-// ReconcileMergeReadiness is a level-triggered sweep for accepted review
-// evidence whose approved-to-merge edge was interrupted. Every candidate is
-// revalidated under the task side-effect lock before a forge mutation.
+// ReconcileMergeReadiness sweeps gate-on approved and merge-gate tasks for an
+// already-merged pull request, then recovers gate-off accepted reviews whose
+// approved-to-merge edge was interrupted. The gate-on pass never requests a
+// merge. Every candidate is revalidated under the task side-effect lock.
 func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 	tasks, err := d.Store.ListTasks(ctx)
 	if err != nil {
 		return 0, err
 	}
 	reconciled := 0
+	for _, task := range tasks {
+		if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
+			continue
+		}
+		// A gate-on read failure is logged per task and never aborts the tick:
+		// later tasks and the daemon's later reconcile steps still run.
+		before := task.State
+		readErr := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+			_, lockedErr := d.readMergeReadinessLocked(lockedCtx, task, true)
+			return lockedErr
+		})
+		if readErr != nil {
+			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, readErr)
+			continue
+		}
+		after, getErr := d.Store.GetTask(ctx, task.ID)
+		if getErr != nil {
+			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, getErr)
+			continue
+		}
+		if before != after.State {
+			reconciled++
+		}
+	}
 	for _, task := range tasks {
 		if task.MergeApproval || task.State == core.TaskMerged || task.State == core.TaskClosed || task.State == core.TaskParked || task.State == core.TaskAwaiting {
 			continue

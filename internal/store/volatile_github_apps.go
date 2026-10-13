@@ -13,6 +13,9 @@ type workspaceAppRecord struct {
 }
 
 func (m *volatileMemory) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core.WorkspaceGitHubAppCredential) (core.WorkspaceGitHubAppStatus, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkspaceGitHubAppStatus{}, err
+	}
 	if err := ValidateWorkspaceGitHubApp(id, app); err != nil {
 		return core.WorkspaceGitHubAppStatus{}, err
 	}
@@ -39,6 +42,9 @@ func (m *volatileMemory) StoreWorkspaceGitHubApp(ctx context.Context, id string,
 	return status, nil
 }
 func (m *volatileMemory) RecordWorkspaceGitHubAppInstallation(ctx context.Context, id string, appID, installationID int64, account string) (core.WorkspaceGitHubAppStatus, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkspaceGitHubAppStatus{}, err
+	}
 	m.lock()
 	defer m.unlock()
 	r, ok := m.workspaceGitHubApps[id]
@@ -96,6 +102,9 @@ func (m *volatileMemory) GetWorkspaceGitHubAppForUse(_ context.Context, id strin
 	return core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: status, PrivateKey: pem}, nil
 }
 func (m *volatileMemory) DeleteWorkspaceGitHubApp(ctx context.Context, id string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.lock()
 	defer m.unlock()
 	if id == "" {

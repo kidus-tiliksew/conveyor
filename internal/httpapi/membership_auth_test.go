@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -28,6 +29,11 @@ type membershipFixture struct {
 	invitations     []core.WorkspaceInvitation
 	invitationList  []string
 	invitationsErr  error
+	// instanceAdmins names the deployment marker owners; instanceAdminErr
+	// fails the instance-administration authority (DEC-63).
+	instanceAdmins   map[string]bool
+	instanceAdminErr error
+	instanceCalls    int
 }
 
 type identityProvisioningFixture struct {
@@ -41,9 +47,9 @@ type recordingInvitationSessionFixture struct {
 	issueEmails []string
 }
 
-func (f *recordingInvitationSessionFixture) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+func (f *recordingInvitationSessionFixture) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
 	f.issueEmails = append(f.issueEmails, email)
-	return f.invitationSessionFixture.IssueSignInLink(ctx, email)
+	return f.invitationSessionFixture.IssueInvitationSignInLink(ctx, workspaceID, email, purpose)
 }
 
 func (f *identityProvisioningFixture) ProvisionIdentityUser(_ context.Context, email, displayName string) (core.IdentityUser, error) {
@@ -87,6 +93,13 @@ func (f *membershipFixture) AuthorizeDeployment(_ context.Context, userID string
 	}
 	return false, nil
 }
+func (f *membershipFixture) AuthorizeInstanceAdministration(_ context.Context, userID string) (bool, error) {
+	f.instanceCalls++
+	if f.instanceAdminErr != nil {
+		return false, f.instanceAdminErr
+	}
+	return f.instanceAdmins[userID], nil
+}
 func (f *membershipFixture) ListWorkspacesForUser(_ context.Context, userID string) ([]core.Workspace, error) {
 	var result []core.Workspace
 	for _, item := range f.workspaces {
@@ -114,9 +127,13 @@ func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string)
 	return f.revokeErr
 }
 
+// DEC-63(2), DEC-63(5), DEC-63(6): only the deployment owner's own user
+// credential provisions; a nonowner human gets the uniform 404 and execution
+// credentials keep the 401 credential-class refusal.
 func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
 	server := NewServer(fixture)
+	server.Memberships = &membershipFixture{instanceAdmins: map[string]bool{"operator": true}}
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 		"agent-token":    {ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
@@ -132,13 +149,16 @@ func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 		server.Handler().ServeHTTP(response, request)
 		return response
 	}
-	for _, token := range []string{"", "agent-token", "user-token"} {
+	for _, token := range []string{"", "agent-token"} {
 		if response := call(token); response.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q status=%d body=%s", token, response.Code, response.Body.String())
 		}
 	}
+	if response := call("user-token"); response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"workspace_not_found"`) || fixture.calls != 0 {
+		t.Fatalf("nonowner status=%d body=%s calls=%d", response.Code, response.Body.String(), fixture.calls)
+	}
 	response := call("operator-token")
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"id":"usr_provisioned"`) || fixture.calls != 1 {
+	if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" || fixture.calls != 1 {
 		t.Fatalf("operator status=%d body=%s calls=%d", response.Code, response.Body.String(), fixture.calls)
 	}
 }
@@ -172,6 +192,7 @@ func TestAgentCredentialCannotReachRepresentativeOperatorRESTRoutes(t *testing.T
 func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T) {
 	fixture := &identityProvisioningFixture{Store: store.NewMemory()}
 	server := NewServer(fixture)
+	server.Memberships = &membershipFixture{instanceAdmins: map[string]bool{"operator": true}}
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 	}
@@ -203,7 +224,8 @@ func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T)
 
 	fixture.provisionErr = errors.New(provisionedAccountDeactivatedError)
 	response := call(`{"email":"user@example.test","display_name":"User"}`)
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"error":"account_deactivated"`) || !strings.Contains(response.Body.String(), "reactivate") {
+	// A deactivated account is an acknowledged no-op (DEC-63(6)).
+	if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
 		t.Fatalf("deactivated status=%d body=%q", response.Code, response.Body.String())
 	}
 
@@ -333,9 +355,13 @@ func TestAuthorizationStoreFailuresDoNotLeakErrorText(t *testing.T) {
 		}
 	}
 
-	// Deployment-scoped mutation: requireMutationCapability's AuthorizeDeployment branch.
+	// Instance administration: requireInstanceAdministration's authority.
+	fixture.instanceAdminErr = errors.New(rawError)
+	assertGeneric("instance administration", call(http.MethodPost, "/v1/users"))
+	fixture.instanceAdminErr = nil
+
+	// Workspace-scoped mutation authority failures.
 	fixture.authorizeErrs = map[core.Capability]error{core.CapabilityManageWorkspace: errors.New(rawError)}
-	assertGeneric("deployment mutation", call(http.MethodPost, "/v1/users"))
 
 	// Workspace-scoped mutation: requireMutationCapability's AuthorizeWorkspace branch.
 	assertGeneric("workspace mutation", call(http.MethodPost, "/v1/lineage/rebuild"))
@@ -430,7 +456,7 @@ func TestMCPUnboundWorkspaceMatchesMissingWorkspace(t *testing.T) {
 	server := NewServer(store.NewMemory())
 	server.Workspaces, server.Memberships = fixture, fixture
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
 	_, unbound := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "beta"})
 	_, missing := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "does-not-exist"})
 	if unbound == nil || missing == nil || unbound.Error() != missing.Error() {
@@ -657,8 +683,10 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {
 			t.Fatalf("viewer read %s was capability-refused", path)
 		}
+		// Admission asks only for view_workspace; the next-action projection
+		// may then look up the choice capabilities to mark choices allowed.
 		for _, capability := range fixture.capabilityCalls {
-			if capability != core.CapabilityViewWorkspace {
+			if capability != core.CapabilityViewWorkspace && !slices.Contains(nextActionCapabilities, capability) {
 				t.Fatalf("viewer read %s requested capability %q (calls=%v)", path, capability, fixture.capabilityCalls)
 			}
 		}
@@ -693,7 +721,7 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 	server.Workspaces, server.Memberships = fixture, fixture
 	server.WorkOrders = &workorder.Service{Store: st}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 	fixture.capabilityCalls = nil
 	if _, err := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "alpha"}); err != nil {
 		t.Fatalf("viewer list_work_orders: %v", err)
@@ -712,13 +740,17 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 			t.Fatalf("viewer MCP tool %s calls=%v want %q", tool, fixture.capabilityCalls, want)
 		}
 	}
+	// The governance tools need claim_work, so a viewer is refused by the
+	// capability check before any claim lookup (req-accounts-and-membership
+	// AC-2.2). Live-claim demotion is covered in
+	// mcp_governance_authorization_test.go.
 	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 		fixture.capabilityCalls = nil
 		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
-		if !errors.Is(err, store.ErrWorkOrderClaimLost) {
-			t.Fatalf("viewer MCP governance tool %s error=%v, want claim loss", tool, err)
+		if err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+			t.Fatalf("viewer MCP governance tool %s error=%v, want workspace_not_found", tool, err)
 		}
-		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityViewWorkspace {
+		if len(fixture.capabilityCalls) == 0 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityClaimWork {
 			t.Fatalf("viewer MCP governance tool %s calls=%v", tool, fixture.capabilityCalls)
 		}
 	}
@@ -743,14 +775,21 @@ func TestMCPGovernanceToolsRemainClaimGatedForEveryRole(t *testing.T) {
 			server.Workspaces, server.Memberships = fixture, fixture
 			server.WorkOrders = &workorder.Service{Store: st}
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-			request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+			request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
 				fixture.capabilityCalls = nil
 				_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
-				if !errors.Is(err, store.ErrWorkOrderClaimLost) {
+				// A viewer lacks claim_work and is refused before the claim
+				// lookup; every other role reaches the claim gate
+				// (req-accounts-and-membership AC-2.2-AC-2.4).
+				if role == core.WorkspaceRoleViewer {
+					if err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
+						t.Fatalf("%s error=%v, want workspace_not_found", tool, err)
+					}
+				} else if !errors.Is(err, store.ErrWorkOrderClaimLost) {
 					t.Fatalf("%s error=%v, want claim loss", tool, err)
 				}
-				if len(fixture.capabilityCalls) != 1 || fixture.capabilityCalls[0] != core.CapabilityViewWorkspace {
+				if len(fixture.capabilityCalls) != 1 || fixture.capabilityCalls[0] != core.CapabilityClaimWork {
 					t.Fatalf("%s capability calls=%v", tool, fixture.capabilityCalls)
 				}
 			}
@@ -941,7 +980,7 @@ func TestDurableWorkspaceAuthorizationWithoutMembershipsFailsClosed(t *testing.T
 			t.Fatalf("%s status=%d body=%q", path, response.Code, response.Body.String())
 		}
 	}
-	ctx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser})
+	ctx := withCredentialActor(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser})
 	if _, err := server.resolveMCPWorkspace(ctx, "alpha"); err == nil || err.Error() != "workspace_not_found: workspace not found" {
 		t.Fatalf("MCP fail-closed error=%v", err)
 	}
@@ -950,7 +989,7 @@ func TestDurableWorkspaceAuthorizationWithoutMembershipsFailsClosed(t *testing.T
 func TestWorkerMCPWorkspaceIsBoundToEnrollment(t *testing.T) {
 	server := NewServer(store.NewMemory())
 	server.Workspaces = &fakeWorkspaceControl{items: []core.Workspace{{ID: "alpha"}, {ID: "beta"}}}
-	ctx := context.WithValue(t.Context(), workerContextKey{}, core.Worker{ID: "worker-alpha", Workspace: "alpha"})
+	ctx := context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker-alpha", Workspace: "alpha"})
 	if got, err := server.resolveMCPWorkspace(ctx, ""); err != nil || got != "alpha" {
 		t.Fatalf("omitted workspace=%q err=%v", got, err)
 	}

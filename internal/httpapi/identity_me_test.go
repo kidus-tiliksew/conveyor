@@ -45,7 +45,7 @@ func TestCallerIdentityMapsMissingBindingToNotFound(t *testing.T) {
 	server := NewServer(identities)
 	server.CallerIdentities = identities
 	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
-	request = request.WithContext(store.WithCredential(request.Context(), core.AuthenticatedCredential{ID: "pat-missing", OwnerUserID: "usr-missing", Kind: core.CredentialUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-missing", OwnerUserID: "usr-missing", Kind: core.CredentialUser}))
 	response := httptest.NewRecorder()
 	server.getCallerIdentity(response, request)
 

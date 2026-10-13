@@ -7,7 +7,7 @@ import (
 )
 
 func TestPlanningBundleApprovalCreatesOneAtomicDependencyOrderedTaskSet(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle", Title: "Bundle delivery"}, core.RequirementVersion{Content: "# Bundle delivery", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a task bundle."}}})
 	if err != nil {
@@ -82,7 +82,7 @@ func TestPlanningBundleApprovalCreatesOneAtomicDependencyOrderedTaskSet(t *testi
 }
 
 func TestPlanningBundleRejectsCyclesAndRejectDecisionCreatesNothing(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-reject", Title: "Reject"}, core.RequirementVersion{Content: "# Reject", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Reject task sets."}}})
 	if err != nil {

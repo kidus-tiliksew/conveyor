@@ -14,7 +14,7 @@ import (
 
 func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	root := context.Background()
+	root := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(root, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestMultiWorkspaceIsolationIntegration(t *testing.T) {
 
 func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	root := context.Background()
+	root := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(root, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestTaskLockSerializesWithinWorkspaceIntegration(t *testing.T) {
 
 func TestTaskSideEffectLockAllowsNestedLifecycleTransitionIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	root := context.Background()
+	root := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(root, databaseURL)
 	if err != nil {
 		t.Fatal(err)

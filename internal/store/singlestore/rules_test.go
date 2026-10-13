@@ -65,7 +65,7 @@ func TestConflictTranslation(t *testing.T) {
 		code    uint16
 		message string
 		want    error
-	}{{1062, "Duplicate key jobs_pkey", store.ErrDispatchJobConflict}, {1062, "Duplicate key reference_documents_live_name_idx", store.ErrReferenceDocumentNameConflict}, {1205, "lock wait timeout", store.ErrRetryable}, {1213, "deadlock", store.ErrRetryable}} {
+	}{{1062, "Duplicate key jobs_pkey", store.ErrDispatchJobConflict}, {1062, "Duplicate key reference_documents_live_name_idx", store.ErrReferenceDocumentNameConflict}, {1062, "Duplicate entry for key 'task_start_over_task'", store.ErrTaskAlreadyStartedOver}, {1205, "lock wait timeout", store.ErrRetryable}, {1213, "deadlock", store.ErrRetryable}} {
 		err := translateBackendConflict(&mysql.MySQLError{Number: tc.code, Message: tc.message})
 		if !errors.Is(err, tc.want) {
 			t.Fatalf("%d: %v", tc.code, err)
@@ -105,8 +105,11 @@ func TestUniqueRuleInputsFailBeforeSQL(t *testing.T) {
 		{table: "user_tokens", operation: "UPDATE", values: map[string]any{"deployment_credential": true}, where: map[string]any{"user_id": "multiple"}},
 		{table: "reference_documents", operation: "INSERT", values: map[string]any{"workspace_id": "ws", "name": "name", "deleted_at": nilTime}},
 		{table: "reference_documents", operation: "UPDATE", values: map[string]any{"workspace_id": "ws", "name": "name", "deleted_at": nil}, where: map[string]any{"workspace_id": "ws"}},
+		{table: "tasks", operation: "DELETE", where: map[string]any{"workspace_id": "ws", "id": "task"}},
+		{table: "tasks", operation: "INSERT", values: map[string]any{"workspace_id": "ws", "id": "task", "state": "running"}},
+		{table: "tasks", operation: "UPDATE", values: map[string]any{"state": "closed"}, where: map[string]any{"workspace_id": "ws"}},
 	} {
-		if _, err := writeRow(t.Context(), nil, w); err == nil {
+		if _, err := writeRow(store.WithActor(t.Context(), store.SystemActor()), nil, w); err == nil {
 			t.Fatal("unsafe unique-rule input accepted")
 		}
 	}

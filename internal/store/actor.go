@@ -12,10 +12,16 @@ func UserActorID(id string) string   { return "user:" + strings.TrimSpace(id) }
 func AgentActorID(id string) string  { return "agent:" + strings.TrimSpace(id) }
 func WorkerActorID(id string) string { return "worker:" + strings.TrimSpace(id) }
 
-type Actor struct {
-	ID   string
-	Role core.ActorRole
-}
+// Actor is the typed event actor (component-persistence, Actor context).
+type Actor = core.Actor
+
+// ErrMissingActor wraps every refused event write whose context carries no
+// complete actor.
+var ErrMissingActor = core.ErrMissingActor
+
+// SystemActor returns the explicit system actor for background work; see
+// core.SystemActor.
+func SystemActor(subsystem ...string) Actor { return core.SystemActor(subsystem...) }
 
 type actorContextKey struct{}
 
@@ -36,11 +42,26 @@ func CredentialFromContext(ctx context.Context) (core.AuthenticatedCredential, b
 	return credential, ok && credential.ID != "" && credential.OwnerUserID != ""
 }
 
+// ActorFromContext returns the complete actor bound to ctx, or an empty Actor
+// when the context carries none. It never manufactures a system actor: a
+// background operation binds SystemActor where it starts, and a request binds
+// its credential-derived actor (req-accounts-and-membership REQ-3).
 func ActorFromContext(ctx context.Context) Actor {
-	if actor, ok := ctx.Value(actorContextKey{}).(Actor); ok && actor.ID != "" && actor.Role != "" {
+	if actor, ok := ctx.Value(actorContextKey{}).(Actor); ok && actor.Complete() {
 		return actor
 	}
-	return Actor{ID: "conveyor", Role: core.ActorSystem}
+	return Actor{}
+}
+
+// RequireActor returns the complete actor bound to ctx or an error wrapping
+// ErrMissingActor. Every event writer calls it before any SQL or state change,
+// and an actor already set on the event envelope does not bypass it.
+func RequireActor(ctx context.Context) (Actor, error) {
+	actor := ActorFromContext(ctx)
+	if !actor.Complete() {
+		return Actor{}, fmt.Errorf("%w: the context carries no complete typed actor", ErrMissingActor)
+	}
+	return actor, nil
 }
 
 // WorkOrderOwnerUserID resolves the executing human from durable claim state.

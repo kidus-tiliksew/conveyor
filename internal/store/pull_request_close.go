@@ -75,6 +75,9 @@ func PullRequestCloseEvent(p core.PullRequestClose) core.Event {
 }
 
 func (m *memory) QueuePullRequestClose(ctx context.Context, p core.PullRequestClose) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if err := ValidatePullRequestCloseActor(ctx); err != nil {
 		return err
 	}
@@ -112,6 +115,9 @@ func (m *memory) GetPullRequestClose(ctx context.Context, id string) (core.PullR
 	return p, ok, nil
 }
 func (m *memory) UpdatePullRequestClose(ctx context.Context, p core.PullRequestClose) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if err := ValidatePullRequestCloseActor(ctx); err != nil {
 		return err
 	}

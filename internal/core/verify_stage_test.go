@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestVerifyReviewCompletionBindsCurrentHead(t *testing.T) {
 	task := Task{ID: "task", ReviewedHeadSHA: "head"}
@@ -44,5 +47,36 @@ func TestVerifyUsesOrdinaryLifecycleEdges(t *testing.T) {
 	}
 	if !ValidWorkOrderStage(StageVerify) || ValidWorkOrderStage(StageMerge) {
 		t.Fatal("invalid executor vocabulary")
+	}
+}
+
+func TestValidateVerifyDispatchNamesEachCondition(t *testing.T) {
+	order := WorkOrder{ID: "verify-1", TaskID: "task", Stage: StageVerify, HeadSHA: "head"}
+	if err := ValidateVerifyDispatch(Task{ID: "task", NextStage: StageVerify, ReviewedHeadSHA: "head"}, order); err == nil || !strings.Contains(err.Error(), "verify stage is off in task task's frozen policy") {
+		t.Fatalf("off err=%v", err)
+	}
+	task := Task{ID: "task", NextStage: StageImplement, ReviewedHeadSHA: "head"}
+	task.SetupContract.VerifyStage = true
+	if err := ValidateVerifyDispatch(task, order); err == nil || !strings.Contains(err.Error(), "next_stage is implement, not verify") {
+		t.Fatalf("next_stage err=%v", err)
+	}
+	task.NextStage = StageVerify
+	blank := order
+	blank.HeadSHA = ""
+	if err := ValidateVerifyDispatch(task, blank); err == nil || !strings.Contains(err.Error(), "the order has no head") {
+		t.Fatalf("missing head err=%v", err)
+	}
+	mismatch := order
+	mismatch.HeadSHA = "other"
+	if err := ValidateVerifyDispatch(task, mismatch); err == nil || !strings.Contains(err.Error(), "order head other differs from the verify head head") {
+		t.Fatalf("mismatch err=%v", err)
+	}
+	task.ApprovalStale = true
+	task.RefreshHeadSHA = "refresh"
+	if err := ValidateVerifyDispatch(task, mismatch); err == nil || !strings.Contains(err.Error(), "differs from the verify head refresh (the refresh head, because approval_stale is set)") {
+		t.Fatalf("refresh err=%v", err)
+	}
+	if err := ValidateVerifyDispatch(task, WorkOrder{ID: "impl", Stage: StageImplement}); err != nil {
+		t.Fatalf("non-verify err=%v", err)
 	}
 }

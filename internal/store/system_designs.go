@@ -13,6 +13,9 @@ import (
 )
 
 func (m *memory) CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, document.Workspace)
@@ -93,10 +96,16 @@ func (m *memory) ListSystemDesigns(ctx context.Context, includeArchived bool) ([
 }
 
 func (m *memory) ArchiveSystemDesign(ctx context.Context, id, actor string, supersededBy []string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.setSystemDesignArchived(ctx, id, actor, true, supersededBy)
 }
 
 func (m *memory) RestoreSystemDesign(ctx context.Context, id, actor string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.setSystemDesignArchived(ctx, id, actor, false, nil)
 }
 
@@ -149,6 +158,9 @@ func (m *memory) setSystemDesignArchived(ctx context.Context, id, actor string, 
 }
 
 func (m *memory) ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.SystemDesignVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, version.Workspace)
@@ -195,6 +207,9 @@ func (m *memory) appendSystemDesignProposalEventLocked(ctx context.Context, vers
 }
 
 func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -268,6 +283,9 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 }
 
 func (m *memory) DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.dismissSystemDesignVersionLocked(ctx, documentID, version)
@@ -479,6 +497,9 @@ func (m *memory) ListSystemDesignEventsByDocument(ctx context.Context) (map[stri
 }
 
 func (m *memory) RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -508,6 +529,9 @@ func (m *memory) RecordSystemDesignConsulted(ctx context.Context, documentID str
 }
 
 func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Decision{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, decision.Workspace)
@@ -550,6 +574,9 @@ func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (c
 }
 
 func (m *memory) DismissDecision(ctx context.Context, id string) (core.Decision, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Decision{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -574,6 +601,9 @@ func (m *memory) DismissDecision(ctx context.Context, id string) (core.Decision,
 }
 
 func (m *memory) ConfirmDecision(ctx context.Context, id string) (core.Decision, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Decision{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -719,6 +749,9 @@ func (m *memory) decisionWithSupersessionSweepLocked(decision core.Decision) cor
 }
 
 func (m *memory) DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.DecisionSupersessionSweepEntry{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := memoryDecisionSweepKey{workspace: workspaceOrDefault(ctx, ""), decisionID: decisionID, documentTier: documentTier, documentID: documentID}

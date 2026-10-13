@@ -31,6 +31,14 @@ func (s *failingConflictFixStore) CreateConflictFixCommand(context.Context, task
 	return store.ConflictFixResult{}, errors.New("forced conflict-fix order creation failure")
 }
 
+func (s *failingConflictFixStore) GetCallerIdentity(ctx context.Context, workspace, userID string) (core.CallerIdentity, error) {
+	identities, ok := s.Store.(store.CallerIdentityStore)
+	if !ok {
+		return core.CallerIdentity{}, fmt.Errorf("identity store unavailable")
+	}
+	return identities.GetCallerIdentity(ctx, workspace, userID)
+}
+
 func approvedMergeFixture(t *testing.T, githubRepo string) (context.Context, store.Store, core.Task, *Dispatcher) {
 	return approvedMergeFixtureWithScope(t, githubRepo, config.RefreshReviewDelta)
 }
@@ -41,7 +49,7 @@ func approvedMergeFixtureWithScope(t *testing.T, githubRepo, scope string) (cont
 
 func approvedMergeFixtureWithScopeAndGate(t *testing.T, githubRepo, scope string, mergeApproval bool) (context.Context, store.Store, core.Task, *Dispatcher) {
 	t.Helper()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merge-task", State: core.TaskApproved, MergeApproval: mergeApproval, SetupContract: config.ExecutionSetup{RefreshReview: scope}, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -359,11 +367,12 @@ func TestMergeApprovedTaskRefusesChangedObservedHead(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "outside-head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err == nil {
-		t.Fatal("changed head completed")
+	err := d.MergeApprovedTask(ctx, task)
+	if err == nil || !strings.Contains(err.Error(), "outside-head") || !strings.Contains(err.Error(), "reviewed-head") {
+		t.Fatalf("changed head error=%v", err)
 	}
-	if count, _ := st.CountEvents(ctx, task.ID, "merge.reconciled"); count != 0 {
-		t.Fatal("changed head reconciled")
+	if count, _ := st.CountEvents(ctx, task.ID, "merge.failed"); count != 1 {
+		t.Fatalf("drift events=%d", count)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
 	if current.State != core.TaskApproved {
@@ -372,7 +381,7 @@ func TestMergeApprovedTaskRefusesChangedObservedHead(t *testing.T) {
 }
 
 func TestReconcileMergeReadinessRecoversAcceptedTaskKnockedOutOfApproved(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "lost-approved", Workspace: "test", Repo: "app", Branch: "conveyor/lost-approved", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, ApprovedHeadSHA: "accepted-head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -628,19 +637,23 @@ func TestConflictFixTerminalAttemptBudgetExhaustsOneEpisode(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		order, err := d.DispatchConflictFix(ctx, task)
-		if err != nil || order.ID == "" {
-			t.Fatalf("dispatch %d order=%+v err=%v", attempt+1, order, err)
+	for attempt := range 3 {
+		if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+			t.Fatalf("readiness %d err=%v", attempt+1, err)
 		}
+		created, err := st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil || len(created) != attempt+1 || created[attempt].ID == "" {
+			t.Fatalf("attempt %d orders=%+v err=%v", attempt+1, created, err)
+		}
+		order := created[attempt]
 		order.RetrySuppressed = true
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
 		if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if replacement, err := d.DispatchConflictFix(ctx, task); err != nil || replacement.ID != "" {
-		t.Fatalf("exhausted replacement=%+v err=%v", replacement, err)
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatalf("exhausted readiness err=%v", err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
 	if err != nil || len(orders) != 3 {
@@ -668,7 +681,7 @@ func TestConflictFixDispatchFailureIsAtomicAndEpisodeBackedOff(t *testing.T) {
 	failing := &failingConflictFixStore{Store: base}
 	d.Store = failing
 
-	if _, err := d.DispatchConflictFix(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+	if _, err := d.ReadMergeReadiness(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
 		t.Fatalf("first dispatch error=%v", err)
 	}
 	current, _ := base.GetTask(ctx, task.ID)
@@ -680,19 +693,19 @@ func TestConflictFixDispatchFailureIsAtomicAndEpisodeBackedOff(t *testing.T) {
 	if dispatched, _ := base.CountEvents(ctx, task.ID, "merge.conflict_fix_dispatched"); dispatched != 0 {
 		t.Fatalf("dispatch audit count=%d, want 0", dispatched)
 	}
-	if _, err := d.DispatchConflictFix(ctx, task); err != nil || failing.calls != 1 {
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil || failing.calls != 1 {
 		t.Fatalf("immediate retry err=%v calls=%d", err, failing.calls)
 	}
 	now = now.Add(time.Minute)
-	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 2 {
+	if _, err := d.ReadMergeReadiness(ctx, task); err == nil || failing.calls != 2 {
 		t.Fatalf("one-minute retry err=%v calls=%d", err, failing.calls)
 	}
 	now = now.Add(2 * time.Minute)
-	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 3 {
+	if _, err := d.ReadMergeReadiness(ctx, task); err == nil || failing.calls != 3 {
 		t.Fatalf("two-minute retry err=%v calls=%d", err, failing.calls)
 	}
 	now = now.Add(30 * time.Minute)
-	if _, err := d.DispatchConflictFix(ctx, task); err != nil || failing.calls != 3 {
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil || failing.calls != 3 {
 		t.Fatalf("exhausted retry err=%v calls=%d", err, failing.calls)
 	}
 	failed, _ := base.ListEvents(ctx, task.ID)
@@ -747,16 +760,19 @@ func TestConflictFixDispatchFailureBudgetResetsForChangedAndClearedEpisodes(t *t
 
 	for _, advance := range []time.Duration{0, time.Minute, 2 * time.Minute} {
 		now = now.Add(advance)
-		if _, err := d.DispatchConflictFix(ctx, task); err == nil {
-			t.Fatalf("dispatch %d unexpectedly succeeded", failing.calls+1)
+		if _, err := d.ReadMergeReadiness(ctx, task); err == nil {
+			t.Fatalf("readiness %d unexpectedly succeeded", failing.calls+1)
 		}
 	}
 	if failing.calls != 3 {
 		t.Fatalf("exhausted calls=%d, want 3", failing.calls)
 	}
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil || failing.calls != 3 {
+		t.Fatalf("exhausted unchanged episode err=%v calls=%d", err, failing.calls)
+	}
 
 	head = "changed-conflicting-head"
-	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 4 {
+	if _, err := d.ReadMergeReadiness(ctx, task); err == nil || failing.calls != 4 {
 		t.Fatalf("changed episode err=%v calls=%d", err, failing.calls)
 	}
 	readiness = "MERGEABLE"
@@ -764,7 +780,7 @@ func TestConflictFixDispatchFailureBudgetResetsForChangedAndClearedEpisodes(t *t
 		t.Fatal(err)
 	}
 	readiness = "CONFLICTING"
-	if _, err := d.DispatchConflictFix(ctx, task); err == nil || failing.calls != 5 {
+	if _, err := d.ReadMergeReadiness(ctx, task); err == nil || failing.calls != 5 {
 		t.Fatalf("cleared episode err=%v calls=%d", err, failing.calls)
 	}
 }
@@ -1055,17 +1071,24 @@ func TestConflictingMergeGateRetriesRecordOneBlockedEvent(t *testing.T) {
 	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "CONFLICTING" {
 		t.Fatalf("readiness=%+v err=%v", readiness, err)
 	}
+	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" {
+		t.Fatalf("orders=%+v", orders)
+	}
+	if repeat, err := d.ReadMergeReadiness(ctx, task); err != nil || repeat.State != "UNKNOWN" {
+		t.Fatalf("repeat readiness=%+v err=%v", repeat, err)
+	}
 	for range 2 {
-		if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "merge conflicts") {
+		if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "not approved for merge") {
 			t.Fatalf("err=%v", err)
 		}
 	}
 	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 1 {
 		t.Fatalf("merge.blocked events=%d, want 1", blocked)
 	}
-	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	if len(orders) != 0 {
-		t.Fatalf("human-gated merge retries created orders=%+v", orders)
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 1 {
+		t.Fatalf("retries created orders=%+v", orders)
 	}
 }
 
@@ -1083,18 +1106,21 @@ func TestChangedHeadConflictingReadinessKeepsGateBlockedWithoutRefresh(t *testin
 	}
 	current, _ := st.GetTask(ctx, task.ID)
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
-	if current.ApprovalStale || current.State != core.TaskApproved || len(orders) != 0 {
+	if current.ApprovalStale || current.State != core.TaskQueued || current.NextStage != core.StageImplement || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" {
 		t.Fatalf("task=%+v orders=%+v", current, orders)
 	}
-	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
-		t.Fatal(err)
+	if repeat, err := d.ReadMergeReadiness(ctx, task); err != nil || repeat.State != "UNKNOWN" {
+		t.Fatalf("repeat readiness=%+v err=%v", repeat, err)
 	}
 	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 1 {
 		t.Fatalf("merge.blocked events=%d, want 1", blocked)
 	}
+	if stale, _ := st.CountEvents(ctx, task.ID, "approval.stale"); stale != 0 {
+		t.Fatalf("approval.stale events=%d, want 0", stale)
+	}
 	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
-	if len(orders) != 0 {
-		t.Fatalf("repeated human-gated readiness created orders=%+v", orders)
+	if len(orders) != 1 {
+		t.Fatalf("repeated readiness created orders=%+v", orders)
 	}
 }
 
@@ -1157,6 +1183,15 @@ func TestResolvedReadinessAllowsNewConflictEpisode(t *testing.T) {
 	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	orders[0].RetrySuppressed = true
+	orders[0].LastAttemptOutcome = core.WorkOrderOutcomeExpired
+	if err = storetest.For(st).UpdateWorkOrder(ctx, orders[0]); err != nil {
+		t.Fatal(err)
+	}
 	mergeable = "MERGEABLE"
 	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "MERGEABLE" {
 		t.Fatalf("resolved readiness=%+v err=%v", readiness, err)
@@ -1170,6 +1205,438 @@ func TestResolvedReadinessAllowsNewConflictEpisode(t *testing.T) {
 	}
 	if cleared, _ := st.CountEvents(ctx, task.ID, "merge.conflict_cleared"); cleared != 1 {
 		t.Fatalf("merge.conflict_cleared events=%d, want 1", cleared)
+	}
+}
+
+func TestGateOnConflictingReadinessDispatchesOneFix(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error {
+		merges++
+		return nil
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "approved-head"}, nil
+	}
+	readiness, err := d.ReadMergeReadiness(ctx, task)
+	if err != nil || readiness.State != "CONFLICTING" {
+		t.Fatalf("readiness=%+v err=%v", readiness, err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskQueued || current.NextStage != core.StageImplement {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" || orders[0].Stage != core.StageImplement {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	repeat, err := d.ReadMergeReadiness(ctx, task)
+	if err != nil || repeat.State != "UNKNOWN" {
+		t.Fatalf("repeat=%+v err=%v", repeat, err)
+	}
+	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); blocked != 1 {
+		t.Fatalf("merge.blocked events=%d, want 1", blocked)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 1 || merges != 0 {
+		t.Fatalf("orders=%d merges=%d", len(orders), merges)
+	}
+}
+
+func TestGateOnConflictingMergeActDispatchesFixWithoutMerging(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error {
+		merges++
+		return nil
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "approved-head"}, nil
+	}
+	err := d.MergeApprovedTask(ctx, task)
+	orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
+	if listErr != nil || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
+		t.Fatalf("orders=%+v err=%v", orders, listErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "merge conflicts") || !strings.Contains(err.Error(), "conflict fix "+orders[0].ID+" dispatched") {
+		t.Fatalf("err=%v", err)
+	}
+	if merges != 0 {
+		t.Fatalf("RequestMerge calls=%d", merges)
+	}
+}
+
+func TestGateOnConflictMergeActReportsUndispatchedReason(t *testing.T) {
+	ctx, base, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := base.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	d.Now = func() time.Time { return now }
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	failing := &failingConflictFixStore{Store: d.Store}
+	d.Store = failing
+	if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+		t.Fatalf("first merge act err=%v", err)
+	}
+	err := d.MergeApprovedTask(ctx, task)
+	wantBackoff := "backing off until " + now.Add(time.Minute).Format(time.RFC3339)
+	if err == nil || !strings.Contains(err.Error(), "merge conflicts") || !strings.Contains(err.Error(), wantBackoff) || failing.calls != 1 {
+		t.Fatalf("backoff err=%v calls=%d", err, failing.calls)
+	}
+	for _, advance := range []time.Duration{time.Minute, 2 * time.Minute} {
+		now = now.Add(advance)
+		if err = d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+			t.Fatalf("retry err=%v calls=%d", err, failing.calls)
+		}
+	}
+	if failing.calls != 3 {
+		t.Fatalf("calls=%d, want 3", failing.calls)
+	}
+	now = now.Add(30 * time.Minute)
+	err = d.MergeApprovedTask(ctx, task)
+	if err == nil || !strings.Contains(err.Error(), "conflict fix not dispatched (budget exhausted)") || failing.calls != 3 {
+		t.Fatalf("exhausted err=%v calls=%d", err, failing.calls)
+	}
+}
+
+func TestGateOnConflictMergeActNamesBlockedReviewRecovery(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	interrupted := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, RetrySuppressed: true, LastAttemptOutcome: core.WorkOrderOutcomeExpired, CreatedAt: time.Now().UTC()}
+	if err := storetest.For(st).CreateWorkOrder(ctx, interrupted); err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error {
+		merges++
+		return nil
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	err := d.MergeApprovedTask(ctx, task)
+	if err == nil || !strings.Contains(err.Error(), "recovery blocked") || strings.Contains(err.Error(), "budget exhausted") || merges != 0 {
+		t.Fatalf("err=%v merges=%d", err, merges)
+	}
+	if blocked, countErr := st.CountEvents(ctx, task.ID, "merge.conflict_recovery_blocked"); countErr != nil || blocked != 1 {
+		t.Fatalf("recovery-blocked events=%d err=%v", blocked, countErr)
+	}
+	if exhausted, countErr := st.CountEvents(ctx, task.ID, "merge.conflict_dispatch_exhausted"); countErr != nil || exhausted != 0 {
+		t.Fatalf("exhausted events=%d err=%v", exhausted, countErr)
+	}
+}
+
+func TestGateOnConflictFixExhaustionRetriesOnlyOnOperatorRoute(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error {
+		merges++
+		return nil
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	for attempt := range 3 {
+		if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+			t.Fatalf("readiness %d err=%v", attempt+1, err)
+		}
+		orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil || len(orders) != attempt+1 {
+			t.Fatalf("attempt %d orders=%+v err=%v", attempt+1, orders, err)
+		}
+		order := orders[attempt]
+		order.RetrySuppressed = true
+		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
+		if err = storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if exhausted, _ := st.CountEvents(ctx, task.ID, "merge.conflict_dispatch_exhausted"); exhausted != 1 {
+		t.Fatalf("exhaustion events=%d, want 1", exhausted)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 3 {
+		t.Fatalf("automatic orders=%+v err=%v", orders, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil || store.LatestForgeFailure(events) == nil || store.LatestForgeFailure(events).Category != "conflict_dispatch_exhausted" {
+		t.Fatalf("needs-operator failure=%+v err=%v", store.LatestForgeFailure(events), err)
+	}
+	replacement, err := d.DispatchConflictFix(ctx, task)
+	if err != nil || replacement.ID == "" {
+		t.Fatalf("operator retry order=%+v err=%v", replacement, err)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 4 {
+		t.Fatalf("orders=%+v", orders)
+	}
+	events, err = st.ListEvents(ctx, task.ID)
+	if err != nil || store.LatestForgeFailure(events) != nil {
+		t.Fatalf("operator retry left failure=%+v err=%v", store.LatestForgeFailure(events), err)
+	}
+	replacement.RetrySuppressed = true
+	replacement.LastAttemptOutcome = core.WorkOrderOutcomeExpired
+	if err = storetest.For(st).UpdateWorkOrder(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.ReadMergeReadiness(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	orders, _ = st.ListTaskWorkOrders(ctx, task.ID)
+	if len(orders) != 4 || merges != 0 {
+		t.Fatalf("orders=%d merges=%d", len(orders), merges)
+	}
+	if exhausted, _ := st.CountEvents(ctx, task.ID, "merge.conflict_dispatch_exhausted"); exhausted != 1 {
+		t.Fatalf("exhaustion events=%d after operator retry, want 1", exhausted)
+	}
+}
+
+func TestConflictFixOperatorRouteIgnoresBackoff(t *testing.T) {
+	ctx, base, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
+	if err := base.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	d.Now = func() time.Time { return now }
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	failing := &failingConflictFixStore{Store: base}
+	d.Store = failing
+	if _, err := d.ReadMergeReadiness(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+		t.Fatalf("first readiness err=%v", err)
+	}
+	if _, err := d.ReadMergeReadiness(ctx, task); err != nil || failing.calls != 1 {
+		t.Fatalf("automatic backoff err=%v calls=%d", err, failing.calls)
+	}
+	if _, err := d.DispatchConflictFix(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") || failing.calls != 2 {
+		t.Fatalf("operator retry err=%v calls=%d", err, failing.calls)
+	}
+}
+
+func TestGateOnReadMergeReadinessNeverRequestsMerge(t *testing.T) {
+	refuseMerge := func(d *Dispatcher) {
+		d.RequestMerge = func(context.Context, string, int) error {
+			t.Fatal("ReadMergeReadiness requested a merge")
+			return nil
+		}
+	}
+	t.Run("conflicting", func(t *testing.T) {
+		ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+		if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+			t.Fatal(err)
+		}
+		refuseMerge(d)
+		d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+		}
+		readiness, err := d.ReadMergeReadiness(ctx, task)
+		if err != nil || readiness.State != "CONFLICTING" {
+			t.Fatalf("readiness=%+v err=%v", readiness, err)
+		}
+		orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+		if len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" {
+			t.Fatalf("orders=%+v", orders)
+		}
+	})
+	t.Run("mergeable", func(t *testing.T) {
+		ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+		if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+			t.Fatal(err)
+		}
+		refuseMerge(d)
+		d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "approved-head"}, nil
+		}
+		readiness, err := d.ReadMergeReadiness(ctx, task)
+		if err != nil || readiness.State != "MERGEABLE" {
+			t.Fatalf("readiness=%+v err=%v", readiness, err)
+		}
+		current, _ := st.GetTask(ctx, task.ID)
+		orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
+		if current.State != core.TaskApproved || len(orders) != 0 {
+			t.Fatalf("task=%+v orders=%+v", current, orders)
+		}
+	})
+	t.Run("changed-head", func(t *testing.T) {
+		ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+		if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+			t.Fatal(err)
+		}
+		refuseMerge(d)
+		d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+		d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "moved-head"}, nil
+		}
+		readiness, err := d.ReadMergeReadiness(ctx, task)
+		if err != nil || readiness.State != "STALE" {
+			t.Fatalf("readiness=%+v err=%v", readiness, err)
+		}
+		current, _ := st.GetTask(ctx, task.ID)
+		if !current.ApprovalStale || current.State == core.TaskMerged {
+			t.Fatalf("task=%+v", current)
+		}
+	})
+}
+
+func TestGateOnConflictFixRefreshReturnsToMergeGateWithoutMerging(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: store.UserActorID("usr-approver"), ActorRole: core.ActorUser}); err != nil {
+		t.Fatal(err)
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error {
+		merges++
+		return nil
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
+	}
+	if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State != "CONFLICTING" {
+		t.Fatalf("readiness=%+v err=%v", readiness, err)
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" {
+		t.Fatalf("fix orders=%+v err=%v", orders, err)
+	}
+	claimedFix, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{SessionID: "fix-session", ClientToken: "fix-token", Agent: "codex", Model: "fixer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedFix.State = core.WorkOrderSubmitted
+	claimedFix.HeadSHA = "fix-head"
+	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedFix, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.MarkTaskApprovalStale(ctx, task.ID, orders[0].BaselineSHA, "fix-head", config.RefreshReviewDelta, "merge-conflict"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
+	if err = d.DispatchNow(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review core.WorkOrder
+	for _, order := range orders {
+		if order.Stage == core.StageReview && order.ReviewKind == "refresh" {
+			review = order
+			break
+		}
+	}
+	if review.ID == "" || review.HeadSHA != "fix-head" {
+		t.Fatalf("refresh order=%+v", review)
+	}
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "refresh-review", ClientToken: "refresh-token", Agent: "codex", Model: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := st.ListJobs(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job core.Job
+	for _, candidate := range jobs {
+		if candidate.ID == review.JobID {
+			job = candidate
+			break
+		}
+	}
+	if job.ID == "" {
+		t.Fatalf("review job missing: %+v", jobs)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = d.ApplyExternalReviewPinned(ctx, current, job, pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "fix head approved"}, review.ID, claimed.SessionID, "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority(), true); err != nil {
+		t.Fatal(err)
+	}
+	current, err = st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskApproved || !current.MergeApproval || current.ApprovedHeadSHA != "fix-head" {
+		t.Fatalf("settled task=%+v err=%v", current, err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// DEC-64(8); component-submission-merge v6: the gate-on conflict loop
+	// re-approves the refresh round through review.accept, not a gate.merge pair.
+	lastCommand, accepts := "", 0
+	for _, event := range events {
+		if event.Kind != "task.state_changed" {
+			continue
+		}
+		var payload struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			lastCommand = payload.Command
+			if payload.Command == string(core.TaskReviewAccept) {
+				accepts++
+			}
+		}
+	}
+	if lastCommand != string(core.TaskReviewAccept) || accepts != 1 {
+		t.Fatalf("refresh approval command=%q review.accept count=%d, want one review.accept", lastCommand, accepts)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "fix-head"}, nil
+	}
+	if readiness, readErr := d.ReadMergeReadiness(ctx, current); readErr != nil || readiness.State != "MERGEABLE" || merges != 0 {
+		t.Fatalf("settled readiness=%+v merges=%d err=%v", readiness, merges, readErr)
+	}
+	if reconciled, reconcileErr := d.ReconcileMergeReadiness(ctx); reconcileErr != nil || reconciled != 0 || merges != 0 {
+		t.Fatalf("tick reconciled=%d merges=%d err=%v", reconciled, merges, reconcileErr)
+	}
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		if views == 1 {
+			return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "fix-head"}, nil
+		}
+		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "fix-head", MergeCommitSHA: "landed"}, nil
+	}
+	if err = d.MergeApprovedTask(ctx, current); err != nil || merges != 1 {
+		t.Fatalf("operator merge err=%v merges=%d", err, merges)
 	}
 }
 
@@ -1227,7 +1694,7 @@ func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
 func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T) {
 	for _, scenario := range []string{"approved", "unapproved", "wrong-repository", "wrong-slug", "wrong-pr", "changed-head", "missing-lineage", "stale-approval"} {
 		t.Run(scenario, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			task := core.Task{ID: "observed", Workspace: "demo", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-observed", State: core.TaskApproved, ReviewedHeadSHA: "head", ApprovedHeadSHA: "head", CreatedAt: time.Now()}
 			if scenario == "unapproved" {
@@ -1298,7 +1765,7 @@ func TestReconcileObservedPullRequestApprovalLineageAndIdempotency(t *testing.T)
 }
 
 func TestReconcileObservedPullRequestUsesCurrentAssignedBranch(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "observed", Workspace: "demo", Repo: "app", BaseBranch: "main", Branch: "feature/from-ide", State: core.TaskApproved, ReviewedHeadSHA: "head", ApprovedHeadSHA: "head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1325,7 +1792,7 @@ func TestReconcileObservedPullRequestUsesCurrentAssignedBranch(t *testing.T) {
 // implement order while GitHub already reports the pushed fix as mergeable.
 func conflictFixDeferralFixture(t *testing.T, taskState core.TaskState, claim bool) (context.Context, store.Store, core.Task, *Dispatcher, *int) {
 	t.Helper()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "conflict-deferral", Workspace: "test", Repo: "app", Branch: "conveyor/conflict-deferral", BaseBranch: "main", State: taskState, NextStage: core.StageImplement, PolicyVersion: 1, ApprovedHeadSHA: "approved-head", ReviewedHeadSHA: "approved-head", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {

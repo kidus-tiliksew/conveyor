@@ -40,6 +40,13 @@ releases ownership. Callback locks hold a dedicated connection until the
 callback returns. Lock rows remain for reuse. Same-task commands share the
 task-operation key; unrelated tasks have different keys.
 
+A commit that spans partitions can release its lock row before its other rows
+are visible, so a waiting command can acquire the lock and still miss them.
+The one-deployment-credential and live reference-name rules therefore record
+their winner in the lock row's `holder` column, which commits with the release,
+and check it alongside their counts. The race and its measurement are recorded
+in [the unique-write race report](measurements/singlestore-unique-write-race-261012-832d9c.md).
+
 `conveyor:startup-migrations` serializes daemon starts. SingleStore DDL commits
 implicitly, so that lock lives on one connection while DDL runs on another.
 Migration files must be restart-safe. The runner records a version only after

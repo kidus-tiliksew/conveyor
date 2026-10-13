@@ -68,7 +68,7 @@ func captureIntegrationInput(claimed core.WorkOrder, content string) core.WorkOr
 func TestAttemptObservabilityConcurrentCaptureIntegration(t *testing.T) {
 	st := integrationStore(t)
 	workspace := "attempt-capture-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"strings"
 	"testing"
 	"time"
@@ -43,12 +44,12 @@ func TestMigration121MovesRiverJobsOntoTheLogIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 120); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 120); err != nil {
 		t.Fatalf("migrate isolated schema to version 120: %v", err)
 	}
 	// The shape River's migrator left behind, reduced to the columns the
 	// conversion reads.
-	if _, err = pool.Exec(t.Context(), `
+	if _, err = pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `
 CREATE TABLE river_job (id bigserial PRIMARY KEY, kind text NOT NULL, args jsonb NOT NULL, state text NOT NULL, max_attempts int NOT NULL);
 CREATE TABLE river_leader (name text PRIMARY KEY);
 CREATE TABLE river_queue (name text PRIMARY KEY);
@@ -72,16 +73,16 @@ CREATE TABLE river_migration (id bigserial PRIMARY KEY)`); err != nil {
 		{"order_clock", "available", fmt.Sprintf(`{"workspace_id":%q}`, workspace), 1},
 	}
 	for _, row := range rows {
-		if _, err = pool.Exec(t.Context(), `INSERT INTO river_job (kind, args, state, max_attempts) VALUES ($1, $2::jsonb, $3, $4)`, row.kind, row.args, row.state, row.max); err != nil {
+		if _, err = pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `INSERT INTO river_job (kind, args, state, max_attempts) VALUES ($1, $2::jsonb, $3, $4)`, row.kind, row.args, row.state, row.max); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 121); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 121); err != nil {
 		t.Fatalf("migrate to version 121: %v", err)
 	}
 	var riverLeft bool
-	if err = pool.QueryRow(t.Context(), `SELECT to_regclass('river_job') IS NOT NULL`).Scan(&riverLeft); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT to_regclass('river_job') IS NOT NULL`).Scan(&riverLeft); err != nil {
 		t.Fatal(err)
 	}
 	if riverLeft {
@@ -98,7 +99,7 @@ CREATE TABLE river_migration (id bigserial PRIMARY KEY)`); err != nil {
 		"job/order_clock:":                        false,
 	}
 	for stream, active := range want {
-		job, err := logqueue.Load(t.Context(), st.Log(), workspace, eventlog.StreamID(stream))
+		job, err := logqueue.Load(store.WithActor(t.Context(), store.SystemActor()), st.Log(), workspace, eventlog.StreamID(stream))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,13 +110,13 @@ CREATE TABLE river_migration (id bigserial PRIMARY KEY)`); err != nil {
 			t.Fatalf("%s job=%+v, want available at attempt 0", stream, job)
 		}
 	}
-	queued, err := logqueue.Load(t.Context(), st.Log(), workspace, eventlog.StreamID("job/dispatch_task:queued-task"))
+	queued, err := logqueue.Load(store.WithActor(t.Context(), store.SystemActor()), st.Log(), workspace, eventlog.StreamID("job/dispatch_task:queued-task"))
 	if err != nil || queued.MaxAttempts != queue.DispatchTaskMaxAttempts || !strings.Contains(string(queued.Args), `"queued-task"`) {
 		t.Fatalf("converted job=%+v err=%v", queued, err)
 	}
 	// Running the migration path again is a no-op: 121 is recorded and the
 	// table is gone.
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 121); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 121); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 }

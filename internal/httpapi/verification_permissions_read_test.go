@@ -39,7 +39,7 @@ func newPermissionRouteFixture(t *testing.T) *permissionRouteFixture {
 	b := s.Store.(store.Backend)
 	s.Workspaces = b
 	f := &permissionRouteFixture{t: t, s: s, b: b, worker: worker, id: id, path: "/v1/work-orders/" + id + "/verification/permissions?workspace_id=demo"}
-	f.ctx = store.WithWorkspace(t.Context(), "demo")
+	f.ctx = store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, err := b.BootstrapIdentity(f.ctx, config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}, "permission-read-token"); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +49,11 @@ func newPermissionRouteFixture(t *testing.T) *permissionRouteFixture {
 	}
 	f.ownerID = owner.ID
 	f.operator = f.user(owner.ID)
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	if _, err = b.GrantWorkspaceRole(f.operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	for role, target := range map[core.WorkspaceRole]*context.Context{core.WorkspaceRoleContributor: &f.contrib, core.WorkspaceRoleViewer: &f.viewer} {
 		member, err := b.ProvisionIdentityUser(f.operator, string(role)+"@example.test", string(role))
 		if err != nil {

@@ -413,13 +413,49 @@ func TestMonitorConfigurationIsExplicitAndRepositoryScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !normalized.Monitor.Enabled || normalized.Monitor.PollInterval != 30*time.Second ||
-		normalized.Monitor.StartupWindow != 12*time.Hour {
+		normalized.Monitor.StartupWindow != 12*time.Hour || normalized.Monitor.MergeDeferralBound != 10*time.Minute {
 		t.Fatalf("monitor=%+v", normalized.Monitor)
+	}
+	short := validConfig()
+	short.Monitor = MonitorConfig{StartupWindowText: "5m"}
+	shortNorm, err := normalize(short, "/tmp/conveyor.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 5*time.Minute - time.Minute - 5*time.Second; shortNorm.Monitor.MergeDeferralBound != want {
+		t.Fatalf("derived bound=%s want %s", shortNorm.Monitor.MergeDeferralBound, want)
+	}
+	equal := validConfig()
+	equal.Monitor = MonitorConfig{StartupWindowText: "5m", MergeDeferralBoundText: "3m55s"}
+	equalNorm, err := normalize(equal, "/tmp/conveyor.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equalNorm.Monitor.MergeDeferralBound != 3*time.Minute+55*time.Second {
+		t.Fatalf("explicit derived bound=%s", equalNorm.Monitor.MergeDeferralBound)
+	}
+
+	disabled := validConfig()
+	disabled.Monitor = MonitorConfig{PollIntervalText: "1m", StartupWindowText: "1m"}
+	disabledNorm, err := normalize(disabled, "/tmp/conveyor.yaml")
+	if err != nil || disabledNorm.Monitor.MergeDeferralBound != 0 {
+		t.Fatalf("deferral should disable: %+v err=%v", disabledNorm.Monitor, err)
 	}
 	for _, mutate := range []func(*Config){
 		func(value *Config) { value.Monitor.Repositories = []string{"unknown"} },
 		func(value *Config) { value.Monitor.Repositories = nil },
 		func(value *Config) { value.Monitor.PollIntervalText = "0s" },
+		func(value *Config) { value.Monitor.MergeDeferralBoundText = "0s" },
+		func(value *Config) { value.Monitor.MergeDeferralBoundText = "24h" },
+		func(value *Config) {
+			value.Monitor.StartupWindowText = "10m"
+			value.Monitor.MergeDeferralBoundText = "10m"
+		},
+		func(value *Config) {
+			value.Monitor.PollIntervalText = "10m"
+			value.Monitor.StartupWindowText = "15m"
+			value.Monitor.MergeDeferralBoundText = "10m"
+		},
 	} {
 		candidate := validConfig()
 		candidate.Monitor = MonitorConfig{Enabled: true, Repositories: []string{candidate.Repos[0].Name}, PollIntervalText: "1m", StartupWindowText: "24h"}

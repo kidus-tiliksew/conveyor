@@ -17,7 +17,7 @@ import (
 
 func TestAttachTaskBranchHTTP(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{
 		ID: "attach-http", Workspace: "demo", Repo: "conveyor", Title: "Attach",
 		BaseBranch: "main", Branch: gitx.BranchName("attach-http"), State: core.TaskRunning,

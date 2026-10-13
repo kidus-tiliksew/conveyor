@@ -1,3 +1,5 @@
+# Conveyor documentation
+
 ## Getting started
 
 - [Server setup](server-setup.md): install the binaries, start a database, run the daemon, invite clients
@@ -23,14 +25,33 @@
 
 - [Worker operations](worker-operations.md): durable worker enrollment, service install, recovery
 - [GitHub lifecycle](github-lifecycle.md): how issues, PRs, and review statuses are projected onto GitHub
-- [Known limitations](known-limitations.md): accepted boundaries of the current implementation
+- [SingleStore operations](singlestore.md): running the factory on SingleStore instead of PostgreSQL
 - [The log core](log-core.md): the event log and the durable queue that runs on it
+- [Known limitations](known-limitations.md): accepted boundaries of the current implementation
+
+## Agent harnesses
+
+- [Cursor CLI](cursor-build.md): worker setup with environment MCP transport
+- [Grok Build](grok-build.md): worker setup with environment MCP transport
+- [OpenCode](opencode-build.md): worker setup with environment MCP transport
 
 ## Playbooks
 
-Agent-facing playbooks, installable for Claude Code, Codex, and Cursor with
+Agent-facing playbooks, installed as project-scoped skills for Claude Code,
+Codex, Cursor, and OpenCode by `conveyor repo init`, or user-globally by
 `conveyor skills install`:
 
 - [Planning](playbooks/conveyor-planning.md): draft and push documents from a local agent session
 - [Task filing](playbooks/conveyor-task-filing.md): file well-formed tasks and dependency chains
 - [Working a task](playbooks/conveyor-work.md): the claim, checkout, submit, review lifecycle
+- [Testing strategy](playbooks/conveyor-testing-doc.md): write the testing-strategy System Design document that reviewers judge verification against
+- [Authoring verification kits](playbooks/conveyor-kit.md): declare repository kits in `.conveyor/kits/manifest.yaml`
+- [Executing verification kits](playbooks/conveyor-kit-verify.md): run kits and ordinary checks under a verify claim and submit typed evidence
+
+Operator procedures:
+
+- [Checkpoint recovery](playbooks/checkpoint-recovery.md): recover preserved implementation work
+
+## Contributing to this repository
+
+- [Local validation evidence](validation-evidence.md): scratch space, `make validate`, retained evidence, and resource recovery

@@ -94,7 +94,7 @@ func TestGitHubIssuePublicationRecoverableFailureEmitsRetryActivityWithError(t *
 
 func githubIssuePublicationFixture(t *testing.T) (context.Context, store.Store, *githubIssuePublicationWorker, string) {
 	t.Helper()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "github-publication-" + core.NewTaskID(), Workspace: "test", Repo: "app", Title: "Publish issue", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -232,7 +232,7 @@ func TestReviewPublicationFailureKeepsInternalReviewAuthoritative(t *testing.T) 
 
 func reviewPublicationFixture(t *testing.T, verdict string) (context.Context, store.Store, *reviewPublicationWorker, core.ReviewPublication) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	taskID := "review-publication-" + core.NewTaskID()
 	task := core.Task{
@@ -383,7 +383,7 @@ func (s *cancelledDispatchStore) GetTask(context.Context, string) (core.Task, er
 // every second for as long as the task waits.
 func TestDispatchJobCompletesWhileTaskWaitsForAClaim(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	cfg := &config.Config{
 		Workspace: "test",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
@@ -445,7 +445,7 @@ func TestQueueRescueThresholdUsesLargestRouteAndFallback(t *testing.T) {
 
 func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context, store.Store, *dispatchTaskWorker, string) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	taskID := "dispatch-failure-" + core.NewTaskID()
 	task := core.Task{ID: taskID, Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
@@ -467,4 +467,78 @@ func dispatchFailureFixture(t *testing.T, withConflictFix bool) (context.Context
 
 func dispatchTaskJob(taskID string, attempt, maxAttempts int) queue.Job {
 	return testJob(queue.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID}, int64(attempt), attempt, maxAttempts)
+}
+
+// TestBackgroundEventActorsAreExplicit drives the dispatcher, a dispatch job,
+// and the order clock from contexts that carry no actor. Each records its
+// events under the system actor it binds where the work starts, never under a
+// silent default, including through a cancellation-independent context
+// (component-persistence, Actor context).
+func TestBackgroundEventActorsAreExplicit(t *testing.T) {
+	setupCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	bare := store.WithWorkspace(t.Context(), "test")
+	cfg := &config.Config{
+		Workspace: "test",
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"spec": {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+		}},
+		Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}},
+	}
+	st := store.NewMemoryWithConfig(cfg)
+	createTask := func(id string) {
+		t.Helper()
+		if err := st.CreateTask(setupCtx, core.Task{ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireActor := func(taskID, kind, actorID string) {
+		t.Helper()
+		events, err := st.ListEvents(setupCtx, taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Kind == kind {
+				if event.ActorID != actorID || event.ActorRole != core.ActorSystem {
+					t.Fatalf("%s %s actor=%s/%s, want %s/system", taskID, kind, event.ActorID, event.ActorRole, actorID)
+				}
+				return
+			}
+		}
+		t.Fatalf("%s has no %s event", taskID, kind)
+	}
+	dispatcher := New(st, cfg, nil)
+
+	createTask("dispatch-now")
+	cancelled, cancel := context.WithCancel(bare)
+	cancel()
+	if err := dispatcher.DispatchNow(context.WithoutCancel(cancelled), "dispatch-now"); err != nil {
+		t.Fatal(err)
+	}
+	requireActor("dispatch-now", "work_order.created", "dispatcher")
+
+	createTask("dispatch-job")
+	job := dispatchTaskJob("dispatch-job", 1, queue.DispatchTaskMaxAttempts)
+	worker := &dispatchTaskWorker{dispatcher: dispatcher, shutdown: &ShutdownMarker{}}
+	if err := worker.Work(bare, job); err != nil {
+		t.Fatal(err)
+	}
+	requireActor("dispatch-job", "work_order.created", "queue:"+job.ID)
+
+	orders, err := st.ListTaskWorkOrders(setupCtx, "dispatch-job")
+	if err != nil || len(orders) != 1 {
+		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(setupCtx, orders[0].ID, core.WorkOrderClaim{SessionID: "expiring", ClientToken: "expiring", ClaimantID: core.TaskRunClaimantID("usr-run"), OwnerUserID: "usr-run", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	clock := &orderClockWorker{dispatcher: dispatcher}
+	clockJob := testJob(queue.OrderClockArgs{WorkspaceID: "test"}, 7, 1, 1)
+	if err := clock.Work(t.Context(), clockJob); err != nil {
+		t.Fatal(err)
+	}
+	requireActor("dispatch-job", "work_order.expired", "queue:"+clockJob.ID)
+	if actor := store.ActorFromContext(context.WithoutCancel(cancelled)); actor != (store.Actor{}) {
+		t.Fatalf("bare context gained an actor: %+v", actor)
+	}
 }

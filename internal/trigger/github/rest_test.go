@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -216,6 +217,69 @@ func TestAppMergePayloadAttributionAndResponse(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("merge calls=%d", calls)
+	}
+}
+
+// TestAppMergePayloadCarriesExpectedHead pins DEC-64(5): the merge PUT names
+// the reviewed head as `sha` only when the call binds one.
+func TestAppMergePayloadCarriesExpectedHead(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, body)
+		_, _ = w.Write([]byte(`{"merged":true}`))
+	}))
+	defer server.Close()
+	run := newRESTRunner(server.Client(), server.URL, "token", "workspace demo GitHub App")
+	if err := mergePullRequest(WithExpectedHead(t.Context(), " reviewed-head "), "org/repo", 12, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergePullRequest(t.Context(), "org/repo", 12, run); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[0]["sha"] != "reviewed-head" {
+		t.Fatalf("merge bodies=%v", bodies)
+	}
+	if _, exists := bodies[1]["sha"]; exists {
+		t.Fatalf("expected head escaped its call context: %v", bodies[1])
+	}
+}
+
+// TestMergeRefusedOnlyForDefinitiveForgeAnswers pins DEC-64(6) R2: only a
+// 403/405/409/422 answer is a refusal; 5xx, rate limits, and transport
+// failures may hide a landed merge.
+func TestMergeRefusedOnlyForDefinitiveForgeAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		status  int
+		headers map[string]string
+		want    bool
+	}{
+		{status: http.StatusForbidden, want: true},
+		{status: http.StatusMethodNotAllowed, want: true},
+		{status: http.StatusConflict, want: true},
+		{status: http.StatusUnprocessableEntity, want: true},
+		{status: http.StatusNotFound, want: false},
+		{status: http.StatusBadGateway, want: false},
+		{status: http.StatusInternalServerError, want: false},
+		{status: http.StatusForbidden, headers: map[string]string{"X-RateLimit-Remaining": "0"}, want: false},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			for key, value := range tc.headers {
+				w.Header().Set(key, value)
+			}
+			http.Error(w, `{"message":"refused"}`, tc.status)
+		}))
+		err := mergePullRequest(t.Context(), "org/repo", 12, newRESTRunner(server.Client(), server.URL, "token", "workspace demo GitHub App"))
+		server.Close()
+		if err == nil || MergeRefused(err) != tc.want {
+			t.Fatalf("status %d headers %v: err=%v refused=%v want %v", tc.status, tc.headers, err, MergeRefused(err), tc.want)
+		}
+	}
+	if MergeRefused(fmt.Errorf("transport: %w", &Error{Category: ForgeRequest, Err: errors.New("connection reset")})) {
+		t.Fatal("transport failure classified as a refusal")
 	}
 }
 

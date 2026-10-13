@@ -21,6 +21,9 @@ func (s verificationSecrets) ListGitHubAppKeysForRedaction(context.Context) ([]s
 }
 
 func (m *volatileMemory) ApplyVerification(ctx context.Context, c VerificationCommand) (VerificationReceipt, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return VerificationReceipt{}, err
+	}
 	return taskops.ExecuteVerification(ctx, m, c.Access.TaskID, c.Kind, func(lease taskops.TaskLease) (VerificationReceipt, error) { return m.applyVerification(ctx, lease, c) })
 }
 
@@ -305,6 +308,9 @@ func VerificationArtifactAccess(rows []VerificationRow, a VerificationAccess, ev
 }
 
 func (m *volatileMemory) ReconcileVerificationClaims(ctx context.Context) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	ws, ok := WorkspaceFromContext(ctx)
 	if !ok {
 		return 0, ErrVerificationAccess
@@ -335,6 +341,9 @@ func (m *volatileMemory) ReconcileVerificationClaims(ctx context.Context) (int, 
 }
 
 func (m *volatileMemory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, timeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	clean, err := SanitizeVerificationRecovery(ctx, m)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -379,6 +388,9 @@ func (m *volatileMemory) putDeliveriesLocked(updates []core.VerificationDelivery
 	}
 }
 func (m *volatileMemory) RecordVerificationPullRequest(ctx context.Context, e core.Event) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ws, ok := WorkspaceFromContext(ctx)

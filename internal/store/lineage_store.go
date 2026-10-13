@@ -327,6 +327,9 @@ func requirementDeliveryLink(link core.LineageLink) bool {
 }
 
 func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.LineageRebuildResult{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {

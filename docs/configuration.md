@@ -42,7 +42,9 @@ review:
 execution:
   spec_approval: true            # workspace default for the plan gate
   merge_approval: true           # workspace default for the merge gate
+  verify_stage: false            # workspace default for the kit verify stage
   implement_concurrency: 1
+  verify_concurrency: 1
   review_concurrency: 1
 
 repos:
@@ -56,6 +58,7 @@ monitor:
   repositories: [api]
   poll_interval: 1m
   startup_window: 24h
+  merge_deferral_bound: 10m
 ```
 
 `planning_models` optionally lists the planning models the dashboard may
@@ -146,7 +149,7 @@ Server (read by `conveyord`):
 |---|---|
 | `CONVEYOR_DATABASE_URL` | PostgreSQL URL or SingleStore URL/DSN. Required unless `database.url` is set. |
 | `CONVEYOR_API_TOKEN` | Bound as the first operator's token at bootstrap. Required. |
-| `CONVEYOR_LLM_API_KEY` | Key for in-process triage and spec stages. Required. |
+| `CONVEYOR_LLM_API_KEY` | Key for the in-process triage and planning stages. Required. |
 | `CONVEYOR_LLM_BASE_URL` | OpenAI-compatible endpoint override. |
 | `CONVEYOR_PUBLIC_URL` | External dashboard URL; used for sign-in links and origin checks. |
 | `CONVEYOR_LISTEN_ADDR` | Daemon listen address as `host:port`; used when `-addr` is not explicitly set. |

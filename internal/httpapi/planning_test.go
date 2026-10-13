@@ -34,7 +34,7 @@ func TestPlanningHTTPAttachmentWithoutRequirementHasDurableSessionOwner(t *testi
 		Model: "planner", Prompt: planningHTTPPrompt,
 	}
 	handler := server.Handler()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-no-requirement"})
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestPlanningHTTPAttachmentWithoutRequirementHasDurableSessionOwner(t *testi
 
 func TestPlanningHTTPAbandonPersistsReason(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-abandon-reason"})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestPlanningHTTPRequiresMutationAuthAndKeepsWorkspaceScope(t *testing.T) {
 
 func TestPlanningHTTPConcurrentRunReturnsConflictBeforeSSECommit(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-http-run-claim"})
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +341,7 @@ func TestPlanningHTTPConcurrentRunReturnsConflictBeforeSSECommit(t *testing.T) {
 
 func TestPlanningHTTPRedactsInternalRunErrors(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-http-redaction"})
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +404,7 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 		t.Fatalf("unknown goal status=%d, want 400", code)
 	}
 
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	listed, err := st.ListPlanningSessions(ctx)
 	if err != nil || len(listed) != 2 {
 		t.Fatalf("listed=%d err=%v, want the two accepted sessions", len(listed), err)
@@ -422,7 +422,7 @@ func TestPlanningHTTPBundlePreviewAndOperatorApproval(t *testing.T) {
 	server.Workspace, server.BearerToken = "demo", "token"
 	var enqueued []string
 	server.OnCreate = func(_ context.Context, taskID string) { enqueued = append(enqueued, taskID) }
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-http-bundle", Title: "HTTP bundle"}, core.RequirementVersion{Content: "# HTTP bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Approve a bundle."}}})
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestPlanningHTTPFallbackRejectsUncheckedPromotions(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace, server.BearerToken = "demo", "token"
 	handler := server.Handler()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	document, version, err := st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-http-promotion", Name: "Overview"}, core.ReferenceDocumentVersion{Filename: "overview.md", ContentType: "text/markdown", Content: "# Retry policy\nRetry twice."})
 	if err != nil {
 		t.Fatal(err)

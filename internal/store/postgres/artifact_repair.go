@@ -52,7 +52,7 @@ func (s *Store) RepairArtifactMetadata(ctx context.Context, r store.ArtifactRepa
 				return err
 			}
 			e := store.ArtifactRepairEvent(ctx, r, a, result)
-			if _, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: e.Kind, ActorID: e.ActorID, ActorRole: string(e.ActorRole), PayloadJson: e.Payload, At: timestamp(time.Now().UTC())}); err != nil {
+			if _, err = insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{WorkspaceID: workspace(ctx), Kind: e.Kind, ActorID: e.ActorID, ActorRole: string(e.ActorRole), PayloadJson: e.Payload, At: timestamp(time.Now().UTC())}); err != nil {
 				return err
 			}
 		}

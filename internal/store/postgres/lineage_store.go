@@ -685,7 +685,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		result.PreservedUnregenerable = len(preserved)
 		result.Ambiguous = len(ambiguous)
 		actor := store.ActorFromContext(ctx)
-		_, err = q.InsertWorkspaceEvent(ctx, db.InsertWorkspaceEventParams{
+		_, err = insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "lineage.rebuilt", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "reason": request.Reason, "request_id": request.RequestID, "result": result}),
 			At:          timestamp(time.Now().UTC()),

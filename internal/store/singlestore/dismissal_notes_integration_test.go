@@ -1,10 +1,13 @@
 package singlestore
 
-import "testing"
+import (
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"testing"
+)
 
 func TestDismissalNoteMigrationRetriesPartialDDLIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	// This fixture owns the isolated test database. Model a crash after the
 	// first column committed but before the second and the ledger were written.
 	if _, err := st.db.ExecContext(ctx, "DELETE FROM conveyor_singlestore_migrations WHERE version=4"); err != nil {

@@ -153,6 +153,26 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 19 {
+			if err := s.migrateTaskGateKind(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
+		if file.version == 20 {
+			if err := s.migrateAutomaticRecoveryLedger(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
+		if file.version == 21 {
+			if err := s.addNullableColumns(ctx, nullableColumn{"work_orders", "base_conflict_checked_at", "DATETIME(6) NULL"}); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
+		if file.version == 22 {
+			if err := s.migrateLockClaims(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -179,6 +199,19 @@ func (s *Store) migrateRepositoryInstallColumn(ctx context.Context) error {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `ALTER TABLE repos ADD COLUMN install_conveyor BOOLEAN NOT NULL DEFAULT false`)
+	return err
+}
+
+// conveyor_locks exists before the ledger, so its claim column arrives here.
+func (s *Store) migrateLockClaims(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='conveyor_locks' AND column_name='holder'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE conveyor_locks ADD COLUMN holder VARCHAR(255) NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -211,6 +244,54 @@ func (s *Store) migrateTaskStartOver(ctx context.Context) error {
 			if _, err := s.db.ExecContext(ctx, "ALTER TABLE tasks ADD COLUMN "+column.name+" "+column.definition); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// migrateTaskGateKind adds tasks.gate_kind before the version 19 backfill.
+// SingleStore DDL commits implicitly and has no ADD COLUMN IF NOT EXISTS.
+func (s *Store) migrateTaskGateKind(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='tasks' AND column_name='gate_kind'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN gate_kind VARCHAR(32) NULL`)
+	return err
+}
+
+// migrateAutomaticRecoveryLedger adds the AR-2 nullable columns before the
+// version 20 file. Replay is a no-op once each column exists. There is no
+// backfill; counts are read as COALESCE(..., 0).
+func (s *Store) migrateAutomaticRecoveryLedger(ctx context.Context) error {
+	return s.addNullableColumns(ctx,
+		nullableColumn{"work_orders", "automatic_recovery_count", "INT NULL"},
+		nullableColumn{"work_orders", "automatic_recovery_window_started_at", "DATETIME(6) NULL"},
+		nullableColumn{"work_orders", "next_automatic_recovery_at", "DATETIME(6) NULL"},
+		nullableColumn{"github_lifecycles", "automatic_reenqueue_at", "DATETIME(6) NULL"},
+		nullableColumn{"review_publications", "automatic_reenqueue_at", "DATETIME(6) NULL"},
+	)
+}
+
+type nullableColumn struct{ table, name, definition string }
+
+// addNullableColumns adds each missing column behind an information_schema
+// check, because SingleStore DDL commits implicitly and has no ADD COLUMN IF
+// NOT EXISTS. Replay is a no-op once each column exists.
+func (s *Store) addNullableColumns(ctx context.Context, columns ...nullableColumn) error {
+	for _, column := range columns {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name=? AND column_name=?`, column.table, column.name).Scan(&exists); err != nil {
+			return err
+		}
+		if exists != 0 {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+column.table+" ADD COLUMN "+column.name+" "+column.definition); err != nil {
+			return err
 		}
 	}
 	return nil

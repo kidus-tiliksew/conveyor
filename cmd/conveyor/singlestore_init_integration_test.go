@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,7 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 30*time.Second)
 		defer cancel()
 		if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+database+"`"); err != nil {
 			t.Error(err)
@@ -48,7 +49,7 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	answers := initAnswers{Organization: "SingleStore fixture", OperatorName: "Owner", OperatorEmail: "owner@example.test", WorkspaceID: "fresh", WorkspaceName: "Fresh", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"}
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	var output strings.Builder
-	if err = initializeDeployment(t.Context(), &output, path, answers); err != nil {
+	if err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &output, path, answers); err != nil {
 		t.Fatal(err)
 	}
 	first := signInTokenFromOutput(t, output.String())
@@ -56,7 +57,7 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 		t.Fatal("init did not issue a sign-in link")
 	}
 	output.Reset()
-	if err = initializeDeployment(t.Context(), &output, path, answers); err != nil {
+	if err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &output, path, answers); err != nil {
 		t.Fatal(err)
 	}
 	if next := signInTokenFromOutput(t, output.String()); next == "" || next == first {
@@ -77,7 +78,7 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.Reset()
-	if err = initializeDeployment(t.Context(), &output, legacyPath, answers); err != nil {
+	if err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &output, legacyPath, answers); err != nil {
 		t.Fatalf("rerun over a legacy executor config: %v", err)
 	}
 	if after, readErr := os.ReadFile(legacyPath); readErr != nil || string(after) != string(legacy) {

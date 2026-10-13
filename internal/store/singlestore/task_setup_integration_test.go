@@ -30,7 +30,7 @@ func TestTaskPolicyChangeSingleStoreScopesExclusionToExecutingAttempts(t *testin
 	}
 	legacy := config.ExecutionSetup{Name: "legacy", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", TimeoutText: "1h"}}}
 	now := time.Now().UTC()
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, SetupName: legacy.Name, SetupContract: legacy, CreatedAt: now}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SetupName: legacy.Name, SetupContract: legacy, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)

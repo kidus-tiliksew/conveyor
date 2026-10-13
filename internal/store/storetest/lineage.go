@@ -56,7 +56,7 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 		t.Fatal(err)
 	}
 	// Workspace-scoped reads never fall back to another graph.
-	if foreign, err := st.ListLineageLinks(store.WithWorkspace(t.Context(), fixture.Workspace+"-other")); err != nil || len(foreign) != 0 {
+	if foreign, err := st.ListLineageLinks(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), fixture.Workspace+"-other")); err != nil || len(foreign) != 0 {
 		t.Fatalf("cross-workspace lineage leaked: links=%v err=%v", foreign, err)
 	}
 	assertAbandonedDraftSupersession(t, st, ctx)

@@ -11,20 +11,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
-
-// TaskNeedsAttention is the shared operator-attention truth table. Keeping it
-// at the store boundary lets the memory projection match the HTTP activity
-// surfaces while PostgreSQL computes the same predicates from narrow columns.
-func TaskNeedsAttention(task core.Task, marker ActivityMarker, pendingAuthority, pendingContext bool) bool {
-	return task.State == core.TaskAwaiting || task.State == core.TaskParked ||
-		marker.ForgeFailure != nil || marker.ReviewRecovery != nil ||
-		marker.InterruptedReviewRecovery != nil || marker.Stalled != nil || pendingAuthority || pendingContext || marker.UserChangesRequested
-}
 
 // TaskFilter is the one predicate set the Tasks list and the Board both send
 // to the server (AC-2.4). It is shared rather than duplicated so the two
@@ -161,11 +151,10 @@ type TaskPage struct {
 	Total int
 }
 
-// RecoveryRefreeze re-freezes a recovered order's pipeline policy and stage
-// timeout. It carries no harness, model, or effort: queue re-entry clears every
-// execution pin (req-worker AC-2.2; DEC-56).
+// RecoveryRefreeze carries the recovered order's execution timeout from the
+// task's frozen per-stage timeout. Recovery never rewrites frozen policy
+// (req-task-lifecycle-and-queue AC-5.1, AC-5.2; DEC-47).
 type RecoveryRefreeze struct {
-	Setup                config.ExecutionSetup
 	ExecutionTimeoutText string
 }
 
@@ -257,6 +246,9 @@ type memoryDependencyAddition struct {
 }
 
 func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	versions := m.specs[taskID]
@@ -472,6 +464,9 @@ func (m *memory) ListDependencyBlockers(ctx context.Context, taskIDs []string) (
 }
 
 func (m *memory) AddTaskDependency(ctx context.Context, request DependencyAdditionRequest) (DependencyAdditionResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return DependencyAdditionResult{}, err
+	}
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -563,6 +558,9 @@ func (m *memory) dependencyPathExistsLocked(from, target string) bool {
 }
 
 func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRemovalRequest) (DependencyRemovalResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return DependencyRemovalResult{}, err
+	}
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -607,14 +605,23 @@ func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRem
 }
 
 func (m *memory) CreateTask(ctx context.Context, t core.Task) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.CreateTaskWithDependencies(ctx, t, nil)
 }
 
 func (m *memory) CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.CreateTaskWithDependenciesAndContext(ctx, t, dependencyIDs, TaskContextInput{})
 }
 
 func (m *memory) CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.createTaskWithContextLocked(ctx, t, dependencyIDs, attached, nil)
@@ -646,18 +653,18 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	for _, dependencyID := range dependencyIDs {
 		dependencyID = strings.TrimSpace(dependencyID)
 		if dependencyID == "" || seen[dependencyID] {
-			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			return NewTaskDependencyError(dependencyID, "empty or duplicate")
 		}
 		seen[dependencyID] = true
 		dependency, ok := m.tasks[dependencyID]
 		if !ok {
-			return fmt.Errorf("dependency task %s not found", dependencyID)
+			return NewTaskDependencyError(dependencyID, "not found")
 		}
 		if dependency.Workspace != t.Workspace {
-			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+			return NewTaskDependencyError(dependencyID, "belongs to another workspace")
 		}
 		if core.TaskTerminal(dependency.State) {
-			return fmt.Errorf("dependency task %s is not open", dependencyID)
+			return NewTaskDependencyError(dependencyID, "is not open")
 		}
 	}
 	designVersions, err := m.validateTaskContextLocked(t.Workspace, attached)
@@ -715,7 +722,7 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 	for _, id := range input.RequirementIDs {
 		document, ok := m.requirements[memoryScopedKey{workspace: workspace, id: id}]
 		if !ok {
-			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
+			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: ContextReasonNotFound}
 		}
 		if err := ValidateContextDocument("requirement", id, document.CurrentVersion, document.Archived); err != nil {
 			return nil, err
@@ -725,7 +732,7 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 	for _, id := range input.DesignIDs {
 		document, ok := m.systemDesigns[memoryScopedKey{workspace: workspace, id: id}]
 		if !ok {
-			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
+			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: ContextReasonNotFound}
 		}
 		if err := ValidateContextDocument("system design", id, document.CurrentVersion, document.Archived); err != nil {
 			return nil, err
@@ -736,6 +743,9 @@ func (m *memory) validateTaskContextLocked(workspace string, input TaskContextIn
 }
 
 func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change TaskContextChange) (core.TaskContext, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskContext{}, err
+	}
 	add, err := NormalizeTaskContextInput(change.Add)
 	if err != nil {
 		return core.TaskContext{}, err
@@ -1052,30 +1062,20 @@ func (m *memory) ListCallerAttentionTaskPage(ctx context.Context, query CallerAt
 	if err != nil {
 		return TaskPage{}, err
 	}
-	markers, err := m.ListActivityMarkers(ctx)
-	if err != nil {
-		return TaskPage{}, err
-	}
-	proposals, err := m.ListPendingProposals(ctx)
-	if err != nil {
-		return TaskPage{}, err
-	}
-	orders, err := m.ListWorkOrders(ctx)
-	if err != nil {
-		return TaskPage{}, err
-	}
-	markerByTask := make(map[string]ActivityMarker, len(markers))
-	for _, marker := range markers {
-		markerByTask[marker.TaskID] = marker
-	}
-	pendingAuthority := pendingAuthorityTaskIDs(orders, proposals)
-	pendingContext := pendingTaskContextIDs(proposals)
-	attention := make([]core.Task, 0, len(tasks))
+	candidates := make([]core.Task, 0, len(tasks))
 	for _, task := range tasks {
 		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
 			continue
 		}
-		if TaskNeedsAttention(task, markerByTask[task.ID], pendingAuthority[task.ID], pendingContext[task.ID]) {
+		candidates = append(candidates, task)
+	}
+	projected, err := ReadNextActions(ctx, m, candidates, NextActionOptions{})
+	if err != nil {
+		return TaskPage{}, err
+	}
+	attention := make([]core.Task, 0, len(candidates))
+	for _, task := range candidates {
+		if TaskNeedsAttention(projected[task.ID]) {
 			attention = append(attention, task)
 		}
 	}
@@ -1096,6 +1096,9 @@ func taskOperationsEventKind(kind string) bool {
 }
 
 func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -1123,6 +1126,9 @@ func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Ta
 }
 
 func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
 		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
 	}
@@ -1162,6 +1168,9 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (m *memory) UpdateTaskClassification(ctx context.Context, id, class string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
@@ -1184,10 +1193,26 @@ func (m *memory) EnsureTaskEnqueued(_ context.Context, id string) error {
 	if task.State != core.TaskQueued {
 		return fmt.Errorf("task %s is not queued", id)
 	}
+	// Same rule as the durable backends: a held stage is moved through its
+	// order, not a task redispatch (component-durable-queue; DEC-62).
+	now := time.Now().UTC()
+	orders := make([]core.WorkOrder, 0)
+	for _, order := range m.workOrders {
+		if order.TaskID == id {
+			orders = append(orders, ProjectWorkOrderAt(order, now))
+		}
+	}
+	sortWorkOrders(orders)
+	if holding, held := core.WorkOrderBlocksStageMint(orders, task.NextStage); held {
+		return fmt.Errorf("%w: task %s waits on work order %s", ErrTaskHeldByWorkOrder, id, holding.ID)
+	}
 	return nil
 }
 
 func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[j.TaskID]; !ok {
@@ -1202,6 +1227,9 @@ func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
 }
 
 func (m *memory) UpdateJob(ctx context.Context, j core.Job) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	jobs := m.jobs[j.TaskID]
@@ -1222,7 +1250,7 @@ func (m *memory) UpdateJob(ctx context.Context, j core.Job) error {
 func (m *memory) ListJobs(_ context.Context, taskID string) ([]core.Job, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	jobs := append([]core.Job(nil), m.jobs[taskID]...)
+	jobs := append(make([]core.Job, 0, len(m.jobs[taskID])), m.jobs[taskID]...)
 	sortJobs(jobs)
 	return jobs, nil
 }
@@ -1239,8 +1267,15 @@ func (m *memory) GetLatestJob(_ context.Context, taskID string) (core.Job, bool,
 }
 
 func (m *memory) CreateIntervention(ctx context.Context, intervention core.Intervention) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createInterventionLocked(ctx, intervention)
+}
+
+func (m *memory) createInterventionLocked(ctx context.Context, intervention core.Intervention) error {
 	_, ok := m.tasks[intervention.TaskID]
 	if !ok {
 		return fmt.Errorf("task %s not found", intervention.TaskID)
@@ -1283,6 +1318,9 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 }
 
 func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, taskops.RequestChangesCommand) {
 		return core.Task{}, fmt.Errorf("request changes requires a valid taskops lease")
 	}
@@ -1314,10 +1352,11 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 			count++
 		}
 	}
+	window := m.countEventsSinceHumanInterventionLocked(task.ID, "pipeline.bounced") + 1
 	plan := PlanChangesRequested(ChangesRequestedInput{
 		TaskID: task.ID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 		ReasonCode: UserRequestChangesReason, Feedback: request.Feedback, Source: UserRequestChangesSource,
-		Count: count, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+		Count: count, Window: window, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 	})
 	state, err := core.TransitionTask(task.State, plan.Command)
 	if err != nil {
@@ -1331,6 +1370,7 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 	}
 	fromState, fromStage := task.State, task.NextStage
 	task.State, task.NextStage, task.RecoveryStage = state, plan.NextStage, plan.Recovery
+	task.GateKind = core.GateKindFor(state, plan.Command)
 	if request.Hold {
 		task.Hold = true
 	}
@@ -1344,12 +1384,65 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 }
 
 func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if !lease.ValidFor(intervention.TaskID) {
 		return core.Task{}, fmt.Errorf("task cancellation requires a valid taskops lease")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cancelTaskLocked(ctx, intervention)
+}
+
+// MergeTaskAtGateCommand is the volatile reference for the one-act gate merge
+// (DEC-64(1,7); component-task-lifecycle). Every refusal is checked before the
+// first write so the in-memory ledger stays all-or-nothing like the durable
+// stores' single transaction.
+func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
+	if !lease.ValidFor(intervention.TaskID) {
+		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
+	}
+	if err := core.ValidateGateMerge(intervention, approvedHead, confirmed); err != nil {
+		return core.Task{}, err
+	}
+	approvedHead = strings.TrimSpace(approvedHead)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[intervention.TaskID]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
+	}
+	if _, err := core.TransitionGateMerge(task.State, task.GateKind); err != nil {
+		return core.Task{}, err
+	}
+	if !m.verifyReviewReadyLocked(task) {
+		return core.Task{}, fmt.Errorf("verification is required before approval or merge")
+	}
+	// The durable stores reject a NUL audit actor at the event insert and roll
+	// back; the reference refuses the same input domain before any write.
+	actor := ActorFromContext(ctx)
+	if strings.ContainsRune(actor.ID, 0) || strings.ContainsRune(intervention.ActorID, 0) || strings.ContainsRune(confirmed.ActorID, 0) {
+		return core.Task{}, fmt.Errorf("audit actor contains NUL")
+	}
+	if intervention.JobID != "" {
+		if job, _, found := m.findJobLocked(intervention.JobID); !found || job.TaskID != intervention.TaskID {
+			return core.Task{}, fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
+		}
+	}
+	if err := m.createInterventionLocked(ctx, intervention); err != nil {
+		return core.Task{}, err
+	}
+	task = m.tasks[task.ID]
+	task.ReviewedHeadSHA, task.ApprovedHeadSHA, task.ApprovalStale = approvedHead, approvedHead, false
+	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
+	m.tasks[task.ID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "approved_head": approvedHead})})
+	m.appendEventLocked(ctx, confirmed)
+	return m.applyTaskCommandLocked(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionMerge})
 }
 
 func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Intervention) (core.Task, error) {
@@ -1417,6 +1510,7 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 	}
 	from := task.State
 	task.State, task.NextStage, task.RecoveryStage = taskState, "", ""
+	task.GateKind = core.GateKindFor(taskState, core.TaskCancel)
 	m.tasks[task.ID] = task
 	m.deleteProposedTaskContextLocked(task.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"from": from, "to": taskState, "command": core.TaskCancel}), At: intervention.At})
@@ -1428,7 +1522,7 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 func (m *memory) ListInterventions(_ context.Context, taskID string) ([]core.Intervention, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	items := append([]core.Intervention(nil), m.interventions[taskID]...)
+	items := append(make([]core.Intervention, 0, len(m.interventions[taskID])), m.interventions[taskID]...)
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].At.Equal(items[j].At) {
 			return items[i].ID < items[j].ID

@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // lockedMemberships serializes the shared membership fixture so concurrent
@@ -51,6 +52,11 @@ func (l *lockedMemberships) AuthorizeDeployment(ctx context.Context, userID stri
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.inner.AuthorizeDeployment(ctx, userID, capability)
+}
+func (l *lockedMemberships) AuthorizeInstanceAdministration(ctx context.Context, userID string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.AuthorizeInstanceAdministration(ctx, userID)
 }
 func (l *lockedMemberships) ListWorkspacesForUser(ctx context.Context, userID string) ([]core.Workspace, error) {
 	l.mu.Lock()
@@ -682,9 +688,12 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 		t.Fatalf("create: %q", created.errText)
 	}
 	taskID := created.task.ID
+	// report_continuation's launcher-only refusal is in its handler, past the
+	// work-order service availability check.
+	f.server.WorkOrders = &workorder.Service{Store: f.store}
 	for _, tool := range mcpTools() {
 		name, _ := tool["name"].(string)
-		if !humanReservedMCPTool(name) {
+		if !agentRefusedMCPTool(name) {
 			continue
 		}
 		result := f.callMCP(t, token, name, map[string]any{"workspace_id": "alpha", "task_id": taskID, "depends_on_task_id": taskID, "assignee_user_id": intakeOwner(core.WorkspaceRoleOperator), "branch": "feature/x", "work_order_id": taskID + "-spec-1"})
@@ -721,7 +730,7 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 	}
 	// A worker credential still cannot create tasks.
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "alpha"}))
+	request = request.WithContext(withWorkerActor(request.Context(), core.Worker{ID: "worker", Workspace: "alpha"}))
 	if _, err := f.server.callMCPTool(request, "create_task", intakeArgs("worker", nil)); err == nil || !strings.Contains(err.Error(), "worker credentials cannot create tasks") {
 		t.Fatalf("worker err=%v", err)
 	}

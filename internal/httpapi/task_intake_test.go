@@ -39,7 +39,7 @@ func (s *intakeRaceContextReadErrorStore) ListEvents(context.Context, string) ([
 
 func TestTaskIntakeRetryUsesCreateTimeContextAfterLaterEdits(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, id := range []string{"req-original", "req-later"} {
 		requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: id}, core.RequirementVersion{
 			Content: "# " + id, Origin: core.RequirementOriginOperator,
@@ -82,7 +82,7 @@ func TestTaskIntakeRetryUsesCreateTimeContextAfterLaterEdits(t *testing.T) {
 
 func TestTaskIntakeRetriesPropagateContextReadErrors(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	server := NewServer(st)
 	server.Workspace, server.Repos = "demo", []string{"api"}
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Retry context", nil }

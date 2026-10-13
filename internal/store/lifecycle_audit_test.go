@@ -42,6 +42,26 @@ func TestAuditLifecycleHistoryAcceptsCommandedCancellation(t *testing.T) {
 	}
 }
 
+// TestAuditLifecycleHistoryAcceptsBothReviewAcceptanceForms pins DEC-64(8) R2:
+// the single review.accept edge and the historical gate.merge +
+// intervention.approve_review pair both audit clean, with no backfill.
+func TestAuditLifecycleHistoryAcceptsBothReviewAcceptanceForms(t *testing.T) {
+	change := func(id int64, task string, from, to core.TaskState, command core.TaskCommand) core.Event {
+		return core.Event{ID: id, TaskID: task, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": to, "command": command})}
+	}
+	events := []core.Event{
+		change(1, "accepted", core.TaskRunning, core.TaskApproved, core.TaskReviewAccept),
+		change(2, "historical", core.TaskRunning, core.TaskAwaiting, core.TaskGateMerge),
+		change(3, "historical", core.TaskAwaiting, core.TaskApproved, core.TaskInterventionApproveReview),
+	}
+	if violations := AuditLifecycleHistory(events); len(violations) != 0 {
+		t.Fatalf("violations = %#v", violations)
+	}
+	if violations := AuditLifecycleHistory([]core.Event{change(4, "bad", core.TaskAwaiting, core.TaskApproved, core.TaskReviewAccept)}); len(violations) != 1 {
+		t.Fatalf("review.accept from awaiting_human audited clean: %#v", violations)
+	}
+}
+
 func TestAuditLifecycleHistoryAcceptsRetiredTriageRouteHumanEvent(t *testing.T) {
 	events := []core.Event{{ID: 1, TaskID: "legacy-route-human", Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
 		"from": core.TaskRunning, "to": core.TaskAwaiting, "command": "triage.route_human",
@@ -72,5 +92,44 @@ func TestAuditLifecycleHistoryClassifiesHistoricalQueuedRecoveryAsRedispatch(t *
 	}
 	if violations := AuditLifecycleHistory(events); len(violations) != 0 {
 		t.Fatalf("violations = %#v", violations)
+	}
+}
+
+func TestAuditTaskGateKindsReportsOnlyDiscrepancies(t *testing.T) {
+	now := time.Now().UTC()
+	events := []core.Event{
+		{ID: 1, TaskID: "mapped", Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskDispatchStart})},
+		{ID: 2, TaskID: "mapped", Kind: "task.state_changed", At: now.Add(time.Second), Payload: core.JSONPayload(map[string]any{"command": core.TaskCancel})},
+		{ID: 9, TaskID: "mapped", Kind: "task.state_changed", At: now.Add(time.Second), Payload: core.JSONPayload(map[string]any{"command": core.TaskGateSpec})},
+		{ID: 3, TaskID: "other", Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskJobFail})},
+		{ID: 4, TaskID: "unmapped", Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskCancel})},
+		{ID: 5, TaskID: "mismatch", Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskGateMerge})},
+		{ID: 6, TaskID: "stale", Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskOrderClaim})},
+	}
+	tasks := []TaskGateObservation{
+		{TaskID: "mapped", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval},
+		{TaskID: "other", State: core.TaskAwaiting, GateKind: core.GateKindJobFailure},
+		{TaskID: "unmapped", State: core.TaskAwaiting},
+		{TaskID: "missing", State: core.TaskAwaiting},
+		{TaskID: "mismatch", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval},
+		{TaskID: "stale", State: core.TaskRunning, GateKind: core.GateKindPlanApproval},
+		{TaskID: "clear", State: core.TaskRunning},
+	}
+	violations := AuditTaskGateKinds(tasks, events)
+	got := map[string]string{}
+	for _, violation := range violations {
+		got[violation.TaskID] = violation.Reason
+	}
+	want := map[string]string{"unmapped": "unmapped", "missing": "no history", "mismatch": "mismatch", "stale": "stale kind"}
+	if len(got) != len(want) {
+		t.Fatalf("violations = %#v", violations)
+	}
+	for id, reason := range want {
+		if got[id] != reason {
+			t.Fatalf("%s reason=%q, want %q (%#v)", id, got[id], reason, violations)
+		}
+	}
+	if events[2].ID != 9 {
+		t.Fatal("audit modified source history")
 	}
 }

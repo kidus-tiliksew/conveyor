@@ -18,12 +18,12 @@ import (
 
 func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	workspace := "review-proposal-gate-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegrati
 		t.Fatal(err)
 	}
 	st.Close()
-	st, err = Open(t.Context(), databaseURL)
+	st, err = Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegrati
 }
 
 func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,13 +130,13 @@ func TestDirectVersionDismissalClearsPendingProjectionAndKeepsHistoryIntegration
 }
 
 func TestPendingProposalsProjectionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "pending-proposals-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -216,13 +216,13 @@ func TestPendingProposalsProjectionIntegration(t *testing.T) {
 }
 
 func TestTerminalTaskContextProposalsStayOutOfPendingProjectionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "terminal-pending-context-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestTerminalTaskContextProposalsStayOutOfPendingProjectionIntegration(t *te
 	}
 
 	projection, err := st.PendingProposalsProjection(ctx)
-	if err != nil || len(projection.Items) != 1 || projection.Items[0].OriginID != taskIDs["open"] || projection.TaskCount != 1 {
+	if err != nil || len(projection.Items) != 1 || projection.Items[0].OriginID != taskIDs["open"] {
 		t.Fatalf("projection=%+v err=%v", projection, err)
 	}
 	for _, label := range []string{"merged", "closed"} {
@@ -302,12 +302,12 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 107); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 107); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "migration-context-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	var head int
@@ -413,12 +413,12 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = Migrate(t.Context(), pool); err != nil {
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "pending-scale-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -441,15 +441,15 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 		if projectionErr != nil {
 			t.Fatal(projectionErr)
 		}
-		if projection.TaskCount != 1 || len(projection.Items) != 1 {
+		if len(projection.Items) != 1 {
 			t.Fatalf("%s projection=%+v", label, projection)
 		}
 		queries := recorder.snapshot()
-		if len(queries) != 2 {
-			t.Fatalf("%s query count=%d want 2: %v", label, len(queries), queries)
+		if len(queries) != 1 {
+			t.Fatalf("%s query count=%d want 1: %v", label, len(queries), queries)
 		}
-		if !strings.Contains(queries[1], "WITH pending_origin_tasks") || strings.Contains(queries[1], "served_requirement_snapshot") || strings.Contains(queries[1], "governance_snapshot") {
-			t.Fatalf("%s attention query is not the narrow projection: %s", label, queries[1])
+		if strings.Contains(queries[0], "pending_origin_tasks") || strings.Contains(queries[0], "attention_tasks") {
+			t.Fatalf("%s still uses the SQL attention predicate: %s", label, queries[0])
 		}
 	}
 	assertProjection("baseline")
@@ -484,13 +484,13 @@ func TestPendingProposalsProjectionKeepsTwoStatementsAtProductionCardinalityInte
 }
 
 func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "pending-truth-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -600,12 +600,12 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projection.TaskCount != 11 || len(projection.Items) != 5 {
-		t.Fatalf("projection=%+v want task_count=11 proposals=5", projection)
+	if len(projection.Items) != 5 {
+		t.Fatalf("projection=%+v want proposals=5", projection)
 	}
 
 	sibling := "pending-truth-sibling-" + core.NewTaskID()
-	siblingCtx := store.WithWorkspace(t.Context(), sibling)
+	siblingCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), sibling)
 	if _, err = st.BootstrapWorkspaceConfig(siblingCtx, &config.Config{Workspace: sibling, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +631,7 @@ func TestPendingProposalsAttentionTruthTableAndWorkspaceIsolationIntegration(t *
 		t.Fatalf("sibling suppressed=%t err=%v", suppressed, proposeErr)
 	}
 	projection, err = st.PendingProposalsProjection(ctx)
-	if err != nil || projection.TaskCount != 11 || len(projection.Items) != 5 {
+	if err != nil || len(projection.Items) != 5 {
 		t.Fatalf("workspace isolation projection=%+v err=%v", projection, err)
 	}
 }

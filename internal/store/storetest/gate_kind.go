@@ -1,0 +1,412 @@
+package storetest
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+)
+
+// RunGateKindConformance proves a state writer records the gate kind of the
+// transition that entered awaiting_human, and clears it on every other write.
+// Dispatch, plan revision, review aggregation, request changes, cancel, start
+// over, and conflict fix each have their own assignment. ListTasks is the
+// readback, and AuditTaskGateKinds is the report.
+func RunGateKindConformance(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	plane := taskops.New(st)
+	cases := []struct {
+		command core.TaskCommand
+		want    core.GateKind
+	}{
+		{core.TaskGateSpec, core.GateKindPlanApproval},
+		{core.TaskJobFail, core.GateKindJobFailure},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.command), func(t *testing.T) {
+			id := createRunningTask(t, st, ctx, workspace)
+			out, err := plane.Perform(ctx, id, taskops.Command{Kind: tc.command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGate(t, st, ctx, id, out.Task, core.TaskAwaiting, tc.want)
+		})
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.command)+" project stages", func(t *testing.T) {
+			id := createRunningTask(t, st, ctx, workspace)
+			out, err := plane.Perform(ctx, id, taskops.Command{Kind: tc.command, ProjectStages: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGate(t, st, ctx, id, out.Task, core.TaskAwaiting, tc.want)
+		})
+	}
+	t.Run("plan revision", func(t *testing.T) {
+		fixture := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
+		result, err := requestPlanRevision(ctx, st, fixture.order.TaskID, fixture.order.ID, fixture.workerID, fixture.sessionID, "the API moved")
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, fixture.order.TaskID, result.Task, core.TaskAwaiting, core.GateKindPlanRevision)
+	})
+	t.Run("review aggregation merge gate", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		acceptReviewRound(t, st, ctx, id, func(order core.WorkOrder, seat int) core.ReviewDecision {
+			return core.ReviewDecision{
+				TaskID: id, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat,
+				Verdict: "approve", ReasonCode: "verified", Summary: "merge gate", ReviewedCommitSHA: "head",
+				PolicyVersion: 1, MergeApproval: true, MaxBounces: 3,
+			}
+		})
+		stored, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, stored, core.TaskAwaiting, core.GateKindMergeApproval)
+	})
+	t.Run("review aggregation bounce limit", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		acceptReviewRound(t, st, ctx, id, func(order core.WorkOrder, seat int) core.ReviewDecision {
+			return core.ReviewDecision{
+				TaskID: id, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat,
+				Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: 1,
+			}
+		})
+		stored, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, stored, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+	})
+	t.Run("request changes bounce limit", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		transitionToMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "limit", MaxBounces: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+	})
+	t.Run("request changes parks on an open agent window", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 2, 3)
+		reopenMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "limit", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+	})
+	t.Run("request changes requeues after an intervention", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 2, 3)
+		events, err := st.ListEvents(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().UTC()
+		if n := len(events); n > 0 && !events[n-1].At.IsZero() {
+			at = events[n-1].At.Add(time.Millisecond)
+		}
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		if err = st.CreateIntervention(user, core.Intervention{TaskID: id, Action: core.InterventionRedirect, ReasonCode: "operator_redirect", ActorRole: core.ActorHuman, At: at}); err != nil {
+			t.Fatal(err)
+		}
+		reopenMergeGate(t, ctx, st, id)
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "after intervention", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskQueued, "")
+	})
+	t.Run("request changes requeues at cap minus one", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 1, 3)
+		reopenMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "under", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskQueued, "")
+	})
+	t.Run("request changes parks at the cap", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		accumulateAgentBounces(t, plane, st, ctx, id, 2, 3)
+		reopenMergeGate(t, ctx, st, id)
+		user := store.WithActor(ctx, store.Actor{ID: "operator-gate", Role: core.ActorUser})
+		out, err := taskops.New(st).RequestChanges(user, taskops.RequestChanges{TaskID: id, Feedback: "cap", MaxBounces: 3})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskAwaiting, core.GateKindReviewBounceLimit)
+	})
+	t.Run("late review verdict keeps an existing human gate", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		jobs, orders := reviewRound(id, 1)
+		requireOK(t, CreateReviewRound(ctx, st, id, jobs, orders))
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{
+			TaskID: id, JobID: orders[0].JobID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 1, ReviewSeat: 1,
+			Verdict: "changes_requested", ReasonCode: "fix", Summary: "late", Feedback: "again", MaxBounces: 1,
+		}))
+		parked, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskJobFail})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, parked.Task, core.TaskAwaiting, core.GateKindJobFailure)
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{
+			TaskID: id, JobID: orders[1].JobID, ReviewWorkOrderID: orders[1].ID, ReviewRound: 1, ReviewSeat: 2,
+			Verdict: "changes_requested", ReasonCode: "fix", Summary: "late", Feedback: "again", MaxBounces: 1,
+		}))
+		stored, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, stored, core.TaskAwaiting, core.GateKindJobFailure)
+	})
+	for _, exit := range []struct {
+		command core.TaskCommand
+		state   core.TaskState
+	}{
+		{core.TaskInterventionApproveSpec, core.TaskQueued},
+		{core.TaskInterventionApproveReview, core.TaskApproved},
+		{core.TaskInterventionRedirect, core.TaskQueued},
+		{core.TaskInterventionReject, core.TaskClosed},
+	} {
+		t.Run(string(exit.command), func(t *testing.T) {
+			id := createRunningTask(t, st, ctx, workspace)
+			if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
+				t.Fatal(err)
+			}
+			out, err := plane.Perform(ctx, id, taskops.Command{Kind: exit.command})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGate(t, st, ctx, id, out.Task, exit.state, "")
+		})
+	}
+	t.Run("cancel clears the kind", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
+			t.Fatal(err)
+		}
+		out, err := plane.Cancel(ctx, core.Intervention{TaskID: id, Action: core.InterventionCancel, ReasonCode: "operator_cancel"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out, core.TaskClosed, "")
+	})
+	t.Run("start over clears the kind", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := plane.StartOver(ctx, core.TaskStartOverRequest{TaskID: id, RequestID: "restart-" + id, Reason: "fresh"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, result.Task, core.TaskClosed, "")
+	})
+	t.Run("conflict fix writes an empty kind", func(t *testing.T) {
+		id := createTask(t, st, ctx, workspace, core.TaskApproved, core.StageReview)
+		now := time.Now().UTC()
+		jobID := id + "-conflict"
+		_, err := taskops.ExecuteWorkOrder(ctx, st, id, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ConflictFixResult, error) {
+			return st.CreateConflictFixCommand(ctx, lease, store.ConflictFixRequest{
+				TaskID: id,
+				Job:    core.Job{ID: jobID, TaskID: id, Stage: core.StageImplement, State: core.JobPending},
+				WorkOrder: core.WorkOrder{
+					ID: jobID, TaskID: id, JobID: jobID, Stage: core.StageImplement, ReasonCode: "merge-conflict",
+					QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now,
+				},
+				Intervention: core.Intervention{TaskID: id, Action: core.InterventionRedirect, ReasonCode: "merge-conflict"},
+				ApprovedHead: "approved", NewHead: "conflicting",
+			})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, err := st.GetTask(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, stored, core.TaskQueued, "")
+	})
+	t.Run("audit flags a seeded mismatch", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateSpec}); err != nil {
+			t.Fatal(err)
+		}
+		if clean := auditTask(t, st, ctx, id); len(clean) != 0 {
+			t.Fatalf("clean gate audit=%+v", clean)
+		}
+		if err := st.AppendEvent(ctx, core.Event{
+			TaskID: id, Kind: "task.state_changed", At: time.Now().UTC().Add(time.Minute),
+			Payload: core.JSONPayload(map[string]any{"command": core.TaskJobFail}),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		violations := auditTask(t, st, ctx, id)
+		if len(violations) != 1 || violations[0].Reason != "mismatch" || violations[0].Expected != string(core.GateKindJobFailure) {
+			t.Fatalf("seeded audit=%+v", violations)
+		}
+	})
+	t.Run("merge recover clears the kind and a dependent block", func(t *testing.T) {
+		id := createRunningTask(t, st, ctx, workspace)
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		dependent := createTask(t, st, ctx, workspace, core.TaskQueued, core.StageImplement)
+		orderID := dependent + "-implement"
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: dependent, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		queuedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+		if err := For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: orderID, JobID: orderID, TaskID: dependent, Stage: core.StageImplement, QueueEnteredAt: queuedAt, QueueDeadline: queuedAt.Add(time.Hour), CreatedAt: queuedAt}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent, DependsOnTaskID: id, Reason: "merge first", RequestID: "merge-recover-" + id}); err != nil {
+			t.Fatal(err)
+		}
+		blocked, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil || blocked.QueueBlockedAt.IsZero() {
+			t.Fatalf("dependent block=%+v err=%v", blocked, err)
+		}
+		out, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskMergeRecover})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGate(t, st, ctx, id, out.Task, core.TaskMerged, "")
+		if violations := auditTask(t, st, ctx, id); len(violations) != 0 {
+			t.Fatalf("audit=%+v", violations)
+		}
+		resumed, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil || !resumed.QueueBlockedAt.IsZero() || !resumed.Claimable {
+			t.Fatalf("resumed order=%+v err=%v", resumed, err)
+		}
+	})
+}
+
+func assertGate(t *testing.T, st store.Store, ctx context.Context, id string, returned core.Task, state core.TaskState, kind core.GateKind) {
+	t.Helper()
+	if returned.State != state || returned.GateKind != kind {
+		t.Fatalf("returned state=%s gate_kind=%q, want %s %q", returned.State, returned.GateKind, state, kind)
+	}
+	stored, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != state || stored.GateKind != kind {
+		t.Fatalf("stored state=%s gate_kind=%q, want %s %q", stored.State, stored.GateKind, state, kind)
+	}
+	listed := listedTask(t, st, ctx, id)
+	if listed.State != state || listed.GateKind != kind {
+		t.Fatalf("listed state=%s gate_kind=%q, want %s %q", listed.State, listed.GateKind, state, kind)
+	}
+	if violations := auditTask(t, st, ctx, id); kind == listed.GateKind && len(violations) != 0 {
+		t.Fatalf("audit=%+v", violations)
+	}
+}
+
+func listedTask(t *testing.T, st store.Store, ctx context.Context, id string) core.Task {
+	t.Helper()
+	tasks, err := st.ListTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if task.ID == id {
+			return task
+		}
+	}
+	t.Fatalf("task %s missing from ListTasks", id)
+	return core.Task{}
+}
+
+func auditTask(t *testing.T, st store.Store, ctx context.Context, id string) []store.TaskGateAuditViolation {
+	t.Helper()
+	task := listedTask(t, st, ctx, id)
+	events, err := st.ListEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.AuditTaskGateKinds([]store.TaskGateObservation{{
+		TaskID: task.ID, State: task.State, GateKind: task.GateKind,
+	}}, events)
+}
+
+func acceptReviewRound(t *testing.T, st store.Store, ctx context.Context, taskID string, decision func(core.WorkOrder, int) core.ReviewDecision) {
+	t.Helper()
+	jobs, orders := reviewRound(taskID, 1)
+	requireOK(t, CreateReviewRound(ctx, st, taskID, jobs, orders))
+	for i, order := range orders {
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, decision(order, i+1)))
+	}
+}
+
+func accumulateAgentBounces(t *testing.T, plane *taskops.Plane, st store.Store, ctx context.Context, id string, n, max int) {
+	t.Helper()
+	for round := 1; round <= n; round++ {
+		if round > 1 {
+			if _, err := plane.Perform(ctx, id, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		jobs, orders := reviewRound(id, round)
+		requireOK(t, CreateReviewRound(ctx, st, id, jobs, orders))
+		for i, order := range orders {
+			requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{
+				TaskID: id, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: round, ReviewSeat: i + 1,
+				Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: max,
+			}))
+		}
+	}
+}
+
+func createRunningTask(t *testing.T, st store.Store, ctx context.Context, workspace string) string {
+	t.Helper()
+	return createTask(t, st, ctx, workspace, core.TaskRunning, "")
+}
+
+func createTask(t *testing.T, st store.Store, ctx context.Context, workspace string, state core.TaskState, next core.Stage) string {
+	t.Helper()
+	id := core.NewTaskID()
+	task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, NextStage: next, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.GateKind != "" {
+		t.Fatalf("new task gate_kind=%q", stored.GateKind)
+	}
+	return id
+}
+
+func reopenMergeGate(t *testing.T, ctx context.Context, st store.Store, id string) {
+	t.Helper()
+	task, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plane := taskops.New(st)
+	if task.State == core.TaskAwaiting {
+		if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskInterventionRedirect}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = plane.Perform(ctx, id, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -22,7 +22,7 @@ import (
 func taskAggregateFixture(t *testing.T) (*Store, context.Context) {
 	t.Helper()
 	s := integrationStore(t)
-	ctx := store.WithWorkspace(t.Context(), "task-tests")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "task-tests")
 	if _, err := s.CreateWorkspace(ctx, "task-tests", "Tasks", &config.Config{Workspace: "task-tests"}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,9 +107,7 @@ func TestTaskCallbackCleanupIntegration(t *testing.T) {
 			return nil
 		}))
 	})
-	if got := s.db.Stats().InUse; got != 0 {
-		t.Fatalf("callback leaked %d connections", got)
-	}
+	requireNoConnectionsInUse(t, s.db)
 }
 
 func TestTaskAggregateConstraintsIntegration(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 
 func TestBlueprintMaterializationDependencyClaimsAndParentClose(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemoryWithConfig(&config.Config{
 		Workspace: "demo",
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
@@ -120,7 +120,7 @@ func transitionTaskToMerged(t *testing.T, ctx context.Context, st Store, id stri
 
 func TestBlueprintCycleFailsApprovalWithoutPartialState(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemoryWithConfig(&config.Config{
 		Workspace: "demo",
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
@@ -151,7 +151,7 @@ func TestBlueprintCycleFailsApprovalWithoutPartialState(t *testing.T) {
 
 func TestBlueprintDiamondDecompositionAccepted(t *testing.T) {
 	t.Parallel()
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemoryWithConfig(&config.Config{
 		Workspace: "demo",
 		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},

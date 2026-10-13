@@ -59,14 +59,14 @@ func workerEvidenceRequest(t *testing.T, credential, orderID, session, token, co
 
 func TestWorkerVerificationEvidenceUploadIsBoundToLiveClaim(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	orders := &workorder.Service{Store: st}
 	workers := &workerservice.Service{Store: st, WorkOrders: orders}
-	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	pairing, _, err := workers.IssuePairing(memberPairingContext(t, st, ctx, "owner"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := workers.Enroll(t.Context(), pairing, "evidence-worker")
+	enrollment, err := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "evidence-worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,14 +128,14 @@ func TestWorkerVerificationEvidenceUploadIsBoundToLiveClaim(t *testing.T) {
 // AC-8.1; component-artifacts).
 func TestWorkerVerificationEvidenceRecordingBytes(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	orders := &workorder.Service{Store: st}
 	workers := &workerservice.Service{Store: st, WorkOrders: orders}
-	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	pairing, _, err := workers.IssuePairing(memberPairingContext(t, st, ctx, "owner"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := workers.Enroll(t.Context(), pairing, "recording-worker")
+	enrollment, err := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "recording-worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,11 @@ func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
 			server.ConfigProvider = test.provider
 			server.Workers = &workerservice.Service{Store: test.store, WorkOrders: orders, ConfigProvider: test.provider}
 			request := httptest.NewRequest(http.MethodGet, "/v1/worker/orders", nil)
-			request = request.WithContext(context.WithValue(request.Context(), workerContextKey{}, core.Worker{CredentialHash: "hash"}))
+			worker := core.Worker{ID: "worker-hash", Workspace: "demo", OwnerUserID: "usr-owner", Name: "worker-hash", CredentialHash: "hash", LeaseExpiresAt: time.Now().UTC().Add(time.Minute)}
+			if err := createOwnedWorker(test.store, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), worker); err != nil {
+				t.Fatal(err)
+			}
+			request = request.WithContext(store.WithWorkspace(withWorkerActor(request.Context(), worker), "demo"))
 			response := httptest.NewRecorder()
 			server.listWorkerOrders(response, request)
 			if response.Code != test.wantStatus || response.Body.String() != test.wantBody || strings.Contains(response.Body.String(), "raw worker order store failure") {
@@ -253,7 +257,7 @@ func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
 
 func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
@@ -262,7 +266,10 @@ func TestWorkerHTTPExchangesNeverReturnStoredToken(t *testing.T) {
 	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
 	const storedToken = "owner-forge-secret"
 	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
-	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", Name: "worker-a", CredentialHash: "credential-worker-a", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	if err := createOwnedWorker(st, ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: "worker-token-delivery", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/worker-token-delivery", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -336,7 +343,7 @@ func (s *failingSecondGetTaskStore) GetTask(ctx context.Context, id string) (cor
 
 func TestClaimWorkerOrderCompensationIsNotConflict(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
@@ -344,7 +351,10 @@ func TestClaimWorkerOrderCompensationIsNotConflict(t *testing.T) {
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
 	workers := &workerservice.Service{Store: &failingSecondGetTaskStore{Store: st}, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
-	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	worker := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", Name: "worker-a", CredentialHash: "credential-worker-a", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	if err := createOwnedWorker(st, ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: "worker-compensation", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/worker-compensation", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -370,7 +380,7 @@ func TestClaimWorkerOrderCompensationIsNotConflict(t *testing.T) {
 }
 
 func TestWorkerRenewHTTPReportsSameSessionCheckpointRelease(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "worker-checkpoint", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
 	job := core.Job{ID: "worker-checkpoint-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -409,11 +419,11 @@ func workerConfigHTTPFixture(t *testing.T) (*Server, workerservice.Enrollment, *
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
 	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider}
-	pairing, _, err := workers.IssuePairing(store.WithWorkspace(t.Context(), "demo"), time.Minute)
+	pairing, _, err := workers.IssuePairing(memberPairingContext(t, st, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), "owner"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := workers.Enroll(t.Context(), pairing, "config-worker")
+	enrollment, err := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "config-worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,6 +477,11 @@ func TestWorkerConfigHTTPUsesConfiguredProvider(t *testing.T) {
 
 func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	st := store.NewMemory()
+	// The legacy bearer's owner pairs the worker, so it needs the active
+	// membership that worker admission requires.
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "local-operator", true); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
@@ -517,7 +532,7 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 	if heartbeat.Code != http.StatusOK {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	task := core.Task{ID: "rate-health", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "rate-health-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -559,16 +574,16 @@ func TestWorkerEnrollmentHeartbeatHealthAndRevocationHTTP(t *testing.T) {
 
 func TestWorkerClaimReconciliationIsReadOnlyAndServerAuthoritative(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo"}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
 	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider}
-	pairing, _, err := workers.IssuePairing(ctx, time.Minute)
+	pairing, _, err := workers.IssuePairing(memberPairingContext(t, st, ctx, "owner"), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := workers.Enroll(t.Context(), pairing, "reconcile-worker")
+	enrollment, err := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "reconcile-worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +634,7 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 	for _, channel := range []string{"worker", "run", "mcp"} {
 		for _, mode := range []string{"missing-sha", "missing-pr", "head-mismatch", "base-mismatch", "foreign-session", "matching"} {
 			t.Run(channel+"/"+mode, func(t *testing.T) {
-				ctx := store.WithWorkspace(t.Context(), "demo")
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 				st := store.NewMemory()
 				task := core.Task{ID: "delivery", Workspace: "demo", Repo: "app", Title: "Deliver", Branch: "conveyor/task-delivery", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 				if err := st.CreateTask(ctx, task); err != nil {
@@ -668,11 +683,11 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 				claim := core.WorkOrderClaim{SessionID: "session", ClientToken: "claim-token", ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner", Lease: time.Minute}
 				credential := "run-bearer"
 				if channel == "worker" {
-					pairing, _, err := workers.IssuePairing(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "owner-bearer", OwnerUserID: "owner", Kind: core.CredentialUser}), time.Minute)
+					pairing, _, err := workers.IssuePairing(memberPairingContext(t, st, ctx, "owner"), time.Minute)
 					if err != nil {
 						t.Fatal(err)
 					}
-					enrollment, err := workers.Enroll(t.Context(), pairing, "worker")
+					enrollment, err := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "worker")
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -740,7 +755,7 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 					// the recorded result with no PR, order, or event write.
 					eventsBefore := len(events)
 					replayTemplate := httptest.NewRecorder()
-					handler.ServeHTTP(replayTemplate, templateRequest.Clone(t.Context()))
+					handler.ServeHTTP(replayTemplate, templateRequest.Clone(store.WithActor(t.Context(), store.SystemActor())))
 					if replayTemplate.Code != 200 {
 						t.Fatalf("replay template status=%d body=%s", replayTemplate.Code, replayTemplate.Body.String())
 					}
@@ -799,6 +814,9 @@ type heartbeatHTTPFixture struct {
 func newHeartbeatHTTPFixture(t *testing.T) heartbeatHTTPFixture {
 	t.Helper()
 	st := store.NewMemory()
+	if err := store.SetMemoryWorkspaceMember(st, "demo", "local-operator", true); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{Workspace: "demo"}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
@@ -852,7 +870,7 @@ func (f heartbeatHTTPFixture) heartbeat(body string, contentLength int64) *httpt
 
 func (f heartbeatHTTPFixture) stored(t *testing.T) core.Worker {
 	t.Helper()
-	workers, err := f.store.ListWorkers(store.WithWorkspace(t.Context(), "demo"))
+	workers, err := f.store.ListWorkers(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -964,11 +982,11 @@ func TestWorkerHeartbeatHTTPBoundsTheWholeBody(t *testing.T) {
 
 func TestWorkerConfigHTTPServesPolicyProjectionOfComposedRuntime(t *testing.T) {
 	server, backend, deployment, ctx := composedRuntimeServer(t)
-	pairing, _, err := server.Workers.IssuePairing(ctx, time.Minute)
+	pairing, _, err := server.Workers.IssuePairing(volatilePairingContext(t, backend, ctx), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := server.Workers.Enroll(t.Context(), pairing, "policy-worker")
+	enrollment, err := server.Workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "policy-worker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1004,4 +1022,33 @@ func TestWorkerConfigHTTPServesPolicyProjectionOfComposedRuntime(t *testing.T) {
 		t.Fatalf("worker config policy = %+v", workerConfig)
 	}
 	requireUnchangedComposition(t, backend, deployment, ctx, before, stored.Version)
+}
+
+// memberPairingContext binds the user credential that worker pairing requires
+// and gives its owner an active membership on the memory store, so the enrolled
+// worker is admitted (component-work-orders, Workers: Enrollment and Admission).
+func memberPairingContext(t *testing.T, st store.Store, ctx context.Context, owner string) context.Context {
+	t.Helper()
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	if err := store.SetMemoryWorkspaceMember(st, workspace, owner, true); err != nil {
+		t.Fatal(err)
+	}
+	return withCredentialActor(ctx, core.AuthenticatedCredential{ID: owner + "-pat", OwnerUserID: owner, Kind: core.CredentialUser})
+}
+
+// volatilePairingContext provisions an active contributor on a volatile
+// backend and binds that user's credential for worker pairing.
+func volatilePairingContext(t *testing.T, backend store.Backend, ctx context.Context) context.Context {
+	t.Helper()
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	ctx = store.WithActor(ctx, store.SystemActor())
+	user, err := backend.ProvisionIdentityUser(ctx, "worker-owner@example.test", "Worker owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userCtx := withCredentialActor(ctx, core.AuthenticatedCredential{ID: "worker-owner-pat", OwnerUserID: user.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	if _, err := backend.GrantWorkspaceRole(userCtx, user.Email, workspace, core.WorkspaceRoleContributor); err != nil {
+		t.Fatal(err)
+	}
+	return userCtx
 }

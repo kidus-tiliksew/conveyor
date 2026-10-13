@@ -8,7 +8,7 @@ import (
 )
 
 func TestSelectionFreshnessAfterAttachmentAndZeroBudget(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "fresh", Workspace: "demo", State: core.TaskRunning}
 	if e := st.CreateTask(ctx, task); e != nil {

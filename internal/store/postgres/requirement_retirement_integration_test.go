@@ -33,12 +33,12 @@ func TestMigration094RetiresSupersededRequirementVersionsIdempotentlyIntegration
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 92); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 92); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	workspace := "requirement-retirement-migration-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestMigration094RetiresSupersededRequirementVersionsIdempotentlyIntegration
 		t.Fatal(err)
 	}
 
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 0); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 0); err != nil {
 		t.Fatal(err)
 	}
 	var retired, confirmed bool
@@ -88,7 +88,7 @@ func TestMigration094RetiresSupersededRequirementVersionsIdempotentlyIntegration
 		AND kind='requirement.version_retired' AND payload_json->>'requirement_id'='req-260811-0ee057'`, workspace).Scan(&eventsBefore); err != nil || eventsBefore != 1 {
 		t.Fatalf("retirement events=%d err=%v", eventsBefore, err)
 	}
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 0); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 0); err != nil {
 		t.Fatal(err)
 	}
 	var eventsAfter int

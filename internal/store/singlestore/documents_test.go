@@ -31,13 +31,13 @@ func TestDocumentSuccessorJSONPreservesOrder(t *testing.T) {
 }
 func TestDocumentReadsRequireWorkspaceBeforeSQL(t *testing.T) {
 	st := &Store{}
-	if _, err := st.GetRequirement(t.Context(), "req"); !errors.Is(err, store.ErrWorkspaceRequired) {
+	if _, err := st.GetRequirement(store.WithActor(t.Context(), store.SystemActor()), "req"); !errors.Is(err, store.ErrWorkspaceRequired) {
 		t.Fatal(err)
 	}
-	if _, err := st.ListLineageLinks(t.Context()); !errors.Is(err, store.ErrWorkspaceRequired) {
+	if _, err := st.ListLineageLinks(store.WithActor(t.Context(), store.SystemActor())); !errors.Is(err, store.ErrWorkspaceRequired) {
 		t.Fatal(err)
 	}
-	if _, err := st.ListDocumentEventPage(t.Context(), core.LineageRequirement, "req", store.DocumentEventQuery{Limit: 1}); !errors.Is(err, store.ErrWorkspaceRequired) {
+	if _, err := st.ListDocumentEventPage(store.WithActor(t.Context(), store.SystemActor()), core.LineageRequirement, "req", store.DocumentEventQuery{Limit: 1}); !errors.Is(err, store.ErrWorkspaceRequired) {
 		t.Fatal(err)
 	}
 }

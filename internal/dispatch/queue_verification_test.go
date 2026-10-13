@@ -70,7 +70,7 @@ func (b *publicationWorkerFixture) TranslateVerificationPublication(ctx context.
 func TestVerificationPublicationWorkerReconciliation(t *testing.T) {
 	st := store.NewVolatileBackend()
 	defer st.Close()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", GitHub: "org/repo"}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestVerificationPublicationWorkspaceEnvelope(t *testing.T) {
 	p := store.VerificationPublication{ID: "same-source", TaskID: "same-task"}
 	raw, _ := json.Marshal(p)
 	for _, ws := range []string{"alpha", "beta"} {
-		if err := w.Legacy(t.Context(), queue.Job{WorkspaceID: ws, ID: "same-stream", Args: raw}); err != nil {
+		if err := w.Legacy(store.WithActor(t.Context(), store.SystemActor()), queue.Job{WorkspaceID: ws, ID: "same-stream", Args: raw}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -203,13 +203,13 @@ func TestVerificationPublicationWorkspaceEnvelope(t *testing.T) {
 		if payload == string(raw) {
 			ws = ""
 		}
-		if err := w.Legacy(t.Context(), queue.Job{WorkspaceID: ws, Args: []byte(payload)}); err == nil {
+		if err := w.Legacy(store.WithActor(t.Context(), store.SystemActor()), queue.Job{WorkspaceID: ws, Args: []byte(payload)}); err == nil {
 			t.Fatal("invalid legacy envelope accepted")
 		}
 	}
 	for _, args := range []queue.VerificationPublicationArgs{{Repository: "org/repo", PullRequestNumber: 42}, {WorkspaceID: "beta", Repository: "org/repo", PullRequestNumber: 42}} {
 		raw, _ := json.Marshal(args)
-		if err := w.Work(t.Context(), queue.Job{WorkspaceID: "alpha", Args: raw}); err == nil {
+		if err := w.Work(store.WithActor(t.Context(), store.SystemActor()), queue.Job{WorkspaceID: "alpha", Args: raw}); err == nil {
 			t.Fatal("typed workspace accepted")
 		}
 	}
@@ -222,7 +222,7 @@ func TestVerificationPublicationWorkspaceEnvelope(t *testing.T) {
 func TestVerificationDispatchReviewBinding(t *testing.T) {
 	for _, scope := range []string{"", config.RefreshReviewDelta, config.RefreshReviewFull} {
 		t.Run(scope, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewVolatileBackend()
 			defer st.Close()
 			task := core.Task{ID: core.NewTaskID(), Workspace: "demo", Repo: "repo", State: core.TaskQueued, NextStage: core.StageVerify, ReviewedHeadSHA: "head"}

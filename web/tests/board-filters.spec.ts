@@ -1,4 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
@@ -128,7 +130,9 @@ async function routeBoard(page: Page, seen: string[]) {
   // The Board's New task button follows create_tasks (DEC-60), so the board
   // signs in a maintainer, the lowest role that may file tasks.
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: { id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' } }),
+    route.fulfill({
+      json: callerIdentity({ id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' }),
+    }),
   )
   await page.route('**/v1/pending-proposals**', (route) =>
     route.fulfill({ json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } } }),
@@ -280,7 +284,7 @@ test('running cards use the in-flight stage when latest stage is stale', async (
     }),
   )
   await page.goto('/')
-  await expect(page.getByRole('region', { name: 'Reviewing' })).toContainText('Running external review')
+  await expect(page.getByRole('region', { name: 'Review' })).toContainText('Running external review')
   await expect(page.getByRole('region', { name: 'Plan' })).not.toContainText('Running external review')
 })
 
@@ -722,6 +726,9 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
 })
 
 test('failed triage Board badge distinguishes failure from genuine review gates', async ({ page }, testInfo) => {
+  // The card states the server's next action: a failed triage is a job
+  // failure for the operator, never a review gate.
+  await serveNextActionsFromActivity(page)
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await routeBoard(page, [])
   await page.route('**/v1/activity?**', (route) =>
@@ -735,9 +742,11 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
             title: 'Image preparation failed',
             state: 'awaiting_human',
             next_stage: '',
+            recovery_stage: 'triage',
           },
           latest_stage: 'triage',
           needs_attention: true,
+          events: [],
         },
         {
           ...activity[0],
@@ -750,6 +759,7 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
           },
           latest_stage: 'spec',
           needs_attention: true,
+          events: [],
         },
         {
           ...activity[0],
@@ -760,19 +770,85 @@ test('failed triage Board badge distinguishes failure from genuine review gates'
             state: 'awaiting_human',
             next_stage: '',
           },
+          at_merge_gate: true,
           latest_stage: 'review',
           needs_attention: true,
+          events: [],
         },
       ],
     }),
   )
   await page.goto('/')
   const failed = page.getByRole('link').filter({ hasText: 'Image preparation failed' })
-  await expect(failed).toContainText('Triage failed')
-  await expect(failed).not.toContainText('Awaiting review')
-  await expect(page.getByRole('link').filter({ hasText: 'Plan ready for decision' })).toContainText('Awaiting review')
+  await expect(failed).toHaveAttribute('data-operator', 'true')
+  await expect(failed).toContainText('Job failure')
+  await expect(failed).not.toContainText('Plan approval')
+  await expect(page.getByRole('link').filter({ hasText: 'Plan ready for decision' })).toContainText('Plan approval')
   await expect(page.getByRole('link').filter({ hasText: 'Implementation ready for decision' })).toContainText(
-    'Awaiting review',
+    'Merge approval',
   )
   await testInfo.attach('failed-triage-board', { body: await page.screenshot(), contentType: 'image/png' })
+})
+
+// Every next-action kind lands in the column its server fields name (NA-6):
+// merge work under Merge, recovery holds under Triage, and everything else
+// under the stage the task is in or about to enter.
+const columnCases: Array<{ kind: string; state: string; latest: string; next?: string; column: string }> = [
+  { kind: 'merge_approval', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'merge_execution', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'merge_conflict', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'merging', state: 'awaiting_human', latest: 'review', column: 'Merge' },
+  { kind: 'parked', state: 'awaiting_human', latest: 'implement', column: 'Triage' },
+  { kind: 'dispatch_exhausted', state: 'awaiting_human', latest: 'review', column: 'Triage' },
+  { kind: 'job_failure', state: 'awaiting_human', latest: 'implement', column: 'Implement' },
+  { kind: 'plan_approval', state: 'awaiting_human', latest: 'spec', next: 'implement', column: 'Plan' },
+  { kind: 'plan_revision', state: 'awaiting_human', latest: 'spec', column: 'Plan' },
+  { kind: 'review_bounce_limit', state: 'awaiting_human', latest: 'review', column: 'Review' },
+  { kind: 'review_recovery', state: 'awaiting_human', latest: 'review', column: 'Review' },
+  { kind: 'agent_question', state: 'awaiting_human', latest: 'implement', column: 'Implement' },
+  { kind: 'verification_disposition', state: 'awaiting_human', latest: 'verify', column: 'Verify' },
+  { kind: 'forge_failure', state: 'awaiting_human', latest: 'implement', column: 'Implement' },
+  { kind: 'dependency_unsatisfiable', state: 'queued', latest: '', next: 'spec', column: 'Plan' },
+  { kind: 'stalled', state: 'queued', latest: 'spec', next: 'implement', column: 'Implement' },
+  { kind: 'blocked', state: 'queued', latest: '', next: 'spec', column: 'Plan' },
+  { kind: 'working', state: 'running', latest: 'implement', next: 'verify', column: 'Verify' },
+  { kind: 'terminal', state: 'merged', latest: 'review', column: 'Completed' },
+]
+
+test('each next-action kind lands in its stage column', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await routeBoard(page, [])
+  await page.route('**/v1/activity?**', (route) =>
+    route.fulfill({
+      json: columnCases.map((c) => ({
+        ...activity[0],
+        task: {
+          ...activity[0].task,
+          id: `col-${c.kind}`,
+          title: `Column case ${c.kind}`,
+          state: c.state,
+          next_stage: c.next ?? '',
+        },
+        latest_stage: c.latest,
+        next_action: {
+          kind: c.kind,
+          label: c.kind,
+          actor: 'operator',
+          judgment: true,
+          summary: `Summary ${c.kind}`,
+          deadline: null,
+        },
+      })),
+    }),
+  )
+  await page.goto('/')
+  for (const c of columnCases) {
+    await expect(
+      page
+        .getByRole('region', { name: c.column, exact: true })
+        .getByRole('link')
+        .filter({ hasText: `Column case ${c.kind}` }),
+      `${c.kind} under ${c.column}`,
+    ).toHaveCount(1)
+  }
 })

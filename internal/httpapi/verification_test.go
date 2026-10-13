@@ -27,7 +27,7 @@ func verificationHTTPFixture(t *testing.T) (*Server, context.Context, string) {
 	t.Helper()
 	b := store.NewVolatileBackend()
 	t.Cleanup(b.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}}}
 	if _, err := b.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func verificationHTTPFixture(t *testing.T) (*Server, context.Context, string) {
 		t.Fatal(err)
 	}
 	ctx = store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker})
-	ctx = context.WithValue(ctx, workerContextKey{}, core.Worker{ID: "fixture", Workspace: "demo"})
+	ctx = withWorkerActor(ctx, core.Worker{ID: "fixture", Workspace: "demo"})
 	s := NewServer(b)
 	s.WorkOrders = &workorder.Service{Store: b, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	return s, ctx, o.ID
@@ -227,7 +227,7 @@ func TestVerificationSealedReviewSurfaceReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx = store.WithActor(ctx, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
-	ctx = context.WithValue(ctx, workerContextKey{}, core.Worker{ID: "reviewer", Workspace: "demo"})
+	ctx = withWorkerActor(ctx, core.Worker{ID: "reviewer", Workspace: "demo"})
 	request = request.WithContext(ctx)
 	for _, vc := range []store.VerificationContext{sealed.Contexts[0], unsealed.Contexts[0]} {
 		for _, name := range []string{"get_verification_context", "get_verification_publication"} {

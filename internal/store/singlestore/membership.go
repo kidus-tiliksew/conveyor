@@ -32,6 +32,23 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 	return allowed, translateBackendConflict(err)
 }
 
+// AuthorizeInstanceAdministration answers whether the active user owns the
+// sole deployment_credential marker. No role, binding, or credential scope
+// participates (DEC-63(1)).
+func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	var allowed bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM user_tokens t
+		JOIN users u ON u.id=t.user_id
+		WHERE t.deployment_credential=TRUE AND t.user_id=? AND u.status='active'
+	)`, userID).Scan(&allowed)
+	return allowed, translateBackendConflict(err)
+}
+
 func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	var role core.WorkspaceRole
 	err := s.db.QueryRowContext(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
@@ -167,6 +184,7 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 			}
 		}
 		_, err := appendWorkspaceEvent(ctx, tx, workspaceID, "workspace.membership_granted", map[string]any{"workspace_id": workspaceID, "email": email, "role": role, "invitation": invitation, "granted_by": c.OwnerUserID})
+		r.Invitation = invitation
 		return translateBackendConflict(err)
 	})
 	return r, translateBackendConflict(err)
@@ -191,6 +209,9 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 		return errors.New("authenticated user credential is required")
 	}
 	return s.identityTx(ctx, func(tx *sql.Tx) error {
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationRevokeLocked); err != nil {
+			return err
+		}
 		r, err := tx.ExecContext(ctx, "DELETE FROM workspace_membership_invitations WHERE workspace_id=? AND email=?", workspaceID, email)
 		if err != nil {
 			return translateBackendConflict(err)

@@ -27,7 +27,7 @@ func TestVerificationChunkExpiryGrouping(t *testing.T) {
 		"no workspace":    WithActor(context.Background(), Actor{ID: "verification-reconciler", Role: core.ActorSystem}),
 		"other system":    WithActor(WithWorkspace(context.Background(), "demo"), Actor{ID: "dispatcher", Role: core.ActorSystem}),
 		"worker":          WithActor(WithWorkspace(context.Background(), "demo"), Actor{ID: "verification-reconciler", Role: core.ActorWorker}),
-		"no actor":        WithWorkspace(context.Background(), "demo"),
+		"no actor":        WithWorkspace(WithActor(context.Background(), SystemActor()), "demo"),
 		"empty workspace": WithActor(WithWorkspace(context.Background(), ""), Actor{ID: "verification-reconciler", Role: core.ActorSystem}),
 	} {
 		if _, _, err := AuthorizeVerificationChunkExpiry(ctx); !errors.Is(err, ErrVerificationAccess) {
@@ -106,12 +106,12 @@ func TestVerificationChunkExpirySelectionSeam(t *testing.T) {
 			t.Fatalf("expiry = %d, %v", n, err)
 		}
 	}
-	run(context.Background())
+	run(WithActor(context.Background(), SystemActor()))
 	if !reflect.DeepEqual(order, []string{"group:task-a", "group:task-b"}) {
 		t.Fatalf("production order = %v", order)
 	}
 	order = nil
-	run(WithVerificationChunkExpirySelectedForTest(context.Background(), func(rows []VerificationChunkCandidate) {
+	run(WithVerificationChunkExpirySelectedForTest(WithActor(context.Background(), SystemActor()), func(rows []VerificationChunkCandidate) {
 		order = append(order, "selected:"+strconv.Itoa(len(rows)))
 	}))
 	if !reflect.DeepEqual(order, []string{"selected:3", "group:task-a", "group:task-b"}) {

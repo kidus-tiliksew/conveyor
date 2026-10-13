@@ -22,6 +22,12 @@ type PlanRevisionRequestResult struct {
 }
 
 func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error) {
+	// A worker claim records its own worker actor; any other claim records the
+	// caller's actor. Either must be complete before the order, job, session,
+	// or task changes (component-persistence, Actor context).
+	if _, err := RequireActor(workerClaimActorContext(ctx, claim.WorkerID)); err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rationale = strings.TrimSpace(rationale)
@@ -93,6 +99,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 		}
 	}
 	task.State = nextTask
+	task.GateKind = core.GateKindFor(nextTask, core.TaskGatePlanRevision)
 	m.tasks[task.ID] = task
 	actor := workerClaimActorContext(ctx, claim.WorkerID)
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
@@ -102,6 +109,9 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 }
 
 func (m *memory) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -173,19 +183,21 @@ func (m *memory) retireWorkOrderSiblingsLocked(ctx context.Context, authoritativ
 	}
 }
 
-// WorkOrderRecoverySupersessionError rejects recovery once another order or
-// task progress has made the target's stage historical. Callers hold the
-// task-operation serialization boundary while evaluating it.
-func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+// WorkOrderRecoveryRefusal is the shared deterministic predicate recover and
+// redispatch apply before any write. Callers hold the task-operation
+// serialization boundary while evaluating it.
+func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
 	laterThanTarget := func(candidate core.WorkOrder) bool {
 		return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
 	}
-	for _, candidate := range taskOrders {
-		if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
-			continue
-		}
-		if laterThanTarget(candidate) {
-			return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
+	if order.Stage != core.StageReview {
+		for _, candidate := range taskOrders {
+			if candidate.ID == order.ID || candidate.Stage != order.Stage || candidate.State == core.WorkOrderCancelled {
+				continue
+			}
+			if laterThanTarget(candidate) {
+				return fmt.Errorf("work order %s was superseded by same-stage successor %s", order.ID, candidate.ID)
+			}
 		}
 	}
 	pastStage := func(stage core.Stage) bool {
@@ -208,12 +220,19 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 		}
 		return false
 	}
-	if task.State == core.TaskApproved || task.State == core.TaskMerged || task.State == core.TaskClosed {
+	if (task.State == core.TaskApproved || task.State == core.TaskMerged || task.State == core.TaskClosed) &&
+		(order.State != core.WorkOrderQueued || strings.TrimSpace(order.LastAttemptOutcome) != "") {
 		gate := "terminal task state"
 		if order.Stage == core.StageReview {
 			gate = "merge gate"
 		}
 		return fmt.Errorf("work order %s cannot be recovered after its task reached the %s", order.ID, gate)
+	}
+	if !core.ValidWorkOrderStage(order.Stage) {
+		return fmt.Errorf("work order %s cannot be recovered because stage %s is not a work-order stage", order.ID, order.Stage)
+	}
+	if err := core.ValidateVerifyDispatch(task, order); err != nil {
+		return err
 	}
 	switch order.Stage {
 	case core.StageSpec:
@@ -222,15 +241,102 @@ func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, ta
 			return fmt.Errorf("work order %s cannot be recovered because task %s has passed the plan gate", order.ID, task.ID)
 		}
 	case core.StageVerify:
-		if !task.SetupContract.VerifyStage || order.HeadSHA != core.VerifyStageHead(task) || pastStage(core.StageVerify) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
+		if pastStage(core.StageVerify) || task.NextStage == core.StageReview || task.RecoveryStage == core.StageReview {
 			return fmt.Errorf("verify work order %s is superseded", order.ID)
 		}
 	case core.StageImplement:
 		if pastStage(core.StageImplement) || task.NextStage == core.StageVerify || task.NextStage == core.StageReview || task.RecoveryStage == core.StageVerify || task.RecoveryStage == core.StageReview {
-			return fmt.Errorf("work order %s cannot be recovered because task %s has advanced to review", order.ID, task.ID)
+			reached := "review"
+			if !pastStage(core.StageImplement) && task.NextStage != core.StageReview && task.RecoveryStage != core.StageReview {
+				reached = "verify"
+			}
+			return fmt.Errorf("work order %s cannot be recovered because task %s has advanced to %s", order.ID, task.ID, reached)
 		}
 	}
 	return nil
+}
+
+// PlanRevisionRequest is the readable work_order.plan_revision_requested
+// payload bound to a pending plan-revision gate.
+type PlanRevisionRequest struct {
+	WorkOrderID string
+	AttemptID   string
+	Rationale   string
+	PlanVersion int
+}
+
+// PlanRevisionGateState is the scan shared by recover/redispatch refusal and
+// dispatch.PendingPlanRevisionGate. An awaiting task whose latest transition
+// is undecodable, or whose latest transition is the plan-revision gate with a
+// missing, undecodable, or incomplete request, is pending and unreadable.
+func PlanRevisionGateState(task core.Task, events []core.Event) (PlanRevisionRequest, bool, error) {
+	if task.State != core.TaskAwaiting {
+		return PlanRevisionRequest{}, false, nil
+	}
+	gateAt := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "task.state_changed" {
+			continue
+		}
+		var transition struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if err := json.Unmarshal(events[i].Payload, &transition); err != nil {
+			return PlanRevisionRequest{}, true, fmt.Errorf("decode latest task transition for %s: %w", task.ID, ErrPlanRevisionGateUnreadable)
+		}
+		if transition.Command != core.TaskGatePlanRevision {
+			return PlanRevisionRequest{}, false, nil
+		}
+		gateAt = i
+		break
+	}
+	if gateAt < 0 {
+		return PlanRevisionRequest{}, false, nil
+	}
+	for i := gateAt - 1; i >= 0; i-- {
+		if events[i].Kind != "work_order.plan_revision_requested" {
+			continue
+		}
+		var request struct {
+			WorkOrderID string `json:"work_order_id"`
+			AttemptID   string `json:"attempt_id"`
+			Rationale   string `json:"rationale"`
+			PlanVersion int    `json:"plan_version"`
+		}
+		if err := json.Unmarshal(events[i].Payload, &request); err != nil {
+			return PlanRevisionRequest{}, true, fmt.Errorf("decode plan-revision request for %s: %w", task.ID, ErrPlanRevisionGateUnreadable)
+		}
+		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
+			return PlanRevisionRequest{}, true, fmt.Errorf("plan-revision request for %s is incomplete: %w", task.ID, ErrPlanRevisionGateUnreadable)
+		}
+		return PlanRevisionRequest{
+			WorkOrderID: request.WorkOrderID,
+			AttemptID:   request.AttemptID,
+			Rationale:   request.Rationale,
+			PlanVersion: request.PlanVersion,
+		}, true, nil
+	}
+	return PlanRevisionRequest{}, true, fmt.Errorf("plan-revision gate for %s has no request event: %w", task.ID, ErrPlanRevisionGateUnreadable)
+}
+
+// WorkOrderPlanRevisionRefusal refuses recover and redispatch while the task
+// awaits a plan-revision decision. The event remains the authority because
+// TaskAwaiting is shared by every operator gate.
+func WorkOrderPlanRevisionRefusal(task core.Task, events []core.Event, orderID string) error {
+	_, pending, err := PlanRevisionGateState(task, events)
+	if !pending {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("work order %s cannot be recovered while task %s has an unreadable plan-revision request; use the plan-revision decision gate", orderID, task.ID)
+	}
+	return fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", orderID, task.ID)
+}
+
+// WorkOrderRecoverySupersessionError is the historical name of
+// WorkOrderRecoveryRefusal. Call sites use WorkOrderRecoveryRefusal.
+func WorkOrderRecoverySupersessionError(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+	return WorkOrderRecoveryRefusal(task, order, taskOrders)
 }
 
 // ValidateJobTransition keeps whole-record metadata updates compatible while
@@ -321,6 +427,9 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 }
 
 func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
 	if command.Kind == core.TaskStartOver {
 		return core.Task{}, fmt.Errorf("task start over requires StartOverTaskCommand")
 	}
@@ -329,6 +438,10 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.applyTaskCommandLocked(ctx, id, command)
+}
+
+func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command taskops.Command) (core.Task, error) {
 	task, ok := m.tasks[id]
 	if !ok {
 		return core.Task{}, fmt.Errorf("task %s not found", id)
@@ -350,6 +463,7 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 		}
 	}
 	task.State = state
+	task.GateKind = core.GateKindFor(state, command.Kind)
 	if command.ProjectStages {
 		task.NextStage = command.NextStage
 		task.RecoveryStage = command.RecoveryStage
@@ -401,6 +515,7 @@ func (m *memory) closeBlueprintParentLocked(ctx context.Context, parentID string
 		return false
 	}
 	parent.State = closed
+	parent.GateKind = core.GateKindFor(closed, core.TaskBlueprintClose)
 	m.tasks[parent.ID] = parent
 	m.deleteProposedTaskContextLocked(parent.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": closed, "command": core.TaskBlueprintClose})})

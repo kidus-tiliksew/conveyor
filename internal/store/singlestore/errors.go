@@ -28,6 +28,9 @@ func translateBackendConflict(err error) error {
 		if strings.Contains(driver.Message, "reference_documents_live_name_idx") {
 			return store.ErrReferenceDocumentNameConflict
 		}
+		if strings.Contains(driver.Message, "task_start_over_task") {
+			return store.ErrTaskAlreadyStartedOver
+		}
 	case 1205, 1213:
 		return store.ErrRetryable
 	}

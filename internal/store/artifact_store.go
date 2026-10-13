@@ -117,6 +117,9 @@ func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifac
 }
 
 func (m *memory) CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Artifact{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")

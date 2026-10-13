@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const createdAt = '2026-07-18T00:00:00Z'
 
@@ -31,7 +32,7 @@ async function mockTaskCreateAPIs(
     }
     if (url.pathname === '/v1/me') {
       const role = options.role ?? 'operator'
-      await route.fulfill({ json: { id: `usr_${role}`, role } })
+      await route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }) })
       return
     }
     if (url.pathname === '/v1/workspace') {
@@ -262,7 +263,7 @@ test('new task removes title input and submits description for AI title generati
 
   await expect.poll(submitted).toContain('Generate this title from context')
   expect(submitted()).not.toContain('setup')
-  await expect(page).toHaveURL(/\/tasks\?task=generated$/)
+  await expect(page).toHaveURL(/\/tasks\/generated\?view=list$/)
   expect(submitted()).not.toContain('"title"')
   // DEC-55(2): no execution-mode selector; hold defaults off and is omitted.
   expect(submitted()).not.toContain('"mode"')

@@ -16,7 +16,7 @@ import (
 
 func confirmedTriageRequirement(t *testing.T, st store.Store) core.Requirement {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-grounding", Title: "Grounding"}, core.RequirementVersion{
 		Content: "# Grounding\n\nTriage reads confirmed bodies.", Origin: core.RequirementOriginOperator,
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Triage reads confirmed bodies."}},
@@ -31,7 +31,7 @@ func confirmedTriageRequirement(t *testing.T, st store.Store) core.Requirement {
 }
 
 func TestTriageToolLoopReadsCorpusThenReturnsVerdict(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement := confirmedTriageRequirement(t, st)
 	agent := &sequenceAgent{results: []inprocess.Result{
@@ -57,7 +57,7 @@ func TestTriageToolLoopReadsCorpusThenReturnsVerdict(t *testing.T) {
 }
 
 func TestTriageMixedFunctionCallAndVerdictExecutesBeforeFinalizing(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := &countingCorpusStore{Store: store.NewMemory()}
 	premature := "```conveyor:triage\n{\"class\":\"bug\",\"route\":\"proceed\",\"summary\":\"Premature.\",\"brief\":{\"questions\":[],\"affected_areas\":[],\"risks\":[]},\"requirement_proposals\":[],\"system_design_proposals\":[]}\n```"
 	final := strings.Replace(premature, "Premature.", "Final after grounding.", 1)
@@ -88,7 +88,7 @@ func (s *countingCorpusStore) ListRequirements(ctx context.Context, includeArchi
 }
 
 func TestTriageCorpusFailureIsInBandAndFailOpen(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := failingCorpusStore{Store: store.NewMemory()}
 	agent := &sequenceAgent{results: []inprocess.Result{
 		nativeCallResult("list", "list_requirements", "{}", ""),
@@ -105,7 +105,7 @@ func TestTriageCorpusFailureIsInBandAndFailOpen(t *testing.T) {
 }
 
 func TestTriageToolBudgetExhaustionStillProducesCompleteVerdict(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	results := make([]inprocess.Result, maxTriageIterations)
 	for i := range results {
@@ -126,7 +126,7 @@ func TestTriageToolBudgetExhaustionStillProducesCompleteVerdict(t *testing.T) {
 }
 
 func TestTriageToolCallBudgetDefersExcessCalls(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := &countingCorpusStore{Store: store.NewMemory()}
 	calls := make([]inprocess.FunctionCall, 10)
 	for i := range calls {

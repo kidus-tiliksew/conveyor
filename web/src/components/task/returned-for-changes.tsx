@@ -41,7 +41,7 @@ export function ReturnedForChangesAttention() {
   const attention = useActivity()
   const identity = useQuery({
     queryKey: ['caller-identity', workspace],
-    queryFn: () => fetchCallerIdentity(),
+    queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
     retry: false,
   })
@@ -80,7 +80,7 @@ export function ReturnedForChangesAttention() {
         </>
       ),
       action: (
-        <Link to="/tasks" search={{ task: item.task.id }}>
+        <Link to="/tasks/$taskId" params={{ taskId: item.task.id }} search={{ view: 'list' }}>
           <Button size="sm" variant="secondary" tabIndex={-1}>
             Open task
           </Button>

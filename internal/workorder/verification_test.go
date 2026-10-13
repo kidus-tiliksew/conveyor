@@ -26,7 +26,7 @@ func newVerificationServiceFixture(t *testing.T) verificationServiceFixture {
 	t.Helper()
 	b := store.NewVolatileBackend()
 	t.Cleanup(b.Close)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}}}
 	if _, err := b.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -154,6 +154,12 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	userctx := store.WithActor(f.ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	grantCtx := store.WithCredential(userctx, core.AuthenticatedCredential{ID: "owner", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	if _, err = f.b.GrantWorkspaceRole(grantCtx, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	raw := core.JSONPayload(VerificationContextRequest{ContextID: vc.ID})
 	for _, name := range []string{"get_verification_context", "get_verification_publication"} {
 		if _, err = f.s.Verification(userctx, f.o.ID, "", "", name, raw); err != nil {
@@ -193,7 +199,7 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 // verification-reconciler actor (component-verification-evidence).
 func TestExpireVerificationChunksRequiresSystemActor(t *testing.T) {
 	s := &Service{Store: store.NewVolatileBackend()}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, actor := range []store.Actor{{ID: "worker:w", Role: core.ActorWorker}, {ID: "owner", Role: core.ActorUser}} {
 		if _, err := s.ExpireVerificationChunks(store.WithActor(ctx, actor), store.VerificationChunkExpiryLimit); !errors.Is(err, store.ErrVerificationAccess) {
 			t.Fatalf("%+v reached chunk expiry: %v", actor, err)

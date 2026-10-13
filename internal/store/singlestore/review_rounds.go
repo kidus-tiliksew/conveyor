@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -396,7 +395,6 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 		}
 
 		command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
-		autoApprove := false
 		if aggregate.Verdict == "changes_requested" {
 			count, window, countErr := bounceCountsTx(ctx, tx, decision.TaskID)
 			if countErr != nil {
@@ -412,6 +410,9 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				Count: int(count), Window: int(window), MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
 				Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
 			})
+			if before.State == core.TaskAwaiting && plan.Command == core.TaskStageBounceLimit {
+				return nil
+			}
 			if err = insertInterventionTx(ctx, tx, plan.Intervention); err != nil {
 				return err
 			}
@@ -421,28 +422,14 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				}
 			}
 			command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-		} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
-			autoApprove, recovery = true, ""
+		} else if store.ReviewAcceptAdmitted(decision, aggregate.Verdict) {
+			// DEC-64(8): one running -> approved edge, no intervention.
+			command, recovery = core.TaskReviewAccept, ""
 		}
 		fromState := core.TaskState(before.State)
 		state, transitionErr := core.TransitionTask(fromState, command)
 		if transitionErr != nil {
 			return transitionErr
-		}
-		if autoApprove {
-			approved, approveErr := core.TransitionTask(state, core.TaskInterventionApproveReview)
-			if approveErr != nil {
-				return approveErr
-			}
-			// Auto-approval currently projects running -> awaiting_human with
-			// gate.merge even though the merge gate is off. The table has no direct
-			// running -> approved edge; keep this explicit gap workaround visible
-			// until a table amendment supplies the intended command.
-			if err = taskEvent(ctx, tx, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
-				return err
-			}
-			fromState, state = state, approved
-			command = core.TaskInterventionApproveReview
 		}
 		nonAdvancingRefresh := store.NonAdvancingRefreshBinding(decision, aggregate.ApprovedHeadSHA)
 		if nonAdvancingRefresh {
@@ -453,7 +440,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				return err
 			}
 		}
-		values := map[string]any{"state": state, "next_stage": next, "recovery_stage": recovery}
+		values := map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, command)), "next_stage": next, "recovery_stage": recovery}
 		if aggregate.Verdict == "approve" && aggregate.ApprovedHeadSHA != "" {
 			values["reviewed_head_sha"] = aggregate.ApprovedHeadSHA
 			if state == core.TaskApproved && !nonAdvancingRefresh {
@@ -466,9 +453,6 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 			return err
 		}
 
-		// When autoApprove is true, this second projection records an intervention
-		// command without a human intervention. It is the paired gap workaround for
-		// the absent running -> approved table edge.
 		if err := taskEvent(ctx, tx, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 			return err
 		}
@@ -604,7 +588,13 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 		active, recoverable := 0, 0
 		var timedOutIDs, inconsistentIDs []string
+		exhaustedIDs := []string{}
 		for _, o := range old {
+			if store.ReviewSeatRecoveryExhausted(o) {
+				recoverable++
+				exhaustedIDs = append(exhaustedIDs, o.ID)
+				continue
+			}
 			if o.State == core.WorkOrderQueued || o.State == core.WorkOrderClaimed || o.State == core.WorkOrderSubmitted {
 				active++
 			}
@@ -623,6 +613,15 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if latest == 0 || latest != r.PriorRound || recoverable == 0 || active != 0 || resolved {
 			return fmt.Errorf("%w: task has no matching recoverable non-progressing review round", store.ErrReviewRetryConflict)
+		}
+		if r.Automatic {
+			events, eventsErr := documentTaskEvents(ctx, tx, r.TaskID)
+			if eventsErr != nil {
+				return eventsErr
+			}
+			if err = store.AutomaticReviewRetryRefusal(r, &store.ReviewRecoveryState{AutomaticRetryExhausted: store.AutomaticReviewAct(events, latest)}); err != nil {
+				return err
+			}
 		}
 		next = r.PriorRound + 1
 		for i, j := range jobs {
@@ -645,7 +644,11 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review_round_retries(workspace_id,request_id,task_id,reason,prior_round,new_round,pr_head,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, ws, r.RequestID, r.TaskID, r.Reason, r.PriorRound, next, r.PRHead, actor.ID, now); err != nil {
 			return err
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_retried", At: now, Payload: core.JSONPayload(map[string]any{"request_id": r.RequestID, "workspace_id": ws, "task_id": r.TaskID, "actor": actor.ID, "reason": r.Reason, "prior_round": r.PriorRound, "new_round": next, "pr_head": r.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": t.SetupName, "setup_contract": t.SetupContract})}); err != nil {
+		retriedPayload := map[string]any{"request_id": r.RequestID, "workspace_id": ws, "task_id": r.TaskID, "actor": actor.ID, "reason": r.Reason, "prior_round": r.PriorRound, "new_round": next, "pr_head": r.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "exhausted_work_order_ids": exhaustedIDs, "setup_name": t.SetupName, "setup_contract": t.SetupContract}
+		if r.Automatic {
+			retriedPayload["automatic"] = true
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_retried", At: now, Payload: core.JSONPayload(retriedPayload)}); err != nil {
 			return err
 		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(map[string]any{"review_round": next, "seat_count": len(created), "retry_request_id": r.RequestID})}); err != nil {
@@ -725,24 +728,12 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 		if recovery == nil || recovery.ReviewRound != r.Round {
 			return fmt.Errorf("%w: task has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict)
 		}
+		if err = store.AutomaticInterruptedRecoveryRefusal(r, recovery); err != nil {
+			return err
+		}
 		result = store.InterruptedReviewRecoveryResult{RequestID: r.RequestID, TaskID: r.TaskID, ReviewRound: r.Round, RecoveredOrders: []core.WorkOrder{}, RetainedOrders: append([]core.WorkOrder{}, recovery.RetainedOrders...)}
 		now := time.Now().UTC()
 		actor := store.ActorFromContext(ctx)
-		for _, o := range recovery.EligibleOrders {
-			if c := r.Refreezes[o.ID]; c != nil {
-				prior := t.SetupContract
-				if err = taskWrite(ctx, tx, t.ID, map[string]any{"setup_contract": core.JSONPayload(c.Setup)}); err != nil {
-					return err
-				}
-				t.SetupContract = c.Setup
-				if !reflect.DeepEqual(prior, c.Setup) {
-					if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: "task.setup.refrozen", At: now, Payload: core.JSONPayload(map[string]any{"prior": prior, "new": c.Setup, "request_id": r.RequestID, "work_order_id": o.ID, "actor": actor.ID})}); err != nil {
-						return err
-					}
-				}
-				break
-			}
-		}
 		for _, o := range recovery.EligibleOrders {
 			prior := o.LastAttemptOutcome
 			o.LastAttemptOutcome = ""
@@ -772,7 +763,11 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 				return err
 			}
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_recovered", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "review_round": r.Round, "request_id": r.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)})}); err != nil {
+		recoveredPayload := map[string]any{"workspace_id": ws, "review_round": r.Round, "request_id": r.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}
+		if r.Automatic {
+			recoveredPayload["automatic"] = true
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_recovered", At: now, Payload: core.JSONPayload(recoveredPayload)}); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO interrupted_review_recoveries(workspace_id,request_id,task_id,review_round,actor_id,result_json,created_at) VALUES(?,?,?,?,?,?,?)`, ws, r.RequestID, t.ID, r.Round, actor.ID, core.JSONPayload(result), now)

@@ -18,7 +18,7 @@ import (
 func TestSpecApprovalBypassMergeGateInterventions(t *testing.T) {
 	for _, action := range []core.InterventionAction{core.InterventionApprove, core.InterventionRedirect} {
 		t.Run(string(action), func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			task := core.Task{
 				ID: "spec-bypass-" + string(action), Workspace: "demo", Repo: "conveyor",

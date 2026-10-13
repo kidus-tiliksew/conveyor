@@ -270,6 +270,7 @@ test('review model consumers share the 2,500,000-cell matrix guard', () => {
 })
 
 import type { Page } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 type Tier = 'requirements' | 'system-design'
 async function seedReview(
@@ -385,7 +386,7 @@ async function seedReview(
     const path = url.pathname
     const workspace = url.searchParams.get('workspace_id') ?? 'demo'
     if (path === '/v1/me')
-      return route.fulfill({ json: { id: 'operator', role: options.reader ? 'viewer' : 'operator' } })
+      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.reader ? 'viewer' : 'operator' }) })
     if (path === '/v1/workspaces')
       return route.fulfill({
         json: [

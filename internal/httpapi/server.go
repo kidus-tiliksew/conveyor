@@ -31,6 +31,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -68,7 +69,10 @@ type Server struct {
 	// work-order context is derived from the durable intervention record.
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
-	OnMerge          func(context.Context, core.Task) error
+	OnMerge func(context.Context, core.Task) error
+	// OnGateMerge is the one-act operator merge at the merge_approval gate,
+	// run as the acting operator (DEC-64(1); component-submission-merge).
+	OnGateMerge      func(context.Context, core.Task, core.Actor) (core.Task, error)
 	OnMergeReadiness func(context.Context, core.Task) (dispatch.MergeReadiness, error)
 	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
@@ -184,14 +188,17 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireSelfServiceCredential).Put("/me", s.putOwnDisplayName)
-		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/users", s.provisionIdentityUser)
+		// Instance administration (DEC-63): only the deployment marker owner's
+		// own user credential reaches account provisioning and workspace
+		// creation; every other authenticated human gets the uniform 404.
+		r.With(s.requireInstanceAdministration).Post("/users", s.provisionIdentityUser)
 		// Self-service credential routes carry no subject in the path: the owner
 		// is the presented credential, so no capability applies and no request
 		// can name another user's tokens (REQ-2/AC-2.1).
 		r.With(s.requireSelfServiceCredential).Get("/tokens", s.listOwnPersonalAccessTokens)
 		r.With(s.requireSelfServiceCredential).Post("/tokens", s.issueOwnPersonalAccessToken)
 		r.With(s.requireSelfServiceCredential).Delete("/tokens/{token_id}", s.revokeOwnPersonalAccessToken)
-		r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/workspaces", s.createWorkspace)
+		r.With(s.requireInstanceAdministration).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
@@ -226,6 +233,11 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
 			r.Get("/tasks/{id}", s.getTask)
+			r.Get("/tasks/{id}/next-action", s.getNextAction)
+			r.Get("/tasks/{id}/flow", s.getTaskFlow)
+			r.Get("/inbox", s.listInbox)
+			r.Get("/next-actions", s.listNextActions)
+			r.Get("/inbox/acts", s.listFactoryActs)
 			r.Get("/tasks/{id}/jobs", s.listJobs)
 			r.Get("/tasks/{id}/events", s.listEvents)
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
@@ -381,6 +393,10 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		if err := s.Store.EnsureTaskEnqueued(r.Context(), id); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			if errors.Is(err, store.ErrTaskHeldByWorkOrder) {
+				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
 			log.Printf("ensure task enqueued: %v", err)
@@ -1028,6 +1044,10 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval {
+		s.mergeTaskAtGate(w, r, task)
+		return
+	}
 	if task.State != core.TaskApproved && task.State != core.TaskMerged {
 		http.Error(w, "task is not approved for merge", http.StatusConflict)
 		return
@@ -1050,6 +1070,40 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
 		return
 	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// mergeTaskAtGate is the one-act operator merge at the merge_approval gate
+// (DEC-64(1)-(6),(9)). The route's operate_gates capability check already
+// ran; the act runs as the request credential's actor. A refusal names the
+// readiness state and leaves the gate pending.
+func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task core.Task) {
+	if s.OnGateMerge == nil {
+		http.Error(w, "merge operation is not configured", http.StatusNotImplemented)
+		return
+	}
+	actor, err := store.RequireActor(r.Context())
+	if err != nil {
+		http.Error(w, "merge requires an authenticated operator", http.StatusForbidden)
+		return
+	}
+	updated, err := s.OnGateMerge(r.Context(), task, actor)
+	var notReady *dispatch.ErrGateMergeNotReady
+	switch {
+	case errors.As(err, &notReady):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": notReady.Error(), "readiness": notReady.State})
+		return
+	case errors.Is(err, dispatch.ErrGateMergeUnconfirmed):
+		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	case updated.State != core.TaskMerged:
+		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
+		return
+	}
+	s.taskRunReadiness.forget(r.Context(), task.ID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1222,7 +1276,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, tasks)
+	s.writeTasks(w, r, tasks)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -1237,7 +1291,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	s.writeTask(w, r, t)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -1340,6 +1394,7 @@ type reviewItem struct {
 	CheckoutAvailable         bool                                  `json:"checkout_available"`
 	CheckoutGuidance          string                                `json:"checkout_guidance"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	NextAction                *nextaction.Compact                   `json:"next_action,omitempty"`
 	AtMergeGate               bool                                  `json:"at_merge_gate"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
 	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
@@ -1362,6 +1417,7 @@ type activityItem struct {
 	LatestStage               core.Stage                            `json:"latest_stage,omitempty"`
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
+	NextAction                *nextaction.Compact                   `json:"next_action,omitempty"`
 	PendingAuthority          bool                                  `json:"pending_authority"`
 	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
@@ -1529,13 +1585,33 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, claimWaiting, err := s.proposalSignals(r.Context(), proposals, taskIDs)
+	orders, err := s.Store.ListWorkOrdersForTasks(r.Context(), taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingContext := pendingTaskContextByTask(proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders, proposals)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	pendingAuthority := pendingAuthorityByTask(orders, proposals)
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	opts.MarkersLoaded, opts.Markers = true, markers
+	opts.OrdersLoaded, opts.Orders = true, orders
+	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	items := make([]activityItem, 0, len(tasks))
 	fullItems := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
@@ -1554,13 +1630,11 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !marker.UserChangesRequested && !pendingAuthority[task.ID] {
 			continue
 		}
-		// Project the existing presentation-only authority signal without
-		// changing any lifecycle gate (REQ-2 AC-2.2; REQ-3; component-http-api).
-		// proposal_claim_waiting is the narrower read of the claim gate's own
-		// predicate (req-260810-70ce2f REQ-1); attention keeps its broader meaning.
+		compact := nextaction.CompactFrom(projected[task.ID])
 		item := activityItem{
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
-			NeedsAttention:            needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
+			NeedsAttention:            projected[task.ID].Actor == nextaction.ActorOperator,
+			NextAction:                &compact,
 			PendingAuthority:          pendingAuthority[task.ID],
 			ProposalClaimWaiting:      len(claimWaiting[task.ID]) > 0,
 			ForgeFailure:              marker.ForgeFailure,
@@ -1679,13 +1753,6 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 	_, _ = w.Write(body)
 }
 
-// needsAttention is the one derivation the stage-grouped board and the
-// list-first Tasks view share, so the two surfaces cannot disagree about which
-// work is waiting on a human (component-http-api).
-func needsAttention(task core.Task, marker store.ActivityMarker, pendingAuthority, pendingContext bool) bool {
-	return store.TaskNeedsAttention(task, marker, pendingAuthority, pendingContext)
-}
-
 // Plan status is the four durable outcomes AC-1.4 names. Each is read off the
 // persisted plan version and the audited task-state command that parked or
 // resumed it; none is inferred when that authority is absent.
@@ -1732,6 +1799,7 @@ type taskOperationsItem struct {
 	// fields a list row states travel with it.
 	Stalled              *taskStalledSummary `json:"stalled,omitempty"`
 	NeedsAttention       bool                `json:"needs_attention"`
+	NextAction           *nextaction.Compact `json:"next_action,omitempty"`
 	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids,omitempty"`
 	ChildRollup          *taskChildRollup    `json:"child_rollup,omitempty"`
 	Plan                 taskPlanStatus      `json:"plan"`
@@ -1792,20 +1860,19 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
-	proposals, err := s.Store.ListPendingProposals(ctx)
+	opts, err := s.nextActionOptions(r)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingAuthority, err := s.pendingAuthorityTasks(ctx, proposals, taskIDs)
+	opts.MarkersLoaded, opts.Markers = true, markers
+	projected, err := store.ReadNextActions(ctx, s.Store, page.Tasks, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	pendingContext := pendingTaskContextByTask(proposals)
-	// Blocked stays a derived predicate owned by the dependency substrate
 	// (component-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
@@ -1831,15 +1898,17 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
+		compact := nextaction.CompactFrom(projected[task.ID])
 		items = append(items, taskOperationsItem{
 			Task:                 task,
 			LatestStage:          marker.LatestStage,
 			LastEventAt:          marker.LastEventAt,
 			Stalled:              taskStalledSummaryFor(marker.Stalled),
-			NeedsAttention:       needsAttention(task, marker, pendingAuthority[task.ID], pendingContext[task.ID]),
+			NeedsAttention:       projected[task.ID].Actor == nextaction.ActorOperator,
+			NextAction:           &compact,
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
-			Plan:                 taskPlanStatusFor(latest, hasPlan, events),
+			Plan:                 taskPlanStatusFor(task, latest, hasPlan, events),
 		})
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -2015,12 +2084,16 @@ func taskChildRollupFor(children []core.TaskRelation) *taskChildRollup {
 // separates a plan waiting at its gate from one the operator redirected, the
 // same recognition the dispatcher's own spec-gate check performs
 // (component-http-api).
-func taskPlanStatusFor(latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
+func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, events []core.Event) taskPlanStatus {
 	if !hasPlan {
 		return taskPlanStatus{State: taskPlanNone}
 	}
 	status := taskPlanStatus{State: taskPlanApproved, Version: latest.Version, Legacy: latest.LegacyGate}
 	if latest.Approved {
+		return status
+	}
+	status.State = taskPlanPendingGate
+	if task.State == core.TaskAwaiting && task.GateKind != "" {
 		return status
 	}
 	// A plan version is created at its gate, so pending is the state it
@@ -2104,6 +2177,16 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if workOrders == nil {
 		workOrders = []core.WorkOrder{}
 	}
+	_, pendingPlanRevision, planErr := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
+	if errors.Is(planErr, store.ErrPlanRevisionGateUnreadable) {
+		pendingPlanRevision = true
+		planErr = nil
+	}
+	if planErr != nil {
+		log.Printf("handle API request: %v", planErr)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	for index := range workOrders {
 		captures, captureErr := s.Store.ListWorkOrderTranscriptCaptures(r.Context(), workOrders[index].ID)
 		if captureErr != nil {
@@ -2125,6 +2208,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 				workOrders[index].ActivitySnapshot = &snapshot
 			}
 		}
+		store.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
 		if workOrders[index].Stage != core.StageImplement {
 			continue
 		}
@@ -2158,8 +2242,19 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
-	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
-		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
+	// A merge_approval gate carries the side-effect-free peek so surfaces offer
+	// the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
+	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+	if (task.State == core.TaskApproved || gateMerge) && s.OnMergeReadiness != nil {
+		var readiness dispatch.MergeReadiness
+		var readinessErr error
+		if gateMerge {
+			// The gate peek is cached so the next-action projection can offer
+			// the server merge choice without its own forge call (DEC-64(3)).
+			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, s.OnMergeReadiness)
+		} else {
+			readiness, readinessErr = s.OnMergeReadiness(r.Context(), task)
+		}
 		if readinessErr != nil {
 			// The merge action must never render without a successful gate-facing
 			// readiness read (component-http-api).
@@ -2211,10 +2306,24 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	waitingProposals := claimWaiting[id]
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	action, err := store.ReadNextAction(r.Context(), s.Store, id, opts)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	compact := nextaction.CompactFrom(action)
 	writeJSON(w, http.StatusOK, taskDetailProjection{reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
-		NeedsAttention:            task.State == core.TaskAwaiting || task.State == core.TaskParked || store.LatestForgeFailure(events) != nil || store.ReviewRecoveryNeeded(workOrders, events) != nil || store.InterruptedReviewRecoveryNeeded(task, workOrders, events) != nil || stalled != nil || store.UserRequestChangesPending(events) || pendingAuthority || len(task.Context.Proposals) > 0,
+		NeedsAttention:            action.Actor == nextaction.ActorOperator,
+		NextAction:                &compact,
 		AtMergeGate:               store.AtMergeGate(task, events),
 		PendingAuthority:          pendingAuthority,
 		ProposalClaimWaiting:      len(waitingProposals) > 0,

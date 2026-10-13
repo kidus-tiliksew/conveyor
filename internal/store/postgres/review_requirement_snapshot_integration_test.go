@@ -15,7 +15,7 @@ import (
 
 func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 
 func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatal(err)

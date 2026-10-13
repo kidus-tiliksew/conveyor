@@ -12,13 +12,13 @@ import (
 )
 
 func TestPhase56MonitorPersistenceAndWorkspaceIsolationIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "phase56-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestPhase56MonitorPersistenceAndWorkspaceIsolationIntegration(t *testing.T)
 	if _, fresh, err := st.RecordDrift(ctx, drift); err != nil || !fresh {
 		t.Fatalf("drift fresh=%t err=%v", fresh, err)
 	}
-	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
+	restarted, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestPhase56MonitorPersistenceAndWorkspaceIsolationIntegration(t *testing.T)
 		len(status.Activity) != 1 || status.Activity[0].Kind != "monitor.task_created" {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
-	other := store.WithWorkspace(context.Background(), workspace+"-other")
+	other := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace+"-other")
 	if otherStatus, otherErr := restarted.MonitorStatus(other, true, now); otherErr == nil && (otherStatus.DriftCount != 0 || len(otherStatus.Observations) != 0) {
 		t.Fatalf("cross-workspace status=%+v", otherStatus)
 	}
@@ -82,7 +82,7 @@ func TestPhase56MonitorPersistenceAndWorkspaceIsolationIntegration(t *testing.T)
 }
 
 func TestDriftRequirementAmendmentIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestDriftRequirementAmendmentIntegration(t *testing.T) {
 	}
 	// A restarted store reads the durable link and confirmation closes the
 	// drift in the same transaction.
-	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
+	restarted, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

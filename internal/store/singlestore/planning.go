@@ -610,7 +610,7 @@ func validateTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID string, 
 		var archivedAt *time.Time
 		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=? AND id=? FOR UPDATE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: "was not found in this workspace"}
+			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
 			return nil, err
@@ -625,7 +625,7 @@ func validateTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID string, 
 		var archivedAt *time.Time
 		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=? AND id=? FOR UPDATE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: "was not found in this workspace"}
+			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
 			return nil, err
@@ -673,7 +673,7 @@ func insertPlanningBundleTask(ctx context.Context, tx *sql.Tx, t core.Task) (sql
 		return nil, err
 	}
 	return writeRow(ctx, tx, rowWrite{table: "tasks", operation: "INSERT", values: map[string]any{
-		"workspace_id": t.Workspace, "id": t.ID, "source": t.Source, "mode": string(t.Mode), "intake_key": t.IntakeKey, "title": t.Title, "body": t.Body, "escalation_level": string(t.Level), "spec_approval": t.SpecApproval, "merge_approval": t.MergeApproval, "policy_version": t.PolicyVersion, "setup_contract": setup, "repo_name": t.Repo, "base_branch": t.BaseBranch, "branch": t.Branch, "state": string(t.State), "next_stage": string(t.NextStage), "created_at": t.CreatedAt,
+		"workspace_id": t.Workspace, "id": t.ID, "source": t.Source, "mode": string(t.Mode), "intake_key": t.IntakeKey, "title": t.Title, "body": t.Body, "escalation_level": string(t.Level), "spec_approval": t.SpecApproval, "merge_approval": t.MergeApproval, "policy_version": t.PolicyVersion, "setup_contract": setup, "repo_name": t.Repo, "base_branch": t.BaseBranch, "branch": t.Branch, "state": string(t.State), "gate_kind": string(t.GateKind), "next_stage": string(t.NextStage), "created_at": t.CreatedAt,
 	}})
 }
 
@@ -772,73 +772,14 @@ func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID
 
 func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
 	items, err := s.ListPendingProposals(ctx)
-	result := store.PendingProposalsProjection{Items: items}
 	if err != nil {
-		return result, err
+		return store.PendingProposalsProjection{}, err
 	}
-	rows, err := documentRows(ctx, s.db, `SELECT t.id,t.state FROM tasks t WHERE t.workspace_id=? AND NOT EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)`, documentWorkspace(ctx))
-	if err != nil {
-		return result, err
-	}
-	states := map[string]core.TaskState{}
-	for rows.Next() {
-		var id string
-		var state core.TaskState
-		if err = rows.Scan(&id, &state); err != nil {
-			rows.Close()
-			return result, err
-		}
-		states[id] = state
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil || len(states) == 0 {
-		return result, err
-	}
-	markers, err := s.ListActivityMarkers(ctx)
-	if err != nil {
-		return result, err
-	}
-	pendingContext, origins, authority := map[string]bool{}, map[string]bool{}, map[string]bool{}
-	for _, p := range items {
-		if p.OriginType == "task" {
-			origins[p.OriginID] = true
-			if p.Tier == "task_context" {
-				pendingContext[p.OriginID] = true
-			}
-		}
-	}
-	rows, err = documentRows(ctx, s.db, `SELECT DISTINCT task_id FROM work_orders WHERE workspace_id=? AND ((stage='implement' AND state='submitted') OR (stage='review' AND state IN ('queued','claimed','submitted')))`, documentWorkspace(ctx))
-	if err != nil {
-		return result, err
-	}
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return result, err
-		}
-		authority[id] = origins[id]
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return result, err
-	}
-	byID := map[string]store.ActivityMarker{}
-	for _, m := range markers {
-		byID[m.TaskID] = m
-	}
-	for id, state := range states {
-		m := byID[id]
-		if core.TaskTerminal(state) {
-			m.Stalled = nil
-		}
-		if store.TaskNeedsAttention(core.Task{ID: id, State: state}, m, authority[id], pendingContext[id]) {
-			result.TaskCount++
-		}
-	}
-	return result, nil
+	return store.PendingProposalsProjection{Items: items}, nil
+}
+
+func (s *Store) CountOperatorAttention(ctx context.Context) (int, error) {
+	return store.CountOperatorAttention(ctx, s)
 }
 
 // Acquisition is bounded independently of the callback lifetime. SingleStore

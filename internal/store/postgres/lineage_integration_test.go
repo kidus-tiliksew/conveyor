@@ -164,7 +164,7 @@ func TestPostgresLineageRebuildPreservesLiveShapedUnregenerableLinks(t *testing.
 		t.Fatal(err)
 	}
 	sibling := workspace + "-sibling"
-	siblingCtx := store.WithWorkspace(t.Context(), sibling)
+	siblingCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), sibling)
 	if _, err := st.BootstrapWorkspaceConfig(siblingCtx, &config.Config{Workspace: sibling, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

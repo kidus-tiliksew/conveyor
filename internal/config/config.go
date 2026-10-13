@@ -51,12 +51,58 @@ type Repo struct {
 // no credentials; the GitHub boundary uses the daemon's least-privilege
 // environment and records only stable error categories (component-harness-execution).
 type MonitorConfig struct {
-	Enabled           bool          `yaml:"enabled" json:"enabled"`
-	Repositories      []string      `yaml:"repositories,omitempty" json:"repositories"`
-	PollInterval      time.Duration `yaml:"-" json:"-"`
-	PollIntervalText  string        `yaml:"poll_interval" json:"poll_interval"`
-	StartupWindow     time.Duration `yaml:"-" json:"-"`
-	StartupWindowText string        `yaml:"startup_window" json:"startup_window"`
+	Enabled                bool          `yaml:"enabled" json:"enabled"`
+	Repositories           []string      `yaml:"repositories,omitempty" json:"repositories"`
+	PollInterval           time.Duration `yaml:"-" json:"-"`
+	PollIntervalText       string        `yaml:"poll_interval" json:"poll_interval"`
+	StartupWindow          time.Duration `yaml:"-" json:"-"`
+	StartupWindowText      string        `yaml:"startup_window" json:"startup_window"`
+	MergeDeferralBound     time.Duration `yaml:"-" json:"-"`
+	MergeDeferralBoundText string        `yaml:"merge_deferral_bound,omitempty" json:"merge_deferral_bound,omitempty"`
+}
+
+func normalizeMonitorConfig(m *MonitorConfig) error {
+	if m.PollIntervalText == "" {
+		m.PollIntervalText = "1m"
+	}
+	poll, err := time.ParseDuration(m.PollIntervalText)
+	if err != nil || poll <= 0 {
+		return fmt.Errorf("monitor.poll_interval must be a positive duration")
+	}
+	m.PollInterval = poll
+	if m.StartupWindowText == "" {
+		m.StartupWindowText = "24h"
+	}
+	window, err := time.ParseDuration(m.StartupWindowText)
+	if err != nil || window <= 0 {
+		return fmt.Errorf("monitor.startup_window must be a positive duration")
+	}
+	m.StartupWindow = window
+	const (
+		defaultMergeDeferralBound = 10 * time.Minute
+		mergeDeferralWindowSlack  = 5 * time.Second
+	)
+	derived := window - poll - mergeDeferralWindowSlack
+	if derived > defaultMergeDeferralBound {
+		derived = defaultMergeDeferralBound
+	}
+	if m.MergeDeferralBoundText == "" {
+		if derived <= 0 {
+			m.MergeDeferralBound = 0
+			return nil
+		}
+		m.MergeDeferralBound = derived
+		return nil
+	}
+	bound, err := time.ParseDuration(m.MergeDeferralBoundText)
+	if err != nil || bound <= 0 {
+		return fmt.Errorf("monitor.merge_deferral_bound must be a positive duration")
+	}
+	if bound+poll+mergeDeferralWindowSlack > window {
+		return fmt.Errorf("monitor.merge_deferral_bound plus poll_interval plus 5s must not exceed monitor.startup_window")
+	}
+	m.MergeDeferralBound = bound
+	return nil
 }
 
 // DatabaseForURL selects the durable backend for host-side CLI commands and
@@ -661,15 +707,21 @@ type ExecutionSetup struct {
 
 // MarshalJSON persists and serves only the frozen pipeline-policy subset.
 // Legacy execution setups remain YAML-readable for client-local files and are
-// accepted by UnmarshalJSON solely to migrate existing task rows.
+// accepted by UnmarshalJSON solely to migrate existing task rows. Nil seats
+// omit the seats key (no frozen seat count), distinct from an empty frozen
+// panel; historical migration 099 reads an absent key as an empty array.
 func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
-	seats := make([]struct{}, len(s.Review.Seats))
+	var seats *[]struct{}
+	if s.Review.Seats != nil {
+		frozen := make([]struct{}, len(s.Review.Seats))
+		seats = &frozen
+	}
 	return json.Marshal(struct {
 		VerifyStage   bool              `json:"verify_stage,omitempty"`
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
-			Seats []struct{} `json:"seats"`
+			Seats *[]struct{} `json:"seats,omitempty"`
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review,omitempty"`
 	}{
@@ -682,7 +734,7 @@ func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 			"review":    s.ExecutionSettings.Review.TimeoutText,
 		},
 		Review: struct {
-			Seats []struct{} `json:"seats"`
+			Seats *[]struct{} `json:"seats,omitempty"`
 		}{Seats: seats},
 		RefreshReview: s.RefreshReview,
 	})
@@ -719,7 +771,11 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 	s.ExecutionSettings.Spec.TimeoutText = policy.StageTimeouts["spec"]
 	s.ExecutionSettings.Implementation.TimeoutText = policy.StageTimeouts["implement"]
 	s.ExecutionSettings.Review.TimeoutText = policy.StageTimeouts["review"]
-	s.Review.Seats = make([]ReviewSeat, len(policy.Review.Seats))
+	var seats []ReviewSeat
+	if policy.Review.Seats != nil {
+		seats = make([]ReviewSeat, len(policy.Review.Seats))
+	}
+	s.Review.Seats = seats
 	s.MaxBounces = policy.MaxBounces
 	s.RefreshReview = policy.RefreshReview
 	return nil
@@ -742,6 +798,7 @@ const (
 type WorkspaceDocument struct {
 	Workspace                 string                       `yaml:"workspace" json:"workspace"`
 	MaxBounces                int                          `yaml:"max_bounces" json:"max_bounces"`
+	Recovery                  RecoveryPolicy               `yaml:"recovery,omitempty" json:"recovery,omitempty"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
 	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty" json:"execution_settings,omitempty"`
 	Routing                   Routing                      `yaml:"routing" json:"routing"`
@@ -774,13 +831,14 @@ func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Workspace                 string            `json:"workspace"`
 		MaxBounces                int               `json:"max_bounces"`
+		Recovery                  RecoveryPolicy    `json:"recovery"`
 		WorkOrderQueueTimeoutText string            `json:"work_order_queue_timeout"`
 		StageTimeouts             map[string]string `json:"stage_timeouts"`
 		Review                    ReviewPanel       `json:"review"`
 		Execution                 ExecutionPolicy   `json:"execution"`
 		Repos                     []Repo            `json:"repos"`
 		Monitor                   MonitorConfig     `json:"monitor"`
-	}{d.Workspace, d.MaxBounces, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
+	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -807,6 +865,7 @@ type Config struct {
 	PackDir                   string                       `yaml:"pack_dir,omitempty"`
 	packDirSet                bool                         `yaml:"-"`
 	MaxBounces                int                          `yaml:"max_bounces"`
+	Recovery                  RecoveryPolicy               `yaml:"recovery,omitempty" json:"recovery,omitempty"`
 	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
 	PlanningSnapshotMaxBytes  int64                        `yaml:"planning_snapshot_max_bytes,omitempty"`
@@ -856,6 +915,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Workspace = document.Workspace
 	next.MaxBounces = document.MaxBounces
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
+	next.Recovery = document.Recovery
 	policyOnly := document.ExecutionSettings == nil && document.Setups == nil && len(document.Routing.Stages) == 0 && len(document.Harnesses) == 0
 	// A policy-only document deliberately inherits no execution authority
 	// from workspace state. The deployment value is retained only as a
@@ -1010,6 +1070,9 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 		return nil, fmt.Errorf("work_order_queue_timeout must be a positive duration")
 	}
 	next.WorkOrderQueueTimeout = queueTimeout
+	if err = next.Recovery.Normalize(); err != nil {
+		return nil, err
+	}
 	if next.Routing.Stages == nil {
 		next.Routing.Stages = map[string]StageRoute{}
 	}
@@ -1033,17 +1096,8 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 	if next.Review.Seats == nil {
 		next.Review.Seats = []ReviewSeat{{}}
 	}
-	if next.Monitor.PollIntervalText == "" {
-		next.Monitor.PollIntervalText = "1m"
-	}
-	if next.Monitor.StartupWindowText == "" {
-		next.Monitor.StartupWindowText = "24h"
-	}
-	if next.Monitor.PollInterval, err = time.ParseDuration(next.Monitor.PollIntervalText); err != nil || next.Monitor.PollInterval <= 0 {
-		return nil, fmt.Errorf("monitor.poll_interval must be a positive duration")
-	}
-	if next.Monitor.StartupWindow, err = time.ParseDuration(next.Monitor.StartupWindowText); err != nil || next.Monitor.StartupWindow <= 0 {
-		return nil, fmt.Errorf("monitor.startup_window must be a positive duration")
+	if err = normalizeMonitorConfig(&next.Monitor); err != nil {
+		return nil, err
 	}
 	seen := map[string]bool{}
 	for i, repo := range next.Repos {
@@ -1651,22 +1705,12 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		}
 		c.WorkOrderQueueTimeout = parsed
 	}
-	if c.Monitor.PollIntervalText == "" {
-		c.Monitor.PollIntervalText = "1m"
+	if err := c.Recovery.Normalize(); err != nil {
+		return err
 	}
-	monitorPoll, err := time.ParseDuration(c.Monitor.PollIntervalText)
-	if err != nil || monitorPoll <= 0 {
-		return fmt.Errorf("monitor.poll_interval must be a positive duration")
+	if err := normalizeMonitorConfig(&c.Monitor); err != nil {
+		return err
 	}
-	c.Monitor.PollInterval = monitorPoll
-	if c.Monitor.StartupWindowText == "" {
-		c.Monitor.StartupWindowText = "24h"
-	}
-	startupWindow, err := time.ParseDuration(c.Monitor.StartupWindowText)
-	if err != nil || startupWindow <= 0 {
-		return fmt.Errorf("monitor.startup_window must be a positive duration")
-	}
-	c.Monitor.StartupWindow = startupWindow
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -1900,6 +1944,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	}
 	document := WorkspaceDocument{
 		Workspace: c.Workspace, MaxBounces: c.MaxBounces,
+		Recovery:                  c.Recovery,
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
@@ -1920,6 +1965,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	}
 	document.Monitor.PollInterval = 0
 	document.Monitor.StartupWindow = 0
+	document.Monitor.MergeDeferralBound = 0
 	document.Monitor.Repositories = append(make([]string, 0, len(c.Monitor.Repositories)), c.Monitor.Repositories...)
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0

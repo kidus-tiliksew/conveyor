@@ -8,7 +8,7 @@ import (
 
 func TestRepositoryInstallColumnAndBackfillIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 121)
-	ctx := store.WithWorkspace(t.Context(), "install-backfill")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "install-backfill")
 	legacy := "workspace: install-backfill\nrepos:\n  - name: repo\n    url: https://example.test/repo\n    base: main\n"
 	if _, err := st.pool.Exec(ctx, `INSERT INTO workspaces(id,name,config_yaml) VALUES($1,$1,$2)`, "install-backfill", legacy); err != nil {
 		t.Fatal(err)

@@ -1,4 +1,12 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
+
+// No production role holds confirm_documents without propose_documents. The
+// server serves whatever list its bundle table yields, so these cases serve
+// that combination directly to exercise the independent capability checks.
+const confirmOnlyCapabilities = capabilitiesForRole('operator').filter(
+  (capability) => capability !== 'propose_documents',
+)
 
 const first = {
   document_id: 'design-dispatch',
@@ -97,7 +105,7 @@ async function initialize(page: Page) {
 function shell(route: Route) {
   const path = new URL(route.request().url()).pathname
   if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-  if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+  if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
   if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
@@ -871,7 +879,8 @@ test('System Design archive controls are absent without document confirmation ca
   })
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
-    if (url.pathname === '/v1/me') return route.fulfill({ json: { id: 'usr_contributor', role: 'contributor' } })
+    if (url.pathname === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_contributor', role: 'contributor' }) })
     const handled = shell(route)
     if (handled) return await handled
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view())] })
@@ -999,15 +1008,16 @@ test('System Design pending attention revises through the shared dialog and refr
 for (const access of ['confirm-only', 'propose-only'] as const) {
   test(`System Design Revise stays absent for ${access}`, async ({ page }) => {
     await initialize(page)
-    if (access === 'confirm-only')
-      await page.route('**/src/lib/workspace-capabilities.json*', async (route) => {
-        const response = await route.fetch()
-        await route.fulfill({ response, body: (await response.text()).replace(/"propose_documents",?/g, '') })
-      })
     await page.route('**/v1/**', async (route) => {
       const path = new URL(route.request().url()).pathname
       if (path === '/v1/me')
-        return route.fulfill({ json: { id: 'caller', role: access === 'confirm-only' ? 'operator' : 'contributor' } })
+        return route.fulfill({
+          json: callerIdentity({
+            id: 'caller',
+            role: access === 'confirm-only' ? 'operator' : 'contributor',
+            capabilities: access === 'confirm-only' ? confirmOnlyCapabilities : undefined,
+          }),
+        })
       const handled = shell(route)
       if (handled) return await handled
       if (path === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })

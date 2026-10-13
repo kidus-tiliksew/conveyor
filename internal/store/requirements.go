@@ -79,6 +79,9 @@ func (r PlanningFinalizeRequest) Validate() error {
 }
 
 func (m *memory) CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, requirement.Workspace)
@@ -181,10 +184,16 @@ func (m *memory) ListRequirements(ctx context.Context, includeArchived bool) ([]
 }
 
 func (m *memory) ArchiveRequirement(ctx context.Context, id, actor string, supersededBy []string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.setRequirementArchived(ctx, id, actor, true, supersededBy)
 }
 
 func (m *memory) RestoreRequirement(ctx context.Context, id, actor string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.setRequirementArchived(ctx, id, actor, false, nil)
 }
 
@@ -270,6 +279,9 @@ func (m *memory) validateSupersededByLocked(workspace, targetID string, ids []st
 }
 
 func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.RequirementVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, version.Workspace)
@@ -338,6 +350,9 @@ func (m *memory) ProposeRequirementVersion(ctx context.Context, version core.Req
 }
 
 func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -431,6 +446,9 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 }
 
 func (m *memory) DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Requirement{}, core.RequirementVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.dismissRequirementVersionLocked(ctx, requirementID, version)
@@ -526,6 +544,9 @@ func (m *memory) ListRequirementVersionsByRequirement(ctx context.Context) (map[
 }
 
 func (m *memory) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.RequirementStalenessAcknowledgment{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -551,6 +572,9 @@ func (m *memory) AcknowledgeRequirementStaleness(ctx context.Context, acknowledg
 }
 
 func (m *memory) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.RequirementServesLink{}, err
+	}
 	proposal, _, err := m.proposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: blueprintTaskID, TargetKind: core.TaskContextProposalRequirement,
 		TargetID: requirementID, Source: core.TaskContextProposalSource(source), Justification: "This confirmed requirement is relevant task context."}, true)
 	if err != nil {
@@ -566,11 +590,17 @@ func (m *memory) ProposeRequirementServes(ctx context.Context, blueprintTaskID, 
 }
 
 func (m *memory) ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.RequirementServesLink{}, err
+	}
 	proposal, err := m.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalConfirmed, true)
 	return requirementServesFromProposal(proposal), err
 }
 
 func (m *memory) DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.RequirementServesLink{}, err
+	}
 	proposal, err := m.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalDismissed, true)
 	if err == nil {
 		m.mu.Lock()
@@ -608,6 +638,9 @@ func requirementServesFromProposal(proposal core.TaskContextProposal) core.Requi
 }
 
 func (m *memory) CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningSession{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, session.Workspace)
@@ -688,6 +721,9 @@ func (m *memory) ListPlanningSessions(ctx context.Context) ([]core.PlanningSessi
 }
 
 func (m *memory) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningSession{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -759,6 +795,9 @@ func clonePlanningSession(session core.PlanningSession) core.PlanningSession {
 }
 
 func (m *memory) AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningMessage{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, message.Workspace)
@@ -800,6 +839,9 @@ func (m *memory) ListPlanningMessages(ctx context.Context, sessionID string) ([]
 }
 
 func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFinalizeRequest) (core.PlanningSession, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningSession{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
@@ -923,6 +965,11 @@ func (m *memory) FinalizePlanningSession(ctx context.Context, request PlanningFi
 }
 
 func (m *memory) AbandonPlanningSession(ctx context.Context, sessionID string, reasons ...string) (core.PlanningSession, error) {
+	// The abandonment event records the caller's actor, so a missing actor is
+	// refused before the session changes (component-persistence, Actor context).
+	if _, err := RequireActor(ctx); err != nil {
+		return core.PlanningSession{}, err
+	}
 	var abandoned core.PlanningSession
 	err := m.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
 		m.mu.Lock()

@@ -82,5 +82,10 @@ responses, and retryable 5xx responses retain the bounded three-attempt policy.
 ## Mechanical verification is repository-owned
 
 Conveyor opens the pull request and audits review, but repository CI performs
-tests and other mechanical verification. A managed verification agent and
-runner return only if Phase 8 is explicitly activated.
+tests and other mechanical verification. The optional verify stage runs
+repository-declared verification kits and ordinary checks on an operator's
+machine, under a verify claim, and seals the resulting evidence for review.
+Conveyor hosts no verification runner, and a passing kit supplies evidence
+only. It never grants acceptance or operator approval. See
+[Authoring verification kits](playbooks/conveyor-kit.md) and
+[Executing verification kits](playbooks/conveyor-kit-verify.md).

@@ -1,5 +1,6 @@
 // Visual-capture harness for the policy-only workspace settings page.
 import { test, type Page, type Route } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
 
 const document = {
   workspace: 'conveyor',
@@ -33,7 +34,7 @@ async function mockAPIs(page: Page) {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces')
       return route.fulfill({ json: [{ id: 'conveyor', name: 'Conveyor', config_version: 1 }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace/config') return route.fulfill({ json: { document, version: 1 } })
     if (path === '/v1/workers')
       return route.fulfill({

@@ -27,7 +27,7 @@ func policyCommandTask(t *testing.T, st Store, ctx context.Context, id string) c
 }
 
 func TestChangeTaskPolicyCommandRejectsUnleasedMutation(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	task := policyCommandTask(t, st, ctx, "policy-command-lease")
 	enabled := true
@@ -128,7 +128,7 @@ func TestChangeTaskPolicyCommandTrimsReasonInAuditEvent(t *testing.T) {
 // Historical setup-change events stay readable: review orders a retired setup
 // change superseded remain historical-only for every current-round reader.
 func TestHistoricalSetupChangeSupersessionRemainsReadable(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	task := policyCommandTask(t, st, ctx, "historical-supersession")
 	payload := map[string]any{"request_id": "retired-setup-change", "previous_setup": map[string]any{"name": "old"}, "new_setup": map[string]any{"name": "next"},

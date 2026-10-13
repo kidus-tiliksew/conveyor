@@ -25,7 +25,7 @@ import (
 
 func newMCPReadFixture(t *testing.T) (*Server, context.Context) {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	s := NewServer(st)
 	membership := &membershipFixture{workspaces: []core.Workspace{{ID: "demo", Name: "Demo"}, {ID: "private", Name: "Private"}}, roles: map[string]map[string]core.WorkspaceRole{"reader": {"demo": core.WorkspaceRoleViewer}, "other": {"demo": core.WorkspaceRoleViewer}}}
@@ -143,6 +143,35 @@ func mustRead(t *testing.T, s *Server, name string, a map[string]any) mcpReadPag
 		t.Fatalf("%s: %s", name, e)
 	}
 	return p
+}
+
+// TestMCPGetTaskCarriesNextAction pins get_task's next_action to the REST
+// projection, so an MCP reader sees the server-stated summary (DEC-61).
+func TestMCPGetTaskCarriesNextAction(t *testing.T) {
+	s, ctx := newMCPReadFixture(t)
+	if err := s.Store.CreateTask(ctx, core.Task{ID: "awaiting", Workspace: "demo", Repo: "conveyor", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readItem(t, mustRead(t, s, "get_task", map[string]any{"workspace_id": "demo", "task_id": "awaiting"}), 0)["next_action"].(map[string]any)
+	if !ok {
+		t.Fatal("get_task omits next_action")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/awaiting/next-action?workspace_id=demo", nil)
+	request.Header.Set("Authorization", "Bearer reader")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	var want map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &want); response.Code != http.StatusOK || err != nil {
+		t.Fatalf("REST next action status=%d body=%s err=%v", response.Code, response.Body.String(), err)
+	}
+	if want["kind"] != "plan_approval" {
+		t.Fatalf("fixture projects %v, want plan_approval", want["kind"])
+	}
+	for _, field := range []string{"label", "actor", "kind", "judgment", "summary", "deadline"} {
+		if !reflect.DeepEqual(got[field], want[field]) {
+			t.Fatalf("get_task next_action.%s=%v, REST %v", field, got[field], want[field])
+		}
+	}
 }
 
 // The fixture drives native tools/call from a viewer PAT with no work order.
@@ -290,7 +319,7 @@ func TestMCPReadAuthorizationAndSchemas(t *testing.T) {
 			if foreign != absent || !strings.Contains(foreign, "workspace_not_found") {
 				t.Fatalf("scope leaks existence: %s / %s", foreign, absent)
 			}
-			request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(t.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
 			if _, e := s.callMCPTool(request, d.name, a); e == nil {
 				t.Fatal("worker read accepted")
 			}

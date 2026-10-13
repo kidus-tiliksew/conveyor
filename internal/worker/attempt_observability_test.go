@@ -57,8 +57,9 @@ func endedCaptureAttempt(t *testing.T, st store.Store, ctx context.Context, work
 // secret source fails, and never changes the attempt's lifecycle outcome
 // (req-260820-221be8 AC-2.1, AC-2.2; DEC-26; component-work-orders).
 func TestAttemptObservabilityRedactionBoundAndFailure(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	worker := core.Worker{ID: "capture-worker", Workspace: "demo"}
 	exact := "stored-app-key-value-0123456789"
 	pattern := "ghp_" + strings.Repeat("A1b2", 9)

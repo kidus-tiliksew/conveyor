@@ -176,3 +176,44 @@ func TestWorkspaceConfigAPIReportsInvalidRepositoryNameAsFieldError(t *testing.T
 		t.Fatalf("status=%d updates=%d body=%s", result.Code, backend.updates, result.Body)
 	}
 }
+
+func TestWorkspaceConfigAPIRecoveryRoundTripAndRefusal(t *testing.T) {
+	document := contextualWorkspaceDocument()
+	document.Recovery = config.RecoveryPolicy{AutomaticRecoveries: 2, WindowText: "24h"}
+	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 1}}
+	s := NewServer(store.NewMemory())
+	s.BearerToken = "token"
+	s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+	s.ConfigStore = backend
+	h := s.Handler()
+
+	get := httptest.NewRequest(http.MethodGet, "/v1/workspace/config", nil)
+	get.Header.Set("Authorization", "Bearer token")
+	getResult := httptest.NewRecorder()
+	h.ServeHTTP(getResult, get)
+	if getResult.Code != http.StatusOK || !strings.Contains(getResult.Body.String(), `"automatic_recoveries":2`) || !strings.Contains(getResult.Body.String(), `"window":"24h"`) {
+		t.Fatalf("GET status=%d body=%s", getResult.Code, getResult.Body)
+	}
+
+	document.Recovery = config.RecoveryPolicy{AutomaticRecoveries: 11, WindowText: "24h"}
+	body, _ := json.Marshal(map[string]any{"document": document})
+	refused := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+	refused.Header.Set("Authorization", "Bearer token")
+	refused.Header.Set("If-Match", "1")
+	refusedResult := httptest.NewRecorder()
+	h.ServeHTTP(refusedResult, refused)
+	if refusedResult.Code != http.StatusUnprocessableEntity || backend.updates != 0 || !strings.Contains(refusedResult.Body.String(), `"field":"recovery.automatic_recoveries"`) {
+		t.Fatalf("refusal status=%d updates=%d body=%s", refusedResult.Code, backend.updates, refusedResult.Body)
+	}
+
+	document.Recovery = config.RecoveryPolicy{AutomaticRecoveries: 0, WindowText: "1h"}
+	body, _ = json.Marshal(map[string]any{"document": document})
+	put := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+	put.Header.Set("Authorization", "Bearer token")
+	put.Header.Set("If-Match", "1")
+	putResult := httptest.NewRecorder()
+	h.ServeHTTP(putResult, put)
+	if putResult.Code != http.StatusOK || backend.record.Document.Recovery.AutomaticRecoveries != 0 || backend.record.Document.Recovery.WindowText != "1h" {
+		t.Fatalf("PUT status=%d recovery=%+v body=%s", putResult.Code, backend.record.Document.Recovery, putResult.Body)
+	}
+}

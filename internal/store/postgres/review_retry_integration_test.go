@@ -15,7 +15,7 @@ import (
 )
 
 func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestReviewRoundRetryPersistenceIntegration(t *testing.T) {
 	if _, err = storetest.For(st).RetryReviewRound(ctx, changed, jobs2, orders2); !errors.Is(err, store.ErrReviewRetryConflict) {
 		t.Fatalf("changed request error=%v", err)
 	}
-	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
+	restarted, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

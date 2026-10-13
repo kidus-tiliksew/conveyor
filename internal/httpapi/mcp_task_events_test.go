@@ -311,7 +311,7 @@ func TestMCPTaskEventsCursorRefusalsAndAuthorization(t *testing.T) {
 			t.Fatalf("%s: err=%q want %q", name, e, tc.want)
 		}
 	}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(t.Context(), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
 	if _, e := s.callMCPTool(request, "list_task_events", base); e == nil {
 		t.Fatal("worker cursor read accepted")
 	}

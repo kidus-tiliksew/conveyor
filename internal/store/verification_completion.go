@@ -118,6 +118,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		return out, err
 	}
 	task.NextStage, task.RecoveryStage = next, recovery
+	task.GateKind = core.GateKindFor(task.State, command)
 	order.Claimable, order.UpdatedAt, order.OperatorDirection = false, now, ""
 	job.EndedAt = now
 	if orderCommand == core.WorkOrderCmdRelease {

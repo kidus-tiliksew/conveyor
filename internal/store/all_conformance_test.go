@@ -2,25 +2,43 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func TestMemoryConformance(t *testing.T) {
 	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
+		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
+			service := &workorder.Service{
+				Store:          st,
+				ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+					return githubtrigger.ReviewTarget{Number: 7, HeadSHA: head}, nil
+				},
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
+		},
 		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			t.Helper()
 			st := store.NewVolatileBackend()
 			t.Cleanup(st.Close)
 			workspace := "conformance-" + core.NewTaskID()
-			ctx := store.WithWorkspace(t.Context(), workspace)
+			ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.SystemActor())
 			cfg := &config.Config{Workspace: workspace, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{
 				"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 			}}}
@@ -28,9 +46,19 @@ func TestMemoryConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			return storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) { return st.ListEvents(ctx, "") }, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
+				// The volatile ledger keeps taskless events of every workspace
+				// in one list. An event whose payload names another
+				// workspace_id belongs to that workspace's ledger.
+				ws, _ := store.WorkspaceFromContext(ctx)
 				events, err := st.ListEvents(ctx, "")
 				var out []core.Event
 				for _, event := range events {
+					var scope struct {
+						WorkspaceID string `json:"workspace_id"`
+					}
+					if json.Unmarshal(event.Payload, &scope) == nil && scope.WorkspaceID != "" && scope.WorkspaceID != ws {
+						continue
+					}
 					if strings.HasPrefix(event.Kind, kindPrefix) {
 						out = append(out, event)
 					}
@@ -42,7 +70,33 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedArtifactMetadataForTest(t, st, ctx, a, b)
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return store.SeedEventsForTest(t, st, ctx, base, events)
+			}, SeedSetupContract: func(t *testing.T, _ context.Context, taskID, raw string) {
+				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}}
+		},
+	})
+}
+
+// TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-63 cases
+// against a new volatile backend per case (component-identity-membership).
+func TestMemoryFreshDeploymentBootstrap(t *testing.T) {
+	storetest.RunFreshDeploymentBootstrap(t, storetest.FreshDeployment{
+		Open: func(t *testing.T) store.Backend {
+			st := store.NewVolatileBackend()
+			t.Cleanup(st.Close)
+			return st
+		},
+		Deactivate: func(t *testing.T, st store.Backend, userID string) {
+			deactivator, ok := st.(interface {
+				DeactivateIdentityUser(context.Context, string) (core.IdentityUser, error)
+			})
+			if !ok {
+				t.Fatal("volatile backend lacks account deactivation")
+			}
+			ctx := store.WithActor(t.Context(), store.Actor{ID: "system", Role: core.ActorSystem})
+			if _, err := deactivator.DeactivateIdentityUser(ctx, userID); err != nil {
+				t.Fatal(err)
+			}
 		},
 	})
 }

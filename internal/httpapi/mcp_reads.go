@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -48,7 +50,8 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_workspaces", "List only your own workspace memberships. Supply a known workspace_id to authorize this bounded discovery read.", nil, nil},
 		{"list_repositories", "List repository names and base branches in the selected workspace; excludes local paths and configuration.", nil, nil},
 		{"list_tasks", "Find active or terminal tasks. An empty work-order list is not evidence that tasks do not exist.", map[string]any{"state": enum("active", "terminal", "all"), "repository": str(), "query": str()}, nil},
-		{"get_task", "Read one task, including terminal tasks, without claiming or reconciling work. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"task_id": str()}, []string{"task_id"}},
+		{"get_task", "Read one task, including terminal tasks, without claiming or reconciling work. next_action carries the server-stated label, actor, kind, judgment, summary, deadline, and blockers; get_task_status returns the full statement. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"task_id": str()}, []string{"task_id"}},
+		{"list_operator_inbox", "List the operator inbox in server order: decisions first, then tasks blocked by other tasks, then acts needing no judgment. Each item carries its band, task, next action, pull request, served requirements, recommendation, blockers, and deadline; pending document proposals appear among the decisions. Filters match GET /v1/next-actions.", map[string]any{"band": enum("decisions", "blocked", "automatic"), "state": str(), "repository": str(), "serves_requirement": str(), "governing_design": str(), "assignee": str(), "query": str()}, nil},
 		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with any snapshot or offset argument, including offset 0) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
 		{"get_task_context", "Read attached pins and all proposal states. Archived references remain labeled and readable; proposals confer no authority.", map[string]any{"task_id": str(), "proposal_state": enum("all", "proposed", "confirmed", "dismissed")}, []string{"task_id"}},
 		{"list_documents", "Discover confirmed requirement, design, or informative reference document identities. Archived history requires include_archived=true.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "include_archived": boolean, "query": str()}, []string{"kind"}},
@@ -372,13 +375,45 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 				break
 			}
 		}
+	case "list_operator_inbox":
+		values := url.Values{}
+		for arg, key := range map[string]string{"state": "state", "repository": "repository", "serves_requirement": "serves_requirement", "governing_design": "governing_design", "assignee": "assignee", "query": "q"} {
+			if value := readString(a, arg); value != "" {
+				values.Set(key, value)
+			}
+		}
+		filter, e := parseTaskFilter(values)
+		if e != nil {
+			return nil, e
+		}
+		opts, e := s.nextActionOptionsFor(ctx)
+		if e != nil {
+			return nil, e
+		}
+		items, e := s.readInbox(ctx, opts, readString(a, "band"), filter)
+		if e != nil {
+			return nil, e
+		}
+		for _, item := range items {
+			result = append(result, item)
+		}
 	case "get_task", "get_task_context":
 		task, e := s.Store.GetTask(ctx, readString(a, "task_id"))
 		if workspace, _ := store.WorkspaceFromContext(ctx); e != nil || task.Workspace != workspace {
 			return nil, store.ErrNotFound
 		}
 		if name == "get_task" {
-			return []any{taskRead(task, true)}, nil
+			read := taskRead(task, true)
+			opts, e := s.nextActionOptionsFor(ctx)
+			if e != nil {
+				return nil, e
+			}
+			action, e := store.ReadNextAction(ctx, s.Store, task.ID, opts)
+			if e != nil {
+				return nil, e
+			}
+			read["next_action"] = nextaction.CompactFrom(action)
+			return []any{read}, nil
 		}
 		task.Context, e = store.TaskContextForTask(ctx, s.Store, task.ID)
 		if e != nil {

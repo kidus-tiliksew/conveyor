@@ -97,7 +97,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		// name or an approved head from a different review cycle.
 		baseline = ""
 		for _, order := range orders {
-			if order.TaskID != task.ID || order.Stage != task.NextStage || order.HeadSHA != task.ReviewedHeadSHA || order.ReviewScope != task.RefreshReviewScope || order.BaselineSHA == "" || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderCompleted) {
+			if order.TaskID != task.ID || order.Stage != task.NextStage || order.HeadSHA != task.ReviewedHeadSHA || order.ReviewScope != task.RefreshReviewScope || order.BaselineSHA == "" || !policyHandoffBaselineState(order, task) {
 				continue
 			}
 			if baseline != "" && baseline != order.BaselineSHA {
@@ -117,7 +117,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		if order.ReviewRound >= reviewRound {
 			reviewRound = order.ReviewRound + 1
 		}
-		if order.Stage == task.NextStage && (order.State == core.WorkOrderQueued || (order.Stage == core.StageReview && order.State == core.WorkOrderCompleted)) {
+		if policyHandoffSupersedeState(order, task) {
 			r.SupersedeWorkOrderIDs = append(r.SupersedeWorkOrderIDs, order.ID)
 		}
 	}
@@ -150,4 +150,55 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		r.NewWorkOrders = append(r.NewWorkOrders, order)
 	}
 	return r, nil
+}
+
+func policyHandoffBaselineState(order core.WorkOrder, task core.Task) bool {
+	if order.State == core.WorkOrderQueued || order.State == core.WorkOrderCompleted {
+		return true
+	}
+	return task.NextStage == core.StageVerify && order.Stage == core.StageVerify &&
+		(order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut)
+}
+
+func policyHandoffSupersedeState(order core.WorkOrder, task core.Task) bool {
+	if order.Stage != task.NextStage {
+		return false
+	}
+	if order.State == core.WorkOrderQueued || (order.Stage == core.StageReview && order.State == core.WorkOrderCompleted) {
+		return true
+	}
+	return task.NextStage == core.StageVerify && order.Stage == core.StageVerify &&
+		(order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut)
+}
+
+// PolicyHandoffRetireCommand returns the lifecycle command and event kind used
+// to retire a superseded order during a frozen-policy handoff. Queued orders
+// keep the historical cancel path. A stranded stale verify order uses W16
+// (work_order.retired); a stranded timed_out verify order uses W15
+// (work_order.cancelled).
+func PolicyHandoffRetireCommand(order core.WorkOrder) (core.WorkOrderCommand, string, bool) {
+	switch order.State {
+	case core.WorkOrderQueued:
+		return core.WorkOrderCmdCancel, "work_order.cancelled", true
+	case core.WorkOrderStale:
+		if order.Stage == core.StageVerify {
+			return core.WorkOrderCmdPreempt, "work_order.retired", true
+		}
+	case core.WorkOrderTimedOut:
+		if order.Stage == core.StageVerify {
+			return core.WorkOrderCmdCancel, "work_order.cancelled", true
+		}
+	}
+	return "", "", false
+}
+
+func PolicyHandoffSupersessionAllowed(order core.WorkOrder, fromStage core.Stage) bool {
+	if order.State == core.WorkOrderQueued {
+		return true
+	}
+	if order.Stage == core.StageReview && order.State == core.WorkOrderCompleted {
+		return true
+	}
+	return fromStage == core.StageVerify && order.Stage == core.StageVerify &&
+		(order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut)
 }

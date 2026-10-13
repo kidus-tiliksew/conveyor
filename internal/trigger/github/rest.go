@@ -519,6 +519,9 @@ func mergePayload(ctx context.Context) map[string]any {
 	if message, ok := ctx.Value(mergeMessageKey{}).(string); ok && message != "" {
 		payload["commit_message"] = message
 	}
+	if head, ok := ctx.Value(expectedHeadKey{}).(string); ok && head != "" {
+		payload["sha"] = head
+	}
 	return payload
 }
 

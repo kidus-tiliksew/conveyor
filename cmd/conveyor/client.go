@@ -230,6 +230,20 @@ func (c *client) mergeTask(id string) (core.Task, error) {
 	return task, err
 }
 
+// taskMergeGate is the task activity slice `task merge` needs to confirm
+// the one-act gate merge: the task and the readiness peek the activity
+// envelope carries at the merge_approval gate (DEC-64(3)).
+type taskMergeGate struct {
+	Task           core.Task                            `json:"task"`
+	MergeReadiness *workerservice.TaskRunMergeReadiness `json:"merge_readiness"`
+}
+
+func (c *client) taskMergeGate(id string) (taskMergeGate, error) {
+	var gate taskMergeGate
+	err := c.do(http.MethodGet, "/v1/tasks/"+url.PathEscape(id)+"/activity", nil, &gate)
+	return gate, err
+}
+
 func (c *client) closeTask(id, reason string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("a credential is required for task close; run `conveyor auth login`")
@@ -315,12 +329,40 @@ func (c *client) do(method, path string, body []byte, out any) error {
 }
 
 func (c *client) doHeaders(method, path string, body []byte, out any, headers map[string]string) error {
+	resp, err := c.send(method, path, body, headers)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// getRawWithHeader is a GET that returns the body bytes and response headers.
+func (c *client) getRawWithHeader(path string) ([]byte, http.Header, error) {
+	resp, err := c.send(http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, resp.Header, nil
+}
+
+// send issues one authenticated request. A status of 300 or above becomes an
+// error carrying the server's text; otherwise the caller owns the open body.
+func (c *client) send(method, path string, body []byte, headers map[string]string) (*http.Response, error) {
 	if c.configErr != nil {
-		return c.configErr
+		return nil, c.configErr
 	}
 	req, err := http.NewRequest(method, c.base+path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -336,20 +378,17 @@ func (c *client) doHeaders(method, path string, body []byte, out any, headers ma
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s (is conveyord running? set CONVEYOR_ADDR if not on :8080)", err)
+		return nil, fmt.Errorf("%s (is conveyord running? set CONVEYOR_ADDR if not on :8080)", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
 		msg, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())
+			return nil, fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())
 		}
-		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
+		return nil, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
 	}
-	if resp.StatusCode == http.StatusNoContent || out == nil {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return resp, nil
 }
 
 // credentialDiagnostic names the credential source and whether a stored
@@ -438,8 +477,46 @@ func (c *client) restartTask(request core.TaskStartOverRequest) (core.TaskStartO
 	if err != nil {
 		return result, err
 	}
-	err = c.do(http.MethodPost, "/v1/tasks/"+url.PathEscape(request.TaskID)+"/restart", body, &result)
-	return result, err
+	requestID := strings.TrimSpace(request.RequestID)
+	err = c.doHeaders(http.MethodPost, "/v1/tasks/"+url.PathEscape(request.TaskID)+"/restart", body, &result, map[string]string{
+		"X-Request-Id":      requestID,
+		"X-Idempotency-Key": requestID,
+	})
+	if err != nil {
+		return result, wrapRestartClientError(err, requestID)
+	}
+	return result, nil
+}
+
+func wrapRestartClientError(err error, requestID string) error {
+	if err == nil {
+		return nil
+	}
+	text := err.Error()
+	msg := text
+	_, body, ok := strings.Cut(text, ": ")
+	if ok {
+		var parsed struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed) == nil && (parsed.Error != "" || parsed.Message != "") {
+			switch {
+			case parsed.Error != "" && parsed.Message != "":
+				msg = parsed.Error + ": " + parsed.Message
+			case parsed.Error != "":
+				msg = parsed.Error
+			default:
+				msg = parsed.Message
+			}
+			prefix, _, _ := strings.Cut(text, ": ")
+			msg = prefix + ": " + msg
+		}
+	}
+	if requestID = strings.TrimSpace(requestID); requestID == "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return fmt.Errorf("restart request %s failed: %s", requestID, msg)
 }
 
 func (c *client) restartPullRequest(ctx context.Context, task core.Task) (github.SubmissionPullRequest, error) {

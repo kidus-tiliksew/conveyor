@@ -8,7 +8,7 @@ import (
 
 func TestRepositoryInstallMigrationBackfillAndRetryIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	// Recreate the pre-migration shape only in this package's isolated test DB.
 	for _, query := range []string{
 		`DELETE FROM conveyor_singlestore_migrations WHERE version=2`,
@@ -45,7 +45,7 @@ func TestRepositoryInstallMigrationBackfillAndRetryIntegration(t *testing.T) {
 
 func TestRepositoryInstallColumnIntegration(t *testing.T) {
 	st := integrationStore(t)
-	ctx := store.WithWorkspace(t.Context(), "install-columns")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "install-columns")
 	cfg := &config.Config{Workspace: "install-columns", Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

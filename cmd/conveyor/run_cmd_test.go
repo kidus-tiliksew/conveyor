@@ -2278,3 +2278,25 @@ func TestUnattachedRunNamesPendingMergeExecution(t *testing.T) {
 		})
 	}
 }
+
+// TestReportUnattachedRunWaitUsesWireLabel proves run prints the catalogue
+// label the server sends and never synthesizes one (req-operator-next-action
+// AC-1.8; DEC-61).
+func TestReportUnattachedRunWaitUsesWireLabel(t *testing.T) {
+	for _, tc := range []struct {
+		gate workerservice.TaskRunGate
+		want string
+	}{
+		{workerservice.TaskRunGate{Kind: "spec", Label: "Plan approval pending", Summary: "plan v2"}, "task 261011-aaaaaa is waiting on Plan approval pending; plan v2; no work order was claimed\n"},
+		{workerservice.TaskRunGate{Kind: "merge"}, "task 261011-aaaaaa is waiting on merge; no work order was claimed\n"},
+	} {
+		var out bytes.Buffer
+		gate := tc.gate
+		if err := reportUnattachedRunWait(&out, "261011-aaaaaa", &workerservice.DispatchOrder{Gate: &gate}, false); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != tc.want {
+			t.Fatalf("output = %q, want %q", out.String(), tc.want)
+		}
+	}
+}

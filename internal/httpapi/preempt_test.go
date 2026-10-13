@@ -16,7 +16,7 @@ import (
 )
 
 func TestWorkOrderPreemptHTTPRequiresOperatorReasonAndIdempotency(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "preempt-http-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "preempt-http-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobRunning}
@@ -78,7 +78,7 @@ func TestWorkOrderPreemptHTTPRequiresOperatorReasonAndIdempotency(t *testing.T) 
 	if duplicate.Code != http.StatusOK || duplicate.Body.String() != response.Body.String() {
 		t.Fatalf("duplicate status=%d body=%s want=%s", duplicate.Code, duplicate.Body, response.Body)
 	}
-	events, err := st.ListEvents(context.Background(), task.ID)
+	events, err := st.ListEvents(store.WithActor(context.Background(), store.SystemActor()), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

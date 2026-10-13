@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -40,13 +41,22 @@ var (
 	ErrRequirementServesTransition = ErrTaskContextProposalTransition
 	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
 	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
-	ErrReviewRetryConflict         = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid              = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized          = errors.New("worker credential is invalid or revoked")
-	ErrWorkOrderCancelled          = errors.New("work order was cancelled")
-	ErrWorkOrderPreempted          = errors.New("work order was preempted by an operator")
-	ErrWorkOrderPreemptConflict    = errors.New("work order preempt conflict")
-	ErrTaskTerminal                = errors.New("task is already terminal")
+	// ErrTaskHeldByWorkOrder: a queued task's current stage is held by a
+	// queued, claimed, stale, or timed_out order (core.WorkOrderBlocksStageMint).
+	// Task redispatch cannot help; the operator redispatches or recovers the
+	// order itself (component-durable-queue; DEC-62).
+	ErrTaskHeldByWorkOrder      = errors.New("task stage is held by a work order; redispatch or recover the work order instead")
+	ErrReviewRetryConflict      = errors.New("review round retry conflicts with current state")
+	ErrPairingInvalid           = errors.New("worker pairing token is invalid, expired, or already used")
+	ErrWorkerUnauthorized       = errors.New("worker credential is invalid or revoked")
+	ErrWorkOrderCancelled       = errors.New("work order was cancelled")
+	ErrWorkOrderPreempted       = errors.New("work order was preempted by an operator")
+	ErrWorkOrderPreemptConflict = errors.New("work order preempt conflict")
+	ErrTaskTerminal             = errors.New("task is already terminal")
+	// ErrTaskAlreadyStartedOver reports that the retired task already has a
+	// start-over successor (the tasks.supersedes unique index or task_start_overs
+	// uniqueness).
+	ErrTaskAlreadyStartedOver = errors.New("task already has a start-over successor")
 	// ErrTaskBranchConflict reports that another open task in the same
 	// workspace repository already holds the assigned branch
 	// (req-task-branch-assignment AC-4.1).
@@ -83,6 +93,10 @@ var (
 	// owned claim into one response so the upload route cannot disclose another
 	// task's ownership.
 	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
+	// ErrPlanRevisionGateUnreadable marks an awaiting plan-revision gate whose
+	// latest transition or request payload cannot be read. Listings treat it as
+	// pending; writes stay refused.
+	ErrPlanRevisionGateUnreadable = errors.New("plan-revision gate is unreadable")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -173,6 +187,12 @@ type TaskStore interface {
 	// CancelTask atomically records the human intervention, closes the task,
 	// and cancels every non-terminal work order.
 	CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error)
+	// MergeTaskAtGateCommand atomically completes a confirmed forge merge at
+	// the merge_approval gate (DEC-64(1,7); component-task-lifecycle): it
+	// records the approve intervention, binds approvedHead, appends the
+	// merge.confirmed event, and applies intervention.merge. It refuses with
+	// the typed transition error unless the task waits at merge_approval.
+	MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)
@@ -199,6 +219,11 @@ type TaskStore interface {
 	// attempt and persists its redirect, task transition, job, work order, and
 	// dispatch audit. A returned existing order is an idempotent success.
 	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
+	// ClaimBaseConflictCheck stamps base_conflict_checked_at on one submitted
+	// work order in the selected workspace only while it is unset. True means
+	// this caller owns the single pre-dispatch mergeability read for that head
+	// (feature-bounded-automatic-recovery AR-4); updated_at is left alone.
+	ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
 	// CreateClaimedVerificationEvidence atomically derives evidence ownership
 	// from an exact live implement claim (component-artifacts; DEC-53).
@@ -237,6 +262,13 @@ type WorkOrderStore interface {
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	ReconcileReviewPublications(ctx context.Context) (int, error)
+	// ListAutomaticPublicationRetries lists failed GitHub-issue and review
+	// publications due for their once-per-window automatic re-enqueue (AR-5).
+	ListAutomaticPublicationRetries(ctx context.Context, now time.Time) ([]AutomaticPublicationRetry, error)
+	// AutomaticPublicationRetryCommand re-checks one retry in its transaction,
+	// moves it failed->retrying, stamps it, records the automatic event, and
+	// enqueues its job. It reports false when the row is no longer due.
+	AutomaticPublicationRetryCommand(ctx context.Context, lease taskops.TaskLease, retry AutomaticPublicationRetry, now time.Time) (bool, error)
 	AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error
 	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
 	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
@@ -355,6 +387,7 @@ type DocumentStore interface {
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).
 	PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error)
+	CountOperatorAttention(ctx context.Context) (int, error)
 }
 
 // PlanningStore owns the planning-session, bundle and artifact contract.
@@ -426,6 +459,9 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListFactoryActs returns the workspace factory log, newest first, after the
+	// Go filter. The query may only narrow candidates.
+	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)
 	// ListEventsAfter treats a nonzero afterID as an anchor event owned by the
 	// requested task and workspace and returns the events strictly after its
 	// (at, id) tuple in ascending (at, id) order. Zero starts at the beginning.
@@ -555,6 +591,7 @@ type memory struct {
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
+	readClockPolicy             func(workspace string) (config.RecoveryPolicy, time.Duration, error)
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
 	repositories                map[string]map[string]string
@@ -631,6 +668,9 @@ func (m *memory) WithTaskSideEffectLock(ctx context.Context, taskID string, fn f
 }
 
 func (m *memory) AppendEvent(ctx context.Context, event core.Event) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[event.TaskID]; !ok {
@@ -657,6 +697,20 @@ func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, err
 		return events[i].At.Before(events[j].At)
 	})
 	return events, nil
+}
+
+func (m *memory) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var events []core.Event
+	for id, task := range m.tasks {
+		if task.Workspace != workspace {
+			continue
+		}
+		events = append(events, m.events[id]...)
+	}
+	return SelectFactoryActs(events, since, limit), nil
 }
 
 func (m *memory) CountEvents(_ context.Context, taskID, kind string) (int, error) {
@@ -712,15 +766,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	for _, order := range orders {
-		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
-			blockers := blockersByTask[order.TaskID]
-			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
-			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
-			if len(order.BlockingTaskIDs) > 0 {
-				order.Claimable = false
-			}
-		}
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockersByTask[order.TaskID]))
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -770,6 +816,9 @@ func (m *memory) ListActivityMarkersForTasks(ctx context.Context, taskIDs []stri
 }
 
 func (m *memory) UpsertTranscript(ctx context.Context, transcript core.Transcript) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	job, _, ok := m.findJobLocked(transcript.JobID)
@@ -813,8 +862,15 @@ func (m *memory) GetTranscript(_ context.Context, jobID string) (core.Transcript
 	return transcript, nil
 }
 
+// appendEventLocked records one event under the held mutex. Every mutating
+// entry point checks RequireActor before it changes any state, so a missing
+// actor here is a programming error, never a silent default
+// (component-persistence, Actor context).
 func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
-	actor := ActorFromContext(ctx)
+	actor, err := RequireActor(ctx)
+	if err != nil {
+		panic(fmt.Errorf("volatile event %q reached the ledger without an actor check: %w", event.Kind, err))
+	}
 	if event.ActorID == "" {
 		event.ActorID = actor.ID
 	}

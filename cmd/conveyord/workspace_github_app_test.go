@@ -28,7 +28,7 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	st := store.NewVolatileBackend()
 	defer st.Close()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", GitHub: "org/repo"}}}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 	if forgeCalls != 1 {
 		t.Fatal("forge act was not executed")
 	}
-	if _, err = resolve(context.Background(), "org/repo"); github.ErrorCategory(err) != github.ForgePermission {
+	if _, err = resolve(store.WithActor(context.Background(), store.SystemActor()), "org/repo"); github.ErrorCategory(err) != github.ForgePermission {
 		t.Fatal("implicit workspace accepted")
 	}
 	if _, err = resolve(ctx, "org/uncovered"); github.ErrorCategory(err) != github.ForgePermission {

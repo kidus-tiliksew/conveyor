@@ -54,7 +54,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	}(); response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), "req-does-not-exist") {
 		t.Fatalf("unknown requirement status=%d body=%s", response.Code, response.Body.String())
 	}
-	if _, _, err := st.CreateRequirement(store.WithWorkspace(t.Context(), "demo"), core.Requirement{ID: "req-runtime", Title: "Runtime"}, core.RequirementVersion{
+	if _, _, err := st.CreateRequirement(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), core.Requirement{ID: "req-runtime", Title: "Runtime"}, core.RequirementVersion{
 		Content:    "# Runtime requirement.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Runtime references are valid.\n```",
 		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Runtime references are valid."}},
 		Origin:     core.RequirementOriginChat, OriginSessionID: "monitor-test",
@@ -82,7 +82,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
 		t.Fatalf("first=%d %s second=%d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
 	}
-	tasks, err := st.ListTasks(store.WithWorkspace(context.Background(), "demo"))
+	tasks, err := st.ListTasks(store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo"))
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
@@ -91,7 +91,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 		!tasks[0].SpecApproval || !tasks[0].MergeApproval {
 		t.Fatalf("enqueued=%d task=%+v", enqueued, tasks[0])
 	}
-	events, err := st.ListEvents(store.WithWorkspace(context.Background(), "demo"), tasks[0].ID)
+	events, err := st.ListEvents(store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo"), tasks[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,14 +192,14 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 		second.TaskOutcome != "reused" || redelivered.DeduplicatedCount != 1 {
 		t.Fatalf("first=%+v second=%+v redelivered=%+v", first, second, redelivered)
 	}
-	tasks, err := st.ListTasks(store.WithWorkspace(t.Context(), "demo"))
+	tasks, err := st.ListTasks(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"))
 	if err != nil || len(tasks) != 1 || enqueued != 1 {
 		t.Fatalf("tasks=%+v enqueued=%d err=%v", tasks, enqueued, err)
 	}
 	if !strings.Contains(tasks[0].Body, "check run 11") || strings.Contains(tasks[0].Body, "check run 22") {
 		t.Fatalf("first task body was not preserved: %q", tasks[0].Body)
 	}
-	status, err := server.Monitor.Status(store.WithWorkspace(t.Context(), "demo"))
+	status, err := server.Monitor.Status(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"))
 	if err != nil || len(status.Observations) != 2 {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
@@ -208,7 +208,7 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 			t.Fatalf("observation not linked to shared task: %+v", observation)
 		}
 	}
-	events, err := st.ListEvents(store.WithWorkspace(t.Context(), "demo"), first.TaskID)
+	events, err := st.ListEvents(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), first.TaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 // open; confirming that version through the operator route closes it once
 // (DEC-46; req-delivery-and-forge AC-4.2, AC-4.3).
 func TestResolveDriftProposesRequirementAmendmentUntilConfirmed(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-runtime", Title: "Runtime contract"}, core.RequirementVersion{
 		Content:    "# Runtime changes remain aligned.",
@@ -352,7 +352,7 @@ func TestResolveDriftProposesRequirementAmendmentUntilConfirmed(t *testing.T) {
 }
 
 func TestResolveDriftDecodesGeneratedDesignDriftID(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	drift := monitor.Drift{
 		ID:          "design:design-http-api:lineaged_merge:conveyor:pr:390",

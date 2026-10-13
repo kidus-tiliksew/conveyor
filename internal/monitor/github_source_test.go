@@ -436,6 +436,66 @@ func TestRecordedLineageRejectsUnrelatedRepositoryAndUnrecordedHead(t *testing.T
 	}
 }
 
+// A head Conveyor recorded for the pull request after it moved is lineage;
+// an approval never vouches for an older or foreign pull request
+// (component-submission-merge "Observed merges"; AC-4.3).
+func TestRecordedLineageAcceptsHeadsConveyorRecordedForThePullRequest(t *testing.T) {
+	opened := func(number int, head string) core.Event {
+		return core.Event{Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": number, "head_sha": head})}
+	}
+	merge := func(kind, repository string, number int, head string) core.Event {
+		return core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{"repository": repository, "pull_request": number, "head_sha": head, "merge_commit_sha": "landed"})}
+	}
+	base := core.Task{ID: "t", Repo: "app", Branch: "conveyor/t", GitHub: &core.GitHubLifecycle{Repository: "acme/app"}}
+	approved := base
+	approved.ApprovedHeadSHA, approved.ReviewedHeadSHA = "approved", "reviewed"
+	cases := []struct {
+		name   string
+		task   core.Task
+		events []core.Event
+		branch string
+		number int
+		head   string
+		want   bool
+	}{
+		{"opened head", base, []core.Event{opened(12, "a")}, "conveyor/t", 12, "a", true},
+		{"merge.confirmed head", base, []core.Event{opened(12, "a"), merge("merge.confirmed", "acme/app", 12, "b")}, "conveyor/t", 12, "b", true},
+		{"merge.reconciled head", base, []core.Event{opened(12, "a"), merge("merge.reconciled", "acme/app", 12, "b")}, "conveyor/t", 12, "b", true},
+		{"approved head on latest PR", approved, []core.Event{opened(11, "a"), opened(12, "c")}, "conveyor/t", 12, "approved", true},
+		{"reviewed head on latest PR", approved, []core.Event{opened(12, "a")}, "conveyor/t", 12, "reviewed", true},
+		{"approved head on older PR", approved, []core.Event{opened(11, "a"), opened(12, "c")}, "conveyor/t", 11, "approved", false},
+		{"approved head on foreign latest PR", approved, []core.Event{opened(12, "a"), {Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/other", "number": 13, "head_sha": "x"})}}, "conveyor/t", 12, "approved", true},
+		{"approved head without opened PR", approved, []core.Event{merge("merge.confirmed", "acme/app", 12, "b")}, "conveyor/t", 12, "approved", false},
+		{"merge event of another repository", base, []core.Event{opened(12, "a"), merge("merge.confirmed", "acme/other", 12, "b")}, "conveyor/t", 12, "b", false},
+		{"merge event of another PR", base, []core.Event{opened(12, "a"), merge("merge.reconciled", "acme/app", 13, "b")}, "conveyor/t", 12, "b", false},
+		{"merge event of another kind", base, []core.Event{opened(12, "a"), merge("merge.requested", "acme/app", 12, "b")}, "conveyor/t", 12, "b", false},
+		{"unrecorded head", approved, []core.Event{opened(12, "a"), merge("merge.confirmed", "acme/app", 12, "b")}, "conveyor/t", 12, "c", false},
+		{"empty head", base, []core.Event{opened(12, "")}, "conveyor/t", 12, "", false},
+		{"empty head with empty approval", base, []core.Event{opened(12, "a")}, "conveyor/t", 12, " ", false},
+		{"branch that is not Task.Branch", approved, []core.Event{opened(12, "a")}, "conveyor/other", 12, "a", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RecordedLineage(tc.task, tc.events, "app", "acme/app", "t", tc.branch, tc.number, tc.head); got != tc.want {
+				t.Fatalf("RecordedLineage=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// RecordedPullRequestHead is also called without RecordedLineage's guards
+// (261013-9f494b): an empty head and an unrecorded pull request never match.
+func TestRecordedPullRequestHeadRejectsEmptyHeadAndUnrecordedPullRequest(t *testing.T) {
+	task := core.Task{ID: "t"}
+	opened := []core.Event{{Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 12, "head_sha": "a"})}}
+	if RecordedPullRequestHead(task, opened, "acme/app", 12, "") {
+		t.Fatal("empty head matched an empty approved head")
+	}
+	if RecordedPullRequestHead(task, nil, "acme/app", 0, "") || RecordedPullRequestHead(core.Task{ApprovedHeadSHA: "x"}, nil, "acme/app", 0, "x") {
+		t.Fatal("approved head vouched for a pull request Conveyor never recorded")
+	}
+}
+
 func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *testing.T) {
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprint(approved), func(t *testing.T) {
@@ -576,5 +636,181 @@ func TestGitHubSourceResolverFactoryIsPollLocal(t *testing.T) {
 		if factories != poll || resolutions != poll*4 {
 			t.Fatalf("factories=%d resolutions=%d", factories, resolutions)
 		}
+	}
+}
+
+func commitWithPullsRun(sha, parent, message, date, pulls string) CommandRunner {
+	if pulls == "" {
+		pulls = "[]"
+	}
+	return func(_ context.Context, args ...string) ([]byte, error) {
+		path := strings.Join(args, " ")
+		switch {
+		case strings.Contains(path, "/commits -f"):
+			return []byte(fmt.Sprintf(`[{"sha":%q,"html_url":"https://example/%s","parents":[{"sha":%q}],"commit":{"message":%q,"committer":{"date":%q}}}]`, sha, sha, parent, message, date)), nil
+		case strings.Contains(path, "/pulls"):
+			return []byte(pulls), nil
+		case strings.Contains(path, "compare/"+parent+"..."+sha):
+			return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected args %v", args)
+		}
+	}
+}
+
+func TestGitHubSourceDefersAndSuppressesInFlightAndRecordedMerges(t *testing.T) {
+	committed := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	externalPulls := `[{"number":12,"html_url":"https://github.com/acme/conveyor/pull/12","merged_at":"2026-10-13T12:00:00Z","head":{"ref":"feature","sha":"head"}}]`
+	for _, test := range []struct {
+		name   string
+		state  MergeState
+		taskID string
+		kind   SignalKind
+		pulls  string
+		reason string
+		want   int
+	}{
+		{name: "direct push in flight", state: MergeInFlight, taskID: "t1", kind: DirectPush, reason: "merge_in_flight"},
+		{name: "direct push recorded", state: MergeRecorded, taskID: "t1", kind: DirectPush, reason: "conveyor_merge_recorded"},
+		{name: "direct push none", state: MergeNone, kind: DirectPush, want: 1},
+		{name: "external merge in flight", state: MergeInFlight, taskID: "t1", kind: ExternalPRMerge, pulls: externalPulls, reason: "merge_in_flight"},
+		{name: "external merge recorded", state: MergeRecorded, taskID: "t1", kind: ExternalPRMerge, pulls: externalPulls, reason: "conveyor_merge_recorded"},
+		{name: "external merge none", state: MergeNone, kind: ExternalPRMerge, pulls: externalPulls, want: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var suppressed []string
+			source := GitHubSource{
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+				Run: commitWithPullsRun("landed", "parent", "merge", committed.Format(time.RFC3339), test.pulls),
+				MergeCommitState: func(_ context.Context, repository, sha string, at time.Time) (MergeState, string, error) {
+					if repository != "acme/conveyor" || sha != "landed" || !at.Equal(committed) {
+						t.Fatalf("repository=%s sha=%s at=%s", repository, sha, at)
+					}
+					return test.state, test.taskID, nil
+				},
+				OnSuppressed: func(_ context.Context, payload map[string]any) error {
+					reason, _ := payload["reason"].(string)
+					suppressed = append(suppressed, reason)
+					return nil
+				},
+			}
+			observations, err := source.Observations(t.Context(), committed.Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.want == 0 {
+				if len(observations) != 0 || len(suppressed) != 1 || suppressed[0] != test.reason {
+					t.Fatalf("observations=%+v suppressed=%v", observations, suppressed)
+				}
+				return
+			}
+			if len(observations) != 1 || observations[0].Kind != test.kind || observations[0].CommitSHA != "landed" || len(suppressed) != 0 {
+				t.Fatalf("observations=%+v suppressed=%v", observations, suppressed)
+			}
+		})
+	}
+}
+
+func TestGitHubSourceDoesNotDeferRevertDuringInFlightMerge(t *testing.T) {
+	source := GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		Run: commitWithPullsRun("reverted", "parent", "Revert merge", "2026-10-13T12:00:00Z", ""),
+		MergeCommitState: func(context.Context, string, string, time.Time) (MergeState, string, error) {
+			t.Fatal("revert consulted merge state")
+			return MergeInFlight, "t1", nil
+		},
+	}
+	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 1 || observations[0].Kind != Revert {
+		t.Fatalf("observations=%+v", observations)
+	}
+}
+
+func TestGitHubSourceMergeCommitStateErrorFailsClosed(t *testing.T) {
+	source := GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		Run: commitWithPullsRun("landed", "parent", "merge", "2026-10-13T12:00:00Z", ""),
+		MergeCommitState: func(context.Context, string, string, time.Time) (MergeState, string, error) {
+			return MergeNone, "", fmt.Errorf("store unavailable")
+		},
+	}
+	if _, err := source.Observations(t.Context(), time.Now().Add(-time.Hour)); err == nil || !strings.Contains(err.Error(), "store unavailable") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestGitHubSourceStaleApprovalMergeStaysExternal(t *testing.T) {
+	// A GitHub merge at a stale approved head is still external_pr_merge when
+	// no merge.confirmed or merge.reconciled proves a Conveyor merge (AC-4.3).
+	pulls := `[{"number":12,"html_url":"https://github.com/acme/conveyor/pull/12","merged_at":"2026-10-13T12:00:00Z","head":{"ref":"conveyor/task-old","sha":"stale-head"}}]`
+	source := GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		Run: commitWithPullsRun("stale-head", "parent", "merged", "2026-10-13T12:00:00Z", pulls),
+		MergeCommitState: func(context.Context, string, string, time.Time) (MergeState, string, error) {
+			return MergeNone, "", nil
+		},
+		OnSuppressed: func(context.Context, map[string]any) error {
+			t.Fatal("stale approval suppressed")
+			return nil
+		},
+	}
+	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 1 || observations[0].Kind != ExternalPRMerge || observations[0].CommitSHA != "stale-head" {
+		t.Fatalf("observations=%+v", observations)
+	}
+}
+
+func TestRecordedMergeHeadMatchesOnlyConfirmedOrReconciled(t *testing.T) {
+	events := []core.Event{
+		{Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "number": 12, "head_sha": "stale-head"})},
+		{Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "pull_request": 12, "head_sha": "head", "merge_commit_sha": "landed"})},
+	}
+	if !RecordedMergeHead(events, "acme/app", 12, "landed") || !RecordedMergeHead(events, "acme/app", 12, "head") {
+		t.Fatal("recorded merge commit or head did not match")
+	}
+	if RecordedMergeHead(events, "acme/app", 12, "stale-head") {
+		t.Fatal("opened head matched as a Conveyor merge")
+	}
+	if RecordedMergeHead([]core.Event{{Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "pull_request": 12, "head_sha": "head", "merge_commit_sha": "landed"})}}, "acme/app", 13, "landed") {
+		t.Fatal("foreign pull request matched")
+	}
+	if RecordedMergeHead(nil, "acme/app", 12, "landed") || RecordedMergeCommit(core.Event{Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "merge_commit_sha": "landed"})}, "acme/app", "landed") {
+		t.Fatal("missing or failed merge matched")
+	}
+	if RecordedMergeCommit(core.Event{Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "head_sha": "head", "merge_commit_sha": "landed"})}, "acme/app", "head") {
+		t.Fatal("head_sha matched as a recorded merge commit")
+	}
+}
+
+func TestDecideMergeStatePrefersRecordedAndExpiresInFlight(t *testing.T) {
+	committed := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	bound := 10 * time.Minute
+	requestAt := committed
+	state, task := DecideMergeState("rec", "fly", committed, requestAt, committed.Add(time.Minute), bound)
+	if state != MergeRecorded || task != "rec" {
+		t.Fatalf("state=%v task=%s", state, task)
+	}
+	state, task = DecideMergeState("", "fly", committed, requestAt, committed.Add(bound-time.Second), bound)
+	if state != MergeInFlight || task != "fly" {
+		t.Fatalf("state=%v task=%s", state, task)
+	}
+	state, task = DecideMergeState("", "fly", committed, requestAt, committed.Add(bound), bound)
+	if state != MergeNone || task != "" {
+		t.Fatalf("expired state=%v task=%s", state, task)
+	}
+	future := committed.Add(time.Hour)
+	state, task = DecideMergeState("", "fly", future, committed.Add(-bound), committed, bound)
+	if state != MergeNone || task != "" {
+		t.Fatalf("stuck request hid future commit state=%v task=%s", state, task)
+	}
+	state, task = DecideMergeState("", "fly", future, committed.Add(-time.Second), committed, bound)
+	if state != MergeInFlight || task != "fly" {
+		t.Fatalf("fresh request with future commit state=%v task=%s", state, task)
 	}
 }

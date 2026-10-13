@@ -157,6 +157,7 @@ type Outcome struct {
 type Backend interface {
 	ApplyTaskCommand(context.Context, TaskLease, string, Command) (core.Task, error)
 	CancelTaskCommand(context.Context, TaskLease, core.Intervention) (core.Task, error)
+	MergeTaskAtGateCommand(context.Context, TaskLease, core.Intervention, string, core.Event) (core.Task, error)
 	AcceptReviewDecisionCommand(context.Context, TaskLease, core.ReviewDecision) error
 	ClaimWorkOrderCommand(context.Context, TaskLease, string, core.WorkOrderClaim) (core.WorkOrder, error)
 	ListElapsedWorkOrderTaskIDs(context.Context, time.Time) ([]string, error)
@@ -183,6 +184,18 @@ func (p *Plane) Cancel(ctx context.Context, intervention core.Intervention) (cor
 		return core.Task{}, fmt.Errorf("taskops task id is required")
 	}
 	return p.backend.CancelTaskCommand(ctx, TaskLease{taskID: intervention.TaskID, seal: &leaseSeal{}}, intervention)
+}
+
+// MergeAtGate completes a confirmed forge merge at the merge_approval gate in
+// one store transaction (DEC-64(1,7); component-task-lifecycle).
+func (p *Plane) MergeAtGate(ctx context.Context, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	if p == nil || p.backend == nil {
+		return core.Task{}, fmt.Errorf("taskops plane requires a backend")
+	}
+	if intervention.TaskID == "" || confirmed.TaskID != intervention.TaskID {
+		return core.Task{}, fmt.Errorf("taskops gate merge requires one task id")
+	}
+	return p.backend.MergeTaskAtGateCommand(ctx, TaskLease{taskID: intervention.TaskID, command: string(core.TaskInterventionMerge), seal: &leaseSeal{}}, intervention, approvedHead, confirmed)
 }
 
 func (p *Plane) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {

@@ -10,7 +10,7 @@ import (
 )
 
 func TestServedRequirementsForTaskReportsAuthorityTruncation(t *testing.T) {
-	ctx := WithWorkspace(t.Context(), "demo")
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "authority-root", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {

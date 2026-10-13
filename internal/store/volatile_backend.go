@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"strings"
+	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog"
@@ -30,7 +33,7 @@ var _ Backend = (*volatileMemory)(nil)
 // NewVolatileBackend constructs the test backend. Deployment selection must
 // use backend.Open, which requires an explicit AllowVolatile option.
 func NewVolatileBackend() Backend {
-	return &volatileMemory{
+	backend := &volatileMemory{
 		memory:      NewMemory().(*memory),
 		memberships: map[memoryScopedKey]workspaceBinding{},
 		invitations: map[memoryScopedKey]workspaceInvitation{},
@@ -42,6 +45,14 @@ func NewVolatileBackend() Backend {
 		orgName:     "Conveyor",
 		log:         memlog.New(),
 	}
+	backend.readClockPolicy = func(workspace string) (config.RecoveryPolicy, time.Duration, error) {
+		record, ok := backend.workspaces[workspace]
+		if !ok || strings.TrimSpace(record.ConfigYAML) == "" {
+			return config.DefaultRecoveryPolicy(), config.DefaultWorkOrderQueueTimeout, nil
+		}
+		return config.ReadClockPolicy([]byte(record.ConfigYAML))
+	}
+	return backend
 }
 
 func (m *volatileMemory) Close()              {}
@@ -60,8 +71,11 @@ func (m *volatileMemory) unlock() {
 	m.mu.Unlock()
 }
 
-func (m *volatileMemory) recordEventLocked(workspace string, event core.Event) core.Event {
-	m.appendEventLocked(WithWorkspace(context.Background(), workspace), event)
+// recordEventLocked records an event in a fresh workspace context. The caller
+// passes the actor the operation derived, so the fresh context never relies on
+// an implicit default.
+func (m *volatileMemory) recordEventLocked(actor Actor, workspace string, event core.Event) core.Event {
+	m.appendEventLocked(WithActor(WithWorkspace(context.Background(), workspace), actor), event)
 	event.ID = m.nextEventID
 	return event
 }

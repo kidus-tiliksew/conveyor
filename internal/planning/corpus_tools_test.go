@@ -11,7 +11,7 @@ import (
 )
 
 func TestPlanningDelegatesConfirmedCorpusReadsToSharedExecutor(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-planning-corpus", Title: "Shared corpus"}, core.RequirementVersion{
 		Content: "# Shared corpus\n\nThe full planning body is explicit-read only.", Origin: core.RequirementOriginOperator,
@@ -50,7 +50,7 @@ func TestPlanningDelegatesConfirmedCorpusReadsToSharedExecutor(t *testing.T) {
 }
 
 func TestPlanningRejectsArchivedCorpusIDs(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	_, v, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-archived", Title: "Archive"}, core.RequirementVersion{Content: "# Archived", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Exclude archived authority."}}})
 	if err != nil {

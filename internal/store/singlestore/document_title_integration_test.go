@@ -80,7 +80,7 @@ func renameTable(t *testing.T, ctx context.Context, st *Store, from, to string) 
 			return
 		}
 		restored = true
-		if _, err := st.db.ExecContext(context.Background(), "ALTER TABLE `"+to+"` RENAME `"+from+"`"); err != nil {
+		if _, err := st.db.ExecContext(store.WithActor(context.Background(), store.SystemActor()), "ALTER TABLE `"+to+"` RENAME `"+from+"`"); err != nil {
 			t.Errorf("restore table %s: %v", from, err)
 		}
 	}

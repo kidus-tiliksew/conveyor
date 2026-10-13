@@ -17,10 +17,22 @@ it only when the credential belongs to exactly one workspace. The operator
 investigation tools below always require an explicit `workspace_id`. Worker
 credentials are pinned to their own workspace automatically.
 
-The operator investigation tools below admit user credentials only. These
-lifecycle tools also reserve their human operations: `add_task_dependency`, `set_assignee`,
-`attach_task_branch`, `redispatch_work_order`, and `report_continuation`. `create_task` is the one
-maintainer act an agent credential may perform, under the rules in its row below (DEC-60).
+Every tool names one capability, checked against the live role binding of the
+credential's owning user on every call. A refusal answers `workspace_not_found`,
+exactly like an unknown workspace.
+
+An agent credential may use only tools whose capability every contributor
+holds, plus `create_tasks`: today `view_workspace`, `claim_work`,
+`request_changes`, `propose_documents`, and `create_tasks`. The rule is derived
+from the role bundles, not from a list of tool names, so a tool added under a
+higher capability is refused for agents automatically. That refuses
+`add_task_dependency` and `attach_task_branch` (`operate_gates`), `set_assignee`
+(`set_assignee`), and `redispatch_work_order` (`recover_work`) with
+`<tool> requires an operator-scoped user credential`. Two separate rules refuse
+agents the same way: the operator investigation tools below admit user
+credentials only, and `report_continuation` belongs to the launching client
+(`conveyor run` or a worker). `create_task` is the one maintainer act an agent
+credential may perform, under the rules in its row below (DEC-60).
 
 The agent-facing discipline for using these tools well is the
 [work playbook](playbooks/conveyor-work.md); this page is the tool
@@ -40,7 +52,8 @@ jobs, record consultation events, or create/confirm proposals.
 | `list_workspaces` | None | Returns only the caller's own workspace memberships; use a known workspace ID as the explicit authorization scope. |
 | `list_repositories` | None | Returns repository `name` and `base_branch`; configuration, URLs, credentials, and checkout paths are omitted. |
 | `list_tasks` | None | `state`: `active` (default), `terminal`, or `all`; exact `repository`; `query` matches task ID, title, source, or branch. |
-| `get_task` | `task_id` | Includes terminal tasks and body; excludes execution setup and work-order credentials. |
+| `get_task` | `task_id` | Includes terminal tasks and body; excludes execution setup and work-order credentials. `next_action` carries the server-stated `label`, `actor`, `kind`, `judgment`, `summary`, `deadline`, and `blocked_by`; `get_task_status` returns the full statement. |
+| `list_operator_inbox` | None | The inbox `GET /v1/next-actions` serves, in the same server order: decisions first, then tasks blocked by other tasks, then acts needing no judgment, with pending document proposals among the decisions. `band`: `decisions`, `blocked`, or `automatic`; exact `state`, `repository`, `serves_requirement`, `governing_design`, and `assignee`; `query` matches as the REST `q` filter does. |
 | `list_task_events` | `task_id` | Exact `event_kind`; oldest timestamp first, then ascending event ID. Long histories arrive in bounded windows; see [Task event windows](#task-event-windows). |
 | `get_task_context` | `task_id` | `proposal_state`: `all` (default), `proposed`, `confirmed`, or `dismissed`. Attachments are always included. |
 | `list_documents` | `kind`: `requirement`, `system_design`, or `reference` | `query` matches ID/title; `include_archived` defaults false. Requirement/design listings contain confirmed document identities only. |
@@ -206,10 +219,16 @@ for how to turn the evidence into a separately authorized follow-up.
 | `list_work_orders` | List active, stale, or execution-timed-out spec, implement, and review orders, with their distinct queue, execution, and lease clocks, claimability, and refusal reasons. |
 | `claim_work_order` | Claim one order with a fresh `session_id` and secret `client_token`, optionally choosing a lease up to one hour. Claimant identity comes from the credential. Self-review is refused, as is any session or client token already used by the implementer or another seat. |
 | `get_work_order` | The full stage context: role prompt, task, served requirements, governance snapshot, approved plan, triage brief, bounce history, lineage context, artifact references, and (for review) the diff and PR description. `authority_source` says whether authority is `pinned` (claim-time snapshot) or `live`. |
+| `get_task_status` | The task's next action exactly as `GET /v1/tasks/{id}/next-action` returns it: label, who acts next, kind, judgment, summary, question, choices with their effects, what happens if nobody acts, deadline, blockers, and the current order and attempt. A human credential reads any task in the workspace. An agent or run-child credential must pass the `work_order_id` and `session_id` of an order its session claimed or submitted for that task; every refusal is the same error, whether or not the task exists. Read only: it never renews the lease or records an observation. Worker credentials are refused. |
 | `read_artifact` | Fetch one artifact's content, base64-encoded. Scoped to the claim and to the bounded lineage selection that served the reference; an artifact ID alone is not enough. |
-| `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. |
-| `report_progress` | Report progress text for the operator's timeline. |
-| `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request, `class: authority_conflict`, and document citations. |
+| `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. Requires `claim_work`. |
+| `report_progress` | Report progress text for the operator's timeline. Requires `claim_work`. |
+| `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request, `class: authority_conflict`, and document citations. Requires `claim_work`. |
+
+Every claim-bound tool requires `claim_work`, so a live claim never outlasts
+its holder's binding: a user demoted to viewer keeps the claim (demotion
+releases nothing) but every call under it is refused until the lease expires or
+the binding is restored.
 
 ## Delivering
 
@@ -219,13 +238,16 @@ for how to turn the evidence into a separately authorized follow-up.
 | `submit_for_review` | End of implementation: opens or reuses the pushed branch's PR and dispatches the independent review round. A successful call ends the implementation claim. A launched session then exits; a self-claimed session continues the `conveyor-work` delivery loop. |
 | `submit_review_verdict` | Submit `approve` or `changes_requested` with a reason code, summary, feedback, requirement citations, done-criteria coverage, and a governance assessment, all validated against the pinned snapshot. |
 | `await_review` | Long-poll for the round's verdict on a submitted implementation order. A self-claimed implementation session calls it after submission; a session launched by `conveyor run` or a worker does not, because its launcher owns verdicts. |
-| `request_plan_revision` | The repository-reality escape hatch: the approved plan cannot be executed as written. Requires a rationale; the order returns to the queue behind an operator gate. |
+| `request_plan_revision` | The repository-reality escape hatch: the approved plan cannot be executed as written. Requires `claim_work`, the caller's own live implement claim, and a rationale; the order returns to the queue behind an operator gate. |
 
 ## Proposing authority
 
-All three require a live claim on an implement-stage order, and all three
-are fire-and-forget: propose, cite the pending ID, keep working. The
-operator alone confirms, and confirmation never blocks implementation.
+All three require `claim_work` and the caller's own live claim on an
+implement-stage order, and all three are fire-and-forget: propose, cite the
+pending ID, keep working. A viewer is refused even while it holds a live claim.
+The operator alone confirms, and confirmation never blocks implementation.
+Proposals outside a claim go through the REST routes, which require
+`propose_documents`.
 
 | Tool | What it does |
 |---|---|
@@ -239,16 +261,16 @@ operator alone confirms, and confirmation never blocks implementation.
 |---|---|
 | `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status. Observational only; missing usage never blocks lifecycle progress. |
 | `upload_transcript` | Optional self-reported session transcript, capped at 4 MiB, passed through redaction, and stored as an audit artifact. |
-| `report_continuation` | Advisory harness-native continuation metadata for the active attempt, enabling resume after checkpoint or plan-revision releases. Human credentials only. |
+| `report_continuation` | Advisory harness-native continuation metadata for the active attempt, enabling resume after checkpoint or plan-revision releases. Requires `claim_work`; the launching client's user or worker credential only, never the agent session it launched. |
 
 ## Filing and operating
 
 | Tool | What it does |
 |---|---|
 | `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, `hold`, and gate overrides. The title is generated; supplying one is an error. Requires `create_tasks`. An agent credential may call it when its owning user holds `create_tasks` in the workspace; for an agent, omitted gates take the workspace defaults, `true` turns a gate on, and `false` or a legacy level `L0` or `L1` is refused with `agent_gate_disable_forbidden` (a null or non-boolean gate is `invalid_agent_gate_override`). The task's `task.created` event records `trigger_provenance` naming the agent and its owning user. Worker credentials are refused. |
-| `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Human credentials with `operate_gates` only. |
-| `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Human credentials only. |
-| `redispatch_work_order` | Return a stale queued order to the queue with a fresh deadline. Active and execution-timed-out orders are rejected. Human credentials only. |
+| `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Requires `operate_gates`; human credentials only. |
+| `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Requires `set_assignee`; human credentials only. |
+| `redispatch_work_order` | Return a stale queued order to the queue with a fresh deadline. Active and execution-timed-out orders are rejected. Requires `recover_work`; human credentials only. |
 
 ## Contracts worth restating
 

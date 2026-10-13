@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from '@tanstack/react-router'
+import { Link, useParams, useSearch } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { groupForSummary } from '../../lib/activity'
+import { boardColumnFor } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
@@ -21,15 +21,50 @@ import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
+import { BoardList } from './board-list'
+import type { BoardSearch } from './board-search'
+import { BoardViewSwitch } from './board-view-switch'
 
-// The kanban board: the distribution of work across
-// stages is the factory's health made visible. Read-only on purpose — tasks
-// move between columns via the pipeline, never by hand.
+// The Board: kanban columns or the list view of the same workspace (REQ-6),
+// with task intake over either. The view, intake and any arriving list filter
+// live in the address so a reload or a shared link lands on the same view.
 export function Board() {
-  const navigate = useNavigate()
-  const [creating, setCreating] = useState(false)
+  const { workspace } = useWorkspaceSelection()
+  const search = useSearch({ strict: false }) as BoardSearch
   // Intake follows its own capability (DEC-60); the server checks it again.
   const canCreateTasks = useWorkspaceCapability('create_tasks')
+  if (!workspace) return <Onboarding />
+  const list = search.view === 'list'
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
+        <h1 className="text-lg font-semibold tracking-tight">Board</h1>
+        <BoardViewSwitch view={list ? 'list' : 'kanban'} />
+        <div className="ml-auto flex items-center gap-2">
+          <MCPSetup />
+          {canCreateTasks && (
+            <Link to="." search={(prev: BoardSearch) => ({ ...prev, create: true as const })}>
+              <Button size="sm" tabIndex={-1}>
+                <Plus />
+                New task
+              </Button>
+            </Link>
+          )}
+        </div>
+      </header>
+      <div className="mx-4 lg:mx-6">
+        <EmptyRepositoryNotice />
+      </div>
+      {list ? <BoardList /> : <Kanban />}
+      {search.create && canCreateTasks && <TaskCreateSheet />}
+    </div>
+  )
+}
+
+// The kanban view: the distribution of work across stages is the factory's
+// health made visible. Read-only on purpose — tasks move between columns via
+// the pipeline, never by hand.
+function Kanban() {
   // The board opens on the last month of activity and remembers whatever the
   // operator changes it to, per workspace (AC-2.4).
   const [filter, setFilter] = useTaskFilters('board', boardDefaultTaskFilter)
@@ -40,7 +75,6 @@ export function Board() {
   // place rather than emptying the board behind a request the server refuses.
   const rangeError = taskFilterRangeError(filter)
   const { data, isLoading, isFetching, error } = useActivity(params, !rangeError, offset)
-  const { workspace } = useWorkspaceSelection()
   // Highlight the card whose sheet is open (child route /tasks/$taskId).
   const { taskId: selectedId } = useParams({ strict: false }) as { taskId?: string }
 
@@ -53,7 +87,7 @@ export function Board() {
       // anchors; applying the same predicate here keeps the column counts
       // honest for any caller that hands the board a wider list.
       if (isBlueprintAnchor(item.task)) continue
-      const key = groupForSummary(item)
+      const key = boardColumnFor(item)
       byGroup.set(key, [...(byGroup.get(key) ?? []), item])
     }
     for (const items of byGroup.values()) {
@@ -71,12 +105,9 @@ export function Board() {
     setOffset(Math.floor((data.total - 1) / data.limit) * data.limit)
   }, [data, offset])
 
-  if (!workspace) return <Onboarding />
-
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
-        <h1 className="text-lg font-semibold tracking-tight">Board</h1>
+    <>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border px-4 py-2 text-xs text-muted lg:px-6">
         <TaskFilters
           value={filter}
           onChange={(next) => {
@@ -84,47 +115,37 @@ export function Board() {
             setFilter(next)
           }}
           fallback={boardDefaultTaskFilter}
-          className="ml-auto"
+          className="mr-auto"
         />
-        <MCPSetup />
-        {canCreateTasks && (
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus />
-            New task
-          </Button>
+        {data && !isLoading && (
+          <>
+            <span>
+              Showing {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)}{' '}
+              of {data.total}
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={data.offset === 0 || isFetching}
+              onClick={() => setOffset(Math.max(0, data.offset - data.limit))}
+            >
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={data.offset + data.items.length >= data.total || isFetching}
+              onClick={() => setOffset(data.offset + data.limit)}
+            >
+              Next
+            </Button>
+          </>
         )}
-      </header>
-      <div className="mx-4 lg:mx-6">
-        <EmptyRepositoryNotice />
       </div>
       {error != null && (
         <p className="mx-4 mt-4 rounded-lg lg:mx-6 bg-failure-soft p-3 text-sm text-failure">
           Activity feed unavailable: {String(error)}
         </p>
-      )}
-      {data && !isLoading && (
-        <div className="flex shrink-0 items-center justify-end gap-3 border-b border-border px-4 py-2 text-xs text-muted lg:px-6">
-          <span>
-            Showing {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)} of{' '}
-            {data.total}
-          </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={data.offset === 0 || isFetching}
-            onClick={() => setOffset(Math.max(0, data.offset - data.limit))}
-          >
-            Previous
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={data.offset + data.items.length >= data.total || isFetching}
-            onClick={() => setOffset(data.offset + data.limit)}
-          >
-            Next
-          </Button>
-        </div>
       )}
       <section aria-label="Task board" className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
         {isLoading
@@ -139,16 +160,7 @@ export function Board() {
               />
             ))}
       </section>
-      {creating && canCreateTasks && (
-        <TaskCreateSheet
-          onClose={() => setCreating(false)}
-          onCreated={(taskId) => {
-            setCreating(false)
-            void navigate({ to: '/tasks/$taskId', params: { taskId } })
-          }}
-        />
-      )}
-    </div>
+    </>
   )
 }
 

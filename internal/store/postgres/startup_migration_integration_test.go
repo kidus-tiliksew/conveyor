@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -21,10 +22,14 @@ func TestStartupMigrationRejectsStoreNewerThanBinaryIntegration(t *testing.T) {
 	}
 }
 
+// TestWorkerOwnershipMigrationPreservesLegacyOwnerlessIntegration upgrades a
+// version-86 schema through migration 087. The ownerless legacy row keeps its
+// nullable owner and stays listable, and its credential is refused at use
+// (component-work-orders, Workers: Admission).
 func TestWorkerOwnershipMigrationPreservesLegacyOwnerlessIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 86)
 	workspace := "worker-owner-migration-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.SystemActor())
 	if _, err := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
@@ -35,9 +40,15 @@ func TestWorkerOwnershipMigrationPreservesLegacyOwnerlessIntegration(t *testing.
 	if err := Migrate(ctx, st.pool); err != nil {
 		t.Fatal(err)
 	}
-	worker, err := st.AuthenticateWorker(ctx, credentialHash)
-	if err != nil || worker.OwnerUserID != "" {
-		t.Fatalf("legacy worker owner=%q err=%v", worker.OwnerUserID, err)
+	workers, err := st.ListWorkers(ctx)
+	if err != nil || len(workers) != 1 || workers[0].ID != "legacy-worker" || workers[0].OwnerUserID != "" {
+		t.Fatalf("legacy worker listing=%+v err=%v", workers, err)
+	}
+	if _, err := st.AuthenticateWorker(ctx, credentialHash); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("ownerless legacy worker authenticated: %v", err)
+	}
+	if _, err := st.HeartbeatWorker(ctx, "legacy-worker", time.Now().UTC().Add(time.Minute), nil); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("ownerless legacy worker heartbeat: %v", err)
 	}
 }
 

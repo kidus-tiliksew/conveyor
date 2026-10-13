@@ -17,6 +17,8 @@ const (
 	TaskContextDesignAdded        = "task.context_design_added"
 	TaskContextDesignActive       = "task.context_design_activated"
 	TaskContextDesignRemoved      = "task.context_design_removed"
+	ContextReasonUnconfirmed      = "has no confirmed version"
+	ContextReasonNotFound         = "was not found in this workspace"
 )
 
 type TaskContextInput struct {
@@ -64,7 +66,7 @@ func ValidateContextDocument(kind, id string, current int, archived bool) error 
 		return &SystemDesignArchivedError{DocumentID: id}
 	}
 	if current <= 0 {
-		return &TaskContextReferenceError{Kind: kind, ID: id, Reason: "has no confirmed version"}
+		return &TaskContextReferenceError{Kind: kind, ID: id, Reason: ContextReasonUnconfirmed}
 	}
 	return nil
 }

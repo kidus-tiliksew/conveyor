@@ -21,7 +21,7 @@ func changeTaskPolicy(t *testing.T, st *Store, ctx context.Context, request stor
 }
 
 func TestTaskPolicyChangePostgresScopesExclusionToExecutingAttempts(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestTaskPolicyChangePostgresScopesExclusionToExecutingAttempts(t *testing.T
 	}
 	legacy := config.ExecutionSetup{Name: "legacy", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", TimeoutText: "1h"}}}
 	now := time.Now().UTC()
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, SetupName: legacy.Name, SetupContract: legacy, CreatedAt: now}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SetupName: legacy.Name, SetupContract: legacy, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestTaskPolicyChangePostgresScopesExclusionToExecutingAttempts(t *testing.T
 // as the retired command left it, an immutable task.setup.changed event plus
 // the review_superseded flag (component-persistence).
 func TestHistoricalSetupSupersessionPostgresReaggregatesReplacementSeats(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}

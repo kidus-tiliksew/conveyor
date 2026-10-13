@@ -16,7 +16,7 @@ import (
 func TestSubmitRoutesFrozenVerifyAndRendersPinnedContext(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "off", true: "on"}[enabled], func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "app", Base: "main"}}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP, TimeoutText: "1h"}, "review": {Execution: config.ExecutionMCP, TimeoutText: "1h"}, "verify": {Execution: config.ExecutionMCP, TimeoutText: "1h"}}}}
 			cfg.Execution.VerifyStage = enabled

@@ -262,6 +262,9 @@ func EvaluateWorktreeHandoff(task core.Task, order core.WorkOrder, claim core.Wo
 }
 
 func (m *memory) WorktreeHandoffCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaimIdentity, repository string, request core.WorktreeHandoffRequest) (core.WorktreeHandoff, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorktreeHandoff{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]

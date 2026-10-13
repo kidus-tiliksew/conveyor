@@ -135,6 +135,9 @@ func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSet
 }
 
 func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw SetupChangeRequest) (SetupChangeResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return SetupChangeResult{}, err
+	}
 	request, err := PrepareSetupChangeRequest(raw)
 	request.PolicyActor = ActorFromContext(ctx)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {
@@ -198,7 +201,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	}
 	for _, id := range request.SupersedeWorkOrderIDs {
 		order, exists := m.workOrders[id]
-		if !exists || order.TaskID != task.ID || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderCompleted) {
+		if !exists || order.TaskID != task.ID || !PolicyHandoffSupersessionAllowed(order, task.NextStage) {
 			return SetupChangeResult{}, fmt.Errorf("%w: superseded work order %s is invalid", ErrSetupChangeConflict, id)
 		}
 	}
@@ -231,14 +234,14 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 			return SetupChangeResult{}, fmt.Errorf("%w: superseded work order %s is invalid", ErrSetupChangeConflict, id)
 		}
 		priorState := order.State
-		if order.State == core.WorkOrderQueued {
-			state, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel)
+		if command, eventKind, ok := PolicyHandoffRetireCommand(order); ok {
+			state, transitionErr := core.TransitionWorkOrder(order.State, command)
 			if transitionErr != nil {
 				return SetupChangeResult{}, transitionErr
 			}
 			order.State, order.Claimable, order.UpdatedAt = state, false, now
 			m.workOrders[id] = order
-			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actor.ID, ActorRole: actor.Role,
+			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: eventKind, ActorID: actor.ID, ActorRole: actor.Role,
 				Payload: core.JSONPayload(order), At: now})
 			if job, index, found := m.findJobLocked(order.JobID); found {
 				job.State, job.EndedAt = core.JobFailed, now

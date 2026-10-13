@@ -17,7 +17,7 @@ import (
 
 func TestAssignmentResolveTaskWiresRecordedOwnerLookup(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	resolver := assignmentResolveTask(st, "app", "org/app")
 	source := monitor.GitHubSource{NewTaskResolver: resolver}
 	if source.NewTaskResolver == nil {
@@ -77,7 +77,7 @@ func TestAssignmentResolverPollReadCount(t *testing.T) {
 	for _, n := range []int{1, 12} {
 		for _, unrelated := range []int{0, 50} {
 			t.Run(fmt.Sprintf("pulls=%d/unrelated=%d", n, unrelated), func(t *testing.T) {
-				ctx := store.WithWorkspace(t.Context(), "demo")
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 				st := &countingMonitorStore{Store: store.NewMemory()}
 				for i := 0; i <= unrelated; i++ {
 					repo := "other"
@@ -165,7 +165,7 @@ func TestAssignmentResolverReadErrorsAbortPoll(t *testing.T) {
 					return nil, nil
 				},
 			}
-			got, err := source.Observations(store.WithWorkspace(t.Context(), "demo"), time.Time{})
+			got, err := source.Observations(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), time.Time{})
 			if !errors.Is(err, sentinel) || len(got) != 0 {
 				t.Fatalf("observations=%v err=%v", got, err)
 			}
@@ -181,7 +181,7 @@ func TestAssignmentResolverReadErrorsAbortPoll(t *testing.T) {
 }
 
 func TestAssignmentResolverRefreshesBranchBetweenPolls(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "task", Workspace: "demo", Repo: "app", Branch: "old-branch", State: core.TaskRunning}
 	if err := st.CreateTask(ctx, task); err != nil {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -124,6 +123,9 @@ type InterruptedReviewRecoveryState struct {
 	Reason         string           `json:"reason"`
 	EligibleOrders []core.WorkOrder `json:"eligible_orders"`
 	RetainedOrders []core.WorkOrder `json:"retained_orders"`
+	// AutomaticRetryExhausted is true when this round already had its one
+	// automatic act (feature-bounded-automatic-recovery AR-5).
+	AutomaticRetryExhausted bool `json:"automatic_retry_exhausted"`
 }
 
 type InterruptedReviewRecoveryRequest struct {
@@ -131,6 +133,8 @@ type InterruptedReviewRecoveryRequest struct {
 	RequestID string
 	Round     int
 	Refreezes map[string]*RecoveryRefreeze
+	// Automatic marks the AR-5 sweep's act; its audit payload records it.
+	Automatic bool
 }
 
 type InterruptedReviewRecoveryResult struct {
@@ -171,6 +175,8 @@ func InterruptedReviewRecoveryNeeded(task core.Task, orders []core.WorkOrder, ev
 		Reason:         "latest review round has interrupted seats whose claims are no longer authorized",
 		EligibleOrders: make([]core.WorkOrder, 0),
 		RetainedOrders: make([]core.WorkOrder, 0),
+		// One automatic act per round (AR-5); later acts are operator-only.
+		AutomaticRetryExhausted: AutomaticReviewAct(events, latest),
 	}
 	verdicts := completedReviewWorkOrderIDs(events, latest)
 	for _, order := range orders {
@@ -231,6 +237,12 @@ type ReviewRecoveryState struct {
 	Reason             string           `json:"reason"`
 	TimedOutOrders     []core.WorkOrder `json:"timed_out_orders"`
 	InconsistentOrders []core.WorkOrder `json:"inconsistent_orders"`
+	// ExhaustedOrders are queued seats whose bounded automatic recovery is
+	// exhausted. A retry replaces them with a new round; they stay unchanged.
+	ExhaustedOrders []core.WorkOrder `json:"exhausted_orders"`
+	// AutomaticRetryExhausted is true when this round already had its one
+	// automatic act (feature-bounded-automatic-recovery AR-5).
+	AutomaticRetryExhausted bool `json:"automatic_retry_exhausted"`
 }
 
 type ReviewRoundRetryRequest struct {
@@ -239,6 +251,8 @@ type ReviewRoundRetryRequest struct {
 	Reason     string
 	PriorRound int
 	PRHead     string
+	// Automatic marks the AR-5 sweep's act; its audit payload records it.
+	Automatic bool
 }
 
 type ReviewRoundRetryResult struct {
@@ -286,9 +300,19 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *R
 		Reason:             "latest review round is terminal after a reviewer timed out",
 		TimedOutOrders:     make([]core.WorkOrder, 0),
 		InconsistentOrders: make([]core.WorkOrder, 0),
+		ExhaustedOrders:    make([]core.WorkOrder, 0),
+	}
+	for _, events := range eventSets {
+		if AutomaticReviewAct(events, latest) {
+			state.AutomaticRetryExhausted = true
+		}
 	}
 	for _, order := range orders {
 		if order.Stage != core.StageReview || order.ReviewRound != latest {
+			continue
+		}
+		if ReviewSeatRecoveryExhausted(order) {
+			state.ExhaustedOrders = append(state.ExhaustedOrders, order)
 			continue
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted {
@@ -305,16 +329,21 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *R
 			}
 		}
 	}
-	if len(state.TimedOutOrders) == 0 && len(state.InconsistentOrders) == 0 {
+	if len(state.TimedOutOrders) == 0 && len(state.InconsistentOrders) == 0 && len(state.ExhaustedOrders) == 0 {
 		return nil
 	}
 	if len(state.InconsistentOrders) > 0 {
 		state.Reason = "latest review round is non-progressing because a completed seat has a contradictory failed child outcome"
+	} else if len(state.TimedOutOrders) == 0 {
+		state.Reason = "latest review round cannot finish because a seat's automatic recovery is exhausted"
 	}
 	return state
 }
 
 func (m *memory) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if pairing.Workspace != workspaceOrDefault(ctx, pairing.Workspace) {
@@ -344,6 +373,9 @@ func (m *memory) ConsumeWorkerPairing(_ context.Context, tokenHash string, now t
 }
 
 func (m *memory) CreateWorker(ctx context.Context, worker core.Worker) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if worker.Workspace != workspaceOrDefault(ctx, worker.Workspace) {
@@ -376,12 +408,22 @@ func (m *memory) ListWorkers(ctx context.Context) ([]core.Worker, error) {
 	return result, nil
 }
 
+// workerOwnerActiveLocked reports whether a worker has a nonblank owner with
+// an active membership in the worker's workspace. The volatile backend's
+// membership projection stands in for the durable users and bindings rows;
+// NewVolatileBackend derives it under the mutex and NewMemory fixtures seed it
+// explicitly (component-work-orders, Workers: Admission).
+func (m *memory) workerOwnerActiveLocked(worker core.Worker) bool {
+	owner := strings.TrimSpace(worker.OwnerUserID)
+	return owner != "" && m.workspaceMembers[memoryScopedKey{workspace: worker.Workspace, id: owner}]
+}
+
 func (m *memory) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace, _ := WorkspaceFromContext(ctx)
 	for _, worker := range m.workers {
-		if (workspace == "" || worker.Workspace == workspace) && worker.CredentialHash == credentialHash && worker.RevokedAt.IsZero() {
+		if (workspace == "" || worker.Workspace == workspace) && worker.CredentialHash == credentialHash && worker.RevokedAt.IsZero() && m.workerOwnerActiveLocked(worker) {
 			return worker, nil
 		}
 	}
@@ -393,7 +435,7 @@ func (m *memory) HeartbeatWorker(ctx context.Context, id string, leaseExpires ti
 	defer m.mu.Unlock()
 	worker, ok := m.workers[id]
 	workspace, _ := WorkspaceFromContext(ctx)
-	if !ok || worker.Workspace != workspace || !worker.RevokedAt.IsZero() {
+	if !ok || worker.Workspace != workspace || !worker.RevokedAt.IsZero() || !m.workerOwnerActiveLocked(worker) {
 		return core.Worker{}, ErrWorkerUnauthorized
 	}
 	worker.LastSeenAt = time.Now().UTC()
@@ -423,6 +465,9 @@ func (m *memory) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessMo
 }
 
 func (m *memory) RevokeWorker(ctx context.Context, id string) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	worker, ok := m.workers[id]
@@ -440,6 +485,9 @@ func (m *memory) RevokeWorker(ctx context.Context, id string) error {
 }
 
 func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -494,6 +542,9 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 }
 
 func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -530,6 +581,9 @@ func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID st
 }
 
 func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -612,6 +666,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			}
 		} else {
 			order.RetrySuppressed = true
+			order.RetrySuppressionReason = core.AttemptRetriesExhaustedReason
 		}
 		if release.ModelRejection && order.RequiredHarness != "" && order.RequiredModel != "" && detail != "" {
 			workspace, _ := WorkspaceFromContext(ctx)
@@ -698,6 +753,9 @@ func (m *memory) previousTransientFailuresLocked(order core.WorkOrder) int {
 }
 
 func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
@@ -1002,6 +1060,9 @@ func workOrderRetryDelay(release core.WorkOrderRelease, retry int) time.Duration
 }
 
 func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if !lease.ValidFor(decision.TaskID) {
 		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
 	}
@@ -1078,6 +1139,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			if task.State == core.TaskQueued {
 				from := task.State
 				task.State = core.TaskRunning
+				task.GateKind = core.GateKindFor(core.TaskRunning, core.TaskOrderClaim)
 				m.tasks[task.ID] = task
 				m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
 					"from": from, "to": task.State, "command": core.TaskOrderClaim, "claim_authority_work_order_id": order.ID,
@@ -1120,7 +1182,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)})
 
 	command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
-	autoApprove := false
 	if aggregate.Verdict == "changes_requested" {
 		count := 0
 		for _, event := range m.events[decision.TaskID] {
@@ -1141,6 +1202,9 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			Count: count, Window: window, MaxBounces: decision.MaxBounces, ReviewRound: decision.ReviewRound,
 			Reviews: aggregate.Reviews, Requeue: core.TaskStageAdvance, EnforceLimit: true,
 		})
+		if task.State == core.TaskAwaiting && plan.Command == core.TaskStageBounceLimit {
+			return nil
+		}
 		m.nextReviewID++
 		plan.Intervention.ID = m.nextReviewID
 		m.interventions[decision.TaskID] = append(m.interventions[decision.TaskID], plan.Intervention)
@@ -1148,26 +1212,14 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			m.appendEventLocked(ctx, event)
 		}
 		command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-	} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
-		autoApprove, recovery = true, ""
+	} else if ReviewAcceptAdmitted(decision, aggregate.Verdict) {
+		// DEC-64(8): one running -> approved edge, no intervention.
+		command, recovery = core.TaskReviewAccept, ""
 	}
 	fromState, fromStage := task.State, task.NextStage
 	state, err := core.TransitionTask(fromState, command)
 	if err != nil {
 		return err
-	}
-	if autoApprove {
-		approved, approveErr := core.TransitionTask(state, core.TaskInterventionApproveReview)
-		if approveErr != nil {
-			return approveErr
-		}
-		// Auto-approval currently projects running -> awaiting_human with
-		// gate.merge even though the merge gate is off. The table has no direct
-		// running -> approved edge; keep this explicit gap workaround visible
-		// until a table amendment supplies the intended command.
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
-		fromState, state = state, approved
-		command = core.TaskInterventionApproveReview
 	}
 	nonAdvancingRefresh := NonAdvancingRefreshBinding(decision, aggregate.ApprovedHeadSHA)
 	if nonAdvancingRefresh {
@@ -1184,10 +1236,8 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 	}
 	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
+	task.GateKind = core.GateKindFor(state, command)
 	m.tasks[task.ID] = task
-	// When autoApprove is true, this second projection records an intervention
-	// command without a human intervention. It is the paired gap workaround for
-	// the absent running -> approved table edge.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil
@@ -1341,6 +1391,9 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 }
 
 func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("work-order create requires a valid taskops lease")
 	}
@@ -1404,6 +1457,9 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
 	}
@@ -1473,6 +1529,9 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 }
 
 func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
 	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
@@ -1491,11 +1550,24 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if err := core.ValidateVerifyDispatch(task, order); err != nil {
 		return false, err
 	}
+	// Creation agrees with core.WorkOrderBlocksStageMint: a same-stage order
+	// refuses only while it is the task's latest order in a holding state,
+	// or holds a claim (executor exclusivity). An older queued or stale
+	// order behind a newer stage is history and is retired below
+	// (component-work-orders "Stages and order minting"; DEC-62).
+	var taskOrders []core.WorkOrder
 	for _, existing := range m.workOrders {
-		if existing.TaskID == job.TaskID && existing.Stage == job.Stage &&
-			(existing.State == core.WorkOrderQueued || existing.State == core.WorkOrderClaimed) {
+		if existing.TaskID != job.TaskID {
+			continue
+		}
+		if existing.Stage == job.Stage && existing.State == core.WorkOrderClaimed {
 			return false, nil
 		}
+		taskOrders = append(taskOrders, existing)
+	}
+	sortWorkOrders(taskOrders)
+	if _, held := core.WorkOrderBlocksStageMint(taskOrders, job.Stage); held {
+		return false, nil
 	}
 	if _, exists := m.workOrders[order.ID]; exists {
 		return false, nil
@@ -1526,7 +1598,19 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stage re-entry", now, true)
 	return true, nil
+}
+
+// sortWorkOrders orders one task's orders by (created_at, id), the order
+// core.WorkOrderBlocksStageMint expects.
+func sortWorkOrders(orders []core.WorkOrder) {
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
 }
 
 func (m *memory) taskBlockedLocked(taskID string) bool {
@@ -1539,6 +1623,9 @@ func (m *memory) taskBlockedLocked(taskID string) bool {
 }
 
 func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return ReviewRoundRetryResult{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
 	}
@@ -1578,6 +1665,9 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	recovery := ReviewRecoveryNeeded(taskOrders, m.events[request.TaskID])
 	if recovery == nil || recovery.PriorRound != request.PriorRound {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching terminal timed-out review round", ErrReviewRetryConflict, request.TaskID)
+	}
+	if err := AutomaticReviewRetryRefusal(request, recovery); err != nil {
+		return ReviewRoundRetryResult{}, err
 	}
 	newRound := request.PriorRound + 1
 	for i, job := range jobs {
@@ -1624,7 +1714,14 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	for _, order := range recovery.InconsistentOrders {
 		inconsistentIDs = append(inconsistentIDs, order.ID)
 	}
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
+	exhaustedIDs := make([]string, 0, len(recovery.ExhaustedOrders))
+	for _, order := range recovery.ExhaustedOrders {
+		exhaustedIDs = append(exhaustedIDs, order.ID)
+	}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "exhausted_work_order_ids": exhaustedIDs, "setup_name": task.SetupName, "setup_contract": task.SetupContract}
+	if request.Automatic {
+		payload["automatic"] = true
+	}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
@@ -1633,6 +1730,9 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 }
 
 func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return InterruptedReviewRecoveryResult{}, err
+	}
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdRecover)) {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires a valid taskops lease")
 	}
@@ -1682,6 +1782,9 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no matching interrupted review round", ErrReviewRetryConflict, request.TaskID)
 	}
+	if err := AutomaticInterruptedRecoveryRefusal(request, recovery); err != nil {
+		return InterruptedReviewRecoveryResult{}, err
+	}
 	result := InterruptedReviewRecoveryResult{
 		RequestID:       request.RequestID,
 		TaskID:          request.TaskID,
@@ -1690,19 +1793,6 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 		RetainedOrders:  append(make([]core.WorkOrder, 0, len(recovery.RetainedOrders)), recovery.RetainedOrders...),
 	}
 	actor := ActorFromContext(ctx)
-	for _, eligible := range recovery.EligibleOrders {
-		change := request.Refreezes[eligible.ID]
-		if change == nil {
-			continue
-		}
-		priorContract := task.SetupContract
-		task.SetupContract = change.Setup
-		m.tasks[task.ID] = task
-		if !reflect.DeepEqual(priorContract, change.Setup) {
-			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: eligible.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": request.RequestID, "work_order_id": eligible.ID, "actor": actor.ID}), At: now})
-		}
-		break
-	}
 	for _, eligible := range recovery.EligibleOrders {
 		order := m.workOrders[eligible.ID]
 		priorOutcome := order.LastAttemptOutcome
@@ -1725,7 +1815,11 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	for _, retained := range recovery.RetainedOrders {
 		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: retained.JobID, Kind: "review.seat_recovery_skipped", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "review_seat": retained.ReviewSeat, "work_order_id": retained.ID, "request_id": request.RequestID, "prior_state": retained.State, "resulting_state": retained.State, "outcome": "retained_completed", "setup_name": task.SetupName, "setup_contract": task.SetupContract}), At: now})
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now})
+	recoveredPayload := map[string]any{"workspace_id": workspace, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}
+	if request.Automatic {
+		recoveredPayload["automatic"] = true
+	}
+	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(recoveredPayload), At: now})
 	m.interruptedReviewRecoveries[key] = memoryInterruptedReviewRecovery{Workspace: workspace, Request: request, Result: result}
 	return result, nil
 }
@@ -1753,7 +1847,14 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 		order.Assignee = m.tasks[order.TaskID].Assignee
 		orders = append(orders, ProjectWorkOrderAt(order, now))
 	}
-	sort.Slice(orders, func(i, j int) bool { return orders[i].CreatedAt.Before(orders[j].CreatedAt) })
+	// Ties break by ID, as PostgreSQL's ORDER BY created_at,id does, so the
+	// latest order a reader picks is stable across reads.
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
 	return orders, nil
 }
 
@@ -1902,7 +2003,7 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
 		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 			order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
-		if elapsedExecution || elapsedClaim || elapsedQueue {
+		if elapsedExecution || elapsedClaim || elapsedQueue || m.automaticRecoveryCandidateLocked(order, now) {
 			seen[order.TaskID] = struct{}{}
 		}
 	}
@@ -1915,6 +2016,9 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 }
 
 func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	if !lease.ValidFor(taskID) {
 		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
 	}
@@ -1932,10 +2036,14 @@ func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLeas
 			count++
 		}
 	}
-	return count, nil
+	acted, err := m.applyAutomaticRecoveryLocked(ctx, taskID, now)
+	return count + acted, err
 }
 
 func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
@@ -1945,14 +2053,48 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
+	if claim.WorkerID != "" {
+		// Worker owner admission under the mutex: the enrollment must exist,
+		// be unrevoked, and have an active owner. Its owner replaces any
+		// client-supplied owner (component-work-orders, Worker owner
+		// admission).
+		worker, ok := m.workers[claim.WorkerID]
+		if !ok || worker.Workspace != m.tasks[order.TaskID].Workspace {
+			return core.WorkOrder{}, fmt.Errorf("%w: worker %s is not enrolled", ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if !worker.RevokedAt.IsZero() {
+			return core.WorkOrder{}, fmt.Errorf("%w: worker %s", ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerRead); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if !m.workerOwnerActiveLocked(worker) {
+			return core.WorkOrder{}, fmt.Errorf("%w: worker %s owner has no active workspace membership", ErrWorkerUnauthorized, claim.WorkerID)
+		}
+		claim.OwnerUserID = strings.TrimSpace(worker.OwnerUserID)
+		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerLocked); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	if task := m.tasks[order.TaskID]; task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, task.Assignee.UserID)
 	}
 	if !core.ValidWorkOrderStage(order.Stage) {
 		return core.WorkOrder{}, fmt.Errorf("invalid work-order stage %s", order.Stage)
 	}
-	if err := core.ValidateVerifyDispatch(m.tasks[order.TaskID], order); err != nil {
-		return core.WorkOrder{}, err
+	var claimOrders []core.WorkOrder
+	for _, candidate := range m.workOrders {
+		if candidate.TaskID == order.TaskID {
+			claimOrders = append(claimOrders, candidate)
+		}
+	}
+	if order.State == core.WorkOrderQueued {
+		if err := WorkOrderRecoveryRefusal(m.tasks[order.TaskID], order, claimOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err := WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], order.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
 	}
 	for _, other := range m.workOrders {
 		if core.ConflictingExecutorClaims(order, other) {
@@ -2096,6 +2238,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			return core.WorkOrder{}, taskErr
 		}
 		task.State = state
+		task.GateKind = core.GateKindFor(state, core.TaskOrderClaim)
 		m.tasks[task.ID] = task
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": state, "command": core.TaskOrderClaim})})
 	}
@@ -2104,6 +2247,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 }
 
 func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
@@ -2114,11 +2260,11 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 		return core.WorkOrder{}, fmt.Errorf("work-order redispatch requires a valid taskops lease")
 	}
 	now := time.Now().UTC()
-	order = m.refreshWorkOrderLocked(ctx, order, now)
-	if order.State != core.WorkOrderStale {
+	projected := ProjectWorkOrderAt(order, now)
+	if projected.State != core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("work order %s is not stale and cannot be redispatched", id)
 	}
-	if !order.ExecutionStartedAt.IsZero() {
+	if !projected.ExecutionStartedAt.IsZero() {
 		return core.WorkOrder{}, fmt.Errorf("work order %s was already claimed and requires operator recovery", id)
 	}
 	var taskOrders []core.WorkOrder
@@ -2127,37 +2273,17 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 			taskOrders = append(taskOrders, candidate)
 		}
 	}
-	if err := WorkOrderRecoverySupersessionError(m.tasks[order.TaskID], order, taskOrders); err != nil {
+	if err := WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
 		return core.WorkOrder{}, err
 	}
+	if err := WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+		return core.WorkOrder{}, err
+	}
+	order = m.refreshWorkOrderLocked(ctx, order, now)
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
-	next, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch)
-	if transitionErr != nil {
-		return core.WorkOrder{}, transitionErr
-	}
-	order.State, order.Claimable = next, true
-	order.ClaimantID, order.SessionID, order.ClientTokenHash = "", "", ""
-	order.Agent, order.Model, order.WorkerID, order.Progress = "", "", "", ""
-	order.ModelEnforcement = ""
-	order.LeaseExpiresAt = time.Time{}
-	order.ClearExecutionPins()
-	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
-	order.ExecutionStartedAt, order.ExecutionDeadline = time.Time{}, time.Time{}
-	order.RedispatchCount++
-	order.UpdatedAt = now
-	if order.Stage == core.StageImplement {
-		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
-	}
-	m.workOrders[id] = order
-	if job, index, exists := m.findJobLocked(order.JobID); exists {
-		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
-		m.jobs[job.TaskID][index] = job
-	}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.redispatched", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "prior_state": core.WorkOrderStale, "new_state": order.State, "command": core.WorkOrderCmdRedispatch, "reason": "stale never-claimed queue redispatch"}), At: now})
-	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stale redispatch", now, false)
-	return order, nil
+	return m.redispatchOrderLocked(ctx, order, queueTimeout, now, false, config.RecoveryPolicy{}, "")
 }
 
 func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
@@ -2177,6 +2303,9 @@ func (m *memory) reviewSeatAcceptedLocked(order core.WorkOrder) bool {
 }
 
 func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.WorkOrder{}, err
+	}
 	clean, sanitationErr := SanitizeVerificationRecovery(ctx, nil)
 	if sanitationErr != nil {
 		return core.WorkOrder{}, sanitationErr
@@ -2198,48 +2327,49 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	workspace, _ := WorkspaceFromContext(ctx)
 	var verificationRows []VerificationRow
 	var verificationEvents []core.Event
+	key := workspace + "/" + id + "/" + requestID
+	order, ok := m.workOrders[id]
+	if !ok {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
+		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+	}
+	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
+		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
+	}
+	now := time.Now().UTC()
+	projected := order
 	if VerificationRecoveryFromContext(ctx) != nil {
 		actor := ActorFromContext(ctx)
 		member := memoryScopedKey{workspace: workspace, id: strings.TrimPrefix(actor.ID, "user:")}
 		if actor.Role != core.ActorUser || !m.workspaceMembers[member] || !core.RoleAllows(m.workspaceMemberRoles[member], core.CapabilityOperateGates) {
 			return core.WorkOrder{}, ErrVerificationAccess
 		}
-		old := m.workOrders[id]
-		verificationRows, verificationEvents, err = PrepareVerificationRecovery(ctx, m.tasks[old.TaskID], old, m.verificationRowsLocked(workspace, old.TaskID), requestID, time.Now().UTC())
+		var taskOrders []core.WorkOrder
+		for _, candidate := range m.workOrders {
+			if candidate.TaskID == order.TaskID {
+				taskOrders = append(taskOrders, candidate)
+			}
+		}
+		if err = WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+			return core.WorkOrder{}, err
+		}
+		verificationRows, verificationEvents, err = PrepareVerificationRecovery(ctx, m.tasks[order.TaskID], order, m.verificationRowsLocked(workspace, order.TaskID), requestID, now)
 		if err != nil {
 			return core.WorkOrder{}, err
 		}
 		if err = VerificationFault(ctx, "recovery"); err != nil {
 			return core.WorkOrder{}, err
 		}
+	} else {
+		projected = ProjectWorkOrderAt(order, now)
 	}
-	key := workspace + "/" + id + "/" + requestID
 	if _, exists := m.recoveries[key]; exists {
-		order, ok := m.workOrders[id]
-		if !ok {
-			return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
-		}
-		if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
-			return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
-		}
 		return order, nil
-	}
-	order, ok := m.workOrders[id]
-	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
-	}
-	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
-		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
-	}
-	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
-	}
-	if VerificationRecoveryFromContext(ctx) == nil {
-		order = m.refreshWorkOrderLocked(ctx, order, time.Now().UTC())
-	}
-	eligibleQueued := order.State == core.WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
-	if !eligibleQueued && order.State != core.WorkOrderStale && order.State != core.WorkOrderTimedOut {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
 	}
 	var taskOrders []core.WorkOrder
 	for _, candidate := range m.workOrders {
@@ -2247,60 +2377,19 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 			taskOrders = append(taskOrders, candidate)
 		}
 	}
-	if err = WorkOrderRecoverySupersessionError(m.tasks[order.TaskID], order, taskOrders); err != nil {
+	if err = WorkOrderRecoveryRefusal(m.tasks[order.TaskID], projected, taskOrders); err != nil {
 		return core.WorkOrder{}, err
 	}
-	now := time.Now().UTC()
-	prior := order.LastAttemptOutcome
-	priorAttemptID := order.LastAttemptID
-	priorState := order.State
-	priorFailureCategory := order.LastFailureCategory
-	priorTransientFailures := m.previousTransientFailuresLocked(order)
-	priorNextRetryAt := order.NextRetryAt
-	clearActiveAttempt(&order)
-	lifecycleCommand := core.WorkOrderCmdRecover
-	eventKind := "work_order.recovered"
-	if priorState == core.WorkOrderQueued {
-		// Resetting retry metadata on an already-queued order is not a lifecycle
-		// transition. Keep the historical event kind without mislabeling this
-		// operator action as W14.
-		lifecycleCommand = ""
-		eventKind = "work_order.redispatched"
+	if err = WorkOrderPlanRevisionRefusal(m.tasks[order.TaskID], m.events[order.TaskID], projected.ID); err != nil {
+		return core.WorkOrder{}, err
 	}
-	next := priorState
-	if lifecycleCommand != "" {
-		var transitionErr error
-		next, transitionErr = core.TransitionWorkOrder(priorState, lifecycleCommand)
-		if transitionErr != nil {
-			return core.WorkOrder{}, transitionErr
-		}
+	eligibleQueued := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
+	if !eligibleQueued && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {
+		return core.WorkOrder{}, fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
 	}
-	order.State = next
-	order.LastAttemptOutcome = ""
-	order.RetrySuppressed = false
-	order.RetrySuppressionReason = ""
-	order.AutomaticRetryCount = 0
-	order.NextRetryAt = time.Time{}
-	order.QueueEnteredAt, order.QueueDeadline = now, now.Add(queueTimeout)
-	order.RedispatchCount++
-	order.OperatorDirection = direction
-	order.UpdatedAt = now
-	order.Claimable = true
-	order.ClearExecutionPins()
-	if order.Stage == core.StageImplement {
-		m.repinTaskDesignContextLocked(ctx, order.TaskID, now)
-	}
-	if len(refreeze) != 0 && refreeze[0] != nil {
-		change := refreeze[0]
-		task := m.tasks[order.TaskID]
-		priorContract := task.SetupContract
-		task.SetupContract = change.Setup
-		m.tasks[task.ID] = task
-		order.ExecutionTimeoutText = change.ExecutionTimeoutText
-		if !reflect.DeepEqual(priorContract, change.Setup) {
-			actor := ActorFromContext(ctx)
-			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.setup.refrozen", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"prior": priorContract, "new": change.Setup, "request_id": requestID, "work_order_id": order.ID, "actor": actor.ID}), At: now})
-		}
+
+	if VerificationRecoveryFromContext(ctx) == nil {
+		order = m.refreshWorkOrderLocked(ctx, order, now)
 	}
 	for _, row := range verificationRows {
 		m.verificationRows[workspace+"\x00"+row.Table+"\x00"+row.ID] = row
@@ -2308,14 +2397,11 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	for _, event := range verificationEvents {
 		m.appendEventLocked(ctx, event)
 	}
-	m.workOrders[id] = order
-	if job, index, exists := m.findJobLocked(order.JobID); exists {
-		job.State, job.StartedAt, job.EndedAt = core.JobPending, time.Time{}, time.Time{}
-		m.jobs[job.TaskID][index] = job
+	var freeze *RecoveryRefreeze
+	if len(refreeze) != 0 {
+		freeze = refreeze[0]
 	}
-	m.recoveries[key] = struct{}{}
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": id, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction, "failure_category": priorFailureCategory, "consecutive_transient_failures": priorTransientFailures, "next_retry_at": priorNextRetryAt}), At: now})
-	return order, nil
+	return m.recoverOrderLocked(ctx, order, requestID, direction, queueTimeout, now, freeze, false, config.RecoveryPolicy{})
 }
 
 func (m *memory) repinTaskDesignContextLocked(ctx context.Context, taskID string, at time.Time) {
@@ -2402,6 +2488,9 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 func tokenHash(value string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(value))) }
 
 func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.updateWorkOrderCommandLocked(ctx, lease, order, commands...)
@@ -2506,6 +2595,9 @@ func InferWorkOrderUpdateCommand(current, next core.WorkOrder) (core.WorkOrderCo
 }
 
 func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.SpecVersion{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[spec.TaskID]; !ok {
@@ -2568,6 +2660,9 @@ func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.
 }
 
 func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	versions := m.specs[taskID]

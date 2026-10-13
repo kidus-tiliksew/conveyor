@@ -13,8 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // conformanceSchema is the one migrated schema the conformance run shares.
@@ -161,13 +164,27 @@ func conformanceStore(t *testing.T) *Store {
 func TestPostgresConformanceIntegration(t *testing.T) {
 	integrationDatabaseURL(t)
 	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
+		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
+			service := &workorder.Service{
+				Store:          st,
+				ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+					return githubtrigger.ReviewTarget{Number: 7, HeadSHA: head}, nil
+				},
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
+		},
 		ProductionCapable: true,
 		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			t.Helper()
 			st := conformanceStore(t)
 			workspace := "conformance-" + core.NewTaskID()
-			ctx := store.WithWorkspace(t.Context(), workspace)
+			ctx := store.WithActor(store.WithWorkspace(t.Context(), workspace), store.SystemActor())
 			cfg := &config.Config{Workspace: workspace, Repos: repos, Routing: config.Routing{Stages: map[string]config.StageRoute{
 				"implement": {Timeout: time.Hour}, "review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 			}}}
@@ -199,7 +216,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				return result, rows.Err()
 			}, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
 				ws, _ := store.WorkspaceFromContext(ctx)
-				rows, err := st.pool.Query(ctx, `SELECT id,kind,payload_json,at FROM events WHERE workspace_id=$1 AND task_id IS NULL AND starts_with(kind,$2) ORDER BY at,id`, ws, kindPrefix)
+				rows, err := st.pool.Query(ctx, `SELECT id,kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=$1 AND task_id IS NULL AND starts_with(kind,$2) ORDER BY at,id`, ws, kindPrefix)
 				if err != nil {
 					return nil, err
 				}
@@ -207,9 +224,11 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				var result []core.Event
 				for rows.Next() {
 					var e core.Event
-					if err := rows.Scan(&e.ID, &e.Kind, &e.Payload, &e.At); err != nil {
+					var role string
+					if err := rows.Scan(&e.ID, &e.Kind, &e.ActorID, &role, &e.Payload, &e.At); err != nil {
 						return nil, err
 					}
+					e.ActorRole = core.ActorRole(role)
 					result = append(result, e)
 				}
 				return result, rows.Err()
@@ -225,6 +244,10 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return postgresSeedEvents(t, st, ctx, base, events)
+			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
+				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
+					t.Fatal(err)
+				}
 			}}
 		},
 	})

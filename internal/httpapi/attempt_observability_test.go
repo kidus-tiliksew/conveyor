@@ -37,7 +37,7 @@ func TestAttemptObservabilityHTTPBindingAndBodyLimit(t *testing.T) {
 		},
 		"stranger-token": {ID: "pat_stranger", OwnerUserID: "someone-else", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 	}
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	target := createTaskRunOrder(t, st, "target")
 	createTaskRunOrder(t, st, "other")
 	claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"local-codex","model":"local-model"}`)
@@ -139,7 +139,7 @@ func TestAttemptObservabilityHTTPBindingAndBodyLimit(t *testing.T) {
 // the capture to the claiming enrolled worker for a non-implement stage.
 func TestAttemptObservabilityWorkerPlaneBinding(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
@@ -147,8 +147,14 @@ func TestAttemptObservabilityWorkerPlaneBinding(t *testing.T) {
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
 	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
-	owner := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
-	intruder := core.Worker{ID: "worker-b", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute)}
+	owner := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", Name: "owner", CredentialHash: "credential-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	if err := createOwnedWorker(st, ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	intruder := core.Worker{ID: "worker-b", Workspace: "demo", OwnerUserID: "usr-owner", Name: "intruder", CredentialHash: "credential-intruder", LeaseExpiresAt: now.Add(time.Minute)}
+	if err := createOwnedWorker(st, ctx, intruder); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: "worker-capture", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/worker-capture", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -167,7 +173,7 @@ func TestAttemptObservabilityWorkerPlaneBinding(t *testing.T) {
 		route.URLParams.Add("id", job.ID)
 		requestCtx := context.WithValue(ctx, chi.RouteCtxKey, route)
 		if worker != nil {
-			requestCtx = context.WithValue(requestCtx, workerContextKey{}, *worker)
+			requestCtx = withWorkerActor(requestCtx, *worker)
 		}
 		request := httptest.NewRequest(http.MethodPost, "/v1/worker/work-orders/"+job.ID+"/"+name, strings.NewReader(body)).WithContext(requestCtx)
 		response := httptest.NewRecorder()
@@ -224,7 +230,7 @@ type attemptCaptureBoundPlane struct {
 func attemptCaptureRunPlane(t *testing.T) attemptCaptureBoundPlane {
 	t.Helper()
 	_, st, handler := taskRunHTTPFixture(t)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	target := createTaskRunOrder(t, st, "target")
 	claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"local-codex","model":"local-model"}`)
 	if claim.Code != http.StatusOK {
@@ -257,7 +263,7 @@ func attemptCaptureRunPlane(t *testing.T) attemptCaptureBoundPlane {
 func attemptCaptureWorkerPlane(t *testing.T) attemptCaptureBoundPlane {
 	t.Helper()
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"review": {Execution: config.ExecutionMCP, Timeout: time.Hour},
@@ -265,7 +271,10 @@ func attemptCaptureWorkerPlane(t *testing.T) attemptCaptureBoundPlane {
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	workOrders := &workorder.Service{Store: st, ConfigProvider: provider}
 	workers := &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: provider, Now: func() time.Time { return now }}
-	owner := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	owner := core.Worker{ID: "worker-a", Workspace: "demo", OwnerUserID: "usr-owner", Name: "owner", CredentialHash: "credential-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	if err := createOwnedWorker(st, ctx, owner); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: "worker-bound", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/worker-bound", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -445,7 +454,7 @@ func TestAttemptObservabilityDuplicateUploadsRaceAndRedactionFailure(t *testing.
 	t.Run("redaction failure", func(t *testing.T) {
 		server, st, handler := taskRunHTTPFixture(t)
 		server.Workers.RedactionSecrets = failingAttemptRedaction{}
-		ctx := store.WithWorkspace(t.Context(), "demo")
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 		target := createTaskRunOrder(t, st, "target")
 		claim := taskRunHTTPCall(handler, http.MethodPost, "/v1/tasks/target/run-orders/"+target.ID+"/claim", `{"session_id":"run-session","client_token":"run-secret","agent":"local-codex","model":"local-model"}`)
 		var claimed core.WorkOrder

@@ -207,6 +207,54 @@ func runWorkspaceControl(t *testing.T, x Fixture) {
 	t.Run("PolicyOnlyPlanningRejectsMissingDeploymentControlPlane", func(t *testing.T) {
 		runPolicyOnlyPlanningRejectsMissingDeploymentControlPlane(t, x)
 	})
+	t.Run("BootstrapAndCredentialLifecycleActorsExplicit", func(t *testing.T) { runBootstrapAndCredentialLifecycleActorsExplicit(t, x) })
+}
+
+// runBootstrapAndCredentialLifecycleActorsExplicit proves startup and
+// credential-lifecycle writes carry explicit actors on every backend: a
+// workspace creation without an actor is refused and leaves no workspace,
+// the same creation under the explicit system actor records that actor,
+// bootstrap and rotation succeed from an explicit system context, and a
+// personal access token issued under a bare credential keeps its derived
+// user attribution (component-persistence, Actor context).
+func runBootstrapAndCredentialLifecycleActorsExplicit(t *testing.T, x Fixture) {
+	st := x.Backend
+	bare := store.WithWorkspace(context.Background(), x.Workspace)
+	refused := x.Workspace + "-noactor"
+	if _, err := st.CreateWorkspace(store.WithWorkspace(context.Background(), refused), refused, "No actor", &config.Config{Workspace: refused}); !errors.Is(err, store.ErrMissingActor) {
+		t.Fatalf("actorless workspace creation error=%v", err)
+	}
+	if _, err := st.GetWorkspace(store.WithActor(store.WithWorkspace(context.Background(), refused), store.SystemActor()), refused); err == nil {
+		t.Fatal("refused workspace creation left a workspace")
+	}
+	created := x.Workspace + "-system"
+	systemCtx := store.WithActor(store.WithWorkspace(context.Background(), created), store.SystemActor())
+	if _, err := st.CreateWorkspace(systemCtx, created, "System", &config.Config{Workspace: created}); err != nil {
+		t.Fatal(err)
+	}
+	if x.WorkspaceEvents != nil {
+		events, err := x.WorkspaceEvents(systemCtx, "workspace.created")
+		requireOK(t, err)
+		if len(events) != 1 || events[0].ActorID != core.SystemActorID || events[0].ActorRole != core.ActorSystem {
+			t.Fatalf("workspace.created events=%+v", events)
+		}
+	}
+	identity := config.FirstOperatorIdentity{OrganizationName: "Conformance", Email: "actor-owner@example.test", DisplayName: "Owner"}
+	bootstrapCtx := store.WithActor(bare, store.SystemActor())
+	if _, err := st.BootstrapIdentity(bootstrapCtx, identity, "actor-bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	if rotated, err := st.BootstrapIdentity(bootstrapCtx, identity, "actor-rotated"); err != nil || !rotated {
+		t.Fatalf("bootstrap rotation rotated=%t err=%v", rotated, err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(bootstrapCtx, "actor-rotated")
+	requireOK(t, err)
+	credentialOnly := store.WithCredential(bare, core.AuthenticatedCredential{ID: "actor-pat", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	issued, err := st.IssueOwnPersonalAccessToken(credentialOnly, owner.ID, "actor-explicit")
+	requireOK(t, err)
+	if verified, err := st.VerifyPersonalAccessToken(bootstrapCtx, issued.Value); err != nil || verified.ID != owner.ID {
+		t.Fatalf("issued token verifies as %+v err=%v", verified, err)
+	}
 }
 
 // runMonitorPullRequestEvents holds all backends to the monitor's narrow read

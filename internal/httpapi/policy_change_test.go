@@ -13,7 +13,7 @@ import (
 
 func TestTaskPolicyHTTPBoundary(t *testing.T) {
 	_, st, handler := taskRunHTTPFixture(t)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := st.CreateTask(ctx, core.Task{ID: "policy-task", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -88,10 +89,19 @@ func sortedColumns(values map[string]any) ([]string, error) {
 }
 
 // writeRow enforces the rules that SingleStore cannot express as constraints.
-// Unique checks and the write share transaction-scoped lock rows.
+// A unique rule claims its value on a lock row (claimKey) and also counts the
+// committed rows, which covers rows written before claims existed.
 func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if err := checkWrite(w); err != nil {
 		return nil, err
+	}
+	// Every ledger row names the explicit context actor; a row that already
+	// carries actor values does not bypass the check (component-persistence,
+	// Actor context).
+	if w.table == "events" || w.table == "deployment_events" {
+		if _, err := store.RequireActor(ctx); err != nil {
+			return nil, fmt.Errorf("%s insert: %w", w.table, err)
+		}
 	}
 	if !validIdentifier(w.table) {
 		return nil, fmt.Errorf("invalid SQL table")
@@ -102,40 +112,54 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if w.operation != "INSERT" && len(w.where) == 0 {
 		return nil, fmt.Errorf("write predicate is required")
 	}
+	if w.operation == "DELETE" && (w.table == "user_tokens" || w.table == "reference_documents" || w.table == "tasks") {
+		// Claims on lock rows track these rows; a hard delete would orphan one
+		// (DEC-68, component-persistence Lock and transaction contract).
+		return nil, fmt.Errorf("%s rows are retired, not deleted", w.table)
+	}
 	if w.table == "user_tokens" {
 		value, present := w.values["deployment_credential"]
 		deployment, valid := value.(bool)
 		if present && !valid {
 			return nil, fmt.Errorf("deployment_credential must be boolean")
 		}
-		if deployment {
+		if deployment || (present && w.operation == "UPDATE") {
+			id, _ := w.values["id"].(string)
 			if w.operation == "UPDATE" {
-				if id, ok := w.where["id"].(string); !ok || id == "" {
-					return nil, fmt.Errorf("credential update requires one token id")
+				id, _ = w.where["id"].(string)
+			}
+			if id == "" {
+				return nil, fmt.Errorf("credential write requires one token id")
+			}
+			holder, err := claimKey(ctx, tx, "one-deployment-credential")
+			if err != nil {
+				return nil, err
+			}
+			if deployment {
+				var count int
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_tokens WHERE deployment_credential=TRUE AND id<>?`, id).Scan(&count); err != nil {
+					return nil, err
 				}
-			}
-			if err := lockKey(ctx, tx, "one-deployment-credential"); err != nil {
-				return nil, err
-			}
-			var count int
-			id := w.values["id"]
-			if id == nil {
-				id = w.where["id"]
-			}
-			if id == nil {
-				id = ""
-			}
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM user_tokens WHERE deployment_credential=TRUE AND id<>?`, id).Scan(&count); err != nil {
-				return nil, err
-			}
-			if err := checkDeploymentCredential(true, count); err != nil {
-				return nil, err
+				if holder != "" && holder != id {
+					count++
+				}
+				if err := checkDeploymentCredential(true, count); err != nil {
+					return nil, err
+				}
+				if err := setClaim(ctx, tx, "one-deployment-credential", id); err != nil {
+					return nil, err
+				}
+			} else if holder == id {
+				if err := setClaim(ctx, tx, "one-deployment-credential", ""); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
-	if w.table == "reference_documents" && w.operation != "DELETE" {
-		// A reference writer supplies the complete name/deleted_at projection, so
-		// rename and restore receive the same uniqueness check as insertion.
+	if w.table == "reference_documents" {
+		// A reference writer supplies the complete name/deleted_at projection.
+		// Documents are created live and only soft-deleted afterwards, so each
+		// live name has exactly one claim to take and release.
 		name, ok := w.values["name"].(string)
 		if !ok {
 			return nil, fmt.Errorf("reference write requires name")
@@ -150,37 +174,61 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		if _, ok := w.values["deleted_at"]; !ok {
 			return nil, fmt.Errorf("reference write requires deleted_at")
 		}
+		var live bool
 		switch w.values["deleted_at"].(type) {
-		case nil, time.Time:
+		case nil:
+			live = true
+		case time.Time:
 		default:
 			return nil, fmt.Errorf("deleted_at must be a time or untyped nil")
 		}
+		id, _ := w.values["id"].(string)
 		if w.operation == "UPDATE" {
-			if id, ok := w.where["id"].(string); !ok || id == "" {
+			if live {
+				return nil, fmt.Errorf("reference update must soft-delete")
+			}
+			id, _ = w.where["id"].(string)
+			if id == "" {
 				return nil, fmt.Errorf("reference update requires one document id")
 			}
 			if scoped, ok := w.where["workspace_id"].(string); !ok || scoped == "" || scoped != ws {
 				return nil, store.ErrWorkspaceRequired
 			}
+		} else if !live || id == "" {
+			return nil, fmt.Errorf("reference insert requires a live document id")
 		}
-		if w.values["deleted_at"] == nil {
-			if err := lockKey(ctx, tx, fmt.Sprintf("reference-names:%s", ws)); err != nil {
-				return nil, err
-			}
-			id := w.values["id"]
-			if id == nil {
-				id = w.where["id"]
-			}
-			if id == nil {
-				id = ""
-			}
+		var folded string
+		if err := tx.QueryRowContext(ctx, `SELECT LOWER(?)`, name).Scan(&folded); err != nil {
+			return nil, err
+		}
+		claim := fmt.Sprintf("reference-name:%v:%s", ws, folded)
+		holder, err := claimKey(ctx, tx, claim)
+		if err != nil {
+			return nil, err
+		}
+		if live {
 			var count int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reference_documents WHERE workspace_id=? AND LOWER(name)=LOWER(?) AND deleted_at IS NULL AND id<>?`, ws, name, id).Scan(&count); err != nil {
 				return nil, err
 			}
+			if holder != "" && holder != id {
+				count++
+			}
 			if err := checkReferenceName(true, count); err != nil {
 				return nil, err
 			}
+			if err := setClaim(ctx, tx, claim, id); err != nil {
+				return nil, err
+			}
+		} else if holder == id {
+			if err := setClaim(ctx, tx, claim, ""); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if w.table == "tasks" {
+		if err := taskBranchRule(ctx, tx, w); err != nil {
+			return nil, err
 		}
 	}
 	names, err := sortedColumns(w.values)
@@ -226,4 +274,115 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	return tx.ExecContext(ctx, query, args...)
+}
+
+// taskBranchClaimKey names the lock row that serializes and claims one open
+// task branch. AttachTaskBranch, insertTaskRow and writeRow address the same
+// row through it (DEC-68, component-persistence Lock and transaction contract).
+func taskBranchClaimKey(ws, repo, branch string) string {
+	return "task-open-branch:" + ws + ":" + repo + ":" + branch
+}
+
+// taskBranchRule keeps one open task per workspace, repo and branch
+// (req-task-branch-assignment AC-4.1, AC-4.2). SingleStore has no partial
+// unique index, and the lock row and task row live on different partitions,
+// so the occupant is claimed on the lock row and released only by the write
+// that ends its occupancy: a terminal state or a branch change (DEC-68,
+// component-persistence Lock and transaction contract).
+func taskBranchRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
+	switch w.operation {
+	case "INSERT":
+		id, _ := w.values["id"].(string)
+		ws, _ := w.values["workspace_id"].(string)
+		repo, okRepo := w.values["repo_name"].(string)
+		branch, okBranch := w.values["branch"].(string)
+		state, okState := w.values["state"]
+		if id == "" || ws == "" || !okRepo || !okBranch || !okState {
+			return fmt.Errorf("task insert requires id, workspace_id, repo_name, branch and state")
+		}
+		if core.TaskTerminal(core.TaskState(fmt.Sprint(state))) {
+			return nil
+		}
+		return claimTaskBranch(ctx, tx, ws, repo, branch, id)
+	case "UPDATE":
+		state, setsState := w.values["state"]
+		branch, setsBranch := w.values["branch"]
+		repo, setsRepo := w.values["repo_name"]
+		if !setsState && !setsBranch && !setsRepo {
+			return nil
+		}
+		ws, _ := w.where["workspace_id"].(string)
+		id, _ := w.where["id"].(string)
+		if ws == "" || id == "" {
+			return fmt.Errorf("task state or branch write requires one task id")
+		}
+		if _, ok := branch.(string); setsBranch && !ok {
+			return fmt.Errorf("task branch must be a string")
+		}
+		if _, ok := repo.(string); setsRepo && !ok {
+			return fmt.Errorf("task repo_name must be a string")
+		}
+		var oldRepo, oldBranch, oldState sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT repo_name, branch, state FROM tasks WHERE workspace_id=? AND id=?`, ws, id).Scan(&oldRepo, &oldBranch, &oldState)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		newRepo, newBranch, newState := oldRepo.String, oldBranch.String, oldState.String
+		if setsRepo {
+			newRepo = repo.(string)
+		}
+		if setsBranch {
+			newBranch = branch.(string)
+		}
+		if setsState {
+			newState = fmt.Sprint(state)
+		}
+		wasOpen := !core.TaskTerminal(core.TaskState(oldState.String))
+		isOpen := !core.TaskTerminal(core.TaskState(newState))
+		moved := oldRepo.String != newRepo || oldBranch.String != newBranch
+		if wasOpen && (!isOpen || moved) {
+			if err := releaseTaskBranch(ctx, tx, taskBranchClaimKey(ws, oldRepo.String, oldBranch.String), id); err != nil {
+				return err
+			}
+		}
+		if isOpen && (!wasOpen || moved) {
+			return claimTaskBranch(ctx, tx, ws, newRepo, newBranch, id)
+		}
+	}
+	return nil
+}
+
+// claimTaskBranch refuses a branch whose claim or committed open row belongs
+// to another task, then records id as the holder.
+func claimTaskBranch(ctx context.Context, tx *sql.Tx, ws, repo, branch, id string) error {
+	key := taskBranchClaimKey(ws, repo, branch)
+	holder, err := claimKey(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	if holder != "" && holder != id {
+		return store.TaskBranchInUseError(branch, holder)
+	}
+	var occupant string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, repo, branch, id).Scan(&occupant)
+	if err == nil {
+		return store.TaskBranchInUseError(branch, occupant)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return setClaim(ctx, tx, key, id)
+}
+
+// releaseTaskBranch clears key only when id holds it, so a stale read of the
+// task's own row can never free another task's claim.
+func releaseTaskBranch(ctx context.Context, tx *sql.Tx, key, id string) error {
+	holder, err := claimKey(ctx, tx, key)
+	if err != nil || holder != id {
+		return err
+	}
+	return setClaim(ctx, tx, key, "")
 }

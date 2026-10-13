@@ -36,6 +36,9 @@ func MonitorRecordWorkspace(ctx context.Context, record string) (string, error) 
 }
 
 func (m *memory) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	return m.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, Payload: core.JSONPayload(payload)})
 }
 
@@ -76,6 +79,59 @@ func (m *memory) FindOpenMonitorTask(ctx context.Context, repository string, kin
 	return selected.ID, selected.ID != "", nil
 }
 
+func (m *memory) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	commitSHA = strings.TrimSpace(commitSHA)
+	repository = strings.TrimSpace(repository)
+	if commitSHA == "" || repository == "" {
+		return monitor.MergeNone, "", nil
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	var recordedTask string
+	var recordedEvent core.Event
+	var inFlightTask string
+	var inFlightEvent core.Event
+	for taskID, events := range m.events {
+		if taskID == "" {
+			continue
+		}
+		task, ok := m.tasks[taskID]
+		if !ok || task.Workspace != workspace {
+			continue
+		}
+		for _, event := range events {
+			if monitor.RecordedMergeCommit(event, repository, commitSHA) {
+				if recordedTask == "" || TaskEventBefore(event, recordedEvent) {
+					recordedTask, recordedEvent = taskID, event
+				}
+			}
+			if !monitor.MergeRequestedInRepository(event, repository) {
+				continue
+			}
+			ended := false
+			for _, later := range events {
+				if !TaskEventBefore(event, later) || !monitor.EndsMergeFlight(later) {
+					continue
+				}
+				ended = true
+				break
+			}
+			if ended {
+				continue
+			}
+			if bound <= 0 || !event.At.After(now.Add(-bound)) {
+				continue
+			}
+			if inFlightTask == "" || TaskEventBefore(event, inFlightEvent) {
+				inFlightTask, inFlightEvent = taskID, event
+			}
+		}
+	}
+	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, inFlightEvent.At, now, bound)
+	return state, taskID, nil
+}
+
 func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -84,6 +140,9 @@ func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error)
 }
 
 func (m *memory) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.SystemDesignMergeJudgment{}, err
+	}
 	if causalEventID <= 0 || strings.TrimSpace(commitSHA) == "" {
 		return monitor.SystemDesignMergeJudgment{}, nil
 	}
@@ -267,6 +326,9 @@ func (m *memory) LinkTask(ctx context.Context, identity, taskID, outcome string)
 }
 
 func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.Drift{}, false, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, err := MonitorRecordWorkspace(ctx, drift.WorkspaceID)
@@ -323,6 +385,9 @@ func (m *memory) reconcileConfirmedSystemDesignDriftLocked(ctx context.Context, 
 }
 
 func (m *memory) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.Drift{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, ok := WorkspaceFromContext(ctx)

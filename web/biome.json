@@ -35,7 +35,27 @@
       },
       "a11y": {
         "recommended": true
+      },
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "patterns": [
+              {
+                "group": ["**/lib/activity"],
+                "importNamePattern": "gateBadge",
+                "message": "gateBadge is deleted: the gate is the server's next_action (feature-operator-next-action NA-9)."
+              }
+            ]
+          }
+        }
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/lib/activity.ts"],
+      "plugins": ["./biome/no-client-gate-derivation.grit"]
+    }
+  ]
 }

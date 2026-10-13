@@ -11,7 +11,7 @@ import (
 )
 
 func TestMemoryConflictFixCommandFailureLeavesNoPartialOutcome(t *testing.T) {
-	ctx := WithWorkspace(context.Background(), "demo")
+	ctx := WithWorkspace(WithActor(context.Background(), SystemActor()), "demo")
 	st := NewMemory()
 	task := core.Task{ID: "conflict-atomic-memory", Workspace: "demo", State: core.TaskApproved, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {

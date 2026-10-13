@@ -114,6 +114,8 @@ func (item runTUIActionItem) Description() string { return "" }
 func (item runTUIActionItem) FilterValue() string { return item.label }
 
 type runTUIModel struct {
+	// mergeYes skips the merge_approval merge confirmation (`run --yes`).
+	mergeYes     bool
 	viewport     viewport.Model
 	width        int
 	height       int
@@ -362,6 +364,14 @@ func (m *runTUIModel) selectInteractiveAction() {
 	case runGateApprove:
 		m.confirmation, m.inputAction, m.confirmYes = "Approve this action?", item.key, false
 	case runGateMerge:
+		if m.gate != nil && m.gate.gate.Kind == workerservice.TaskRunGateMergeApproval {
+			if m.mergeYes {
+				m.sendAction(runTUIAction{decision: runGateMerge})
+				return
+			}
+			m.confirmation, m.inputAction, m.confirmYes = taskRunGateMergeSummary(m.gate.gate)+" Approve and merge?", item.key, false
+			return
+		}
 		m.confirmation, m.inputAction, m.confirmYes = "Merge this pull request?", item.key, false
 	case runGateRequestChanges:
 		m.feedback, m.inputAction, m.input = true, item.key, ""
@@ -472,7 +482,10 @@ func (m *runTUIModel) rebuildActionList(selected string) {
 		items = append(items, runTUIActionItem{key: "proposal:" + taskRunProposalKey(proposal), label: label, decision: runConfirmProposal, proposal: &proposal, available: proposal.CanConfirm})
 	}
 	mergeExecution := m.gate != nil && m.gate.gate.Kind == workerservice.TaskRunGateMergeExecution
-	if mergeExecution && m.gate.gate.MergeActionAvailable() {
+	// The merge_approval gate offers the same one-act merge as the plain
+	// prompt, beside Approve (DEC-64(1,3)).
+	mergeApproval := m.gate != nil && m.gate.gate.Kind == workerservice.TaskRunGateMergeApproval
+	if (mergeExecution || mergeApproval) && m.gate.gate.MergeActionAvailable() {
 		// The merge act is its own confirmation, keyed to the approved head and
 		// readiness; an approval never stands in for it (req-local-task-runs
 		// AC-4.1; component-local-launchers).
@@ -798,6 +811,7 @@ func startRunTUI(ctx context.Context, input io.Reader, output io.Writer, stage r
 	interrupt := make(chan struct{}, 1)
 	model := newRunTUIModel(stage, gate, actions, interrupt)
 	model.taskURL = taskURL
+	model.mergeYes = runMergeYes(ctx)
 	options := []tea.ProgramOption{tea.WithContext(ctx), tea.WithOutput(output), tea.WithoutSignalHandler(), tea.WithMouseCellMotion()}
 	_, terminalInput := input.(*os.File)
 	if !terminalInput {

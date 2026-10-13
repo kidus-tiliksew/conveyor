@@ -1,4 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // component-verification-service and component-web-task-surfaces: a verify
 // order released at its operator checkpoint is labelled
@@ -249,11 +251,13 @@ async function fixture(
     work_orders: [order],
     spec: { task_id: taskId, version: 1, content: 'Verify the checkpoint.', approved: true, created_at: at },
   }
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: options.role ?? 'maintainer' } })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.role ?? 'maintainer' }) })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: true }] })
     if (path.endsWith('/activity')) return route.fulfill({ json: item })

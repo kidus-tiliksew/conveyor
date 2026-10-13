@@ -32,7 +32,7 @@ type capturingInputAgent struct {
 }
 
 func TestTransitionDoesNotDemoteTaskWithLiveClaim(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "live-claim-demotion", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -69,7 +69,7 @@ func (agent *capturingInputAgent) Run(_ context.Context, model string, input inp
 func TestInProcessDispatchUsesAndAttributesEnvironmentModelOverride(t *testing.T) {
 	t.Setenv(config.ControlPlaneModelEnv, "general")
 	t.Setenv(config.TriageModelEnv, "triage-override")
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "model-override", Workspace: "demo", Repo: "api", Title: "Resolve model", State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -139,7 +139,7 @@ func (taskReadFailureStore) GetTask(context.Context, string) (core.Task, error) 
 
 func TestTransitionDoesNotPersistWithoutKnownDestination(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "transition-read-failure", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -157,7 +157,7 @@ func TestTransitionDoesNotPersistWithoutKnownDestination(t *testing.T) {
 
 func TestBlueprintParentDoesNotCreateImplementOrder(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	parent := core.Task{
 		ID: "blueprint-parent-no-order", Workspace: "demo", Repo: "conveyor",
@@ -242,7 +242,7 @@ func (st *concurrentSpecDispatchStore) CreateStageWorkOrderCommand(ctx context.C
 }
 
 func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", Branch: "conveyor/task-mcp-spec", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -267,7 +267,7 @@ func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 }
 
 func TestConcurrentSpecDispatchCreatesOneWorkOrder(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	memory := store.NewMemory()
 	task := core.Task{ID: "concurrent-mcp-spec", Workspace: "demo", Repo: "api", BaseBranch: "main", State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
 	if err := memory.CreateTask(ctx, task); err != nil {
@@ -348,7 +348,7 @@ func (st *artifactContextFailureStore) GetArtifact(ctx context.Context, id strin
 
 func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "artifact-context", Workspace: "demo", Repo: "api", Title: "Use attachments", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -415,7 +415,7 @@ func TestPipelinePreparesTextImageDocumentAndAudioArtifactInputs(t *testing.T) {
 
 func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := newHistoricalArtifactStore()
 	now := time.Now().UTC()
 	parent := core.Task{ID: "context-blueprint", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: now}
@@ -476,7 +476,7 @@ func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 
 func TestPipelineRetriesKeepGeneratedTranscriptsOutOfStageInput(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "artifact-retry", Workspace: "demo", Repo: "api", Title: "Retry safely", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -527,7 +527,7 @@ func TestPipelineRetriesKeepGeneratedTranscriptsOutOfStageInput(t *testing.T) {
 
 func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "spec-feedback", Workspace: "demo", Repo: "api", Title: "Revise the spec", Mode: core.TaskModeAuto, PolicyVersion: 1, SpecApproval: true, State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -565,7 +565,7 @@ func TestSpecStageInputThreadsPriorRevisionAndGateFeedback(t *testing.T) {
 
 func TestInProcessReviewEmbedsBranchDiff(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "review-diff", Workspace: "demo", Repo: "api", Title: "Review the change", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-diff", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -601,7 +601,7 @@ func TestInProcessReviewEmbedsBranchDiff(t *testing.T) {
 
 func TestInProcessReviewStatesWhenBranchHasNoChanges(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "review-empty", Workspace: "demo", Repo: "api", Title: "Review nothing", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-empty", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -632,7 +632,7 @@ func TestInProcessReviewStatesWhenBranchHasNoChanges(t *testing.T) {
 
 func TestInProcessReviewRendersFrozenRefreshDeltaComparison(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "review-refresh-delta", Workspace: "demo", Repo: "api", Title: "Review the delta", Mode: core.TaskModeAuto,
@@ -665,7 +665,7 @@ func TestInProcessReviewRendersFrozenRefreshDeltaComparison(t *testing.T) {
 
 func TestInProcessReviewDiffFailuresStopBeforeModelExecution(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "review-diff-fail", Workspace: "demo", Repo: "api", Title: "Review the change", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview, Branch: "conveyor/task-review-diff-fail", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -716,7 +716,7 @@ func TestPipelineArtifactContextFailuresStopBeforeModelExecution(t *testing.T) {
 		{name: "read failure", contentType: "text/plain", readErr: true, want: "artifact read unavailable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(context.Background(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 			base := store.NewMemory()
 			task := core.Task{ID: "failure-" + strings.ReplaceAll(test.name, " ", "-"), Workspace: "demo", Repo: "api", Title: "Context failure", Mode: core.TaskModeAuto, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 			if err := base.CreateTask(ctx, task); err != nil {
@@ -783,7 +783,7 @@ func (s mergeIdentityStore) GetCallerIdentity(context.Context, string, string) (
 }
 
 func TestOrdinaryReviewWithoutOrderHeadFallsBackToPullRequestOpenedHead(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "ordinary-review-head", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, MergeApproval: true, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -914,7 +914,7 @@ func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
 	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness("codex"), harness("claude")}, Setups: []config.ExecutionSetup{backend, frontend}, DefaultSetup: "backend"}).WithSetup(backend)
 	cfg.Setups, cfg.DefaultSetup = []config.ExecutionSetup{backend, frontend}, "backend"
 
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "frozen-frontend", Workspace: "demo", Title: "Frontend", SetupName: frontend.Name, SetupContract: frontend, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -935,7 +935,7 @@ func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
 }
 
 func TestCapturedLegacySpecGateCanCompleteMaterialization(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemoryWithConfig(&config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api", Base: "main"}}})
 	task := core.Task{ID: "legacy-gate", Workspace: "demo", Repo: "api", State: core.TaskRunning, SpecApproval: true, PolicyVersion: 1, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -986,7 +986,7 @@ func TestPlanSubmissionPreservesSpecGateLifecycleSequences(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := func(plan bool) []eventProjection {
-				ctx := store.WithWorkspace(t.Context(), "demo")
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 				st := store.NewMemory()
 				task := core.Task{ID: "lifecycle-equivalence", Workspace: "demo", Repo: "api", PolicyVersion: 1, SpecApproval: tc.gate, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Unix(1, 0).UTC()}
 				if err := st.CreateTask(ctx, task); err != nil {
@@ -1045,7 +1045,7 @@ func TestMergeAndRecoveryInterventionsDoNotRequireSpec(t *testing.T) {
 	for _, command := range []core.TaskCommand{core.TaskGateMerge, core.TaskJobFail, core.TaskStageBounceLimit} {
 		for _, action := range []core.InterventionAction{core.InterventionApprove, core.InterventionRedirect} {
 			t.Run(string(command)+"/"+string(action), func(t *testing.T) {
-				ctx := store.WithWorkspace(t.Context(), "demo")
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 				st := store.NewMemory()
 				task := core.Task{
 					ID: "no-spec-" + string(command) + "-" + string(action), Workspace: "demo", Repo: "api",
@@ -1100,7 +1100,7 @@ func TestMergeAndRecoveryInterventionsDoNotRequireSpec(t *testing.T) {
 }
 
 func TestMergeGateIgnoresUnapprovedNewerSpec(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "merge-with-newer-spec", Workspace: "demo", Repo: "api", PolicyVersion: 1,
@@ -1141,7 +1141,7 @@ func TestMergeGateIgnoresUnapprovedNewerSpec(t *testing.T) {
 }
 
 func TestRecordedSpecGateWithoutSpecFallsThrough(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "spec-gate-without-spec", Workspace: "demo", Repo: "api",
@@ -1219,7 +1219,7 @@ func (agent *sequenceAgent) Run(_ context.Context, _ string, input inprocess.Inp
 
 func TestSpecStructuredValidationFeedsPreciseErrorIntoRetry(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "structured-spec-retry", Workspace: "demo", Repo: "api", Title: "Retry semantics", PolicyVersion: 1, SpecApproval: true, State: core.TaskQueued, NextStage: core.StageSpec, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1260,7 +1260,7 @@ func structuredSpecOutput(markdown, criterion, ref string) string {
 
 func TestInProcessUsageRecordsTokensWithoutCost(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "high-usage", Workspace: "demo", Repo: "api", Title: "Small fix", Level: core.L0, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1291,7 +1291,7 @@ func TestInProcessUsageRecordsTokensWithoutCost(t *testing.T) {
 
 func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "task", Workspace: "demo", Repo: "api", Title: "Add audit export", Body: "Specify and implement it", BaseBranch: "main", Branch: "conveyor/task-task", Level: core.L2, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1349,7 +1349,7 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 }
 
 func TestImplementationDispatchNeverSnapshotsUndeclaredExplicitSymbol(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "reject-symbolic-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1395,7 +1395,7 @@ func implementationModelDocument(policy, model string, sentinels []string) confi
 }
 
 func TestHumanTriageRouteEntersInvalidOutputBounce(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "policy-spec", Workspace: "demo", Repo: "api", Title: "Policy", Hold: true, PolicyVersion: 1, SpecApproval: true, MergeApproval: false, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1435,7 +1435,7 @@ func TestTriageProceedSelectsNextStageFromPolicyAlone(t *testing.T) {
 		{name: "legacy L3", level: core.L3, want: core.StageSpec},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			task := core.Task{ID: "triage-policy", Workspace: "demo", Repo: "api", PolicyVersion: tc.policyVersion, SpecApproval: tc.specApproval, Level: tc.level, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
@@ -1460,7 +1460,7 @@ func TestTriageProceedSelectsNextStageFromPolicyAlone(t *testing.T) {
 }
 
 func TestTriageParkRecordsReasonAndRemainsRecoverable(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "triage-park", Workspace: "demo", Repo: "api", PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1507,7 +1507,7 @@ func TestTriageParkRecordsReasonAndRemainsRecoverable(t *testing.T) {
 func TestHistoricalRouteHumanAwaitingTaskCanRejectOrCancelButNotApprove(t *testing.T) {
 	for _, action := range []core.InterventionAction{core.InterventionReject, core.InterventionCancel, core.InterventionApprove} {
 		t.Run(string(action), func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "demo")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
 			task := core.Task{ID: "legacy-route-human-" + string(action), Workspace: "demo", Repo: "api", State: core.TaskAwaiting, RecoveryStage: core.StageTriage, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
@@ -1544,7 +1544,7 @@ func TestHistoricalRouteHumanAwaitingTaskCanRejectOrCancelButNotApprove(t *testi
 }
 
 func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "spec-revision", Workspace: "demo", Repo: "api", Title: "Revise policy", Mode: core.TaskModeManual, PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1664,7 +1664,7 @@ func TestRequestedSpecChangesRequireRevisedApprovalBeforeImplementation(t *testi
 
 func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "bounce-task", Workspace: "test", Repo: "app", Level: core.L2, State: core.TaskRunning, Branch: "conveyor/bounce", BaseBranch: "main", CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1713,7 +1713,7 @@ func TestExternalReviewBounceCreatesNextImplementOrderWithFeedback(t *testing.T)
 func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 	for _, reviewPath := range []string{"in-process", "external-mcp"} {
 		t.Run(reviewPath, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			task := core.Task{ID: "evidence-" + reviewPath, Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
@@ -1767,7 +1767,7 @@ func TestReviewPathsProjectOnlyEligibleEvidenceSupport(t *testing.T) {
 
 func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 	t.Parallel()
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "window-task", Workspace: "test", Repo: "app", Level: core.L2, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1824,7 +1824,7 @@ func TestBounceWindowResetsAfterHumanIntervention(t *testing.T) {
 
 func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "cap-task", Workspace: "test", Repo: "app", Level: core.L2, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -1850,7 +1850,7 @@ func TestExternalReviewAtBounceCapStopsAtHumanGate(t *testing.T) {
 }
 
 func TestReviewCitationValidationUsesInProcessBounceAndExternalRetry(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "test")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "citation-bounce", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
@@ -2006,7 +2006,7 @@ func TestValidateReviewCitationsCoversEveryAssessmentBranch(t *testing.T) {
 }
 
 func TestLegacyDoneHeadingPromptAndValidatorAgreeNoExecutionPlan(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "legacy-done-heading", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2058,7 +2058,7 @@ func TestLegacyDoneHeadingPromptAndValidatorAgreeNoExecutionPlan(t *testing.T) {
 }
 
 func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	design, attached, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-attached-inprocess", Title: "Attached authority", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Attached v1\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -2127,7 +2127,7 @@ func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testin
 }
 
 func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "pinned-review-race", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
@@ -2183,7 +2183,7 @@ func TestExternalReviewUsesPinnedRequirementVersionAfterConfirmationMoves(t *tes
 
 func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	base := store.NewMemory()
 	task := core.Task{ID: "publication-failure", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := base.CreateTask(ctx, task); err != nil {
@@ -2231,7 +2231,7 @@ func TestReviewAcceptanceFailureRollsBackAndRetryCommitsOnce(t *testing.T) {
 
 func TestReviewForRepoWithoutGitHubDoesNotCreateOrReconcilePublication(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "non-github-review", Workspace: "test", Repo: "local", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2259,7 +2259,7 @@ func TestReviewForRepoWithoutGitHubDoesNotCreateOrReconcilePublication(t *testin
 
 func TestExistingUnacceptedReviewEventRepairsRouting(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "partial-review", Workspace: "test", Repo: "app", Level: core.L0, State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2308,7 +2308,7 @@ func TestExternalReviewApprovePreservesLevelRouting(t *testing.T) {
 		{name: "L2 final human gate", level: core.L2, state: core.TaskAwaiting, recovery: core.StageImplement},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := store.WithActor(context.Background(), store.SystemActor())
 			st := store.NewMemory()
 			task := core.Task{ID: "approve-" + string(test.level), Workspace: "test", Repo: "app", Level: test.level, State: core.TaskRunning, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
@@ -2338,7 +2338,7 @@ func TestResolvedMergeGateControlsHumanWaitOrAutomaticMerge(t *testing.T) {
 		want          core.TaskState
 	}{{"human merge gate", true, core.TaskAwaiting}, {"automatic merge", false, core.TaskMerged}} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			task := core.Task{ID: "policy-" + test.name, Workspace: "test", Repo: "app", Branch: "conveyor/policy", PolicyVersion: 1, SpecApproval: false, MergeApproval: test.mergeApproval, State: core.TaskRunning, CreatedAt: time.Now()}
 			if err := st.CreateTask(ctx, task); err != nil {
@@ -2373,7 +2373,7 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 		want          core.TaskState
 	}{{"human merge gate", true, core.TaskAwaiting}, {"automatic merge", false, core.TaskMerged}} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			st := store.NewMemory()
 			now := time.Now().UTC()
 			task := core.Task{ID: "panel-policy-" + test.name, Workspace: "test", Repo: "app", Branch: "conveyor/panel-policy", Mode: core.TaskModeAuto, PolicyVersion: 1, MergeApproval: test.mergeApproval, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
@@ -2425,7 +2425,7 @@ func TestUnanimousReviewPanelSurvivesRestartAndUsesResolvedMergeGate(t *testing.
 }
 
 func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "done-criteria-repair", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {

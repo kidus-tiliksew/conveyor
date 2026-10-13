@@ -47,6 +47,9 @@ func (m *volatileMemory) GetWorkspace(_ context.Context, id string) (core.Worksp
 // CreateWorkspace implements WorkspaceControlStore: the record, its repos,
 // the creator's operator binding, and the audit event land together.
 func (m *volatileMemory) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Workspace{}, err
+	}
 	data, err := config.MarshalPolicyDocument(cfg)
 	if err != nil {
 		return core.Workspace{}, err
@@ -114,34 +117,18 @@ func (m *volatileMemory) BootstrapWorkspaceConfig(_ context.Context, cfg *config
 		return false, nil
 	}
 	now := time.Now().UTC()
+	emptyRegistry := len(m.workspaces) == 0
 	m.workspaces[cfg.Workspace] = workspaceRecord{Workspace: core.Workspace{ID: cfg.Workspace, Name: cfg.Workspace, ConfigVersion: 1, CreatedAt: now}, ConfigYAML: string(configYAML)}
 	m.upsertReposLocked(cfg.Workspace, cfg.Repos)
-	// Identity bootstraps before the configured workspace; the earliest
-	// account becomes its operator so the deployment token stays zero-config.
-	if first, ok := m.earliestUserLocked(); ok {
-		key := memoryScopedKey{workspace: cfg.Workspace, id: first.ID}
+	// Only the first workspace of an empty registry binds the deployment
+	// marker's owner; an established registry binds nobody (DEC-63(4)).
+	if owner, active := m.deploymentOwnerLocked(); emptyRegistry && active {
+		key := memoryScopedKey{workspace: cfg.Workspace, id: owner}
 		if _, bound := m.memberships[key]; !bound {
 			m.memberships[key] = workspaceBinding{Role: core.WorkspaceRoleOperator, CreatedAt: now}
 		}
 	}
 	return true, nil
-}
-
-func (m *volatileMemory) earliestUserLocked() (identityUser, bool) {
-	var users []identityUser
-	for _, user := range m.users {
-		users = append(users, user)
-	}
-	if len(users) == 0 {
-		return identityUser{}, false
-	}
-	sort.Slice(users, func(i, j int) bool {
-		if !users[i].CreatedAt.Equal(users[j].CreatedAt) {
-			return users[i].CreatedAt.Before(users[j].CreatedAt)
-		}
-		return users[i].ID < users[j].ID
-	})
-	return users[0], true
 }
 
 // WorkspaceConfig implements WorkspaceConfigStore.
@@ -192,6 +179,9 @@ func (m *volatileMemory) RuntimeConfig(ctx context.Context, deployment *config.C
 // UpdateWorkspaceConfig implements WorkspaceConfigStore as a compare-and-set
 // on the document version.
 func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return config.UpdateReceipt{}, err
+	}
 	data, err := config.MarshalPolicyDocument(next)
 	if err != nil {
 		return config.UpdateReceipt{}, err
@@ -231,6 +221,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
 	}
+	if before.Recovery.AutomaticRecoveries != after.Recovery.AutomaticRecoveries || before.Recovery.WindowText != after.Recovery.WindowText {
+		sections = append(sections, "recovery")
+	}
 	if !reflect.DeepEqual(before.Routing, after.Routing) {
 		sections = append(sections, "routing")
 	}
@@ -261,6 +254,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 // ReconcileBlueprintClosures implements BlueprintClosureReconciler: a queued
 // parent whose children have all finished is closed.
 func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")

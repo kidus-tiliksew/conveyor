@@ -17,45 +17,58 @@ import (
 )
 
 func TestVK10PostgresScenarioIntegration(t *testing.T) {
+	raw := disposablePostgresURL(t, "VK-10")
+	vk10fixture.Run(t, func(t *testing.T) store.Backend { return postgresSchemaBackend(t, raw, "vk10_") })
+}
+
+// disposablePostgresURL is CONVEYOR_TEST_DATABASE_URL; the test skips when it
+// is unset and fails unless it names a disposable database ending in _test.
+func disposablePostgresURL(t *testing.T, scenario string) string {
+	t.Helper()
 	raw := os.Getenv("CONVEYOR_TEST_DATABASE_URL")
 	if raw == "" {
 		t.Skip("missing PostgreSQL evidence: CONVEYOR_TEST_DATABASE_URL is unset")
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
-		t.Fatal("VK-10 PostgreSQL requires a disposable database ending in _test")
+		t.Fatal(scenario + " PostgreSQL requires a disposable database ending in _test")
 	}
-	vk10fixture.Run(t, func(t *testing.T) store.Backend {
-		admin, err := pgxpool.New(t.Context(), raw)
-		if err != nil {
-			t.Fatal(err)
+	return raw
+}
+
+// postgresSchemaBackend opens a PostgreSQL backend in a fresh schema named
+// with prefix, dropped when the test ends.
+func postgresSchemaBackend(t *testing.T, raw, prefix string) store.Backend {
+	t.Helper()
+	admin, err := pgxpool.New(t.Context(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := prefix + strings.ReplaceAll(core.NewTaskID(), "-", "_")
+	quoted := pgx.Identifier{schema}.Sanitize()
+	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+quoted); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		defer admin.Close()
+		ctx, cancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 30*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(ctx, "DROP SCHEMA "+quoted+" CASCADE"); err != nil {
+			t.Error(err)
 		}
-		schema := "vk10_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
-		quoted := pgx.Identifier{schema}.Sanitize()
-		if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+quoted); err != nil {
-			admin.Close()
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			defer admin.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if _, err := admin.Exec(ctx, "DROP SCHEMA "+quoted+" CASCADE"); err != nil {
-				t.Error(err)
-			}
-		})
-		u, err := url.Parse(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		q := u.Query()
-		q.Set("search_path", schema)
-		u.RawQuery = q.Encode()
-		b, err := postgres.Open(t.Context(), u.String())
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(b.Close)
-		return b
 	})
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	b, err := postgres.Open(store.WithActor(t.Context(), store.SystemActor()), u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(b.Close)
+	return b
 }

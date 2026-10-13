@@ -19,11 +19,71 @@ const (
 	dashboardSessionLifetime = 7 * 24 * time.Hour
 )
 
+// IssueSignInLink admits any active account or pending invitation. It serves
+// only host-local issuance (req-invitations-and-sign-in REQ-3).
 func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IssuedSignInLink{}, translateBackendConflict(err)
 	}
+	return s.issueSignInLink(ctx, email, func(tx *sql.Tx) error {
+		var allowed bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE email=? AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=?)", email, email).Scan(&allowed); err != nil {
+			return translateBackendConflict(err)
+		}
+		if !allowed {
+			return store.ErrNotFound
+		}
+		return nil
+	}, nil)
+}
+
+// IssueInvitationSignInLink issues a link only while workspaceID holds a
+// pending invitation for email. identityTx's workspace-registry and
+// identity-registry lock rows serialize it with revocation and redemption, and
+// the resend audit event commits with the link (component-identity-membership).
+func (s *Store) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	if !purpose.Valid() {
+		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
+	}
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return core.IssuedSignInLink{}, store.ErrNotFound
+	}
+	var resentBy string
+	if purpose == store.SignInLinkResend {
+		credential, ok := store.CredentialFromContext(ctx)
+		if !ok || credential.OwnerUserID == "" {
+			return core.IssuedSignInLink{}, errors.New("authenticated user credential is required")
+		}
+		resentBy = credential.OwnerUserID
+	}
+	return s.issueSignInLink(ctx, email, func(tx *sql.Tx) error {
+		var pending bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE workspace_id=? AND email=?)", workspaceID, email).Scan(&pending); err != nil {
+			return translateBackendConflict(err)
+		}
+		if !pending {
+			return store.ErrNotFound
+		}
+		return store.RunIdentityTestHook(ctx, store.IdentityHookInvitationLinkLocked)
+	}, func(tx *sql.Tx) error {
+		if purpose != store.SignInLinkResend {
+			return nil
+		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationResentAudit); err != nil {
+			return err
+		}
+		actorCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID(resentBy), Role: core.ActorUser})
+		_, err := appendWorkspaceEvent(actorCtx, tx, workspaceID, "workspace.invitation_resent", map[string]any{"workspace_id": workspaceID, "email": email, "resent_by": resentBy})
+		return translateBackendConflict(err)
+	})
+}
+
+// issueSignInLink runs admit under identityTx, rotates earlier unredeemed
+// links, stores the new hash, appends identity.signin_link_issued, and then
+// runs audit in the same transaction.
+func (s *Store) issueSignInLink(ctx context.Context, email string, admit, audit func(*sql.Tx) error) (core.IssuedSignInLink, error) {
 	id, err := randomIdentityID("sil", 12)
 	if err != nil {
 		return core.IssuedSignInLink{}, translateBackendConflict(err)
@@ -35,12 +95,8 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 	hash := sha256.Sum256([]byte(value))
 	expires := time.Now().UTC().Add(signInLinkLifetime).Truncate(time.Microsecond)
 	err = s.identityTx(ctx, func(tx *sql.Tx) error {
-		var allowed bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM users WHERE email=? AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=?)", email, email).Scan(&allowed); err != nil {
-			return translateBackendConflict(err)
-		}
-		if !allowed {
-			return store.ErrNotFound
+		if err := admit(tx); err != nil {
+			return err
 		}
 		var uid any
 		var userID string
@@ -63,7 +119,13 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 		if _, err := writeRow(ctx, tx, rowWrite{table: "invitation_signin_tokens", operation: "INSERT", values: map[string]any{"id": id, "email": email, "user_id": uid, "token_hash": hash[:], "expires_at": expires}}); err != nil {
 			return translateBackendConflict(err)
 		}
-		return appendDeploymentEvent(ctx, tx, "identity.signin_link_issued", map[string]any{"signin_link_id": id, "email": email})
+		if err := appendDeploymentEvent(ctx, tx, "identity.signin_link_issued", map[string]any{"signin_link_id": id, "email": email}); err != nil {
+			return err
+		}
+		if audit != nil {
+			return audit(tx)
+		}
+		return nil
 	})
 	if err != nil {
 		return core.IssuedSignInLink{}, translateBackendConflict(err)
@@ -103,6 +165,9 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 	err := s.identityTx(ctx, func(tx *sql.Tx) error {
 		var id, email string
 		var uid sql.NullString
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookSignInRedeemLocked); err != nil {
+			return err
+		}
 		if err := tx.QueryRowContext(ctx, "SELECT id,email,user_id FROM invitation_signin_tokens WHERE token_hash=? AND redeemed_at IS NULL AND expires_at>CURRENT_TIMESTAMP(6)", hash[:]).Scan(&id, &email, &uid); err != nil {
 			return translateBackendConflict(err)
 		}
@@ -110,7 +175,7 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 			return translateBackendConflict(err)
 		}
 		if !uid.Valid {
-			u, err := provisionIdentity(ctx, tx, email, email)
+			u, err := provisionIdentity(ctx, tx, email, email, true)
 			if err != nil {
 				return translateBackendConflict(err)
 			}

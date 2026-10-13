@@ -1,21 +1,22 @@
 import { createRootRoute, createRoute, createRouter, Outlet, redirect, useParams } from '@tanstack/react-router'
 import { AppShell } from './components/app-shell'
 import { Board } from './components/board/board'
+import { validateBoardSearch } from './components/board/board-search'
 import { type ReviewSearch, validateReviewSearch } from './components/documents/document-review'
+import { validateInboxSearch } from './components/inbox/inbox-search'
 import { TaskSheet } from './components/task/task-sheet'
 import { CreateWorkspaceDialog } from './components/workspace/create-workspace-dialog'
 import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
+import { InboxPage } from './pages/inbox'
 import { MonitorPage } from './pages/monitor'
 import { OnboardingPage } from './pages/onboarding'
-import { PendingProposalsPage } from './pages/pending-proposals'
 import { PlanningPage } from './pages/planning'
 import { RequirementsPage } from './pages/requirements'
 import { SettingsPage } from './pages/settings'
 import { SignInPage } from './pages/sign-in'
 import { SystemDesignPage } from './pages/system-design'
 import { TaskFullPage } from './pages/task-full'
-import { TasksPage } from './pages/tasks'
 import { WorkspacePage } from './pages/workspace'
 
 // The board is a layout route: the task sheet mounts into its Outlet, so the
@@ -38,22 +39,28 @@ function TaskSheetRoute() {
 
 const rootRoute = createRootRoute({ component: AppShell })
 // Pathless layout: the board wraps "/", the task sheets, and the workspace
-// modal, so it stays mounted (scroll, search) while overlays open over it.
-const boardRoute = createRoute({ getParentRoute: () => rootRoute, id: 'board', component: BoardPage })
+// modal, so it stays mounted (scroll, search) while overlays open over it. Its
+// search is the view, intake and arriving list filters (REQ-6), which every
+// child keeps.
+const boardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: 'board',
+  validateSearch: validateBoardSearch,
+  component: BoardPage,
+})
 const boardIndexRoute = createRoute({ getParentRoute: () => boardRoute, path: '/', component: () => null })
 const taskSheetRoute = createRoute({
   getParentRoute: () => boardRoute,
   path: '/tasks/$taskId',
   component: TaskSheetRoute,
 })
-// Task intake moved to the Tasks view (AC-2.1). The board's old address stays
-// as a redirect so existing links and bookmarks land on the surface that now
-// owns creation instead of on a dead route.
+// Task intake lives on the Board's list view; the old address stays a
+// redirect so existing links and bookmarks still land on intake.
 const newTaskRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/new',
   beforeLoad: () => {
-    throw redirect({ to: '/tasks', search: { create: true } })
+    throw redirect({ to: '/', search: { view: 'list', create: true } })
   },
   component: () => null,
 })
@@ -67,22 +74,20 @@ const taskFullRoute = createRoute({
   path: '/tasks/$taskId/full',
   component: TaskFullPage,
 })
-// The list-first Tasks view, which is also where tasks are
-// created and inspected (REQ-2). Both of the surfaces it hosts are search
-// params on this one route rather than child paths: the list stays mounted —
-// its page, its filters, its scroll — behind whichever sheet is open, and the
-// address of the surface stays `/tasks`, so intake and an open panel highlight
-// the Tasks view rather than announcing some other page.
+// The Tasks page became the Board's list view (AC-6.3). Its address redirects
+// there, keeping intake and any filter it names; anything else is dropped. A
+// legacy panel permalink (`?task=`) opens that task's sheet over the list.
 const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tasks',
-  // `task` is the open detail panel, which makes the panel's own address the
-  // permalink an operator can share (AC-2.2); `create` is task intake (AC-2.1).
-  validateSearch: (search: Record<string, unknown>): { task?: string; create?: boolean } => ({
-    task: typeof search.task === 'string' && search.task ? search.task : undefined,
-    create: search.create === true || search.create === 'true' ? true : undefined,
-  }),
-  component: TasksPage,
+  beforeLoad: ({ search }) => {
+    const task = (search as Record<string, unknown>).task
+    if (typeof task === 'string' && task) {
+      throw redirect({ to: '/tasks/$taskId', params: { taskId: task }, search: { view: 'list' } })
+    }
+    throw redirect({ to: '/', search: { ...validateBoardSearch(search as Record<string, unknown>), view: 'list' } })
+  },
+  component: () => null,
 })
 // Legacy deep links from before the board became the home page.
 const activityRedirectRoute = createRoute({
@@ -137,17 +142,25 @@ const systemDesignRoute = createRoute({
   }),
   component: SystemDesignPage,
 })
+// The operator inbox (feature-operator-next-action NA-6).
+const inboxRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/inbox',
+  validateSearch: validateInboxSearch,
+  component: InboxPage,
+})
+// Pending proposals are decisions in the Inbox now; the old address keeps its
+// task, document and tier.
 const pendingProposalsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/pending-proposals',
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): { task?: string; document?: string; tier?: 'requirement' | 'system_design' } => ({
-    task: typeof search.task === 'string' && search.task ? search.task : undefined,
-    document: typeof search.document === 'string' && search.document ? search.document : undefined,
-    tier: search.tier === 'requirement' || search.tier === 'system_design' ? search.tier : undefined,
-  }),
-  component: PendingProposalsPage,
+  beforeLoad: ({ search }) => {
+    throw redirect({
+      to: '/inbox',
+      search: { ...validateInboxSearch(search as Record<string, unknown>), band: 'decisions' },
+    })
+  },
+  component: () => null,
 })
 // The planning-side blueprint surface: the list, and the
 // canonical detail route an anchor now owns. The task routes no longer render
@@ -180,6 +193,7 @@ const routeTree = rootRoute.addChildren([
   workspaceRoute,
   requirementsRoute,
   systemDesignRoute,
+  inboxRoute,
   pendingProposalsRoute,
   blueprintsRoute,
   blueprintDetailRoute,

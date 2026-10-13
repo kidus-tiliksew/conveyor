@@ -4,26 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // ForgeFailure is the latest unresolved GitHub projection or merge failure
-// that belongs in the needs-operator surface.
+// that belongs in the needs-operator surface. AutomaticRetryExhausted is true
+// when the failed publication already had its bounded automatic re-enqueue
+// (feature-bounded-automatic-recovery AR-5), so only the operator can act.
 type ForgeFailure struct {
-	Category string    `json:"category"`
-	Detail   string    `json:"detail"`
-	Surface  string    `json:"surface"`
-	At       time.Time `json:"at"`
+	Category                string    `json:"category"`
+	Detail                  string    `json:"detail"`
+	Surface                 string    `json:"surface"`
+	At                      time.Time `json:"at"`
+	AutomaticRetryExhausted bool      `json:"automatic_retry_exhausted"`
 }
 
 // LatestForgeFailure reduces durable projection events to the current
 // operator-actionable GitHub failure.
 func LatestForgeFailure(events []core.Event) *ForgeFailure {
 	var issue *ForgeFailure
+	issueAutomatic := false
 	reviews := make(map[string]*ForgeFailure)
+	reviewAutomatic := make(map[string]bool)
 	var merge *ForgeFailure
 	var conflict *ForgeFailure
 	for _, event := range events {
@@ -32,29 +39,39 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 			ForgeErrorCategory string `json:"forge_error_category"`
 			LastError          string `json:"last_error"`
 			Error              string `json:"error"`
+			Automatic          bool   `json:"automatic"`
+		}
+		reviewKey := func() string {
+			if payload.ReviewWorkOrderID != "" {
+				return payload.ReviewWorkOrderID
+			}
+			return event.JobID
 		}
 		switch event.Kind {
+		case "github_issue.publication_retry":
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Automatic {
+				issueAutomatic = true
+			}
 		case "github_issue.publication_failed":
 			if json.Unmarshal(event.Payload, &payload) == nil {
-				issue = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.LastError, Surface: "GitHub issue publication", At: event.At}
+				issue = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.LastError, Surface: "GitHub issue publication", At: event.At, AutomaticRetryExhausted: issueAutomatic}
 			}
 		case "github_issue.publication_published":
-			issue = nil
+			issue, issueAutomatic = nil, false
+		case "review.publication_retry":
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Automatic {
+				reviewAutomatic[reviewKey()] = true
+			}
 		case "review.publication_failed":
 			if json.Unmarshal(event.Payload, &payload) == nil {
-				key := payload.ReviewWorkOrderID
-				if key == "" {
-					key = event.JobID
-				}
-				reviews[key] = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.LastError, Surface: "GitHub review publication", At: event.At}
+				key := reviewKey()
+				reviews[key] = &ForgeFailure{Category: payload.ForgeErrorCategory, Detail: payload.LastError, Surface: "GitHub review publication", At: event.At, AutomaticRetryExhausted: reviewAutomatic[key]}
 			}
 		case "review.publication_published":
 			if json.Unmarshal(event.Payload, &payload) == nil {
-				key := payload.ReviewWorkOrderID
-				if key == "" {
-					key = event.JobID
-				}
+				key := reviewKey()
 				delete(reviews, key)
+				delete(reviewAutomatic, key)
 			}
 		case "merge.failed":
 			if json.Unmarshal(event.Payload, &payload) == nil {
@@ -91,6 +108,9 @@ func LatestForgeFailure(events []core.Event) *ForgeFailure {
 }
 
 func (m *memory) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -117,6 +137,9 @@ func (m *memory) GetReviewPublication(_ context.Context, id string) (core.Review
 }
 
 func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -142,6 +165,9 @@ func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.R
 }
 
 func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	var missing []core.ReviewPublication
 	seen := map[string]bool{}
@@ -323,6 +349,9 @@ func publicationCommand(to, retrying, published, failed string) string {
 }
 
 func (m *memory) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -358,6 +387,9 @@ func (m *memory) GetGitHubLifecycle(_ context.Context, taskID string) (core.GitH
 }
 
 func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	if _, err := RequireActor(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -388,3 +420,79 @@ func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHu
 }
 
 func (m *memory) ReconcileGitHubLifecycles(context.Context) (int, error) { return 0, nil }
+
+func (m *memory) ListAutomaticPublicationRetries(ctx context.Context, now time.Time) ([]AutomaticPublicationRetry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	due := func(taskID string, failed bool, stamp time.Time) bool {
+		task, ok := m.tasks[taskID]
+		if !ok || (workspace != "" && task.Workspace != workspace) {
+			return false
+		}
+		policy, _ := m.recoveryPolicyLocked(task.Workspace)
+		return AutomaticPublicationDue(policy, task.State, failed, stamp, now)
+	}
+	var retries []AutomaticPublicationRetry
+	for taskID, lifecycle := range m.github {
+		if due(taskID, lifecycle.State == core.GitHubPublicationFailed, lifecycle.AutomaticReenqueueAt) {
+			retries = append(retries, AutomaticPublicationRetry{Kind: AutomaticPublicationIssue, TaskID: taskID, Key: taskID})
+		}
+	}
+	for id, publication := range m.publications {
+		if due(publication.TaskID, publication.State == core.ReviewPublicationFailed, publication.AutomaticReenqueueAt) {
+			retries = append(retries, AutomaticPublicationRetry{Kind: AutomaticPublicationReview, TaskID: publication.TaskID, Key: id})
+		}
+	}
+	sort.Slice(retries, func(i, j int) bool {
+		if retries[i].Kind != retries[j].Kind {
+			return retries[i].Kind < retries[j].Kind
+		}
+		return retries[i].Key < retries[j].Key
+	})
+	return retries, nil
+}
+
+func (m *memory) AutomaticPublicationRetryCommand(ctx context.Context, lease taskops.TaskLease, retry AutomaticPublicationRetry, now time.Time) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
+	if !lease.ValidForCommand(retry.TaskID, string(PublicationRetryCommand)) {
+		return false, fmt.Errorf("automatic publication retry requires a valid taskops lease")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace, _ := WorkspaceFromContext(ctx)
+	task, ok := m.tasks[retry.TaskID]
+	if !ok || (workspace != "" && task.Workspace != workspace) {
+		return false, nil
+	}
+	policy, _ := m.recoveryPolicyLocked(task.Workspace)
+	switch retry.Kind {
+	case AutomaticPublicationIssue:
+		lifecycle, exists := m.github[retry.Key]
+		if !exists || lifecycle.TaskID != retry.TaskID || !AutomaticPublicationDue(policy, task.State, lifecycle.State == core.GitHubPublicationFailed, lifecycle.AutomaticReenqueueAt, now) {
+			return false, nil
+		}
+		if err := ValidateGitHubPublicationTransition(lifecycle.State, core.GitHubPublicationRetrying); err != nil {
+			return false, err
+		}
+		lifecycle.State, lifecycle.AutomaticReenqueueAt, lifecycle.UpdatedAt = core.GitHubPublicationRetrying, now, now
+		m.github[retry.Key] = lifecycle
+		m.appendEventLocked(ctx, AutomaticGitHubIssueRetryEvent(lifecycle, retry.RequestID(now), now))
+	case AutomaticPublicationReview:
+		publication, exists := m.publications[retry.Key]
+		if !exists || publication.TaskID != retry.TaskID || !AutomaticPublicationDue(policy, task.State, publication.State == core.ReviewPublicationFailed, publication.AutomaticReenqueueAt, now) {
+			return false, nil
+		}
+		if err := ValidateReviewPublicationTransition(publication.State, core.ReviewPublicationRetrying); err != nil {
+			return false, err
+		}
+		publication.State, publication.AutomaticReenqueueAt, publication.UpdatedAt = core.ReviewPublicationRetrying, now, now
+		m.publications[retry.Key] = publication
+		m.appendEventLocked(ctx, AutomaticReviewRetryEvent(publication, retry.RequestID(now), now))
+	default:
+		return false, fmt.Errorf("unknown automatic publication kind %q", retry.Kind)
+	}
+	return true, nil
+}

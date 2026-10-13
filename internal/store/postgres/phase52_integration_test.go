@@ -14,13 +14,13 @@ import (
 )
 
 func TestRefreshReviewSettlementBindsHeadAndParksNonAdvancingRegressionIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "refresh-binding-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestRefreshReviewSettlementBindsHeadAndParksNonAdvancingRegressionIntegrati
 		})
 	}
 
-	restarted, err := Open(t.Context(), integrationDatabaseURL(t))
+	restarted, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +108,13 @@ func TestRefreshReviewSettlementBindsHeadAndParksNonAdvancingRegressionIntegrati
 }
 
 func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.T) {
-	st, err := Open(t.Context(), integrationDatabaseURL(t))
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "phase52-claims-" + core.NewTaskID()
-	ctx := store.WithWorkspace(context.Background(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage":    {Model: "gpt", TimeoutText: "1m", Timeout: time.Minute, Execution: config.ExecutionInProcess},
 		"spec":      {Model: "gpt", TimeoutText: "1m", Timeout: time.Minute, Execution: config.ExecutionInProcess},
@@ -124,7 +124,7 @@ func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "phase52-claims", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}
+	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: activeWorkerOwner(t, st, workspace), Name: "phase52-claims", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}

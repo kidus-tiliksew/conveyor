@@ -40,23 +40,23 @@ func TestInterventionActionMigrationUpgradesVersion35SchemaIntegration(t *testin
 	if err = pool.Ping(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 35); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 35); err != nil {
 		t.Fatalf("migrate isolated schema to version 35: %v", err)
 	}
 	var beforeName, beforeChecksum string
 	var beforeVersion int
-	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&beforeVersion); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&beforeVersion); err != nil {
 		t.Fatal(err)
 	}
 	if beforeVersion != 35 {
 		t.Fatalf("pre-upgrade migration version=%d", beforeVersion)
 	}
-	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&beforeName, &beforeChecksum); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&beforeName, &beforeChecksum); err != nil {
 		t.Fatal(err)
 	}
 
 	workspace := "migration-v35-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	st := newStore(pool)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
@@ -77,12 +77,12 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 		t.Fatal(err)
 	}
 
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatalf("upgrade isolated version-35 schema: %v", err)
 	}
 	var afterName, afterChecksum string
 	var afterVersion int
-	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
 	if afterVersion != embeddedMigrationHead(t) {
@@ -90,7 +90,7 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 			afterVersion, embeddedMigrationHead(t))
 	}
 	var leakedTempTables int
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_catalog.pg_class
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM pg_catalog.pg_class
 		WHERE relpersistence='t' AND relname IN (
 			'migration_050_invalid_observation_requirements',
 			'migration_050_invalid_drift_requirements'
@@ -100,7 +100,7 @@ VALUES ($1, 'existing-version-35-row', 'human', 'approve', 'pre-upgrade')`,
 	if leakedTempTables != 0 {
 		t.Fatalf("migration 050 temporary tables remain=%d", leakedTempTables)
 	}
-	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&afterName, &afterChecksum); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=1").Scan(&afterName, &afterChecksum); err != nil {
 		t.Fatal(err)
 	}
 	if afterName != beforeName || afterChecksum != beforeChecksum {
@@ -156,18 +156,18 @@ func TestWorkOrderAttemptMigrationUpgradeKeepsVersion48LedgerIntegration(t *test
 	if err = pool.Ping(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if err = migrateControlPlaneToVersion(t.Context(), pool, 48); err != nil {
+	if err = migrateControlPlaneToVersion(store.WithActor(t.Context(), store.SystemActor()), pool, 48); err != nil {
 		t.Fatalf("migrate isolated schema to version 48: %v", err)
 	}
 	var beforeName, beforeChecksum string
-	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&beforeName, &beforeChecksum); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&beforeName, &beforeChecksum); err != nil {
 		t.Fatal(err)
 	}
 	if beforeName != "048_planning_exploration.sql" || beforeChecksum == "" {
 		t.Fatalf("version 48 ledger=(%q,%q)", beforeName, beforeChecksum)
 	}
 	var attemptColumns, planningColumns int
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM information_schema.columns
 WHERE table_schema=current_schema() AND table_name='work_orders'
   AND column_name IN ('attempt_id','last_attempt_id','last_failure_category')`).Scan(&attemptColumns); err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ WHERE table_schema=current_schema() AND table_name='work_orders'
 	if attemptColumns != 0 {
 		t.Fatalf("version 48 attempt columns=%d", attemptColumns)
 	}
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM information_schema.columns
 WHERE table_schema=current_schema() AND table_name='planning_sessions'
   AND column_name IN ('model','effort','exploration_output_tokens','exploration_tokens_used','primary_repo','pinned_revisions')`).Scan(&planningColumns); err != nil {
 		t.Fatal(err)
@@ -184,18 +184,18 @@ WHERE table_schema=current_schema() AND table_name='planning_sessions'
 		t.Fatalf("version 48 planning columns=%d", planningColumns)
 	}
 
-	if err = migrateControlPlane(t.Context(), pool); err != nil {
+	if err = migrateControlPlane(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatalf("upgrade isolated version-48 schema: %v", err)
 	}
 	var afterName, afterChecksum string
-	if err = pool.QueryRow(t.Context(), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&afterName, &afterChecksum); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT name,checksum FROM conveyor_schema_migrations WHERE version=48").Scan(&afterName, &afterChecksum); err != nil {
 		t.Fatal(err)
 	}
 	if afterName != beforeName || afterChecksum != beforeChecksum {
 		t.Fatalf("version 48 migration changed: before=(%q,%q) after=(%q,%q)", beforeName, beforeChecksum, afterName, afterChecksum)
 	}
 	var afterVersion int
-	if err = pool.QueryRow(t.Context(), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT max(version) FROM conveyor_schema_migrations").Scan(&afterVersion); err != nil {
 		t.Fatal(err)
 	}
 	if afterVersion != embeddedMigrationHead(t) {
@@ -203,13 +203,13 @@ WHERE table_schema=current_schema() AND table_name='planning_sessions'
 			afterVersion, embeddedMigrationHead(t))
 	}
 	var attemptMigrationName string
-	if err = pool.QueryRow(t.Context(), "SELECT name FROM conveyor_schema_migrations WHERE version=49").Scan(&attemptMigrationName); err != nil {
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), "SELECT name FROM conveyor_schema_migrations WHERE version=49").Scan(&attemptMigrationName); err != nil {
 		t.Fatal(err)
 	}
 	if attemptMigrationName != "049_work_order_attempts.sql" {
 		t.Fatalf("version 49 migration=%q", attemptMigrationName)
 	}
-	if err = pool.QueryRow(t.Context(), `SELECT count(*) FROM information_schema.columns
+	if err = pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT count(*) FROM information_schema.columns
 WHERE table_schema=current_schema() AND table_name='work_orders'
   AND column_name IN ('attempt_id','last_attempt_id','last_failure_category')`).Scan(&attemptColumns); err != nil {
 		t.Fatal(err)
@@ -221,13 +221,13 @@ WHERE table_schema=current_schema() AND table_name='work_orders'
 
 func TestMigratedSchemaAcceptsCanonicalInterventionActionsIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
-	st, err := Open(t.Context(), databaseURL)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
 	workspace := "intervention-actions-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)

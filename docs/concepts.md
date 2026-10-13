@@ -23,8 +23,8 @@ Conveyor applies that answer to agent-written software:
   an operator confirms them, and only confirmed documents are authority.
   This is [the document corpus](document-corpus.md).
 - Work flows through stations. A [task](tasks.md) passes triage, an optional
-  plan gate, implementation, and independent review, each an explicit stage
-  with its own contract. The server rejects self-review and unstructured
+  plan gate, implementation, optional kit verification, and independent
+  review, each an explicit stage with its own contract. The server rejects self-review and unstructured
   verdicts the way a factory rejects an uncalibrated gauge.
 - Inspection is placed where mistakes change the product or its
   architecture: document confirmation, plan approval, merge approval, and
@@ -39,7 +39,7 @@ Conveyor coordinates work, it does not execute it. Agents run on your machines w
 your credentials, edit in ordinary Git worktrees, and deliver through
 ordinary pull requests. There is no hosted sandbox and the server never
 holds your agent CLI credentials; the only model key it keeps is its own,
-for the in-process triage, spec, and planning stages.
+for the in-process triage and planning stages.
 
 If you deleted Conveyor tomorrow, the repository,
 the PRs, and the review trail would all still be sitting in Git and GitHub,

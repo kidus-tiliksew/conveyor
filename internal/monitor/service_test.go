@@ -184,7 +184,7 @@ func (f sourceFunc) Observations(ctx context.Context, since time.Time) ([]monito
 func testService(t *testing.T) (*monitor.Service, store.Store, context.Context) {
 	t.Helper()
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	service := &monitor.Service{
 		Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true,
 		Repositories: map[string]struct{}{"conveyor": {}},

@@ -1,4 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // Stateful local fixture for the operator grant disclosure
 // (component-web-task-surfaces). The browser proves request composition and
@@ -175,6 +177,7 @@ async function fixture(page: Page, options: Options = {}) {
       grants,
     }
   }
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -186,7 +189,8 @@ async function fixture(page: Page, options: Options = {}) {
           { id: 'other', name: 'Other' },
         ],
       })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'operator', role: options.role ?? 'operator' } })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.role ?? 'operator' }) })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: false }] })
     if (path.endsWith('/activity')) return route.fulfill({ json: item })

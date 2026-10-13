@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
@@ -502,5 +503,50 @@ func TestRuntimeTrustedWorkspaceAndPublicationWakeup(t *testing.T) {
 			t.Fatal("suppressed generation lost its wakeup")
 		case <-time.After(time.Millisecond * 5):
 		}
+	}
+}
+
+// TestEnqueueAndRuntimeActorsAreExplicit proves queue envelopes name their
+// system actor explicitly: enqueue records the canonical queue subsystem
+// built by core.SystemActor, and the runtime records its claim and outcome
+// under its worker identity with the system role (component-persistence,
+// Actor context). The claim is observed through a handler channel.
+func TestEnqueueAndRuntimeActorsAreExplicit(t *testing.T) {
+	f := newRuntimeFixture(t, Options{WorkerID: "replica-a"})
+	claimed := make(chan queue.Job, 1)
+	release := make(chan struct{})
+	f.outcome = func(job queue.Job) error {
+		claimed <- job
+		<-release
+		return nil
+	}
+	if _, err := Enqueue(context.Background(), f.log, "ws", "demo", "actor", demoArgs{Key: "actor"}, 3, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	stream := StreamFor("demo", "actor")
+	actorOf := func(kind string) (string, string, bool) {
+		events, err := f.log.Read(context.Background(), "ws", stream, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Kind == kind {
+				return event.ActorID, event.ActorRole, true
+			}
+		}
+		return "", "", false
+	}
+	if id, role, ok := actorOf(KindEnqueued); !ok || id != core.SystemActor("queue").ID || role != string(core.ActorSystem) {
+		t.Fatalf("enqueue actor=%q/%q ok=%t", id, role, ok)
+	}
+	f.start(t)
+	<-claimed
+	if id, role, ok := actorOf(KindClaimed); !ok || id != "replica-a" || role != string(core.ActorSystem) {
+		t.Fatalf("claim actor=%q/%q ok=%t", id, role, ok)
+	}
+	close(release)
+	f.waitFor(t, "completion", func() bool { return f.state(t, "actor").State == StateCompleted })
+	if id, role, ok := actorOf(KindCompleted); !ok || id != "replica-a" || role != string(core.ActorSystem) {
+		t.Fatalf("outcome actor=%q/%q ok=%t", id, role, ok)
 	}
 }

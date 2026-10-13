@@ -52,7 +52,7 @@ func TestPhase62RequirementsHTTPIncludesWorkspaceRequirementLineageIntegration(t
 	// model scopes by the immutable workspace column, not payload identity
 	// alone.
 	siblingWorkspace := "phase62-http-sibling-" + core.NewTaskID()
-	siblingCtx := store.WithWorkspace(t.Context(), siblingWorkspace)
+	siblingCtx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), siblingWorkspace)
 	if _, err := st.BootstrapWorkspaceConfig(siblingCtx, &config.Config{
 		Workspace: siblingWorkspace,
 		Repos: []config.Repo{{

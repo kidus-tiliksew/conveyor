@@ -16,6 +16,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
@@ -356,45 +357,33 @@ func (s *Server) taskRunAwaitingGate(ctx context.Context, task core.Task) (*work
 		}
 	}
 
-	if revision, pending, revisionErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, task.ID); revisionErr != nil {
-		return nil, revisionErr
-	} else if pending {
-		return &workerservice.TaskRunGate{
-			Kind: "plan_revision", Label: "plan revision gate",
-			Summary:     fmt.Sprintf("implementation requested revision of execution plan v%d", revision.PlanVersion),
-			PlanVersion: revision.PlanVersion, Rationale: revision.Rationale,
-			CanOperate: canOperate, CanRequestChanges: canOperate,
-		}, nil
-	}
-
-	command, err := latestTaskGateCommand(ctx, s.Store, task.ID)
+	action, err := store.ReadNextAction(ctx, s.Store, task.ID, store.NextActionOptions{Capabilities: map[core.Capability]bool{}})
 	if err != nil {
 		return nil, err
 	}
-	switch command {
-	case core.TaskGateSpec:
-		spec, found, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID)
-		if specErr != nil {
-			return nil, specErr
-		}
-		gate := &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan", CanOperate: canOperate, CanRequestChanges: canOperate}
-		if found {
-			gate.SpecVersion = spec.Version
-			gate.Summary = fmt.Sprintf("submitted execution plan v%d", spec.Version)
-		}
-		return gate, nil
-	case core.TaskGateMerge:
-		summary := "reviewed task branch"
-		if task.Branch != "" {
-			summary = task.Branch
-			if task.BaseBranch != "" {
-				summary += " into " + task.BaseBranch
-			}
-		}
-		return &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", Summary: summary, CanOperate: canOperate, CanRequestChanges: canRequestChanges}, nil
-	default:
-		return &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: fmt.Sprintf("task is %s after %s", task.State, task.NextStage), CanOperate: canOperate, CanRequestChanges: canOperate}, nil
+	entry, ok := nextaction.Lookup(action.Kind, action.Details.StallReason, action.Details.ReleaseOutcome, action.Details.GateKind)
+	if !ok || entry.RunGate == nil {
+		return &workerservice.TaskRunGate{Kind: "human", Label: "human recovery gate", Summary: action.Summary, CanOperate: canOperate, CanRequestChanges: canOperate}, nil
 	}
+	gate := &workerservice.TaskRunGate{Kind: entry.RunGate.Kind, Label: entry.RunGate.Label, Summary: action.Summary, CanOperate: canOperate, CanRequestChanges: canOperate || canRequestChanges}
+	if action.Kind == nextaction.KindPlanApproval {
+		if spec, found, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID); specErr != nil {
+			return nil, specErr
+		} else if found {
+			gate.SpecVersion = spec.Version
+		}
+	}
+	// A merge_approval gate carries the side-effect-free readiness peek, so a
+	// run offers the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
+	if task.GateKind == core.GateKindMergeApproval && gate.Kind == workerservice.TaskRunGateMergeApproval && s.OnMergeReadiness != nil {
+		readiness, readErr := s.taskRunReadiness.read(ctx, task, s.OnMergeReadiness)
+		if readErr != nil {
+			log.Printf("task run gate merge readiness for %s: %v", task.ID, readErr)
+		} else {
+			gate.MergeReadiness = &workerservice.TaskRunMergeReadiness{State: readiness.State, HeadSHA: readiness.HeadSHA, URL: readiness.URL, Number: readiness.Number}
+		}
+	}
+	return gate, nil
 }
 
 // taskRunMergeReadinessReuse bounds forge reads from polling runs and waits:
@@ -435,7 +424,7 @@ func (s *Server) taskRunMergeExecutionGate(ctx context.Context, task core.Task, 
 	case !readReadiness:
 		parts = append(parts, "merge readiness changed during this read; the next read checks it again")
 	default:
-		readiness, readErr := s.taskRunReadiness.read(ctx, task, approvedHead, s.OnMergeReadiness)
+		readiness, readErr := s.taskRunReadiness.read(ctx, task, s.OnMergeReadiness)
 		if readErr != nil {
 			log.Printf("task run merge readiness for %s: %v", task.ID, readErr)
 			parts = append(parts, "merge readiness could not be read; the next read retries")
@@ -471,9 +460,13 @@ func taskRunMergeReadinessRemedy(state string, task core.Task) string {
 	case "STALE":
 		return "readiness STALE; the branch head moved after approval, so a refresh review replaces this merge"
 	case "CONFLICTING":
-		return "readiness CONFLICTING; the pull request conflicts with its base, and an operator with recover_work starts the conflict fix (dashboard Fix merge conflict, or POST /v1/tasks/" + task.ID + "/merge-conflict-fix)"
+		return "readiness CONFLICTING; the pull request conflicts with its base. Conveyor dispatches the conflict fix automatically; an operator with recover_work retries only after automatic fixes are exhausted (POST /v1/tasks/" + task.ID + "/merge-conflict-fix)"
 	case "UNKNOWN":
 		return "readiness UNKNOWN; GitHub has not settled mergeability, or a conflict fix is in progress"
+	case "MERGED":
+		return "readiness MERGED; the pull request is already merged"
+	case "MERGED_HEAD_MISMATCH":
+		return "readiness MERGED_HEAD_MISMATCH; the pull request merged at a head that does not match the reviewed head, so merge is not offered"
 	default:
 		return "readiness " + state + "; merge is not offered"
 	}
@@ -508,9 +501,9 @@ func (c *taskRunReadinessCache) now() time.Time {
 	return time.Now()
 }
 
-func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, approvedHead string, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error)) (dispatch.MergeReadiness, error) {
+func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error)) (dispatch.MergeReadiness, error) {
 	id := taskRunReadinessID(ctx, task.ID)
-	key := string(task.State) + "\x00" + approvedHead
+	key := taskRunReadinessKey(task)
 	c.mu.Lock()
 	if entry, ok := c.entries[id]; ok && entry.key == key && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
 		c.mu.Unlock()
@@ -557,26 +550,6 @@ func (s *Server) taskRunCapability(ctx context.Context, capability core.Capabili
 		return s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspaceID, capability)
 	}
 	return credential.Scope == core.CredentialScopeOperator, nil
-}
-
-func latestTaskGateCommand(ctx context.Context, st store.Store, taskID string) (core.TaskCommand, error) {
-	events, err := st.ListEvents(ctx, taskID)
-	if err != nil {
-		return "", err
-	}
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].Kind != "task.state_changed" {
-			continue
-		}
-		var transition struct {
-			Command core.TaskCommand `json:"command"`
-		}
-		if err := json.Unmarshal(events[index].Payload, &transition); err != nil {
-			return "", fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
-		}
-		return transition.Command, nil
-	}
-	return "", nil
 }
 
 func (s *Server) nextTaskRunOrder(ctx context.Context, task core.Task) (workerservice.DispatchOrder, bool, error) {
@@ -974,4 +947,29 @@ func (s *Server) checkpointTaskRunOrderAttempt(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"created": created})
+}
+
+// lastKnown returns the cached readiness peek for a next-action projection.
+// It never calls the forge, so a next-action read cannot loop forge calls;
+// a missing or expired entry yields nil, which projects as UNKNOWN (DEC-64(3)).
+func (c *taskRunReadinessCache) lastKnown(ctx context.Context, task core.Task) *nextaction.MergeReadiness {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[taskRunReadinessID(ctx, task.ID)]
+	if !ok || entry.key != taskRunReadinessKey(task) || c.now().Sub(entry.readAt) >= taskRunMergeReadinessReuse {
+		return nil
+	}
+	return &nextaction.MergeReadiness{State: entry.readiness.State, HeadSHA: entry.readiness.HeadSHA, Number: entry.readiness.Number}
+}
+
+// taskRunReadinessKey is the one readiness cache key for every reader and
+// writer: the reviewed head at an awaiting merge_approval gate, otherwise the
+// approved head (falling back to the reviewed head), so a replaced head
+// misses (DEC-64(3)).
+func taskRunReadinessKey(task core.Task) string {
+	head := task.ApprovedHeadSHA
+	if head == "" || (task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval) {
+		head = task.ReviewedHeadSHA
+	}
+	return string(task.State) + "\x00" + head
 }

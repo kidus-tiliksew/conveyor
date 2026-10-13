@@ -15,7 +15,7 @@ import (
 // only while the proposing task remains non-terminal.
 func TestTaskActivityOperatorNotes(t *testing.T) {
 	st := store.NewMemory()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, id := range []string{"noted-task", "bare-task"} {
 		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", State: core.TaskRunning}); err != nil {
 			t.Fatal(err)

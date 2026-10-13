@@ -1,4 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // The Knowledge explorer and the parked navigation.
 // Task, requirement, and System Design detail each open a focused right panel
@@ -242,12 +244,13 @@ interface Options {
 }
 
 async function routeAPI(page: Page, options: Options = {}) {
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
-    if (path === '/v1/me') return route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', repos: [{ name: 'conveyor', base: 'main' }] } })
     if (path === '/v1/activity') return route.fulfill({ json: [] })
@@ -680,12 +683,11 @@ test('primary navigation shows exactly the accepted operating surfaces', async (
   await page.goto('/')
   const nav = page.getByRole('navigation', { name: 'Primary' })
   await expect(nav.getByRole('link')).toHaveText([
-    /^Board/,
-    'Tasks',
+    'Board',
+    /^Inbox/,
     'Workspace',
     'Requirements',
     'System Design',
-    'Pending proposals',
     'Monitor',
     'Settings',
   ])

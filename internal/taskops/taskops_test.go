@@ -13,7 +13,7 @@ import (
 )
 
 func TestPlaneOwnsTaskLeaseAndCommitsCanonicalEvent(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "taskops-lease", Workspace: "demo", State: core.TaskClaiming, NextStage: core.StageTriage}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -35,7 +35,7 @@ func TestPlaneOwnsTaskLeaseAndCommitsCanonicalEvent(t *testing.T) {
 }
 
 func TestWorkOrderCommandLeaseCannotBeForgedOrReusedForAnotherCommand(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "order-capability", Workspace: "demo", State: core.TaskQueued, NextStage: core.StageImplement}
 	job := core.Job{ID: "order-capability-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -62,7 +62,7 @@ func TestWorkOrderCommandLeaseCannotBeForgedOrReusedForAnotherCommand(t *testing
 }
 
 func TestReadsArePureAndOrderClockPersistsCanonicalCommands(t *testing.T) {
-	ctx := store.WithWorkspace(context.Background(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	task := core.Task{ID: "order-clock", Workspace: "demo", State: core.TaskRunning}

@@ -123,7 +123,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 		{name: "atomic attachment", attachErr: errors.New("transaction rolled back"), wantDetail: "attach submission governance"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx := store.WithWorkspace(t.Context(), "test")
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 			base := store.NewMemory()
 			design, version, err := base.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-submit-failure", Title: "Submit failure", Category: "Architecture"}, core.SystemDesignVersion{
 				Content: "# Submit\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -180,7 +180,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 }
 
 func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	design, confirmed, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-derived-gate", Title: "Derived gate", Category: "Architecture"}, core.SystemDesignVersion{
 		Content: "# Gate\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/workorder/**\n```", Origin: core.SystemDesignOriginOperator,
@@ -260,7 +260,7 @@ type evidenceSubmissionFixture struct {
 
 func newEvidenceSubmissionFixture(t *testing.T) evidenceSubmissionFixture {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{
 		ID: "evidence-task", Workspace: "demo", Repo: "app", Source: "roadmap:phase-5.4",
@@ -457,7 +457,7 @@ func TestSubmitForReviewAdmitsWithoutEvidenceAndPropagatesOnlyEligibleEvidence(t
 }
 
 func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "issue-linked", Workspace: "test", Repo: "app", Title: "Linked change", Branch: "conveyor/issue-linked", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -529,7 +529,7 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 
 func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st := store.NewMemory()
 	task := core.Task{ID: "stale-refresh", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/stale-refresh", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -582,6 +582,58 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	}
 }
 
+// TestPreReviewConflictFixSubmissionKeepsRefreshBaseline submits a conflict
+// fix dispatched before review of the refresh head (its baseline is that
+// unreviewed head, not the approved head). It is an ordinary refresh
+// submission: the approved baseline stays and only the refresh head advances
+// (feature-bounded-automatic-recovery AR-4).
+func TestPreReviewConflictFixSubmissionKeepsRefreshBaseline(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
+	st := store.NewMemory()
+	task := core.Task{ID: "pre-review-fix", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/pre-review-fix", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.MarkTaskApprovalStale(ctx, task.ID, "approved-head", "refresh-head", config.RefreshReviewDelta, "head-changed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": "test", "task_id": task.ID, "reason_code": "pre-review-conflict", "approved_head": "approved-head", "new_head": "refresh-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "pre-review-fix-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, ReasonCode: "merge-conflict", BaselineSHA: "refresh-head"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "fixer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-fixer"), OwnerUserID: "usr-fixer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+			return githubtrigger.ReviewTarget{Number: 7, HeadSHA: "fix-head"}, nil
+		}}
+	prepareSubmissionTest(service)
+	if _, err := service.SubmitForReview(ctx, job.ID, "fixer", submissionTestHead(service)); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := st.GetTask(ctx, task.ID)
+	if err != nil || !updated.ApprovalStale || updated.ApprovedHeadSHA != "approved-head" || updated.RefreshBaselineSHA != "approved-head" || updated.RefreshHeadSHA != "fix-head" {
+		t.Fatalf("task = %+v err=%v", updated, err)
+	}
+	if n, countErr := st.CountEvents(ctx, task.ID, "approval.stale"); countErr != nil || n != 1 {
+		t.Fatalf("approval.stale events=%d err=%v, want only the original refresh", n, countErr)
+	}
+	if n, countErr := st.CountEvents(ctx, task.ID, "review.refresh_head_advanced"); countErr != nil || n != 1 {
+		t.Fatalf("advance events=%d err=%v", n, countErr)
+	}
+}
+
 // conflictSubmission is a ReasonCode merge-conflict implement order claimed
 // for a task with an older approved round, an unresolved conflict episode,
 // its own running implement job, and a newer job that is not the order's.
@@ -601,7 +653,7 @@ type conflictSubmission struct {
 
 func newConflictSubmission(t *testing.T, policy config.ExecutionSetup, wrap ...func(store.Store) store.Store) *conflictSubmission {
 	t.Helper()
-	ctx := store.WithWorkspace(t.Context(), "test")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	var st store.Store = store.NewMemory()
 	for _, apply := range wrap {
 		st = apply(st)
@@ -1260,7 +1312,7 @@ func TestConflictFixSubmissionReplayRefusesIncompleteHandoff(t *testing.T) {
 		})
 	}
 	t.Run("refresh head advance fails", func(t *testing.T) {
-		ctx := store.WithWorkspace(t.Context(), "test")
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 		faults := &handoffFaultStore{Store: store.NewMemory(), failAdvanceHead: true}
 		task := core.Task{ID: "stale-advance", Workspace: "test", Repo: "app", Title: "Fix", Branch: "conveyor/stale-advance", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
 		if err := faults.CreateTask(ctx, task); err != nil {

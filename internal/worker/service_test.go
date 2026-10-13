@@ -41,26 +41,27 @@ func (failingObservabilityStore) FinalizeWorkOrderAttemptObservability(context.C
 func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }, IdentityUsers: workerIdentityFixture{identity: core.CallerIdentity{ID: "usr-assigned", DisplayName: "Assigned User", Email: "assigned@example.test"}}}
-	operatorCtx := store.WithCredential(t.Context(), core.AuthenticatedCredential{ID: "operator-token", OwnerUserID: "usr-assigned", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "operator-token", OwnerUserID: "usr-assigned", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithWorkspace(store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID("usr-assigned"), Role: core.ActorUser}), "demo")
 	token, pairing, err := service.IssuePairing(operatorCtx, time.Minute)
 	if err != nil || token == "" || pairing.TokenHash == token {
 		t.Fatalf("pairing=%+v token=%q err=%v", pairing, token, err)
 	}
-	enrollment, err := service.Enroll(t.Context(), token, "laptop")
+	enrollment, err := service.Enroll(store.WithActor(t.Context(), store.SystemActor()), token, "laptop")
 	if err != nil || enrollment.Credential == "" || enrollment.Worker.CredentialHash == enrollment.Credential || enrollment.Worker.OwnerUserID != "usr-assigned" {
 		t.Fatalf("enrollment=%+v err=%v", enrollment, err)
 	}
-	if _, err = service.Enroll(t.Context(), token, "again"); !errors.Is(err, store.ErrPairingInvalid) {
+	if _, err = service.Enroll(store.WithActor(t.Context(), store.SystemActor()), token, "again"); !errors.Is(err, store.ErrPairingInvalid) {
 		t.Fatalf("pairing reuse err=%v", err)
 	}
-	if _, _, err = service.Authenticate(t.Context(), enrollment.Credential, "other"); !errors.Is(err, store.ErrWorkerUnauthorized) {
+	if _, _, err = service.Authenticate(store.WithActor(t.Context(), store.SystemActor()), enrollment.Credential, "other"); !errors.Is(err, store.ErrWorkerUnauthorized) {
 		t.Fatalf("cross-workspace auth err=%v", err)
 	}
-	workerCtx, worker, err := service.Authenticate(t.Context(), enrollment.Credential, "demo")
+	workerCtx, worker, err := service.Authenticate(store.WithActor(t.Context(), store.SystemActor()), enrollment.Credential, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,8 +203,9 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 }
 
 func TestReleaseCheckpointDecisionValidationAndCitations(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	service := &Service{Store: st}
 	now := time.Now().UTC()
 	task := core.Task{ID: "checkpoint-metadata", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
@@ -272,8 +274,9 @@ func TestReleaseCheckpointDecisionValidationAndCitations(t *testing.T) {
 
 func TestWorkerClaimUsesEnrollmentOwnerForAssignmentEligibility(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
@@ -300,31 +303,44 @@ func TestWorkerClaimUsesEnrollmentOwnerForAssignmentEligibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := func(id, owner string) core.Worker {
-		return core.Worker{ID: id, Workspace: "demo", OwnerUserID: owner, LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
-	}
-	for name, candidate := range map[string]core.Worker{"different owner": worker("worker-v", "usr-v"), "ownerless legacy": worker("worker-legacy", "")} {
-		if _, err := service.ClaimForWorker(ctx, candidate, assigned.ID, core.WorkOrderClaim{SessionID: name, ClientToken: name}); err == nil || !strings.Contains(err.Error(), "usr-u") {
-			t.Fatalf("%s claim error=%v", name, err)
+		candidate := core.Worker{ID: id, Workspace: "demo", OwnerUserID: owner, Name: id, CredentialHash: "credential-" + id, LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}, CreatedAt: now}
+		if owner == "" {
+			// A historical ownerless enrollment stays storable and listable.
+			if err := st.CreateWorker(ctx, candidate); err != nil {
+				t.Fatal(err)
+			}
+			return candidate
 		}
+		return enrollTestWorker(t, st, candidate)
 	}
-	claimed, err := service.ClaimForWorker(ctx, worker("worker-u", "usr-u"), assigned.ID, core.WorkOrderClaim{SessionID: "owned", ClientToken: "owned"})
+	differentOwner, legacy, owned := worker("worker-v", "usr-v"), worker("worker-legacy", ""), worker("worker-u", "usr-u")
+	if _, err := service.ClaimForWorker(ctx, differentOwner, assigned.ID, core.WorkOrderClaim{SessionID: "different owner", ClientToken: "different owner"}); err == nil || !strings.Contains(err.Error(), "usr-u") {
+		t.Fatalf("different owner claim error=%v", err)
+	}
+	claimed, err := service.ClaimForWorker(ctx, owned, assigned.ID, core.WorkOrderClaim{SessionID: "owned", ClientToken: "owned"})
 	if err != nil || claimed.WorkerID != "worker-u" {
 		t.Fatalf("owned claim=%+v err=%v", claimed, err)
 	}
-	legacyClaim, err := service.ClaimForWorker(ctx, worker("worker-legacy", ""), unassigned.ID, core.WorkOrderClaim{SessionID: "legacy", ClientToken: "legacy", OwnerUserID: "forged"})
-	if err != nil || legacyClaim.WorkerID != "worker-legacy" {
-		t.Fatalf("legacy unassigned claim=%+v err=%v", legacyClaim, err)
+	// An ownerless legacy enrollment is refused at use, and a forged owner on
+	// the claim cannot rescue it (component-work-orders, Worker owner admission).
+	if _, err := service.ClaimForWorker(ctx, legacy, unassigned.ID, core.WorkOrderClaim{SessionID: "legacy", ClientToken: "legacy", OwnerUserID: "forged"}); !errors.Is(err, store.ErrWorkerUnauthorized) {
+		t.Fatalf("legacy ownerless claim error=%v", err)
+	}
+	if order, err := st.GetWorkOrder(ctx, unassigned.ID); err != nil || order.State != core.WorkOrderQueued {
+		t.Fatalf("refused legacy claim changed order: %+v %v", order, err)
 	}
 }
 
 func TestWorkerClaimDeliveryWithoutStoredToken(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
 	worker := core.Worker{ID: "worker-owner", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	worker = enrollTestWorker(t, st, worker)
 
 	createOrder := func(taskID string) core.WorkOrder {
 		t.Helper()
@@ -380,12 +396,14 @@ func (s *failingSecondGetTaskStore) GetTask(ctx context.Context, id string) (cor
 
 func TestWorkerClaimDeliveryReleasesWhenTaskReadFails(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: &failingSecondGetTaskStore{Store: st}, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
 	worker := core.Worker{ID: "worker-owner", Workspace: "demo", OwnerUserID: "usr-owner", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}}
+	worker = enrollTestWorker(t, st, worker)
 	task := core.Task{ID: "owner-token-fail", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/owner-token-fail", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -409,8 +427,9 @@ func TestWorkerClaimDeliveryReleasesWhenTaskReadFails(t *testing.T) {
 }
 
 func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	now := time.Now().UTC()
 	task := core.Task{ID: "checkpoint-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: now}
 	job := core.Job{ID: "checkpoint-task-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -520,12 +539,14 @@ func TestAttemptCheckpointIsAttemptScopedAndIdempotent(t *testing.T) {
 
 func TestListClaimableOrdersByQueueEntryWithReviewPreference(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }, RetryDelay: time.Nanosecond, RetryMaximum: time.Nanosecond}
 	worker := core.Worker{ID: "claim-order-worker", Workspace: "demo", Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}}, LeaseExpiresAt: now.Add(time.Minute)}
+	worker = enrollTestWorker(t, st, worker)
 
 	createOrder := func(id string, stage core.Stage, queueEnteredAt, createdAt time.Time) {
 		task := core.Task{ID: id, Workspace: "demo", State: core.TaskRunning, NextStage: stage, CreatedAt: createdAt}
@@ -649,8 +670,9 @@ func TestObservabilityBoundsPreserveNewestValidUTF8(t *testing.T) {
 }
 
 func TestObservabilityPersistenceFailuresDoNotChangeLifecycleResults(t *testing.T) {
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
+	seedWorkerOwners(t, base)
 	now := time.Now().UTC()
 	task := core.Task{ID: "observability-failure", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
@@ -698,9 +720,10 @@ func TestProviderUsageLimitMatcher(t *testing.T) {
 
 func TestTaskAvailabilityReportsWorkerLivenessAndQueueContext(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	worker := core.Worker{ID: "worker-status", Workspace: "demo", Name: "status", CredentialHash: "hash", CreatedAt: now}
+	seedWorkerOwners(t, st)
+	worker := core.Worker{ID: "worker-status", Workspace: "demo", OwnerUserID: "usr-owner", Name: "status", CredentialHash: "hash", CreatedAt: now}
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
@@ -725,8 +748,9 @@ func TestTaskAvailabilityReportsWorkerLivenessAndQueueContext(t *testing.T) {
 
 func TestTaskAvailabilityUsesWorkerLivenessNotHarnessProbes(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	worker := core.Worker{ID: "stale-probe-worker", Workspace: "demo", Name: "stale", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: false}}, CreatedAt: now}
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
@@ -752,8 +776,9 @@ func TestTaskAvailabilityUsesWorkerLivenessNotHarnessProbes(t *testing.T) {
 
 func TestTaskAvailabilityOmitsWarningWithoutEnrolledWorkers(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	service := &Service{Store: st, Now: func() time.Time { return now }}
 	cfg := &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}}}}
 	task := core.Task{ID: "pull-only-task", Workspace: "demo"}
@@ -784,7 +809,7 @@ func TestTaskAvailabilityOmitsWarningWithoutEnrolledWorkers(t *testing.T) {
 
 func TestTaskAvailabilityOmitsStatusWithoutActionableTaskOrder(t *testing.T) {
 	status := (&Service{Store: store.NewMemory()}).TaskAvailability(
-		store.WithWorkspace(t.Context(), "demo"),
+		store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"),
 		&config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}},
 		core.Task{ID: "reviewed-task", Workspace: "demo", State: core.TaskAwaiting},
 		[]core.WorkOrder{{ID: "completed-review", TaskID: "reviewed-task", Stage: core.StageReview, State: core.WorkOrderCompleted, RequiredHarness: "codex"}},
@@ -796,8 +821,9 @@ func TestTaskAvailabilityOmitsStatusWithoutActionableTaskOrder(t *testing.T) {
 
 func TestBlockedImplementationIsWorkerVisibleButUnclaimable(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }}
@@ -805,6 +831,7 @@ func TestBlockedImplementationIsWorkerVisibleButUnclaimable(t *testing.T) {
 		ID: "worker", Workspace: "demo", LeaseExpiresAt: now.Add(time.Minute),
 		Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}},
 	}
+	worker = enrollTestWorker(t, st, worker)
 	dependency := core.Task{ID: "dependency", Workspace: "demo", Repo: "api", State: core.TaskRunning, CreatedAt: now}
 	if err := st.CreateTask(ctx, dependency); err != nil {
 		t.Fatal(err)
@@ -844,15 +871,16 @@ func TestBlockedImplementationIsWorkerVisibleButUnclaimable(t *testing.T) {
 func TestWorkerDispatchDoesNotFilterClientLocalHarnesses(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	cfg.Harnesses = append(cfg.Harnesses, config.Harness{Name: "reviewer", Command: []string{"reviewer", "{prompt}", "{mcp_config}"}, ProbeCommand: []string{"reviewer", "--version"}, ProbeTimeoutText: "5s", ProbeTimeout: 5 * time.Second})
 	review := cfg.Routing.Stages["review"]
 	review.Harness = "reviewer"
 	cfg.Routing.Stages["review"] = review
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	orders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: orders, ConfigProvider: orders.ConfigProvider, Now: func() time.Time { return now }}
-	worker := core.Worker{ID: "partial-worker", Workspace: "demo", Name: "partial", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "reviewer", Healthy: false}}, CreatedAt: now}
+	worker := core.Worker{ID: "partial-worker", Workspace: "demo", OwnerUserID: "usr-owner", Name: "partial", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Healthy: true}, {Harness: "reviewer", Healthy: false}}, CreatedAt: now}
 	if err := st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
@@ -918,8 +946,9 @@ func TestLegacyHarnessSnapshotDefaultsToJSONFileTransport(t *testing.T) {
 
 func TestImplementationDispatchLeavesExecutionToClientLocalSetup(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	cfg.Harnesses[0].EffortArgs["high"] = []string{"--config", `model_reasoning_effort="low"`}
 	cfg.Repos = []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}
@@ -944,6 +973,7 @@ func TestImplementationDispatchLeavesExecutionToClientLocalSetup(t *testing.T) {
 	}
 	snapshotHarness := harnessFromSnapshot(snapshot)
 	worker := core.Worker{ID: "implementation-worker", Workspace: "demo", CredentialHash: "hash", LeaseExpiresAt: now.Add(time.Minute), Probes: []core.HarnessProbe{{Harness: "codex", Fingerprint: HarnessFingerprint(snapshotHarness), Healthy: true}}, CreatedAt: now}
+	worker = enrollTestWorker(t, st, worker)
 	listed, err := service.ListClaimable(ctx, worker)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("listed=%+v err=%v", listed, err)
@@ -964,12 +994,14 @@ func TestImplementationDispatchLeavesExecutionToClientLocalSetup(t *testing.T) {
 // model then satisfies the claim (req-worker AC-2.2, AC-2.3; DEC-56).
 func TestReleaseClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T) {
 	now := time.Now().UTC()
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
+	seedWorkerOwners(t, st)
 	cfg := workerTestConfig()
 	workOrders := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	service := &Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, Now: func() time.Time { return now }, RetryDelay: time.Nanosecond, RetryMaximum: time.Nanosecond}
 	worker := core.Worker{ID: "pinned-release-worker", Workspace: "demo", Probes: []core.HarnessProbe{{Harness: "claude", Healthy: true}}, LeaseExpiresAt: now.Add(time.Minute)}
+	worker = enrollTestWorker(t, st, worker)
 	if err := st.CreateTask(ctx, core.Task{ID: "pinned-release", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -1014,4 +1046,43 @@ func TestReleaseClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T) {
 	if err != nil || next.ReviewRound != 1 || next.ReviewSeat != 2 {
 		t.Fatalf("next machine claim=%+v err=%v", next, err)
 	}
+}
+
+// seedWorkerOwners gives the package's fixture owners active memberships in
+// the memory store, because a worker is admitted only with an active owner
+// (component-work-orders, Workers: Admission).
+func seedWorkerOwners(t *testing.T, st store.Store) {
+	t.Helper()
+	for _, owner := range []string{"usr-assigned", "usr-heartbeat", "usr-owner", "usr-other"} {
+		if err := store.SetMemoryWorkspaceMember(st, "demo", owner, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// enrollTestWorker persists a fixture worker with an active owner, because the
+// service reauthenticates every listing and claim from the stored enrollment
+// (component-work-orders, Workers: Listing and Claim).
+func enrollTestWorker(t *testing.T, st store.Store, worker core.Worker) core.Worker {
+	t.Helper()
+	if worker.OwnerUserID == "" {
+		worker.OwnerUserID = "usr-owner"
+	}
+	if worker.CredentialHash == "" {
+		worker.CredentialHash = "credential-" + worker.ID
+	}
+	if worker.Name == "" {
+		worker.Name = worker.ID
+	}
+	if worker.CreatedAt.IsZero() {
+		worker.CreatedAt = time.Now().UTC()
+	}
+	if err := store.SetMemoryWorkspaceMember(st, worker.Workspace, worker.OwnerUserID, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), worker.Workspace), store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker})
+	if err := st.CreateWorker(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	return worker
 }

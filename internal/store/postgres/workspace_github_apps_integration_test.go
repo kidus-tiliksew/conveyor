@@ -12,7 +12,7 @@ import (
 func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	workspace := "app-ledger-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), workspace)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	cfg := &config.Config{Workspace: workspace}
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 // the encryption identifiers were renamed decrypts unchanged.
 func TestWorkspaceGitHubAppLegacyCiphertextIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
-	ctx := t.Context()
+	ctx := store.WithActor(t.Context(), store.SystemActor())
 	storetest.RunLegacyGitHubAppKeyRecovery(t, st, ctx, func(t *testing.T, workspace string, nonce, ciphertext []byte) error {
 		t.Helper()
 		tag, err := st.pool.Exec(ctx, `UPDATE workspace_github_apps SET private_key_nonce=$2,private_key_ciphertext=$3 WHERE workspace_id=$1`, workspace, nonce, ciphertext)
@@ -88,7 +88,7 @@ func TestWorkspaceGitHubAppMigrationGuard(t *testing.T) {
 	// The embedded-version guard and the full migration run prove version 123.
 	st := newIdentityIntegrationStore(t, 0)
 	var exists bool
-	if err := st.pool.QueryRow(t.Context(), `SELECT to_regclass('workspace_github_apps') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+	if err := st.pool.QueryRow(store.WithActor(t.Context(), store.SystemActor()), `SELECT to_regclass('workspace_github_apps') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 		t.Fatal("app migration missing")
 	}
 

@@ -32,6 +32,23 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 	return allowed, err
 }
 
+// AuthorizeInstanceAdministration answers whether the active user owns the
+// sole deployment_credential marker. No role, binding, or credential scope
+// participates (DEC-63(1)).
+func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	var allowed bool
+	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM user_tokens t
+		JOIN users u ON u.id=t.user_id
+		WHERE t.deployment_credential AND t.user_id=$1 AND u.status='active'
+	)`, userID).Scan(&allowed)
+	return allowed, err
+}
+
 func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	var role core.WorkspaceRole
 	err := s.boundary.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&role)
@@ -177,8 +194,9 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 				return err
 			}
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
-			"workspace_id": workspaceID, "email": email, "role": role, "invitation": errors.Is(lookupErr, pgx.ErrNoRows),
+		result.Invitation = errors.Is(lookupErr, pgx.ErrNoRows)
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_granted", Payload: core.JSONPayload(map[string]any{
+			"workspace_id": workspaceID, "email": email, "role": role, "invitation": result.Invitation,
 			"granted_by": credential.OwnerUserID,
 		})})
 	})
@@ -201,6 +219,9 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 		if err := lockIdentityEmail(ctx, tx, email); err != nil {
 			return err
 		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationRevokeLocked); err != nil {
+			return err
+		}
 		result, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email)
 		if err != nil {
 			return err
@@ -208,7 +229,7 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 		if result.RowsAffected() == 0 {
 			return fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspaceID, "email": email, "invitation": true, "revoked_by": credential.OwnerUserID,
 		})})
 	})
@@ -254,7 +275,7 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 		if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_revoked"); err != nil {
 			return err
 		}
-		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspaceID, "user_id": userID,
 		})})
 	})

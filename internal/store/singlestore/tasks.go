@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,13 +46,13 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,'')`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection)
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -114,15 +115,18 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" || seen[id] {
-			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			return store.NewTaskDependencyError(id, "empty or duplicate")
 		}
 		seen[id] = true
 		d, err := getTaskRow(ctx, tx, id)
 		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return store.NewTaskDependencyError(id, "not found")
+			}
 			return err
 		}
 		if core.TaskTerminal(d.State) {
-			return fmt.Errorf("dependency task %s is not open", id)
+			return store.NewTaskDependencyError(id, "is not open")
 		}
 	}
 	versions, err := validateTaskContextTx(ctx, tx, ws, attached)
@@ -176,7 +180,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 }
 
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
-	lockKeys := []string{"task-id:" + t.ID, "task-open-branch:" + t.Workspace + ":" + t.Repo + ":" + t.Branch}
+	lockKeys := []string{"task-id:" + t.ID, taskBranchClaimKey(t.Workspace, t.Repo, t.Branch)}
 	if t.IntakeKey != "" {
 		lockKeys = append(lockKeys, "task-intake:"+t.Workspace+":"+t.IntakeKey)
 	}
@@ -199,14 +203,6 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		if count > 0 {
 			return fmt.Errorf("task identifier, branch or intake key already exists")
 		}
-	}
-	var occupant string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') LIMIT 1`, t.Workspace, t.Repo, t.Branch).Scan(&occupant)
-	if err == nil {
-		return store.TaskBranchInUseError(t.Branch, occupant)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
 	}
 	setup, err := json.Marshal(t.SetupContract)
 	if err != nil {
@@ -239,6 +235,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"base_branch":          t.BaseBranch,
 		"branch":               t.Branch,
 		"state":                t.State,
+		"gate_kind":            string(t.GateKind),
 		"next_stage":           t.NextStage,
 		"recovery_stage":       t.RecoveryStage,
 		"parent_task_id":       nullString(t.ParentTaskID),
@@ -382,8 +379,15 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed'), EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='pull_request.opened')`, ws, taskID, ws, taskID).Scan(&claimed, &prOpened); err != nil {
 					return err
 				}
-				if err := lockKey(ctx, tx, "task-open-branch:"+ws+":"+result.Repo+":"+branch); err != nil {
-					return err
+				// Lock the old and new branch rows in one order so concurrent swaps
+				// cannot deadlock; writeRow then releases and claims them (DEC-68,
+				// component-persistence Lock and transaction contract).
+				keys := []string{taskBranchClaimKey(ws, result.Repo, result.Branch), taskBranchClaimKey(ws, result.Repo, branch)}
+				sort.Strings(keys)
+				for _, key := range keys {
+					if err := lockKey(ctx, tx, key); err != nil {
+						return err
+					}
 				}
 				var occupant string
 				err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, result.Repo, branch, taskID).Scan(&occupant)
@@ -825,6 +829,18 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 	}
 	var result core.Task
 	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		var applyErr error
+		result, applyErr = s.applyTaskCommandTx(ctx, tx, id, command)
+		return applyErr
+	})
+	return result, err
+}
+
+// applyTaskCommandTx applies one lifecycle command inside a transaction that
+// already holds the task-operation lock (component-task-lifecycle).
+func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, command taskops.Command) (core.Task, error) {
+	var result core.Task
+	err := func() error {
 		before, err := getTaskRow(ctx, tx, id)
 		if err != nil {
 			return notFound(err, "task %s", id)
@@ -848,9 +864,11 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 				command.RecoveryStage = core.StageVerify
 			}
 		}
-		values := map[string]any{"state": state}
+		kind := core.GateKindFor(state, command.Kind)
+		values := map[string]any{"state": state, "gate_kind": string(kind)}
 		result = before
 		result.State = state
+		result.GateKind = kind
 		if command.ProjectStages {
 			values["next_stage"] = command.NextStage
 			values["recovery_stage"] = command.RecoveryStage
@@ -904,7 +922,7 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 			return err
 		}
 		return nil
-	})
+	}()
 	return result, err
 }
 
@@ -931,7 +949,7 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx *sql.Tx, parentID
 	if childCount == 0 || nonTerminal != 0 {
 		return false, nil
 	}
-	if err = taskWrite(ctx, tx, parentID, map[string]any{"state": closed}); err != nil {
+	if err = taskWrite(ctx, tx, parentID, map[string]any{"state": closed, "gate_kind": string(core.GateKindFor(closed, core.TaskBlueprintClose))}); err != nil {
 		return false, err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, parentID); err != nil {
@@ -1029,6 +1047,51 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	}
 	return s.GetTask(ctx, i.TaskID)
 }
+
+// MergeTaskAtGateCommand completes a confirmed forge merge at the
+// merge_approval gate in one transaction under the task-operation lock
+// (DEC-64(1,7); component-task-lifecycle): approve intervention, approval
+// binding, merge.confirmed, then intervention.merge.
+func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, i core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	if !lease.ValidFor(i.TaskID) {
+		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
+	}
+	if err := core.ValidateGateMerge(i, approvedHead, confirmed); err != nil {
+		return core.Task{}, err
+	}
+	approvedHead = strings.TrimSpace(approvedHead)
+	i = normalizeIntervention(ctx, i)
+	err := s.taskTx(ctx, i.TaskID, func(tx *sql.Tx) error {
+		before, err := getTaskRow(ctx, tx, i.TaskID)
+		if err != nil {
+			return err
+		}
+		if _, err = core.TransitionGateMerge(before.State, before.GateKind); err != nil {
+			return err
+		}
+		if err = insertInterventionTx(ctx, tx, i); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: i.JobID, Kind: "intervention." + string(i.Action), ActorID: i.ActorID, ActorRole: i.ActorRole, At: i.At, Payload: core.JSONPayload(map[string]any{"reason_code": i.ReasonCode, "comment": i.Comment})}); err != nil {
+			return err
+		}
+		if err = taskWrite(ctx, tx, i.TaskID, approvalValues(approvedHead)); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": before.Workspace, "task_id": i.TaskID, "approved_head": approvedHead})}); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, confirmed); err != nil {
+			return err
+		}
+		_, err = s.applyTaskCommandTx(ctx, tx, i.TaskID, taskops.Command{Kind: core.TaskInterventionMerge})
+		return err
+	})
+	if err != nil {
+		return core.Task{}, err
+	}
+	return s.GetTask(ctx, i.TaskID)
+}
 func (s *Store) cancelTaskTx(ctx context.Context, tx *sql.Tx, i core.Intervention) error {
 	before, err := getTaskRow(ctx, tx, i.TaskID)
 	if err != nil {
@@ -1102,7 +1165,7 @@ func (s *Store) cancelTaskTx(ctx context.Context, tx *sql.Tx, i core.Interventio
 			return err
 		}
 	}
-	if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "next_stage": "", "recovery_stage": ""}); err != nil {
+	if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(core.TaskState(state), core.TaskCancel)), "next_stage": "", "recovery_stage": ""}); err != nil {
 		return err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, i.TaskID); err != nil {
@@ -1125,6 +1188,17 @@ func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
 		}
 		if t.State != core.TaskQueued {
 			return fmt.Errorf("task %s is not queued", id)
+		}
+		// A task held by a mint-blocking order waits for its claim or the order
+		// clock; a task redispatch cannot move it, so the operator is pointed at
+		// the order (component-durable-queue; DEC-62).
+		var holding string
+		err = tx.QueryRowContext(ctx, `SELECT wo.id FROM tasks t JOIN work_orders wo ON wo.workspace_id=t.workspace_id AND wo.task_id=t.id WHERE t.workspace_id=? AND t.id=? AND `+blockingOrderSQL("t")+` AND wo.state IN ('queued','claimed','stale','timed_out') ORDER BY wo.created_at DESC, wo.id DESC LIMIT 1`, t.Workspace, id).Scan(&holding)
+		if err == nil {
+			return fmt.Errorf("%w: task %s waits on work order %s", store.ErrTaskHeldByWorkOrder, id, holding)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
 		}
 		inserted, err := s.enqueueTaskTx(ctx, tx, id, t.Workspace)
 		if err != nil || !inserted {
@@ -1166,14 +1240,14 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return fmt.Errorf("review job %s does not belong to task %s", request.JobID, request.TaskID)
 			}
 		}
-		count, _, err := bounceCountsTx(ctx, tx, request.TaskID)
+		count, window, err := bounceCountsTx(ctx, tx, request.TaskID)
 		if err != nil {
 			return err
 		}
 		plan := store.PlanChangesRequested(store.ChangesRequestedInput{
 			TaskID: request.TaskID, JobID: request.JobID, ActorID: actor.ID, ActorRole: actor.Role,
 			ReasonCode: store.UserRequestChangesReason, Feedback: request.Feedback, Source: store.UserRequestChangesSource,
-			Count: int(count) + 1, Window: 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect,
+			Count: count + 1, Window: window + 1, MaxBounces: request.MaxBounces, Requeue: core.TaskInterventionRedirect, EnforceLimit: true,
 		})
 		state, err := core.TransitionTask(before.State, plan.Command)
 		if err != nil {
@@ -1187,11 +1261,12 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
-		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "next_stage": plan.NextStage, "recovery_stage": plan.Recovery}); err != nil {
+		if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(state, plan.Command)), "next_stage": plan.NextStage, "recovery_stage": plan.Recovery}); err != nil {
 			return err
 		}
 		result = before
 		result.State = state
+		result.GateKind = core.GateKindFor(state, plan.Command)
 		result.NextStage = plan.NextStage
 		result.RecoveryStage = plan.Recovery
 
@@ -1278,6 +1353,12 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 				return fmt.Errorf("%w: work order %s is not an unclaimed queued order", store.ErrSetupChangeConflict, d.ID)
 			}
 		}
+		for _, id := range r.SupersedeWorkOrderIDs {
+			o, ok := byID[id]
+			if !ok || !store.PolicyHandoffSupersessionAllowed(o, t.NextStage) {
+				return fmt.Errorf("%w: superseded work order %s is invalid", store.ErrSetupChangeConflict, id)
+			}
+		}
 		fromStage := t.NextStage
 		prior := t.SetupContract
 		// The frozen policy changes; the task's legacy setup_name is left as is.
@@ -1330,14 +1411,14 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 			}
 			old := o.State
 			values := map[string]any{"review_superseded": o.Stage == core.StageReview, "updated_at": now}
-			if old == core.WorkOrderQueued {
-				next, err := core.TransitionWorkOrder(old, core.WorkOrderCmdCancel)
+			if command, eventKind, ok := store.PolicyHandoffRetireCommand(o); ok {
+				next, err := core.TransitionWorkOrder(old, command)
 				if err != nil {
 					return err
 				}
 				o.State = next
 				values["state"] = next
-				if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: "work_order.cancelled", At: now, Payload: core.JSONPayload(map[string]any{"id": id, "state": next, "from": old, "command": core.WorkOrderCmdCancel})}); err != nil {
+				if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: o.JobID, Kind: eventKind, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "state": next, "from": old, "command": command})}); err != nil {
 					return err
 				}
 				if _, err = writeRow(ctx, tx, rowWrite{table: "jobs", operation: "UPDATE", values: map[string]any{"state": core.JobFailed, "ended_at": now, "updated_at": now}, where: map[string]any{"workspace_id": ws, "id": o.JobID}}); err != nil {

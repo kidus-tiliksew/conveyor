@@ -97,6 +97,11 @@ func main() {
 	defer stopSignals()
 	ctx, cancelService := context.WithCancel(context.Background())
 	defer cancelService()
+	// Startup, bootstrap, reconciliation, and every background loop derive
+	// from the service context, so they record the explicit system actor. The
+	// HTTP base context stays independent: a request records only its
+	// credential-derived actor (component-persistence, Actor context).
+	ctx = store.WithActor(ctx, store.SystemActor())
 	httpBaseCtx, cancelHTTP := context.WithCancel(context.Background())
 	defer cancelHTTP()
 
@@ -224,6 +229,7 @@ func main() {
 	srv.GenerateTaskTitle = d.GenerateTaskTitle
 	srv.OnIntervention = d.HandleIntervention
 	srv.OnMerge = d.MergeApprovedTask
+	srv.OnGateMerge = d.MergeAtGate
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
@@ -295,8 +301,9 @@ func main() {
 				reconcileWorkspaceVerification(workspaceCtx, workOrders, workspace.ID, log.Printf)
 				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
 				if mergeErr != nil {
+					// A readiness failure is logged and never skips the later
+					// lifecycle and publication reconciles in this tick.
 					log.Printf("reconcile merge readiness: %v", mergeErr)
-					return
 				}
 				if mergeReadiness != 0 {
 					log.Printf("reconciled %d merge-ready task(s) in workspace %s", mergeReadiness, workspace.ID)
@@ -340,6 +347,19 @@ func main() {
 				}
 				if publications != 0 {
 					log.Printf("reconciled %d completed review publication(s) in workspace %s", publications, workspace.ID)
+				}
+				// Bounded automatic recovery AR-5 runs last; a failure is logged
+				// so it never blocks the remaining workspaces.
+				now := time.Now().UTC()
+				if reenqueued, reenqueueErr := store.ReconcileFailedPublications(workspaceCtx, st, now); reenqueueErr != nil {
+					log.Printf("automatic publication recovery in workspace %s: %v", workspace.ID, reenqueueErr)
+				} else if reenqueued != 0 {
+					log.Printf("automatically re-enqueued %d failed publication(s) in workspace %s", reenqueued, workspace.ID)
+				}
+				if reviewActs, reviewErr := workOrders.SweepAutomaticReviewRecovery(workspaceCtx, now); reviewErr != nil {
+					log.Printf("automatic review recovery in workspace %s: %v", workspace.ID, reviewErr)
+				} else if reviewActs != 0 {
+					log.Printf("automatically recovered %d review round(s) in workspace %s", reviewActs, workspace.ID)
 				}
 			}
 		}
@@ -430,6 +450,11 @@ func main() {
 							ReconcileMerged: func(callCtx context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
 								return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)
 							},
+						}
+						bound := current.Monitor.MergeDeferralBound
+						monitorStore := srv.Monitor.Store
+						source.MergeCommitState = func(ctx context.Context, repository, commitSHA string, committedAt time.Time) (monitor.MergeState, string, error) {
+							return monitorStore.MonitorMergeCommitState(ctx, repository, commitSHA, committedAt, time.Now().UTC(), bound)
 						}
 						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
 							return srv.Monitor.Store.AuditMonitor(ctx, "monitor.suppressed", payload)

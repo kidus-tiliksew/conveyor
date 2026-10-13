@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, type Locator, type Page, type Route, test } from '@playwright/test'
+import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
 
 const createdAt = '2026-07-15T12:00:00Z'
@@ -8,6 +10,16 @@ async function showAllBoardTasks(page: Page) {
   await page.addInitScript(() =>
     localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' })),
   )
+}
+// The compact next action the server puts on a stalled activity item, for
+// board fixtures built by hand.
+const stalledNextAction = {
+  kind: 'stalled',
+  label: 'Stalled',
+  actor: 'operator',
+  judgment: true,
+  summary: 'This order cannot be claimed.',
+  deadline: null,
 }
 const checkpointProgress =
   'Choose whether the recovery should preserve the existing proposal or replace it with the newly confirmed lifecycle direction before implementation continues.'
@@ -1599,6 +1611,8 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                     : taskId.startsWith('merge-')
                       ? 'approved'
                       : 'running',
+      // Merge-gate fixtures hold approved branches for an operator merge.
+      merge_approval: taskId.startsWith('merge-'),
       next_stage: taskId === 'parked' ? '' : 'implement',
       recovery_stage: taskId === 'parked' ? 'triage' : taskId === 'merge-request-changes' ? 'implement' : '',
       // The head the factory judged, durable on the task itself once review
@@ -2044,6 +2058,7 @@ function blueprintProjection() {
 }
 
 async function mockTaskAPIs(page: Page) {
+  await serveNextActionsFromActivity(page)
   detailRequestCounts.clear()
   let liveActivityRequests = 0
   let releaseLiveStream = () => {}
@@ -2059,7 +2074,7 @@ async function mockTaskAPIs(page: Page) {
       return
     }
     if (url.pathname === '/v1/me') {
-      await route.fulfill({ json: { id: 'usr_operator', role: 'operator' } })
+      await route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
       return
     }
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
@@ -2149,11 +2164,11 @@ test('task metadata presents stored spec versions as plan versions', async ({ pa
   await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
 
-// The agent prompt the checkout group copies: title, optional full body, and
-// the conveyor-work instruction, one blank line apart.
-function expectedAgentPrompt(origin: string, taskID: string, title: string, body?: string) {
+// The agent prompt the checkout group copies: the title and the conveyor-work
+// instruction, one blank line apart. The task body is never part of it.
+function expectedAgentPrompt(origin: string, taskID: string, title: string) {
   const instruction = `Use the conveyor-work skill to work Conveyor task ${taskID} in workspace \`demo\` on ${origin}.`
-  return [title, body, instruction].filter((part) => part !== undefined).join('\n\n')
+  return [title, instruction].join('\n\n')
 }
 
 // Serves one task's detail with overridden task fields or checkout projection.
@@ -2237,23 +2252,24 @@ async function expectCheckoutFits(group: Locator) {
   return bounds
 }
 
-test('Prompt for AI Agents shows the full agent prompt and copies the same text', async ({ page, context }) => {
+test('Prompt for AI Agents shows the title and instruction and copies the same text', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
   await page.goto(`/tasks/${taskID}/full`)
   const origin = await page.evaluate(() => window.location.origin)
-  const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', 'A short description.')
+  const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task')
   const group = checkoutGroup(page)
   await expect(group).toBeVisible()
   expect(await promptText(group)).toBe(expectedPrompt)
+  expect(await promptText(group)).not.toContain('A short description.')
   await expect(group.locator('code')).not.toHaveAttribute('title')
 
-  // The prompt keeps its blank lines: three paragraphs and two blank lines
-  // render as at least five lines.
+  // The prompt keeps its blank line: two paragraphs and one blank line render
+  // as at least three lines.
   const bounds = await checkoutBounds(group)
   expect(bounds.whiteSpace).toBe('pre-wrap')
-  expect(bounds.lines).toBeGreaterThanOrEqual(5)
+  expect(bounds.lines).toBeGreaterThanOrEqual(3)
 
   // The Terminal tab and the tab structure are gone.
   await expect(page.getByRole('tablist')).toHaveCount(0)
@@ -2278,14 +2294,16 @@ test('Prompt for AI Agents shows the full agent prompt and copies the same text'
   expect(await promptText(group)).toBe(expectedPrompt)
 })
 
-// A long title, a long multi-paragraph body with an unbroken token, and a long
-// task ID must wrap at phone widths on both the full page and the task sheet.
+// A long title with an unbroken token and a long task ID must wrap at phone
+// widths on both the full page and the task sheet. The task's long Markdown
+// body stays out of the prompt.
 const longToken = `https://example.test/${'unbroken-segment-'.repeat(8)}end`
-const longTitle = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()}`
+const longTitle = `Replace the checkout presentation ${'with a deliberately long task title '.repeat(4).trim()} ${longToken}`
+const bodyMarker = 'body-marker-never-in-the-prompt'
 const longBody = [
   '## Context',
   '',
-  `The prompt carries the whole body. See ${longToken} for the original report.`,
+  `The task body carries ${bodyMarker} and the original report.`,
   '',
   '1. First step with `code` and **bold** text.',
   '2. Second step:',
@@ -2294,30 +2312,14 @@ const longBody = [
   '',
   ...Array.from(
     { length: 6 },
-    (_, index) => `Paragraph ${index + 1}. ${'Every sentence of this body must survive. '.repeat(3).trim()}`,
+    (_, index) =>
+      `Paragraph ${index + 1}. ${'Every sentence of this body stays in the description. '.repeat(3).trim()}`,
   ).flatMap((paragraph) => [paragraph, '']),
   'Final paragraph ends here.',
 ].join('\n')
 
-// Scrolls the prompt to its end and reports whether the scroll reached it with
-// the final line inside the prompt's visible box.
-function scrollPromptToEnd(group: Locator) {
-  return group.locator('code').evaluate((node) => {
-    node.scrollTop = node.scrollHeight
-    const box = node.getBoundingClientRect()
-    const range = document.createRange()
-    range.selectNodeContents(node)
-    const rects = range.getClientRects()
-    const last = rects[rects.length - 1]
-    return {
-      atEnd: Math.abs(node.scrollHeight - node.clientHeight - node.scrollTop) <= 1,
-      lastLineVisible: last.bottom <= box.bottom + 0.5 && last.top >= box.top - 0.5,
-    }
-  })
-}
-
 for (const route of ['full', 'sheet'] as const) {
-  test(`Prompt for AI Agents wraps a long prompt without overflow on the ${route} task view`, async ({
+  test(`Prompt for AI Agents leaves out the body and wraps without overflow on the ${route} task view`, async ({
     page,
     context,
   }) => {
@@ -2327,28 +2329,29 @@ for (const route of ['full', 'sheet'] as const) {
 
     await page.goto(route === 'full' ? `/tasks/${taskID}/full` : `/tasks/${taskID}`)
     const origin = await page.evaluate(() => window.location.origin)
-    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle, longBody)
+    const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle)
     const sheet = page.getByRole('dialog', { name: 'Task detail' })
     const scope = route === 'full' ? page : sheet
     const group = checkoutGroup(scope)
     await expect(group).toBeVisible()
     expect(await promptText(group)).toBe(expectedPrompt)
+    expect(await promptText(group)).not.toContain(bodyMarker)
+    // The task's description still shows the body the prompt leaves out.
+    await expect(scope.getByText(bodyMarker, { exact: false })).toBeVisible()
     // The sheet's slide moves the group and its copy button between reads.
     if (route === 'sheet') await waitForSheetSettled(sheet)
 
+    // The prompt grows with its text and has no inner scroll.
     const desktop = await expectCheckoutFits(group)
     expect(desktop.width).toBeLessThanOrEqual(desktop.cap + 0.5)
-    // The long prompt is taller than its 16rem bound and scrolls to its end.
-    expect(desktop.scrollable).toBe(true)
-    expect(await scrollPromptToEnd(group)).toEqual({ atEnd: true, lastLineVisible: true })
+    expect(desktop.scrollable).toBe(false)
 
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 720 })
       if (route === 'sheet') await waitForSheetSettled(sheet)
       const phone = await expectCheckoutFits(group)
       expect(phone.lines).toBeGreaterThan(desktop.lines)
-      expect(phone.scrollable).toBe(true)
-      expect(await scrollPromptToEnd(group)).toEqual({ atEnd: true, lastLineVisible: true })
+      expect(phone.scrollable).toBe(false)
       expect(await promptText(group)).toBe(expectedPrompt)
     }
 
@@ -2372,46 +2375,6 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
-// The prompt carries the stored body with only its outer whitespace trimmed;
-// a body with nothing left after trimming is omitted.
-const promptBodyCases: { name: string; body: string; expected?: string }[] = [
-  {
-    name: 'keeps a multi-paragraph body over 280 characters exactly',
-    body: `\n\n  ${longBody}  \n\n`,
-    expected: longBody,
-  },
-  {
-    name: 'keeps a leading heading and the paragraphs after it',
-    body: '# Heading\n\n## Section\nFirst line with `code`\nand **bold** text.\n\nSecond paragraph.',
-    expected: '# Heading\n\n## Section\nFirst line with `code`\nand **bold** text.\n\nSecond paragraph.',
-  },
-  { name: 'keeps a heading-only body', body: '# Only a heading', expected: '# Only a heading' },
-  {
-    name: 'trims only outer whitespace',
-    body: '\n \t First line\n    indented line\n\n\nAfter two blank lines.\t \n',
-    expected: 'First line\n    indented line\n\n\nAfter two blank lines.',
-  },
-  { name: 'omits an empty body', body: '' },
-  { name: 'omits a whitespace-only body', body: ' \n\n\t \n ' },
-]
-
-for (const [index, { name, body, expected }] of promptBodyCases.entries()) {
-  test(`Prompt for AI Agents body ${name}`, async ({ page, context }) => {
-    const taskID = `work-on-this-body-${index}`
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await routeCheckoutTask(page, taskID, { body })
-    await page.goto(`/tasks/${taskID}/full`)
-    const origin = await page.evaluate(() => window.location.origin)
-    const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task', expected)
-    const group = checkoutGroup(page)
-    await expect(group).toBeVisible()
-    expect(await promptText(group)).toBe(expectedPrompt)
-    await group.getByRole('button', { name: 'Copy agent prompt' }).click()
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(expectedPrompt)
-    expect(expectedPrompt).not.toContain('…')
-  })
-}
-
 test('Prompt for AI Agents shows the agent prompt for an available checkout without a command', async ({ page }) => {
   const taskID = 'work-on-this-no-command'
   await routeCheckoutTask(page, taskID, { checkout_command: undefined })
@@ -2419,7 +2382,7 @@ test('Prompt for AI Agents shows the agent prompt for an available checkout with
   const origin = await page.evaluate(() => window.location.origin)
   const group = checkoutGroup(page)
   await expect(group).toBeVisible()
-  expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task', 'A short description.'))
+  expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task'))
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toBeVisible()
 })
 
@@ -2744,6 +2707,31 @@ test('structured authority checkpoint leads with the decision and resolves throu
       ],
     }),
   )
+  // The inbox lists pending proposals from the server's next-actions listing,
+  // so the checkpoint's "Review or dismiss" path lands on this card.
+  await page.route('**/v1/next-actions*', (route) =>
+    route.fulfill({
+      json: {
+        operator_decisions: 1,
+        items: [
+          {
+            band: 'decisions',
+            kind: 'document_proposal',
+            proposal: {
+              id: 'design-checkpoint',
+              title: 'Checkpoint design',
+              tier: 'system_design',
+              version: 2,
+              origin_type: 'operator',
+              proposed_at: createdAt,
+              age_seconds: 60,
+            },
+          },
+        ],
+        acts: [],
+      },
+    }),
+  )
   await page.route('**/v1/system-designs/design-checkpoint/versions/2/confirm**', async (route) => {
     confirmHeaders = route.request().headers()
     resolved = true
@@ -2803,7 +2791,7 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await expect(standalone.getByRole('button', { name: 'Confirm version 3' })).toHaveCount(1)
   await expect(standalone.getByRole('button', { name: 'Confirm version 4' })).toHaveCount(1)
   const dismissPath = card.getByRole('link', { name: 'Review or dismiss v2' })
-  await expect(dismissPath).toHaveAttribute('href', /pending-proposals.*document=design-checkpoint.*tier=system_design/)
+  await expect(dismissPath).toHaveAttribute('href', /\/inbox\?.*document=design-checkpoint.*tier=system_design/)
   await dismissPath.click()
   await expect(page.getByText('Showing System Design proposals for design-checkpoint.')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Checkpoint design' })).toBeVisible()
@@ -2867,7 +2855,7 @@ test('structured authority checkpoint omits the standalone card when every propo
   await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
 })
 
-test('stalled task is labelled in the operator tray with recover and reasoned cancel controls', async ({ page }) => {
+test('stalled task is labelled on its board card with recover and reasoned cancel controls', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('recovery', false)
   item.task.assignee = {
@@ -2888,6 +2876,7 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
           last_event_at: createdAt,
           needs_attention: true,
           stalled: item.stalled,
+          next_action: stalledNextAction,
         },
       ],
     })
@@ -2905,16 +2894,18 @@ test('stalled task is labelled in the operator tray with recover and reasoned ca
     await route.fulfill({ json: { ...item.task, state: 'closed' } })
   })
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray.getByText('Stalled')).toBeVisible()
+  // An operator item stays in its stage column, styled as waiting on a person.
+  const card = page.getByRole('region', { name: 'Implement' }).getByRole('link', { name: /Short task/ })
+  await expect(card).toHaveAttribute('data-operator', 'true')
+  await expect(card.getByText('Stalled')).toBeVisible()
   // The board card carries the shared assignee chip: the name is what shows,
   // and the account identifiers behind it stay in the tooltip.
-  const assignee = tray.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
+  const assignee = card.getByTitle('Assigned to Assigned User — assigned@example.test · usr-assigned')
   await expect(assignee).toBeVisible()
   await expect(assignee).toContainText('Assigned User')
   await expect(assignee).toContainText('AU')
-  await expect(tray.getByText('harness exited: status 1')).toBeVisible()
-  await tray.getByText('Short task').click()
+  await expect(card.getByText('harness exited: status 1')).toBeVisible()
+  await card.click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
   await page.getByRole('button', { name: 'Task actions' }).click()
   await page.getByRole('menuitem', { name: 'Cancel task' }).click()
@@ -3018,199 +3009,24 @@ test('the board keeps a superseded task stalled while its sheet offers only Redi
           last_event_at: createdAt,
           needs_attention: true,
           stalled: item.stalled,
+          next_action: stalledNextAction,
         },
       ],
     }),
   )
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray.getByText('Stalled')).toBeVisible()
-  await tray.getByText('Short task').click()
+  const card = page.getByRole('region', { name: 'Plan' }).getByRole('link', { name: /Short task/ })
+  await expect(card).toHaveAttribute('data-operator', 'true')
+  await expect(card.getByText('Stalled')).toBeVisible()
+  await card.click()
   await expectSupersededStaleHistory(page.getByRole('dialog', { name: 'Task detail' }))
 })
 
-const stale = (id: string, created_at: string, extra: Partial<SupersessionOrder> = {}): SupersessionOrder => ({
-  id: `${supersessionTaskId}-${id}`,
-  stage: 'spec',
-  state: 'stale',
-  created_at,
-  ...extra,
-})
-const successor = (id: string, created_at: string, extra: Partial<SupersessionOrder> = {}): SupersessionOrder => ({
-  id: `${supersessionTaskId}-${id}`,
-  stage: 'spec',
-  state: 'queued',
-  created_at,
-  ...extra,
-})
-
-for (const { name, orders, nextStage, recoverable } of [
-  {
-    name: 'a lone stale order',
-    orders: [stale('spec-1', '2026-09-28T09:00:00Z')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a stale order whose only later successor was cancelled',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z'),
-      successor('spec-2', '2026-09-29T09:00:00Z', { state: 'cancelled' }),
-    ],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'an equal creation instant with a smaller successor ID',
-    orders: [stale('spec-b', '2026-09-28T09:00:00.123456Z'), successor('spec-a', '2026-09-28T09:00:00.123456Z')],
-    recoverable: `${supersessionTaskId}-spec-b`,
-  },
-  {
-    name: 'a microsecond-earlier successor that millisecond parsing would tie and order by ID',
-    orders: [stale('spec-a', '2026-09-28T09:00:00.123457Z'), successor('spec-b', '2026-09-28T09:00:00.123456Z')],
-    recoverable: `${supersessionTaskId}-spec-a`,
-  },
-  {
-    name: 'a later order of another stage only',
-    orders: [
-      stale('implement-1', '2026-09-28T09:00:00Z', { stage: 'implement' }),
-      successor('spec-9', '2026-09-29T09:00:00Z'),
-    ],
-    nextStage: 'implement' as const,
-    recoverable: `${supersessionTaskId}-implement-1`,
-  },
-  {
-    name: 'a nanosecond-earlier successor with a greater ID',
-    orders: [stale('spec-a', '2026-09-28T09:00:00.123456789Z'), successor('spec-b', '2026-09-28T09:00:00.123456788Z')],
-    recoverable: `${supersessionTaskId}-spec-a`,
-  },
-  // Absent or invalid creation information establishes no ordering, so the
-  // existing derivation keeps recovery rather than normalizing a bad field.
-  {
-    name: 'a successor without a creation time',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z'),
-      successor('spec-2', '2026-09-29T09:00:00Z', { created_at: undefined }),
-    ],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a predecessor without a creation time',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z', { created_at: undefined }),
-      successor('spec-2', '2026-09-29T09:00:00Z'),
-    ],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a completed successor whose overflowing minutes would normalize later',
-    orders: [
-      stale('spec-1', '2026-09-28T09:30:00Z'),
-      successor('spec-2', '2026-09-28T09:60:00Z', { state: 'completed' }),
-    ],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a successor whose overflowing seconds would normalize later',
-    orders: [stale('spec-1', '2026-09-28T09:30:00Z'), successor('spec-2', '2026-09-28T09:30:60Z')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a successor whose overflowing hour would normalize later',
-    orders: [stale('spec-1', '2026-09-28T09:30:00Z'), successor('spec-2', '2026-09-28T24:00:00Z')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a successor whose invalid offset minutes would normalize later',
-    orders: [stale('spec-1', '2026-09-28T10:00:00Z'), successor('spec-2', '2026-09-28T09:00:00-02:60')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a predecessor whose overflowing minutes would normalize earlier',
-    orders: [stale('spec-1', '2026-09-28T08:60:00Z'), successor('spec-2', '2026-09-28T09:30:00Z')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a predecessor whose invalid offset hour would normalize earlier',
-    orders: [stale('spec-1', '2026-09-28T09:00:00+24:00'), successor('spec-2', '2026-09-28T08:00:00Z')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a lowercase zone designator that Go rejects',
-    orders: [stale('spec-1', '2026-09-28T09:00:00Z'), successor('spec-2', '2026-09-29T09:00:00z')],
-    recoverable: `${supersessionTaskId}-spec-1`,
-  },
-  {
-    name: 'a nanosecond-later successor with a smaller ID',
-    orders: [stale('spec-b', '2026-09-28T09:00:00.123456788Z'), successor('spec-a', '2026-09-28T09:00:00.123456789Z')],
-  },
-  {
-    name: 'a successor on the day after a leap day',
-    orders: [stale('spec-1', '2024-02-29T23:59:59Z'), successor('spec-2', '2024-03-01T00:00:00Z')],
-  },
-  {
-    name: 'a predecessor at the largest offset Go accepts',
-    orders: [stale('spec-1', '2026-09-28T09:00:00+23:59'), successor('spec-2', '2026-09-28T09:00:00Z')],
-  },
-  {
-    name: 'a timed-out predecessor with a queued successor',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z', { state: 'timed_out' }),
-      successor('spec-2', '2026-09-29T09:00:00Z'),
-    ],
-  },
-  {
-    name: 'an equal creation instant with a greater successor ID',
-    orders: [stale('spec-a', '2026-09-28T09:00:00.123456Z'), successor('spec-b', '2026-09-28T09:00:00.123456Z')],
-  },
-  {
-    name: 'an equal instant written with another offset and a greater successor ID',
-    orders: [stale('spec-a', '2026-09-28T09:00:00Z'), successor('spec-b', '2026-09-28T11:00:00.000+02:00')],
-  },
-  {
-    name: 'a microsecond-later successor that millisecond parsing would tie and order by ID',
-    orders: [stale('spec-b', '2026-09-28T09:00:00.123456Z'), successor('spec-a', '2026-09-28T09:00:00.123457Z')],
-  },
-  {
-    name: 'a later completed successor',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z'),
-      successor('spec-2', '2026-09-29T09:00:00Z', { state: 'completed' }),
-    ],
-  },
-  {
-    name: 'a later submitted successor',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z'),
-      successor('spec-2', '2026-09-29T09:00:00Z', { state: 'submitted' }),
-    ],
-  },
-  {
-    name: 'a predecessor whose activity is more recent than its successor',
-    orders: [
-      stale('spec-1', '2026-09-28T09:00:00Z', { updated_at: '2026-09-30T18:00:00Z' }),
-      successor('spec-2', '2026-09-29T09:00:00Z', { updated_at: '2026-09-29T09:00:00Z' }),
-    ],
-  },
-] as { name: string; orders: SupersessionOrder[]; nextStage?: 'spec' | 'implement'; recoverable?: string }[]) {
-  test(`recovery ${recoverable ? 'remains offered' : 'is withheld'} for ${name}`, async ({ page }) => {
-    const recovered = await routeSupersession(page, orders, nextStage)
-    await page.goto(`/tasks/${supersessionTaskId}/full`)
-    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-    const action = page.getByRole('button', { name: 'Recover work order' })
-    if (!recoverable) {
-      await expect(page.getByText(/went stale in the queue|timed out/).first()).toBeVisible()
-      await expect(action).toHaveCount(0)
-      await expect(page.getByText(/paused — recovery needed/)).toHaveCount(0)
-      return
-    }
-    await action.click()
-    await expect.poll(() => recovered).toEqual([recoverable])
-  })
-}
-
-test('pending authority moves a live task to Needs operator until the proposal is resolved', async ({ page }) => {
+// A pending proposal is decided in the Inbox; the board does not reroute the
+// task that authored it, so it stays in its stage column either way.
+test('pending authority keeps a live task in its stage column', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('design-proposal', false)
-  let pending = true
   await page.route('**/v1/activity*', async (route) => {
     await route.fulfill({
       json: [
@@ -3218,8 +3034,8 @@ test('pending authority moves a live task to Needs operator until the proposal i
           task: { ...item.task, title: 'Proposal-gated task', next_stage: 'review' },
           latest_stage: 'review',
           last_event_at: createdAt,
-          needs_attention: pending,
-          pending_authority: pending,
+          needs_attention: true,
+          pending_authority: true,
         },
         {
           task: { ...item.task, id: 'resolved-terminal', title: 'Completed proposal task', state: 'merged' },
@@ -3233,28 +3049,13 @@ test('pending authority moves a live task to Needs operator until the proposal i
   })
 
   await page.goto('/')
-  const operator = page.getByRole('region', { name: 'Needs operator' })
-  await expect(operator.getByText('Proposal-gated task')).toBeVisible()
-  await expect(operator.getByText('Awaiting proposal decision')).toBeVisible()
-  await expect(operator.getByText('Completed proposal task')).toHaveCount(0)
+  const review = page.getByRole('region', { name: 'Review' })
+  await expect(review.getByText('Proposal-gated task')).toBeVisible()
+  await expect(review.getByText('Completed proposal task')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Completed' }).getByText('Completed proposal task')).toBeVisible()
-
-  pending = false
-  const refreshedActivity = page.waitForResponse(
-    (response) => response.request().method() === 'GET' && response.url().includes('/v1/activity'),
-  )
-  await page.reload()
-  await refreshedActivity
-  const reviewing = page.getByRole('region', { name: 'Reviewing' })
-  // Wait for the destination card before asserting absence from its prior
-  // region. During a reload, both regions are briefly empty while the
-  // refreshed activity projection is rendered, especially under CI load.
-  await expect(reviewing.getByText('Proposal-gated task')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('region', { name: 'Needs operator' }).getByText('Proposal-gated task')).toHaveCount(0)
-  await expect(reviewing.getByText('Awaiting proposal decision')).toHaveCount(0)
 })
 
-test('forge failure categories render in the needs-operator tray and task activity evidence', async ({ page }) => {
+test('forge failure categories render on the board card and in task activity evidence', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('forge-failure', false)
   await page.route('**/v1/activity*', async (route) => {
@@ -3272,10 +3073,10 @@ test('forge failure categories render in the needs-operator tray and task activi
   })
 
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray.getByText('forge_rate_limited')).toBeVisible()
-  await expect(tray.getByText(/GitHub merge: merge pull request/)).toBeVisible()
-  await tray.getByText('Short task').click()
+  const card = page.getByRole('link', { name: /Short task/ })
+  await expect(card.getByText('forge_rate_limited')).toBeVisible()
+  await expect(card.getByText(/GitHub merge: merge pull request/)).toBeVisible()
+  await card.click()
   await expect(page.getByText(/forge_request · create task issue: request timed out/)).toBeVisible()
   await expect(page.getByText(/forge_permission · publish review comment: resource not accessible/)).toBeVisible()
   await expect(page.getByText(/forge_rate_limited · merge pull request: API rate limit exceeded/)).toBeVisible()
@@ -4117,19 +3918,14 @@ for (const state of ['running', 'merged', 'closed']) {
     }) => {
       await mockContextManagement(page, { state })
       if (state === 'running')
-        await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_viewer', role: 'viewer' } }))
+        await page.route('**/v1/me**', (route) =>
+          route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }) }),
+        )
       await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       await expect(page.getByRole('region', { name: 'Attached context' })).toBeVisible()
       await expect(page.getByRole('button', { name: /^Remove context/ })).toHaveCount(0)
-      if (state === 'running') {
-        await expect(page.getByRole('button', { name: 'Attach context', exact: true })).toHaveCount(0)
-      } else {
-        // Keep the stale checkpoint projection to exercise the dialog's own terminal guard.
-        await page.getByRole('button', { name: 'Attach context', exact: true }).click()
-        const dialog = page.getByRole('dialog', { name: 'Manage task context' })
-        await expect(dialog.getByRole('button', { name: /^Remove context/ })).toHaveCount(0)
-        await expect(dialog.getByRole('button', { name: 'Attach selected context' })).toBeDisabled()
-      }
+      // A terminal task has no current order (server next action), so no recovery card offers it.
+      await expect(page.getByRole('button', { name: 'Attach context', exact: true })).toHaveCount(0)
     })
   }
 }
@@ -4263,7 +4059,9 @@ test('task context suggestions show justification and become attachments or disa
 })
 
 test('task context suggestions remain visible without decision controls for non-operators', async ({ page }) => {
-  await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_viewer', role: 'contributor' } }))
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'contributor' }) }),
+  )
   await page.route('**/v1/tasks/context-suggestion-viewer/activity*', (route) => {
     const item = activity('context-suggestion-viewer', false)
     item.task.context = {
@@ -4686,7 +4484,7 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
   await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible()
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate).toHaveCount(1)
-  await expect(gate.getByText('Your review, please')).toBeVisible()
+  await expect(gate.getByRole('heading', { name: 'Plan approval' })).toBeVisible()
 
   // The gate is the timeline's last entry — the decision point where the
   // story currently ends.
@@ -4915,7 +4713,9 @@ test('the revision chain reads as request, decision, and the plan version it pro
 test('worker warning is scoped to actionable task-owned work at the human gate', async ({ page }) => {
   await page.goto('/tasks/human-gate-worker-scope/full')
 
-  await expect(page.getByRole('region', { name: 'Human gate' }).getByText('Your review, please')).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: 'Human gate' }).getByRole('heading', { name: 'Plan approval' }),
+  ).toBeVisible()
   await expect(page.getByText('GitHub review publication retrying')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
@@ -4949,22 +4749,6 @@ test('parked task offers recovery instead of an invalid approval verdict', async
   await recoveryRequest
 })
 
-test('merge gate renders pending readiness without offering merge', async ({ page }) => {
-  await page.goto('/tasks/merge-unknown/full')
-  const gate = page.getByRole('region', { name: 'Human gate' })
-  await expect(gate.getByText('Checking merge readiness')).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
-})
-
-test('merge gate fails closed when readiness is absent', async ({ page }) => {
-  await page.goto('/tasks/merge-missing/full')
-  const gate = page.getByRole('region', { name: 'Human gate' })
-  await expect(gate.getByText('Checking merge readiness')).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Readiness pending' })).toBeDisabled()
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
-})
-
 test('merge gate stays pending until the post-success task and activity refreshes settle', async ({ page }) => {
   let merged = false
   let releaseRefresh = () => {}
@@ -4988,10 +4772,10 @@ test('merge gate stays pending until the post-success task and activity refreshe
 
   await page.goto('/tasks/merge-delayed/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
-  const merge = gate.getByRole('button', { name: 'Merge pull request' })
+  const merge = gate.getByRole('button', { name: 'Merge', exact: true })
   await merge.click()
-  await expect(gate.getByRole('button', { name: 'Merging…' })).toBeDisabled()
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+  await expect(gate.getByRole('button', { name: 'Recording…' })).toBeDisabled()
+  await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toHaveCount(0)
 
   releaseRefresh()
   await expect(gate).toHaveCount(0)
@@ -5006,9 +4790,9 @@ test('failed merge restores the existing error and retry action', async ({ page 
 
   await page.goto('/tasks/merge-failure/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
-  const merge = gate.getByRole('button', { name: 'Merge pull request' })
+  const merge = gate.getByRole('button', { name: 'Merge', exact: true })
   await merge.click()
-  await expect(gate.getByText('Error: GitHub merge failed')).toBeVisible()
+  await expect(gate.getByText('GitHub merge failed')).toBeVisible()
   await expect(merge).toBeEnabled()
   await merge.click()
   await expect.poll(() => attempts).toBe(2)
@@ -5061,15 +4845,12 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
   await page.goto('/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
-  // The composer says where the feedback goes before it is written, and will
-  // not send until something is written.
-  await expect(gate.getByText('This feedback goes to the next implementation run word for word.')).toBeVisible()
-  await expect(gate.getByText('Feedback is required to send this back.')).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Send feedback' })).toBeDisabled()
+  // The composer will not send until something is written.
+  await expect(gate.getByRole('button', { name: 'Request changes' }).last()).toBeDisabled()
 
   await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
-  await expect(gate.getByRole('button', { name: 'Send feedback' })).toBeEnabled()
-  await gate.getByRole('button', { name: 'Send feedback' }).click()
+  await expect(gate.getByRole('button', { name: 'Request changes' }).last()).toBeEnabled()
+  await gate.getByRole('button', { name: 'Request changes' }).last().click()
 
   await expect.poll(() => feedback).toBe('Keep this exact feedback.')
 })
@@ -5077,12 +4858,12 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
 test('contributor assignee can request merge-gate changes without gate approval controls', async ({ page }) => {
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: {
+      json: callerIdentity({
         id: 'usr_contributor',
         email: 'contributor@example.test',
         display_name: 'Connie Contributor',
         role: 'contributor',
-      },
+      }),
     }),
   )
   await page.route('**/v1/tasks/merge-request-changes/activity*', (route) => {
@@ -5103,22 +4884,22 @@ test('contributor assignee can request merge-gate changes without gate approval 
   await page.goto('/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate.getByRole('button', { name: 'Approve' })).toHaveCount(0)
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
+  await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toHaveCount(0)
   await gate.getByRole('button', { name: 'Request changes' }).click()
   await gate.getByLabel('Changes you want').fill('Please cover the contributor path.')
-  await gate.getByRole('button', { name: 'Send feedback' }).click()
+  await gate.getByRole('button', { name: 'Request changes' }).last().click()
   await expect.poll(() => feedback).toBe('Please cover the contributor path.')
 })
 
 test("non-assignee contributor cannot request changes at another user's merge gate", async ({ page }) => {
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: {
+      json: callerIdentity({
         id: 'usr_contributor',
         email: 'contributor@example.test',
         display_name: 'Connie Contributor',
         role: 'contributor',
-      },
+      }),
     }),
   )
   await page.route('**/v1/tasks/merge-request-changes/activity*', (route) => {
@@ -5167,7 +4948,7 @@ test('the recorded return reads back in the timeline with its feedback', async (
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
   await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
-  await gate.getByRole('button', { name: 'Send feedback' }).click()
+  await gate.getByRole('button', { name: 'Request changes' }).last().click()
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('Sent back with your feedback')).toBeVisible()
@@ -5175,42 +4956,6 @@ test('the recorded return reads back in the timeline with its feedback', async (
   await expect(timeline.getByText('This feedback goes to the next implementation run word for word.')).toBeVisible()
   // The wire reason code never reaches the story.
   await expect(timeline.getByText('user-request-changes')).toHaveCount(0)
-})
-
-test('approved state keeps request changes on the legacy review route', async ({ page }) => {
-  let legacyFeedback = ''
-  let mergeGateRequests = 0
-  await page.route('**/v1/tasks/merge-delayed/request-changes*', async (route) => {
-    mergeGateRequests++
-    await route.fulfill({ status: 409, body: 'task is not at the merge gate' })
-  })
-  await page.route('**/v1/tasks/merge-delayed/review*', async (route) => {
-    legacyFeedback = ((await route.request().postDataJSON()) as { comment: string }).comment
-    await route.fulfill({ json: activity('merge-delayed', false).task })
-  })
-
-  await page.goto('/tasks/merge-delayed/full')
-  const gate = page.getByRole('region', { name: 'Human gate' })
-  await gate.getByRole('button', { name: 'Request changes' }).click()
-  await gate.getByLabel('Redirect feedback').fill('Use the legacy review redirect.')
-  await gate.getByRole('button', { name: 'Send feedback' }).click()
-
-  await expect.poll(() => legacyFeedback).toBe('Use the legacy review redirect.')
-  expect(mergeGateRequests).toBe(0)
-})
-
-test('conflicting readiness makes the idempotent fix dispatch primary', async ({ page }) => {
-  let dispatches = 0
-  await page.route('**/v1/tasks/merge-conflict/merge-conflict-fix*', async (route) => {
-    dispatches++
-    await route.fulfill({ json: { id: 'merge-conflict-implement-2', reason_code: 'merge-conflict' } })
-  })
-  await page.goto('/tasks/merge-conflict/full')
-  const gate = page.getByRole('region', { name: 'Human gate' })
-  await expect(gate.getByText('Merge blocked by conflicts')).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toHaveCount(0)
-  await gate.getByRole('button', { name: 'Fix merge conflict' }).click()
-  await expect.poll(() => dispatches).toBe(1)
 })
 
 test('new task events preserve the task sheet scroll position', async ({ page }) => {
@@ -5276,9 +5021,9 @@ for (const decision of ['approve', 'redirect'] as const) {
     if (decision === 'approve') {
       await gate.getByRole('button', { name: 'Approve' }).click()
     } else {
-      await gate.getByRole('button', { name: 'Request changes' }).click()
-      await gate.getByLabel('Redirect feedback').fill('Please revise the implementation.')
-      const submit = gate.getByRole('button', { name: 'Send feedback' })
+      await gate.getByRole('button', { name: 'Redirect' }).click()
+      await gate.getByLabel('Guidance').fill('Please revise the implementation.')
+      const submit = gate.getByRole('button', { name: 'Redirect' }).last()
       await expect(submit).toBeEnabled()
       await submit.click()
     }
@@ -5358,7 +5103,10 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
     page.locator('section[aria-labelledby="current-execution-title"]').getByRole('link', { name: 'Runtime · Waiting' }),
   ).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
   await expect(page.getByText('Not applicable.')).toBeVisible()
-  await expect(page.getByText('Nothing — implementation starts automatically when Runtime merges.')).toBeVisible()
+  // The summary is NextActionCard's alone; the panel keeps the dependency links (DEC-61).
+  await expect(page.getByText('This task is waiting on another task.', { exact: true })).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'Next action' })).toContainText('This task is waiting on another task.')
+  await expect(page.getByText('What to do next')).toHaveCount(0)
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Any agent connected over MCP can claim this.', { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
@@ -5448,7 +5196,7 @@ test('recovery-needing work stays primary when dependencies are also unresolved'
   await expect(currentState.getByText(/task remains dependency-gated/i)).toBeVisible()
   await expect(page.getByText(/starts automatically/i)).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
+  await expect(currentState.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
 })
 
 test('board cards show a neutral, keyboard-reachable dependency chip using titles', async ({ page }) => {
@@ -5683,7 +5431,7 @@ test('checkpoint proposal confirmation completes before recovery with an audited
   await expect(card.getByText('Version 2 proposed by this task')).toBeVisible()
   await expect(card.getByRole('link', { name: 'Review or dismiss proposals' })).toHaveAttribute(
     'href',
-    /pending-proposals.*task=operator-checkpoint/,
+    /\/inbox\?.*task=operator-checkpoint/,
   )
   await expect(page.getByLabel('Operator direction')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
@@ -5763,7 +5511,7 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   await expect(card).toContainText('Version 2 proposed by this task')
   await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal' })).toHaveAttribute(
     'href',
-    /pending-proposals.*task=design-proposal/,
+    /\/inbox\?.*task=design-proposal/,
   )
   await expect(card.getByRole('link', { name: 'Work-order lifecycle' })).toHaveAttribute(
     'href',
@@ -5794,7 +5542,9 @@ test("a task's own System Design proposal is confirmable from its detail and cle
 
 test('maintainer sees a pending task System Design proposal without an enabled Confirm action', async ({ page }) => {
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/me**', (route) => route.fulfill({ json: { id: 'usr_maintainer', role: 'maintainer' } }))
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }) }),
+  )
   await page.route('**/v1/tasks/design-proposal/activity*', (route) => {
     const item = activity('design-proposal', false)
     return route.fulfill({ json: { ...item, pending_authority: true } })
@@ -5920,7 +5670,7 @@ for (const withDesignCard of [false, true]) {
       )
       await expect(card.getByRole('link', { name: `Confirm or dismiss the ${proposal}`, exact: true })).toHaveAttribute(
         'href',
-        /pending-proposals.*task=design-proposal-queued/,
+        /\/inbox\?.*task=design-proposal-queued/,
       )
       await expect(card.getByText('System Design update proposed')).toHaveCount(withDesignCard ? 1 : 0)
       await expect(card.getByRole('list', { name: 'Proposals review will not include' })).toHaveCount(0)
@@ -5967,7 +5717,7 @@ for (const stage of ['verify', 'review'] as const) {
     await expect(card).not.toContainText('Unrelated proposal')
     await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal', exact: true })).toHaveAttribute(
       'href',
-      /pending-proposals.*task=design-proposal-queued/,
+      /\/inbox\?.*task=design-proposal-queued/,
     )
     await expect(page.getByText(/cannot be claimed/)).toHaveCount(0)
     await expect(page.getByText(/(Review is|are) waiting on/)).toHaveCount(0)
@@ -6100,12 +5850,12 @@ async function routeAssignment(page: Page, options: { operator: boolean }) {
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: {
+      json: callerIdentity({
         id: 'usr_ada',
         email: 'ada@example.test',
         display_name: 'Ada Owner',
         role: options.operator ? 'operator' : 'contributor',
-      },
+      }),
     }),
   )
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
@@ -6254,10 +6004,10 @@ test('a claim refusal names the assignee rather than showing the transport sente
   )
 
   await page.goto('/')
-  const tray = page.getByRole('region', { name: 'Needs operator' })
-  await expect(tray).toContainText('Assigned to Bo Member — only they can pick this up.')
-  await expect(tray).not.toContainText('only that assignee may claim its work orders')
-  await expect(tray).not.toContainText('usr_bo')
+  const card = page.getByRole('region', { name: 'Implement' }).getByRole('link', { name: /Short task/ })
+  await expect(card).toContainText('Assigned to Bo Member — only they can pick this up.')
+  await expect(card).not.toContainText('only that assignee may claim its work orders')
+  await expect(card).not.toContainText('usr_bo')
 })
 
 for (const withNotes of [true, false]) {
@@ -6344,7 +6094,7 @@ const restartProposal = {
 
 async function mockRestart(page: Page, options: { role?: string; proposals?: (typeof restartProposal)[] } = {}) {
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: { id: 'usr_restart', role: options.role ?? 'operator' } }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_restart', role: options.role ?? 'operator' }) }),
   )
   await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: restartFixture() }))
   await page.route('**/v1/pending-proposals*', (route) =>
@@ -6515,17 +6265,17 @@ test('start over blocks loading and failed proposal reads and can retry the prev
   await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
 })
 
-for (const [status, message] of [
-  [403, 'task has pending proposals: confirm_documents capability is required'],
-  [409, 'request_id was already used with a different reason or note'],
-  [409, 'terminal tasks cannot start over; create a task with POST /v1/tasks'],
+for (const [status, code, message] of [
+  [403, 'start_over_confirm_documents', 'task has pending proposals: confirm_documents capability is required'],
+  [409, 'start_over_request_conflict', 'request_id was already used with a different reason or note'],
+  [409, 'task_terminal', 'terminal tasks cannot start over; create a task with POST /v1/tasks'],
 ] as const) {
   test(`start over preserves server refusal: ${message}`, async ({ page }) => {
     await mockRestart(page)
     let calls = 0
     await page.route('**/v1/tasks/restart-source/restart*', (route) => {
       calls++
-      return route.fulfill({ status, body: message })
+      return route.fulfill({ status, json: { error: code, message } })
     })
     const dialog = await openRestart(page)
     await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
@@ -6535,6 +6285,24 @@ for (const [status, message] of [
     await expect(page).toHaveURL(/restart-source\/full$/)
   })
 }
+
+test('start over shows the restart request ID without putting it in the message', async ({ page }) => {
+  await mockRestart(page)
+  await page.route('**/v1/tasks/restart-source/restart?*', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    await route.fulfill({
+      status: 500,
+      headers: { 'X-Request-Id': 'req-restart-500' },
+      json: { error: 'internal_error', message: 'internal server error' },
+    })
+  })
+  const dialog = await openRestart(page)
+  await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
+  await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toHaveText('internal server error')
+  await expect(dialog.getByTestId('task-restart-request-id')).toHaveText('Request ID: req-restart-500')
+  await expect(dialog.getByRole('alert')).not.toContainText('req-restart-500')
+})
 
 for (const [state, message] of [
   ['closed', 'Pull request closed.'],
@@ -7212,7 +6980,9 @@ for (const surface of ['full', 'sheet', 'list']) {
     await expect(page.getByRole('button', { name: 'Task status: Triage failed', exact: true })).toBeVisible()
     await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
     await expect(page.getByText('Your review, please')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
+    // The gate's choices are the server's job_failure choices (DEC-61), shown
+    // on the next-action card; the recovery card offers no approval of its own.
+    await expect(recovery.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
     await expect(page.getByText('Factory review approved this')).toHaveCount(0)
     await recovery.scrollIntoViewIfNeeded()
     await testInfo.attach(`failed-triage-${surface}`, { body: await page.screenshot(), contentType: 'image/png' })
@@ -7369,7 +7139,7 @@ test('failed triage accepted retry with stale detail refreshes status without re
 })
 
 test('failed triage capability refusal keeps the reason visible without a retry action', async ({ page }) => {
-  await page.route('**/v1/me*', (route) => route.fulfill({ json: { id: 'reader', role: 'viewer' } }))
+  await page.route('**/v1/me*', (route) => route.fulfill({ json: callerIdentity({ id: 'reader', role: 'viewer' }) }))
   await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: failedTriageFixture() }))
   await page.goto('/tasks/failed-triage/full')
   const recovery = page.getByRole('region', { name: 'Triage recovery' })
@@ -7851,16 +7621,16 @@ test('a request-changes conflict refetches task detail and renders the current g
   await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
   await expect.poll(() => detailRequests).toBe(1)
   const feedRequests = activityRequests
-  await gate.getByRole('button', { name: 'Send feedback' }).click()
+  await gate.getByRole('button', { name: 'Request changes' }).last().click()
 
   await expect.poll(() => detailRequests).toBe(2)
   await expect.poll(() => activityRequests).toBe(feedRequests + 1)
   // The panel renders the server's current gate while the refusal stays visible.
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toBeEnabled()
+  await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toBeEnabled()
   await expect(gate.getByRole('region', { name: 'What you are approving' })).toHaveCount(0)
-  await expect(gate.getByText('Error: task is not at the merge gate')).toBeVisible()
+  await expect(gate.getByText('task is not at the merge gate')).toBeVisible()
   // No retry, no success effects: the operator's feedback is kept.
-  await expect(gate.getByLabel('Redirect feedback')).toHaveValue('Keep this exact feedback.')
+  await expect(gate.getByLabel('Changes you want')).toHaveValue('Keep this exact feedback.')
   expect(changeRequests).toBe(1)
 })
 
@@ -7878,9 +7648,9 @@ test('non-conflict gate failures keep their existing behavior without a refetch'
   await page.goto('/tasks/merge-failure/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect.poll(() => detailRequests).toBe(1)
-  await gate.getByRole('button', { name: 'Merge pull request' }).click()
-  await expect(gate.getByText('Error: GitHub merge failed')).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Merge pull request' })).toBeEnabled()
+  await gate.getByRole('button', { name: 'Merge', exact: true }).click()
+  await expect(gate.getByText('GitHub merge failed')).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toBeEnabled()
   expect(detailRequests).toBe(1)
 })
 

@@ -70,7 +70,7 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displa
 			return notFound(err, "dashboard session")
 		}
 		actor := store.ActorFromContext(ctx)
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+		return insertDeploymentEvent(ctx, q, db.InsertDeploymentEventParams{
 			Kind: "identity.display_name_changed", ActorID: actor.ID, ActorRole: string(actor.Role),
 			PayloadJson: core.JSONPayload(map[string]any{"user_id": userID, "session_id": sessionID}),
 			At:          pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
@@ -82,9 +82,14 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displa
 	return identity, err
 }
 
-// BootstrapIdentity ensures that the configured deployment token maps to a
-// usable operator. The advisory lock makes upgrade recovery and rotation
-// idempotent; the durable marker makes the display label irrelevant.
+// BootstrapIdentity maps the configured deployment token to the
+// instance-administration principal, the owner of the sole
+// deployment_credential marker. The advisory lock makes rotation idempotent
+// and serializes first-workspace seeding. A live marker keeps its owner
+// across restart, configuration change, and rotation; without a marker the
+// configured first operator becomes the owner. Bootstrap never writes a
+// workspace binding, so demotions and exclusions survive every restart
+// (DEC-63(3), DEC-63(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -107,6 +112,9 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('conveyor:identity-bootstrap'))"); err != nil {
 		return false, fmt.Errorf("lock identity bootstrap: %w", err)
 	}
+	if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapLocked); err != nil {
+		return false, err
+	}
 	q := s.queries.WithTx(tx)
 	hash := sha256.Sum256([]byte(legacyToken))
 	var legacy struct {
@@ -116,45 +124,40 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	}
 	legacyErr := tx.QueryRow(ctx, `SELECT t.id,t.user_id,t.token_hash,t.kind,t.scope,t.revoked_at,u.status
 		FROM user_tokens t JOIN users u ON u.id=t.user_id
-		WHERE t.deployment_credential`).Scan(
+		WHERE t.deployment_credential FOR UPDATE OF t`).Scan(
 		&legacy.id, &legacy.userID, &legacy.tokenHash, &legacy.kind, &legacy.scope, &legacy.revoked, &legacy.status,
 	)
 	if legacyErr != nil && !errors.Is(legacyErr, pgx.ErrNoRows) {
 		return false, fmt.Errorf("read legacy API token mapping: %w", legacyErr)
 	}
-	if legacyErr == nil && legacy.revoked.Valid && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1 {
+	marked := legacyErr == nil
+	sameHash := marked && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1
+	if marked && legacy.revoked.Valid && sameHash {
 		return false, errors.New("legacy token revoked; remove CONVEYOR_API_TOKEN or issue a new PAT")
 	}
-	var legacyCoversWorkspaces bool
-	if legacyErr == nil {
-		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (
-			SELECT 1 FROM workspaces w
-			WHERE NOT EXISTS (
-				SELECT 1 FROM workspace_role_bindings b
-				WHERE b.workspace_id=w.id AND b.user_id=$1 AND b.role='operator'
-			)
-		)`, legacy.userID).Scan(&legacyCoversWorkspaces); err != nil {
-			return false, fmt.Errorf("check legacy operator workspace bindings: %w", err)
-		}
+	if marked && legacy.status != "active" {
+		// An inactive owner fails closed; no other operator replaces it.
+		return false, errors.New("deployment owner account is deactivated; reactivate it before startup")
 	}
-	var usableOperator bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM user_tokens t JOIN users u ON u.id=t.user_id
-		WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active'
-		  AND EXISTS (SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=t.user_id AND b.role='operator')
-	)`).Scan(&usableOperator); err != nil {
-		return false, fmt.Errorf("check usable operator credential: %w", err)
-	}
-	if legacyCoversWorkspaces && legacyErr == nil && subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1 &&
-		legacy.status == "active" && !legacy.revoked.Valid && legacy.scope == string(core.CredentialScopeOperator) {
-		if err := tx.Commit(ctx); err != nil {
+	commit := func() (bool, error) {
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit); err != nil {
 			return false, err
 		}
-		return false, nil
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("commit identity bootstrap: %w", err)
+		}
+		return true, nil
 	}
-
-	if legacyErr == nil && legacy.status == "active" && !legacy.revoked.Valid {
-		sameHash := subtle.ConstantTimeCompare(legacy.tokenHash, hash[:]) == 1
+	if marked && !legacy.revoked.Valid {
+		if sameHash && legacy.kind == string(core.CredentialUser) && legacy.scope == string(core.CredentialScopeOperator) {
+			if err := store.RunIdentityTestHook(ctx, store.IdentityHookBootstrapBeforeCommit); err != nil {
+				return false, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 		if sameHash {
 			if _, err := tx.Exec(ctx, `UPDATE user_tokens
 				SET kind='user',scope='operator'
@@ -166,53 +169,32 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 			WHERE id=$2 AND revoked_at IS NULL`, hash[:], legacy.id); err != nil {
 			return false, fmt.Errorf("rotate legacy API token mapping: %w", err)
 		}
-		if err := seedOperatorBindings(ctx, tx, legacy.userID); err != nil {
+		if err := auditLegacyTokenLifecycle(ctx, q, legacy.id, "identity.legacy_token_rotated"); err != nil {
 			return false, err
 		}
-		auditKind := "identity.legacy_token_rotated"
-		if sameHash {
-			auditKind = "identity.legacy_bindings_healed"
-		}
-		if err := auditLegacyTokenLifecycle(ctx, q, legacy.id, auditKind); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return false, fmt.Errorf("commit legacy API token rotation: %w", err)
-		}
-		return true, nil
+		return commit()
 	}
 
-	var owner IdentityUser
-	if usableOperator {
-		row := tx.QueryRow(ctx, `SELECT u.id,u.email,u.display_name,u.status,u.created_at
-			FROM users u JOIN user_tokens t ON t.user_id=u.id
-			WHERE t.kind='user' AND t.scope='operator' AND t.revoked_at IS NULL AND u.status='active'
-			  AND EXISTS (SELECT 1 FROM workspace_role_bindings b WHERE b.user_id=u.id AND b.role='operator')
-			ORDER BY t.created_at,t.id LIMIT 1 FOR UPDATE OF u`)
-		var createdAt time.Time
-		if err := row.Scan(&owner.ID, &owner.Email, &owner.DisplayName, &owner.Status, &createdAt); err != nil {
-			return false, fmt.Errorf("select usable operator: %w", err)
-		}
-		owner.CreatedAt = createdAt
-	} else {
-		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName)
-		if err != nil {
-			return false, fmt.Errorf("seed first operator: %w", err)
-		}
-		owner = identityUser(row)
-		if owner.Status != "active" {
-			return false, errors.New("configured first operator account is deactivated")
-		}
-		if _, err := tx.Exec(ctx, `UPDATE orgs SET name=$1 WHERE singleton=true AND name='Conveyor'`, identity.OrganizationName); err != nil {
-			return false, fmt.Errorf("configure deployment organization: %w", err)
-		}
-	}
-
-	if legacyErr == nil {
+	ownerID := legacy.userID
+	if marked {
+		// A revoked marker keeps its owner; the new deployment token is
+		// reissued to the same account (DEC-63(3)).
 		if _, err := tx.Exec(ctx, `UPDATE user_tokens
 			SET label='retired legacy API token',deployment_credential=false
 			WHERE id=$1`, legacy.id); err != nil {
-			return false, fmt.Errorf("retire unusable legacy API token mapping: %w", err)
+			return false, fmt.Errorf("retire revoked legacy API token mapping: %w", err)
+		}
+	} else {
+		row, err := provisionIdentityUserInTx(ctx, tx, q, identity.Email, identity.DisplayName, false)
+		if err != nil {
+			if err.Error() == "provisioned account is deactivated" {
+				return false, errors.New("configured first operator account is deactivated")
+			}
+			return false, fmt.Errorf("seed first operator: %w", err)
+		}
+		ownerID = row.ID
+		if _, err := tx.Exec(ctx, `UPDATE orgs SET name=$1 WHERE singleton=true AND name='Conveyor'`, identity.OrganizationName); err != nil {
+			return false, fmt.Errorf("configure deployment organization: %w", err)
 		}
 	}
 	tokenID, err := randomIdentityID("pat", 12)
@@ -220,23 +202,17 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		return false, err
 	}
 	if _, err := q.InsertDeploymentCredential(ctx, db.InsertDeploymentCredentialParams{
-		ID: tokenID, UserID: owner.ID, Label: "legacy API token", TokenHash: hash[:],
+		ID: tokenID, UserID: ownerID, Label: "legacy API token", TokenHash: hash[:],
 		Kind: string(core.CredentialUser), Scope: string(core.CredentialScopeOperator),
 	}); err != nil {
 		return false, fmt.Errorf("map legacy API token: %w", err)
 	}
-	if legacyErr == nil {
+	if marked {
 		if err := auditLegacyTokenLifecycle(ctx, q, tokenID, "identity.legacy_token_rotated"); err != nil {
 			return false, err
 		}
 	}
-	if err := seedOperatorBindings(ctx, tx, owner.ID); err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit identity bootstrap: %w", err)
-	}
-	return true, nil
+	return commit()
 }
 
 // ProvisionIdentityUser creates or resolves one normalized account and redeems
@@ -255,7 +231,7 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, displayName st
 	var result db.User
 	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var provisionErr error
-		result, provisionErr = provisionIdentityUserInTx(ctx, tx, q, email, displayName)
+		result, provisionErr = provisionIdentityUserInTx(ctx, tx, q, email, displayName, false)
 		return provisionErr
 	})
 	if err != nil {
@@ -264,7 +240,11 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, displayName st
 	return identityUser(result), nil
 }
 
-func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, email, displayName string) (db.User, error) {
+// provisionIdentityUserInTx resolves or creates the account and consumes its
+// pending invitations. byLink selects sign-in link redemption, whose grants are
+// attributed to the redeemed account rather than to the inviter
+// (req-accounts-and-membership AC-3.1).
+func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, email, displayName string, byLink bool) (db.User, error) {
 	if err := lockIdentityEmail(ctx, tx, email); err != nil {
 		return db.User{}, err
 	}
@@ -285,13 +265,13 @@ func provisionIdentityUserInTx(ctx context.Context, tx pgx.Tx, q *db.Queries, em
 	if row.Status != "active" {
 		return db.User{}, errors.New("provisioned account is deactivated")
 	}
-	if err := redeemWorkspaceInvitations(ctx, tx, q, row); err != nil {
+	if err := redeemWorkspaceInvitations(ctx, tx, q, row, byLink); err != nil {
 		return db.User{}, err
 	}
 	return row, nil
 }
 
-func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, user db.User) error {
+func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, user db.User, byLink bool) error {
 	rows, err := tx.Query(ctx, `SELECT workspace_id,role,invited_by
 		FROM workspace_membership_invitations WHERE email=$1 ORDER BY workspace_id FOR UPDATE`, user.Email)
 	if err != nil {
@@ -327,12 +307,21 @@ func redeemWorkspaceInvitations(ctx context.Context, tx pgx.Tx, q *db.Queries, u
 			return fmt.Errorf("consume workspace invitation: %w", err)
 		}
 		eventCtx := store.WithWorkspace(ctx, item.workspaceID)
+		actorID := store.UserActorID(item.invitedBy)
+		payload := map[string]any{
+			"workspace_id": item.workspaceID, "user_id": user.ID, "email": user.Email, "role": item.role,
+			"invitation": false, "redemption": true, "granted_by": item.invitedBy,
+		}
+		if byLink {
+			actorID = store.UserActorID(user.ID)
+			payload["invited_by"] = item.invitedBy
+		}
+		// The redemption establishes its own attributed actor, so the event
+		// context binds it explicitly (component-persistence, Actor context).
+		eventCtx = store.WithActor(eventCtx, store.Actor{ID: actorID, Role: core.ActorUser})
 		if err := insertWorkspaceEvent(eventCtx, q, core.Event{
-			Kind: "workspace.membership_granted", ActorID: store.UserActorID(item.invitedBy), ActorRole: core.ActorUser,
-			Payload: core.JSONPayload(map[string]any{
-				"workspace_id": item.workspaceID, "user_id": user.ID, "email": user.Email, "role": item.role,
-				"invitation": false, "redemption": true, "granted_by": item.invitedBy,
-			}),
+			Kind: "workspace.membership_granted", ActorID: actorID, ActorRole: core.ActorUser,
+			Payload: core.JSONPayload(payload),
 		}); err != nil {
 			return fmt.Errorf("audit workspace invitation redemption: %w", err)
 		}
@@ -356,17 +345,14 @@ func lockIdentityEmail(ctx context.Context, tx pgx.Tx, email string) error {
 	return nil
 }
 
-func seedOperatorBindings(ctx context.Context, tx pgx.Tx, userID string) error {
-	if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role)
-		SELECT id,$1,'operator' FROM workspaces
-		ON CONFLICT(workspace_id,user_id) DO UPDATE SET role='operator',updated_at=now()`, userID); err != nil {
-		return fmt.Errorf("seed legacy workspace memberships: %w", err)
-	}
-	return nil
+// userActorContext binds the user actor that an identity operation itself
+// establishes, such as a sign-in or a session revocation.
+func userActorContext(ctx context.Context, userID string) context.Context {
+	return store.WithActor(ctx, store.Actor{ID: store.UserActorID(userID), Role: core.ActorUser})
 }
 
 func auditLegacyTokenLifecycle(ctx context.Context, q *db.Queries, credentialID, kind string) error {
-	if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+	if err := insertDeploymentEvent(store.WithActor(ctx, store.SystemActor("system")), q, db.InsertDeploymentEventParams{
 		Kind: kind, ActorID: "system", ActorRole: string(core.ActorSystem),
 		PayloadJson: core.JSONPayload(map[string]any{"credential_id": credentialID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
 	}); err != nil {
@@ -380,7 +366,7 @@ func auditPersonalAccessTokenLifecycle(ctx context.Context, q *db.Queries, row d
 	if credential, ok := store.CredentialFromContext(ctx); ok {
 		actorUserID = credential.OwnerUserID
 	}
-	if err := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+	if err := insertDeploymentEvent(store.WithActor(ctx, store.Actor{ID: store.UserActorID(actorUserID), Role: core.ActorUser}), q, db.InsertDeploymentEventParams{
 		Kind: kind, ActorID: store.UserActorID(actorUserID), ActorRole: string(core.ActorUser),
 		PayloadJson: core.JSONPayload(map[string]any{"credential_id": row.ID, "label": row.Label}),
 		At:          pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
@@ -539,12 +525,72 @@ const (
 
 // IssueSignInLink rotates prior unredeemed links and only succeeds for an
 // existing account or pending invitation. That predicate is the no-self-
-// registration boundary.
+// registration boundary. It serves only host-local issuance
+// (req-invitations-and-sign-in REQ-3).
 func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IssuedSignInLink{}, err
 	}
+	return s.issueSignInLink(ctx, email, func(tx pgx.Tx) error {
+		var allowed bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=$1)`, email).Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return store.ErrNotFound
+		}
+		return nil
+	}, nil)
+}
+
+// IssueInvitationSignInLink issues a link only while workspaceID holds a
+// pending invitation for email. The check, rotation, insert, and the resend
+// audit event share one transaction under the identity email lock, which
+// revocation and redemption also take (component-identity-membership).
+func (s *Store) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	if !purpose.Valid() {
+		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
+	}
+	email, err := normalizeIdentityEmail(email)
+	if err != nil {
+		return core.IssuedSignInLink{}, fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
+	}
+	var resentBy string
+	if purpose == store.SignInLinkResend {
+		credential, ok := store.CredentialFromContext(ctx)
+		if !ok || credential.OwnerUserID == "" {
+			return core.IssuedSignInLink{}, errors.New("authenticated user credential is required")
+		}
+		resentBy = credential.OwnerUserID
+	}
+	return s.issueSignInLink(ctx, email, func(tx pgx.Tx) error {
+		var pending bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2)`, workspaceID, email).Scan(&pending); err != nil {
+			return err
+		}
+		if !pending {
+			return fmt.Errorf("%w: workspace membership invitation", store.ErrNotFound)
+		}
+		return store.RunIdentityTestHook(ctx, store.IdentityHookInvitationLinkLocked)
+	}, func(q *db.Queries) error {
+		if purpose != store.SignInLinkResend {
+			return nil
+		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookInvitationResentAudit); err != nil {
+			return err
+		}
+		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{
+			Kind: "workspace.invitation_resent", ActorID: store.UserActorID(resentBy), ActorRole: core.ActorUser,
+			Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "email": email, "resent_by": resentBy}),
+		})
+	})
+}
+
+// issueSignInLink holds the identity email lock, runs admit, rotates earlier
+// unredeemed links, stores the new hash, appends identity.signin_link_issued,
+// and then runs audit, all in one transaction.
+func (s *Store) issueSignInLink(ctx context.Context, email string, admit func(pgx.Tx) error, audit func(*db.Queries) error) (core.IssuedSignInLink, error) {
 	id, err := randomIdentityID("sil", 12)
 	if err != nil {
 		return core.IssuedSignInLink{}, err
@@ -560,14 +606,10 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 		if err := lockIdentityEmail(ctx, tx, email); err != nil {
 			return err
 		}
-		var userID *string
-		var allowed bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE email=$1 AND status='active') OR EXISTS(SELECT 1 FROM workspace_membership_invitations WHERE email=$1)`, email).Scan(&allowed); err != nil {
+		if err := admit(tx); err != nil {
 			return err
 		}
-		if !allowed {
-			return store.ErrNotFound
-		}
+		var userID *string
 		var uid string
 		if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE email=$1 AND status='active'`, email).Scan(&uid); err == nil {
 			userID = &uid
@@ -581,7 +623,13 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 			return err
 		}
 		actor := store.ActorFromContext(ctx)
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		if err := insertDeploymentEvent(ctx, q, db.InsertDeploymentEventParams{Kind: "identity.signin_link_issued", ActorID: actor.ID, ActorRole: string(actor.Role), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": id, "email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}}); err != nil {
+			return err
+		}
+		if audit != nil {
+			return audit(q)
+		}
+		return nil
 	})
 	if err != nil {
 		return core.IssuedSignInLink{}, err
@@ -598,11 +646,23 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var linkID, email string
 		var userID *string
+		// Take the email lock before any token-row lock, the same order
+		// issuance uses, so redemption cannot deadlock against a concurrent
+		// issuance or resend. The conditional UPDATE still decides the winner.
+		if err := tx.QueryRow(ctx, `SELECT email FROM invitation_signin_tokens WHERE token_hash=$1`, hash[:]).Scan(&email); err != nil {
+			return notFound(err, "sign-in link")
+		}
+		if err := lockIdentityEmail(ctx, tx, email); err != nil {
+			return err
+		}
+		if err := store.RunIdentityTestHook(ctx, store.IdentityHookSignInRedeemLocked); err != nil {
+			return err
+		}
 		if err := tx.QueryRow(ctx, `UPDATE invitation_signin_tokens SET redeemed_at=now() WHERE token_hash=$1 AND redeemed_at IS NULL AND expires_at>now() RETURNING id,email,user_id`, hash[:]).Scan(&linkID, &email, &userID); err != nil {
 			return notFound(err, "sign-in link")
 		}
 		if userID == nil {
-			row, err := provisionIdentityUserInTx(ctx, tx, q, email, email)
+			row, err := provisionIdentityUserInTx(ctx, tx, q, email, email, true)
 			if err != nil {
 				return err
 			}
@@ -621,10 +681,10 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 			return mintErr
 		}
 		at := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
-		if eventErr := q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); eventErr != nil {
+		if eventErr := insertDeploymentEvent(userActorContext(ctx, *userID), q, db.InsertDeploymentEventParams{Kind: "identity.signin_link_redeemed", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"signin_link_id": linkID}), At: at}); eventErr != nil {
 			return eventErr
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID}), At: at})
+		return insertDeploymentEvent(userActorContext(ctx, *userID), q, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(*userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID}), At: at})
 	})
 	if err != nil {
 		return core.DashboardSession{}, core.IdentityUser{}, core.ErrInvalidCredential
@@ -667,7 +727,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 		if err != nil {
 			return err
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(user.ID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID, "method": "password"}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		return insertDeploymentEvent(userActorContext(ctx, user.ID), q, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_created", ActorID: store.UserActorID(user.ID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": session.ID, "method": "password"}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, core.ErrInvalidCredential) {
@@ -711,7 +771,7 @@ func (s *Store) SetOwnPassword(ctx context.Context, userID, sessionID, currentPa
 		if _, err := tx.Exec(ctx, `UPDATE users SET password_hash=$2 WHERE id=$1`, userID, encoded); err != nil {
 			return err
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: kind, ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		return insertDeploymentEvent(userActorContext(ctx, userID), q, db.InsertDeploymentEventParams{Kind: kind, ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
 	})
 }
 
@@ -764,7 +824,7 @@ func (s *Store) RevokeDashboardSession(ctx context.Context, userID, sessionID st
 		if result.RowsAffected() != 1 {
 			return store.ErrNotFound
 		}
-		return q.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_revoked", ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
+		return insertDeploymentEvent(userActorContext(ctx, userID), q, db.InsertDeploymentEventParams{Kind: "identity.dashboard_session_revoked", ActorID: store.UserActorID(userID), ActorRole: string(core.ActorUser), PayloadJson: core.JSONPayload(map[string]any{"session_id": sessionID}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}})
 	})
 }
 
@@ -773,7 +833,7 @@ func (s *Store) RecordInvitationDelivery(ctx context.Context, email, outcome str
 		return errors.New("invalid invitation delivery outcome")
 	}
 	actor := store.ActorFromContext(ctx)
-	return s.queries.InsertDeploymentEvent(ctx, db.InsertDeploymentEventParams{
+	return insertDeploymentEvent(ctx, s.queries, db.InsertDeploymentEventParams{
 		Kind: "identity.invitation_delivery_" + outcome, ActorID: actor.ID, ActorRole: string(actor.Role),
 		PayloadJson: core.JSONPayload(map[string]any{"email": email}), At: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
 	})

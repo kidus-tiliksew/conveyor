@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, MailPlus, RotateCw, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { MailPlus, RotateCw, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import {
   fetchWorkspaceInvitations,
   inviteWorkspaceMember,
@@ -12,7 +12,7 @@ import {
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
-import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceRoles, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -24,12 +24,34 @@ function formatTimestamp(value: string) {
 }
 
 function roleLabel(role: WorkspaceRole) {
-  return role.charAt(0).toUpperCase() + role.slice(1)
+  return role
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
 }
 
+const preferredInitialRole = 'contributor'
+
+// The picker's initial and reset choice: contributor when the served chain
+// holds it, otherwise the chain's first (lowest) role, or none for an empty
+// chain. The chain is server-defined (component-identity-membership).
+function initialRole(chain: readonly WorkspaceRole[]): WorkspaceRole {
+  return chain.includes(preferredInitialRole) ? preferredInitialRole : (chain[0] ?? '')
+}
+
+// The served chain ascends, so its last role is the highest and carries the
+// emphasized badge. A role outside the chain renders neutrally with its label.
+function roleBadgeVariant(role: WorkspaceRole, chain: readonly WorkspaceRole[]) {
+  return chain.length > 0 && role === chain[chain.length - 1] ? 'accent' : 'default'
+}
+
+// An invitation carries a delivery outcome. A grant to an existing account
+// records the binding only: the server issues no sign-in link for it, and
+// account recovery is the host-local `conveyor user issue-link` act.
 type DeliveryNotice = {
   grant: MembershipGrant
-  kind: 'invitation' | 'role_change' | 'sign_in'
+  kind: 'invitation' | 'membership' | 'role_change'
   previousRole?: WorkspaceRole
 }
 
@@ -44,6 +66,8 @@ type DeliveryNotice = {
 export function MembersSection() {
   const { workspace } = useWorkspaceSelection()
   const canManage = useWorkspaceCapability('manage_membership')
+  const roleChain = useWorkspaceRoles()
+  const roleChainKey = roleChain.join('\n')
   const queryClient = useQueryClient()
   const enabled = Boolean(workspace && canManage)
 
@@ -65,7 +89,14 @@ export function MembersSection() {
   }
 
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<WorkspaceRole>('contributor')
+  const [role, setRole] = useState<WorkspaceRole>(() => initialRole(roleChain))
+  // A workspace switch or a refreshed chain reconciles the selection: a role
+  // the served chain no longer holds resets to the served default, so a
+  // removed role cannot be submitted.
+  useEffect(() => {
+    setRole((current) => (current && roleChain.includes(current) ? current : initialRole(roleChain)))
+  }, [workspace, roleChainKey])
+  const roleSelectable = role !== '' && roleChain.includes(role)
   const [delivery, setDelivery] = useState<DeliveryNotice | null>(null)
   const normalizedEmail = email.trim().toLowerCase()
   const existingMember = members.data?.find((member) => member.email?.trim().toLowerCase() === normalizedEmail)
@@ -76,11 +107,11 @@ export function MembersSection() {
     onSuccess: async (result, request) => {
       setDelivery({
         grant: result,
-        kind: request.existingRole ? 'role_change' : 'invitation',
+        kind: request.existingRole ? 'role_change' : result.delivery ? 'invitation' : 'membership',
         previousRole: request.existingRole,
       })
       setEmail('')
-      setRole('contributor')
+      setRole(initialRole(roleChain))
       await refresh()
     },
   })
@@ -95,10 +126,11 @@ export function MembersSection() {
   const resendInvitation = useMutation({
     mutationFn: (invitedEmail: string) => resendWorkspaceInvitation(workspace, invitedEmail),
     onSuccess: (result) => setDelivery({ grant: result, kind: 'invitation' }),
-  })
-  const sendMemberSignInLink = useMutation({
-    mutationFn: (memberEmail: string) => resendWorkspaceInvitation(workspace, memberEmail),
-    onSuccess: (result) => setDelivery({ grant: result, kind: 'sign_in' }),
+    onError: async (error) => {
+      // A refused resend never leaves an earlier link on screen.
+      setDelivery(null)
+      if (error instanceof WorkspaceNotVisibleError) await refresh()
+    },
   })
 
   const attemptedRoleChange = invite.variables?.existingRole
@@ -117,6 +149,7 @@ export function MembersSection() {
               aria-label="Invite a member"
               onSubmit={(event) => {
                 event.preventDefault()
+                if (!roleSelectable) return
                 invite.mutate({ email: email.trim(), role, existingRole: roleChange?.role })
               }}
             >
@@ -133,15 +166,16 @@ export function MembersSection() {
                 aria-label="Role"
                 className="max-w-36"
                 value={role}
-                onChange={(event) => setRole(event.target.value as WorkspaceRole)}
+                disabled={roleChain.length === 0}
+                onChange={(event) => setRole(event.target.value)}
               >
-                <option value="viewer">Viewer</option>
-                <option value="executor">Executor</option>
-                <option value="contributor">Contributor</option>
-                <option value="maintainer">Maintainer</option>
-                <option value="operator">Operator</option>
+                {roleChain.map((option) => (
+                  <option key={option} value={option}>
+                    {roleLabel(option)}
+                  </option>
+                ))}
               </Select>
-              <Button type="submit" disabled={!email.trim() || invite.isPending}>
+              <Button type="submit" disabled={!email.trim() || !roleSelectable || invite.isPending}>
                 <MailPlus />
                 {invite.isPending
                   ? roleChange
@@ -154,7 +188,7 @@ export function MembersSection() {
               <p className="basis-full text-xs leading-5 text-muted">
                 {roleChange
                   ? `Role change: ${roleChange.email} already has the ${roleLabel(roleChange.role)} role. Submitting will change their role to ${roleLabel(role)}.`
-                  : 'The person receives a one-time sign-in link. Opening it creates their account and workspace membership. Operators can invite, remove, and change who else is an operator.'}
+                  : 'A person without an account receives a one-time sign-in link that creates their account and workspace membership. An existing account is added right away and receives no link. Operators can invite, remove, and change who else is an operator.'}
               </p>
               {invite.error && (
                 <p className="basis-full text-xs text-failure">
@@ -170,25 +204,19 @@ export function MembersSection() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium text-foreground">
-                    {delivery.kind === 'sign_in'
-                      ? delivery.grant.delivery === 'sent'
-                        ? 'Sign-in link sent'
-                        : 'Sign-in link ready to share'
-                      : delivery.kind === 'role_change'
-                        ? 'Role updated'
+                    {delivery.kind === 'role_change'
+                      ? 'Role updated'
+                      : delivery.kind === 'membership'
+                        ? 'Member added'
                         : delivery.grant.delivery === 'sent'
                           ? 'Invitation sent'
                           : 'Invitation ready to share'}
                   </p>
                   <p className="mt-1 text-xs leading-5 text-muted">
-                    {delivery.kind === 'sign_in'
-                      ? delivery.grant.delivery === 'sent'
-                        ? 'We emailed a fresh sign-in link. The member can use it to get back in if they forgot their password.'
-                        : delivery.grant.sign_in_url
-                          ? 'Email delivery is unavailable. Copy this fresh sign-in link so the member can get back in if they forgot their password.'
-                          : 'A fresh sign-in link could not be delivered. Try sending it again.'
-                      : delivery.kind === 'role_change'
-                        ? `${delivery.grant.email} changed from ${roleLabel(delivery.previousRole ?? delivery.grant.role)} to ${roleLabel(delivery.grant.role)}.${delivery.grant.sign_in_url ? ' Email delivery is unavailable; copy the fresh sign-in link below.' : ''}`
+                    {delivery.kind === 'role_change'
+                      ? `${delivery.grant.email} changed from ${roleLabel(delivery.previousRole ?? delivery.grant.role)} to ${roleLabel(delivery.grant.role)}.`
+                      : delivery.kind === 'membership'
+                        ? `${delivery.grant.email} already has an account and now has the ${roleLabel(delivery.grant.role)} role in this workspace.`
                         : delivery.grant.delivery === 'sent'
                           ? 'We sent a sign-in link by email.'
                           : delivery.grant.sign_in_url
@@ -205,10 +233,7 @@ export function MembersSection() {
                   <p className="min-w-0 flex-1 truncate font-mono text-xs" title={delivery.grant.sign_in_url}>
                     {delivery.grant.sign_in_url}
                   </p>
-                  <CopyButton
-                    value={delivery.grant.sign_in_url}
-                    label={delivery.kind === 'invitation' ? 'Copy invitation link' : 'Copy sign-in link'}
-                  />
+                  <CopyButton value={delivery.grant.sign_in_url} label="Copy invitation link" />
                 </div>
               )}
             </div>
@@ -226,21 +251,7 @@ export function MembersSection() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Badge variant={member.role === 'operator' ? 'accent' : 'default'}>{roleLabel(member.role)}</Badge>
-                {canManage && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    aria-label={`Send sign-in link to ${member.display_name || member.email || member.user_id}`}
-                    disabled={sendMemberSignInLink.isPending || !member.email}
-                    onClick={() => member.email && sendMemberSignInLink.mutate(member.email)}
-                  >
-                    <KeyRound />
-                    {sendMemberSignInLink.isPending && sendMemberSignInLink.variables === member.email
-                      ? 'Sending…'
-                      : 'Send sign-in link'}
-                  </Button>
-                )}
+                <Badge variant={roleBadgeVariant(member.role, roleChain)}>{roleLabel(member.role)}</Badge>
                 {canManage && (
                   <Button
                     size="icon"
@@ -261,11 +272,6 @@ export function MembersSection() {
               {removeMember.error instanceof LastWorkspaceOperatorError
                 ? 'This workspace would be left without an operator. Make someone else an operator first, then remove this one.'
                 : errorMessage(removeMember.error, 'Could not remove that member.')}
-            </p>
-          )}
-          {sendMemberSignInLink.error && (
-            <p className="text-sm text-failure">
-              {errorMessage(sendMemberSignInLink.error, 'Could not send that sign-in link.')}
             </p>
           )}
         </CardContent>
@@ -302,9 +308,7 @@ export function MembersSection() {
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Badge variant={invitation.role === 'operator' ? 'accent' : 'default'}>
-                    {roleLabel(invitation.role)}
-                  </Badge>
+                  <Badge variant={roleBadgeVariant(invitation.role, roleChain)}>{roleLabel(invitation.role)}</Badge>
                   <Button
                     size="sm"
                     variant="secondary"
@@ -334,7 +338,9 @@ export function MembersSection() {
             )}
             {resendInvitation.error && (
               <p className="text-sm text-failure">
-                {errorMessage(resendInvitation.error, 'Could not resend that invitation.')}
+                {resendInvitation.error instanceof WorkspaceNotVisibleError
+                  ? 'That invitation is no longer pending. It may have been revoked or accepted.'
+                  : errorMessage(resendInvitation.error, 'Could not resend that invitation.')}
               </p>
             )}
           </CardContent>

@@ -12,7 +12,7 @@ export function ProfileCard() {
   const queryClient = useQueryClient()
   const identity = useQuery({
     queryKey: ['caller-identity', workspace],
-    queryFn: () => fetchCallerIdentity(),
+    queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
   })
   const [displayName, setDisplayName] = useState('')

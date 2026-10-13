@@ -219,7 +219,7 @@ func (g kitRegistryGuardStore) ListSystemDesignVersions(ctx context.Context, id 
 func TestWorkspaceVerificationKits(t *testing.T) {
 	st := store.NewVolatileBackend()
 	defer st.Close()
-	ctx := store.WithWorkspace(t.Context(), "alpha")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "alpha")
 	cfg := &config.Config{Workspace: "alpha", Repos: []config.Repo{
 		{Name: "kits", GitHub: "org/kits", Base: "main"},
 		{Name: "legacy", GitHub: "org/legacy", Base: "main"},
@@ -235,7 +235,7 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		{Name: "pin-slow", GitHub: "org/pin-slow", Base: "main"},
 		{Name: "pin-design-versions", GitHub: "org/pin-design-versions", Base: "main"},
 	}}
-	if _, err := st.BootstrapWorkspaceConfig(t.Context(), cfg); err != nil {
+	if _, err := st.BootstrapWorkspaceConfig(store.WithActor(t.Context(), store.SystemActor()), cfg); err != nil {
 		t.Fatal(err)
 	}
 	// Corpus: req-a confirmed v1, v2 (current) and pending v3; req-dismissed

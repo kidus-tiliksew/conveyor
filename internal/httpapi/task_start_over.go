@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -19,11 +20,11 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		http.Error(w, "invalid restart request", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_restart_request", "message": "invalid restart request"})
 		return
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		http.Error(w, "restart body must contain one JSON object", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_restart_request", "message": "restart body must contain one JSON object"})
 		return
 	}
 	request.TaskID = chi.URLParam(r, "id")
@@ -33,7 +34,7 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 	}
 	request.Reason = strings.TrimSpace(request.Reason)
 	if err := request.Validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_restart_request", "message": err.Error()})
 		return
 	}
 	credential, _ := store.CredentialFromContext(r.Context())
@@ -46,7 +47,7 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("authorize task start over: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeRestartInternalError(w, r)
 			return
 		}
 	} else {
@@ -54,19 +55,7 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := taskops.New(s.Store).StartOver(r.Context(), request)
 	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrTaskTerminal):
-			http.Error(w, "terminal tasks cannot start over; create a task with POST /v1/tasks", http.StatusConflict)
-		case errors.Is(err, store.ErrStartOverRequestConflict):
-			http.Error(w, err.Error(), http.StatusConflict)
-		case errors.Is(err, store.ErrStartOverConfirmDocuments):
-			http.Error(w, err.Error(), http.StatusForbidden)
-		case errors.Is(err, store.ErrNotFound):
-			http.Error(w, "task not found", http.StatusNotFound)
-		default:
-			log.Printf("start task over: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}
+		writeRestartError(w, r, err)
 		return
 	}
 	if result.Created && s.OnCreate != nil {
@@ -77,4 +66,50 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, result)
+}
+
+func writeRestartError(w http.ResponseWriter, r *http.Request, err error) {
+	var (
+		referenceErr        *store.TaskContextReferenceError
+		requirementArchived *store.RequirementArchivedError
+		designArchived      *store.SystemDesignArchivedError
+		dependencyErr       *store.TaskDependencyError
+		branchErr           *store.BranchInUseError
+		invalidTransition   *core.ErrInvalidTransition
+	)
+	switch {
+	case errors.Is(err, store.ErrTaskTerminal):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "task_terminal", "message": "terminal tasks cannot start over; create a task with POST /v1/tasks"})
+	case errors.Is(err, store.ErrStartOverRequestConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "start_over_request_conflict", "message": err.Error()})
+	case errors.Is(err, store.ErrStartOverConfirmDocuments):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "start_over_confirm_documents", "message": err.Error()})
+	case errors.As(err, &dependencyErr):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "task_dependency", "message": dependencyErr.Error()})
+	case errors.As(err, &invalidTransition):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid_transition", "message": invalidTransition.Error()})
+	case errors.As(err, &requirementArchived):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "requirement_archived", "message": requirementArchived.Error()})
+	case errors.As(err, &designArchived):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "system_design_archived", "message": designArchived.Error()})
+	case errors.As(err, &referenceErr):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "invalid_context_reference", "message": referenceErr.Error()})
+	case errors.As(err, &branchErr) || errors.Is(err, store.ErrTaskBranchConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "task_branch_conflict", "message": err.Error()})
+	case errors.Is(err, store.ErrTaskAlreadyStartedOver):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "task_already_started_over", "message": "task already has a successor; read it with GET /v1/tasks/{id}"})
+	case errors.Is(err, store.ErrRetryable):
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "retryable", "message": err.Error()})
+	case errors.Is(err, store.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found", "message": "task not found"})
+	default:
+		log.Printf("start task over: %v", err)
+		writeRestartInternalError(w, r)
+	}
+}
+
+func writeRestartInternalError(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Request-Id", middleware.GetReqID(r.Context()))
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error", "message": "internal server error"})
 }

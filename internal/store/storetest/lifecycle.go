@@ -90,12 +90,38 @@ func RecoverInterruptedReviewRound(ctx context.Context, st store.Store, request 
 	})
 }
 
+// ClaimWorkOrder claims through the taskops plane. A worker claim needs a real
+// enrollment with an active owner, so a fixture worker ID that has no row in
+// the bound workspace is enrolled first; an existing row keeps its state.
 func ClaimWorkOrder(ctx context.Context, st store.Store, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	order, err := st.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
+	if claim.WorkerID != "" {
+		enrollCtx := ctx
+		if _, ok := store.WorkspaceFromContext(ctx); !ok {
+			task, err := st.GetTask(ctx, order.TaskID)
+			if err != nil {
+				return core.WorkOrder{}, err
+			}
+			enrollCtx = store.WithWorkspace(ctx, task.Workspace)
+		}
+		if _, err := EnsureWorkerEnrollment(enrollCtx, st, claim.WorkerID); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
 	return taskops.New(st).ClaimWorkOrder(ctx, order.TaskID, id, claim)
+}
+
+// ProjectTaskNextStage moves a running task through recover-refresh and
+// dispatch-start so tests can claim at one stage and then project the next.
+func ProjectTaskNextStage(ctx context.Context, st store.Store, taskID string, stage core.Stage) error {
+	if _, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskRecoverRefresh}); err != nil {
+		return err
+	}
+	_, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskDispatchStart, NextStage: stage, ProjectStages: true})
+	return err
 }
 
 func RedispatchWorkOrder(ctx context.Context, st store.Store, id string, timeout time.Duration) (core.WorkOrder, error) {

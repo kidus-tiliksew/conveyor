@@ -100,6 +100,7 @@ func TestCreateWorkspaceValidatesAndUsesDefaults(t *testing.T) {
 	deployment := &config.Config{Workspace: "demo", MaxBounces: 2, Database: config.Database{Backend: "memory"}, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 	srv := NewServer(store.NewMemory())
 	srv.Workspaces, srv.Deployment, srv.BearerToken = control, deployment, "token"
+	srv.Memberships = localOperatorInstanceAdmin()
 	queued := ""
 	srv.EnsureWorkspaceQueues = func(id string, candidate *config.Config) error {
 		if candidate == nil || candidate.Workspace != id || candidate.Routing.Stages["triage"].TimeoutText != "1h" || control.created != nil {
@@ -125,6 +126,7 @@ func TestCreateWorkspaceDoesNotPersistWhenQueueRegistrationFails(t *testing.T) {
 	control := &fakeWorkspaceControl{}
 	srv := NewServer(store.NewMemory())
 	srv.Workspaces, srv.Deployment, srv.BearerToken = control, &config.Config{}, "token"
+	srv.Memberships = localOperatorInstanceAdmin()
 	srv.EnsureWorkspaceQueues = func(string, *config.Config) error { return context.Canceled }
 	req := httptest.NewRequest(http.MethodPost, "/v1/workspaces", bytes.NewBufferString(`{"id":"engineering","name":"Engineering"}`))
 	req.Header.Set("Authorization", "Bearer token")
@@ -207,6 +209,7 @@ func TestCreateWorkspaceRejectsExecutionDetailMatchesPUT(t *testing.T) {
 				control := &fakeWorkspaceControl{}
 				create := NewServer(store.NewMemory())
 				create.Workspaces, create.Deployment, create.BearerToken = control, legacyExecutorDeployment(), "token"
+				create.Memberships = localOperatorInstanceAdmin()
 				queued := false
 				create.EnsureWorkspaceQueues = func(string, *config.Config) error {
 					queued = true
@@ -296,6 +299,7 @@ func createWorkspaceAcceptsPolicyOnlyDocuments(t *testing.T) {
 			control := &fakeWorkspaceControl{}
 			srv := NewServer(store.NewMemory())
 			srv.Workspaces, srv.Deployment, srv.BearerToken = control, legacyExecutorDeployment(), "token"
+			srv.Memberships = localOperatorInstanceAdmin()
 			var preflight *config.Config
 			srv.EnsureWorkspaceQueues = func(id string, candidate *config.Config) error {
 				if control.created != nil {
@@ -332,6 +336,7 @@ func createWorkspaceAcceptsPolicyOnlyDocuments(t *testing.T) {
 			control := &fakeWorkspaceControl{}
 			srv := NewServer(store.NewMemory())
 			srv.Workspaces, srv.Deployment, srv.BearerToken = control, legacyExecutorDeployment(), "token"
+			srv.Memberships = localOperatorInstanceAdmin()
 			srv.EnsureWorkspaceQueues = func(string, *config.Config) error {
 				t.Fatal("queue preflight ran for an invalid document")
 				return nil
@@ -345,4 +350,11 @@ func createWorkspaceAcceptsPolicyOnlyDocuments(t *testing.T) {
 			}
 		})
 	}
+}
+
+// localOperatorInstanceAdmin admits the configured-token fallback user as the
+// instance-administration principal; without an authority the creation route
+// fails closed (DEC-63(5)).
+func localOperatorInstanceAdmin() *membershipFixture {
+	return &membershipFixture{instanceAdmins: map[string]bool{"local-operator": true}}
 }

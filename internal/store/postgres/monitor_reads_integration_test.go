@@ -45,12 +45,12 @@ func TestMonitorReadsBoundedAndHTTPParityIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err = Migrate(t.Context(), pool); err != nil {
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
 		t.Fatal(err)
 	}
 	st := newStore(pool)
 	ws := "monitor-reads-" + core.NewTaskID()
-	ctx := store.WithWorkspace(t.Context(), ws)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), ws)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: ws, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}

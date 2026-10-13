@@ -36,7 +36,7 @@ func TestTaskVerificationReadAndObservationBoundary(t *testing.T) {
 	obligation := call("register_verification_obligation", map[string]any{"context_id": contextID, "obligation_id": "observe", "description": "Observe fixture", "sources": []any{map[string]any{"document_id": "req-fixture", "version": 1, "section_id": "REQ-1"}}, "observation_procedure": "Read fixture state", "contract": map[string]any{"id": "observe", "kind": "observation", "argv": []string{}, "cwd": ".", "timeout_seconds": 30, "stages": []string{"verify"}, "prerequisites": []any{}, "permissions": []any{}, "inputs": []any{}, "required_assertions": []string{}, "retry_policy": "safe_to_replay", "safety_basis": "read only", "operations": []any{}, "evidence_outputs": []any{map[string]any{"type": "operator_observation", "schema_version": 1, "minimum_items": 1}}, "supports": []any{}}}).(store.VerificationReceipt)
 	grantID := storetest.GrantVerificationFixture(t, s.Store.(store.Backend), worker, "verification-http", id, contextID, "grant", core.VerificationSubject{Kind: "ordinary", ObligationID: "observe", ContractDigest: obligation.Digest}, nil)
 	run := call("start_verification_attempt", map[string]any{"grant_id": grantID, "effective_actions": []core.VerificationPermission{}, "coverage": store.VerificationCoverage{ObligationIDs: []string{"observe"}, Justification: "Fixture coverage", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "Current observation", Subjects: []core.VerificationSubject{{Kind: "ordinary", ObligationID: "observe", ContractDigest: obligation.Digest}}}}}, "context_id": contextID, "start_key": "start", "subject": core.VerificationSubject{Kind: "ordinary", ObligationID: "observe", ContractDigest: obligation.Digest}, "environment": core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}, "effective_permissions": []any{}, "safe_inputs": map[string]any{}}).(store.VerificationReceipt)
-	ctx := store.WithWorkspace(t.Context(), "demo")
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if _, err := b.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Test", Email: "owner@example.test", DisplayName: "Owner"}, "read-token"); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +48,11 @@ func TestTaskVerificationReadAndObservationBoundary(t *testing.T) {
 		return store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "test", OwnerUserID: id, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}), store.Actor{ID: store.UserActorID(id), Role: core.ActorUser})
 	}
 	operator := user(owner.ID)
+	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// deployment owner's workspace binding explicitly.
+	if _, err = b.GrantWorkspaceRole(operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
+		t.Fatal(err)
+	}
 	viewer, err := b.ProvisionIdentityUser(operator, "viewer@example.test", "Viewer")
 	if err != nil {
 		t.Fatal(err)

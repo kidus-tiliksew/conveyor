@@ -161,7 +161,7 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 	for _, m := range markers {
 		byID[m.TaskID] = m
 	}
-	matches := []core.Task{}
+	candidates := []core.Task{}
 	for _, t := range tasks {
 		if core.TaskTerminal(t.State) {
 			continue
@@ -173,13 +173,15 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 		if parent {
 			continue
 		}
-		authority := false
-		if origins[t.ID] {
-			if err = documentRow(ctx, s.db, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND ((stage='implement' AND state='submitted') OR (stage='review' AND state IN ('queued','claimed','submitted'))))`, documentWorkspace(ctx), t.ID).Scan(&authority); err != nil {
-				return store.TaskPage{}, err
-			}
-		}
-		if store.TaskNeedsAttention(t, byID[t.ID], authority, pending[t.ID]) {
+		candidates = append(candidates, t)
+	}
+	projected, err := store.ReadNextActions(ctx, s, candidates, store.NextActionOptions{})
+	if err != nil {
+		return store.TaskPage{}, err
+	}
+	matches := []core.Task{}
+	for _, t := range candidates {
+		if store.TaskNeedsAttention(projected[t.ID]) {
 			matches = append(matches, t)
 		}
 	}
@@ -267,7 +269,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		if err := lockKey(ctx, tx, "queue-reconcile:"+ws); err != nil {
 			return err
 		}
-		rows, err := documentRows(ctx, tx, `SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.state='queued' AND NOT(t.parent_task_id IS NULL AND t.next_stage='implement' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)) ORDER BY t.created_at,t.id`, ws)
+		rows, err := documentRows(ctx, tx, `SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.state='queued' AND NOT(t.parent_task_id IS NULL AND t.next_stage='implement' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)) AND NOT (`+blockingOrderSQL("t")+`) ORDER BY t.created_at,t.id`, ws)
 		if err != nil {
 			return err
 		}
@@ -334,4 +336,15 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// blockingOrderSQL is the SQL form of core.WorkOrderBlocksStageMint: the
+// task's latest order is at its next_stage and holds it (itself, or for
+// review any seat of its round, is queued, claimed, stale, or timed_out).
+// Read-time stale and timed_out projections are stored as queued or claimed,
+// so the stored set covers them. Such a task is waiting for a claim or for
+// the order clock, not drifting, so reconcile leaves it alone
+// (component-durable-queue "Reconciliation between tasks and jobs"; DEC-62).
+func blockingOrderSQL(task string) string {
+	return `EXISTS (SELECT 1 FROM work_orders latest WHERE latest.workspace_id=` + task + `.workspace_id AND latest.task_id=` + task + `.id AND latest.stage=` + task + `.next_stage AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=latest.workspace_id AND later.task_id=latest.task_id AND (later.created_at > latest.created_at OR (later.created_at = latest.created_at AND later.id > latest.id))) AND EXISTS (SELECT 1 FROM work_orders wo WHERE wo.workspace_id=latest.workspace_id AND wo.task_id=latest.task_id AND (wo.id=latest.id OR (latest.stage='review' AND wo.stage='review' AND wo.review_round=latest.review_round)) AND wo.state IN ('queued','claimed','stale','timed_out')))`
 }

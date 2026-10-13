@@ -4,9 +4,13 @@ import type {
   ActivitySummary,
   Artifact,
   BlueprintView,
+  InboxBand,
   InterventionAction,
   LineageGraph,
   LineageNodeType,
+  NextAction,
+  NextActionChoice,
+  NextActionsPage,
   MonitorDriftOutcome,
   MonitorStatus,
   PendingProposalsResponse,
@@ -22,6 +26,7 @@ import type {
   Task,
   TaskAuditKind,
   TaskAuditResponse,
+  TaskFlow,
   TaskOperationsItem,
   TaskOperationsPage,
   TaskRestartInput,
@@ -270,8 +275,63 @@ export function fetchPendingProposals() {
   return getJSON<PendingProposalsResponse>(workspaceURL('/v1/pending-proposals'))
 }
 
+// The full next action for one task (DEC-61), read in the query's workspace.
+export function fetchNextAction(workspace: string, taskId: string, signal?: AbortSignal) {
+  return getJSON<NextAction>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/next-action`, workspace), signal)
+}
+
+// The operator inbox in server order (feature-operator-next-action NA-6).
+export async function fetchNextActions(
+  workspace: string,
+  input: { band?: InboxBand; limit: number; offset: number },
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
+  if (input.band) query.set('band', input.band)
+  const response = await fetch(workspaceURL(`/v1/next-actions?${query}`, workspace), { signal })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  const body = (await response.json()) as {
+    items: NextActionsPage['items'] | null
+    acts: NextActionsPage['acts'] | null
+  }
+  const items = body.items ?? []
+  return {
+    items,
+    acts: body.acts ?? [],
+    total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
+    limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
+    offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
+  } satisfies NextActionsPage
+}
+
+// Sends a server-stated choice exactly as stated: its method to its path, under
+// the caller's own session, so the act is the same audited operator act the
+// task page records (AC-2.2, DEC-45).
+export async function postNextActionChoice(
+  workspace: string,
+  choice: NextActionChoice,
+  body: Record<string, unknown> | undefined,
+  idempotencyKey?: string,
+) {
+  const response = await fetch(workspaceURL(choice.path, workspace), {
+    method: choice.method,
+    headers: { ...mutationHeaders(), ...(idempotencyKey ? { 'X-Idempotency-Key': idempotencyKey } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!response.ok) throw await gateMutationError(response)
+}
+
 export function fetchTaskActivity(taskId: string) {
   return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
+}
+
+// The flow projection for task detail (NA-7), read in the query's workspace.
+export async function fetchTaskFlow(workspace: string, taskId: string, signal?: AbortSignal) {
+  const body = await getJSON<{ flow: TaskFlow }>(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/flow`, workspace),
+    signal,
+  )
+  return body.flow
 }
 
 // Use the query's workspace and cancellation signal, never a later selection.
@@ -454,7 +514,13 @@ export async function resendWorkspaceInvitation(workspace: string, email: string
     method: 'POST',
     headers: mutationHeaders(),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    const message = apiErrorMessage(await response.text(), response.statusText)
+    // The server answers not-found for any email without a pending invitation
+    // in this workspace, including one already revoked or accepted.
+    if (response.status === 404) throw new WorkspaceNotVisibleError(message)
+    throw new Error(message)
+  }
   return response.json() as Promise<import('./types').MembershipGrant>
 }
 
@@ -469,13 +535,52 @@ export class GateMutationError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    // The merge readiness a refused one-act merge names (DEC-64(3)).
+    readonly readiness?: string,
   ) {
     super(message)
   }
 }
 
+// The sentence a refused one-act merge shows, keyed by the readiness state the
+// server names in its 409 answer (DEC-64(3)).
+export const mergeReadinessRefusals: Record<string, string> = {
+  CONFLICTING: 'Not merged: the pull request has merge conflicts.',
+  STALE: 'Not merged: the pull request head moved past the reviewed head.',
+  UNKNOWN: 'Not merged: GitHub cannot confirm the pull request is mergeable right now.',
+}
+
+// TaskRestartError is a failed restart. The message is the decoded API text
+// and never includes the request ID; that stays in requestId for the dialog.
+export class TaskRestartError extends Error {
+  constructor(
+    message: string,
+    readonly requestId: string | null,
+  ) {
+    super(message)
+    this.name = 'TaskRestartError'
+  }
+}
+
+// A refused one-act merge answers 409 {error, readiness}; the readiness it
+// names becomes the sentence shown (DEC-64(3)). Every other refusal keeps the
+// decoded API text.
 async function gateMutationError(response: Response) {
-  return new GateMutationError(apiErrorMessage(await response.text(), response.statusText), response.status)
+  const body = await response.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    parsed = undefined
+  }
+  const readiness =
+    parsed && typeof parsed === 'object' && 'readiness' in parsed && typeof parsed.readiness === 'string'
+      ? parsed.readiness
+      : undefined
+  const message = readiness
+    ? (mergeReadinessRefusals[readiness] ?? `Not merged: the pull request is ${readiness}.`)
+    : apiErrorMessage(body, response.statusText)
+  return new GateMutationError(message, response.status, readiness)
 }
 
 // API failures arrive either as a JSON envelope or as plain text. Keeping the
@@ -498,11 +603,13 @@ function membershipErrorCode(body: string) {
   }
 }
 
-// Who the caller is. The workspace travels with the request so the response
-// carries the caller's role in it — the one surface that answers "may I do
-// operator things here?" without the browser guessing (REQ-2, DEC-19).
-export async function fetchCallerIdentity() {
-  const response = await fetch(workspaceURL('/v1/me'), { headers: mutationHeaders() })
+// Who the caller is in one workspace. The response carries the caller's role,
+// served capability list, and role chain for that workspace, so the browser
+// never derives a capability itself (REQ-5, DEC-19). The workspace is the one
+// captured by the caller's query key, never a later stored selection, so a
+// delayed response cannot fill another workspace's cache entry.
+export async function fetchCallerIdentity(workspace: string) {
+  const response = await fetch(workspaceURL('/v1/me', workspace), { headers: mutationHeaders() })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return (await response.json()) as import('./types').CallerIdentity
 }
@@ -1504,6 +1611,11 @@ export async function restartTask(taskId: string, input: TaskRestartInput) {
     headers: { ...mutationHeaders(), 'X-Idempotency-Key': input.request_id },
     body: JSON.stringify(input),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    throw new TaskRestartError(
+      apiErrorMessage(await response.text(), response.statusText),
+      response.headers.get('X-Request-Id'),
+    )
+  }
   return response.json() as Promise<TaskRestartResult>
 }

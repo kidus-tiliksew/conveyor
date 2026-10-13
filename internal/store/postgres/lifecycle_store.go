@@ -27,6 +27,18 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
 			return err
 		}
+		var applyErr error
+		result, applyErr = s.applyTaskCommandTx(ctx, tx, q, id, command)
+		return applyErr
+	})
+	return result, err
+}
+
+// applyTaskCommandTx applies one lifecycle command inside a transaction that
+// already holds the task-operation lock (component-task-lifecycle).
+func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries, id string, command taskops.Command) (core.Task, error) {
+	var result core.Task
+	err := func() error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
@@ -53,13 +65,14 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 				ID: id, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
+				GateKind: string(core.GateKindFor(state, command.Kind)),
 			})
 			if updateErr != nil {
 				return updateErr
 			}
 			result = taskFromDB(updated)
 		} else {
-			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state)})
+			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state), GateKind: string(core.GateKindFor(state, command.Kind))})
 			if updateErr != nil {
 				return updateErr
 			}
@@ -109,7 +122,7 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 			return err
 		}
 		return nil
-	})
+	}()
 	return result, err
 }
 
@@ -142,7 +155,7 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		return false, nil
 	}
 	if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
-		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed),
+		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed), GateKind: string(core.GateKindFor(closed, core.TaskBlueprintClose)),
 	}); err != nil {
 		return false, err
 	}
@@ -219,7 +232,10 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 	if !core.TaskTerminal(state) {
 		return nil
 	}
-	actor := store.ActorFromContext(ctx)
+	actor, err := store.RequireActor(ctx)
+	if err != nil {
+		return err
+	}
 	for _, dependentID := range dependents {
 		payload := core.JSONPayload(map[string]any{
 			"task_id": dependentID, "depends_on_task_id": dependencyID, "dependency_state": state,
@@ -325,5 +341,27 @@ func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID st
 		return err
 	}
 	rows.Close()
-	return store.WorkOrderRecoverySupersessionError(task, order, taskOrders)
+	if err := store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
+		return err
+	}
+	eventRows, err := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspaceID, order.TaskID)
+	if err != nil {
+		return err
+	}
+	var events []core.Event
+	for eventRows.Next() {
+		var kind string
+		var payload []byte
+		if scanErr := eventRows.Scan(&kind, &payload); scanErr != nil {
+			eventRows.Close()
+			return scanErr
+		}
+		events = append(events, core.Event{Kind: kind, Payload: payload})
+	}
+	if err = eventRows.Err(); err != nil {
+		eventRows.Close()
+		return err
+	}
+	eventRows.Close()
+	return store.WorkOrderPlanRevisionRefusal(task, events, order.ID)
 }

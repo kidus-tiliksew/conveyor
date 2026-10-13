@@ -151,7 +151,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 			// Exercise URL validation directly: malformed configured origins can
 			// otherwise be refused by CSRF middleware before this handler runs.
 			r := httptest.NewRequest("POST", "/v1/workspaces/alpha/github-app/manifest", nil)
-			r = r.WithContext(store.WithCredential(store.WithWorkspace(r.Context(), "alpha"), sessions.credential))
+			r = r.WithContext(withCredentialActor(store.WithWorkspace(r.Context(), "alpha"), sessions.credential))
 			r.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-a"})
 			w := httptest.NewRecorder()
 			server.createWorkspaceGitHubAppManifest(w, r)
