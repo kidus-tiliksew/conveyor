@@ -14,11 +14,7 @@ import (
 // (req-task-branch-assignment AC-4.1; DEC-68, component-persistence).
 func runTaskBranchConcurrentClaims(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
-	// Creates race eight writers. Attaches race three: PostgreSQL's
-	// AttachTaskBranch holds a pooled connection for its task lock and then
-	// reads through the pool, so contenders must stay below the smallest pool
-	// (pgxpool's default of four) or every attacher waits on the pool.
-	const creators, attachersN = 8, 3
+	const creators, attachersN = 8, 8
 	race := func(n int, fn func(i int) error) []error {
 		start := make(chan struct{})
 		results := make([]error, n)
