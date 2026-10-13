@@ -122,7 +122,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	staleID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageSpec})
 	older := flowOrder(t, st, ctx, staleID, core.StageSpec, "1", flowShort)
 	newer := flowOrder(t, st, ctx, staleID, core.StageSpec, "2", flowShort)
-	flowRecover(t, st, ctx, newer)
+	flowRecover(t, "stale redispatch", st, ctx, newer)
 	add("stale redispatch", staleID, func(t *testing.T, flow store.TaskFlow) {
 		attempts := taskFlowStage(t, flow, core.StageSpec).Attempts
 		var olderRows, newerRows []store.FlowAttempt
@@ -159,7 +159,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	retryID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
 	retryOrder := flowOrder(t, st, ctx, retryID, core.StageImplement, "1", time.Hour)
 	flowClaim(t, st, ctx, retryOrder, "retry", flowShort)
-	flowRecover(t, st, ctx, retryOrder)
+	flowRecover(t, "automatic recovery", st, ctx, retryOrder)
 	add("automatic recovery", retryID, func(t *testing.T, flow store.TaskFlow) {
 		attempts := taskFlowStage(t, flow, core.StageImplement).Attempts
 		if len(attempts) != 2 || attempts[0].Outcome != "timed_out" || attempts[0].Auto || !attempts[1].Auto || attempts[1].EndedAt != nil {
@@ -176,7 +176,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	lateOrder := flowOrder(t, st, ctx, lateID, core.StageImplement, "1", time.Hour)
 	flowClaim(t, st, ctx, lateOrder, "late", flowShort)
 	time.Sleep(2 * flowShort)
-	flowRecover(t, st, ctx, lateOrder)
+	flowRecover(t, "late expiry read", st, ctx, lateOrder)
 	add("late expiry read", lateID, func(t *testing.T, flow store.TaskFlow) {
 		attempts := taskFlowStage(t, flow, core.StageImplement).Attempts
 		if len(attempts) != 2 || attempts[0].Outcome != "timed_out" || attempts[0].Auto || !attempts[1].Auto || attempts[1].EndedAt != nil {
@@ -189,7 +189,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	pendingID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
 	pendingOrder := flowOrder(t, st, ctx, pendingID, core.StageImplement, "1", time.Hour)
 	flowClaim(t, st, ctx, pendingOrder, "pending", flowShort)
-	pending := flowExpire(t, st, ctx, pendingOrder)
+	pending := flowExpire(t, "retrying", st, ctx, pendingOrder)
 	if !pending.NextAutomaticRecoveryAt.After(time.Now().UTC()) {
 		t.Fatalf("order %s automatic recovery not scheduled ahead: %+v", pendingOrder, pending)
 	}
@@ -208,7 +208,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	recoverID := flowTask(t, st, ctx, workspace, core.Task{NextStage: core.StageImplement})
 	recoverOrder := flowOrder(t, st, ctx, recoverID, core.StageImplement, "1", time.Hour)
 	flowClaim(t, st, ctx, recoverOrder, "recover", flowShort)
-	flowExpire(t, st, ctx, recoverOrder)
+	flowExpire(t, "operator recover", st, ctx, recoverOrder)
 	_, err = RecoverWorkOrder(operator, st, recoverOrder, "flow-recover-"+recoverID, time.Hour)
 	requireOK(t, err)
 	add("operator recover", recoverID, func(t *testing.T, flow store.TaskFlow) {
@@ -483,7 +483,7 @@ func flowClaim(t *testing.T, st store.Store, ctx context.Context, id, session st
 // flowExpire waits past the order's execution deadline when one is set,
 // whatever its projected state, and its queue deadline otherwise, then ticks
 // the order clock, so a claimed order times out and a queued one goes stale.
-func flowExpire(t *testing.T, st store.Store, ctx context.Context, id string) core.WorkOrder {
+func flowExpire(t *testing.T, scenario string, st store.Store, ctx context.Context, id string) core.WorkOrder {
 	t.Helper()
 	order, err := st.GetWorkOrder(ctx, id)
 	requireOK(t, err)
@@ -496,7 +496,7 @@ func flowExpire(t *testing.T, st store.Store, ctx context.Context, id string) co
 	}
 	wait := time.Until(deadline) + time.Millisecond
 	if wait > flowMaxWait {
-		t.Fatalf("flowExpire: order %s (state %s, execution_deadline %s, queue_deadline %s) would wait %s, over flowMaxWait %s", id, order.State, order.ExecutionDeadline, order.QueueDeadline, wait, flowMaxWait)
+		t.Fatalf("flowExpire: scenario %q: order %s (state %s, execution_deadline %s, queue_deadline %s) would wait %s, over flowMaxWait %s", scenario, id, order.State, order.ExecutionDeadline, order.QueueDeadline, wait, flowMaxWait)
 	}
 	time.Sleep(wait)
 	_, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
@@ -504,24 +504,24 @@ func flowExpire(t *testing.T, st store.Store, ctx context.Context, id string) co
 	order, err = st.GetWorkOrder(ctx, id)
 	requireOK(t, err)
 	if order.State != core.WorkOrderTimedOut && order.State != core.WorkOrderStale {
-		t.Fatalf("order %s after clock = %s", id, order.State)
+		t.Fatalf("scenario %q: order %s after clock = %s", scenario, id, order.State)
 	}
 	return order
 }
 
 // flowRecover expires the order and ticks to its scheduled automatic recovery.
-func flowRecover(t *testing.T, st store.Store, ctx context.Context, id string) {
+func flowRecover(t *testing.T, scenario string, st store.Store, ctx context.Context, id string) {
 	t.Helper()
-	scheduled := flowExpire(t, st, ctx, id)
+	scheduled := flowExpire(t, scenario, st, ctx, id)
 	if scheduled.NextAutomaticRecoveryAt.IsZero() {
-		t.Fatalf("order %s was not scheduled for automatic recovery: %+v", id, scheduled)
+		t.Fatalf("scenario %q: order %s was not scheduled for automatic recovery: %+v", scenario, id, scheduled)
 	}
 	_, err := taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt)
 	requireOK(t, err)
 	order, err := st.GetWorkOrder(ctx, id)
 	requireOK(t, err)
 	if order.State != core.WorkOrderQueued {
-		t.Fatalf("order %s after recovery = %s", id, order.State)
+		t.Fatalf("scenario %q: order %s after recovery = %s", scenario, id, order.State)
 	}
 }
 
