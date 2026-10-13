@@ -110,7 +110,7 @@ explicit state (`queued`, `claimed`, `submitted`, `completed`, `cancelled`,
   hour). Renewal keeps the claim alive but never moves the execution
   deadline, so a wedged agent cannot hold a task forever.
 
-Spec and implement stages get one order per dispatch. Review gets one order
+Spec, implement, and verify stages get one order per dispatch. Review gets one order
 per configured review seat, so a two-seat setup means two independent
 reviews per round.
 
@@ -197,6 +197,18 @@ submit ends the implementation claim: a session launched by `conveyor run` or a
 worker exits, and a session that claimed its order itself continues the
 self-claimed delivery loop in the `conveyor-work` playbook.
 
+When the task's frozen `verify_stage` policy is on, a verify order sits
+between submission and review. A verifier claims it in a fresh session,
+prepares a verification context bound to the exact submitted head, runs the
+repository's selected [verification kits](playbooks/conveyor-kit.md) and any
+ordinary checks, and submits typed evidence that is sealed for review. Actions
+that need operator authority wait for a claim-bound grant
+(`conveyor verification permissions`). Review is not dispatched until a
+completed verify order exists for the submitted head. A passing kit is
+evidence only, never approval. With the policy off, submission goes straight
+to review. The [verification playbook](playbooks/conveyor-kit-verify.md) has
+the full protocol.
+
 Each review seat claims with a session and client token that must be
 independent of the implementer and of every other seat; self-review is
 refused at claim. A verdict is not a vibe: it must carry a reason code, a
@@ -207,7 +219,9 @@ unknown, or superseded. Malformed assessments are rejected and the order
 stays claimed for correction.
 
 An approved round moves the task to the merge gate (or straight to merge if
-the gate is off). `changes_requested` bounces: the feedback is recorded, and
+the gate is off). At the gate, the operator's merge is a single act: Conveyor
+checks the pull request's readiness and merges it, whether the act comes
+from the dashboard inbox, `conveyor run`, or `conveyor task merge`. `changes_requested` bounces: the feedback is recorded, and
 a new implementation order is created in a fresh session with that feedback
 delivered as context. The bounced order is never revived. Bounces are counted
 since the last human intervention, and hitting `max_bounces` (default 10)
