@@ -401,7 +401,7 @@ func (d *Dispatcher) activeImplementationWorkOrder(ctx context.Context, taskID, 
 }
 
 func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage core.Stage, reasonCode string) (core.WorkOrder, bool, error) {
-	orders, err := d.Store.ListTaskWorkOrders(ctx, taskID)
+	orders, err := store.ListTaskWorkOrdersStored(ctx, d.Store, taskID)
 	if err != nil {
 		return core.WorkOrder{}, false, err
 	}

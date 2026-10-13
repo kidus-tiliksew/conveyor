@@ -319,6 +319,10 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, id string) ([]core.WorkO
 	projectOrders(orders)
 	return orders, err
 }
+func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, id string) ([]core.WorkOrder, error) {
+	return s.listOrders(ctx, s.db, []string{id})
+}
+
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, id string) ([]core.WorkOrder, error) {
 	orders, err := s.listOrders(ctx, s.db, []string{id})
 	projectOrders(orders)

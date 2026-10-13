@@ -960,6 +960,22 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 	}
 	return orders, rows.Err()
 }
+func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := make([]core.WorkOrder, 0)
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, order)
+	}
+	return orders, rows.Err()
+}
 
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)

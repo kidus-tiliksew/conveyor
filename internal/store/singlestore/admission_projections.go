@@ -361,6 +361,7 @@ func blockingOrderSQL(task string) string {
   OR EXISTS (SELECT 1 FROM work_orders claimed
     WHERE claimed.workspace_id=` + task + `.workspace_id
       AND claimed.task_id=` + task + `.id
+      AND claimed.stage=` + task + `.next_stage
       AND ` + task + `.next_stage <> 'review'
       AND claimed.state='claimed')
 )`

@@ -32,6 +32,8 @@ type queueReconciler interface {
 // implement stage is held by a stored claimed order behind a later review seat
 // waits for the order clock rather than drifting. Durable reconcile neither
 // re-enqueues it nor appends dispatch.reconciled across repeated ticks;
+// Claims from a prior spec stage before implement, and from implement behind
+// review before verify, do not hold the task's current stage.
 // EnsureTaskEnqueued names the newest historical claim. Memory exercises the
 // same holder predicate and no-op reconciler, while PostgreSQL and SingleStore
 // also prove repair after the clock persists timeout (component-durable-queue
@@ -99,6 +101,43 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		}
 		return taskID, first
 	}
+	withClaimedDifferentStage := func(claimedStage, currentStage core.Stage) (string, string) {
+		t.Helper()
+		taskID := newQueued(claimedStage)
+		orderID := fmt.Sprintf("%s-%s-1", taskID, claimedStage)
+		if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: claimedStage, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: claimedStage, State: core.WorkOrderQueued}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{
+			SessionID: "reconcile-different-stage-session", ClientToken: "reconcile-different-stage-token",
+			Lease: 4 * time.Hour, ExecutionTimeout: time.Hour,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ops := taskops.New(st)
+		switch {
+		case claimedStage == core.StageSpec && currentStage == core.StageImplement:
+			if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageImplement, ProjectStages: true}); err != nil {
+				t.Fatal(err)
+			}
+		case claimedStage == core.StageImplement && currentStage == core.StageVerify:
+			if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ops.Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageVerify, ProjectStages: true}); err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Fatalf("unsupported different-stage fixture %s -> %s", claimedStage, currentStage)
+		}
+		return taskID, orderID
+	}
 	claimed, claimedOrder := withClaimedBounce()
 	if err := st.EnsureTaskEnqueued(ctx, claimed); !errors.Is(err, store.ErrTaskHeldByWorkOrder) || !strings.Contains(err.Error(), claimedOrder) {
 		t.Fatalf("claimed historical task enqueue err=%v, want holder %s", err, claimedOrder)
@@ -106,6 +145,19 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 	claimedReconciled, err := st.CountEvents(ctx, claimed, "dispatch.reconciled")
 	if err != nil {
 		t.Fatal(err)
+	}
+	differentSpec, differentSpecOrder := withClaimedDifferentStage(core.StageSpec, core.StageImplement)
+	differentVerify, differentVerifyOrder := withClaimedDifferentStage(core.StageImplement, core.StageVerify)
+	for _, fixture := range []struct {
+		taskID  string
+		orderID string
+	}{
+		{differentSpec, differentSpecOrder},
+		{differentVerify, differentVerifyOrder},
+	} {
+		if err := st.EnsureTaskEnqueued(ctx, fixture.taskID); err != nil {
+			t.Fatalf("different-stage task %s held by %s: %v", fixture.taskID, fixture.orderID, err)
+		}
 	}
 	if !production {
 		reconciler, ok := st.(queueReconciler)
@@ -126,6 +178,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		}
 		return
 	}
+	completeDispatchJob(t, ctx, durable.Log(), workspace, claimed)
 	for tick := range 3 {
 		repaired, err := durable.ReconcileQueuedTasks(ctx)
 		if err != nil {
@@ -133,6 +186,24 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		}
 		if repaired != 0 {
 			t.Fatalf("claimed historical tick %d repaired=%d want 0", tick, repaired)
+		}
+	}
+	if got, err := st.CountEvents(ctx, claimed, "dispatch.reconciled"); err != nil || got != claimedReconciled {
+		t.Fatalf("claimed historical dispatch.reconciled=%d err=%v, want %d", got, err, claimedReconciled)
+	}
+	for _, id := range []string{differentSpec, differentVerify} {
+		completeDispatchJob(t, ctx, durable.Log(), workspace, id)
+	}
+	repaired, err := durable.ReconcileQueuedTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 2 {
+		t.Fatalf("different-stage claims repaired=%d, want 2", repaired)
+	}
+	for _, id := range []string{differentSpec, differentVerify} {
+		if got, err := st.CountEvents(ctx, id, "dispatch.reconciled"); err != nil || got != 1 {
+			t.Fatalf("different-stage task %s dispatch.reconciled=%d err=%v, want 1", id, got, err)
 		}
 	}
 	if got, err := st.CountEvents(ctx, claimed, "dispatch.reconciled"); err != nil || got != claimedReconciled {
@@ -171,7 +242,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 	}
 
 	// The dispatch job ran and completed, as it does once an order exists.
-	for _, id := range []string{waiting, stale, review, drifted, bounced, claimed} {
+	for _, id := range []string{waiting, stale, review, drifted, bounced} {
 		completeDispatchJob(t, ctx, durable.Log(), workspace, id)
 	}
 	for tick := range 5 {

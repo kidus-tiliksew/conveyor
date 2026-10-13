@@ -419,6 +419,16 @@ func TestDispatchJobCompletesWhileTaskWaitsForAClaim(t *testing.T) {
 // a one-second snooze for every redelivery (component-durable-queue; DEC-62).
 func TestDispatchJobCompletesForHistoricalClaim(t *testing.T) {
 	t.Parallel()
+	runHistoricalClaimDispatch(t, false)
+}
+
+func TestDispatchJobCompletesForExpiredHistoricalClaim(t *testing.T) {
+	t.Parallel()
+	runHistoricalClaimDispatch(t, true)
+}
+
+func runHistoricalClaimDispatch(t *testing.T, expired bool) {
+	t.Helper()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	cfg := &config.Config{
 		Workspace: "test",
@@ -442,6 +452,16 @@ func TestDispatchJobCompletesForHistoricalClaim(t *testing.T) {
 	}
 	if _, err := storetest.ClaimWorkOrder(ctx, st, first, core.WorkOrderClaim{SessionID: "historical-claim-session", ClientToken: "historical-claim-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
+	}
+	if expired {
+		order, err := st.GetWorkOrder(ctx, first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order.LeaseExpiresAt = time.Now().UTC().Add(-time.Second)
+		if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
 	}
 	later := taskID + "-review-1-seat-1"
 	if err := st.CreateJob(ctx, core.Job{ID: later, TaskID: taskID, Stage: core.StageReview, State: core.JobPending}); err != nil {
