@@ -1794,14 +1794,6 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 // PollOnce runs one explicit-workspace GitHub intake pass.
 func (d *Dispatcher) PollOnce(ctx context.Context) { d.pollOnce(ctx) }
 
-// ComposeReviewOutput renders an MCP review verdict as the conveyor:review
-// fence, so pipeline.ParseReview stays the one validator for MCP verdict input
-// (component-work-orders).
-func ComposeReviewOutput(review pipeline.Review) string {
-	data, _ := json.Marshal(review)
-	return "```conveyor:review\n" + string(data) + "\n```"
-}
-
 func workspaceGitHubAppStore(st store.Store) store.WorkspaceGitHubAppStore {
 	apps, _ := st.(store.WorkspaceGitHubAppStore)
 	return apps

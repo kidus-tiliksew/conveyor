@@ -25,6 +25,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func composeReviewOutput(review pipeline.Review) string {
+	data, _ := json.Marshal(review)
+	return "```conveyor:review\n" + string(data) + "\n```"
+}
+
 type capturingInputAgent struct {
 	input inprocess.Input
 	model string
@@ -2446,7 +2451,7 @@ func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
 	d := New(st, cfg, nil)
 	d.DisableMemoryQueueForTest()
 	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "focused checks pass", DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "required aggregate unverified", Unverified: []string{storetest.PR907MandatoryValidation}}}
-	if err = d.completeOutput(ctx, cfg, task, job, ComposeReviewOutput(review), "in-process", 0); err != nil {
+	if err = d.completeOutput(ctx, cfg, task, job, composeReviewOutput(review), "in-process", 0); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)

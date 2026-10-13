@@ -17,6 +17,84 @@ func TestParseTriageAndReview(t *testing.T) {
 	}
 }
 
+func TestParseReviewPreservesFencedDoneCriteria(t *testing.T) {
+	t.Parallel()
+	criteria := []string{
+		"Run the formatter:\n```go\nfmt.Println(\"ok\")\n```",
+		"Preserve the marker:\n````text\nbody\n````",
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"verdict":     "approve",
+		"reason_code": "approved",
+		"summary":     "fenced criteria pass",
+		"feedback":    "",
+		"done_criteria_coverage": map[string]any{
+			"applicable":  true,
+			"summary":     "all criteria satisfied",
+			"satisfied":   criteria,
+			"unsatisfied": []string{},
+			"unverified":  []string{},
+			"conflicts":   []string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "\\n") {
+		t.Fatalf("JSON did not contain an escaped newline: %s", encoded)
+	}
+	review, err := ParseReview("```conveyor:review\n" + string(encoded) + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.DoneCriteriaCoverage == nil {
+		t.Fatal("done criteria coverage was not decoded")
+	}
+	if len(review.DoneCriteriaCoverage.Satisfied) != len(criteria) {
+		t.Fatalf("satisfied=%v, want %v", review.DoneCriteriaCoverage.Satisfied, criteria)
+	}
+	for index, want := range criteria {
+		if got := review.DoneCriteriaCoverage.Satisfied[index]; got != want {
+			t.Errorf("satisfied[%d]=%q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestParseJSONFenceCompatibility(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		opener string
+		closer string
+	}{
+		{name: "trailing whitespace", opener: "```conveyor:%s \t", closer: "```"},
+		{name: "two-space indentation", opener: "  ```conveyor:%s", closer: "\n``` trailing text"},
+		{name: "four-space indentation", opener: "    ```conveyor:%s", closer: "\n````"},
+		{name: "text after marker", opener: "```conveyor:%s metadata", closer: "\n```"},
+		{name: "BOM prefix", opener: "\ufeff```conveyor:%s", closer: "\n````"},
+	}
+	for _, kind := range []string{"review", "triage"} {
+		for _, testCase := range cases {
+			t.Run(kind+"/"+testCase.name, func(t *testing.T) {
+				var body string
+				if kind == "review" {
+					body = `{"verdict":"approve","reason_code":"approved","summary":"passes","feedback":""}`
+				} else {
+					body = `{"class":"feature","route":"proceed","summary":"passes"}`
+				}
+				input := strings.Replace(testCase.opener, "%s", kind, 1) + "\n" + body + testCase.closer
+				if kind == "review" {
+					if _, err := ParseReview(input); err != nil {
+						t.Fatalf("ParseReview: %v", err)
+					}
+				} else if _, err := ParseTriage(input); err != nil {
+					t.Fatalf("ParseTriage: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestParseReviewNormalizesRequirementCitationLists(t *testing.T) {
 	t.Parallel()
 	review, err := ParseReview("```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"passes\",\"feedback\":\"\",\"requirement_citations\":{\"applicable\":true}}\n```")
