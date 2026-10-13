@@ -145,18 +145,19 @@ func RecordedPullRequestHead(task core.Task, events []core.Event, githubSlug str
 }
 
 // RecordedMergeCommit reports whether event is merge.confirmed or
-// merge.reconciled whose merge_commit_sha or head_sha equals commitSHA.
-// Approvals and pull_request.opened heads are not evidence of a Conveyor
-// merge (AC-4.3; component-monitor-drift; 261013-9f494b).
-func RecordedMergeCommit(event core.Event, commitSHA string) bool {
-	if strings.TrimSpace(commitSHA) == "" || (event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled") {
+// merge.reconciled whose payload repository is githubSlug and whose
+// merge_commit_sha equals commitSHA. head_sha is not evidence: a later
+// force-push or fast-forward of main onto a recorded PR head must stay
+// visible (AC-4.3; component-monitor-drift; 261013-9f494b).
+func RecordedMergeCommit(event core.Event, githubSlug, commitSHA string) bool {
+	if strings.TrimSpace(commitSHA) == "" || strings.TrimSpace(githubSlug) == "" || (event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled") {
 		return false
 	}
 	var merged struct {
-		HeadSHA  string `json:"head_sha"`
-		MergeSHA string `json:"merge_commit_sha"`
+		Repository string `json:"repository"`
+		MergeSHA   string `json:"merge_commit_sha"`
 	}
-	return json.Unmarshal(event.Payload, &merged) == nil && (merged.MergeSHA == commitSHA || merged.HeadSHA == commitSHA)
+	return json.Unmarshal(event.Payload, &merged) == nil && merged.Repository == githubSlug && merged.MergeSHA == commitSHA
 }
 
 // RecordedMergeHead reports whether commitSHA is the merge_commit_sha or
@@ -168,18 +169,50 @@ func RecordedMergeHead(events []core.Event, githubSlug string, pullRequestNumber
 		return false
 	}
 	for _, event := range events {
-		if !RecordedMergeCommit(event, commitSHA) {
+		if event.Kind != "merge.confirmed" && event.Kind != "merge.reconciled" {
 			continue
 		}
 		var merged struct {
 			Repository string `json:"repository"`
 			Number     int    `json:"pull_request"`
+			HeadSHA    string `json:"head_sha"`
+			MergeSHA   string `json:"merge_commit_sha"`
 		}
-		if json.Unmarshal(event.Payload, &merged) == nil && merged.Repository == githubSlug && merged.Number == pullRequestNumber {
+		if json.Unmarshal(event.Payload, &merged) == nil && merged.Repository == githubSlug && merged.Number == pullRequestNumber && (merged.MergeSHA == commitSHA || merged.HeadSHA == commitSHA) {
 			return true
 		}
 	}
 	return false
+}
+
+// EndsMergeFlight reports whether event closes an in-flight merge.requested.
+// Only merge.confirmed, merge.reconciled, and definitive merge.failed
+// reasons count. merge_unconfirmed and merge_verification_failed leave the
+// request pending (DEC-64(6); dispatch/gate_merge.go pendingGateMergeRequest).
+func EndsMergeFlight(event core.Event) bool {
+	switch event.Kind {
+	case "merge.confirmed", "merge.reconciled":
+		return true
+	case "merge.failed":
+		var payload struct {
+			Reason string `json:"reason_code"`
+		}
+		return json.Unmarshal(event.Payload, &payload) == nil && (payload.Reason == "forge_merge_failed" || payload.Reason == "merged_head_mismatch")
+	default:
+		return false
+	}
+}
+
+// MergeRequestedInRepository reports a merge.requested whose payload
+// repository equals the observed GitHub slug.
+func MergeRequestedInRepository(event core.Event, githubSlug string) bool {
+	if event.Kind != "merge.requested" || strings.TrimSpace(githubSlug) == "" {
+		return false
+	}
+	var payload struct {
+		Repository string `json:"repository"`
+	}
+	return json.Unmarshal(event.Payload, &payload) == nil && payload.Repository == githubSlug
 }
 
 type openedPullRequest struct {
@@ -477,7 +510,7 @@ func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, 
 	if s.MergeCommitState == nil || (kind != DirectPush && kind != ExternalPRMerge) {
 		return false, nil
 	}
-	state, taskID, err := s.MergeCommitState(ctx, s.Repository, commit.SHA, commit.Commit.Committer.Date)
+	state, taskID, err := s.MergeCommitState(ctx, s.GitHubSlug, commit.SHA, commit.Commit.Committer.Date)
 	if err != nil {
 		return false, err
 	}

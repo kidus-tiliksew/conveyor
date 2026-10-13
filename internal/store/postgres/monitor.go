@@ -51,37 +51,43 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 
 func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
 	commitSHA = strings.TrimSpace(commitSHA)
-	if commitSHA == "" {
+	repository = strings.TrimSpace(repository)
+	if commitSHA == "" || repository == "" {
 		return monitor.MergeNone, "", nil
 	}
 	ws := workspace(ctx)
 	var recordedTask string
 	err := s.boundary.QueryRow(ctx, `SELECT e.task_id FROM events e
-		JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
-		WHERE e.workspace_id=$1 AND t.repo_name=$2
+		WHERE e.workspace_id=$1
 		  AND e.kind IN ('merge.confirmed','merge.reconciled')
-		  AND (e.payload_json->>'merge_commit_sha'=$3 OR e.payload_json->>'head_sha'=$3)
+		  AND e.payload_json->>'repository'=$2
+		  AND e.payload_json->>'merge_commit_sha'=$3
 		ORDER BY e.at, e.id LIMIT 1`, ws, repository, commitSHA).Scan(&recordedTask)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return monitor.MergeNone, "", err
 	}
 	var inFlightTask string
+	var requestAt time.Time
 	if recordedTask == "" && bound > 0 && now.Sub(committedAt) < bound {
-		err = s.boundary.QueryRow(ctx, `SELECT e.task_id FROM events e
-			JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
-			WHERE e.workspace_id=$1 AND t.repo_name=$2 AND e.kind='merge.requested'
+		err = s.boundary.QueryRow(ctx, `SELECT e.task_id, e.at FROM events e
+			WHERE e.workspace_id=$1 AND e.kind='merge.requested'
+			  AND e.payload_json->>'repository'=$2
+			  AND e.at > $3
 			  AND NOT EXISTS (
 				SELECT 1 FROM events later
 				WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id
-				  AND later.kind IN ('merge.confirmed','merge.reconciled','merge.failed')
+				  AND (
+					later.kind IN ('merge.confirmed','merge.reconciled')
+					OR (later.kind='merge.failed' AND later.payload_json->>'reason_code' IN ('forge_merge_failed','merged_head_mismatch'))
+				  )
 				  AND (later.at > e.at OR (later.at = e.at AND later.id > e.id))
 			  )
-			ORDER BY e.at, e.id LIMIT 1`, ws, repository).Scan(&inFlightTask)
+			ORDER BY e.at, e.id LIMIT 1`, ws, repository, now.Add(-bound)).Scan(&inFlightTask, &requestAt)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return monitor.MergeNone, "", err
 		}
 	}
-	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, now, bound)
+	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, requestAt, now, bound)
 	return state, taskID, nil
 }
 

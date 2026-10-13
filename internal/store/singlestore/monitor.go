@@ -160,7 +160,8 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 
 func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
 	commitSHA = strings.TrimSpace(commitSHA)
-	if commitSHA == "" {
+	repository = strings.TrimSpace(repository)
+	if commitSHA == "" || repository == "" {
 		return monitor.MergeNone, "", nil
 	}
 	ws, err := workspace(ctx)
@@ -169,11 +170,11 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 	}
 	var recordedTask string
 	err = s.db.QueryRowContext(ctx, `SELECT e.task_id FROM events e
-		JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
-		WHERE e.workspace_id=? AND t.repo_name=?
+		WHERE e.workspace_id=?
 		  AND e.kind IN ('merge.confirmed','merge.reconciled')
-		  AND (JSON_EXTRACT_STRING(e.payload_json,'merge_commit_sha')=? OR JSON_EXTRACT_STRING(e.payload_json,'head_sha')=?)
-		ORDER BY e.at, e.id LIMIT 1`, ws, repository, commitSHA, commitSHA).Scan(&recordedTask)
+		  AND JSON_EXTRACT_STRING(e.payload_json,'repository')=?
+		  AND JSON_EXTRACT_STRING(e.payload_json,'merge_commit_sha')=?
+		ORDER BY e.at, e.id LIMIT 1`, ws, repository, commitSHA).Scan(&recordedTask)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return monitor.MergeNone, "", translateBackendConflict(err)
 	}
@@ -181,17 +182,22 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 		recordedTask = ""
 	}
 	var inFlightTask string
+	var requestAt time.Time
 	if recordedTask == "" && bound > 0 && now.Sub(committedAt) < bound {
-		err = s.db.QueryRowContext(ctx, `SELECT e.task_id FROM events e
-			JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
-			WHERE e.workspace_id=? AND t.repo_name=? AND e.kind='merge.requested'
+		err = s.db.QueryRowContext(ctx, `SELECT e.task_id, e.at FROM events e
+			WHERE e.workspace_id=? AND e.kind='merge.requested'
+			  AND JSON_EXTRACT_STRING(e.payload_json,'repository')=?
+			  AND e.at > ?
 			  AND NOT EXISTS (
 				SELECT 1 FROM events later
 				WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id
-				  AND later.kind IN ('merge.confirmed','merge.reconciled','merge.failed')
+				  AND (
+					later.kind IN ('merge.confirmed','merge.reconciled')
+					OR (later.kind='merge.failed' AND JSON_EXTRACT_STRING(later.payload_json,'reason_code') IN ('forge_merge_failed','merged_head_mismatch'))
+				  )
 				  AND (later.at > e.at OR (later.at = e.at AND later.id > e.id))
 			  )
-			ORDER BY e.at, e.id LIMIT 1`, ws, repository).Scan(&inFlightTask)
+			ORDER BY e.at, e.id LIMIT 1`, ws, repository, now.Add(-bound)).Scan(&inFlightTask, &requestAt)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return monitor.MergeNone, "", translateBackendConflict(err)
 		}
@@ -199,7 +205,7 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 			inFlightTask = ""
 		}
 	}
-	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, now, bound)
+	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, requestAt, now, bound)
 	return state, taskID, nil
 }
 func lockMonitorTask(ctx context.Context, tx *sql.Tx, ws, taskID string) error {

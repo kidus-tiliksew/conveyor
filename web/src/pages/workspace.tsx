@@ -286,6 +286,20 @@ export function WorkspacePage() {
   )
 }
 
+function monitorDraft(
+  draft: WorkspaceConfigDocument,
+  patch: Partial<NonNullable<WorkspaceConfigDocument['monitor']>>,
+): NonNullable<WorkspaceConfigDocument['monitor']> {
+  return {
+    enabled: draft.monitor?.enabled ?? false,
+    repositories: draft.monitor?.repositories ?? [],
+    poll_interval: draft.monitor?.poll_interval ?? '1m',
+    startup_window: draft.monitor?.startup_window ?? '24h',
+    merge_deferral_bound: draft.monitor?.merge_deferral_bound,
+    ...patch,
+  }
+}
+
 function GeneralTab({
   draft,
   setDraft,
@@ -421,12 +435,7 @@ function GeneralTab({
             checked={draft.monitor?.enabled ?? false}
             onChange={(enabled) =>
               update({
-                monitor: {
-                  enabled,
-                  repositories: draft.monitor?.repositories ?? [],
-                  poll_interval: draft.monitor?.poll_interval ?? '1m',
-                  startup_window: draft.monitor?.startup_window ?? '24h',
-                },
+                monitor: monitorDraft(draft, { enabled }),
               })
             }
           />
@@ -442,12 +451,7 @@ function GeneralTab({
                 value={draft.monitor?.poll_interval ?? '1m'}
                 onChange={(event) =>
                   update({
-                    monitor: {
-                      enabled: draft.monitor?.enabled ?? false,
-                      repositories: draft.monitor?.repositories ?? [],
-                      poll_interval: event.target.value,
-                      startup_window: draft.monitor?.startup_window ?? '24h',
-                    },
+                    monitor: monitorDraft(draft, { poll_interval: event.target.value }),
                   })
                 }
               />
@@ -457,12 +461,21 @@ function GeneralTab({
                 value={draft.monitor?.startup_window ?? '24h'}
                 onChange={(event) =>
                   update({
-                    monitor: {
-                      enabled: draft.monitor?.enabled ?? false,
-                      repositories: draft.monitor?.repositories ?? [],
-                      poll_interval: draft.monitor?.poll_interval ?? '1m',
-                      startup_window: event.target.value,
-                    },
+                    monitor: monitorDraft(draft, { startup_window: event.target.value }),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Merge deferral bound"
+              hint="How long to skip direct pushes and external merges while a Conveyor merge is in flight. Leave empty to derive min(10m, startup window − poll − 5s)."
+            >
+              <Input
+                value={draft.monitor?.merge_deferral_bound ?? ''}
+                placeholder="auto"
+                onChange={(event) =>
+                  update({
+                    monitor: monitorDraft(draft, { merge_deferral_bound: event.target.value || undefined }),
                   })
                 }
               />
@@ -482,19 +495,11 @@ function GeneralTab({
                       type="checkbox"
                       checked={selected}
                       onChange={(event) => {
-                        const current = draft.monitor ?? {
-                          enabled: false,
-                          repositories: [],
-                          poll_interval: '1m',
-                          startup_window: '24h',
-                        }
+                        const repositories = event.target.checked
+                          ? [...(draft.monitor?.repositories ?? []), repo.name]
+                          : (draft.monitor?.repositories ?? []).filter((name) => name !== repo.name)
                         update({
-                          monitor: {
-                            ...current,
-                            repositories: event.target.checked
-                              ? [...current.repositories, repo.name]
-                              : current.repositories.filter((name) => name !== repo.name),
-                          },
+                          monitor: monitorDraft(draft, { repositories }),
                         })
                       }}
                     />

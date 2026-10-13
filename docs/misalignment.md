@@ -150,6 +150,7 @@ monitor:
   repositories: [api]
   poll_interval: 1m
   startup_window: 24h
+  merge_deferral_bound: 10m
 ```
 
 It polls with the daemon's read-only GitHub credential, and it can only do

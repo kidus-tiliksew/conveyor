@@ -262,7 +262,7 @@ func runMonitorMergeCommitState(t *testing.T, x Fixture) {
 	bound := 10 * time.Minute
 	assertState := func(t *testing.T, sha string, now time.Time, want monitor.MergeState, wantTask string) {
 		t.Helper()
-		state, taskID, err := ms.MonitorMergeCommitState(ctx, "conveyor", sha, committed, now, bound)
+		state, taskID, err := ms.MonitorMergeCommitState(ctx, "acme/conveyor", sha, committed, now, bound)
 		requireOK(t, err)
 		if state != want || (wantTask == "" && taskID != "") || (wantTask != "" && taskID != wantTask) {
 			t.Fatalf("state=%v task=%s want %v %s", state, taskID, want, wantTask)
@@ -271,18 +271,43 @@ func runMonitorMergeCommitState(t *testing.T, x Fixture) {
 	assertState(t, "none-sha", committed.Add(time.Minute), monitor.MergeNone, "")
 
 	inFlight := newAggregateTask(t, x)
-	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: inFlight.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 1})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: inFlight.ID, Kind: "merge.requested", At: committed, Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 1})}))
 	assertState(t, "other-sha", committed.Add(time.Minute), monitor.MergeInFlight, inFlight.ID)
 	assertState(t, "other-sha", committed.Add(bound), monitor.MergeNone, "")
 
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: inFlight.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
 	assertState(t, "other-sha", committed.Add(time.Minute), monitor.MergeNone, "")
 
+	unconfirmed := newAggregateTask(t, x)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: unconfirmed.ID, Kind: "merge.requested", At: committed, Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 11})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: unconfirmed.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "merge_unconfirmed"})}))
+	assertState(t, "unconfirmed-sha", committed.Add(time.Minute), monitor.MergeInFlight, unconfirmed.ID)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: unconfirmed.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+	assertState(t, "unconfirmed-sha", committed.Add(time.Minute), monitor.MergeNone, "")
+
+	first := newAggregateTask(t, x)
+	second := newAggregateTask(t, x)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: first.ID, Kind: "merge.requested", At: committed, Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 21})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: second.ID, Kind: "merge.requested", At: committed.Add(time.Second), Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 22})}))
+	assertState(t, "two-task-sha", committed.Add(time.Minute), monitor.MergeInFlight, first.ID)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: first.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: second.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+
+	stuck := newAggregateTask(t, x)
+	now := committed.Add(time.Minute)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: stuck.ID, Kind: "merge.requested", At: now.Add(-bound), Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 31})}))
+	futureState, futureTask, err := ms.MonitorMergeCommitState(ctx, "acme/conveyor", "future-sha", now.Add(time.Hour), now, bound)
+	requireOK(t, err)
+	if futureState != monitor.MergeNone || futureTask != "" {
+		t.Fatalf("future-dated commit state=%v task=%s", futureState, futureTask)
+	}
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: stuck.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
+
 	recorded := newAggregateTask(t, x)
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: recorded.ID, Kind: "merge.requested", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 2})}))
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: recorded.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 2, "head_sha": "head-sha", "merge_commit_sha": "landed-sha"})}))
 	assertState(t, "landed-sha", committed.Add(time.Minute), monitor.MergeRecorded, recorded.ID)
-	assertState(t, "head-sha", committed.Add(time.Minute), monitor.MergeRecorded, recorded.ID)
+	assertState(t, "head-sha", committed.Add(time.Minute), monitor.MergeNone, "")
 
 	reconciled := newAggregateTask(t, x)
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: reconciled.ID, Kind: "merge.reconciled", Payload: core.JSONPayload(map[string]any{"repository": "acme/conveyor", "pull_request": 3, "head_sha": "recon-head", "merge_commit_sha": "recon-landed"})}))
@@ -308,7 +333,7 @@ func runMonitorMergeCommitState(t *testing.T, x Fixture) {
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: foreign.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "pull_request": 4, "merge_commit_sha": "foreign-sha"})}))
 	assertState(t, "foreign-sha", committed.Add(time.Minute), monitor.MergeNone, "")
 
-	state, _, err := ms.MonitorMergeCommitState(ctx, "conveyor", "", committed, committed.Add(time.Minute), bound)
+	state, _, err := ms.MonitorMergeCommitState(ctx, "acme/conveyor", "", committed, committed.Add(time.Minute), bound)
 	requireOK(t, err)
 	if state != monitor.MergeNone {
 		t.Fatalf("empty sha state=%v", state)
@@ -431,6 +456,17 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 	if !foundExternal {
 		t.Fatal("stale-approval GitHub merge was not reported as external_pr_merge")
 	}
+
+	const lostSHA = "outside-window-sha"
+	lostCommitted := clock.Add(-16 * time.Minute)
+	lostSource := mergeDeferralGitHubSource(x, lostSHA, lostCommitted, func() time.Time { return clock }, bound, "", new([]string))
+	lostPoller := monitor.Poller{Service: service, Source: lostSource, StartupWindow: 15 * time.Minute, Now: func() time.Time { return clock }}
+	if err := lostPoller.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if observed(lostSHA) {
+		t.Fatal("commit older than startup window was observed")
+	}
 }
 
 func mergeDeferralService(t *testing.T, x Fixture, now func() time.Time) *monitor.Service {
@@ -476,6 +512,18 @@ func mergeDeferralGitHubSource(x Fixture, sha string, committed time.Time, now f
 			path := strings.Join(args, " ")
 			switch {
 			case strings.Contains(path, "/commits -f"):
+				var since time.Time
+				for i, arg := range args {
+					if arg == "-f" && i+1 < len(args) && strings.HasPrefix(args[i+1], "since=") {
+						parsed, parseErr := time.Parse(time.RFC3339, strings.TrimPrefix(args[i+1], "since="))
+						if parseErr == nil {
+							since = parsed
+						}
+					}
+				}
+				if !since.IsZero() && committed.Before(since) {
+					return []byte("[]"), nil
+				}
 				return []byte(fmt.Sprintf(`[{"sha":%q,"html_url":"https://example/%s","parents":[{"sha":%q}],"commit":{"message":"manual","committer":{"date":%q}}}]`, sha, sha, parent, committed.UTC().Format(time.RFC3339))), nil
 			case strings.Contains(path, "/pulls"):
 				return []byte(pulls), nil

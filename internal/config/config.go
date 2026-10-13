@@ -58,7 +58,7 @@ type MonitorConfig struct {
 	StartupWindow          time.Duration `yaml:"-" json:"-"`
 	StartupWindowText      string        `yaml:"startup_window" json:"startup_window"`
 	MergeDeferralBound     time.Duration `yaml:"-" json:"-"`
-	MergeDeferralBoundText string        `yaml:"merge_deferral_bound" json:"merge_deferral_bound"`
+	MergeDeferralBoundText string        `yaml:"merge_deferral_bound,omitempty" json:"merge_deferral_bound,omitempty"`
 }
 
 func normalizeMonitorConfig(m *MonitorConfig) error {
@@ -78,15 +78,28 @@ func normalizeMonitorConfig(m *MonitorConfig) error {
 		return fmt.Errorf("monitor.startup_window must be a positive duration")
 	}
 	m.StartupWindow = window
+	const (
+		defaultMergeDeferralBound = 10 * time.Minute
+		mergeDeferralWindowSlack  = 5 * time.Second
+	)
+	derived := window - poll - mergeDeferralWindowSlack
+	if derived > defaultMergeDeferralBound {
+		derived = defaultMergeDeferralBound
+	}
 	if m.MergeDeferralBoundText == "" {
-		m.MergeDeferralBoundText = "10m"
+		if derived <= 0 {
+			m.MergeDeferralBound = 0
+			return nil
+		}
+		m.MergeDeferralBound = derived
+		return nil
 	}
 	bound, err := time.ParseDuration(m.MergeDeferralBoundText)
 	if err != nil || bound <= 0 {
 		return fmt.Errorf("monitor.merge_deferral_bound must be a positive duration")
 	}
-	if bound >= window {
-		return fmt.Errorf("monitor.merge_deferral_bound must be less than monitor.startup_window")
+	if bound+poll+mergeDeferralWindowSlack >= window {
+		return fmt.Errorf("monitor.merge_deferral_bound plus poll_interval plus 5s must be less than monitor.startup_window")
 	}
 	m.MergeDeferralBound = bound
 	return nil

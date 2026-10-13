@@ -219,13 +219,14 @@ const (
 )
 
 // DecideMergeState prefers a recorded Conveyor merge over an in-flight
-// request. Deferral is keyed on commit age, not merge age, so a stuck
-// merge.requested cannot suppress reports past MergeDeferralBound.
-func DecideMergeState(recordedTaskID, inFlightTaskID string, committedAt, now time.Time, bound time.Duration) (MergeState, string) {
+// request. Deferral requires both the commit and the merge.requested
+// event to be younger than MergeDeferralBound, so a future-dated commit
+// cannot hide behind a stuck request (component-monitor-drift; 261013-9f494b).
+func DecideMergeState(recordedTaskID, inFlightTaskID string, committedAt, requestAt, now time.Time, bound time.Duration) (MergeState, string) {
 	if recordedTaskID != "" {
 		return MergeRecorded, recordedTaskID
 	}
-	if inFlightTaskID != "" && bound > 0 && now.Sub(committedAt) < bound {
+	if inFlightTaskID != "" && bound > 0 && now.Sub(committedAt) < bound && now.Sub(requestAt) < bound {
 		return MergeInFlight, inFlightTaskID
 	}
 	return MergeNone, ""

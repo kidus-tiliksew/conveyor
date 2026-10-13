@@ -710,7 +710,7 @@ export interface WorkspaceConfigDocument {
   review: { seats: WorkspaceReviewSeat[] }
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
-  monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string }
+  monitor?: { enabled: boolean; repositories: string[]; poll_interval: string; startup_window: string; merge_deferral_bound?: string }
 }
 
 export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'lineaged_merge' | 'revert'

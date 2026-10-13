@@ -683,7 +683,7 @@ func TestGitHubSourceDefersAndSuppressesInFlightAndRecordedMerges(t *testing.T) 
 				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
 				Run: commitWithPullsRun("landed", "parent", "merge", committed.Format(time.RFC3339), test.pulls),
 				MergeCommitState: func(_ context.Context, repository, sha string, at time.Time) (MergeState, string, error) {
-					if repository != "conveyor" || sha != "landed" || !at.Equal(committed) {
+					if repository != "acme/conveyor" || sha != "landed" || !at.Equal(committed) {
 						t.Fatalf("repository=%s sha=%s at=%s", repository, sha, at)
 					}
 					return test.state, test.taskID, nil
@@ -780,24 +780,37 @@ func TestRecordedMergeHeadMatchesOnlyConfirmedOrReconciled(t *testing.T) {
 	if RecordedMergeHead([]core.Event{{Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "pull_request": 12, "head_sha": "head", "merge_commit_sha": "landed"})}}, "acme/app", 13, "landed") {
 		t.Fatal("foreign pull request matched")
 	}
-	if RecordedMergeHead(nil, "acme/app", 12, "landed") || RecordedMergeCommit(core.Event{Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"merge_commit_sha": "landed"})}, "landed") {
+	if RecordedMergeHead(nil, "acme/app", 12, "landed") || RecordedMergeCommit(core.Event{Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "merge_commit_sha": "landed"})}, "acme/app", "landed") {
 		t.Fatal("missing or failed merge matched")
+	}
+	if RecordedMergeCommit(core.Event{Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "acme/app", "head_sha": "head", "merge_commit_sha": "landed"})}, "acme/app", "head") {
+		t.Fatal("head_sha matched as a recorded merge commit")
 	}
 }
 
 func TestDecideMergeStatePrefersRecordedAndExpiresInFlight(t *testing.T) {
 	committed := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	bound := 10 * time.Minute
-	state, task := DecideMergeState("rec", "fly", committed, committed.Add(time.Minute), bound)
+	requestAt := committed
+	state, task := DecideMergeState("rec", "fly", committed, requestAt, committed.Add(time.Minute), bound)
 	if state != MergeRecorded || task != "rec" {
 		t.Fatalf("state=%v task=%s", state, task)
 	}
-	state, task = DecideMergeState("", "fly", committed, committed.Add(bound-time.Second), bound)
+	state, task = DecideMergeState("", "fly", committed, requestAt, committed.Add(bound-time.Second), bound)
 	if state != MergeInFlight || task != "fly" {
 		t.Fatalf("state=%v task=%s", state, task)
 	}
-	state, task = DecideMergeState("", "fly", committed, committed.Add(bound), bound)
+	state, task = DecideMergeState("", "fly", committed, requestAt, committed.Add(bound), bound)
 	if state != MergeNone || task != "" {
 		t.Fatalf("expired state=%v task=%s", state, task)
+	}
+	future := committed.Add(time.Hour)
+	state, task = DecideMergeState("", "fly", future, committed.Add(-bound), committed, bound)
+	if state != MergeNone || task != "" {
+		t.Fatalf("stuck request hid future commit state=%v task=%s", state, task)
+	}
+	state, task = DecideMergeState("", "fly", future, committed.Add(-time.Second), committed, bound)
+	if state != MergeInFlight || task != "fly" {
+		t.Fatalf("fresh request with future commit state=%v task=%s", state, task)
 	}
 }

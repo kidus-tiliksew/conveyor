@@ -83,7 +83,8 @@ func (m *memory) MonitorMergeCommitState(ctx context.Context, repository, commit
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	commitSHA = strings.TrimSpace(commitSHA)
-	if commitSHA == "" {
+	repository = strings.TrimSpace(repository)
+	if commitSHA == "" || repository == "" {
 		return monitor.MergeNone, "", nil
 	}
 	workspace := workspaceOrDefault(ctx, "")
@@ -96,30 +97,35 @@ func (m *memory) MonitorMergeCommitState(ctx context.Context, repository, commit
 			continue
 		}
 		task, ok := m.tasks[taskID]
-		if !ok || task.Workspace != workspace || task.Repo != repository {
+		if !ok || task.Workspace != workspace {
 			continue
 		}
-		var latest core.Event
 		for _, event := range events {
-			if monitor.RecordedMergeCommit(event, commitSHA) {
+			if monitor.RecordedMergeCommit(event, repository, commitSHA) {
 				if recordedTask == "" || TaskEventBefore(event, recordedEvent) {
 					recordedTask, recordedEvent = taskID, event
 				}
 			}
-			switch event.Kind {
-			case "merge.requested", "merge.confirmed", "merge.reconciled", "merge.failed":
-				if latest.Kind == "" || TaskEventBefore(latest, event) {
-					latest = event
-				}
+			if !monitor.MergeRequestedInRepository(event, repository) {
+				continue
 			}
-		}
-		if latest.Kind == "merge.requested" {
-			if inFlightTask == "" || TaskEventBefore(latest, inFlightEvent) {
-				inFlightTask, inFlightEvent = taskID, latest
+			ended := false
+			for _, later := range events {
+				if !TaskEventBefore(event, later) || !monitor.EndsMergeFlight(later) {
+					continue
+				}
+				ended = true
+				break
+			}
+			if ended {
+				continue
+			}
+			if inFlightTask == "" || TaskEventBefore(event, inFlightEvent) {
+				inFlightTask, inFlightEvent = taskID, event
 			}
 		}
 	}
-	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, now, bound)
+	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, inFlightEvent.At, now, bound)
 	return state, taskID, nil
 }
 
