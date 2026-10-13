@@ -34,6 +34,10 @@ func runWorkspaceNameUniqueness(t *testing.T, x Fixture) {
 			t.Fatalf("workspace name %q: got %v, want ErrWorkspaceConflict", tc.name, err)
 		}
 	}
+	tabID := x.Workspace + "-workspace-name-tab"
+	if _, err := control.CreateWorkspace(x.Context, tabID, "\tWorkspace Alpha\t", &config.Config{Workspace: tabID, Repos: x.Config.Repos}); err != nil {
+		t.Fatalf("tab-prefixed workspace name refused: %v", err)
+	}
 	otherID := x.Workspace + "-workspace-name-alphabet"
 	if _, err := control.CreateWorkspace(x.Context, otherID, "Workspace Alphabet", &config.Config{Workspace: otherID, Repos: x.Config.Repos}); err != nil {
 		t.Fatalf("distinct workspace name refused: %v", err)

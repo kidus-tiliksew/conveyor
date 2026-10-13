@@ -248,7 +248,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 	return t, nil
 }
 func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
-	t, err := scanTask(documentRow(ctx, s.db, `SELECT `+taskColumns+` FROM tasks WHERE workspace_id=? AND intake_key=?`, documentWorkspace(ctx), key))
+	t, err := scanTask(documentRow(ctx, s.db, `SELECT `+taskColumns+` FROM tasks WHERE workspace_id=? AND BINARY intake_key=BINARY ?`, documentWorkspace(ctx), key))
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Task{}, false, nil
 	}

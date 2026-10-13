@@ -60,7 +60,7 @@ func (m *volatileMemory) CreateWorkspace(ctx context.Context, id, name string, c
 		return core.Workspace{}, ErrWorkspaceConflict
 	}
 	for _, record := range m.workspaces {
-		if strings.EqualFold(strings.TrimSpace(record.Name), strings.TrimSpace(name)) {
+		if strings.EqualFold(strings.Trim(record.Name, " "), strings.Trim(name, " ")) {
 			return core.Workspace{}, ErrWorkspaceConflict
 		}
 	}

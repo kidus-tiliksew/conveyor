@@ -501,17 +501,17 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		return core.Task{ID: id, Workspace: intakeWorkspace, Repo: "repo", Branch: branch, IntakeKey: key, Title: id, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	}
 	t.Run("intake key", func(t *testing.T) {
-		if err := st.CreateTask(intakeCtx, intakeTask("intake-winner", "duplicate", "intake-a")); err != nil {
+		if err := st.CreateTask(intakeCtx, intakeTask("intake-winner", "duplicate ", "intake-a")); err != nil {
 			t.Fatal(err)
 		}
 		hide(`DELETE FROM tasks WHERE workspace_id='intake-claims' AND id=?`, "intake-winner")
-		err := st.CreateTask(intakeCtx, intakeTask("intake-late", "duplicate", "intake-b"))
+		err := st.CreateTask(intakeCtx, intakeTask("intake-late", "duplicate ", "intake-b"))
 		if err == nil || !strings.Contains(err.Error(), "intake key") {
 			t.Fatalf("second intake key against an unseen winner: %v", err)
 		}
 	})
 	t.Run("intake key planning bundle", func(t *testing.T) {
-		first := intakeTask("planning-winner", "planning-duplicate", "planning-a")
+		first := intakeTask("planning-winner", "planning-duplicate ", "planning-a")
 		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
 			_, err := insertPlanningBundleTask(intakeCtx, tx, first)
 			return err
@@ -519,7 +519,7 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		hide(`DELETE FROM tasks WHERE workspace_id='intake-claims' AND id=?`, first.ID)
-		second := intakeTask("planning-late", "planning-duplicate", "planning-b")
+		second := intakeTask("planning-late", "planning-duplicate ", "planning-b")
 		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
 			_, err := insertPlanningBundleTask(intakeCtx, tx, second)
 			return err
@@ -556,6 +556,25 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		}
 		if !ok || got.ID != first.ID {
 			t.Fatalf("retry lookup got ok=%v id=%q, want %q", ok, got.ID, first.ID)
+		}
+	})
+	t.Run("intake key padded spelling is distinct", func(t *testing.T) {
+		padded := intakeTask("padded-winner", "padded ", "padded-a")
+		if err := st.CreateTask(intakeCtx, padded); err != nil {
+			t.Fatal(err)
+		}
+		unpadded := intakeTask("padded-distinct", "padded", "padded-b")
+		if err := st.CreateTask(intakeCtx, unpadded); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []core.Task{padded, unpadded} {
+			got, ok, err := st.GetTaskByIntakeKey(intakeCtx, want.IntakeKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok || got.ID != want.ID {
+				t.Fatalf("padded intake key %q got ok=%v id=%q, want %q", want.IntakeKey, ok, got.ID, want.ID)
+			}
 		}
 	})
 
