@@ -405,9 +405,16 @@ func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage c
 	if err != nil {
 		return core.WorkOrder{}, false, err
 	}
+	if reasonCode == "" {
+		// Stale and timed-out orders block minting so the order clock's bounded
+		// recovery owns them instead of a daily same-stage reissue (DEC-62;
+		// component-work-orders "Stages and order minting").
+		order, active := core.WorkOrderBlocksStageMint(orders, stage)
+		return order, active, nil
+	}
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
-		if order.Stage != stage || (reasonCode != "" && order.ReasonCode != reasonCode) {
+		if order.Stage != stage || order.ReasonCode != reasonCode {
 			continue
 		}
 		active := order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed
@@ -438,6 +445,12 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		if order.Stage == core.StageReview && order.ReviewRound > latestRound {
 			latestRound = order.ReviewRound
 		}
+	}
+	// A stale or timed-out seat of the latest round is a recoverable stop the
+	// order clock redispatches under the DEC-62 bound; a second live round
+	// would race it (component-work-orders "Stages and order minting").
+	if _, held := core.WorkOrderBlocksStageMint(prior, core.StageReview); held {
+		return nil
 	}
 	// Durable queue redelivery must reuse any active snapshotted round. The task
 	// remains queued until the first seat claim issues order.claim (component-work-orders).

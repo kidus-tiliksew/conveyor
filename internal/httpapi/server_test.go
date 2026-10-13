@@ -1117,6 +1117,42 @@ func TestRedispatchRepairsAlreadyQueuedTask(t *testing.T) {
 	}
 }
 
+// A queued task held by a stale order is moved through the order, not a task
+// redispatch: the endpoint answers 409 naming the order and enqueues nothing
+// (component-durable-queue; DEC-62).
+func TestRedispatchRejectsTaskHeldByWorkOrder(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
+	st := store.NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "held-task", State: core.TaskQueued, NextStage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	orderID := "held-task-implement-1"
+	if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: "held-task", Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: "held-task", JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-time.Hour), QueueDeadline: now.Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	dispatched := make(chan string, 1)
+	s := NewServer(st)
+	s.BearerToken = "token"
+	s.OnCreate = func(_ context.Context, id string) { dispatched <- id }
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/held-task/redispatch", bytes.NewReader([]byte(`{}`)))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), orderID) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case id := <-dispatched:
+		t.Fatalf("held task %s was enqueued", id)
+	default:
+	}
+}
+
 func TestRedispatchMapsEnqueueRaceToNotFound(t *testing.T) {
 	t.Parallel()
 	base := store.NewMemory()

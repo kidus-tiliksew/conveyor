@@ -269,7 +269,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		if err := lockKey(ctx, tx, "queue-reconcile:"+ws); err != nil {
 			return err
 		}
-		rows, err := documentRows(ctx, tx, `SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.state='queued' AND NOT(t.parent_task_id IS NULL AND t.next_stage='implement' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)) ORDER BY t.created_at,t.id`, ws)
+		rows, err := documentRows(ctx, tx, `SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.state='queued' AND NOT(t.parent_task_id IS NULL AND t.next_stage='implement' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=t.workspace_id AND c.parent_task_id=t.id)) AND NOT (`+blockingOrderSQL("t")+`) ORDER BY t.created_at,t.id`, ws)
 		if err != nil {
 			return err
 		}
@@ -336,4 +336,15 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// blockingOrderSQL is the SQL form of core.WorkOrderBlocksStageMint: the
+// task's latest order is at its next_stage and holds it (itself, or for
+// review any seat of its round, is queued, claimed, stale, or timed_out).
+// Read-time stale and timed_out projections are stored as queued or claimed,
+// so the stored set covers them. Such a task is waiting for a claim or for
+// the order clock, not drifting, so reconcile leaves it alone
+// (component-durable-queue "Reconciliation between tasks and jobs"; DEC-62).
+func blockingOrderSQL(task string) string {
+	return `EXISTS (SELECT 1 FROM work_orders latest WHERE latest.workspace_id=` + task + `.workspace_id AND latest.task_id=` + task + `.id AND latest.stage=` + task + `.next_stage AND NOT EXISTS (SELECT 1 FROM work_orders later WHERE later.workspace_id=latest.workspace_id AND later.task_id=latest.task_id AND (later.created_at > latest.created_at OR (later.created_at = latest.created_at AND later.id > latest.id))) AND EXISTS (SELECT 1 FROM work_orders wo WHERE wo.workspace_id=latest.workspace_id AND wo.task_id=latest.task_id AND (wo.id=latest.id OR (latest.stage='review' AND wo.stage='review' AND wo.review_round=latest.review_round)) AND wo.state IN ('queued','claimed','stale','timed_out')))`
 }

@@ -395,6 +395,10 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
+			if errors.Is(err, store.ErrTaskHeldByWorkOrder) {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			log.Printf("ensure task enqueued: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
