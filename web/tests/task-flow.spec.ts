@@ -44,10 +44,34 @@ const gateActivity = {
   needs_attention: true,
 }
 
+// The same task waiting on a prerequisite: its implement order is queued and
+// unclaimable while a dependency blocks it, so the stub projects blocked and
+// the timeline shows the dependency-waiting panel.
+const blockedActivity = {
+  ...activity,
+  task: {
+    ...task,
+    blocking_task_ids: ['task-prereq'],
+    dependencies: [{ id: 'task-prereq', title: 'Prerequisite slice', state: 'running' }],
+  },
+  work_orders: [
+    {
+      id: 'flow-task-implement-1',
+      task_id: taskId,
+      job_id: 'flow-task-implement-1',
+      stage: 'implement',
+      state: 'queued',
+      claimable: false,
+      created_at: timestamp,
+      updated_at: timestamp,
+    },
+  ],
+}
+
 // A flow's next_action is the compact form of the projection the next-action
 // route serves for the same activity, so the flow and the card always agree.
-function flowNextAction(item: typeof activity): TaskFlowNextAction {
-  const { label, actor, kind, summary } = projectNextAction(item as unknown as ActivityItem)
+function flowNextAction(item: object): TaskFlowNextAction {
+  const { label, actor, kind, summary } = projectNextAction(item as ActivityItem)
   return { label, actor, kind, summary }
 }
 
@@ -191,7 +215,7 @@ async function mockAPI(
   page: Page,
   flow: () => TaskFlow,
   stream?: () => Promise<string | null>,
-  item: typeof activity = activity,
+  item: object = activity,
 ) {
   const counts = { flow: 0, detail: 0 }
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
@@ -526,10 +550,16 @@ test('collapses superseded attempts, and Show raw state reveals the raw projecti
 
 // DEC-61: the next-action summary appears once per task-detail surface, inside
 // the Next action card above the chart, both while an agent works and while
-// the plan gate is open (NA-6, NA-7; AC-4.4).
+// the plan gate is open, and while a dependency blocks it (NA-6, NA-7; AC-4.4).
 const states = [
   { name: 'working', flow: claimedFlow, item: activity, summary: 'An agent is working on this task.' },
   { name: 'plan_approval', flow: gateFlow, item: gateActivity, summary: 'The execution plan is waiting for approval.' },
+  {
+    name: 'blocked',
+    flow: () => ({ ...claimedFlow(), next_action: flowNextAction(blockedActivity) }),
+    item: blockedActivity,
+    summary: 'This task is waiting on another task.',
+  },
 ] as const
 
 for (const surface of surfaces) {
@@ -552,6 +582,13 @@ for (const surface of surfaces) {
         await expect(gate.getByRole('heading', { name: 'Plan approval' })).toBeVisible()
         await expect(gate).not.toContainText(state.summary)
       } else await expect(gate).toHaveCount(0)
+      if (state.name === 'blocked') {
+        // The dependency panel stays, with its links, but does not restate the summary.
+        const panel = detail.locator('section[aria-labelledby="current-execution-title"]')
+        await expect(panel.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
+        await expect(panel.getByRole('link', { name: /Prerequisite slice/ })).toBeVisible()
+        await expect(panel).not.toContainText(state.summary)
+      }
       const precedes = await card.evaluate(
         (next, chart) => Boolean(next.compareDocumentPosition(chart as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
         await flow.elementHandle(),

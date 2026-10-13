@@ -5103,7 +5103,10 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
     page.locator('section[aria-labelledby="current-execution-title"]').getByRole('link', { name: 'Runtime · Waiting' }),
   ).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
   await expect(page.getByText('Not applicable.')).toBeVisible()
-  await expect(page.getByText('This task is waiting on another task.').first()).toBeVisible()
+  // The summary is NextActionCard's alone; the panel keeps the dependency links (DEC-61).
+  await expect(page.getByText('This task is waiting on another task.', { exact: true })).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'Next action' })).toContainText('This task is waiting on another task.')
+  await expect(page.getByText('What to do next')).toHaveCount(0)
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Any agent connected over MCP can claim this.', { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)

@@ -52,8 +52,8 @@ import type {
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
-import { Badge } from '../ui/badge'
 import { useNextAction } from '../inbox/use-next-actions'
+import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
@@ -384,10 +384,12 @@ function CurrentExecutionSummary({
           <dt className="font-medium text-foreground">Retry</dt>
           <dd className="text-muted">{state.retry}</dd>
         </div>
-        <div>
-          <dt className="font-medium text-foreground">What to do next</dt>
-          <dd className="text-muted">{state.nextAction}</dd>
-        </div>
+        {state.nextAction && (
+          <div>
+            <dt className="font-medium text-foreground">What to do next</dt>
+            <dd className="text-muted">{state.nextAction}</dd>
+          </div>
+        )}
       </dl>
       {state.order.state === 'claimed' && state.order.activity_snapshot && (
         <RecentActivity snapshot={state.order.activity_snapshot} />
