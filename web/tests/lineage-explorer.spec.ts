@@ -1,5 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // The Knowledge explorer and the parked navigation.
 // Task, requirement, and System Design detail each open a focused right panel
@@ -243,6 +244,7 @@ interface Options {
 }
 
 async function routeAPI(page: Page, options: Options = {}) {
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -681,12 +683,11 @@ test('primary navigation shows exactly the accepted operating surfaces', async (
   await page.goto('/')
   const nav = page.getByRole('navigation', { name: 'Primary' })
   await expect(nav.getByRole('link')).toHaveText([
-    /^Board/,
-    'Tasks',
+    'Board',
+    /^Inbox/,
     'Workspace',
     'Requirements',
     'System Design',
-    'Pending proposals',
     'Monitor',
     'Settings',
   ])

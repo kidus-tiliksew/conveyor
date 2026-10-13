@@ -2,11 +2,10 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tansta
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
-  BellRing,
   FileCode2,
   FolderGit2,
+  Inbox,
   Kanban,
-  ListChecks,
   LogOut,
   type LucideIcon,
   Menu,
@@ -352,7 +351,8 @@ function WorkspaceProvider({
 const ShellNavContext = createContext<{ closeDrawer: () => void }>({ closeDrawer: () => {} })
 
 // The narrow-viewport shell: a slim bar carrying the workspace name, the
-// attention total, and the menu that opens the rail and sidebar as a drawer.
+// operator-decision count linking to the Inbox, and the menu that opens the
+// rail and sidebar as a drawer.
 function MobileNav() {
   const [open, setOpen] = useState(false)
   const { workspace: selected } = useWorkspaceSelection()
@@ -361,7 +361,7 @@ function MobileNav() {
     queryFn: fetchWorkspaces,
   })
   const { data: proposals } = usePendingProposals()
-  const attention = proposals?.attention?.total ?? 0
+  const operatorDecisions = proposals?.attention?.operator_decisions ?? 0
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? 'Conveyor'
   const close = () => setOpen(false)
   return (
@@ -371,9 +371,9 @@ function MobileNav() {
           <Menu />
         </Button>
         <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">{currentName}</p>
-        {attention > 0 && (
-          <Link to="/" aria-label={`${attention} items need attention`}>
-            <Badge variant="attention">{attention}</Badge>
+        {operatorDecisions > 0 && (
+          <Link to="/inbox" aria-label={`${operatorDecisions} decisions waiting in the Inbox`}>
+            <Badge variant="attention">{operatorDecisions}</Badge>
           </Link>
         )}
       </header>
@@ -467,11 +467,10 @@ function NavSidebar({ className }: { className?: string }) {
   })
   const { data: workspace } = useWorkspace()
   const { data: proposals } = usePendingProposals()
-  // The bounded pending-proposals projection owns the workspace attention
-  // total. Reading it here avoids mounting a second unfiltered activity query
-  // beside the Board's filter-keyed activity request.
-  const attention = proposals?.attention?.total ?? 0
-  const pendingProposalAttention = proposals?.attention?.pending_proposal_count ?? 0
+  // The bounded pending-proposals projection owns the workspace's count of
+  // operator decisions (AC-2.7). Reading it here avoids mounting a second
+  // unfiltered query beside the Board's filter-keyed activity request.
+  const operatorDecisions = proposals?.attention?.operator_decisions ?? 0
   const requirementAttention = new Set(
     (proposals?.items ?? []).filter((item) => item.tier === 'requirement').map((item) => item.id),
   ).size
@@ -493,20 +492,15 @@ function NavSidebar({ className }: { className?: string }) {
         <p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
       </div>
       <div className="flex-1 space-y-0.5 px-2">
-        <NavItem to="/" icon={Kanban} label="Board">
-          {attention > 0 && <Badge variant="attention">{attention}</Badge>}
+        <NavItem to="/" icon={Kanban} label="Board" />
+        <NavItem to="/inbox" icon={Inbox} label="Inbox">
+          {operatorDecisions > 0 && <Badge variant="attention">{operatorDecisions}</Badge>}
         </NavItem>
-        {/* The list-first delivery surface. It matches exactly:
-            a task's own detail route belongs to the Board it opens over. */}
-        <NavItem to="/tasks" icon={ListChecks} label="Tasks" exact />
         <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/requirements" icon={Workflow} label="Requirements">
           {requirementAttention > 0 && <Badge variant="attention">{requirementAttention}</Badge>}
         </NavItem>
         <NavItem to="/system-design" icon={FileCode2} label="System Design" />
-        <NavItem to="/pending-proposals" icon={BellRing} label="Pending proposals">
-          {pendingProposalAttention > 0 && <Badge variant="attention">{pendingProposalAttention}</Badge>}
-        </NavItem>
         {/* Exactly the accepted operating surfaces, and no others
             (req-document-operating-surfaces REQ-4, AC-4.1). Planning and
             Blueprint history are parked, not retired: their routes stay

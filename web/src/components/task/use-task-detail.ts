@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo } from 'react'
-import { groupForSummary } from '../../lib/activity'
+import { boardColumnFor } from '../../lib/activity'
 import { fetchTaskActivity, fetchTaskAudit, fetchVerificationPage, fetchVerificationSummary } from '../../lib/api'
 import { stageGroups } from '../../lib/contracts'
 import type { TaskAuditKind, VerificationCollection } from '../../lib/types'
@@ -88,15 +88,14 @@ export function useTaskAudit(taskId: string, kind: TaskAuditKind, recordId: stri
 }
 
 // Prev/next follow the board's visual order: columns left to right, cards
-// by recency within each column. A surface that already knows the order it is
-// showing passes `enabled: false` and supplies its own. Otherwise navigation is
-// deliberately limited to the current bounded Board page (AC-2.3).
-export function useTaskOrder(taskId: string, enabled = true) {
-  const { data: activity } = useActivity(undefined, enabled)
+// by recency within each column. Navigation is deliberately limited to the
+// current bounded Board page (AC-2.3).
+export function useTaskOrder(taskId: string) {
+  const { data: activity } = useActivity()
   return useMemo(() => {
     const byGroup = new Map<string, Array<{ id: string; at: string }>>()
     for (const summary of activity?.items ?? []) {
-      const key = groupForSummary(summary)
+      const key = boardColumnFor(summary)
       byGroup.set(key, [
         ...(byGroup.get(key) ?? []),
         { id: summary.task.id, at: summary.last_event_at || summary.task.created_at },

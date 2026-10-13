@@ -219,7 +219,9 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	claimedImplementOne, err := storetest.For(st).ClaimWorkOrder(ctx, implementOne.ID, core.WorkOrderClaim{SessionID: "implement-1-session", ClientToken: "implement-1-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-1", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	// Worker IDs are global; per-workspace IDs keep reruns on a kept database
+	// from colliding.
+	claimedImplementOne, err := storetest.For(st).ClaimWorkOrder(ctx, implementOne.ID, core.WorkOrderClaim{SessionID: "implement-1-session", ClientToken: "implement-1-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-1-" + workspace, Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +229,7 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplementOne, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
-	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "zombie-worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "zombie-worker-review-" + workspace, Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +243,7 @@ func TestRecoveryAllowsChangesRequestedBounceIntegration(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, implementTwo); err != nil {
 		t.Fatal(err)
 	}
-	claimedImplementTwo, err := storetest.For(st).ClaimWorkOrder(ctx, implementTwo.ID, core.WorkOrderClaim{SessionID: "implement-2-session", ClientToken: "implement-2-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-2", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedImplementTwo, err := storetest.For(st).ClaimWorkOrder(ctx, implementTwo.ID, core.WorkOrderClaim{SessionID: "implement-2-session", ClientToken: "implement-2-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-2-" + workspace, Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

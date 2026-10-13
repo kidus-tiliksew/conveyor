@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import type { TaskFlow, TaskFlowStage } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // The task flow chart (feature-operator-next-action NA-7, AC-3.2, AC-4.2,
 // AC-4.4). The flow route is mocked with server-shaped projections. Every
@@ -180,6 +181,7 @@ function gateFlow(): TaskFlow {
 async function mockAPI(page: Page, flow: () => TaskFlow, stream?: () => Promise<string | null>) {
   const counts = { flow: 0, detail: 0 }
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })

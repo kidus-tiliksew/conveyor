@@ -1,11 +1,12 @@
+import { Link } from '@tanstack/react-router'
 import {
   Archive,
   Code2,
   FileText,
+  GitMerge,
   GitPullRequest,
   ListFilter,
   ShieldCheck,
-  UserRound,
   type LucideIcon,
 } from 'lucide-react'
 import type { GroupKey } from '../../lib/contracts'
@@ -22,7 +23,7 @@ const groupIcons: Record<GroupKey, LucideIcon> = {
   implement: Code2,
   review: GitPullRequest,
   verify: ShieldCheck,
-  human: UserRound,
+  merge: GitMerge,
   done: Archive,
 }
 
@@ -42,7 +43,9 @@ export function BoardColumn({
   selectedId?: string
 }) {
   const Icon = groupIcons[groupKey]
-  const attention = items.filter((item) => item.needs_attention).length
+  // The items in this column waiting on an operator, by the server's actor;
+  // they are decided in the Inbox, so the count links there.
+  const operator = items.filter((item) => item.next_action?.actor === 'operator').length
   const visible = groupKey === 'done' ? items.slice(0, DONE_CAP) : items
   // Every stage keeps the same lane width as work moves or filters change
   // which columns are populated. The shared flex rule fills spare row width
@@ -61,10 +64,15 @@ export function BoardColumn({
         <Icon className="size-3.5 shrink-0 text-muted" />
         <h2 className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</h2>
         <span className="font-mono text-[11px] text-faint">{items.length}</span>
-        {attention > 0 && groupKey !== 'human' && (
-          <Badge variant="attention" className="ml-auto">
-            {attention}
-          </Badge>
+        {operator > 0 && (
+          <Link
+            to="/inbox"
+            className="ml-auto"
+            aria-label={`${operator} waiting on an operator — open the Inbox`}
+            data-operator-count
+          >
+            <Badge variant="attention">{operator}</Badge>
+          </Link>
         )}
       </header>
       {!idle && (

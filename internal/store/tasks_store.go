@@ -1237,7 +1237,7 @@ func (m *memory) UpdateJob(ctx context.Context, j core.Job) error {
 func (m *memory) ListJobs(_ context.Context, taskID string) ([]core.Job, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	jobs := append([]core.Job(nil), m.jobs[taskID]...)
+	jobs := append(make([]core.Job, 0, len(m.jobs[taskID])), m.jobs[taskID]...)
 	sortJobs(jobs)
 	return jobs, nil
 }
@@ -1455,7 +1455,7 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 func (m *memory) ListInterventions(_ context.Context, taskID string) ([]core.Intervention, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	items := append([]core.Intervention(nil), m.interventions[taskID]...)
+	items := append(make([]core.Intervention, 0, len(m.interventions[taskID])), m.interventions[taskID]...)
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].At.Equal(items[j].At) {
 			return items[i].ID < items[j].ID

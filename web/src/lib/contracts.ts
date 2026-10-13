@@ -1,19 +1,18 @@
 import type { InterventionAction, PlanningSessionGoal } from './types'
 
-// The six fixed feed groups plus a collapsed archive so merged
-// and closed work stays reachable without cluttering the factory's WIP view.
-export type GroupKey = 'triage' | 'spec' | 'implement' | 'review' | 'verify' | 'human' | 'done'
+// The Board's columns: the pipeline stages in order, plus a collapsed archive
+// so merged and closed work stays reachable without cluttering the WIP view.
+// No column collects "work waiting on you": that is the Inbox's question, and
+// each column header counts its own operator items (feature-operator-next-action NA-6).
+export type GroupKey = 'triage' | 'spec' | 'implement' | 'verify' | 'review' | 'merge' | 'done'
 
-// "Needs operator" is not a pipeline stage — it collects tasks holding at a
-// human gate from every stage. It leads the board so the work waiting on you
-// is the first thing read, and never the column that scrolled off the edge.
 export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [
-  { key: 'human', label: 'Needs operator' },
   { key: 'triage', label: 'Triage' },
   { key: 'spec', label: 'Plan' },
-  { key: 'implement', label: 'Implementing' },
-  { key: 'review', label: 'Reviewing' },
-  { key: 'verify', label: 'Verifying' },
+  { key: 'implement', label: 'Implement' },
+  { key: 'verify', label: 'Verify' },
+  { key: 'review', label: 'Review' },
+  { key: 'merge', label: 'Merge' },
   { key: 'done', label: 'Completed' },
 ]
 

@@ -351,3 +351,44 @@ func TestTaskFlowRouteStatesStageCopy(t *testing.T) {
 		t.Fatalf("live lease: missed_check_in = %v, want empty", got)
 	}
 }
+
+// The task detail page iterates interventions and jobs unguarded, so the
+// activity read serializes an empty list as [] on the memory backend too:
+// every seeded flow scenario plus a task with neither list populated.
+func TestTaskActivitySerializesEmptyListsAsArrays(t *testing.T) {
+	server, st, ctx, scenarios := seededFlowServer(t)
+	bare := core.Task{ID: "bare", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-bare", PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{bare.ID}
+	for _, scenario := range scenarios {
+		ids = append(ids, scenario.TaskID)
+	}
+	for _, id := range ids {
+		response := flowGet(t, server, "/v1/tasks/"+id+"/activity?workspace_id=demo", true)
+		var item struct {
+			Interventions json.RawMessage `json:"interventions"`
+			Jobs          json.RawMessage `json:"jobs"`
+		}
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &item) != nil {
+			t.Fatalf("%s activity status=%d body=%s", id, response.Code, response.Body.String())
+		}
+		interventions, err := st.ListInterventions(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		jobs, err := st.ListJobs(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for field, list := range map[string]struct {
+			raw   json.RawMessage
+			empty bool
+		}{"interventions": {item.Interventions, len(interventions) == 0}, "jobs": {item.Jobs, len(jobs) == 0}} {
+			if list.empty && string(list.raw) != "[]" || !bytes.HasPrefix(list.raw, []byte("[")) {
+				t.Errorf("%s activity %s=%s, want a JSON array", id, field, list.raw)
+			}
+		}
+	}
+}

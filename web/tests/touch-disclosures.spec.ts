@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 const timestamp = '2026-09-14T11:00:00Z'
 const reason = 'automatic retry is suppressed'
@@ -70,6 +71,7 @@ const design = {
 
 async function mockAPI(page: Page) {
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
@@ -150,7 +152,7 @@ test.describe('touch disclosures', () => {
       await page.keyboard.press('Escape')
       await expect(content).toBeHidden()
       await trigger.tap()
-      await page.getByRole('heading', { name: surface.route === '/tasks' ? 'Tasks' : task.title, exact: true }).tap()
+      await page.getByRole('heading', { name: surface.route === '/tasks' ? 'Board' : task.title, exact: true }).tap()
       await expect(content).toBeHidden()
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
     })
