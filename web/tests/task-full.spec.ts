@@ -4484,7 +4484,7 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
   await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible()
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate).toHaveCount(1)
-  await expect(gate.getByRole('heading', { name: 'The execution plan is waiting for approval.' })).toBeVisible()
+  await expect(gate.getByRole('heading', { name: 'Plan approval' })).toBeVisible()
 
   // The gate is the timeline's last entry — the decision point where the
   // story currently ends.
@@ -4714,9 +4714,7 @@ test('worker warning is scoped to actionable task-owned work at the human gate',
   await page.goto('/tasks/human-gate-worker-scope/full')
 
   await expect(
-    page
-      .getByRole('region', { name: 'Human gate' })
-      .getByRole('heading', { name: 'The execution plan is waiting for approval.' }),
+    page.getByRole('region', { name: 'Human gate' }).getByRole('heading', { name: 'Plan approval' }),
   ).toBeVisible()
   await expect(page.getByText('GitHub review publication retrying')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)

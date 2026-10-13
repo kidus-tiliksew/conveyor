@@ -1,12 +1,14 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
-import type { TaskFlow, TaskFlowStage } from '../src/lib/types'
+import type { ActivityItem, TaskFlow, TaskFlowNextAction, TaskFlowStage } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
-import { serveNextActionsFromActivity } from './helpers/next-action-stub'
+import { projectNextAction, serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // The task flow chart (feature-operator-next-action NA-7, AC-3.2, AC-4.2,
 // AC-4.4). The flow route is mocked with server-shaped projections. Every
 // assertion checks how the chart draws what the server folded. The client
-// derives nothing from events.
+// derives nothing from events. The chart prints no next-action line:
+// NextActionCard, directly above it, is the one pending next action on each
+// task-detail surface (NA-6; DEC-61).
 
 const timestamp = '2026-10-12T10:00:00Z'
 const taskId = 'flow-task'
@@ -30,6 +32,23 @@ const activity = {
   plan: { state: 'approved', version: 1 },
   last_event_at: timestamp,
   needs_attention: false,
+}
+
+// The same task held at the plan approval gate. With no events, no merge gate
+// and no recovery stage, the next-action stub projects plan_approval.
+const gateActivity = {
+  ...activity,
+  task: { ...task, state: 'awaiting_human' },
+  latest_stage: 'spec',
+  plan: { state: 'pending', version: 1 },
+  needs_attention: true,
+}
+
+// A flow's next_action is the compact form of the projection the next-action
+// route serves for the same activity, so the flow and the card always agree.
+function flowNextAction(item: typeof activity): TaskFlowNextAction {
+  const { label, actor, kind, summary } = projectNextAction(item as unknown as ActivityItem)
+  return { label, actor, kind, summary }
 }
 
 // The server states every sentence on a stage. These mock sentences differ
@@ -132,12 +151,7 @@ function claimedFlow(leaseExpiresAt = '2026-10-12T10:20:00Z', missed = missedChe
       closed: false,
       agent_question: false,
     },
-    next_action: {
-      label: 'Agent implementing',
-      actor: 'agent',
-      kind: 'agent_working',
-      summary: 'An agent holds the implementation attempt; no operator action is needed.',
-    },
+    next_action: flowNextAction(activity),
     raw: {
       state: 'running',
       next_stage: 'implement',
@@ -162,12 +176,7 @@ function gateFlow(): TaskFlow {
     ],
     loops: [],
     side: { blocked_by: [], retrying: { attempt: 2, of: 3 }, parked: false, closed: false, agent_question: false },
-    next_action: {
-      label: 'Approve the plan',
-      actor: 'operator',
-      kind: 'gate',
-      summary: 'The plan waits for your approval.',
-    },
+    next_action: flowNextAction(gateActivity),
     raw: {
       state: 'awaiting_approval',
       next_stage: 'implement',
@@ -178,7 +187,12 @@ function gateFlow(): TaskFlow {
   }
 }
 
-async function mockAPI(page: Page, flow: () => TaskFlow, stream?: () => Promise<string | null>) {
+async function mockAPI(
+  page: Page,
+  flow: () => TaskFlow,
+  stream?: () => Promise<string | null>,
+  item: typeof activity = activity,
+) {
   const counts = { flow: 0, detail: 0 }
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await serveNextActionsFromActivity(page)
@@ -186,7 +200,9 @@ async function mockAPI(page: Page, flow: () => TaskFlow, stream?: () => Promise<
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'admin' }) })
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }),
+      })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
     if (path === '/v1/pending-proposals')
       return route.fulfill({ json: { items: [], attention: { total: 0, task_count: 0, pending_proposal_count: 0 } } })
@@ -196,7 +212,7 @@ async function mockAPI(page: Page, flow: () => TaskFlow, stream?: () => Promise<
     }
     if (path === `/v1/tasks/${taskId}/activity`) {
       counts.detail++
-      return route.fulfill({ json: activity })
+      return route.fulfill({ json: item })
     }
     if (path.endsWith('/stream')) {
       const body = stream ? await stream() : null
@@ -205,7 +221,7 @@ async function mockAPI(page: Page, flow: () => TaskFlow, stream?: () => Promise<
     }
     if (path === '/v1/activity' || path === '/v1/task-operations')
       return route.fulfill({
-        json: [activity],
+        json: [item],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '50', 'X-Conveyor-Offset': '0' },
       })
     if (path === '/v1/workers')
@@ -274,7 +290,7 @@ test('draws stages top to bottom with the server status word, and both approval 
 })
 
 test('marks the waiting gate and omits a gate the policy turned off', async ({ page }) => {
-  await mockAPI(page, () => gateFlow())
+  await mockAPI(page, () => gateFlow(), undefined, gateActivity)
   const flow = await openFlow(page, `/tasks/${taskId}/full`)
   const gate = flow.locator('[data-flow-gate="plan_approval"]')
   await expect(gate).toBeVisible()
@@ -508,18 +524,42 @@ test('collapses superseded attempts, and Show raw state reveals the raw projecti
   await expect(sheet.getByRole('button', { name: 'Hide raw state' })).toHaveAttribute('aria-expanded', 'true')
 })
 
-test('shows the pending next action under the chart as the server states it', async ({ page }) => {
-  await mockAPI(page, () => gateFlow())
-  const flow = await openFlow(page, `/tasks/${taskId}/full`)
-  const pending = flow.locator('[data-flow-next-action]')
-  await expect(pending).toHaveText('The plan waits for your approval.')
-  const [stages, line] = await Promise.all([
-    flow.getByRole('list', { name: 'Stages' }).boundingBox(),
-    pending.boundingBox(),
-  ])
-  if (!stages || !line) throw new Error('flow geometry missing')
-  expect(line.y).toBeGreaterThanOrEqual(stages.y + stages.height)
-})
+// DEC-61: the next-action summary appears once per task-detail surface, inside
+// the Next action card above the chart, both while an agent works and while
+// the plan gate is open (NA-6, NA-7; AC-4.4).
+const states = [
+  { name: 'working', flow: claimedFlow, item: activity, summary: 'An agent is working on this task.' },
+  { name: 'plan_approval', flow: gateFlow, item: gateActivity, summary: 'The execution plan is waiting for approval.' },
+] as const
+
+for (const surface of surfaces) {
+  for (const state of states) {
+    test(`states the next action once, above the chart, on the ${surface.name} (${state.name})`, async ({ page }) => {
+      await mockAPI(page, () => state.flow(), undefined, state.item)
+      const flow = await openFlow(page, surface.url)
+      // The sheets open over the board or the task list, which state the
+      // summary on their own rows; the task-detail surface is the dialog.
+      const detail = surface.inDialog ? page.getByRole('dialog', { name: 'Task detail' }) : page
+      const card = detail.getByRole('region', { name: 'Next action' })
+      await expect(card.getByText(state.summary, { exact: true })).toHaveCount(1)
+      await expect(detail.getByText(state.summary, { exact: true })).toHaveCount(1)
+      await expect(flow.locator('[data-flow-next-action]')).toHaveCount(0)
+      await expect(flow).not.toContainText(state.summary)
+      // While the plan gate is open, its timeline card heads with the label,
+      // not a second copy of the summary.
+      const gate = detail.getByRole('region', { name: 'Human gate' })
+      if (state.name === 'plan_approval') {
+        await expect(gate.getByRole('heading', { name: 'Plan approval' })).toBeVisible()
+        await expect(gate).not.toContainText(state.summary)
+      } else await expect(gate).toHaveCount(0)
+      const precedes = await card.evaluate(
+        (next, chart) => Boolean(next.compareDocumentPosition(chart as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
+        await flow.elementHandle(),
+      )
+      expect(precedes).toBe(true)
+    })
+  }
+}
 
 test('a detail refresh refreshes the flow', async ({ page }) => {
   let released = false

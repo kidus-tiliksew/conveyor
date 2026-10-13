@@ -54,7 +54,9 @@ function flowNodes(flow: TaskFlow): FlowNode[] {
 }
 
 // The task flow chart on every task-detail surface (feature-operator-next-action
-// NA-7). The server folds the flow; this component draws it and nothing more.
+// NA-7). The server folds the flow; this component draws its stages, gates,
+// loops and side conditions and nothing more. It prints no next-action line:
+// NextActionCard owns AC-4.4 on the same surface.
 export function TaskFlowChart({ taskId }: { taskId: string }) {
   const { data: flow, isLoading, error } = useTaskFlow(taskId)
   const [selectedId, setSelectedId] = useState<TaskFlowStageId | null>(null)
@@ -70,11 +72,9 @@ export function TaskFlowChart({ taskId }: { taskId: string }) {
           {isLoading && <Skeleton className="h-48" />}
           {error != null && <p className="text-sm text-failure">{String(error)}</p>}
           {flow && <FlowDiagram flow={flow} onSelect={setSelectedId} />}
-          {flow?.next_action.summary && (
-            <p data-flow-next-action className="border-t border-border pt-3 text-sm text-markdown">
-              {flow.next_action.summary}
-            </p>
-          )}
+          {/* No next-action line here: NextActionCard, placed directly above the
+              chart, is the one pending next action beside the stage flow
+              (feature-operator-next-action NA-6, NA-7; AC-4.4; DEC-61). */}
         </CardContent>
       </Card>
       {flow && selected && <TaskFlowStageSheet stage={selected} raw={flow.raw} onClose={() => setSelectedId(null)} />}
