@@ -263,7 +263,7 @@ test('new task removes title input and submits description for AI title generati
 
   await expect.poll(submitted).toContain('Generate this title from context')
   expect(submitted()).not.toContain('setup')
-  await expect(page).toHaveURL(/\/tasks\?task=generated$/)
+  await expect(page).toHaveURL(/\/tasks\/generated\?view=list$/)
   expect(submitted()).not.toContain('"title"')
   // DEC-55(2): no execution-mode selector; hold defaults off and is omitted.
   expect(submitted()).not.toContain('"mode"')

@@ -1,0 +1,42 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { fetchTaskFlow } from '../../lib/api'
+import { taskDetailQueryKey } from '../../lib/query-keys'
+import { useWorkspaceSelection } from '../app-shell'
+
+export function taskFlowQueryKey(workspace: string, taskId: string) {
+  return ['task-flow', workspace, taskId] as const
+}
+
+// The flow chart refreshes when the task detail does (NA-7). It doesn't refresh
+// on its own clock: SSE invalidation, blocker polling and mutations all refresh
+// the detail entry. This hook watches that cache entry without adding an
+// observer to it (an observer without the detail's queryFn would take over its
+// refetches), and refetches the flow each time the entry updates. That way the
+// chart never disagrees with the timeline under it.
+export function useTaskFlow(taskId: string) {
+  const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const subscribe = useCallback(
+    (onChange: () => void) => queryClient.getQueryCache().subscribe(onChange),
+    [queryClient],
+  )
+  const dataUpdatedAt = useSyncExternalStore(
+    subscribe,
+    () => queryClient.getQueryState(taskDetailQueryKey(workspace, taskId))?.dataUpdatedAt ?? 0,
+  )
+  const flow = useQuery({
+    queryKey: taskFlowQueryKey(workspace, taskId),
+    queryFn: ({ signal }) => fetchTaskFlow(workspace, taskId, signal),
+    enabled: Boolean(workspace && taskId),
+  })
+  // The flow's own first fetch already reads the detail as it stood when the
+  // chart mounted, so only later detail updates trigger a refetch.
+  const seen = useRef(dataUpdatedAt)
+  useEffect(() => {
+    if (dataUpdatedAt === seen.current) return
+    seen.current = dataUpdatedAt
+    void queryClient.invalidateQueries({ queryKey: taskFlowQueryKey(workspace, taskId), exact: true })
+  }, [dataUpdatedAt, queryClient, workspace, taskId])
+  return flow
+}

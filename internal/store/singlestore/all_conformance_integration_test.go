@@ -13,8 +13,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // sharedDatabase is the one isolated SingleStore database a test binary
@@ -142,8 +145,23 @@ func resetSharedDatabase(t *testing.T) {
 	t.Logf("fixture reset %d tables in %s", len(sharedDatabase.tables), time.Since(started).Round(time.Millisecond))
 }
 func TestSingleStoreConformanceIntegration(t *testing.T) {
-	storetest.RunAll(t, storetest.Factory{ProductionCapable: true,
-		Capabilities: storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
+	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
+		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
+			service := &workorder.Service{
+				Store:          st,
+				ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+					return githubtrigger.ReviewTarget{Number: 7, HeadSHA: head}, nil
+				},
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
+		},
+		ProductionCapable: true,
+		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
 			st := integrationStore(t)
 			ws := "conformance-" + core.NewTaskID()
@@ -212,6 +230,10 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return singlestoreSeedEvents(t, st, ctx, base, events)
+			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
+				if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET setup_contract=? WHERE workspace_id=? AND id=?`, raw, ws, taskID); err != nil {
+					t.Fatal(err)
+				}
 			}}
 		}})
 }

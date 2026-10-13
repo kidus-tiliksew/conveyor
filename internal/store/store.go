@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -87,6 +88,10 @@ var (
 	// owned claim into one response so the upload route cannot disclose another
 	// task's ownership.
 	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
+	// ErrPlanRevisionGateUnreadable marks an awaiting plan-revision gate whose
+	// latest transition or request payload cannot be read. Listings treat it as
+	// pending; writes stay refused.
+	ErrPlanRevisionGateUnreadable = errors.New("plan-revision gate is unreadable")
 )
 
 // WorkspaceControlStore owns durable workspace resources independently of a
@@ -203,6 +208,11 @@ type TaskStore interface {
 	// attempt and persists its redirect, task transition, job, work order, and
 	// dispatch audit. A returned existing order is an idempotent success.
 	CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request ConflictFixRequest) (ConflictFixResult, error)
+	// ClaimBaseConflictCheck stamps base_conflict_checked_at on one submitted
+	// work order in the selected workspace only while it is unset. True means
+	// this caller owns the single pre-dispatch mergeability read for that head
+	// (feature-bounded-automatic-recovery AR-4); updated_at is left alone.
+	ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
 	// CreateClaimedVerificationEvidence atomically derives evidence ownership
 	// from an exact live implement claim (component-artifacts; DEC-53).
@@ -241,6 +251,13 @@ type WorkOrderStore interface {
 	GetReviewPublication(ctx context.Context, reviewWorkOrderID string) (core.ReviewPublication, error)
 	UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error
 	ReconcileReviewPublications(ctx context.Context) (int, error)
+	// ListAutomaticPublicationRetries lists failed GitHub-issue and review
+	// publications due for their once-per-window automatic re-enqueue (AR-5).
+	ListAutomaticPublicationRetries(ctx context.Context, now time.Time) ([]AutomaticPublicationRetry, error)
+	// AutomaticPublicationRetryCommand re-checks one retry in its transaction,
+	// moves it failed->retrying, stamps it, records the automatic event, and
+	// enqueues its job. It reports false when the row is no longer due.
+	AutomaticPublicationRetryCommand(ctx context.Context, lease taskops.TaskLease, retry AutomaticPublicationRetry, now time.Time) (bool, error)
 	AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error
 	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
 	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
@@ -359,6 +376,7 @@ type DocumentStore interface {
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).
 	PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error)
+	CountOperatorAttention(ctx context.Context) (int, error)
 }
 
 // PlanningStore owns the planning-session, bundle and artifact contract.
@@ -430,6 +448,9 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListFactoryActs returns the workspace factory log, newest first, after the
+	// Go filter. The query may only narrow candidates.
+	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)
 	// ListEventsAfter treats a nonzero afterID as an anchor event owned by the
 	// requested task and workspace and returns the events strictly after its
 	// (at, id) tuple in ascending (at, id) order. Zero starts at the beginning.
@@ -559,6 +580,7 @@ type memory struct {
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask
+	readClockPolicy             func(workspace string) (config.RecoveryPolicy, time.Duration, error)
 	mu                          sync.RWMutex
 	tasks                       map[string]core.Task
 	repositories                map[string]map[string]string
@@ -666,6 +688,20 @@ func (m *memory) ListEvents(_ context.Context, taskID string) ([]core.Event, err
 	return events, nil
 }
 
+func (m *memory) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	var events []core.Event
+	for id, task := range m.tasks {
+		if task.Workspace != workspace {
+			continue
+		}
+		events = append(events, m.events[id]...)
+	}
+	return SelectFactoryActs(events, since, limit), nil
+}
+
 func (m *memory) CountEvents(_ context.Context, taskID, kind string) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -719,15 +755,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	for _, order := range orders {
-		if order.Stage == core.StageImplement || order.Stage == core.StageVerify {
-			blockers := blockersByTask[order.TaskID]
-			order.BlockingTaskIDs = append([]string(nil), blockers.BlockingTaskIDs...)
-			order.UnsatisfiableTaskIDs = append([]string(nil), blockers.UnsatisfiableTaskIDs...)
-			if len(order.BlockingTaskIDs) > 0 {
-				order.Claimable = false
-			}
-		}
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockersByTask[order.TaskID]))
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()

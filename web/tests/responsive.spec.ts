@@ -4,6 +4,7 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import { waitForSheetSettled } from './helpers/sheet'
 import { callerIdentity } from './helpers/caller-identity'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }
@@ -88,6 +89,7 @@ async function mockShell(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
@@ -121,7 +123,12 @@ async function mockShell(page: Page) {
         json: { workspace: 'demo', repos: [{ name: 'conveyor', url: 'https://example.test/conveyor', base: 'main' }] },
       })
     if (path === '/v1/pending-proposals')
-      return route.fulfill({ json: { items: [], attention: { task_count: 1, pending_proposal_count: 0, total: 1 } } })
+      return route.fulfill({
+        json: {
+          items: [],
+          attention: { task_count: 1, pending_proposal_count: 0, operator_decisions: 1, total: 1 },
+        },
+      })
     if (path === '/v1/activity') return paged(activity)
     if (path === '/v1/task-operations') return paged(operations)
     if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary] })
@@ -237,6 +244,7 @@ const layoutRequirementSummary = {
 // explorer still reads only once its trigger is pressed.
 async function mockRecordDetail(page: Page) {
   const lineageReads: string[] = []
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', (route) => {
     const path = new URL(route.request().url()).pathname
     const detail = path.match(/^\/v1\/tasks\/(task-layout(?:-draft)?)\/(activity|events\/stream|verification)$/)
@@ -362,7 +370,7 @@ test.describe('phone', () => {
     await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Workspaces' })).toBeHidden()
     await expect(page.getByRole('navigation', { name: 'Primary' })).toBeHidden()
-    await expect(page.getByRole('link', { name: '1 items need attention' })).toBeVisible()
+    await expect(page.getByRole('link', { name: '1 decisions waiting in the Inbox' })).toBeVisible()
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: 'test-results/shots/responsive-phone-board.png', animations: 'disabled' })
 
@@ -372,9 +380,9 @@ test.describe('phone', () => {
     await expect(drawer.getByRole('button', { name: 'Switch to Other' })).toBeVisible()
     await page.screenshot({ path: 'test-results/shots/responsive-phone-drawer.png', animations: 'disabled' })
 
-    await drawer.getByRole('link', { name: 'Tasks' }).click()
+    await drawer.getByRole('link', { name: /Inbox/ }).click()
     await expect(drawer).toBeHidden()
-    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
   })
 
   test('the tasks list stacks each row and keeps the page inside the viewport', async ({ page }) => {
@@ -417,8 +425,8 @@ test.describe('phone', () => {
     await mockShell(page)
     const lineageReads = await mockRecordDetail(page)
 
-    // The Tasks list panel carries the most controls, including copy-link.
-    await page.goto('/tasks?task=task-layout')
+    // The Board list panel carries the most controls.
+    await page.goto('/tasks/task-layout?view=list')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
@@ -426,7 +434,6 @@ test.describe('phone', () => {
     await waitForSheetSettled(panel)
     const explorer = header.getByRole('button', { name: 'Knowledge explorer' })
     await expectIconOnlyExplorer(explorer)
-    await expect(header.getByRole('button', { name: 'Copy link to this task' })).toBeVisible()
     await expectHeaderControlsClear(header, title)
     await expectContextRows(page, true)
     await expectPlanHeaderUnbroken(page)
@@ -653,7 +660,7 @@ test.describe('desktop', () => {
     await mockShell(page)
     const lineageReads = await mockRecordDetail(page)
 
-    await page.goto('/tasks?task=task-layout')
+    await page.goto('/tasks/task-layout?view=list')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })

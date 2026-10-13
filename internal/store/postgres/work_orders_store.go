@@ -141,6 +141,7 @@ session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expire
 queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execution_deadline,
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
+COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
 
@@ -461,6 +462,10 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 	return created, err
 }
 
+// reviewSeatRecoveryExhaustedSQL mirrors store.ReviewSeatRecoveryExhausted
+// for a review work_orders row.
+const reviewSeatRecoveryExhaustedSQL = `state='queued' AND retry_suppressed AND retry_suppression_reason='` + core.AutomaticRecoveryExhaustedReason + `' AND session_id='' AND worker_id=''`
+
 func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
@@ -515,8 +520,8 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		SELECT COALESCE(max(review_round),0) AS review_round FROM work_orders
 		WHERE workspace_id=$1 AND task_id=$2 AND stage='review'
 	) SELECT latest.review_round,
-		count(*) FILTER (WHERE state IN ('queued','claimed','submitted')),
-		count(*) FILTER (WHERE state='timed_out' OR (state='completed' AND (last_attempt_outcome<>'' OR retry_suppressed OR last_failure_message<>'') AND (attempt_id='' OR last_attempt_id=attempt_id)))
+		count(*) FILTER (WHERE state IN ('queued','claimed','submitted') AND NOT (`+reviewSeatRecoveryExhaustedSQL+`)),
+		count(*) FILTER (WHERE state='timed_out' OR (`+reviewSeatRecoveryExhaustedSQL+`) OR (state='completed' AND (last_attempt_outcome<>'' OR retry_suppressed OR last_failure_message<>'') AND (attempt_id='' OR last_attempt_id=attempt_id)))
 	FROM latest LEFT JOIN work_orders ON workspace_id=$1 AND task_id=$2 AND stage='review' AND work_orders.review_round=latest.review_round
 	GROUP BY latest.review_round`, workspaceID, request.TaskID).Scan(&latestRound, &activeCount, &recoverableCount); err != nil {
 		return store.ReviewRoundRetryResult{}, err
@@ -533,6 +538,19 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	}
 	if latestRound == 0 || latestRound != request.PriorRound || recoverableCount == 0 || activeCount != 0 || resolved {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: task %s has no matching recoverable non-progressing review round", store.ErrReviewRetryConflict, request.TaskID)
+	}
+	if request.Automatic {
+		automaticRows, listErr := q.ListEvents(ctx, db.ListEventsParams{TaskID: nullableText(request.TaskID), WorkspaceID: workspaceID})
+		if listErr != nil {
+			return store.ReviewRoundRetryResult{}, listErr
+		}
+		events := make([]core.Event, len(automaticRows))
+		for i := range automaticRows {
+			events[i] = eventFromDB(automaticRows[i])
+		}
+		if err = store.AutomaticReviewRetryRefusal(request, &store.ReviewRecoveryState{AutomaticRetryExhausted: store.AutomaticReviewAct(events, latestRound)}); err != nil {
+			return store.ReviewRoundRetryResult{}, err
+		}
 	}
 	newRound := request.PriorRound + 1
 	for i, job := range jobs {
@@ -599,7 +617,11 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	}
 	var timedOutIDs []string
 	var inconsistentIDs []string
+	exhaustedIDs := []string{}
 	for _, order := range timedOutOrders {
+		if store.ReviewSeatRecoveryExhausted(order) {
+			exhaustedIDs = append(exhaustedIDs, order.ID)
+		}
 		if order.State == core.WorkOrderTimedOut {
 			timedOutIDs = append(timedOutIDs, order.ID)
 		}
@@ -608,7 +630,10 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 	}
 	retryTask := taskFromDB(before)
-	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
+	payload := map[string]any{"request_id": request.RequestID, "workspace_id": workspaceID, "task_id": request.TaskID, "actor": actor.ID, "reason": request.Reason, "prior_round": request.PriorRound, "new_round": newRound, "pr_head": request.PRHead, "timed_out_work_order_ids": timedOutIDs, "inconsistent_work_order_ids": inconsistentIDs, "exhausted_work_order_ids": exhaustedIDs, "setup_name": retryTask.SetupName, "setup_contract": retryTask.SetupContract}
+	if request.Automatic {
+		payload["automatic"] = true
+	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -720,6 +745,9 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	if recovery == nil || recovery.ReviewRound != request.Round {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: task %s has no recoverable interrupted review seats or has a conflicting active attempt", store.ErrReviewRetryConflict, request.TaskID)
 	}
+	if err = store.AutomaticInterruptedRecoveryRefusal(request, recovery); err != nil {
+		return store.InterruptedReviewRecoveryResult{}, err
+	}
 	now := time.Now().UTC()
 	result := store.InterruptedReviewRecoveryResult{
 		RequestID:       request.RequestID,
@@ -764,7 +792,11 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 			return store.InterruptedReviewRecoveryResult{}, err
 		}
 	}
-	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}), At: now}); err != nil {
+	recoveredPayload := map[string]any{"workspace_id": workspaceID, "review_round": request.Round, "request_id": request.RequestID, "actor": actor.ID, "recovered_seats": len(result.RecoveredOrders), "retained_completed_seats": len(result.RetainedOrders)}
+	if request.Automatic {
+		recoveredPayload["automatic"] = true
+	}
+	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_recovered", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(recoveredPayload), At: now}); err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
 	resultJSON, err := json.Marshal(result)
@@ -1353,14 +1385,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	if _, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRedispatch); transitionErr != nil {
 		return core.WorkOrder{}, transitionErr
 	}
-	row := tx.QueryRow(ctx, `UPDATE work_orders SET state='queued', claimant_id='',
-		session_id='', client_token_hash='', agent='', model='', worker_id='', lease_expires_at=NULL, model_enforcement='',
-		`+clearExecutionPinsSQL+`,
-		queue_entered_at=$1, queue_deadline=$2, execution_started_at=NULL,
-		execution_deadline=NULL, redispatch_count=redispatch_count+1, progress='', updated_at=$1
-		WHERE workspace_id=$3 AND id=$4 RETURNING `+workOrderColumns,
-		now, now.Add(queueTimeout), workspace(ctx), id)
-	order, err = scanWorkOrder(row)
+	order, err = writeRedispatchedWorkOrder(ctx, tx, id, now, queueTimeout, 0, time.Time{}, true)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -1524,7 +1549,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if len(refreeze) != 0 && refreeze[0] != nil {
 		order.ExecutionTimeoutText = refreeze[0].ExecutionTimeoutText
 	}
-	order, err = scanWorkOrder(tx.QueryRow(ctx, `UPDATE work_orders SET state='queued',claimant_id='',session_id='',attempt_id='',client_token_hash='',agent='',model='',worker_id='',lease_expires_at=NULL,model_enforcement='',execution_started_at=NULL,execution_deadline=NULL,last_attempt_outcome='',retry_suppressed=false,retry_suppression_reason='',automatic_retry_count=0,next_retry_at=NULL,queue_entered_at=$1,queue_deadline=$2,redispatch_count=redispatch_count+1,operator_direction=$3,`+clearExecutionPinsSQL+`,execution_timeout=$4,updated_at=$1 WHERE workspace_id=$5 AND id=$6 AND state IN ('queued','stale','timed_out') RETURNING `+workOrderColumns, now, now.Add(queueTimeout), direction, order.ExecutionTimeoutText, workspace(ctx), id))
+	order, err = writeRecoveredWorkOrder(ctx, tx, id, now, queueTimeout, direction, order.ExecutionTimeoutText, 0, time.Time{})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
 	}
@@ -1553,12 +1578,20 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := s.boundary.Query(ctx, `SELECT DISTINCT task_id FROM work_orders
+	bound, policyErr := clockPolicyBound(ctx, s)
+	if policyErr != nil {
+		return nil, policyErr
+	}
+	query := `SELECT DISTINCT task_id FROM work_orders
 		WHERE workspace_id=$1 AND (
 			(state IN ('queued','claimed') AND execution_deadline IS NOT NULL AND execution_deadline <= $2)
 			OR (state='claimed' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $2)
-			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)
-		) ORDER BY task_id`, workspace(ctx), now)
+			OR (state='queued' AND execution_started_at IS NULL AND queue_blocked_at IS NULL AND queue_deadline <= $2)`
+	if bound != 0 {
+		query += automaticRecoveryElapsedSQL
+	}
+	query += `) ORDER BY task_id`
+	rows, err := s.boundary.Query(ctx, query, workspace(ctx), now)
 	if err != nil {
 		return nil, err
 	}
@@ -1656,7 +1689,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 				count++
 			}
 		}
-		return nil
+		acted, recoveryErr := s.applyAutomaticRecoveryTx(ctx, tx, taskID, now)
+		count += acted
+		return recoveryErr
 	})
 	return count, err
 }
@@ -2311,7 +2346,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
-	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, rateLimitObservedAt pgtype.Timestamptz
+	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, baseConflictChecked, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
 		&order.ReviewRound, &order.ReviewSeat, &order.RequiredModel, &order.RequiredHarness, &order.RequiredEffort, &harnessConfig, &order.ExecutionTimeoutText, &order.ModelEnforcement,
@@ -2319,6 +2354,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&queueEntered, &queueDeadline, &queueBlockedAt, &executionStarted, &executionDeadline,
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
+		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
@@ -2365,6 +2401,15 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	}
 	if nextRetryAt.Valid {
 		order.NextRetryAt = nextRetryAt.Time
+	}
+	if recoveryWindow.Valid {
+		order.AutomaticRecoveryWindowStartedAt = recoveryWindow.Time
+	}
+	if nextAutomaticRecovery.Valid {
+		order.NextAutomaticRecoveryAt = nextAutomaticRecovery.Time
+	}
+	if baseConflictChecked.Valid {
+		order.BaseConflictCheckedAt = baseConflictChecked.Time
 	}
 	if len(rateLimit) > 0 && string(rateLimit) != "{}" {
 		var status core.RateLimitStatus

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -79,7 +80,7 @@ const githubLifecycleColumns = `task_id, repository, spec_version, source,
 source_issue_number, issue_number, issue_url, outcome, state, create_state,
 create_attempts, reconcile_misses, attempts, forge_error_category, last_error,
 forge_author_class, forge_author_user_id,
-created_at, updated_at`
+created_at, updated_at, automatic_reenqueue_at`
 
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
@@ -111,7 +112,8 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 				return err
 			}
 		}
-		return s.queue.enqueueGitHubIssuePublicationTx(ctx, tx, workspace(ctx), lifecycle.TaskID)
+		_, err = s.queue.enqueueGitHubIssuePublicationTx(ctx, tx, workspace(ctx), lifecycle.TaskID)
+		return err
 	})
 }
 
@@ -165,9 +167,11 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 	})
 }
 
+// ReconcileGitHubLifecycles repairs queued or retrying outbox rows whose job
+// is missing. A failed row is re-enqueued only by the bounded AR-5 sweep.
 func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 	rows, err := s.boundary.Query(ctx, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
-		WHERE workspace_id=$1 AND state <> 'published' ORDER BY created_at`, workspace(ctx))
+		WHERE workspace_id=$1 AND state IN ('queued','retrying') ORDER BY created_at`, workspace(ctx))
 	if err != nil {
 		return 0, err
 	}
@@ -196,15 +200,19 @@ func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecycle, error) {
 	var lifecycle core.GitHubLifecycle
 	var state, createState string
+	var reenqueuedAt pgtype.Timestamptz
 	err := row.Scan(&lifecycle.TaskID, &lifecycle.Repository, &lifecycle.SpecVersion,
 		&lifecycle.Source, &lifecycle.SourceIssueNumber, &lifecycle.IssueNumber,
 		&lifecycle.IssueURL, &lifecycle.Outcome, &state, &createState,
 		&lifecycle.CreateAttempts, &lifecycle.ReconcileMisses, &lifecycle.Attempts,
 		&lifecycle.ForgeErrorCategory, &lifecycle.LastError,
 		&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID,
-		&lifecycle.CreatedAt, &lifecycle.UpdatedAt)
+		&lifecycle.CreatedAt, &lifecycle.UpdatedAt, &reenqueuedAt)
 	lifecycle.State = core.GitHubPublicationState(state)
 	lifecycle.CreateState = core.GitHubCreateState(createState)
+	if reenqueuedAt.Valid {
+		lifecycle.AutomaticReenqueueAt = reenqueuedAt.Time
+	}
 	return lifecycle, err
 }
 
@@ -212,7 +220,8 @@ const reviewPublicationColumns = `review_work_order_id, task_id, job_id, verdict
 reason_code, summary, feedback, reviewed_commit_sha, reviewer_model,
 reviewer_session, same_model_as_implementer, review_round, review_seat,
 required_model, required_harness, required_effort, model_enforcement, state, attempts, check_run_id,
-comment_id, forge_error_category, last_error, forge_author_class, forge_author_user_id, created_at, updated_at`
+comment_id, forge_error_category, last_error, forge_author_class, forge_author_user_id, created_at, updated_at,
+automatic_reenqueue_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
@@ -258,7 +267,8 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx pgx.Tx, q *db.Q
 }
 
 func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx pgx.Tx, reviewWorkOrderID string) error {
-	return s.queue.enqueueReviewPublicationTx(ctx, tx, workspace(ctx), reviewWorkOrderID)
+	_, err := s.queue.enqueueReviewPublicationTx(ctx, tx, workspace(ctx), reviewWorkOrderID)
+	return err
 }
 
 func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.ReviewPublication, error) {
@@ -429,6 +439,7 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPublication, error) {
 	var publication core.ReviewPublication
 	var state string
+	var reenqueuedAt pgtype.Timestamptz
 	err := row.Scan(&publication.ReviewWorkOrderID, &publication.TaskID, &publication.JobID,
 		&publication.Verdict, &publication.ReasonCode, &publication.Summary,
 		&publication.Feedback, &publication.ReviewedCommitSHA, &publication.ReviewerModel,
@@ -437,7 +448,10 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 		&publication.RequiredHarness, &publication.RequiredEffort, &publication.ModelEnforcement, &state,
 		&publication.Attempts, &publication.CheckRunID, &publication.CommentID,
 		&publication.ForgeErrorCategory, &publication.LastError, &publication.ForgeAuthorClass, &publication.ForgeAuthorUserID,
-		&publication.CreatedAt, &publication.UpdatedAt)
+		&publication.CreatedAt, &publication.UpdatedAt, &reenqueuedAt)
 	publication.State = core.ReviewPublicationState(state)
+	if reenqueuedAt.Valid {
+		publication.AutomaticReenqueueAt = reenqueuedAt.Time
+	}
 	return publication, err
 }

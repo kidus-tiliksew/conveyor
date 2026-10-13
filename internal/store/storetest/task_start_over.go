@@ -95,11 +95,13 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 				}
 			}
 			request := core.TaskStartOverRequest{TaskID: old.ID, RequestID: "restart-1", Reason: "Try a fresh approach", Note: "Keep the API small."}
-			before, _ := st.ListEvents(ctx, old.ID)
+			before, err := st.ListEvents(ctx, old.ID)
+			requireOK(t, err)
 			if _, err = taskops.New(st).StartOver(ctx, request); !errors.Is(err, store.ErrStartOverConfirmDocuments) {
 				t.Fatalf("missing capability: %v", err)
 			}
-			after, _ := st.ListEvents(ctx, old.ID)
+			after, err := st.ListEvents(ctx, old.ID)
+			requireOK(t, err)
 			if len(before) != len(after) {
 				t.Fatal("capability refusal changed events")
 			}
@@ -172,12 +174,14 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			if err != nil || !strings.Contains(first.OperatorDirection, request.Reason) || !strings.Contains(first.OperatorDirection, request.Note) {
 				t.Fatalf("first direction=%q err=%v", first.OperatorDirection, err)
 			}
-			before, _ = st.ListEvents(ctx, old.ID)
+			before, err = st.ListEvents(ctx, old.ID)
+			requireOK(t, err)
 			replay, err := taskops.New(st).StartOver(ctx, request)
 			if err != nil || replay.Created || replay.Successor.ID != successor.ID {
 				t.Fatalf("replay=%+v err=%v", replay, err)
 			}
-			after, _ = st.ListEvents(ctx, old.ID)
+			after, err = st.ListEvents(ctx, old.ID)
+			requireOK(t, err)
 			if len(before) != len(after) {
 				t.Fatal("replay appended events")
 			}
@@ -347,7 +351,8 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		if err != nil || beforeProposal.Retired {
 			t.Fatalf("proposal=%+v err=%v", beforeProposal, err)
 		}
-		before, _ := st.ListEvents(ctx, old.ID)
+		before, err := st.ListEvents(ctx, old.ID)
+		requireOK(t, err)
 		faultCtx := store.WithTaskStartOverFault(ctx, func(step string) error {
 			if step == "successor" {
 				return fmt.Errorf("injected successor failure")
@@ -357,7 +362,8 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		if _, err = taskops.New(st).StartOver(faultCtx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "rollback", Reason: "retry", CanConfirmDocuments: true}); err == nil {
 			t.Fatal("injected successor failure accepted")
 		}
-		after, _ := st.ListEvents(ctx, old.ID)
+		after, err := st.ListEvents(ctx, old.ID)
+		requireOK(t, err)
 		got, err := st.GetTask(ctx, old.ID)
 		if err != nil || got.State != old.State || got.SupersededBy != "" || len(before) != len(after) {
 			t.Fatalf("partial cancellation task=%+v err=%v", got, err)
@@ -442,13 +448,15 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		if err != nil || len(inherited.Requirements) != 1 || inherited.Requirements[0].ID != keepReq.ID || inherited.Requirements[0].Version != 1 || len(inherited.Designs) != 1 || inherited.Designs[0].ID != keepDesign.ID || inherited.Designs[0].Version != 1 {
 			t.Fatalf("successor context=%+v err=%v", inherited, err)
 		}
-		retiredEvents, _ := st.ListEvents(ctx, old.ID)
+		retiredEvents, err := st.ListEvents(ctx, old.ID)
+		requireOK(t, err)
 		for _, event := range retiredEvents {
 			if event.Kind == store.TaskStartOverContextDropped {
 				t.Fatalf("drop event on retired task: %+v", event)
 			}
 		}
-		successorEvents, _ := st.ListEvents(ctx, result.Successor.ID)
+		successorEvents, err := st.ListEvents(ctx, result.Successor.ID)
+		requireOK(t, err)
 		drops := store.StartOverDroppedContextFromEvents(successorEvents)
 		if !reflect.DeepEqual(drops, result.DroppedContext) {
 			t.Fatalf("successor drops=%+v", drops)
@@ -466,7 +474,8 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		if err != nil || replay.Created || !reflect.DeepEqual(replay.DroppedContext, result.DroppedContext) {
 			t.Fatalf("replay=%+v err=%v", replay, err)
 		}
-		replayEvents, _ := st.ListEvents(ctx, result.Successor.ID)
+		replayEvents, err := st.ListEvents(ctx, result.Successor.ID)
+		requireOK(t, err)
 		replayDrops := 0
 		for _, event := range replayEvents {
 			if event.Kind == store.TaskStartOverContextDropped {

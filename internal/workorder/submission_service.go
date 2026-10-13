@@ -221,12 +221,11 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if err = s.completeImplementationSubmission(ctx, order, headSHA); err != nil {
 		return nil, err
 	}
-	if order.ReasonCode == "merge-conflict" {
-		baseline := order.BaselineSHA
-		if baseline == "" {
-			baseline = task.ApprovedHeadSHA
-		}
-		if _, err = s.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, reviewedHead, conflictRefreshScope(task), "merge-conflict"); err != nil {
+	// Only a fix dispatched from the approved head refreshes that approval. A
+	// pre-review fix (baseline is the unreviewed conflicting head) is an
+	// ordinary submission (feature-bounded-automatic-recovery AR-4).
+	if order.ReasonCode == "merge-conflict" && task.ApprovedHeadSHA != "" && (order.BaselineSHA == "" || order.BaselineSHA == task.ApprovedHeadSHA) {
+		if _, err = s.Store.MarkTaskApprovalStale(ctx, task.ID, task.ApprovedHeadSHA, reviewedHead, conflictRefreshScope(task), "merge-conflict"); err != nil {
 			return nil, err
 		}
 	} else if task.ApprovalStale && reviewedHead != "" && reviewedHead != task.RefreshHeadSHA {

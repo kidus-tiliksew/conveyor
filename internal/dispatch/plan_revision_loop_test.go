@@ -83,7 +83,7 @@ func TestPlanRevisionApproveReentersPlanAndBindsFreshImplementationToV2(t *testi
 	if err != nil || !ok || approved.Version != 2 || approved.Content != strings.TrimSpace(revised.Markdown) {
 		t.Fatalf("approved plan=%+v ok=%t err=%v", approved, ok, err)
 	}
-	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[2].ID, core.WorkOrderClaim{SessionID: "resumed-implementation", ClientToken: "resumed-token", WorkerID: "implement-worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[2].ID, core.WorkOrderClaim{SessionID: "resumed-implementation", ClientToken: "resumed-token", WorkerID: "implement-worker-approve", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,10 @@ func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.St
 	if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", WorkerID: "implement-worker", Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	// Worker IDs are global, so a fixed ID collides when the PostgreSQL
+	// integration run reuses a database; the per-run suffix keeps it unique.
+	workerID := "implement-worker-" + suffix
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", WorkerID: workerID, Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +157,7 @@ func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.St
 		t.Fatal(err)
 	}
 	result, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, core.WorkOrderClaimIdentity{WorkerID: "implement-worker", ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the public API changed")
+		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the public API changed")
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -24,6 +24,9 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
+	// Worker and task IDs are global, so fixed IDs collide when the test
+	// reruns against a kept database; derive them from the per-run workspace.
+	workerID := "worker-a-" + workspace
 	createClaimed := func(id string) core.WorkOrder {
 		t.Helper()
 		task := core.Task{ID: id, Workspace: workspace, Repo: "app", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: now}
@@ -38,7 +41,7 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 			t.Fatal(createErr)
 		}
 		claimed, claimErr := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
-			SessionID: id + "-session", ClientToken: id + "-secret", ClaimantID: "worker-a", WorkerID: "worker-a", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour,
+			SessionID: id + "-session", ClientToken: id + "-secret", ClaimantID: workerID, WorkerID: workerID, Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour,
 		})
 		if claimErr != nil {
 			t.Fatal(claimErr)
@@ -46,7 +49,7 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 		return claimed
 	}
 
-	terminal := createClaimed("continuation-terminal")
+	terminal := createClaimed(workspace + "-terminal")
 	identity := core.WorkOrderClaimIdentity{WorkerID: terminal.WorkerID, ClaimantID: terminal.ClaimantID, SessionID: terminal.SessionID}
 	first := core.WorkOrderContinuation{SessionID: "native-1", AttemptID: terminal.AttemptID, Harness: "codex", LaunchEnvironment: "worker-a/env-1"}
 	if _, err = st.RecordWorkOrderContinuation(ctx, terminal.ID, identity, first); err != nil {
@@ -81,13 +84,13 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 		t.Fatalf("terminal continuation=%+v err=%v", cleared, err)
 	}
 
-	resumable := createClaimed("continuation-resumable")
+	resumable := createClaimed(workspace + "-resumable")
 	resumeIdentity := core.WorkOrderClaimIdentity{WorkerID: resumable.WorkerID, ClaimantID: resumable.ClaimantID, SessionID: resumable.SessionID}
 	capture := core.WorkOrderContinuation{SessionID: "native-resume", AttemptID: resumable.AttemptID, Harness: "codex", LaunchEnvironment: "worker-a/env-1"}
 	if _, err = st.RecordWorkOrderContinuation(ctx, resumable.ID, resumeIdentity, capture); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, resumable.ID, "worker-a", core.WorkOrderRelease{
+	if _, err = storetest.For(st).ReleaseWorkerClaim(ctx, resumable.ID, workerID, core.WorkOrderRelease{
 		SessionID: resumable.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached,
 		Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
 	}); err != nil {
@@ -97,7 +100,7 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	reclaimed, err := storetest.For(st).ClaimWorkOrder(ctx, resumable.ID, core.WorkOrderClaim{
-		SessionID: "resumed-claim", ClientToken: "resumed-secret", ClaimantID: "worker-a", WorkerID: "worker-a", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour,
+		SessionID: "resumed-claim", ClientToken: "resumed-secret", ClaimantID: workerID, WorkerID: workerID, Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour,
 	})
 	if err != nil || !reclaimed.CanResumeContinuation() || reclaimed.ContinuationSessionID != capture.SessionID {
 		t.Fatalf("reclaimed continuation=%+v err=%v", reclaimed, err)
@@ -120,6 +123,9 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
+	// Worker IDs are global; per-workspace IDs keep reruns on a kept database
+	// from colliding, while both subtests still share one enrollment each.
+	implementWorker, reviewWorker := "worker-implement-"+workspace, "worker-review-"+workspace
 	for _, verdict := range []string{"approve", "changes_requested"} {
 		t.Run(verdict, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -134,7 +140,7 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
 				t.Fatal(err)
 			}
-			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session-" + verdict, ClientToken: "implement-token-" + verdict, ClaimantID: "run:implementer", WorkerID: "worker-implement", Agent: "claude", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session-" + verdict, ClientToken: "implement-token-" + verdict, ClaimantID: "run:implementer", WorkerID: implementWorker, Agent: "claude", Lease: time.Minute, ExecutionTimeout: time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -169,7 +175,7 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 			if err = storetest.For(st).CreateWorkOrder(ctx, reviewOrder); err != nil {
 				t.Fatal(err)
 			}
-			claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, reviewOrder.ID, core.WorkOrderClaim{SessionID: "review-session-" + verdict, ClientToken: "review-token-" + verdict, ClaimantID: "run:reviewer", WorkerID: "worker-review", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, reviewOrder.ID, core.WorkOrderClaim{SessionID: "review-session-" + verdict, ClientToken: "review-token-" + verdict, ClaimantID: "run:reviewer", WorkerID: reviewWorker, Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}

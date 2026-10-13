@@ -119,6 +119,30 @@ func reconciledPayload(t *testing.T, st store.Store, ctx context.Context, taskID
 	return payload
 }
 
+func assertNoApprovalBound(t *testing.T, st store.Store, ctx context.Context, taskID string) {
+	t.Helper()
+	if count, _ := st.CountEvents(ctx, taskID, "approval.bound"); count != 0 {
+		t.Fatalf("approval.bound events=%d", count)
+	}
+	current, err := st.GetTask(ctx, taskID)
+	if err != nil || current.ApprovedHeadSHA != "" {
+		t.Fatalf("approved head=%q err=%v", current.ApprovedHeadSHA, err)
+	}
+}
+
+func assertStillAtMergeGate(t *testing.T, st store.Store, ctx context.Context, taskID string) {
+	t.Helper()
+	current, err := st.GetTask(ctx, taskID)
+	if err != nil || current.State != core.TaskAwaiting || current.GateKind != core.GateKindMergeApproval {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	for _, kind := range []string{"merge.reconciled", "merge.failed"} {
+		if count, _ := st.CountEvents(ctx, taskID, kind); count != 0 {
+			t.Fatalf("%s events=%d", kind, count)
+		}
+	}
+}
+
 func TestObservedMergeAtMergeGateReconcilesToMerged(t *testing.T) {
 	ctx := forgeReconcileCtx()
 	st := store.NewMemory()
@@ -146,6 +170,17 @@ func TestObservedMergeAtMergeGateReconcilesToMerged(t *testing.T) {
 	if count, _ := st.CountEvents(ctx, task.ID, "merge.reconciled"); count != 1 {
 		t.Fatalf("repeat events=%d", count)
 	}
+	assertNoApprovalBound(t, st, ctx, task.ID)
+
+	t.Run("merged without a merge commit waits at the gate", func(t *testing.T) {
+		pending := enterMergeGate(t, st, ctx, "gate-no-commit", "pending-head", "", true)
+		openPullRequest(t, st, ctx, pending.ID, 15, "pending-head")
+		accepted, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", pending.ID, mergedPull(pending, 15, "pending-head", "", "github-operator"))
+		if err != nil || accepted {
+			t.Fatalf("accepted=%t err=%v", accepted, err)
+		}
+		assertStillAtMergeGate(t, st, ctx, pending.ID)
+	})
 
 	t.Run("old approval does not hide the reviewed head", func(t *testing.T) {
 		variant := enterMergeGate(t, st, ctx, "gate-new-head", "new-reviewed", "old-approved", true)
@@ -349,6 +384,26 @@ func TestReconcileMergeReadinessReconcilesMergeGateAwaitingMergedPR(t *testing.T
 	if reconciledPayload(t, st, ctx, task.ID)["result"] != "merged_outside_conveyor" {
 		t.Fatal("result missing")
 	}
+	assertNoApprovalBound(t, st, ctx, task.ID)
+
+	t.Run("merged without a merge commit reads UNKNOWN", func(t *testing.T) {
+		ctx := forgeReconcileCtx()
+		st := store.NewMemory()
+		task := enterMergeGate(t, st, ctx, "tick-no-commit", "reviewed-head", "", true)
+		d := newForgeDispatcher(st)
+		d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+			return githubtrigger.PullRequest{Number: 52, State: "closed", Merged: true, Mergeable: "UNKNOWN", HeadSHA: "reviewed-head", MergedBy: "github-operator"}, nil
+		}
+		forbidMergeCalls(t, d)
+		readiness, err := d.ReadMergeReadiness(ctx, task)
+		if err != nil || readiness.State != "UNKNOWN" {
+			t.Fatalf("readiness=%+v err=%v", readiness, err)
+		}
+		if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 0 {
+			t.Fatalf("reconciled=%d err=%v", reconciled, err)
+		}
+		assertStillAtMergeGate(t, st, ctx, task.ID)
+	})
 }
 
 func TestReadMergeReadinessMergedPRAtOtherHeadRecordsDriftNoRefresh(t *testing.T) {

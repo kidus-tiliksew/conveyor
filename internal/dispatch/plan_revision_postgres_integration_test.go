@@ -59,7 +59,7 @@ func TestPostgresPlanRevisionDecisionLoopIntegration(t *testing.T) {
 	if len(jobs) != 2 || jobs[0].State != core.JobFailed || cancelledEvents != 1 {
 		t.Fatalf("contested job/events jobs=%+v cancelled_events=%d", jobs, cancelledEvents)
 	}
-	planOrder, err := storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "postgres-plan-session", ClientToken: "postgres-plan-token", WorkerID: "postgres-plan-worker", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	planOrder, err := storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "postgres-plan-session", ClientToken: "postgres-plan-token", WorkerID: "postgres-plan-worker-" + workspace, Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

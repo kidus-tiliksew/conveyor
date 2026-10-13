@@ -388,6 +388,15 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 			},
 		},
 		{
+			name:  "running/implement-advanced-verify/implement/stale",
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify},
+			order: core.WorkOrder{Stage: core.StageImplement},
+			clock: core.WorkOrderStale,
+			want: func(taskID, orderID, _ string) string {
+				return "work order " + orderID + " cannot be recovered because task " + taskID + " has advanced to verify"
+			},
+		},
+		{
 			name:      "running/verify-on/equal/verify/stale/successor",
 			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
 			order:     core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
@@ -548,7 +557,7 @@ func runRedispatchPlanRevisionGuard(t *testing.T, x Fixture) {
 	requireOK(t, CreateWorkOrder(ctx, st, order))
 	beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, task.ID, order.ID)
 	_, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour)
-	if err == nil || !strings.Contains(err.Error(), "pending plan-revision decision") {
+	if err == nil || !strings.Contains(err.Error(), "unreadable plan-revision request") {
 		t.Fatalf("redispatch err=%v", err)
 	}
 	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
@@ -690,7 +699,7 @@ func runClaimPlanRevisionAfterListing(t *testing.T, x Fixture) {
 	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
 		SessionID: "plan-revision-after-list", ClientToken: "plan-revision-after-list", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
 	})
-	if err == nil || !strings.Contains(err.Error(), "awaits the pending plan-revision decision") {
+	if err == nil || !strings.Contains(err.Error(), "unreadable plan-revision request") {
 		t.Fatalf("claim error=%v", err)
 	}
 }

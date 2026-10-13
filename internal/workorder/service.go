@@ -198,6 +198,10 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 			return nil, taskErr
 		}
 		_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
+		if errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) {
+			pendingPlanRevision = true
+			gateErr = nil
+		}
 		if gateErr != nil {
 			return nil, gateErr
 		}
@@ -217,7 +221,7 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 			order.Claimable = false
 		}
 		if ctxn, ok := recoveryByTask[order.TaskID]; ok {
-			ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
+			store.ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
 		}
 		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
 			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
@@ -229,20 +233,6 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 
 func recoverEligible(order core.WorkOrder) bool {
 	return order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut
-}
-
-func ApplyRecoveryRefusal(order *core.WorkOrder, task core.Task, taskOrders []core.WorkOrder, pendingPlanRevision bool) {
-	if !recoverEligible(*order) {
-		return
-	}
-	if pendingPlanRevision {
-		order.RecoveryRefusal = fmt.Sprintf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", order.ID, task.ID)
-	} else if err := store.WorkOrderRecoveryRefusal(task, *order, taskOrders); err != nil {
-		order.RecoveryRefusal = err.Error()
-	}
-	if order.RecoveryRefusal != "" && order.State == core.WorkOrderQueued {
-		order.Claimable = false
-	}
 }
 
 func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
@@ -497,6 +487,10 @@ func recoveryRefreeze(task core.Task, order core.WorkOrder) *store.RecoveryRefre
 }
 
 func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, requestID string) (store.InterruptedReviewRecoveryResult, error) {
+	return s.recoverInterruptedReviewRound(ctx, taskID, requestID, false)
+}
+
+func (s *Service) recoverInterruptedReviewRound(ctx context.Context, taskID, requestID string, automatic bool) (store.InterruptedReviewRecoveryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery request_id is required")
@@ -531,7 +525,7 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if timeout <= 0 {
 		timeout = config.DefaultWorkOrderQueueTimeout
 	}
-	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}}
+	request := store.InterruptedReviewRecoveryRequest{TaskID: taskID, RequestID: requestID, Round: recovery.ReviewRound, Refreezes: map[string]*store.RecoveryRefreeze{}, Automatic: automatic}
 	for _, order := range recovery.EligibleOrders {
 		if change := recoveryRefreeze(task, order); change != nil {
 			request.Refreezes[order.ID] = change
@@ -556,6 +550,10 @@ func latestReviewRound(orders []core.WorkOrder) int {
 // round terminally timed out. The current PR head and workspace configuration
 // are verified before the store performs the atomic/idempotent transition.
 func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reason string) (store.ReviewRoundRetryResult, error) {
+	return s.retryReviewRound(ctx, taskID, requestID, reason, false)
+}
+
+func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reason string, automatic bool) (store.ReviewRoundRetryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	reason = strings.TrimSpace(reason)
 	if requestID == "" || reason == "" {
@@ -661,7 +659,7 @@ func (s *Service) RetryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA}
+	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA, Automatic: automatic}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
 		return s.Store.RetryReviewRoundCommand(ctx, lease, request, jobs, newOrders)
 	})
@@ -1698,6 +1696,13 @@ func (s *Service) authorizedForAwait(ctx context.Context, id, session string) (c
 
 func (s *Service) authorizedForObservation(ctx context.Context, id, session string) (core.WorkOrder, error) {
 	return s.authorizedSession(ctx, id, session, true)
+}
+
+// ObservableOrder applies get_work_order's observation check (same session,
+// claimed with a live lease, or submitted) without renewing the lease or
+// recording a context observation, so a status read never mutates.
+func (s *Service) ObservableOrder(ctx context.Context, id, session string) (core.WorkOrder, error) {
+	return s.authorizedForObservation(ctx, id, session)
 }
 
 func (s *Service) authorized(ctx context.Context, id, session string) (core.WorkOrder, error) {

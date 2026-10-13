@@ -13,8 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // conformanceSchema is the one migrated schema the conformance run shares.
@@ -161,6 +164,20 @@ func conformanceStore(t *testing.T) *Store {
 func TestPostgresConformanceIntegration(t *testing.T) {
 	integrationDatabaseURL(t)
 	storetest.RunAll(t, storetest.Factory{
+		PlanRevisionGate: func(ctx context.Context, st store.Store, taskID string) (bool, error) {
+			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
+			return pending, err
+		},
+		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
+			service := &workorder.Service{
+				Store:          st,
+				ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+				ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+					return githubtrigger.ReviewTarget{Number: 7, HeadSHA: head}, nil
+				},
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
+		},
 		ProductionCapable: true,
 		Capabilities:      storetest.Capabilities{Identity: true, Membership: true, Tokens: true},
 		New: func(t *testing.T, repos []config.Repo) storetest.Fixture {
@@ -227,6 +244,10 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return postgresSeedEvents(t, st, ctx, base, events)
+			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
+				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
+					t.Fatal(err)
+				}
 			}}
 		},
 	})

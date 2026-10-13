@@ -30,6 +30,7 @@ const (
 	taskWaitReasonChanged  = "changed"
 	taskWaitReasonTerminal = "terminal"
 	taskWaitReasonTimeout  = "timeout"
+	taskWaitReasonReached  = "reached"
 )
 
 const taskWaitLong = `Block until a task's observed state changes, the task reaches a terminal
@@ -56,11 +57,23 @@ terminal, or timeout. --json prints the same fields as one JSON object. On
 timeout, last_read_error names the most recent failed read when the final
 poll failed.
 
+--until operator|terminal|stage=<stage> instead waits for a target. Each poll
+decodes the next_action embedded in GET /v1/tasks/{id}; the wait ends with
+reason reached when next_action.actor is operator, when the task is merged,
+closed, or parked (terminal), or when next_action.current_order.stage equals
+the named work-order stage (spec, implement, verify, review). A task that turns
+terminal before another target ends with reason terminal. Every observed
+change of actor, kind, or current order stage prints one line:
+<observed_at> <label>: actor=<actor> kind=<kind> stage=<stage>
+(to stderr under --json). Label-only changes print nothing.
+
 Exit status:
-  0  the observation changed or the task is merged, closed, or parked
+  0  the observation changed or the task is merged, closed, or parked; with
+     --until, the target was reached or the task is merged, closed, or parked
   2  the timeout elapsed; output reports the last successful observation
-  1  failure: invalid arguments, configuration, authentication, not found,
-     malformed response, or a failed first observation`
+  1  failure: invalid arguments (including an invalid --until), configuration,
+     authentication, not found, malformed response, or a failed first
+     observation`
 
 // taskWaitTimeoutError is returned after a timeout result is printed. main()
 // maps it to exit status 2 without an extra error message.
@@ -88,22 +101,33 @@ type taskWaitProposal struct {
 	Version    int    `json:"version"`
 }
 
+// taskWaitNextAction is the part of the server's next_action a --until wait
+// compares and prints. It is set only when --until is given.
+type taskWaitNextAction struct {
+	Label string `json:"label"`
+	Actor string `json:"actor"`
+	Kind  string `json:"kind"`
+	Stage string `json:"stage,omitempty"`
+}
+
 // taskWaitObservation holds only the compared semantic fields plus the read
 // time. Titles, labels, capability flags, and progress are excluded so that
 // presentation churn never ends a wait.
 type taskWaitObservation struct {
-	TaskID           string             `json:"task_id"`
-	State            core.TaskState     `json:"state"`
-	PendingGate      *taskWaitGate      `json:"pending_gate"`
-	NextOrder        *taskWaitOrder     `json:"next_order"`
-	PendingProposals []taskWaitProposal `json:"pending_proposals"`
-	ObservedAt       time.Time          `json:"observed_at"`
+	TaskID           string              `json:"task_id"`
+	State            core.TaskState      `json:"state"`
+	PendingGate      *taskWaitGate       `json:"pending_gate"`
+	NextOrder        *taskWaitOrder      `json:"next_order"`
+	PendingProposals []taskWaitProposal  `json:"pending_proposals"`
+	NextAction       *taskWaitNextAction `json:"next_action,omitempty"`
+	ObservedAt       time.Time           `json:"observed_at"`
 }
 
 type taskWaitResult struct {
 	taskWaitObservation
 	Reason        string `json:"reason"`
 	TimedOut      bool   `json:"timed_out"`
+	Until         string `json:"until,omitempty"`
 	LastReadError string `json:"last_read_error,omitempty"`
 }
 
@@ -111,22 +135,72 @@ type taskWaitOptions struct {
 	timeout   time.Duration
 	newPoller func() *runAdaptivePoller
 	now       func() time.Time
+	// until is the raw --until value; empty keeps the change-detection wait.
+	until string
+	// progress receives --until change lines; nil means the command output.
+	progress io.Writer
+}
+
+// taskWaitTarget is a parsed --until value.
+type taskWaitTarget struct {
+	raw   string
+	actor string
+	stage core.Stage
+	// terminal is true for --until terminal.
+	terminal bool
+}
+
+func parseTaskWaitTarget(raw string) (taskWaitTarget, error) {
+	target := taskWaitTarget{raw: raw}
+	switch {
+	case raw == "operator":
+		target.actor = "operator"
+	case raw == "terminal":
+		target.terminal = true
+	case strings.HasPrefix(raw, "stage="):
+		target.stage = core.Stage(strings.TrimPrefix(raw, "stage="))
+		if !core.ValidWorkOrderStage(target.stage) {
+			return taskWaitTarget{}, fmt.Errorf("--until stage=%s: unknown work-order stage (want spec, implement, verify, or review)", target.stage)
+		}
+	default:
+		return taskWaitTarget{}, fmt.Errorf("--until must be operator, terminal, or stage=<stage>, got %q", raw)
+	}
+	return target, nil
+}
+
+func (t taskWaitTarget) reached(o taskWaitObservation) bool {
+	if o.NextAction == nil {
+		return false
+	}
+	switch {
+	case t.actor != "":
+		return o.NextAction.Actor == t.actor
+	case t.stage != "":
+		return o.NextAction.Stage == string(t.stage)
+	}
+	return false
 }
 
 func taskWaitCmd() *cobra.Command {
 	timeout := taskWaitDefaultTimeout
 	asJSON := false
+	until := ""
 	cmd := &cobra.Command{
 		Use:   "wait <task-id>",
 		Short: "Block until a task's state, gate, next order, or proposals change",
 		Long:  taskWaitLong,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runTaskWait(cmd.Context(), newClient(), cmd.OutOrStdout(), args[0], asJSON, taskWaitOptions{timeout: timeout})
+			options := taskWaitOptions{timeout: timeout, until: until}
+			if asJSON {
+				options.progress = cmd.ErrOrStderr()
+			}
+			return runTaskWait(cmd.Context(), newClient(), cmd.OutOrStdout(), args[0], asJSON, options)
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", taskWaitDefaultTimeout, "maximum wait; must be positive")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the result as one JSON object")
+	cmd.Flags().StringVar(&until, "until", "", "wait for a target: operator, terminal, or stage=<stage>")
 	return cmd
 }
 
@@ -138,6 +212,14 @@ func runTaskWait(ctx context.Context, c *client, output io.Writer, taskID string
 	if options.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive, got %s", options.timeout)
 	}
+	var target *taskWaitTarget
+	if options.until != "" {
+		parsed, err := parseTaskWaitTarget(options.until)
+		if err != nil {
+			return err
+		}
+		target = &parsed
+	}
 	if c.configErr != nil {
 		return c.configErr
 	}
@@ -147,7 +229,16 @@ func runTaskWait(ctx context.Context, c *client, output io.Writer, taskID string
 	if options.now == nil {
 		options.now = time.Now
 	}
-	result, err := waitForTask(ctx, c, taskID, options)
+	if options.progress == nil {
+		options.progress = output
+	}
+	var result taskWaitResult
+	var err error
+	if target != nil {
+		result, err = waitForTaskTarget(ctx, c, taskID, *target, options)
+	} else {
+		result, err = waitForTask(ctx, c, taskID, options)
+	}
 	if err != nil {
 		return err
 	}
@@ -167,7 +258,7 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 	waitCtx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
 
-	baseline, err := c.observeTaskWait(waitCtx, taskID, options.now)
+	baseline, err := c.observeTaskWait(waitCtx, taskID, options.now, false)
 	if err != nil {
 		if ctx.Err() != nil {
 			return taskWaitResult{}, ctx.Err()
@@ -192,7 +283,7 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 			return taskWaitDeadline(ctx, latest, lastErr)
 		case <-timer.C:
 		}
-		current, err := c.observeTaskWait(waitCtx, taskID, options.now)
+		current, err := c.observeTaskWait(waitCtx, taskID, options.now, false)
 		if err != nil {
 			if waitCtx.Err() != nil {
 				return taskWaitDeadline(ctx, latest, lastErr)
@@ -215,6 +306,99 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 	}
 }
 
+// waitForTaskTarget is the --until form of waitForTask: the same bounded
+// reads and retries, but the wait ends only on the target or a terminal task,
+// and each change of actor, kind, or stage prints one progress line.
+func waitForTaskTarget(ctx context.Context, c *client, taskID string, target taskWaitTarget, options taskWaitOptions) (taskWaitResult, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, options.timeout)
+	defer cancel()
+
+	finish := func(o taskWaitObservation, reason string, lastErr error, timedOut bool) (taskWaitResult, error) {
+		result := taskWaitResult{taskWaitObservation: o, Reason: reason, TimedOut: timedOut, Until: target.raw}
+		if timedOut && lastErr != nil {
+			result.LastReadError = lastErr.Error()
+		}
+		return result, nil
+	}
+	var printed *taskWaitNextAction
+	settle := func(o taskWaitObservation) (string, error) {
+		if printed == nil || o.NextAction.Actor != printed.Actor || o.NextAction.Kind != printed.Kind || o.NextAction.Stage != printed.Stage {
+			printed = o.NextAction
+			stage := o.NextAction.Stage
+			if stage == "" {
+				stage = "none"
+			}
+			if _, err := fmt.Fprintf(options.progress, "%s %s: actor=%s kind=%s stage=%s\n", o.ObservedAt.Format(time.RFC3339), o.NextAction.Label, o.NextAction.Actor, o.NextAction.Kind, stage); err != nil {
+				return "", err
+			}
+		}
+		switch {
+		case taskWaitTerminal(o.State) && target.terminal:
+			return taskWaitReasonReached, nil
+		case taskWaitTerminal(o.State):
+			return taskWaitReasonTerminal, nil
+		case target.reached(o):
+			return taskWaitReasonReached, nil
+		}
+		return "", nil
+	}
+
+	latest, err := c.observeTaskWait(waitCtx, taskID, options.now, true)
+	if err != nil {
+		if ctx.Err() != nil {
+			return taskWaitResult{}, ctx.Err()
+		}
+		if waitCtx.Err() != nil {
+			return taskWaitResult{}, fmt.Errorf("wait for task %s: first observation did not complete within %s: %w", taskID, options.timeout, err)
+		}
+		return taskWaitResult{}, c.taskWaitFailure(taskID, err)
+	}
+	if reason, err := settle(latest); err != nil || reason != "" {
+		if err != nil {
+			return taskWaitResult{}, err
+		}
+		return finish(latest, reason, nil, false)
+	}
+	var lastErr error
+	poller := options.newPoller()
+	for {
+		timer := time.NewTimer(poller.delay())
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			if ctx.Err() != nil {
+				return taskWaitResult{}, ctx.Err()
+			}
+			return finish(latest, taskWaitReasonTimeout, lastErr, true)
+		case <-timer.C:
+		}
+		current, err := c.observeTaskWait(waitCtx, taskID, options.now, true)
+		if err != nil {
+			if waitCtx.Err() != nil {
+				if ctx.Err() != nil {
+					return taskWaitResult{}, ctx.Err()
+				}
+				return finish(latest, taskWaitReasonTimeout, lastErr, true)
+			}
+			if !transientWorkerError(err) {
+				return taskWaitResult{}, c.taskWaitFailure(taskID, err)
+			}
+			lastErr = err
+			poller.observe(false)
+			continue
+		}
+		latest, lastErr = current, nil
+		reason, err := settle(current)
+		if err != nil {
+			return taskWaitResult{}, err
+		}
+		if reason != "" {
+			return finish(current, reason, nil, false)
+		}
+		poller.observe(false)
+	}
+}
+
 func taskWaitDeadline(ctx context.Context, latest taskWaitObservation, lastErr error) (taskWaitResult, error) {
 	if ctx.Err() != nil {
 		return taskWaitResult{}, ctx.Err()
@@ -229,8 +413,11 @@ func taskWaitDeadline(ctx context.Context, latest taskWaitObservation, lastErr e
 // observeTaskWait reads the task and its run-order projection. The task state
 // comes from the later run-order response so state, gate, and order describe
 // the same read.
-func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() time.Time) (taskWaitObservation, error) {
-	var task core.Task
+func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() time.Time, withNextAction bool) (taskWaitObservation, error) {
+	var task struct {
+		core.Task
+		NextAction *nextActionView `json:"next_action"`
+	}
 	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/tasks/"+url.PathEscape(taskID), nil, &task, c.token); err != nil {
 		return taskWaitObservation{}, err
 	}
@@ -252,6 +439,16 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 		return taskWaitObservation{}, fmt.Errorf("task read returned no state")
 	}
 	observation := taskWaitObservation{TaskID: task.ID, State: state, PendingProposals: []taskWaitProposal{}, ObservedAt: now().UTC()}
+	if withNextAction {
+		action := task.NextAction
+		if action == nil || strings.TrimSpace(action.Actor) == "" {
+			return taskWaitObservation{}, fmt.Errorf("task read returned no next_action")
+		}
+		observation.NextAction = &taskWaitNextAction{Label: action.Label, Actor: action.Actor, Kind: action.Kind}
+		if action.CurrentOrder != nil {
+			observation.NextAction.Stage = action.CurrentOrder.Stage
+		}
+	}
 	if gate := run.Gate; gate != nil && strings.TrimSpace(gate.Kind) != "" {
 		normalized := taskWaitGate{Kind: gate.Kind, PlanVersion: gate.PlanVersion}
 		switch gate.Kind {

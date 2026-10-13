@@ -2,6 +2,7 @@
 // rich mocked activity feed and writes screenshots to test-results/shots/ for
 // design review. The idle-board state also guards uniform lane sizing.
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 const now = Date.now()
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString()
@@ -720,6 +721,7 @@ async function mockAPIs(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'conveyor')
   })
+  await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/workspaces') {

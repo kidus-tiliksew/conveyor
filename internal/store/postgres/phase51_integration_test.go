@@ -38,7 +38,10 @@ func TestWorkerWarningFollowsEnrollmentLifecycleIntegration(t *testing.T) {
 	if status := service.TaskAvailability(ctx, cfg, task, orders); status != nil {
 		t.Fatalf("zero-worker status=%+v", status)
 	}
-	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, Name: "stale-codex", LastSeenAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(-time.Second), CreatedAt: now}
+	// Credential hashes are unique across the database, so an empty hash
+	// collides with the previous run's row on a kept database.
+	workerID := "worker-" + core.NewTaskID()
+	worker := core.Worker{ID: workerID, Workspace: workspace, Name: "stale-codex", CredentialHash: "stale-codex-" + workerID, LastSeenAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(-time.Second), CreatedAt: now}
 	if err = st.CreateWorker(ctx, worker); err != nil {
 		t.Fatal(err)
 	}

@@ -12,6 +12,7 @@ import type {
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
   WorkOrderVerificationCheckpointPermission,
+  NextAction,
   WorkspaceMembership,
 } from './types'
 
@@ -75,33 +76,34 @@ export function humanizeClaimRefusal(
   return `Assigned to ${name} — only they can pick this up.`
 }
 
-// Feed grouping: the pipeline stage a task currently occupies.
-// Human gates, approved tasks awaiting merge, parked tasks, and pending
-// authority signals collect under "Awaiting human" without changing pipeline
-// state (REQ-2 AC-2.2; REQ-3; component-web-dashboard); only terminal states
-// archive under "Completed".
-export function groupForSummary(item: ActivitySummary): GroupKey {
+// The Board column a task occupies, read from server fields only (NA-6): the
+// next action's kind places merge work and recovery holds, and otherwise the
+// stage the task is in or about to enter. A plan approval therefore lands
+// under Plan and a failed job under the stage that failed.
+const mergeKinds = new Set(['merge_approval', 'merge_execution', 'merge_conflict', 'merging'])
+const triageKinds = new Set(['parked', 'dispatch_exhausted'])
+
+export function boardColumnFor(item: ActivitySummary): GroupKey {
   const { state } = item.task
-  if (item.stalled?.needed && state !== 'merged' && state !== 'closed') return 'human'
-  if (item.forge_failure && state !== 'merged' && state !== 'closed') return 'human'
-  if (item.pending_authority && state !== 'merged' && state !== 'closed') return 'human'
-  if (state === 'awaiting_human' || state === 'approved' || state === 'parked') return 'human'
   if (state === 'merged' || state === 'closed') return 'done'
+  const kind = item.next_action?.kind ?? ''
+  if (mergeKinds.has(kind)) return 'merge'
+  if (triageKinds.has(kind)) return 'triage'
   const stage =
-    item.task.state === 'queued' || item.task.state === 'running'
+    state === 'queued' || state === 'running'
       ? (item.task.next_stage ?? item.latest_stage)
       : (item.latest_stage ?? item.task.next_stage)
   switch (stage) {
     case 'spec':
       return 'spec'
-    case 'review':
-      return 'review'
+    case 'implement':
+      return 'implement'
     case 'verify':
       return 'verify'
-    case 'implement':
+    case 'review':
+      return 'review'
     case 'merge':
-      return 'implement'
-    case 'triage':
+      return 'merge'
     default:
       return 'triage'
   }
@@ -213,19 +215,6 @@ export function userRunImplementation(events: TaskEvent[]): boolean {
     return typeof payload.claimant_id === 'string' && /^run:.+/.test(payload.claimant_id)
   }
   return false
-}
-
-// Board-card gate chip: says what the gate is waiting for instead of a
-// generic alarm, with tone to match ("Ready to merge" is good news).
-export function gateBadge(item: ActivitySummary): { label: string; variant: 'attention' | 'positive' } | undefined {
-  if (failedTriageSummary(item)) return { label: 'Triage failed', variant: 'attention' }
-  if (item.stalled?.needed) return { label: 'Stalled', variant: 'attention' }
-  if (item.task.state === 'approved') return { label: 'Ready to merge', variant: 'positive' }
-  if (!item.needs_attention) return undefined
-  if (item.pending_authority) return { label: 'Awaiting proposal decision', variant: 'attention' }
-  if (item.task.state === 'parked') return { label: 'Needs a route', variant: 'attention' }
-  if (item.task.state === 'awaiting_human') return { label: 'Awaiting review', variant: 'attention' }
-  return { label: 'Needs attention', variant: 'attention' }
 }
 
 // req-intake-and-triage REQ-3; req-task-centric-operations-view REQ-2:
@@ -428,119 +417,19 @@ function withDependencyContext(state: CurrentExecutionState, item: ActivityItem)
   }
 }
 
-// A Go time.Time JSON instant with its full fractional precision, so ordering
-// agrees with the store even where millisecond Date parsing would collapse two
-// creation times into one.
-const creationInstantPattern =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/
-
-// Accepts only the field ranges Go's RFC 3339 parser accepts. Date arithmetic
-// would otherwise normalize an out-of-range field such as minute 60 into a
-// different, valid-looking instant.
-function creationInstant(value: string | undefined): { seconds: number; nanos: number } | undefined {
-  const match = value ? creationInstantPattern.exec(value) : null
-  if (!match) return undefined
-  const [, year, month, day, hour, minute, second, fraction = '', sign, zoneHour = '0', zoneMinute = '0'] = match
-  const [y, mo, d, h, mi, s, zh, zm] = [year, month, day, hour, minute, second, zoneHour, zoneMinute].map(Number)
-  const lastDay = new Date(0)
-  lastDay.setUTCFullYear(y, mo, 0)
-  if (mo < 1 || mo > 12 || d < 1 || d > lastDay.getUTCDate() || h > 23 || mi > 59 || s > 59 || zh > 23 || zm > 59)
-    return undefined
-  const date = new Date(0)
-  date.setUTCFullYear(y, mo - 1, d)
-  date.setUTCHours(h, mi, s, 0)
-  const offset = (sign === '-' ? -1 : 1) * (zh * 3600 + zm * 60)
-  return { seconds: date.getTime() / 1000 - offset, nanos: Number(fraction.padEnd(9, '0')) }
-}
-
-// Go compares string IDs bytewise; code-point order is the same as UTF-8 byte
-// order, unlike UTF-16 comparison or locale collation.
-function compareOrderIDs(a: string, b: string) {
-  const left = Array.from(a, (char) => char.codePointAt(0) ?? 0)
-  const right = Array.from(b, (char) => char.codePointAt(0) ?? 0)
-  for (let index = 0; index < Math.min(left.length, right.length); index++) {
-    if (left[index] !== right[index]) return left[index] - right[index]
-  }
-  return left.length - right.length
-}
-
-// Mirrors the same-stage branch of store.WorkOrderRecoverySupersessionError:
-// a non-cancelled order of the same stage created later, or at the same
-// instant with a greater ID, makes the target historical. The server refuses
-// recovery of such an order, so it must not become the current execution state
-// or a recovery target (req-task-lifecycle-and-queue REQ-6 AC-6.2;
-// component-web-dashboard). Missing or unparseable creation times establish no
-// ordering.
-function hasSameStageSuccessor(order: WorkOrder, orders: WorkOrder[]) {
-  const target = creationInstant(order.created_at)
-  if (!target) return false
-  return orders.some((candidate) => {
-    if (candidate.id === order.id || candidate.stage !== order.stage || candidate.state === 'cancelled') return false
-    const created = creationInstant(candidate.created_at)
-    if (!created) return false
-    if (created.seconds !== target.seconds) return created.seconds > target.seconds
-    if (created.nanos !== target.nanos) return created.nanos > target.nanos
-    return compareOrderIDs(candidate.id, order.id) > 0
-  })
-}
-
-export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutionState | undefined {
-  const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
-  const orders = item.work_orders ?? []
-  const candidates = [...orders]
-    .filter((candidate) => !(candidate.stage === 'review' && (candidate.review_round ?? 0) > 0))
-    .filter((candidate) => candidate.state === 'claimed' || ['queued', 'stale', 'timed_out'].includes(candidate.state))
-    .filter((candidate) => candidate.state === 'claimed' || !hasSameStageSuccessor(candidate, orders))
-    .sort((a, b) => orderActivityTime(b) - orderActivityTime(a))
-  const order =
-    candidates.find((candidate) => candidate.state === 'claimed') ??
-    candidates.find(
-      (candidate) =>
-        candidate.state !== 'queued' ||
-        Boolean(candidate.last_attempt_outcome || candidate.retry_suppressed || candidate.next_retry_at),
-    )
-
-  if (!order) {
-    const unsatisfiableOrder = unsatisfiableDependencyOrder(item)
-    if (unsatisfiableOrder) {
-      const unsatisfiableDependencyIDs =
-        (unsatisfiableOrder.unsatisfiable_task_ids?.length ?? 0) > 0
-          ? unsatisfiableOrder.unsatisfiable_task_ids
-          : item.stalled?.blocking_task_ids
-      return {
-        kind: 'dependency_attention',
-        status: 'paused',
-        order: unsatisfiableOrder,
-        title: 'Dependency needs attention',
-        blocker: 'A required dependency closed without merging.',
-        retry: 'Redispatch is unavailable while the dependency is unsatisfiable.',
-        nextAction: 'Unlink the dead dependency with an audit reason, or cancel this task.',
-        action: 'none',
-        blockingDependencies: blockingDependencies(item),
-        unsatisfiableDependencyIDs,
-      }
-    }
-    if (dependencyBlockedOrder) {
-      const dependencies = blockingDependencies(item)
-      const dependencySubject =
-        dependencies.length > 1
-          ? `${dependencies.length} dependencies`
-          : dependencies[0]?.title || dependencies[0]?.id || 'the blocking dependency'
-      return {
-        kind: 'dependency_waiting',
-        status: 'progressing',
-        order: dependencyBlockedOrder,
-        title: 'Waiting on dependencies',
-        blocker: 'Implementation is gated by unresolved task dependencies.',
-        retry: 'Not applicable.',
-        nextAction: `Nothing — implementation starts automatically when ${dependencySubject} ${dependencies.length > 1 ? 'merge' : 'merges'}.`,
-        action: 'none',
-        blockingDependencies: dependencies,
-      }
-    }
-    return undefined
-  }
-
+// The server's next action names the order that is current; this maps it onto
+// the execution summary the timeline and recovery card render. Which order is
+// current, and whether it is running, retrying, waiting or paused, is the
+// server's statement (feature-operator-next-action NA-6); only the paused
+// variant is refined from the order's own recorded failure.
+export function deriveCurrentExecutionState(
+  item: ActivityItem,
+  action: NextAction | undefined,
+): CurrentExecutionState | undefined {
+  const current = action?.current_order
+  const order = current && (item.work_orders ?? []).find((candidate) => candidate.id === current.id)
+  if (!action || !order) return undefined
+  const attemptId = action.attempt?.attempt_id || order.last_attempt_id || order.attempt_id
   const stage =
     order.stage === 'spec'
       ? 'Plan'
@@ -549,44 +438,87 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
         : order.stage === 'verify'
           ? 'Verification'
           : 'Implementation'
-  if (order.state === 'claimed') {
-    return {
-      kind: 'running',
-      status: 'progressing',
-      order,
-      attemptId: order.attempt_id,
-      title: `${stage} is in progress`,
-      blocker: 'No current blocker.',
-      retry: 'No retry is needed.',
-      nextAction: 'No operator action is needed.',
-      action: 'none',
-    }
+  switch (action.kind) {
+    case 'working':
+      if (order.state !== 'claimed') return undefined
+      return {
+        kind: 'running',
+        status: 'progressing',
+        order,
+        attemptId,
+        title: `${stage} is in progress`,
+        blocker: 'No current blocker.',
+        retry: 'No retry is needed.',
+        nextAction: 'No operator action is needed.',
+        action: 'none',
+      }
+    case 'retrying':
+      return {
+        kind: 'retry_pending',
+        status: 'progressing',
+        order,
+        attemptId,
+        title: 'Automatic retry scheduled',
+        blocker:
+          order.last_failure_category === 'provider_usage_limit'
+            ? 'The provider usage limit paused the last attempt.'
+            : 'The last attempt ended before completion.',
+        retry: 'Conveyor will retry automatically.',
+        nextAction: 'No operator action is needed.',
+        action: 'none',
+      }
+    case 'blocked':
+      return {
+        kind: 'dependency_waiting',
+        status: 'progressing',
+        order,
+        title: 'Waiting on dependencies',
+        blocker: 'Implementation is gated by unresolved task dependencies.',
+        retry: 'Not applicable.',
+        nextAction: action.summary,
+        action: 'none',
+        blockingDependencies: blockingDependencies(item),
+      }
+    case 'dependency_unsatisfiable':
+      return {
+        kind: 'dependency_attention',
+        status: 'paused',
+        order,
+        title: 'Dependency needs attention',
+        blocker: 'A required dependency closed without merging.',
+        retry: 'Redispatch is unavailable while the dependency is unsatisfiable.',
+        nextAction: 'Unlink the dead dependency with an audit reason, or cancel this task.',
+        action: 'none',
+        blockingDependencies: blockingDependencies(item),
+        unsatisfiableDependencyIDs:
+          (order.unsatisfiable_task_ids?.length ?? 0) > 0
+            ? order.unsatisfiable_task_ids
+            : action.blocked_by?.map((blocker) => blocker.task_id),
+      }
+    case 'stalled':
+    case 'agent_question':
+    case 'verification_disposition':
+    case 'dispatch_exhausted':
+      return pausedExecutionState(item, order, attemptId, stage, action)
+    default:
+      return undefined
   }
-  if (order.next_retry_at && !order.retry_suppressed) {
-    const provider = order.last_failure_category === 'provider_usage_limit'
-    return {
-      kind: 'retry_pending',
-      status: 'progressing',
-      order,
-      attemptId: order.last_attempt_id,
-      title: 'Automatic retry scheduled',
-      blocker: provider
-        ? 'The provider usage limit paused the last attempt.'
-        : 'The last attempt ended before completion.',
-      retry: 'Conveyor will retry automatically.',
-      nextAction: 'No operator action is needed.',
-      action: 'none',
-    }
-  }
-  // component-web-task-surfaces: a verify order released at its operator checkpoint names the
-  // sealed reason and required act; automatic replay stays suppressed.
+}
+
+function pausedExecutionState(
+  item: ActivityItem,
+  order: WorkOrder,
+  attemptId: string | undefined,
+  stage: string,
+  action: NextAction,
+): CurrentExecutionState {
   const verificationCheckpoint = order.stage === 'verify' ? order.checkpoint?.verification : undefined
   if (verificationCheckpoint && order.state === 'queued') {
     return {
       kind: 'verification_checkpoint',
       status: 'paused',
       order,
-      attemptId: order.last_attempt_id,
+      attemptId,
       title: 'Verification checkpoint — operator action required',
       blocker: verificationCheckpoint.reason,
       retry: 'Automatic replay is suppressed until an operator recovers this order.',
@@ -600,7 +532,7 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
         kind: 'checkout_blocked',
         status: 'paused',
         order,
-        attemptId: order.last_attempt_id,
+        attemptId,
         title: `${stage} paused — checkout needs attention`,
         blocker: 'The primary checkout has pre-existing changes, so Conveyor left them untouched.',
         retry: 'Conveyor will not retry automatically while this safety gate is unresolved.',
@@ -616,7 +548,7 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
         kind: 'provider_usage_limit',
         status: 'paused',
         order,
-        attemptId: order.last_attempt_id,
+        attemptId,
         title: `${stage} paused — provider limit reached`,
         blocker: 'The provider usage or capacity limit stopped the last attempt.',
         retry: 'No automatic retry is pending.',
@@ -626,16 +558,23 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
       item,
     )
   }
-  if (order.state === 'stale' || order.state === 'timed_out' || order.last_attempt_outcome === 'expired') {
+  const stall = action.details.stall_reason
+  if (
+    stall === 'stale' ||
+    stall === 'timed_out' ||
+    order.state === 'stale' ||
+    order.state === 'timed_out' ||
+    order.last_attempt_outcome === 'expired'
+  ) {
     return withDependencyContext(
       {
         kind: 'expired',
         status: 'paused',
         order,
-        attemptId: order.last_attempt_id,
+        attemptId,
         title: `${stage} paused — recovery needed`,
         blocker:
-          order.state === 'stale'
+          order.state === 'stale' || stall === 'stale'
             ? 'The order was not claimed before its queue deadline.'
             : 'The claim or execution window ended before completion.',
         retry: 'No automatic retry is pending.',
@@ -650,7 +589,7 @@ export function deriveCurrentExecutionState(item: ActivityItem): CurrentExecutio
       kind: 'released',
       status: 'paused',
       order,
-      attemptId: order.last_attempt_id,
+      attemptId,
       title: `${stage} paused — recovery needed`,
       blocker:
         humanizeClaimRefusal(order.last_failure_message, item.task.assignee) ||
@@ -689,16 +628,13 @@ export function planRevisionRequestFrom(event: TaskEvent): PlanRevisionRequest |
   return { planVersion, rationale }
 }
 
-// A plan-revision request remains the active human decision until an audited
-// intervention supersedes it. Later release/state events are lifecycle detail,
-// so they must not hide the request the operator is being asked to judge
-// (REQ-2 AC-2.1).
-export function pendingPlanRevisionRequest(events: TaskEvent[]): PlanRevisionRequest | null {
+// The newest plan-revision request the agent recorded: the rationale and plan
+// version the decision card lays out. Whether that request is the open
+// decision is the server's next action (kind `plan_revision`), never this
+// event walk (feature-operator-next-action NA-9).
+export function latestPlanRevisionRequest(events: TaskEvent[]): PlanRevisionRequest | null {
   for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-    if (event.kind.startsWith('intervention.')) return null
-    if (event.kind !== 'work_order.plan_revision_requested') continue
-    return planRevisionRequestFrom(event)
+    if (events[i].kind === 'work_order.plan_revision_requested') return planRevisionRequestFrom(events[i])
   }
   return null
 }

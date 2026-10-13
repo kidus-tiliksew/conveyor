@@ -78,9 +78,37 @@ func TestConfigExportImportRoundTripsContextualSettings(t *testing.T) {
 	assertContextualCLIConfig(t, imported, "import")
 }
 
+func TestConfigImportRefusesInvalidRecovery(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"bound 11", "automatic_recoveries: 11\n  window: 24h", "between 0 and 10"},
+		{"bound -1", "automatic_recoveries: -1\n  window: 24h", "between 0 and 10"},
+		{"window 0s", "automatic_recoveries: 2\n  window: 0s", "positive duration"},
+		{"window -1h", "automatic_recoveries: 2\n  window: -1h", "positive duration"},
+		{"garbage window", "automatic_recoveries: 2\n  window: garbage", "positive duration"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "workspace: demo\nmax_bounces: 2\nrecovery:\n  " + tc.yaml + "\n"
+			command := configCmd()
+			command.SetArgs([]string{"import", "-"})
+			command.SetIn(strings.NewReader(body))
+			command.SetOut(&bytes.Buffer{})
+			err := command.Execute()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("import %s error=%v", tc.name, err)
+			}
+		})
+	}
+}
+
 func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 	return config.WorkspaceDocument{
 		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h",
+		Recovery: config.RecoveryPolicy{AutomaticRecoveries: 2, WindowText: "24h"},
 		ExecutionSettings: &config.ContextualExecutionSettings{
 			ControlPlane: config.ControlPlaneSettings{
 				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
@@ -110,6 +138,9 @@ func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 
 func assertContextualCLIConfig(t *testing.T, document config.WorkspaceDocument, step string) {
 	t.Helper()
+	if document.Recovery.AutomaticRecoveries != 2 || document.Recovery.WindowText != "24h" {
+		t.Fatalf("%s lost recovery: %+v", step, document.Recovery)
+	}
 	if document.ExecutionSettings == nil || document.ExecutionSettings.Implementation.Harness != "codex" || document.ExecutionSettings.Review.FallbackHarness != "codex" {
 		t.Fatalf("%s lost execution_settings: %+v", step, document.ExecutionSettings)
 	}

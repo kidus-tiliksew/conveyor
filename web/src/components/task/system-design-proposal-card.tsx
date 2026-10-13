@@ -180,11 +180,7 @@ export function ProposalReviewNotice({
           </div>
         )}
         {showLink && (
-          <Link
-            to="/pending-proposals"
-            search={{ task: taskId }}
-            className="inline-block font-medium text-primary hover:underline"
-          >
+          <Link to="/inbox" search={{ task: taskId }} className="inline-block font-medium text-primary hover:underline">
             {proposalLinkText(effect)}
           </Link>
         )}
@@ -331,7 +327,7 @@ export function SystemDesignProposalCard({
       })}
       {notice && (
         <Link
-          to="/pending-proposals"
+          to="/inbox"
           search={{ task: task.id }}
           className="inline-block text-xs font-medium text-primary hover:underline"
         >

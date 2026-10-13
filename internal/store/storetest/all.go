@@ -48,6 +48,10 @@ type Fixture struct {
 	// deactivation operation, such as SingleStore. Others use their
 	// DeactivateIdentityUser method (component-work-orders, Workers).
 	DeactivateUser func(t *testing.T, ctx context.Context, userID string)
+	// SeedSetupContract replaces one task's stored setup contract with raw
+	// JSON, modelling rows an earlier encoding wrote. No public writer accepts
+	// a raw contract; the volatile backend decodes it into the task.
+	SeedSetupContract func(t *testing.T, ctx context.Context, taskID, raw string)
 }
 
 // Factory creates an isolated backend and workspace on every call. Cleanup
@@ -56,6 +60,12 @@ type Factory struct {
 	New               func(*testing.T, []config.Repo) Fixture
 	Capabilities      Capabilities
 	ProductionCapable bool
+	// PlanRevisionGate is dispatch.PendingPlanRevisionGate. storetest cannot
+	// import dispatch: dispatch integration tests import storetest.
+	PlanRevisionGate PlanRevisionGateFunc
+	// ReviewSweep is workorder.Service.SweepAutomaticReviewRecovery. storetest
+	// cannot import workorder: workorder tests import storetest.
+	ReviewSweep ReviewSweepFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -106,6 +116,10 @@ func RunAll(t *testing.T, factory Factory) {
 		x := factory.fresh(t, repos)
 		return RequirementFixture{x.Backend, x.Context, x.Workspace}
 	}
+	run("NextAction", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunNextActionConformance(t, x.Backend, x.Context)
+	})
 	run("Blueprint", func(t *testing.T) {
 		RunBlueprintConformance(t, func(t *testing.T, repos []config.Repo) BlueprintFixture {
 			x := factory.fresh(t, repos)
@@ -113,6 +127,7 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
+	run("TaskFlow", func(t *testing.T) { runTaskFlow(t, factory) })
 	run("GateKind", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunGateKindConformance(t, x.Backend, x.Context, x.Workspace)
@@ -144,6 +159,10 @@ func RunAll(t *testing.T, factory Factory) {
 	} {
 		run(suite.name, func(t *testing.T) { x := factory.fresh(t, nil); suite.run(t, x.Backend, x.Context) })
 	}
+	run("PlanRevisionGatePayload", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunPlanRevisionGatePayloadConformance(t, x.Backend, x.Context, factory.PlanRevisionGate)
+	})
 	run("PlanningBundles", func(t *testing.T) {
 		RunPlanningBundleConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
 			x := factory.fresh(t, nil)
@@ -163,6 +182,21 @@ func RunAll(t *testing.T, factory Factory) {
 	run("DependencyAddition", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunDependencyAdditionConformance(t, x.Backend, x.Context, x.Workspace)
+	})
+	run("AutomaticRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticRecoveryConformance(t, x.Backend, x.Context)
+	})
+	run("AutomaticPublicationRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticPublicationRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
+	})
+	run("AutomaticReviewRecovery", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		RunAutomaticReviewRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
+	})
+	run("ZeroSetupReviewSeats", func(t *testing.T) {
+		RunZeroSetupReviewSeatsConformance(t, factory.fresh(t, nil), factory.ReviewSweep)
 	})
 	for _, suite := range []struct {
 		name    string

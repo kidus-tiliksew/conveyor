@@ -1378,7 +1378,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Items) != 3 || projection.Attention.TaskCount != 2 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != 5 {
+	if len(projection.Items) != 3 || projection.Attention.TaskCount != 2 || projection.Attention.OperatorDecisions != 2 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != projection.Attention.OperatorDecisions {
 		t.Fatalf("projection=%+v", projection)
 	}
 	for _, item := range projection.Items {

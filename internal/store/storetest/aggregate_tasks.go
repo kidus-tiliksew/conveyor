@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -77,6 +78,14 @@ func runTaskAssigneeMembership(t *testing.T, x Fixture) {
 func runTaskLifecycle(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	task := newAggregateTask(t, x)
+	// Task activity serializes these lists verbatim; a fresh task's must be
+	// [] on every backend, never null (the web iterates them unguarded).
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	requireOK(t, err)
+	requireJSONArray(t, "fresh task interventions", interventions)
+	jobs, err := st.ListJobs(ctx, task.ID)
+	requireOK(t, err)
+	requireJSONArray(t, "fresh task jobs", jobs)
 	before, err := st.ListEvents(ctx, task.ID)
 	requireOK(t, err)
 	held, err := st.SetTaskHold(ctx, task.ID, true)
@@ -108,7 +117,7 @@ func runTaskLifecycle(t *testing.T, x Fixture) {
 	if cancelled.State != core.TaskClosed {
 		t.Fatalf("cancelled state=%s", cancelled.State)
 	}
-	interventions, err := st.ListInterventions(ctx, task.ID)
+	interventions, err = st.ListInterventions(ctx, task.ID)
 	requireOK(t, err)
 	if len(interventions) != 1 {
 		t.Fatal("cancellation intervention missing")
@@ -126,6 +135,15 @@ func runTaskLifecycle(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if len(before) != len(after) || current.State != cancelled.State {
 		t.Fatal("rejected cancellation partially committed")
+	}
+}
+
+func requireJSONArray(t *testing.T, what string, value any) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	requireOK(t, err)
+	if string(data) != "[]" {
+		t.Fatalf("%s serialized as %s, want []", what, data)
 	}
 }
 

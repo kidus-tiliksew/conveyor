@@ -340,10 +340,12 @@ func TestPhase61BlueprintAndTransactionalDependencyGateIntegration(t *testing.T)
 		workspace, bySub["SUB-1"].ID, bySub["SUB-2"].ID); err == nil || !strings.Contains(err.Error(), "dependency cycle") {
 		t.Fatalf("cycle trigger error=%v", err)
 	}
-	job := core.Job{ID: "phase61-order", TaskID: bySub["SUB-2"].ID, Stage: core.StageImplement, State: core.JobPending}
+	// Job and work-order IDs are global; a per-workspace ID keeps a rerun on a
+	// kept database from colliding.
+	job := core.Job{ID: "phase61-order-" + workspace, TaskID: bySub["SUB-2"].ID, Stage: core.StageImplement, State: core.JobPending}
 	queueEnteredAt := time.Now().UTC().Truncate(time.Microsecond)
 	order := core.WorkOrder{
-		ID: "phase61-order", TaskID: job.TaskID, JobID: job.ID, Stage: job.Stage,
+		ID: job.ID, TaskID: job.TaskID, JobID: job.ID, Stage: job.Stage,
 		State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: queueEnteredAt,
 		QueueDeadline: queueEnteredAt.Add(time.Hour),
 	}

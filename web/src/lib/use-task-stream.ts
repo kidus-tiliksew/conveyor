@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { nextActionQueryKey, nextActionsQueryKey } from '../components/inbox/use-next-actions'
 
 // Waits before reopening the stream, indexed by consecutive connections that
 // ended without an activity frame; the last entry caps the delay.
@@ -26,6 +27,9 @@ export function useTaskStream(taskId: string, workspace: string) {
       if (signal.aborted) return
       void queryClient.invalidateQueries({ queryKey: ['task', workspace, taskId] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
+      // The task's next action and the inbox listing it move with its events.
+      void queryClient.invalidateQueries({ queryKey: nextActionQueryKey(workspace, taskId) })
+      void queryClient.invalidateQueries({ queryKey: nextActionsQueryKey(workspace) })
     }
     const refreshQueries = () => {
       window.clearTimeout(refresh)

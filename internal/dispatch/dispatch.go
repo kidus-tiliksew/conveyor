@@ -258,6 +258,14 @@ func (d *Dispatcher) runTask(ctx context.Context, taskID string) error {
 }
 
 func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) error {
+	return d.dispatchSnapshot(ctx, task, true)
+}
+
+// dispatchSnapshot dispatches the task's next stage. checkBase enables the
+// once-per-submission mergeability pre-check before verify or review
+// (feature-bounded-automatic-recovery AR-4); callers that have just read
+// readiness under the task lock pass false.
+func (d *Dispatcher) dispatchSnapshot(ctx context.Context, task core.Task, checkBase bool) error {
 	if isBlueprintAnchor(task) {
 		// A blueprint parent is a batch anchor, never implementation work
 		// Its children own the implement orders.
@@ -287,6 +295,9 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		}
 	}
 	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
+		if routed, checkErr := d.preDispatchConflictCheck(ctx, cfg, task, checkBase); checkErr != nil || routed {
+			return checkErr
+		}
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
 	// Newly dispatched specs are always MCP work orders, even when a stale
@@ -299,9 +310,83 @@ func (d *Dispatcher) runTaskForSnapshot(ctx context.Context, task core.Task) err
 		} else if active {
 			return nil
 		}
+		if task.NextStage == core.StageVerify {
+			if routed, checkErr := d.preDispatchConflictCheck(ctx, cfg, task, checkBase); checkErr != nil || routed {
+				return checkErr
+			}
+		}
 		return d.createWorkOrder(ctx, cfg, task, route, "")
 	}
 	return d.runInProcess(ctx, cfg, task, route)
+}
+
+// preDispatchConflictCheck reads the pull request's mergeability once per
+// submission before verify or review dispatch (feature-bounded-automatic-recovery
+// AR-4; req-bounded-automatic-recovery AC-3.2). A conflicting head routes to a
+// conflict-fix implement order and returns true; every other outcome, including
+// a forge error or an unresolved answer, returns false so dispatch proceeds as
+// today and merge readiness keeps the check.
+func (d *Dispatcher) preDispatchConflictCheck(ctx context.Context, cfg *config.Config, task core.Task, checkBase bool) (bool, error) {
+	if !checkBase || d.ViewPullRequest == nil {
+		return false, nil
+	}
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok || repo.GitHub == "" {
+		return false, nil
+	}
+	head := core.VerifyStageHead(task)
+	if head == "" {
+		return false, nil
+	}
+	orders, err := d.Store.ListTaskWorkOrders(ctx, task.ID)
+	if err != nil {
+		return false, err
+	}
+	var submission core.WorkOrder
+	for _, order := range orders {
+		if order.Stage != core.StageImplement || order.HeadSHA != head || (order.State != core.WorkOrderSubmitted && order.State != core.WorkOrderCompleted) {
+			continue
+		}
+		if submission.ID == "" || order.CreatedAt.After(submission.CreatedAt) {
+			submission = order
+		}
+	}
+	if submission.ID == "" {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	if d.Now != nil {
+		now = d.Now().UTC()
+	}
+	claimed, err := d.Store.ClaimBaseConflictCheck(ctx, submission.ID, now)
+	if err != nil || !claimed {
+		return false, err
+	}
+	pr, err := d.readPullRequestMergeability(ctx, repo.GitHub, task.Branch)
+	if err != nil {
+		log.Printf("[task %s] pre-dispatch base check for %s: %v", task.ID, head, err)
+		return false, nil
+	}
+	if pr.Mergeable != "CONFLICTING" || pr.HeadSHA != head {
+		return false, nil
+	}
+	routed := false
+	err = d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		current, lockedErr := d.Store.GetTask(lockedCtx, task.ID)
+		if lockedErr != nil {
+			return lockedErr
+		}
+		if current.NextStage != task.NextStage || core.VerifyStageHead(current) != head {
+			return nil
+		}
+		if lockedErr = d.Store.AppendEvent(lockedCtx, core.Event{TaskID: current.ID, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"workspace": current.Workspace, "task_id": current.ID, "reason_code": "pre-review-conflict", "approved_head": current.ApprovedHeadSHA, "new_head": head, "work_order_id": submission.ID})}); lockedErr != nil {
+			return lockedErr
+		}
+		routed = true
+		_, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, false, head)
+		return lockedErr
+	})
+	return routed, err
 }
 
 func isBlueprintAnchor(task core.Task) bool {
@@ -1541,6 +1626,8 @@ type PlanRevisionGateContext struct {
 
 // PendingPlanRevisionGate recognizes the latest audited gate command and
 // returns its matching request payload for HTTP validation and dispatch.
+// PlanRevisionGateContext keeps its fields. Unreadable gates return pending
+// with ErrPlanRevisionGateUnreadable so listings can continue and writes refuse.
 func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string) (PlanRevisionGateContext, bool, error) {
 	task, err := st.GetTask(ctx, taskID)
 	if err != nil {
@@ -1553,45 +1640,16 @@ func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
-	gateAt := -1
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != "task.state_changed" {
-			continue
-		}
-		var transition struct {
-			Command core.TaskCommand `json:"command"`
-		}
-		if err = json.Unmarshal(events[i].Payload, &transition); err != nil {
-			return PlanRevisionGateContext{}, false, fmt.Errorf("decode latest task transition for %s: %w", taskID, err)
-		}
-		if transition.Command != core.TaskGatePlanRevision {
-			return PlanRevisionGateContext{}, false, nil
-		}
-		gateAt = i
-		break
+	request, pending, err := store.PlanRevisionGateState(task, events)
+	if err != nil || !pending {
+		return PlanRevisionGateContext{}, pending, err
 	}
-	if gateAt < 0 {
-		return PlanRevisionGateContext{}, false, nil
-	}
-	for i := gateAt - 1; i >= 0; i-- {
-		if events[i].Kind != "work_order.plan_revision_requested" {
-			continue
-		}
-		var request struct {
-			WorkOrderID string `json:"work_order_id"`
-			AttemptID   string `json:"attempt_id"`
-			Rationale   string `json:"rationale"`
-			PlanVersion int    `json:"plan_version"`
-		}
-		if err = json.Unmarshal(events[i].Payload, &request); err != nil {
-			return PlanRevisionGateContext{}, false, fmt.Errorf("decode plan-revision request for %s: %w", taskID, err)
-		}
-		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
-			return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision request for %s is incomplete", taskID)
-		}
-		return PlanRevisionGateContext{WorkOrderID: request.WorkOrderID, AttemptID: request.AttemptID, Rationale: request.Rationale, PlanVersion: request.PlanVersion}, true, nil
-	}
-	return PlanRevisionGateContext{}, false, fmt.Errorf("plan-revision gate for %s has no request event", taskID)
+	return PlanRevisionGateContext{
+		WorkOrderID: request.WorkOrderID,
+		AttemptID:   request.AttemptID,
+		Rationale:   request.Rationale,
+		PlanVersion: request.PlanVersion,
+	}, true, nil
 }
 
 // pendingSpecGate recognizes the exact lifecycle command that parked the task.
