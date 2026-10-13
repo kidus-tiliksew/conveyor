@@ -230,18 +230,17 @@ func (c *client) mergeTask(id string) (core.Task, error) {
 	return task, err
 }
 
-// taskMergeGate is the task detail slice `task merge` needs to confirm the
-// one-act gate merge: the gate and its readiness peek (DEC-64(3)).
+// taskMergeGate is the task activity slice `task merge` needs to confirm
+// the one-act gate merge: the task and the readiness peek the activity
+// envelope carries at the merge_approval gate (DEC-64(3)).
 type taskMergeGate struct {
-	State          core.TaskState                       `json:"state"`
-	GateKind       core.GateKind                        `json:"gate_kind"`
-	ReviewedHead   string                               `json:"reviewed_head_sha"`
+	Task           core.Task                            `json:"task"`
 	MergeReadiness *workerservice.TaskRunMergeReadiness `json:"merge_readiness"`
 }
 
 func (c *client) taskMergeGate(id string) (taskMergeGate, error) {
 	var gate taskMergeGate
-	err := c.do(http.MethodGet, "/v1/tasks/"+url.PathEscape(id), nil, &gate)
+	err := c.do(http.MethodGet, "/v1/tasks/"+url.PathEscape(id)+"/activity", nil, &gate)
 	return gate, err
 }
 

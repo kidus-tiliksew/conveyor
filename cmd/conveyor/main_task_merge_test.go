@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,15 +10,18 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type taskMergeRequest struct {
 	method, path, authorization, workspace string
 }
 
-const approvedDetail = `{"id":"task-1","state":"approved"}`
+const approvedDetail = `{"task":{"id":"task-1","state":"approved"}}`
 
-const gateDetail = `{"id":"task-1","state":"awaiting_human","gate_kind":"merge_approval","reviewed_head_sha":"reviewed-head-sha","merge_readiness":{"state":"MERGEABLE","head_sha":"reviewed-head-sha","url":"https://github.test/org/repo/pull/7","number":7}}`
+const gateDetail = `{"task":{"id":"task-1","state":"awaiting_human","gate_kind":"merge_approval","reviewed_head_sha":"reviewed-head-sha"},"merge_readiness":{"state":"MERGEABLE","head_sha":"reviewed-head-sha","url":"https://github.test/org/repo/pull/7","number":7}}`
 
 // runTaskMergeCommand serves detail on GET and post on POST.
 func runTaskMergeCommand(t *testing.T, detail string, stdin string, args []string, post http.HandlerFunc) (string, error, []taskMergeRequest) {
@@ -26,7 +30,7 @@ func runTaskMergeCommand(t *testing.T, detail string, stdin string, args []strin
 	var requests []taskMergeRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, taskMergeRequest{r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Workspace-ID")})
-		if r.Method == http.MethodGet {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/task-1/activity" {
 			_, _ = w.Write([]byte(detail))
 			return
 		}
@@ -154,5 +158,33 @@ func TestTaskMergeCommandAtGatePrintsReadinessRefusal(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "STALE") || strings.Contains(output, "merged task") {
 		t.Fatalf("err=%v output=%q", err, output)
+	}
+}
+
+// TestTaskMergeGateDecodesRealActivityEnvelope decodes the real handler's
+// activity response, so the confirm names the served head, PR and readiness.
+func TestTaskMergeGateDecodesRealActivityEnvelope(t *testing.T) {
+	isolateLocalAuthTest(t)
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	if err := st.CreateTask(ctx, core.Task{ID: "task-1", Workspace: "demo", Repo: "app", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, ReviewedHeadSHA: "reviewed-head-sha"}); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "operator-secret-token"
+	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
+		return dispatch.MergeReadiness{State: "MERGEABLE", HeadSHA: "reviewed-head-sha", Number: 7, URL: "https://github.test/org/repo/pull/7"}, nil
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	t.Setenv("CONVEYOR_ADDR", httpServer.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "operator-secret-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+	gate, err := newClient().taskMergeGate("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gate.Task.GateKind != core.GateKindMergeApproval || gate.Task.ReviewedHeadSHA != "reviewed-head-sha" || gate.MergeReadiness == nil || gate.MergeReadiness.State != "MERGEABLE" || gate.MergeReadiness.Number != 7 {
+		t.Fatalf("gate=%+v readiness=%+v", gate.Task, gate.MergeReadiness)
 	}
 }

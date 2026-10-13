@@ -15,7 +15,7 @@ import (
 func gateMergeServer(t *testing.T) *Server {
 	t.Helper()
 	st := store.NewMemory()
-	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "gate", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval}); err != nil {
+	if err := st.CreateTask(store.WithActor(context.Background(), store.SystemActor()), core.Task{ID: "gate", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, ReviewedHeadSHA: "reviewed-head"}); err != nil {
 		t.Fatal(err)
 	}
 	s := NewServer(st)
@@ -104,13 +104,23 @@ func TestNextActionMergeChoiceUsesLastKnownReadiness(t *testing.T) {
 	if got := refusal(); got != "merge readiness UNKNOWN" || reads != 0 {
 		t.Fatalf("before peek refusal=%q reads=%d", got, reads)
 	}
-	// A peek cached for another approved head is not last-known for this one.
-	if _, err := s.taskRunReadiness.read(ctx, task, "other-head", s.OnMergeReadiness); err != nil {
+	// A run-gate peek at the reviewed head is reused by next-action; a
+	// replaced reviewed head misses.
+	if _, err := s.taskRunReadiness.read(ctx, task, s.OnMergeReadiness); err != nil {
 		t.Fatal(err)
 	}
-	if got := refusal(); got != "merge readiness UNKNOWN" || reads != 1 {
-		t.Fatalf("other-key refusal=%q reads=%d", got, reads)
+	if got := refusal(); got != "" || reads != 1 {
+		t.Fatalf("reused refusal=%q reads=%d", got, reads)
 	}
+	replaced := task
+	replaced.ReviewedHeadSHA = "replaced-head"
+	if got := s.taskRunReadiness.lastKnown(ctx, replaced); got != nil {
+		t.Fatalf("replaced head reused %+v", got)
+	}
+	if got := s.taskRunReadiness.lastKnown(ctx, task); got == nil || got.State != "MERGEABLE" {
+		t.Fatalf("reviewed head miss %+v", got)
+	}
+	s.taskRunReadiness.forget(ctx, task.ID)
 	// The task detail read caches the gate peek for the next-action read.
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, authenticatedMemoryRead(s, httptest.NewRequest(http.MethodGet, "/v1/tasks/gate/activity", nil)))
@@ -119,5 +129,22 @@ func TestNextActionMergeChoiceUsesLastKnownReadiness(t *testing.T) {
 	}
 	if got := refusal(); got != "" || reads != 2 {
 		t.Fatalf("after peek refusal=%q reads=%d", got, reads)
+	}
+}
+
+// TestTaskRunReadinessKeyFollowsReviewedHeadAtGate: at merge_approval a
+// leftover approved head never masks a replaced reviewed head (DEC-64(3)).
+func TestTaskRunReadinessKeyFollowsReviewedHeadAtGate(t *testing.T) {
+	gate := core.Task{State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, ApprovedHeadSHA: "old-approval", ReviewedHeadSHA: "a"}
+	replaced := gate
+	replaced.ReviewedHeadSHA = "b"
+	if taskRunReadinessKey(gate) == taskRunReadinessKey(replaced) {
+		t.Fatal("replaced reviewed head reused the gate cache key")
+	}
+	approved := core.Task{State: core.TaskApproved, ApprovedHeadSHA: "approved", ReviewedHeadSHA: "a"}
+	moved := approved
+	moved.ReviewedHeadSHA = "b"
+	if taskRunReadinessKey(approved) != taskRunReadinessKey(moved) {
+		t.Fatal("approved task key must follow the approved head")
 	}
 }

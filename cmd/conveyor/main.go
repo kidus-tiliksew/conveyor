@@ -481,7 +481,7 @@ func mergeTaskCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if gate.State == core.TaskAwaiting && gate.GateKind == core.GateKindMergeApproval {
+			if gate.Task.State == core.TaskAwaiting && gate.Task.GateKind == core.GateKindMergeApproval {
 				if err = confirmGateMerge(cmd, args[0], gate, yes); err != nil {
 					return err
 				}
@@ -516,7 +516,7 @@ func confirmGateMerge(cmd *cobra.Command, id string, gate taskMergeGate, yes boo
 			pull += " " + r.URL
 		}
 	}
-	fmt.Fprintf(out, "Merge task %s at the merge approval gate: reviewed head %s, %s (readiness %s)\n", id, gate.ReviewedHead, pull, readiness)
+	fmt.Fprintf(out, "Merge task %s at the merge approval gate: reviewed head %s, %s (readiness %s)\n", id, gate.Task.ReviewedHeadSHA, pull, readiness)
 	if yes {
 		return nil
 	}

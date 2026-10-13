@@ -2247,7 +2247,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		if gateMerge {
 			// The gate peek is cached so the next-action projection can offer
 			// the server merge choice without its own forge call (DEC-64(3)).
-			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, task.ApprovedHeadSHA, s.OnMergeReadiness)
+			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, s.OnMergeReadiness)
 		} else {
 			readiness, readinessErr = s.OnMergeReadiness(r.Context(), task)
 		}

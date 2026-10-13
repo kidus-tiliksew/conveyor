@@ -444,3 +444,21 @@ func TestApproveAfterPendingGateMergeObserved(t *testing.T) {
 	}
 	assertGateMergedBy(t, st, ctx, task.ID, "usr-approver")
 }
+
+// TestApproveDoesNotCreditPendingRequestAtOtherHead is the counterexample to
+// crediting: a pending one-act request at the reviewed head is not credited
+// when the visible merged head differs (DEC-64(7)).
+func TestApproveDoesNotCreditPendingRequestAtOtherHead(t *testing.T) {
+	ctx, st, task, d, forge := gateMergeFixture(t, "gate-approve-other-head")
+	forge.answer = func(*githubtrigger.PullRequest) error { return errors.New("connection reset") }
+	_, _ = d.MergeAtGate(ctx, task, gateOperator)
+	forge.pr.Merged, forge.pr.State, forge.pr.HeadSHA, forge.pr.MergeCommitSHA, forge.pr.MergedBy = true, "closed", "other-head", "landed", "conveyor-app"
+	second := store.WithActor(ctx, core.Actor{ID: store.UserActorID("usr-second"), Role: core.ActorUser})
+	_ = d.HandleIntervention(second, task, core.Job{}, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove})
+	if kinds := eventKinds(t, st, ctx, task.ID); countKind(kinds, "merge.confirmed") != 0 {
+		t.Fatalf("credited a merge at another head: %v", kinds)
+	}
+	if current, _ := st.GetTask(ctx, task.ID); current.State == core.TaskMerged {
+		t.Fatalf("task merged: %+v", current)
+	}
+}

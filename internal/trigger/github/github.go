@@ -470,6 +470,8 @@ func ExpectedHead(ctx context.Context) string {
 // not refusals; the merge may still have landed (DEC-64(6)).
 func MergeRefused(err error) bool {
 	var response *Error
+	// R2 exception: a rate-limited 403 is categorised ForgeRateLimited and
+	// stays unconfirmed, not refused; the merge may still land.
 	if !errors.As(err, &response) || response.Category == ForgeRateLimited {
 		return false
 	}
