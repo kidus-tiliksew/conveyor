@@ -2462,3 +2462,28 @@ func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeReviewOutputPreservesFencedDoneCriteria(t *testing.T) {
+	t.Parallel()
+	criteria := []string{"Run the formatter:\n```go\nfmt.Println(\"ok\")\n```"}
+	review := pipeline.Review{
+		Verdict:    "approve",
+		ReasonCode: "approved",
+		Summary:    "fenced criteria pass",
+		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{
+			Applicable:  true,
+			Summary:     "all criteria satisfied",
+			Satisfied:   criteria,
+			Unsatisfied: []string{},
+			Unverified:  []string{},
+			Conflicts:   []string{},
+		},
+	}
+	parsed, err := pipeline.ParseReview(ComposeReviewOutput(review))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.DoneCriteriaCoverage == nil || !reflect.DeepEqual(parsed.DoneCriteriaCoverage.Satisfied, criteria) {
+		t.Fatalf("satisfied=%v, want %v", parsed.DoneCriteriaCoverage, criteria)
+	}
+}

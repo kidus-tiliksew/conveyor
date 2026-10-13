@@ -1778,7 +1778,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	if err = s.enforce(ctx, order); err != nil {
 		return nil, err
 	}
-	validated, err := pipeline.ParseReview(dispatch.ComposeReviewOutput(review))
+	validated, err := pipeline.ValidateReview(review)
 	if err != nil {
 		return nil, err
 	}

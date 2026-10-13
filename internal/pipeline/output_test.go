@@ -17,6 +17,57 @@ func TestParseTriageAndReview(t *testing.T) {
 	}
 }
 
+func TestParseReviewPreservesFencedDoneCriteria(t *testing.T) {
+	t.Parallel()
+	criteria := []string{
+		"Run the formatter:\n```go\nfmt.Println(\"ok\")\n```",
+		"Preserve the marker:\n````text\nbody\n````",
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"verdict":     "approve",
+		"reason_code": "approved",
+		"summary":     "fenced criteria pass",
+		"feedback":    "",
+		"done_criteria_coverage": map[string]any{
+			"applicable":  true,
+			"summary":     "all criteria satisfied",
+			"satisfied":   criteria,
+			"unsatisfied": []string{},
+			"unverified":  []string{},
+			"conflicts":   []string{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "\\n") {
+		t.Fatalf("JSON did not contain an escaped newline: %s", encoded)
+	}
+	review, err := ParseReview("```conveyor:review\n" + string(encoded) + "\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.DoneCriteriaCoverage == nil {
+		t.Fatal("done criteria coverage was not decoded")
+	}
+	if len(review.DoneCriteriaCoverage.Satisfied) != len(criteria) {
+		t.Fatalf("satisfied=%v, want %v", review.DoneCriteriaCoverage.Satisfied, criteria)
+	}
+	for index, want := range criteria {
+		if got := review.DoneCriteriaCoverage.Satisfied[index]; got != want {
+			t.Errorf("satisfied[%d]=%q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestParseReviewRejectsLongClosingFence(t *testing.T) {
+	t.Parallel()
+	input := "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"passes\",\"feedback\":\"\"}\n````"
+	if _, err := ParseReview(input); err == nil {
+		t.Fatal("accepted a four-backtick closing fence")
+	}
+}
+
 func TestParseReviewNormalizesRequirementCitationLists(t *testing.T) {
 	t.Parallel()
 	review, err := ParseReview("```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"passes\",\"feedback\":\"\",\"requirement_citations\":{\"applicable\":true}}\n```")
