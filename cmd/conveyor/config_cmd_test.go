@@ -43,6 +43,7 @@ func TestConfigExportImportRoundTripsContextualSettings(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	isolateConveyorEnv(t)
 	t.Setenv("CONVEYOR_ADDR", srv.URL)
 	t.Setenv("CONVEYOR_API_TOKEN", "secret-token")
 	previousWorkspace := workspaceFlag
