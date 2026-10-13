@@ -466,15 +466,27 @@ func requestTaskChangesCmd() *cobra.Command {
 	return command
 }
 
-// mergeTaskCmd sends the separate operator merge act for an approved task.
-// Approval never merges; with the merge gate on, the task stays approved
-// until this act or the dashboard's Merge (req-review-gates-evidence AC-1.1,
-// AC-1.2; component-runtime; component-submission-merge).
+// mergeTaskCmd sends the separate operator merge act for an approved task,
+// or the one-act merge at the merge_approval gate, which first names the
+// reviewed head and pull request and asks to confirm unless --yes. Approve
+// alone never merges (req-review-gates-evidence AC-1.1, AC-1.2; DEC-64(1,3);
+// component-runtime; component-submission-merge).
 func mergeTaskCmd() *cobra.Command {
-	return &cobra.Command{
-		Use: "merge <id>", Short: "Merge an approved task's pull request at the merge gate", Args: cobra.ExactArgs(1),
+	var yes bool
+	command := &cobra.Command{
+		Use: "merge <id>", Short: "Merge a task's pull request at the merge gate", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			task, err := newClient().mergeTask(args[0])
+			c := newClient()
+			gate, err := c.taskMergeGate(args[0])
+			if err != nil {
+				return err
+			}
+			if gate.State == core.TaskAwaiting && gate.GateKind == core.GateKindMergeApproval {
+				if err = confirmGateMerge(cmd, args[0], gate, yes); err != nil {
+					return err
+				}
+			}
+			task, err := c.mergeTask(args[0])
 			if err != nil {
 				return err
 			}
@@ -485,6 +497,39 @@ func mergeTaskCmd() *cobra.Command {
 			return err
 		},
 	}
+	command.Flags().BoolVar(&yes, "yes", false, "merge at the merge_approval gate without the confirmation prompt")
+	return command
+}
+
+// confirmGateMerge names the reviewed head and pull request the one-act merge
+// lands and requires --yes or an interactive "yes". It writes to stderr so
+// stdout carries only the receipt (DEC-64(3)).
+func confirmGateMerge(cmd *cobra.Command, id string, gate taskMergeGate, yes bool) error {
+	out := cmd.ErrOrStderr()
+	pull, readiness := "pull request (unknown)", "UNKNOWN"
+	if r := gate.MergeReadiness; r != nil {
+		readiness = r.State
+		if r.Number > 0 {
+			pull = fmt.Sprintf("pull request #%d", r.Number)
+		}
+		if r.URL != "" {
+			pull += " " + r.URL
+		}
+	}
+	fmt.Fprintf(out, "Merge task %s at the merge approval gate: reviewed head %s, %s (readiness %s)\n", id, gate.ReviewedHead, pull, readiness)
+	if yes {
+		return nil
+	}
+	fmt.Fprint(out, "Approve and merge? Type yes to continue: ")
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return err
+	}
+	if strings.TrimSpace(line) != "yes" {
+		fmt.Fprintln(out)
+		return fmt.Errorf("not merged: confirmation declined")
+	}
+	return nil
 }
 
 func removeTaskDependencyCmd() *cobra.Command {

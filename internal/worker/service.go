@@ -181,11 +181,16 @@ type TaskRunMergeReadiness struct {
 	Number  int    `json:"number,omitempty"`
 }
 
+// TaskRunGateMergeApproval is the gate kind of a task paused at the
+// merge_approval gate, where the one-act merge is offered (DEC-64(1,3)).
+const TaskRunGateMergeApproval = "merge"
+
 // MergeActionAvailable reports whether a client may offer the merge act: the
-// gate is a merge-execution gate, the credential holds operate_gates, and the
-// projected readiness is MERGEABLE. The merge route rechecks every condition.
+// gate is a merge-execution or merge_approval gate, the credential holds
+// operate_gates, and the projected readiness is MERGEABLE. The merge route
+// rechecks every condition (DEC-64(3)).
 func (g TaskRunGate) MergeActionAvailable() bool {
-	return g.Kind == TaskRunGateMergeExecution && g.CanOperate &&
+	return (g.Kind == TaskRunGateMergeExecution || g.Kind == TaskRunGateMergeApproval) && g.CanOperate &&
 		g.MergeReadiness != nil && g.MergeReadiness.State == TaskRunMergeReadinessMergeable
 }
 

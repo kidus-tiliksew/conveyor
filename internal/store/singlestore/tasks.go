@@ -829,6 +829,18 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 	}
 	var result core.Task
 	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		var applyErr error
+		result, applyErr = s.applyTaskCommandTx(ctx, tx, id, command)
+		return applyErr
+	})
+	return result, err
+}
+
+// applyTaskCommandTx applies one lifecycle command inside a transaction that
+// already holds the task-operation lock (component-task-lifecycle).
+func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, command taskops.Command) (core.Task, error) {
+	var result core.Task
+	err := func() error {
 		before, err := getTaskRow(ctx, tx, id)
 		if err != nil {
 			return notFound(err, "task %s", id)
@@ -910,7 +922,7 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 			return err
 		}
 		return nil
-	})
+	}()
 	return result, err
 }
 
@@ -1030,6 +1042,51 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	}
 	i = normalizeIntervention(ctx, i)
 	err := s.taskTx(ctx, i.TaskID, func(tx *sql.Tx) error { return s.cancelTaskTx(ctx, tx, i) })
+	if err != nil {
+		return core.Task{}, err
+	}
+	return s.GetTask(ctx, i.TaskID)
+}
+
+// MergeTaskAtGateCommand completes a confirmed forge merge at the
+// merge_approval gate in one transaction under the task-operation lock
+// (DEC-64(1,7); component-task-lifecycle): approve intervention, approval
+// binding, merge.confirmed, then intervention.merge.
+func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, i core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	if !lease.ValidFor(i.TaskID) {
+		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
+	}
+	if err := core.ValidateGateMerge(i, approvedHead, confirmed); err != nil {
+		return core.Task{}, err
+	}
+	approvedHead = strings.TrimSpace(approvedHead)
+	i = normalizeIntervention(ctx, i)
+	err := s.taskTx(ctx, i.TaskID, func(tx *sql.Tx) error {
+		before, err := getTaskRow(ctx, tx, i.TaskID)
+		if err != nil {
+			return err
+		}
+		if _, err = core.TransitionGateMerge(before.State, before.GateKind); err != nil {
+			return err
+		}
+		if err = insertInterventionTx(ctx, tx, i); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: i.JobID, Kind: "intervention." + string(i.Action), ActorID: i.ActorID, ActorRole: i.ActorRole, At: i.At, Payload: core.JSONPayload(map[string]any{"reason_code": i.ReasonCode, "comment": i.Comment})}); err != nil {
+			return err
+		}
+		if err = taskWrite(ctx, tx, i.TaskID, approvalValues(approvedHead)); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": before.Workspace, "task_id": i.TaskID, "approved_head": approvedHead})}); err != nil {
+			return err
+		}
+		if err = taskEvent(ctx, tx, confirmed); err != nil {
+			return err
+		}
+		_, err = s.applyTaskCommandTx(ctx, tx, i.TaskID, taskops.Command{Kind: core.TaskInterventionMerge})
+		return err
+	})
 	if err != nil {
 		return core.Task{}, err
 	}

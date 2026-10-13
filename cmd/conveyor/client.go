@@ -230,6 +230,21 @@ func (c *client) mergeTask(id string) (core.Task, error) {
 	return task, err
 }
 
+// taskMergeGate is the task detail slice `task merge` needs to confirm the
+// one-act gate merge: the gate and its readiness peek (DEC-64(3)).
+type taskMergeGate struct {
+	State          core.TaskState                       `json:"state"`
+	GateKind       core.GateKind                        `json:"gate_kind"`
+	ReviewedHead   string                               `json:"reviewed_head_sha"`
+	MergeReadiness *workerservice.TaskRunMergeReadiness `json:"merge_readiness"`
+}
+
+func (c *client) taskMergeGate(id string) (taskMergeGate, error) {
+	var gate taskMergeGate
+	err := c.do(http.MethodGet, "/v1/tasks/"+url.PathEscape(id), nil, &gate)
+	return gate, err
+}
+
 func (c *client) closeTask(id, reason string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("a credential is required for task close; run `conveyor auth login`")

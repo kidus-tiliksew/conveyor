@@ -27,6 +27,18 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
 			return err
 		}
+		var applyErr error
+		result, applyErr = s.applyTaskCommandTx(ctx, tx, q, id, command)
+		return applyErr
+	})
+	return result, err
+}
+
+// applyTaskCommandTx applies one lifecycle command inside a transaction that
+// already holds the task-operation lock (component-task-lifecycle).
+func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries, id string, command taskops.Command) (core.Task, error) {
+	var result core.Task
+	err := func() error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
 			return notFound(err, "task %s", id)
@@ -110,7 +122,7 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 			return err
 		}
 		return nil
-	})
+	}()
 	return result, err
 }
 

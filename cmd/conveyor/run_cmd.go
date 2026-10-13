@@ -672,6 +672,11 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 	} else if gate.CanRequestChanges {
 		actions = "changes/wait"
 	}
+	// The merge_approval gate also offers the one-act merge at MERGEABLE;
+	// approve alone stays available (DEC-64(1,3)).
+	if gate.Kind == workerservice.TaskRunGateMergeApproval && gate.MergeActionAvailable() {
+		actions = "merge/" + actions
+	}
 	for {
 		answer, polled, err := readRunPromptOrPoll(ctx, answers, output, fmt.Sprintf("Gate action [%s]: ", actions), styled, pollDelay)
 		if err != nil {
@@ -689,6 +694,10 @@ func waitAtTaskRunGate(ctx context.Context, answers *runInputSource, output io.W
 				return runGateStop, "", nil
 			case <-time.After(pollDelay):
 				return runGatePoll, "", nil
+			}
+		case "merge":
+			if gate.Kind == workerservice.TaskRunGateMergeApproval && gate.MergeActionAvailable() {
+				return runGateMerge, "", nil
 			}
 		case "approve":
 			if gate.CanOperate {

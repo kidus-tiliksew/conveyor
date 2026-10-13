@@ -182,6 +182,12 @@ type TaskStore interface {
 	// CancelTask atomically records the human intervention, closes the task,
 	// and cancels every non-terminal work order.
 	CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error)
+	// MergeTaskAtGateCommand atomically completes a confirmed forge merge at
+	// the merge_approval gate (DEC-64(1,7); component-task-lifecycle): it
+	// records the approve intervention, binds approvedHead, appends the
+	// merge.confirmed event, and applies intervention.merge. It refuses with
+	// the typed transition error unless the task waits at merge_approval.
+	MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)

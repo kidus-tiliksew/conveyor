@@ -64,13 +64,16 @@ const (
 	TaskInterventionRedirect      TaskCommand = "intervention.redirect"
 	TaskMergeConfirm              TaskCommand = "merge.confirm"
 	TaskMergeRecover              TaskCommand = "merge.recover"
-	TaskRecoverRefresh            TaskCommand = "refresh.recover"
-	TaskRefreshReview             TaskCommand = "refresh.review"
-	TaskConflictDispatch          TaskCommand = "conflict.dispatch"
-	TaskRecover                   TaskCommand = "task.recover"
-	TaskCancel                    TaskCommand = "task.cancel"
-	TaskStartOver                 TaskCommand = "task.start_over"
-	TaskBlueprintClose            TaskCommand = "blueprint.close"
+	// TaskInterventionMerge is the one-act operator merge at the merge_approval
+	// gate (DEC-64(1); component-task-lifecycle): awaiting_human -> merged.
+	TaskInterventionMerge TaskCommand = "intervention.merge"
+	TaskRecoverRefresh    TaskCommand = "refresh.recover"
+	TaskRefreshReview     TaskCommand = "refresh.review"
+	TaskConflictDispatch  TaskCommand = "conflict.dispatch"
+	TaskRecover           TaskCommand = "task.recover"
+	TaskCancel            TaskCommand = "task.cancel"
+	TaskStartOver         TaskCommand = "task.start_over"
+	TaskBlueprintClose    TaskCommand = "blueprint.close"
 )
 
 // GateKind is the operator wait recorded on the task row when a transition
@@ -138,7 +141,7 @@ var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
 	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskDispatchFailFinal): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
-	string(TaskAwaiting): {string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
+	string(TaskAwaiting): {string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskInterventionMerge): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskParked):   {string(TaskRecover): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 }
@@ -159,6 +162,35 @@ var jobLifecycleTable = lifecycleTable{
 	string(JobPending): {"job.start": string(JobRunning)},
 	string(JobRunning): {"job.complete": string(JobDone), "job.fail": string(JobFailed)},
 	string(JobFailed):  {"job.retry": string(JobPending)},
+}
+
+// TransitionGateMerge applies intervention.merge only while the task waits at
+// the merge_approval gate; any other state or gate kind is the typed
+// transition error (DEC-64(1); component-task-lifecycle).
+func TransitionGateMerge(from TaskState, kind GateKind) (TaskState, error) {
+	to, err := TransitionTask(from, TaskInterventionMerge)
+	if err != nil {
+		return "", err
+	}
+	if kind != GateKindMergeApproval {
+		return "", &ErrInvalidTransition{Space: TaskLifecycle, From: string(from) + "/" + string(kind), Command: string(TaskInterventionMerge)}
+	}
+	return to, nil
+}
+
+// ValidateGateMerge checks the one-act merge inputs every store enforces
+// before it opens its transaction (DEC-64(1,7)).
+func ValidateGateMerge(intervention Intervention, approvedHead string, confirmed Event) error {
+	if intervention.Action != InterventionApprove {
+		return fmt.Errorf("gate merge requires an approve intervention")
+	}
+	if strings.TrimSpace(approvedHead) == "" {
+		return fmt.Errorf("gate merge requires the reviewed head")
+	}
+	if confirmed.Kind != "merge.confirmed" || confirmed.TaskID != intervention.TaskID {
+		return fmt.Errorf("gate merge requires the task's merge.confirmed event")
+	}
+	return nil
 }
 
 func publicationLifecycleTable(queued, retrying, published, failed string) lifecycleTable {

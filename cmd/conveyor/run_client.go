@@ -54,9 +54,10 @@ func (c *client) approveTaskRunGateContext(ctx context.Context, credential strin
 }
 
 // mergeTaskRunGateContext sends the separate merge act at a merge_execution
-// gate with the invoking user's credential, the same audited operator act as
-// the dashboard's Merge (req-local-task-runs AC-4.3;
-// req-review-gates-evidence AC-1.1; component-local-launchers).
+// gate, or the one-act merge at a merge_approval gate (DEC-64(1)), with the
+// invoking user's credential, the same audited operator act as the
+// dashboard's Merge (req-local-task-runs AC-4.3; req-review-gates-evidence
+// AC-1.1; component-local-launchers).
 func (c *client) mergeTaskRunGateContext(ctx context.Context, credential string, item workerservice.DispatchOrder) error {
 	var task core.Task
 	if err := c.workerDoContext(ctx, http.MethodPost, "/v1/tasks/"+url.PathEscape(item.Task.ID)+"/merge", []byte("{}"), &task, credential); err != nil {

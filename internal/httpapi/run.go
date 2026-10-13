@@ -373,6 +373,16 @@ func (s *Server) taskRunAwaitingGate(ctx context.Context, task core.Task) (*work
 			gate.SpecVersion = spec.Version
 		}
 	}
+	// A merge_approval gate carries the side-effect-free readiness peek, so a
+	// run offers the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
+	if task.GateKind == core.GateKindMergeApproval && gate.Kind == workerservice.TaskRunGateMergeApproval && s.OnMergeReadiness != nil {
+		readiness, readErr := s.taskRunReadiness.read(ctx, task, task.ReviewedHeadSHA, s.OnMergeReadiness)
+		if readErr != nil {
+			log.Printf("task run gate merge readiness for %s: %v", task.ID, readErr)
+		} else {
+			gate.MergeReadiness = &workerservice.TaskRunMergeReadiness{State: readiness.State, HeadSHA: readiness.HeadSHA, URL: readiness.URL, Number: readiness.Number}
+		}
+	}
 	return gate, nil
 }
 
