@@ -156,8 +156,13 @@ repos:
 # The monitor is opt-in and limited to configured repositories. It uses the
 # daemon's GitHub credential for read-only observation and always files normal
 # gated tasks; it cannot claim, review, merge, or deploy them (component-monitor-drift).
+# merge_deferral_bound, when unset, is min(10m, startup_window - poll_interval - 5s)
+# and is disabled when that value is not positive. An explicit bound must satisfy
+# bound + poll_interval + 5s < startup_window so a deferred commit stays in the
+# next poll's window.
 monitor:
   enabled: false
   repositories: [api]
   poll_interval: 1m
   startup_window: 24h
+  # merge_deferral_bound: 10m

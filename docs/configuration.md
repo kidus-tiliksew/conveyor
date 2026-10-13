@@ -58,6 +58,7 @@ monitor:
   repositories: [api]
   poll_interval: 1m
   startup_window: 24h
+  merge_deferral_bound: 10m
 ```
 
 `planning_models` optionally lists the planning models the dashboard may

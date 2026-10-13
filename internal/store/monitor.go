@@ -79,6 +79,59 @@ func (m *memory) FindOpenMonitorTask(ctx context.Context, repository string, kin
 	return selected.ID, selected.ID != "", nil
 }
 
+func (m *memory) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	commitSHA = strings.TrimSpace(commitSHA)
+	repository = strings.TrimSpace(repository)
+	if commitSHA == "" || repository == "" {
+		return monitor.MergeNone, "", nil
+	}
+	workspace := workspaceOrDefault(ctx, "")
+	var recordedTask string
+	var recordedEvent core.Event
+	var inFlightTask string
+	var inFlightEvent core.Event
+	for taskID, events := range m.events {
+		if taskID == "" {
+			continue
+		}
+		task, ok := m.tasks[taskID]
+		if !ok || task.Workspace != workspace {
+			continue
+		}
+		for _, event := range events {
+			if monitor.RecordedMergeCommit(event, repository, commitSHA) {
+				if recordedTask == "" || TaskEventBefore(event, recordedEvent) {
+					recordedTask, recordedEvent = taskID, event
+				}
+			}
+			if !monitor.MergeRequestedInRepository(event, repository) {
+				continue
+			}
+			ended := false
+			for _, later := range events {
+				if !TaskEventBefore(event, later) || !monitor.EndsMergeFlight(later) {
+					continue
+				}
+				ended = true
+				break
+			}
+			if ended {
+				continue
+			}
+			if bound <= 0 || !event.At.After(now.Add(-bound)) {
+				continue
+			}
+			if inFlightTask == "" || TaskEventBefore(event, inFlightEvent) {
+				inFlightTask, inFlightEvent = taskID, event
+			}
+		}
+	}
+	state, taskID := monitor.DecideMergeState(recordedTask, inFlightTask, committedAt, inFlightEvent.At, now, bound)
+	return state, taskID, nil
+}
+
 func (m *memory) RequirementExists(ctx context.Context, id string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
