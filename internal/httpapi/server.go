@@ -2242,7 +2242,15 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
 	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 	if (task.State == core.TaskApproved || gateMerge) && s.OnMergeReadiness != nil {
-		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
+		var readiness dispatch.MergeReadiness
+		var readinessErr error
+		if gateMerge {
+			// The gate peek is cached so the next-action projection can offer
+			// the server merge choice without its own forge call (DEC-64(3)).
+			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, task.ApprovedHeadSHA, s.OnMergeReadiness)
+		} else {
+			readiness, readinessErr = s.OnMergeReadiness(r.Context(), task)
+		}
 		if readinessErr != nil {
 			// The merge action must never render without a successful gate-facing
 			// readiness read (component-http-api).

@@ -78,6 +78,7 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 			opts.Capabilities[capability] = true
 		}
 	}
+	opts.MergeReadiness = s.taskRunReadiness.lastKnown
 	return opts, nil
 }
 

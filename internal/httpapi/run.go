@@ -948,3 +948,16 @@ func (s *Server) checkpointTaskRunOrderAttempt(w http.ResponseWriter, r *http.Re
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"created": created})
 }
+
+// lastKnown returns the cached readiness peek for a next-action projection.
+// It never calls the forge, so a next-action read cannot loop forge calls;
+// a missing or expired entry yields nil, which projects as UNKNOWN (DEC-64(3)).
+func (c *taskRunReadinessCache) lastKnown(ctx context.Context, task core.Task) *nextaction.MergeReadiness {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[taskRunReadinessID(ctx, task.ID)]
+	if !ok || entry.key != string(task.State)+"\x00"+task.ApprovedHeadSHA || c.now().Sub(entry.readAt) >= taskRunMergeReadinessReuse {
+		return nil
+	}
+	return &nextaction.MergeReadiness{State: entry.readiness.State, HeadSHA: entry.readiness.HeadSHA, Number: entry.readiness.Number}
+}

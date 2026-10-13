@@ -5,10 +5,10 @@ import { fetchCallerIdentity } from '../../lib/api'
 import type { ActivityItem, Task } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
-import { NextActionChoices } from '../inbox/choice-button'
 import { useNextAction } from '../inbox/use-next-actions'
 import { Disclosure } from '../ui/disclosure'
 import { AttachmentsCard } from './attachments-card'
+import { GateChoices } from './merge-at-gate'
 import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
 import { VerificationVerdictLine } from './verification-entry'
 import { VerificationReviewResult } from './verification-stage'
@@ -208,7 +208,6 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
   const style = toneStyles[tone]
   const Icon = tone === 'alarm' ? TriangleAlert : tone === 'positive' ? GitMerge : UserRound
   const mergeGate = item.at_merge_gate
-
   return (
     <section className={cn('rounded-lg border bg-background', style.card)} aria-label="Human gate">
       <div className={cn('flex flex-wrap items-center gap-3 rounded-t-lg px-4 py-3', style.header)}>
@@ -223,7 +222,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
         {mergeGate && <VerificationVerdictLine item={item} />}
         {mergeGate && <VerificationReviewResult item={item} />}
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-        <NextActionChoices taskId={item.task.id} choices={action.choices} onActed={() => onDecisionRecorded?.()} />
+        <GateChoices taskId={item.task.id} action={action} onActed={() => onDecisionRecorded?.()} />
       </div>
     </section>
   )

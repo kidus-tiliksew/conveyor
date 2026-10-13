@@ -553,7 +553,9 @@ func TestReadMergeReadinessAwaitingGateIsReadOnlyWhenUnmerged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if pr.Mergeable == "CONFLICTING" && readiness.State != "CONFLICTING" {
+			// A head other than the reviewed head is STALE before any
+			// mergeability answer (DEC-64(3)).
+			if readiness.State != "STALE" {
 				t.Fatalf("readiness=%+v", readiness)
 			}
 			current, err := st.GetTask(ctx, task.ID)

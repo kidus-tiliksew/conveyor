@@ -337,6 +337,66 @@ test('agent_question opens the direction input and posts the direction', async (
   expect(harness.posts[0].postDataJSON()).toMatchObject({ direction: 'Use the shared cache.' })
 })
 
+test('the inbox offers the one-act merge only behind the confirm naming the reviewed head and PR', async ({ page }) => {
+  const head = 'feedface1234567'
+  const fixture: Fixture = {
+    items: [
+      {
+        band: 'decisions',
+        task: task('T-merge', 'Merge me', 'awaiting_human'),
+        next_action: {
+          kind: 'merge_approval',
+          label: 'Merge approval',
+          actor: 'operator',
+          judgment: true,
+          summary: 'Waiting for merge approval.',
+          deadline: null,
+        },
+      },
+    ],
+    actions: {
+      'T-merge': {
+        kind: 'merge_approval',
+        label: 'Merge approval',
+        actor: 'operator',
+        judgment: true,
+        summary: 'Waiting for merge approval.',
+        choices: [
+          choice('approve', 'Approve only', '/v1/tasks/T-merge/review'),
+          choice('merge', 'Merge', '/v1/tasks/T-merge/merge'),
+        ],
+        deadline: null,
+        details: { gate_kind: 'merge_approval' },
+      },
+    },
+    activity: {
+      'T-merge': {
+        task: task('T-merge', 'Merge me', 'awaiting_human'),
+        events: [],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+        merge_readiness: { state: 'MERGEABLE', head_sha: head, number: 9 },
+      },
+    },
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox')
+  const card = decisionCards(page).first()
+  await expect(card.locator('[data-choice="approve"]')).toBeVisible()
+  // The merge choice is never a one-click button.
+  await expect(card.locator('[data-choice="merge"]')).toHaveCount(0)
+  await card.locator('[data-merge-at-gate]').click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  await expect(dialog).toContainText('#9')
+  await expect(dialog.locator('code')).toHaveText(head.slice(0, 7))
+  expect(harness.posts).toHaveLength(0)
+  await dialog.locator('[data-confirm-merge]').click()
+  await expect
+    .poll(() => harness.posts.map((post) => new URL(post.url()).pathname))
+    .toEqual(['/v1/tasks/T-merge/merge'])
+})
+
 test('View opens the decision context for each kind without leaving the inbox', async ({ page }) => {
   const fixture = decisionsFixture()
   const base = (id: string, title: string) => ({

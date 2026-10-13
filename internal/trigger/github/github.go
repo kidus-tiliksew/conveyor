@@ -101,6 +101,12 @@ func PermissionError(err error) error {
 	return &Error{Category: ForgePermission, Err: err}
 }
 
+// StatusError returns a forge-status failure carrying a REST status, the
+// shape forge stubs use to answer a definitive refusal or a 5xx.
+func StatusError(status int, err error) error {
+	return &Error{Category: ForgeStatus, status: status, Err: err}
+}
+
 func forgeCallError(err error) error {
 	if err == nil || ErrorCategory(err) != "" {
 		return err
@@ -451,6 +457,12 @@ type expectedHeadKey struct{}
 // merge `sha` so a moved head is refused (DEC-64(5); component-submission-merge).
 func WithExpectedHead(ctx context.Context, head string) context.Context {
 	return context.WithValue(ctx, expectedHeadKey{}, strings.TrimSpace(head))
+}
+
+// ExpectedHead returns the head WithExpectedHead attached, or "".
+func ExpectedHead(ctx context.Context) string {
+	head, _ := ctx.Value(expectedHeadKey{}).(string)
+	return head
 }
 
 // MergeRefused reports a definitive forge refusal of a merge request: GitHub

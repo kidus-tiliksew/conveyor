@@ -1,8 +1,8 @@
+import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Card, CardContent } from '../ui/card'
 import { Skeleton } from '../ui/skeleton'
-import { NextActionChoices } from '../inbox/choice-button'
-import { useNextAction } from '../inbox/use-next-actions'
+import { GateChoices } from './merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
 
 // The server's next action, leading task detail on the Board sheet and the full
@@ -29,7 +29,7 @@ export function NextActionCard({ taskId, gateOpen }: { taskId: string; gateOpen:
           </div>
           <p className="text-sm font-medium leading-6">{action.summary}</p>
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
-          {!gateOpen && <NextActionChoices taskId={taskId} choices={action.choices} />}
+          {!gateOpen && <GateChoices taskId={taskId} action={action} />}
           {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
           <NextActionDeadline deadline={action.deadline} />
           <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
