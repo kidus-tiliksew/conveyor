@@ -108,6 +108,11 @@ func TestUniqueRuleInputsFailBeforeSQL(t *testing.T) {
 		{table: "tasks", operation: "DELETE", where: map[string]any{"workspace_id": "ws", "id": "task"}},
 		{table: "tasks", operation: "INSERT", values: map[string]any{"workspace_id": "ws", "id": "task", "state": "running"}},
 		{table: "tasks", operation: "UPDATE", values: map[string]any{"state": "closed"}, where: map[string]any{"workspace_id": "ws"}},
+		{table: "tasks", operation: "UPDATE", values: map[string]any{"intake_key": "key"}, where: map[string]any{"workspace_id": "ws", "id": "task"}},
+		{table: "workspaces", operation: "DELETE", where: map[string]any{"id": "ws"}},
+		{table: "workspaces", operation: "UPDATE", values: map[string]any{"name": "new"}, where: map[string]any{"id": "ws"}},
+		{table: "workspaces", operation: "INSERT", values: map[string]any{"id": "ws"}},
+		{table: "workspaces", operation: "INSERT", values: map[string]any{"id": "ws", "name": ""}},
 	} {
 		if _, err := writeRow(store.WithActor(t.Context(), store.SystemActor()), nil, w); err == nil {
 			t.Fatal("unsafe unique-rule input accepted")

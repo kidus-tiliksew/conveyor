@@ -28,6 +28,21 @@ func checkWrite(w rowWrite) error {
 		if w.operation != "INSERT" {
 			return fmt.Errorf("%s is append-only", w.table)
 		}
+	case "tasks":
+		if w.operation == "UPDATE" {
+			if _, ok := w.values["intake_key"]; ok {
+				return fmt.Errorf("task intake_key is immutable")
+			}
+		}
+	case "workspaces":
+		switch w.operation {
+		case "UPDATE":
+			if _, ok := w.values["name"]; ok {
+				return fmt.Errorf("workspace name is immutable")
+			}
+		case "DELETE":
+			return fmt.Errorf("workspaces rows are retired, not deleted")
+		}
 	}
 	if state, ok := w.values["state"]; ok {
 		valid := false
@@ -114,7 +129,7 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	}
 	if w.operation == "DELETE" && (w.table == "user_tokens" || w.table == "reference_documents" || w.table == "tasks") {
 		// Claims on lock rows track these rows; a hard delete would orphan one
-		// (DEC-68, component-persistence Lock and transaction contract).
+		// (DEC-70, component-persistence Lock and transaction contract).
 		return nil, fmt.Errorf("%s rows are retired, not deleted", w.table)
 	}
 	if w.table == "user_tokens" {
@@ -230,6 +245,14 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		if err := taskBranchRule(ctx, tx, w); err != nil {
 			return nil, err
 		}
+		if err := taskIntakeRule(ctx, tx, w); err != nil {
+			return nil, err
+		}
+	}
+	if w.table == "workspaces" {
+		if err := workspaceNameRule(ctx, tx, w); err != nil {
+			return nil, err
+		}
 	}
 	names, err := sortedColumns(w.values)
 	if err != nil {
@@ -278,16 +301,93 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 
 // taskBranchClaimKey names the lock row that serializes and claims one open
 // task branch. AttachTaskBranch, insertTaskRow and writeRow address the same
-// row through it (DEC-68, component-persistence Lock and transaction contract).
+// row through it (DEC-70, component-persistence Lock and transaction contract).
 func taskBranchClaimKey(ws, repo, branch string) string {
 	return "task-open-branch:" + ws + ":" + repo + ":" + branch
+}
+
+// taskIntakeClaimKey names the lock row that serializes and claims one
+// non-empty task intake key. The task insert paths and writeRow address the
+// same row (DEC-70, component-persistence Lock and transaction contract).
+func taskIntakeClaimKey(ws, key string) string {
+	return "task-intake:" + ws + ":" + key
+}
+
+// taskIntakeRule keeps non-empty intake keys unique across committed task
+// rows and the lock-row claim. Task intake keys are immutable and task rows
+// cannot be hard-deleted, so claims are never released (DEC-70,
+// component-persistence Lock and transaction contract).
+func taskIntakeRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
+	if w.operation != "INSERT" {
+		return nil
+	}
+	id, _ := w.values["id"].(string)
+	ws, _ := w.values["workspace_id"].(string)
+	if id == "" || ws == "" {
+		return fmt.Errorf("task insert requires id and workspace_id")
+	}
+	raw, present := w.values["intake_key"]
+	if !present || raw == nil {
+		return nil
+	}
+	key, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("task intake_key must be a string")
+	}
+	if key == "" {
+		return nil
+	}
+	claim := taskIntakeClaimKey(ws, key)
+	holder, err := claimKey(ctx, tx, claim)
+	if err != nil {
+		return err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE workspace_id=? AND BINARY intake_key=BINARY ? AND id<>?`, ws, key, id).Scan(&count); err != nil {
+		return err
+	}
+	if (holder != "" && holder != id) || count > 0 {
+		return fmt.Errorf("task intake key already exists")
+	}
+	return setClaim(ctx, tx, claim, id)
+}
+
+// workspaceNameRule claims the SQL-folded workspace name and checks rows
+// written before claims existed. The workspace-registry lock is acquired by
+// both public callers before writeRow (DEC-63(4), DEC-70).
+func workspaceNameRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
+	if w.operation != "INSERT" {
+		return nil
+	}
+	id, okID := w.values["id"].(string)
+	name, okName := w.values["name"].(string)
+	if !okID || id == "" || !okName || strings.TrimSpace(name) == "" {
+		return fmt.Errorf("workspace insert requires id and name")
+	}
+	var folded string
+	if err := tx.QueryRowContext(ctx, `SELECT LOWER(TRIM(?))`, name).Scan(&folded); err != nil {
+		return err
+	}
+	claim := "workspace-name:" + folded
+	holder, err := claimKey(ctx, tx, claim)
+	if err != nil {
+		return err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspaces WHERE LOWER(TRIM(name))=? AND id<>?`, folded, id).Scan(&count); err != nil {
+		return err
+	}
+	if (holder != "" && holder != id) || count > 0 {
+		return store.ErrWorkspaceConflict
+	}
+	return setClaim(ctx, tx, claim, id)
 }
 
 // taskBranchRule keeps one open task per workspace, repo and branch
 // (req-task-branch-assignment AC-4.1, AC-4.2). SingleStore has no partial
 // unique index, and the lock row and task row live on different partitions,
 // so the occupant is claimed on the lock row and released only by the write
-// that ends its occupancy: a terminal state or a branch change (DEC-68,
+// that ends its occupancy: a terminal state or a branch change (DEC-70,
 // component-persistence Lock and transaction contract).
 func taskBranchRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
 	switch w.operation {

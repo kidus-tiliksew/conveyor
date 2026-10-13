@@ -636,9 +636,9 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		return fmt.Errorf("task %s already exists", t.ID)
 	}
 	// The workspace-scoped intake key is unique, as PostgreSQL's
-	// tasks_workspace_intake_key_idx and SingleStore's in-transaction check
-	// enforce. A concurrent retry that loses the race therefore resolves to
-	// the winner's task and provenance on every backend (DEC-39).
+	// tasks_workspace_intake_key_idx and SingleStore's lock-row claim plus
+	// committed-row count enforce. A concurrent retry that loses the race
+	// therefore resolves to the winner's task and provenance on every backend (DEC-39).
 	if t.IntakeKey != "" {
 		for _, existing := range m.tasks {
 			if existing.Workspace == t.Workspace && existing.IntakeKey == t.IntakeKey {
