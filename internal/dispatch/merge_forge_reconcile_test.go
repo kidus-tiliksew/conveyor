@@ -217,17 +217,70 @@ func TestObservedMergeAtMergeGateReconcilesToMerged(t *testing.T) {
 	})
 }
 
+// enterEventHeadMergeGate parks a merge gate whose reviewed head is recorded
+// only on the review event, leaving ReviewedHeadSHA empty.
+func enterEventHeadMergeGate(t *testing.T, st store.Store, ctx context.Context, id string, number int) core.Task {
+	t.Helper()
+	task := enterMergeGate(t, st, ctx, id, "", "", true)
+	if err := st.AppendEvent(ctx, core.Event{TaskID: id, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"verdict": "approve", "reviewed_commit_sha": "event-head"})}); err != nil {
+		t.Fatal(err)
+	}
+	openPullRequest(t, st, ctx, id, number, "event-head")
+	return task
+}
+
+func TestObservedMergeAtEventOnlyReviewedHead(t *testing.T) {
+	t.Run("repeat observation stays reconciled", func(t *testing.T) {
+		ctx := forgeReconcileCtx()
+		st := store.NewMemory()
+		task := enterEventHeadMergeGate(t, st, ctx, "event-head-repeat", 31)
+		d := newForgeDispatcher(st)
+		forbidMergeCalls(t, d)
+		pr := mergedPull(task, 31, "event-head", "landed", "github-operator")
+		for attempt := range 2 {
+			accepted, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", task.ID, pr)
+			if err != nil || !accepted {
+				t.Fatalf("attempt %d accepted=%t err=%v", attempt, accepted, err)
+			}
+		}
+		current, err := st.GetTask(ctx, task.ID)
+		if err != nil || current.State != core.TaskMerged || current.ReviewedHeadSHA != "" {
+			t.Fatalf("task=%+v err=%v", current, err)
+		}
+		reconciledPayload(t, st, ctx, task.ID)
+		assertNoApprovalBound(t, st, ctx, task.ID)
+	})
+	t.Run("readiness recovery then monitor observation", func(t *testing.T) {
+		ctx := forgeReconcileCtx()
+		st := store.NewMemory()
+		task := enterEventHeadMergeGate(t, st, ctx, "event-head-tick", 32)
+		d := newForgeDispatcher(st)
+		forbidMergeCalls(t, d)
+		pr := mergedPull(task, 32, "event-head", "landed", "github-operator")
+		d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) { return pr, nil }
+		if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 1 {
+			t.Fatalf("reconciled=%d err=%v", reconciled, err)
+		}
+		accepted, err := d.ReconcileObservedPullRequest(ctx, "app", "acme/app", task.ID, pr)
+		if err != nil || !accepted {
+			t.Fatalf("accepted=%t err=%v", accepted, err)
+		}
+		reconciledPayload(t, st, ctx, task.ID)
+		assertNoApprovalBound(t, st, ctx, task.ID)
+	})
+}
+
 func TestObservedMergeAtOtherAwaitingGateIsIgnored(t *testing.T) {
 	ctx := forgeReconcileCtx()
 	st := store.NewMemory()
 	d := newForgeDispatcher(st)
 	forbidMergeCalls(t, d)
-	for _, kind := range []core.GateKind{core.GateKindJobFailure, core.GateKindPlanApproval} {
+	for _, kind := range []core.GateKind{core.GateKindJobFailure, core.GateKindPlanApproval, core.GateKind("")} {
 		t.Run(string(kind), func(t *testing.T) {
 			id := "other-" + string(kind)
 			task := core.Task{
 				ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/" + id,
-				State: core.TaskAwaiting, GateKind: kind, ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now().UTC(),
+				State: core.TaskAwaiting, GateKind: kind, ReviewedHeadSHA: "reviewed-head", MergeApproval: true, CreatedAt: time.Now().UTC(),
 			}
 			if err := st.CreateTask(ctx, task); err != nil {
 				t.Fatal(err)
@@ -237,6 +290,16 @@ func TestObservedMergeAtOtherAwaitingGateIsIgnored(t *testing.T) {
 			if err != nil || accepted {
 				t.Fatalf("accepted=%t err=%v", accepted, err)
 			}
+			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				return mergedPull(task, 21, "reviewed-head", "landed", "github-operator"), nil
+			}
+			if readiness, err := d.ReadMergeReadiness(ctx, task); err != nil || readiness.State == "MERGED" {
+				t.Fatalf("readiness=%+v err=%v", readiness, err)
+			}
+			if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 0 {
+				t.Fatalf("sweep reconciled=%d err=%v", reconciled, err)
+			}
+			assertNoApprovalBound(t, st, ctx, id)
 			current, err := st.GetTask(ctx, id)
 			if err != nil || current.State != core.TaskAwaiting || current.GateKind != kind {
 				t.Fatalf("task=%+v err=%v", current, err)
@@ -572,7 +635,9 @@ func TestReconcileMergeReadinessGateOnNotStarvedByErrors(t *testing.T) {
 			return githubtrigger.PullRequest{}, nil
 		}
 	}
+	gateOffMerges := 0
 	d.RequestMerge = func(_ context.Context, _ string, number int) error {
+		gateOffMerges++
 		if number != 91 {
 			t.Fatalf("RequestMerge number=%d", number)
 		}
@@ -583,8 +648,8 @@ func TestReconcileMergeReadinessGateOnNotStarvedByErrors(t *testing.T) {
 		return nil
 	}
 	_, err := d.ReconcileMergeReadiness(ctx)
-	if err == nil || !strings.Contains(err.Error(), "gate-on view failed") || !strings.Contains(err.Error(), "gate-off merge failed") {
-		t.Fatalf("joined error=%v", err)
+	if err == nil || strings.Contains(err.Error(), "gate-on view failed") || !strings.Contains(err.Error(), "gate-off merge failed") || gateOffMerges != 1 {
+		t.Fatalf("error=%v gate-off merges=%d", err, gateOffMerges)
 	}
 	current, getErr := st.GetTask(ctx, success.ID)
 	if getErr != nil || current.State != core.TaskMerged {
@@ -592,25 +657,33 @@ func TestReconcileMergeReadinessGateOnNotStarvedByErrors(t *testing.T) {
 	}
 }
 
-func TestReconcileMergeReadinessGateOnStillDispatchesConflictFix(t *testing.T) {
-	ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
-	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
-		t.Fatal(err)
-	}
-	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
-		return githubtrigger.PullRequest{Number: 101, State: "open", Mergeable: "CONFLICTING", HeadSHA: "approved-head"}, nil
-	}
-	forbidMergeCalls(t, d)
-	if _, err := d.ReconcileMergeReadiness(ctx); err != nil {
-		t.Fatal(err)
-	}
-	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" {
-		t.Fatalf("orders=%+v err=%v", orders, err)
-	}
-	current, err := st.GetTask(ctx, task.ID)
-	if err != nil || current.State != core.TaskQueued {
-		t.Fatalf("task=%+v err=%v", current, err)
+func TestReconcileMergeReadinessGateOnSweepDoesNotDispatchOrRefresh(t *testing.T) {
+	for _, pr := range []githubtrigger.PullRequest{
+		{Number: 101, State: "open", Mergeable: "CONFLICTING", HeadSHA: "approved-head"},
+		{Number: 102, State: "open", Mergeable: "MERGEABLE", HeadSHA: "moved-head"},
+	} {
+		t.Run(pr.Mergeable, func(t *testing.T) {
+			ctx, st, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewNone, true)
+			if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+				t.Fatal(err)
+			}
+			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) { return pr, nil }
+			forbidMergeCalls(t, d)
+			if reconciled, err := d.ReconcileMergeReadiness(ctx); err != nil || reconciled != 0 {
+				t.Fatalf("reconciled=%d err=%v", reconciled, err)
+			}
+			orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+			if err != nil || len(orders) != 0 {
+				t.Fatalf("orders=%+v err=%v", orders, err)
+			}
+			current, err := st.GetTask(ctx, task.ID)
+			if err != nil || current.State != core.TaskApproved || current.ApprovalStale || current.ApprovedHeadSHA != "approved-head" {
+				t.Fatalf("task=%+v err=%v", current, err)
+			}
+			if count, _ := st.CountEvents(ctx, task.ID, "merge.blocked"); count != 0 {
+				t.Fatalf("merge.blocked events=%d", count)
+			}
+		})
 	}
 }
 
@@ -642,11 +715,15 @@ func TestApproveAtMergeGateOnMergedPullRequestEndsMerged(t *testing.T) {
 		if err := st.CreateTask(ctx, merged); err != nil {
 			t.Fatal(err)
 		}
-		if err := d.HandleIntervention(ctx, merged, core.Job{}, core.Intervention{TaskID: merged.ID, Action: core.InterventionApprove, ReasonCode: "approved"}); err != nil {
-			t.Fatal(err)
+		err := d.HandleIntervention(ctx, merged, core.Job{}, core.Intervention{TaskID: merged.ID, Action: core.InterventionApprove, ReasonCode: "approved"})
+		var invalid *core.ErrInvalidTransition
+		if !errors.As(err, &invalid) {
+			t.Fatalf("err=%v", err)
 		}
-		if count, _ := st.CountEvents(ctx, merged.ID, "intervention.approve_review"); count != 0 {
-			t.Fatalf("approve events=%d", count)
+		for _, kind := range []string{"intervention.approve", "intervention.approve_review"} {
+			if count, _ := st.CountEvents(ctx, merged.ID, kind); count != 0 {
+				t.Fatalf("%s events=%d", kind, count)
+			}
 		}
 		if count, _ := st.CountEvents(ctx, merged.ID, "approval.bound"); count != 0 {
 			t.Fatalf("approval events=%d", count)

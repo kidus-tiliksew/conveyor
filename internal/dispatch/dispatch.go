@@ -1533,8 +1533,14 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			if err != nil {
 				return err
 			}
+			// DEC-64 seam: a merge.requested-at-gate check belongs here, before
+			// this merged check, once the intervention.merge one-act path lands.
 			if current.State == core.TaskMerged {
-				return nil
+				// A forge merge reconciled between the handler's check and this
+				// lock: refuse with the typed transition error so the handler
+				// answers 409 and records no intervention.
+				_, transitionErr := core.TransitionTask(current.State, core.TaskInterventionApproveReview)
+				return transitionErr
 			}
 			head := current.ReviewedHeadSHA
 			if head == "" {

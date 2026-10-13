@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -237,13 +238,16 @@ func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (Me
 	var result MergeReadiness
 	err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		var lockedErr error
-		result, lockedErr = d.readMergeReadinessLocked(lockedCtx, task)
+		result, lockedErr = d.readMergeReadinessLocked(lockedCtx, task, false)
 		return lockedErr
 	})
 	return result, err
 }
 
-func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Task) (MergeReadiness, error) {
+// mergedOnly limits the read to the merged short-circuit: the gate-on sweep
+// never dispatches a conflict fix, begins a refresh, or appends merge.blocked
+// (component-submission-merge).
+func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Task, mergedOnly bool) (MergeReadiness, error) {
 	var result MergeReadiness
 	current, err := d.Store.GetTask(ctx, task.ID)
 	if err != nil {
@@ -287,10 +291,11 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 		}
 		return result, nil
 	}
-	// A merge-gate wait is read-only except for the merged short-circuit above.
-	// Conflict fixes and stale refreshes would bind an approval the operator never gave.
-	// Queued and running reads keep the existing conflict and refresh path.
-	if current.State == core.TaskAwaiting {
+	// The gate-on sweep (mergedOnly) and a merge-gate wait are read-only except
+	// for the merged short-circuit above: conflict fixes and stale refreshes
+	// would bind an approval the operator never gave. Other reads keep the
+	// existing conflict and refresh path.
+	if mergedOnly || current.State == core.TaskAwaiting {
 		return result, nil
 	}
 	// A queued or claimed conflict-fix order owns the conflict episode and its
@@ -834,7 +839,9 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 			return nil
 		}
 		if task.State == core.TaskMerged {
-			if pr.HeadSHA != "" && (pr.HeadSHA == task.ApprovedHeadSHA || pr.HeadSHA == task.ReviewedHeadSHA) {
+			// A merge reconciled through the review-event head fallback leaves
+			// ReviewedHeadSHA empty; its merge.reconciled record still matches (AC-3.5).
+			if pr.HeadSHA != "" && (pr.HeadSHA == task.ApprovedHeadSHA || pr.HeadSHA == task.ReviewedHeadSHA || forgeMergeReconciled(events, githubRepo, pr)) {
 				reconciled = true
 			}
 			return nil
@@ -930,19 +937,24 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	reconciled := 0
-	var gateOnErrs []error
 	for _, task := range tasks {
 		if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
 			continue
 		}
+		// A gate-on read failure is logged per task and never aborts the tick:
+		// later tasks and the daemon's later reconcile steps still run.
 		before := task.State
-		if _, readErr := d.ReadMergeReadiness(ctx, task); readErr != nil {
-			gateOnErrs = append(gateOnErrs, fmt.Errorf("task %s: %w", task.ID, readErr))
+		readErr := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+			_, lockedErr := d.readMergeReadinessLocked(lockedCtx, task, true)
+			return lockedErr
+		})
+		if readErr != nil {
+			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, readErr)
 			continue
 		}
 		after, getErr := d.Store.GetTask(ctx, task.ID)
 		if getErr != nil {
-			gateOnErrs = append(gateOnErrs, fmt.Errorf("task %s: %w", task.ID, getErr))
+			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, getErr)
 			continue
 		}
 		if before != after.State {
@@ -956,7 +968,7 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		if task.State != core.TaskApproved {
 			recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
 			if evidenceErr != nil {
-				return reconciled, errors.Join(append(gateOnErrs, evidenceErr)...)
+				return reconciled, evidenceErr
 			}
 			if !recoverable {
 				continue
@@ -969,23 +981,23 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 			}
 			after, getErr := d.Store.GetTask(ctx, task.ID)
 			if getErr != nil {
-				return reconciled, errors.Join(append(gateOnErrs, getErr)...)
+				return reconciled, getErr
 			}
 			if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
 				reconciled++
 				continue
 			}
-			return reconciled, errors.Join(append(gateOnErrs, err)...)
+			return reconciled, err
 		}
 		after, getErr := d.Store.GetTask(ctx, task.ID)
 		if getErr != nil {
-			return reconciled, errors.Join(append(gateOnErrs, getErr)...)
+			return reconciled, getErr
 		}
 		if before != after.State || after.State == core.TaskMerged {
 			reconciled++
 		}
 	}
-	return reconciled, errors.Join(gateOnErrs...)
+	return reconciled, nil
 }
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
