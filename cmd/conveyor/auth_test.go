@@ -15,6 +15,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// isolateConveyorEnv clears the client CONVEYOR_* variables an operator's
+// shell may export, so tests resolve server, credential, workspace and
+// execution config only from what they set themselves (task 261013-d7a93f).
+// t.Setenv restores the inherited values on cleanup; helper subprocesses that
+// need a value still receive it from the explicit env the test builds.
+func isolateConveyorEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"CONVEYOR_CONFIG", "CONVEYOR_WORKSPACE", "CONVEYOR_ADDR", "CONVEYOR_API_TOKEN"} {
+		t.Setenv(name, "")
+	}
+}
+
 func isolateLocalAuthTest(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -25,9 +37,7 @@ func isolateLocalAuthTest(t *testing.T) string {
 	userConfigDir = func() (string, error) { return root, nil }
 	serverFlag, workspaceFlag = "", ""
 	serverFlagExplicit, workspaceFlagExplicit = false, false
-	t.Setenv("CONVEYOR_ADDR", "")
-	t.Setenv("CONVEYOR_API_TOKEN", "")
-	t.Setenv("CONVEYOR_WORKSPACE", "")
+	isolateConveyorEnv(t)
 	t.Cleanup(func() {
 		userConfigDir = previousConfigDir
 		readLoginToken = previousReader
