@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -51,26 +52,55 @@ FROM generate_series(1, 5) AS rows(series)`, workspace, target.ID, now, "conveyo
 	if _, err = tx.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := tx.Query(ctx, "EXPLAIN (COSTS OFF) "+monitorInFlightMergeQuery, workspace, "conveyor", now.Add(-24*time.Hour))
-	if err != nil {
+	var raw []byte
+	if err := tx.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+monitorInFlightMergeQuery, workspace, "conveyor", now.Add(-24*time.Hour)).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	var plan strings.Builder
-	for rows.Next() {
-		var line string
-		if err = rows.Scan(&line); err != nil {
-			rows.Close()
-			t.Fatal(err)
+	var plans []struct {
+		Plan map[string]any `json:"Plan"`
+	}
+	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 || plans[0].Plan == nil {
+		t.Fatalf("invalid JSON plan: %s err=%v", raw, err)
+	}
+	assertMergeRequestedIndexPlan(t, plans[0].Plan)
+}
+
+func assertMergeRequestedIndexPlan(t *testing.T, root map[string]any) {
+	t.Helper()
+
+	const indexName = "events_merge_requested_inflight_idx"
+	requiredIndexConditions := []string{
+		"workspace_id",
+		"payload_json ->> 'repository'",
+		"at >",
+	}
+	foundIndex := false
+	var visit func(map[string]any)
+	visit = func(node map[string]any) {
+		switch node["Node Type"] {
+		case "Sort", "Incremental Sort":
+			t.Fatalf("EXPLAIN plan unexpectedly sorts:\n%+v", root)
 		}
-		plan.WriteString(line)
-		plan.WriteByte('\n')
+		if node["Index Name"] == indexName {
+			foundIndex = true
+			indexCond, _ := node["Index Cond"].(string)
+			for _, term := range requiredIndexConditions {
+				if !strings.Contains(indexCond, term) {
+					t.Fatalf("index %s has Index Cond %q missing %q:\n%+v", indexName, indexCond, term, root)
+				}
+			}
+		}
+		children, _ := node["Plans"].([]any)
+		for _, child := range children {
+			childNode, ok := child.(map[string]any)
+			if !ok {
+				t.Fatalf("invalid child plan node: %+v", child)
+			}
+			visit(childNode)
+		}
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		t.Fatal(err)
-	}
-	rows.Close()
-	if !strings.Contains(plan.String(), "events_merge_requested_inflight_idx") {
-		t.Fatalf("EXPLAIN did not use events_merge_requested_inflight_idx:\n%s", plan.String())
+	visit(root)
+	if !foundIndex {
+		t.Fatalf("EXPLAIN did not use %s:\n%+v", indexName, root)
 	}
 }
