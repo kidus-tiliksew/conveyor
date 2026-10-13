@@ -535,9 +535,19 @@ export class GateMutationError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    // The merge readiness a refused one-act merge names (DEC-64(3)).
+    readonly readiness?: string,
   ) {
     super(message)
   }
+}
+
+// The sentence a refused one-act merge shows, keyed by the readiness state the
+// server names in its 409 answer (DEC-64(3)).
+export const mergeReadinessRefusals: Record<string, string> = {
+  CONFLICTING: 'Not merged: the pull request has merge conflicts.',
+  STALE: 'Not merged: the pull request head moved past the reviewed head.',
+  UNKNOWN: 'Not merged: GitHub cannot confirm the pull request is mergeable right now.',
 }
 
 // TaskRestartError is a failed restart. The message is the decoded API text
@@ -552,8 +562,25 @@ export class TaskRestartError extends Error {
   }
 }
 
+// A refused one-act merge answers 409 {error, readiness}; the readiness it
+// names becomes the sentence shown (DEC-64(3)). Every other refusal keeps the
+// decoded API text.
 async function gateMutationError(response: Response) {
-  return new GateMutationError(apiErrorMessage(await response.text(), response.statusText), response.status)
+  const body = await response.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    parsed = undefined
+  }
+  const readiness =
+    parsed && typeof parsed === 'object' && 'readiness' in parsed && typeof parsed.readiness === 'string'
+      ? parsed.readiness
+      : undefined
+  const message = readiness
+    ? (mergeReadinessRefusals[readiness] ?? `Not merged: the pull request is ${readiness}.`)
+    : apiErrorMessage(body, response.statusText)
+  return new GateMutationError(message, response.status, readiness)
 }
 
 // API failures arrive either as a JSON envelope or as plain text. Keeping the

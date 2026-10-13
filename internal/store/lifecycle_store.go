@@ -438,6 +438,10 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.applyTaskCommandLocked(ctx, id, command)
+}
+
+func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command taskops.Command) (core.Task, error) {
 	task, ok := m.tasks[id]
 	if !ok {
 		return core.Task{}, fmt.Errorf("task %s not found", id)

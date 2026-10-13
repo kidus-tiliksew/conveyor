@@ -1,10 +1,10 @@
 import { Link } from '@tanstack/react-router'
 import type { InboxItem, Task } from '../../lib/types'
+import { GateChoices } from '../task/merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from '../task/next-action-parts'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
-import { NextActionChoices } from './choice-button'
 import { useNextAction } from './use-next-actions'
 
 // One task decision in the Inbox (AC-2.1). The list item carries only the
@@ -48,7 +48,7 @@ export function DecisionCard({ item, task, onView }: { item: InboxItem; task: Ta
       {isLoading && <Skeleton className="h-12" />}
       {action?.question && <p className="text-sm font-medium">{action.question}</p>}
       {item.recommendation && <p className="text-sm text-muted">Recommendation: {item.recommendation}</p>}
-      {action && <NextActionChoices taskId={task.id} choices={action.choices} />}
+      {action && <GateChoices taskId={task.id} action={action} />}
       {action?.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
       <NextActionDeadline deadline={action ? action.deadline : (item.deadline ?? compact?.deadline)} />
       {action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />}

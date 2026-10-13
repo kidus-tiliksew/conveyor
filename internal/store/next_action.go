@@ -22,6 +22,10 @@ type NextActionOptions struct {
 	// OrdersLoaded skips a second order read when the caller already has them.
 	OrdersLoaded bool
 	Orders       []core.WorkOrder
+	// MergeReadiness returns the last-known readiness peek of a
+	// merge_approval gate without a forge call, or nil when none is known
+	// (DEC-64(3); DEC-61).
+	MergeReadiness func(context.Context, core.Task) *nextaction.MergeReadiness
 }
 
 // ReadNextAction projects one task. Missing tasks return the store's not-found error.
@@ -139,6 +143,9 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 		ClaimWaiting: claimWaiting(proposals, orders, task.ID),
 		Blockers:     blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
+	}
+	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && opts.MergeReadiness != nil {
+		input.MergeReadiness = opts.MergeReadiness(ctx, task)
 	}
 	if found {
 		input.LatestSpec = &nextaction.SpecRef{Version: spec.Version}

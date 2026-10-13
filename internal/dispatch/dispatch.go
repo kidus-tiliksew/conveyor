@@ -1533,8 +1533,15 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			if err != nil {
 				return err
 			}
-			// DEC-64 seam: a merge.requested-at-gate check belongs here, before
-			// this merged check, once the intervention.merge one-act path lands.
+			// A pending one-act gate merge whose forge merge is visible belongs
+			// to its requester: complete it and refuse this approve with the
+			// typed transition error, recording no second approval (DEC-64(7)).
+			if credited, creditErr := d.creditVisibleGateMergeLocked(lockedCtx, current); creditErr != nil {
+				return creditErr
+			} else if credited {
+				_, transitionErr := core.TransitionTask(core.TaskMerged, core.TaskInterventionApproveReview)
+				return transitionErr
+			}
 			if current.State == core.TaskMerged {
 				// A forge merge reconciled between the handler's check and this
 				// lock: refuse with the typed transition error so the handler

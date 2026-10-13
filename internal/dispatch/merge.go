@@ -124,6 +124,12 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 		if err != nil {
 			return false, err
 		}
+		// A pending one-act request at this head is the operator's merge, not a
+		// merge outside Conveyor: it completes through intervention.merge and
+		// writes no merge.reconciled or merge.recover (DEC-64(7)).
+		if credited, creditErr := d.creditPendingGateMergeLocked(ctx, task, githubRepo, pr, events); creditErr != nil || credited {
+			return credited, creditErr
+		}
 		if !forgeMergeReconciled(events, githubRepo, pr) {
 			payload := map[string]any{
 				"repository": githubRepo, "pull_request": pr.Number, "url": pr.URL,
@@ -290,6 +296,12 @@ func (d *Dispatcher) readMergeReadinessLocked(ctx context.Context, task core.Tas
 			result.State = "MERGED_HEAD_MISMATCH"
 		}
 		return result, nil
+	}
+	// A merge_approval gate answers the side-effect-free peek, which offers
+	// the one-act merge only at MERGEABLE (DEC-64(2,3)).
+	if !mergedOnly && current.State == core.TaskAwaiting && current.GateKind == core.GateKindMergeApproval {
+		result.State, err = d.peekGateMergeReadinessLocked(ctx, current, pr)
+		return result, err
 	}
 	// The gate-on sweep (mergedOnly) and a merge-gate wait are read-only except
 	// for the merged short-circuit above: conflict fixes and stale refreshes
@@ -788,7 +800,8 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return err
 	}
 	requestMerge := d.RequestMerge
-	ctx = github.WithMergeMessage(ctx, mergeMessage)
+	// The forge merges only the approved head (DEC-64(5); component-submission-merge step 6).
+	ctx = github.WithExpectedHead(github.WithMergeMessage(ctx, mergeMessage), approvedHead)
 	if err := requestMerge(ctx, repo.GitHub, pr.Number); err != nil {
 		return d.recordMergeFailureWithAuthor(ctx, current, "forge_merge_failed", fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, err), author)
 	}

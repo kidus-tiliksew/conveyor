@@ -69,7 +69,10 @@ type Server struct {
 	// work-order context is derived from the durable intervention record.
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
-	OnMerge          func(context.Context, core.Task) error
+	OnMerge func(context.Context, core.Task) error
+	// OnGateMerge is the one-act operator merge at the merge_approval gate,
+	// run as the acting operator (DEC-64(1); component-submission-merge).
+	OnGateMerge      func(context.Context, core.Task, core.Actor) (core.Task, error)
 	OnMergeReadiness func(context.Context, core.Task) (dispatch.MergeReadiness, error)
 	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
@@ -1037,6 +1040,10 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval {
+		s.mergeTaskAtGate(w, r, task)
+		return
+	}
 	if task.State != core.TaskApproved && task.State != core.TaskMerged {
 		http.Error(w, "task is not approved for merge", http.StatusConflict)
 		return
@@ -1059,6 +1066,40 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
 		return
 	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// mergeTaskAtGate is the one-act operator merge at the merge_approval gate
+// (DEC-64(1)-(6),(9)). The route's operate_gates capability check already
+// ran; the act runs as the request credential's actor. A refusal names the
+// readiness state and leaves the gate pending.
+func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task core.Task) {
+	if s.OnGateMerge == nil {
+		http.Error(w, "merge operation is not configured", http.StatusNotImplemented)
+		return
+	}
+	actor, err := store.RequireActor(r.Context())
+	if err != nil {
+		http.Error(w, "merge requires an authenticated operator", http.StatusForbidden)
+		return
+	}
+	updated, err := s.OnGateMerge(r.Context(), task, actor)
+	var notReady *dispatch.ErrGateMergeNotReady
+	switch {
+	case errors.As(err, &notReady):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": notReady.Error(), "readiness": notReady.State})
+		return
+	case errors.Is(err, dispatch.ErrGateMergeUnconfirmed):
+		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	case updated.State != core.TaskMerged:
+		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
+		return
+	}
+	s.taskRunReadiness.forget(r.Context(), task.ID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -2197,8 +2238,19 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
-	if task.State == core.TaskApproved && s.OnMergeReadiness != nil {
-		readiness, readinessErr := s.OnMergeReadiness(r.Context(), task)
+	// A merge_approval gate carries the side-effect-free peek so surfaces offer
+	// the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
+	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+	if (task.State == core.TaskApproved || gateMerge) && s.OnMergeReadiness != nil {
+		var readiness dispatch.MergeReadiness
+		var readinessErr error
+		if gateMerge {
+			// The gate peek is cached so the next-action projection can offer
+			// the server merge choice without its own forge call (DEC-64(3)).
+			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, s.OnMergeReadiness)
+		} else {
+			readiness, readinessErr = s.OnMergeReadiness(r.Context(), task)
+		}
 		if readinessErr != nil {
 			// The merge action must never render without a successful gate-facing
 			// readiness read (component-http-api).

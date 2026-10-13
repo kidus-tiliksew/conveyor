@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"path"
@@ -98,6 +99,12 @@ func PermissionError(err error) error {
 		return nil
 	}
 	return &Error{Category: ForgePermission, Err: err}
+}
+
+// StatusError returns a forge-status failure carrying a REST status, the
+// shape forge stubs use to answer a definitive refusal or a 5xx.
+func StatusError(status int, err error) error {
+	return &Error{Category: ForgeStatus, status: status, Err: err}
 }
 
 func forgeCallError(err error) error {
@@ -443,8 +450,44 @@ func WithMergeMessage(ctx context.Context, message string) context.Context {
 	return context.WithValue(ctx, mergeMessageKey{}, message)
 }
 
+// expectedHeadKey carries the reviewed head one merge request must land.
+type expectedHeadKey struct{}
+
+// WithExpectedHead binds the reviewed head the forge must merge, sent as the
+// merge `sha` so a moved head is refused (DEC-64(5); component-submission-merge).
+func WithExpectedHead(ctx context.Context, head string) context.Context {
+	return context.WithValue(ctx, expectedHeadKey{}, strings.TrimSpace(head))
+}
+
+// ExpectedHead returns the head WithExpectedHead attached, or "".
+func ExpectedHead(ctx context.Context) string {
+	head, _ := ctx.Value(expectedHeadKey{}).(string)
+	return head
+}
+
+// MergeRefused reports a definitive forge refusal of a merge request: GitHub
+// answered 403, 405, 409 or 422. Transport failures, rate limits, and 5xx are
+// not refusals; the merge may still have landed (DEC-64(6)).
+func MergeRefused(err error) bool {
+	var response *Error
+	// R2 exception: a rate-limited 403 is categorised ForgeRateLimited and
+	// stays unconfirmed, not refused; the merge may still land.
+	if !errors.As(err, &response) || response.Category == ForgeRateLimited {
+		return false
+	}
+	switch response.status {
+	case http.StatusForbidden, http.StatusMethodNotAllowed, http.StatusConflict, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
+}
+
 func mergePullRequest(ctx context.Context, repo string, number int, run ghRunner) error {
-	_, err := run(ctx, "pr", "merge", strconv.Itoa(number), "--repo", repo, "--merge")
+	args := []string{"pr", "merge", strconv.Itoa(number), "--repo", repo, "--merge"}
+	if head, ok := ctx.Value(expectedHeadKey{}).(string); ok && head != "" {
+		args = append(args, "--match-head-commit", head)
+	}
+	_, err := run(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("merge pull request %s#%d: %w", repo, number, forgeCallError(err))
 	}

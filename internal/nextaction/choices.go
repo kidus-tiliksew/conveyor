@@ -24,7 +24,10 @@ func revisionChoices() []ChoiceSpec {
 
 func mergeApprovalChoices() []ChoiceSpec {
 	return []ChoiceSpec{
-		{ID: "approve", Label: "Approve", Effect: "Approves the merge.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
+		// The one-act merge is offered only at readiness MERGEABLE (DEC-64(1,3);
+		// feature-operator-next-action v6).
+		{ID: "merge", Label: "Merge", Effect: "Approves and merges the reviewed head.", Method: "POST", Path: "/v1/tasks/{id}/merge", Capability: core.CapabilityOperateGates},
+		{ID: "approve", Label: "Approve only", Effect: "Approves the merge.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
 		{ID: "request_changes", Label: "Request changes", Effect: "Sends the branch back.", Method: "POST", Path: "/v1/tasks/{id}/request-changes", Capability: core.CapabilityRequestChanges},
 	}
 }
@@ -131,6 +134,8 @@ func refuseChoice(in Input, id string, order *core.WorkOrder) string {
 			return core.NextActionPlainApproveRefusal(in.Task.GateKind)
 		}
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
+	case "merge":
+		return mergeAtGateRefusal(in)
 	case "approve_revision", "decline":
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
 	case "redispatch":
@@ -209,4 +214,21 @@ func index(s, token string) int {
 
 func choiceSummary(id string) string {
 	return fmt.Sprintf("choice %s", id)
+}
+
+// mergeAtGateRefusal refuses the merge_approval gate's one-act merge unless
+// the last-known readiness peek is MERGEABLE; an unread peek is UNKNOWN
+// (DEC-64(3); DEC-61). The approved-task merge choice is never refused here.
+func mergeAtGateRefusal(in Input) string {
+	if in.Task.State != core.TaskAwaiting || in.Task.GateKind != core.GateKindMergeApproval {
+		return ""
+	}
+	state := "UNKNOWN"
+	if in.MergeReadiness != nil && in.MergeReadiness.State != "" {
+		state = in.MergeReadiness.State
+	}
+	if state == "MERGEABLE" {
+		return ""
+	}
+	return "merge readiness " + state
 }

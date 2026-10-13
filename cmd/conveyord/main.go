@@ -229,6 +229,7 @@ func main() {
 	srv.GenerateTaskTitle = d.GenerateTaskTitle
 	srv.OnIntervention = d.HandleIntervention
 	srv.OnMerge = d.MergeApprovedTask
+	srv.OnGateMerge = d.MergeAtGate
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {

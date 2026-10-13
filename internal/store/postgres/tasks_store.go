@@ -1382,6 +1382,72 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	return s.GetTask(ctx, intervention.TaskID)
 }
 
+// MergeTaskAtGateCommand completes a confirmed forge merge at the
+// merge_approval gate in one transaction under the task-operation lock
+// (DEC-64(1,7); component-task-lifecycle): approve intervention, approval
+// binding, merge.confirmed, then intervention.merge.
+func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	if !lease.ValidFor(intervention.TaskID) {
+		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
+	}
+	if err := core.ValidateGateMerge(intervention, approvedHead, confirmed); err != nil {
+		return core.Task{}, err
+	}
+	approvedHead = strings.TrimSpace(approvedHead)
+	actor := store.ActorFromContext(ctx)
+	if intervention.ActorID == "" {
+		intervention.ActorID = actor.ID
+	}
+	if intervention.ActorRole == "" {
+		intervention.ActorRole = actor.Role
+	}
+	if intervention.At.IsZero() {
+		intervention.At = time.Now().UTC()
+	}
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		key := "conveyor:task-operation:" + workspace(ctx) + ":" + intervention.TaskID
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		before, err := q.GetTask(ctx, db.GetTaskParams{ID: intervention.TaskID, WorkspaceID: workspace(ctx)})
+		if err != nil {
+			return notFound(err, "task %s", intervention.TaskID)
+		}
+		current := taskFromDB(before)
+		if _, err = core.TransitionGateMerge(current.State, current.GateKind); err != nil {
+			return err
+		}
+		if intervention.JobID != "" {
+			job, getErr := q.GetJob(ctx, db.GetJobParams{ID: intervention.JobID, WorkspaceID: workspace(ctx)})
+			if getErr != nil || job.TaskID != intervention.TaskID {
+				return fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
+			}
+		}
+		if _, err = q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, JobID: intervention.JobID, Kind: "intervention." + string(intervention.Action), ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At}); err != nil {
+			return err
+		}
+		bound, err := q.BindTaskApproval(ctx, db.BindTaskApprovalParams{ID: intervention.TaskID, WorkspaceID: workspace(ctx), HeadSha: approvedHead})
+		if err != nil {
+			return notFound(err, "task %s", intervention.TaskID)
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: intervention.TaskID, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": bound.WorkspaceID, "task_id": intervention.TaskID, "approved_head": approvedHead})}); err != nil {
+			return err
+		}
+		if err = insertEvent(ctx, q, confirmed); err != nil {
+			return err
+		}
+		_, err = s.applyTaskCommandTx(ctx, tx, q, intervention.TaskID, taskops.Command{Kind: core.TaskInterventionMerge})
+		return err
+	})
+	if err != nil {
+		return core.Task{}, err
+	}
+	return s.GetTask(ctx, intervention.TaskID)
+}
+
 func (s *Store) cancelTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, intervention core.Intervention) error {
 	var priorState string
 	err := tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), intervention.TaskID).Scan(&priorState)

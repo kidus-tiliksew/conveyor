@@ -1259,6 +1259,10 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.createInterventionLocked(ctx, intervention)
+}
+
+func (m *memory) createInterventionLocked(ctx context.Context, intervention core.Intervention) error {
 	_, ok := m.tasks[intervention.TaskID]
 	if !ok {
 		return fmt.Errorf("task %s not found", intervention.TaskID)
@@ -1376,6 +1380,56 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cancelTaskLocked(ctx, intervention)
+}
+
+// MergeTaskAtGateCommand is the volatile reference for the one-act gate merge
+// (DEC-64(1,7); component-task-lifecycle). Every refusal is checked before the
+// first write so the in-memory ledger stays all-or-nothing like the durable
+// stores' single transaction.
+func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.Task{}, err
+	}
+	if !lease.ValidFor(intervention.TaskID) {
+		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
+	}
+	if err := core.ValidateGateMerge(intervention, approvedHead, confirmed); err != nil {
+		return core.Task{}, err
+	}
+	approvedHead = strings.TrimSpace(approvedHead)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[intervention.TaskID]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
+	}
+	if _, err := core.TransitionGateMerge(task.State, task.GateKind); err != nil {
+		return core.Task{}, err
+	}
+	if !m.verifyReviewReadyLocked(task) {
+		return core.Task{}, fmt.Errorf("verification is required before approval or merge")
+	}
+	// The durable stores reject a NUL audit actor at the event insert and roll
+	// back; the reference refuses the same input domain before any write.
+	actor := ActorFromContext(ctx)
+	if strings.ContainsRune(actor.ID, 0) || strings.ContainsRune(intervention.ActorID, 0) || strings.ContainsRune(confirmed.ActorID, 0) {
+		return core.Task{}, fmt.Errorf("audit actor contains NUL")
+	}
+	if intervention.JobID != "" {
+		if job, _, found := m.findJobLocked(intervention.JobID); !found || job.TaskID != intervention.TaskID {
+			return core.Task{}, fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
+		}
+	}
+	if err := m.createInterventionLocked(ctx, intervention); err != nil {
+		return core.Task{}, err
+	}
+	task = m.tasks[task.ID]
+	task.ReviewedHeadSHA, task.ApprovedHeadSHA, task.ApprovalStale = approvedHead, approvedHead, false
+	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = "", "", ""
+	m.tasks[task.ID] = task
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "approved_head": approvedHead})})
+	m.appendEventLocked(ctx, confirmed)
+	return m.applyTaskCommandLocked(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionMerge})
 }
 
 func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Intervention) (core.Task, error) {

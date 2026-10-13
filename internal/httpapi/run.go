@@ -373,6 +373,16 @@ func (s *Server) taskRunAwaitingGate(ctx context.Context, task core.Task) (*work
 			gate.SpecVersion = spec.Version
 		}
 	}
+	// A merge_approval gate carries the side-effect-free readiness peek, so a
+	// run offers the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
+	if task.GateKind == core.GateKindMergeApproval && gate.Kind == workerservice.TaskRunGateMergeApproval && s.OnMergeReadiness != nil {
+		readiness, readErr := s.taskRunReadiness.read(ctx, task, s.OnMergeReadiness)
+		if readErr != nil {
+			log.Printf("task run gate merge readiness for %s: %v", task.ID, readErr)
+		} else {
+			gate.MergeReadiness = &workerservice.TaskRunMergeReadiness{State: readiness.State, HeadSHA: readiness.HeadSHA, URL: readiness.URL, Number: readiness.Number}
+		}
+	}
 	return gate, nil
 }
 
@@ -414,7 +424,7 @@ func (s *Server) taskRunMergeExecutionGate(ctx context.Context, task core.Task, 
 	case !readReadiness:
 		parts = append(parts, "merge readiness changed during this read; the next read checks it again")
 	default:
-		readiness, readErr := s.taskRunReadiness.read(ctx, task, approvedHead, s.OnMergeReadiness)
+		readiness, readErr := s.taskRunReadiness.read(ctx, task, s.OnMergeReadiness)
 		if readErr != nil {
 			log.Printf("task run merge readiness for %s: %v", task.ID, readErr)
 			parts = append(parts, "merge readiness could not be read; the next read retries")
@@ -491,9 +501,9 @@ func (c *taskRunReadinessCache) now() time.Time {
 	return time.Now()
 }
 
-func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, approvedHead string, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error)) (dispatch.MergeReadiness, error) {
+func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error)) (dispatch.MergeReadiness, error) {
 	id := taskRunReadinessID(ctx, task.ID)
-	key := string(task.State) + "\x00" + approvedHead
+	key := taskRunReadinessKey(task)
 	c.mu.Lock()
 	if entry, ok := c.entries[id]; ok && entry.key == key && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
 		c.mu.Unlock()
@@ -937,4 +947,29 @@ func (s *Server) checkpointTaskRunOrderAttempt(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"created": created})
+}
+
+// lastKnown returns the cached readiness peek for a next-action projection.
+// It never calls the forge, so a next-action read cannot loop forge calls;
+// a missing or expired entry yields nil, which projects as UNKNOWN (DEC-64(3)).
+func (c *taskRunReadinessCache) lastKnown(ctx context.Context, task core.Task) *nextaction.MergeReadiness {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[taskRunReadinessID(ctx, task.ID)]
+	if !ok || entry.key != taskRunReadinessKey(task) || c.now().Sub(entry.readAt) >= taskRunMergeReadinessReuse {
+		return nil
+	}
+	return &nextaction.MergeReadiness{State: entry.readiness.State, HeadSHA: entry.readiness.HeadSHA, Number: entry.readiness.Number}
+}
+
+// taskRunReadinessKey is the one readiness cache key for every reader and
+// writer: the reviewed head at an awaiting merge_approval gate, otherwise the
+// approved head (falling back to the reviewed head), so a replaced head
+// misses (DEC-64(3)).
+func taskRunReadinessKey(task core.Task) string {
+	head := task.ApprovedHeadSHA
+	if head == "" || (task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval) {
+		head = task.ReviewedHeadSHA
+	}
+	return string(task.State) + "\x00" + head
 }

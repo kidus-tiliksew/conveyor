@@ -381,6 +381,132 @@ test('an approved task with the merge gate off shows the server merging summary 
   await expect(page.getByRole('button', { name: /merge/i })).toHaveCount(0)
 })
 
+// The one-act merge at the merge_approval gate (DEC-64). Merge is the server's
+// `merge` choice (DEC-61): offered at MERGEABLE, otherwise refused with the
+// server's reason. The browser adds only the confirm, which names the reviewed
+// head and the PR.
+const reviewedHead = 'abc1234def5678'
+const mergePath = `/v1/tasks/${taskId}/merge`
+
+function mergeApproval(state: string): NextAction {
+  const mergeable = state === 'MERGEABLE'
+  const refusal = `Merge is offered only when the pull request is MERGEABLE; it is ${state}.`
+  return {
+    label: 'Merge approval',
+    actor: 'operator',
+    kind: 'merge_approval',
+    judgment: true,
+    summary: 'The reviewed branch is waiting for merge approval.',
+    question: 'Approve the merge?',
+    deadline: null,
+    choices: [
+      {
+        id: 'approve',
+        label: 'Approve',
+        effect: 'Approves the merge.',
+        method: 'POST',
+        path: `/v1/tasks/${taskId}/review`,
+        capability: 'operate_gates',
+        allowed: true,
+      },
+      ...(mergeable
+        ? [
+            {
+              id: 'merge',
+              label: 'Merge',
+              effect: 'Approves and merges the reviewed head.',
+              method: 'POST',
+              path: mergePath,
+              capability: 'operate_gates',
+              allowed: true,
+            },
+          ]
+        : []),
+    ],
+    details: {
+      gate_kind: 'merge_approval',
+      merge_readiness: state,
+      ...(mergeable ? {} : { refusals: [{ choice: 'merge', text: refusal }] }),
+    },
+  }
+}
+
+function mergeGateActivity(state: string) {
+  return {
+    ...activity('awaiting_human', mergeApproval(state)),
+    at_merge_gate: true,
+    merge_readiness: { state, head_sha: reviewedHead, number: 42, url: 'https://github.test/pr/42' },
+  }
+}
+
+for (const state of ['CONFLICTING', 'STALE', 'UNKNOWN']) {
+  test(`the merge_approval gate refuses Merge at ${state} with the server's reason`, async ({ page }) => {
+    await mockAPI(
+      page,
+      () => mergeGateActivity(state),
+      () => mergeApproval(state),
+    )
+    await page.goto(`/tasks/${taskId}/full`)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.locator('[data-choice="approve"]')).toBeEnabled()
+    await expect(gate.locator('[data-merge-at-gate]')).toBeDisabled()
+    await expect(gate.getByText(`it is ${state}.`)).toBeVisible()
+  })
+}
+
+test('Merge at MERGEABLE confirms the reviewed head and PR, then posts the choice once', async ({ page }) => {
+  const posts = await mockAPI(
+    page,
+    () => mergeGateActivity('MERGEABLE'),
+    () => mergeApproval('MERGEABLE'),
+  )
+  const merges: string[] = []
+  // The forge answers only after both clicks land, so the act is in flight
+  // across the second click.
+  const forge = Promise.withResolvers<void>()
+  await page.route(`**${mergePath}**`, async (route) => {
+    merges.push(route.request().method())
+    await forge.promise
+    return route.fulfill({ json: {} })
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  // Approve stays beside Merge, and the merge choice is not also a one-click button.
+  await expect(gate.locator('[data-choice="approve"]')).toBeEnabled()
+  await expect(gate.locator('[data-choice="merge"]')).toHaveCount(0)
+  await gate.locator('[data-merge-at-gate]').click()
+  // Opening the confirm sends nothing.
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  await expect(dialog).toContainText('#42')
+  await expect(dialog.locator('code')).toHaveText(reviewedHead.slice(0, 7))
+  await expect(dialog.locator('code')).toHaveAttribute('title', reviewedHead)
+  await expect(dialog.locator('[data-confirm-merge]')).toHaveAttribute('data-endpoint', `POST ${mergePath}`)
+  expect(merges).toHaveLength(0)
+  await dialog.locator('[data-confirm-merge]').dblclick()
+  await expect.poll(() => merges.length).toBe(1)
+  await expect(dialog.locator('[data-confirm-merge]')).toHaveText('Merging…')
+  forge.resolve()
+  await expect(dialog).toHaveCount(0)
+  expect(merges).toEqual(['POST'])
+  expect(posts).toHaveLength(0)
+})
+
+test('a 409 refusal shows the readiness the server names', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => mergeGateActivity('MERGEABLE'),
+    () => mergeApproval('MERGEABLE'),
+  )
+  await page.route(`**${mergePath}**`, (route) =>
+    route.fulfill({ status: 409, json: { error: 'merge gate not ready: CONFLICTING', readiness: 'CONFLICTING' } }),
+  )
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('region', { name: 'Human gate' }).locator('[data-merge-at-gate]').click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  await dialog.locator('[data-confirm-merge]').click()
+  await expect(dialog.getByText('Not merged: the pull request has merge conflicts.')).toBeVisible()
+})
+
 test('the recovery card follows the order the server names as current', async ({ page }) => {
   const orders = [
     {
