@@ -97,6 +97,29 @@ func forgeMergeReconciled(events []core.Event, repository string, pr github.Pull
 	return false
 }
 
+// forgeMergeConfirmed reports a Conveyor merge.confirmed for this pull request
+// at this head; a recorded merge commit must also match. It accepts a merged
+// task whose approval moved after Conveyor merged (component-submission-merge
+// "Observed merges"; AC-3.5). Dedupe keeps using forgeMergeReconciled only.
+func forgeMergeConfirmed(events []core.Event, repository string, pr github.PullRequest) bool {
+	for _, event := range events {
+		if event.Kind != "merge.confirmed" {
+			continue
+		}
+		var prior struct {
+			Repository string `json:"repository"`
+			Number     int    `json:"pull_request"`
+			Head       string `json:"head_sha"`
+			Merge      string `json:"merge_commit_sha"`
+		}
+		if json.Unmarshal(event.Payload, &prior) == nil && prior.Repository == repository && prior.Number == pr.Number &&
+			prior.Head != "" && prior.Head == pr.HeadSHA && (prior.Merge == "" || prior.Merge == pr.MergeCommitSHA) {
+			return true
+		}
+	}
+	return false
+}
+
 func mergedHeadMismatchRecorded(events []core.Event, pr github.PullRequest) bool {
 	for _, event := range events {
 		if event.Kind != "merge.failed" {
@@ -822,7 +845,10 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 }
 
 // ReconcileObservedPullRequest records a forge merge at the reviewed head.
-// The monitor reports evidence; the dispatcher retains transition authority (AC-3.5).
+// Lineage accepts any head Conveyor recorded for the pull request
+// (monitor.RecordedPullRequestHead); completion still needs an eligible
+// expected head. The monitor reports evidence; the dispatcher retains
+// transition authority (AC-3.5; component-submission-merge "Observed merges").
 func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repository, githubRepo, taskID string, pr github.PullRequest) (bool, error) {
 	reconciled := false
 	err := d.Store.WithTaskSideEffectLock(ctx, taskID, func(lockedCtx context.Context) error {
@@ -854,7 +880,7 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 		if task.State == core.TaskMerged {
 			// A merge reconciled through the review-event head fallback leaves
 			// ReviewedHeadSHA empty; its merge.reconciled record still matches (AC-3.5).
-			if pr.HeadSHA != "" && (pr.HeadSHA == task.ApprovedHeadSHA || pr.HeadSHA == task.ReviewedHeadSHA || forgeMergeReconciled(events, githubRepo, pr)) {
+			if pr.HeadSHA != "" && (pr.HeadSHA == task.ApprovedHeadSHA || pr.HeadSHA == task.ReviewedHeadSHA || forgeMergeReconciled(events, githubRepo, pr) || forgeMergeConfirmed(events, githubRepo, pr)) {
 				reconciled = true
 			}
 			return nil
