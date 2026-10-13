@@ -493,3 +493,46 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		refusedBy(t, st.CreateTask(tasks, task("b2-taker", "b2")), "mover")
 	})
 }
+
+func TestAttachTaskBranchKeepsCloseLockUntilCommitIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "attach-order")
+	if _, err := st.CreateWorkspace(ctx, "attach-order", "Attach ordering", &config.Config{Workspace: "attach-order"}); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "attach-order-task"
+	if err := st.CreateTask(ctx, core.Task{
+		ID: taskID, Workspace: "attach-order", Repo: "repo", Branch: "old",
+		Title: taskID, State: core.TaskRunning, NextStage: core.StageImplement,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var probeAcquired bool
+	var probeErr error
+	probeKey := store.BranchCloseLockKey("repo", "new")
+	baseCtx := ctx
+	ctx, obs := observeTaskTxCommit(baseCtx, func() {
+		probeCtx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
+		defer cancel()
+		probeErr = st.WithTaskSideEffectLock(probeCtx, probeKey, func(context.Context) error {
+			probeAcquired = true
+			return nil
+		})
+	})
+	result, err := st.AttachTaskBranch(ctx, taskID, "new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.calls.Load() != 1 {
+		t.Fatalf("task transaction commit hook called %d times, want 1", obs.calls.Load())
+	}
+	if probeAcquired {
+		t.Fatalf("close-lock probe acquired before AttachTaskBranch returned: %v", probeErr)
+	}
+	if probeErr == nil {
+		t.Fatal("close-lock probe unexpectedly completed without waiting for the held lock")
+	}
+	if result.Branch != "new" {
+		t.Fatalf("attach result branch = %q, want new", result.Branch)
+	}
+}

@@ -14,6 +14,7 @@ import (
 // (req-task-branch-assignment AC-4.1; DEC-68, component-persistence).
 func runTaskBranchConcurrentClaims(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
+	// Eight attachers is the smallest N with 2N+1 connections exceeding the old SingleStore pool cap of 16.
 	const creators, attachersN = 8, 8
 	race := func(n int, fn func(i int) error) []error {
 		start := make(chan struct{})

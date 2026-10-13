@@ -24,12 +24,16 @@ func (s *Store) taskTx(ctx context.Context, id string, fn func(*sql.Tx) error) e
 	if err != nil {
 		return err
 	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		if err := s.lockTaskOperation(ctx, tx, ws, id); err != nil {
 			return err
 		}
 		return fn(tx)
 	})
+	if err == nil {
+		noteTaskTxCommit(ctx)
+	}
+	return err
 }
 func taskWrite(ctx context.Context, tx *sql.Tx, id string, values map[string]any) error {
 	values["updated_at"] = time.Now().UTC()
@@ -367,11 +371,11 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 		if err != nil {
 			return err
 		}
+		if err := s.lockOnTaskSession(ctx, documentWorkspace(ctx), taskID, store.BranchCloseLockKey(task.Repo, branch)); err != nil {
+			return err
+		}
 		return s.taskTx(ctx, taskID, func(tx *sql.Tx) error {
 			ws := documentWorkspace(ctx)
-			if err := s.lockTaskOperation(ctx, tx, ws, store.BranchCloseLockKey(task.Repo, branch)); err != nil {
-				return err
-			}
 			var err error
 			result, err = getTaskRow(ctx, tx, taskID)
 			if err != nil {
