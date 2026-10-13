@@ -61,9 +61,13 @@ const (
 	TaskInterventionReject        TaskCommand = "intervention.reject"
 	TaskInterventionApproveSpec   TaskCommand = "intervention.approve_spec"
 	TaskInterventionApproveReview TaskCommand = "intervention.approve_review"
-	TaskInterventionRedirect      TaskCommand = "intervention.redirect"
-	TaskMergeConfirm              TaskCommand = "merge.confirm"
-	TaskMergeRecover              TaskCommand = "merge.recover"
+	// TaskReviewAccept is review acceptance without an operator gate
+	// (DEC-64(8); component-task-lifecycle v13): running -> approved when the
+	// merge gate is off, on any refresh round, or for a legacy policy-0 L0 task.
+	TaskReviewAccept         TaskCommand = "review.accept"
+	TaskInterventionRedirect TaskCommand = "intervention.redirect"
+	TaskMergeConfirm         TaskCommand = "merge.confirm"
+	TaskMergeRecover         TaskCommand = "merge.recover"
 	// TaskInterventionMerge is the one-act operator merge at the merge_approval
 	// gate (DEC-64(1); component-task-lifecycle): awaiting_human -> merged.
 	TaskInterventionMerge TaskCommand = "intervention.merge"
@@ -140,7 +144,7 @@ type lifecycleTable map[string]map[string]string
 var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
-	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskDispatchFailFinal): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
+	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskDispatchFailFinal): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskReviewAccept): string(TaskApproved), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskAwaiting): {string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskInterventionMerge): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskParked):   {string(TaskRecover): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},

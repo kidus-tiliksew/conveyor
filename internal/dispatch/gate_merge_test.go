@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -349,6 +353,100 @@ func TestPendingGateMergeRequestIgnoresEarlierEpisode(t *testing.T) {
 		if got, pending := pendingGateMergeRequest(tc.events); pending != tc.want || (pending && got.OperatorUserID != "usr-approver") {
 			t.Fatalf("%s: pending=%v request=%+v", tc.name, pending, got)
 		}
+	}
+}
+
+// TestGateEpisodeAfterRefreshRoundAcceptedThroughReviewAccept drives a gate-on
+// task through a refresh round (review.accept, DEC-64(8)), then a first
+// acceptance that enters the merge_approval gate, then an unconfirmed operator
+// merge observed at the head. The refresh round leaves no gate.merge in the
+// log, so the real gate episode owns its request (component-submission-merge v6).
+func TestGateEpisodeAfterRefreshRoundAcceptedThroughReviewAccept(t *testing.T) {
+	ctx := store.WithActor(forgeReconcileCtx(), gateOperator)
+	st := mergeIdentityStore{store.NewMemory()}
+	id := "gate-after-refresh"
+	task := core.Task{
+		ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/" + id,
+		State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "refresh-base", ApprovedHeadSHA: "refresh-base",
+		RefreshBaselineSHA: "refresh-base", RefreshHeadSHA: "refresh-head", RefreshReviewScope: "delta",
+		MergeApproval: true, PolicyVersion: 1, Level: core.L2, CreatedAt: time.Now().UTC(),
+	}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	plane := taskops.New(st)
+	acceptRound := func(round int, kind, head string) {
+		t.Helper()
+		jobID := fmt.Sprintf("%s-review-%d", id, round)
+		job := core.Job{ID: jobID, TaskID: id, Stage: core.StageReview, State: core.JobPending}
+		order := core.WorkOrder{ID: jobID, JobID: jobID, TaskID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: 1,
+			QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)}
+		if err := storetest.CreateReviewRound(ctx, st, id, []core.Job{job}, []core.WorkOrder{order}); err != nil {
+			t.Fatal(err)
+		}
+		decision := core.ReviewDecision{TaskID: id, JobID: jobID, ReviewWorkOrderID: jobID, ReviewRound: round, ReviewSeat: 1,
+			Verdict: "approve", ReasonCode: "verified", Summary: "accepted", MaxBounces: 3, ReviewedCommitSHA: head,
+			ReviewKind: kind, Level: core.L2, PolicyVersion: 1, MergeApproval: true}
+		if kind == "refresh" {
+			decision.BaselineSHA, decision.HeadSHA = "refresh-base", head
+		}
+		if err := plane.AcceptReviewDecision(ctx, decision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acceptRound(1, "refresh", "refresh-head")
+	if command := lastStateCommand(t, st, ctx, id); command != core.TaskReviewAccept {
+		t.Fatalf("refresh round command=%s, want review.accept", command)
+	}
+	for _, command := range []taskops.Command{
+		{Kind: core.TaskRefreshReview, NextStage: core.StageReview},
+		{Kind: core.TaskDispatchStart},
+	} {
+		if _, err := plane.Perform(ctx, id, command); err != nil {
+			t.Fatalf("%s: %v", command.Kind, err)
+		}
+	}
+	acceptRound(2, "", gateHead)
+	assertGatePendingState(t, st, ctx, id)
+	openPullRequest(t, st, ctx, id, 7, gateHead)
+	d := newForgeDispatcher(st)
+	forge := &gateForge{pr: githubtrigger.PullRequest{Number: 7, State: "open", Mergeable: "MERGEABLE", HeadSHA: gateHead, HeadRef: task.Branch, URL: "https://github.test/acme/app/pull/7"}}
+	d.ViewPullRequest, d.RequestMerge = forge.view, forge.merge
+	forge.answer = func(*githubtrigger.PullRequest) error { return errors.New("connection reset") }
+	current, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = d.MergeAtGate(ctx, current, gateOperator)
+	forge.pr.Merged, forge.pr.State, forge.pr.MergeCommitSHA, forge.pr.MergedBy = true, "closed", "landed", "conveyor-app"
+	if matched, err := d.ReconcileObservedPullRequest(store.WithActor(ctx, store.SystemActor()), "app", "acme/app", id, forge.pr); err != nil || !matched {
+		t.Fatalf("matched=%v err=%v", matched, err)
+	}
+	assertGateMergedBy(t, st, ctx, id, "usr-approver")
+	events, err := st.ListEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands []core.TaskCommand
+	for _, event := range events {
+		var changed struct {
+			Command core.TaskCommand `json:"command"`
+		}
+		if event.Kind == "task.state_changed" && json.Unmarshal(event.Payload, &changed) == nil &&
+			(changed.Command == core.TaskGateMerge || changed.Command == core.TaskReviewAccept) {
+			commands = append(commands, changed.Command)
+		}
+	}
+	if want := []core.TaskCommand{core.TaskReviewAccept, core.TaskGateMerge}; !reflect.DeepEqual(commands, want) {
+		t.Fatalf("acceptance commands=%v, want %v (no gate.merge from the refresh round)", commands, want)
+	}
+}
+
+func assertGatePendingState(t *testing.T, st store.Store, ctx context.Context, id string) {
+	t.Helper()
+	current, err := st.GetTask(ctx, id)
+	if err != nil || current.State != core.TaskAwaiting || current.GateKind != core.GateKindMergeApproval || current.ReviewedHeadSHA != gateHead {
+		t.Fatalf("gate task=%+v err=%v", current, err)
 	}
 }
 

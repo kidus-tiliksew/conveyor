@@ -1598,7 +1598,9 @@ func TestGateOnConflictFixRefreshReturnsToMergeGateWithoutMerging(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	passedGate := false
+	// DEC-64(8); component-submission-merge v6: the gate-on conflict loop
+	// re-approves the refresh round through review.accept, not a gate.merge pair.
+	lastCommand, accepts := "", 0
 	for _, event := range events {
 		if event.Kind != "task.state_changed" {
 			continue
@@ -1606,12 +1608,15 @@ func TestGateOnConflictFixRefreshReturnsToMergeGateWithoutMerging(t *testing.T) 
 		var payload struct {
 			Command string `json:"command"`
 		}
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.Command == string(core.TaskGateMerge) {
-			passedGate = true
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			lastCommand = payload.Command
+			if payload.Command == string(core.TaskReviewAccept) {
+				accepts++
+			}
 		}
 	}
-	if !passedGate {
-		t.Fatal("refresh approval did not pass through gate.merge")
+	if lastCommand != string(core.TaskReviewAccept) || accepts != 1 {
+		t.Fatalf("refresh approval command=%q review.accept count=%d, want one review.accept", lastCommand, accepts)
 	}
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "fix-head"}, nil

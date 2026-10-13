@@ -42,6 +42,26 @@ func TestAuditLifecycleHistoryAcceptsCommandedCancellation(t *testing.T) {
 	}
 }
 
+// TestAuditLifecycleHistoryAcceptsBothReviewAcceptanceForms pins DEC-64(8) R2:
+// the single review.accept edge and the historical gate.merge +
+// intervention.approve_review pair both audit clean, with no backfill.
+func TestAuditLifecycleHistoryAcceptsBothReviewAcceptanceForms(t *testing.T) {
+	change := func(id int64, task string, from, to core.TaskState, command core.TaskCommand) core.Event {
+		return core.Event{ID: id, TaskID: task, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": to, "command": command})}
+	}
+	events := []core.Event{
+		change(1, "accepted", core.TaskRunning, core.TaskApproved, core.TaskReviewAccept),
+		change(2, "historical", core.TaskRunning, core.TaskAwaiting, core.TaskGateMerge),
+		change(3, "historical", core.TaskAwaiting, core.TaskApproved, core.TaskInterventionApproveReview),
+	}
+	if violations := AuditLifecycleHistory(events); len(violations) != 0 {
+		t.Fatalf("violations = %#v", violations)
+	}
+	if violations := AuditLifecycleHistory([]core.Event{change(4, "bad", core.TaskAwaiting, core.TaskApproved, core.TaskReviewAccept)}); len(violations) != 1 {
+		t.Fatalf("review.accept from awaiting_human audited clean: %#v", violations)
+	}
+}
+
 func TestAuditLifecycleHistoryAcceptsRetiredTriageRouteHumanEvent(t *testing.T) {
 	events := []core.Event{{ID: 1, TaskID: "legacy-route-human", Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
 		"from": core.TaskRunning, "to": core.TaskAwaiting, "command": "triage.route_human",
