@@ -1,0 +1,1 @@
+import"./chunk-FPAJGGOC-DurTMoBf.js";import{h as e}from"./mermaid-parser.core-DOxamSud.js";export{e as createArchitectureServices};

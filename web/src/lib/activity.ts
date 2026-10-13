@@ -4,6 +4,7 @@ import type {
   ActivitySummary,
   Intervention,
   Job,
+  NextAction,
   PendingProposal,
   Task,
   TaskAssignee,
@@ -12,7 +13,6 @@ import type {
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
   WorkOrderVerificationCheckpointPermission,
-  NextAction,
   WorkspaceMembership,
 } from './types'
 
@@ -348,7 +348,10 @@ export interface CurrentExecutionState {
   title: string
   blocker: string
   retry: string
-  nextAction: string
+  // Client guidance for the recovery and execution panels. Absent when the
+  // only guidance is the server's own summary, which NextActionCard already
+  // states once per surface (DEC-61; feature-operator-next-action NA-6).
+  nextAction?: string
   action: 'none' | 'retry_implementation' | 'recover' | 'resolve_checkout'
   blockingDependencies?: TaskRelation[]
   unsatisfiableDependencyIDs?: string[]
@@ -475,7 +478,8 @@ export function deriveCurrentExecutionState(
         title: 'Waiting on dependencies',
         blocker: 'Implementation is gated by unresolved task dependencies.',
         retry: 'Not applicable.',
-        nextAction: action.summary,
+        // No nextAction: the summary is NextActionCard's (DEC-61); the panel
+        // keeps only the dependency links.
         action: 'none',
         blockingDependencies: blockingDependencies(item),
       }

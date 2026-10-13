@@ -213,7 +213,9 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       <div className={cn('flex flex-wrap items-center gap-3 rounded-t-lg px-4 py-3', style.header)}>
         <Icon className={cn('size-5 shrink-0', style.icon)} />
         <div className="min-w-48 flex-1">
-          <h3 className={cn('text-sm font-semibold', style.title)}>{action.summary}</h3>
+          {/* The label, not the summary: NextActionCard above already states the
+              summary once per surface (DEC-61; feature-operator-next-action NA-6). */}
+          <h3 className={cn('text-sm font-semibold', style.title)}>{action.label}</h3>
           {action.question && <p className="mt-0.5 text-xs leading-5 text-muted">{action.question}</p>}
         </div>
       </div>

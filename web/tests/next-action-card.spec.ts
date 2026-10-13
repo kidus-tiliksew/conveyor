@@ -335,7 +335,9 @@ test('the human gate takes its statement and buttons from the server, not the ev
   )
   await page.goto(`/tasks/${taskId}/full`)
   const gate = page.getByRole('region', { name: 'Human gate' })
-  await expect(gate.getByRole('heading', { name: jobFailure.summary })).toBeVisible()
+  // The gate heads with the server label; the summary stays on the card (DEC-61).
+  await expect(gate.getByRole('heading', { name: jobFailure.label })).toBeVisible()
+  await expect(gate).not.toContainText(jobFailure.summary)
   await expect(gate.getByText('Send it back with guidance, or close it?')).toBeVisible()
   await expect(gate.locator('[data-next-action-choices]').first().getByRole('button')).toHaveText([
     'Redirect',
