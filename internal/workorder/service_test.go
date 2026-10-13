@@ -3071,6 +3071,77 @@ func TestSubmitVerdictUnresolvedApprovalRemainsRetryable(t *testing.T) {
 	}
 }
 
+func TestSubmitVerdictPreservesFencedDoneCriteria(t *testing.T) {
+	t.Parallel()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	criterion := "Run the formatter:\n```go\nfmt.Println(\"ok\")\n```"
+	plan := "## Approach\nVerify acceptance.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Verify.\n\n## Risks\n- None.\n\n## Done criteria\n- " + criterion
+	task := core.Task{ID: "fenced-review", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: plan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{
+		ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview,
+		ReviewRound: 1, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{},
+		GovernanceSnapshot: &core.GovernanceSnapshot{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const session = "fenced-review-session"
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "token", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	review := pipeline.Review{
+		Verdict: "approve", ReasonCode: "approved", Summary: "fenced criterion passes",
+		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{
+			Applicable: true, Summary: "all criteria satisfied", Satisfied: []string{criterion},
+			Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{},
+		},
+	}
+	if _, err = service.SubmitVerdict(ctx, job.ID, session, review); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind != "review.completed" {
+			continue
+		}
+		var payload struct {
+			DoneCriteriaCoverage core.DoneCriteriaAssessment `json:"done_criteria_coverage"`
+		}
+		if err = json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		found = true
+		if !reflect.DeepEqual(payload.DoneCriteriaCoverage.Satisfied, []string{criterion}) {
+			t.Fatalf("persisted satisfied=%q, want %q", payload.DoneCriteriaCoverage.Satisfied, criterion)
+		}
+	}
+	if !found {
+		t.Fatal("review.completed event was not persisted")
+	}
+}
+
 // failingClaimBlockingStore fails the claim-blocking read.
 type failingClaimBlockingStore struct{ store.Store }
 

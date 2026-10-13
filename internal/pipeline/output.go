@@ -122,6 +122,13 @@ func ParseReview(output string) (Review, error) {
 	if err := parseJSONFence(output, "review", &value); err != nil {
 		return value, err
 	}
+	return ValidateReview(value)
+}
+
+// ValidateReview applies the structured review contract without re-encoding
+// caller-provided strings. The MCP submit path relies on this to preserve
+// verbatim done-criteria coverage (component-mcp-protocol).
+func ValidateReview(value Review) (Review, error) {
 	if value.Verdict != "approve" && value.Verdict != "changes_requested" {
 		return value, fmt.Errorf("review verdict must be approve or changes_requested")
 	}
@@ -420,21 +427,17 @@ func parseJSONFence(output, kind string, destination any) error {
 
 func fence(output, kind string) (string, bool) {
 	marker := "```conveyor:" + kind
-	start := strings.Index(output, marker)
-	if start < 0 {
-		return "", false
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	for index, line := range lines {
+		opener := strings.TrimSpace(line)
+		opener = strings.TrimPrefix(opener, "\ufeff")
+		opener = strings.TrimSpace(opener)
+		if !strings.HasPrefix(opener, marker) {
+			continue
+		}
+		return strings.Join(lines[index+1:], "\n"), true
 	}
-	start += len(marker)
-	if newline := strings.IndexByte(output[start:], '\n'); newline >= 0 {
-		start += newline + 1
-	} else {
-		return "", false
-	}
-	end := strings.Index(output[start:], "```")
-	if end < 0 {
-		return "", false
-	}
-	return strings.TrimSpace(output[start : start+end]), true
+	return "", false
 }
 
 func fences(output, kind string) []string {
