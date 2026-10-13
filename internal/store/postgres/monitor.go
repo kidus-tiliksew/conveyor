@@ -16,6 +16,23 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
+// monitorInFlightMergeQuery is shared with the PostgreSQL EXPLAIN integration
+// test so the plan assertion covers the production query (component-monitor-drift; component-persistence; DEC-38).
+const monitorInFlightMergeQuery = `SELECT e.task_id, e.at FROM events e
+			WHERE e.workspace_id=$1 AND e.kind='merge.requested'
+			  AND e.payload_json->>'repository'=$2
+			  AND e.at > $3
+			  AND NOT EXISTS (
+				SELECT 1 FROM events later
+				WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id
+				  AND (
+					later.kind IN ('merge.confirmed','merge.reconciled')
+					OR (later.kind='merge.failed' AND later.payload_json->>'reason_code' IN ('forge_merge_failed','merged_head_mismatch'))
+				  )
+				  AND (later.at > e.at OR (later.at = e.at AND later.id > e.id))
+			  )
+			ORDER BY e.at, e.id LIMIT 1`
+
 func (s *Store) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
 	return s.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, Payload: core.JSONPayload(payload)})
 }
@@ -69,20 +86,7 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 	var inFlightTask string
 	var requestAt time.Time
 	if recordedTask == "" && bound > 0 && now.Sub(committedAt) < bound {
-		err = s.boundary.QueryRow(ctx, `SELECT e.task_id, e.at FROM events e
-			WHERE e.workspace_id=$1 AND e.kind='merge.requested'
-			  AND e.payload_json->>'repository'=$2
-			  AND e.at > $3
-			  AND NOT EXISTS (
-				SELECT 1 FROM events later
-				WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id
-				  AND (
-					later.kind IN ('merge.confirmed','merge.reconciled')
-					OR (later.kind='merge.failed' AND later.payload_json->>'reason_code' IN ('forge_merge_failed','merged_head_mismatch'))
-				  )
-				  AND (later.at > e.at OR (later.at = e.at AND later.id > e.id))
-			  )
-			ORDER BY e.at, e.id LIMIT 1`, ws, repository, now.Add(-bound)).Scan(&inFlightTask, &requestAt)
+		err = s.boundary.QueryRow(ctx, monitorInFlightMergeQuery, ws, repository, now.Add(-bound)).Scan(&inFlightTask, &requestAt)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return monitor.MergeNone, "", err
 		}
