@@ -11,10 +11,16 @@ import (
 )
 
 func TestTaskLinkCommandRequiresAuditFieldsAndCallsREST(t *testing.T) {
+	isolateConveyorEnv(t)
+	previousWorkspace, previousWorkspaceExplicit := workspaceFlag, workspaceFlagExplicit
+	workspaceFlag, workspaceFlagExplicit = "demo", false
+	t.Cleanup(func() {
+		workspaceFlag, workspaceFlagExplicit = previousWorkspace, previousWorkspaceExplicit
+	})
 	var body map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks/task-1/dependencies" || r.Header.Get("Authorization") != "Bearer token" {
-			t.Fatalf("request=%s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tasks/task-1/dependencies" || r.Header.Get("Authorization") != "Bearer token" || r.Header.Get("X-Workspace-ID") != "demo" {
+			t.Fatalf("request=%s %s auth=%q workspace=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Workspace-ID"))
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
@@ -24,7 +30,6 @@ func TestTaskLinkCommandRequiresAuditFieldsAndCallsREST(t *testing.T) {
 	defer server.Close()
 	t.Setenv("CONVEYOR_ADDR", server.URL)
 	t.Setenv("CONVEYOR_API_TOKEN", "token")
-	workspaceFlag = "demo"
 	command := addTaskDependencyCmd()
 	var output strings.Builder
 	command.SetOut(&output)
