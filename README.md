@@ -281,10 +281,9 @@ tests, the web typecheck, Biome, and Playwright. `make test-integration` runs
 against PostgreSQL. [Local validation evidence](docs/validation-evidence.md)
 describes scratch space and retained evidence for work on this repository.
 
-## Status
+## Acknowledgements
 
-Conveyor is under active development. Its event log records defects and
-reconciliation work alongside successful merges.
+Supported by the awesome [FunnelFlux](https://funnelflux.com) team.
 
 ## License
 
