@@ -60,11 +60,38 @@ func TestParseReviewPreservesFencedDoneCriteria(t *testing.T) {
 	}
 }
 
-func TestParseReviewRejectsLongClosingFence(t *testing.T) {
+func TestParseJSONFenceCompatibility(t *testing.T) {
 	t.Parallel()
-	input := "```conveyor:review\n{\"verdict\":\"approve\",\"reason_code\":\"approved\",\"summary\":\"passes\",\"feedback\":\"\"}\n````"
-	if _, err := ParseReview(input); err == nil {
-		t.Fatal("accepted a four-backtick closing fence")
+	cases := []struct {
+		name   string
+		opener string
+		closer string
+	}{
+		{name: "trailing whitespace", opener: "```conveyor:%s \t", closer: "```"},
+		{name: "two-space indentation", opener: "  ```conveyor:%s", closer: "\n``` trailing text"},
+		{name: "four-space indentation", opener: "    ```conveyor:%s", closer: "\n````"},
+		{name: "text after marker", opener: "```conveyor:%s metadata", closer: "\n```"},
+		{name: "BOM prefix", opener: "\ufeff```conveyor:%s", closer: "\n````"},
+	}
+	for _, kind := range []string{"review", "triage"} {
+		for _, testCase := range cases {
+			t.Run(kind+"/"+testCase.name, func(t *testing.T) {
+				var body string
+				if kind == "review" {
+					body = `{"verdict":"approve","reason_code":"approved","summary":"passes","feedback":""}`
+				} else {
+					body = `{"class":"feature","route":"proceed","summary":"passes"}`
+				}
+				input := strings.Replace(testCase.opener, "%s", kind, 1) + "\n" + body + testCase.closer
+				if kind == "review" {
+					if _, err := ParseReview(input); err != nil {
+						t.Fatalf("ParseReview: %v", err)
+					}
+				} else if _, err := ParseTriage(input); err != nil {
+					t.Fatalf("ParseTriage: %v", err)
+				}
+			})
+		}
 	}
 }
 

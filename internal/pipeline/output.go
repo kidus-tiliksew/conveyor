@@ -428,16 +428,14 @@ func parseJSONFence(output, kind string, destination any) error {
 func fence(output, kind string) (string, bool) {
 	marker := "```conveyor:" + kind
 	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
-	for index := range lines {
-		if lines[index] != marker {
+	for index, line := range lines {
+		opener := strings.TrimSpace(line)
+		opener = strings.TrimPrefix(opener, "\ufeff")
+		opener = strings.TrimSpace(opener)
+		if !strings.HasPrefix(opener, marker) {
 			continue
 		}
-		start := index + 1
-		for index = start; index < len(lines); index++ {
-			if strings.TrimSpace(lines[index]) == "```" {
-				return strings.TrimSpace(strings.Join(lines[start:index], "\n")), true
-			}
-		}
+		return strings.Join(lines[index+1:], "\n"), true
 	}
 	return "", false
 }

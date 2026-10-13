@@ -25,6 +25,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func composeReviewOutput(review pipeline.Review) string {
+	data, _ := json.Marshal(review)
+	return "```conveyor:review\n" + string(data) + "\n```"
+}
+
 type capturingInputAgent struct {
 	input inprocess.Input
 	model string
@@ -2446,7 +2451,7 @@ func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
 	d := New(st, cfg, nil)
 	d.DisableMemoryQueueForTest()
 	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "focused checks pass", DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: true, Summary: "required aggregate unverified", Unverified: []string{storetest.PR907MandatoryValidation}}}
-	if err = d.completeOutput(ctx, cfg, task, job, ComposeReviewOutput(review), "in-process", 0); err != nil {
+	if err = d.completeOutput(ctx, cfg, task, job, composeReviewOutput(review), "in-process", 0); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
@@ -2460,30 +2465,5 @@ func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
 		if count, _ := st.CountEvents(ctx, task.ID, kind); count != 0 {
 			t.Fatalf("invalid approval produced %s", kind)
 		}
-	}
-}
-
-func TestComposeReviewOutputPreservesFencedDoneCriteria(t *testing.T) {
-	t.Parallel()
-	criteria := []string{"Run the formatter:\n```go\nfmt.Println(\"ok\")\n```"}
-	review := pipeline.Review{
-		Verdict:    "approve",
-		ReasonCode: "approved",
-		Summary:    "fenced criteria pass",
-		DoneCriteriaCoverage: &core.DoneCriteriaAssessment{
-			Applicable:  true,
-			Summary:     "all criteria satisfied",
-			Satisfied:   criteria,
-			Unsatisfied: []string{},
-			Unverified:  []string{},
-			Conflicts:   []string{},
-		},
-	}
-	parsed, err := pipeline.ParseReview(ComposeReviewOutput(review))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parsed.DoneCriteriaCoverage == nil || !reflect.DeepEqual(parsed.DoneCriteriaCoverage.Satisfied, criteria) {
-		t.Fatalf("satisfied=%v, want %v", parsed.DoneCriteriaCoverage, criteria)
 	}
 }
