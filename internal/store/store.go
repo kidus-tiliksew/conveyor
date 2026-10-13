@@ -42,7 +42,7 @@ var (
 	ErrWorkOrderStale              = errors.New("work order is stale and requires redispatch")
 	ErrWorkOrderTimedOut           = errors.New("work order execution deadline exceeded")
 	// ErrTaskHeldByWorkOrder: a queued task's current stage is held by a
-	// queued, claimed, stale, or timed_out order (core.WorkOrderBlocksStageMint).
+	// queued, claimed, stale, or timed_out order (core.WorkOrderHoldsStage).
 	// Task redispatch cannot help; the operator redispatches or recovers the
 	// order itself (component-durable-queue; DEC-62).
 	ErrTaskHeldByWorkOrder      = errors.New("task stage is held by a work order; redispatch or recover the work order instead")

@@ -408,8 +408,10 @@ func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage c
 	if reasonCode == "" {
 		// Stale and timed-out orders block minting so the order clock's bounded
 		// recovery owns them instead of a daily same-stage reissue (DEC-62;
-		// component-work-orders "Stages and order minting").
-		order, active := core.WorkOrderBlocksStageMint(orders, stage)
+		// component-work-orders "Stages and order minting"). A stored claim
+		// remains an executor hold across a stage bounce until the order clock
+		// persists its expiry (component-durable-queue).
+		order, active := core.WorkOrderHoldsStage(orders, stage)
 		return order, active, nil
 	}
 	for i := len(orders) - 1; i >= 0; i-- {

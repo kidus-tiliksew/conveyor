@@ -387,10 +387,11 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		if err := core.ValidateVerifyDispatch(taskFromDB(taskRow), order); err != nil {
 			return err
 		}
-		// Creation agrees with core.WorkOrderHoldsStage: a stored same-stage
-		// claim refuses creation for executor exclusivity even behind a newer
-		// stage. Without a claim, the latest-order holding predicate governs
-		// admission (component-work-orders "Stages and order minting"; DEC-62).
+		// Creation agrees with core.WorkOrderHoldsStage: for non-review stages,
+		// a stored same-stage claim refuses creation for executor exclusivity
+		// even behind a newer stage. Without a claim, the latest-order holding
+		// predicate governs admission; review rounds use their own latest-round
+		// predicate (component-work-orders "Stages and order minting"; DEC-62).
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM work_orders wo

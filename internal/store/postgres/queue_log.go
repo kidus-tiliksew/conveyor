@@ -67,10 +67,10 @@ func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, 
 // blockingOrderSQL is the SQL form of the durable reconcile hold predicate:
 // the task's latest order is at its next_stage and holds it (itself, or for
 // review any seat of its round, is queued, claimed, stale, or timed_out), or
-// any stored same-stage claim holds executor exclusivity across stage history.
-// Read-time stale and timed_out projections are stored as queued or claimed,
-// so the stored set covers them. A stored claim must remain visible until the
-// order clock persists its expiry (component-durable-queue
+// any stored same-stage non-review claim holds executor exclusivity across
+// stage history. Read-time stale and timed_out projections are stored as
+// queued or claimed, so the stored set covers them. A stored claim must remain
+// visible until the order clock persists its expiry (component-durable-queue
 // "Reconciliation between tasks and jobs"; DEC-62).
 func blockingOrderSQL(task string) string {
 	return `(
@@ -95,6 +95,7 @@ func blockingOrderSQL(task string) string {
       WHERE claimed.workspace_id=` + task + `.workspace_id
         AND claimed.task_id=` + task + `.id
         AND claimed.stage=` + task + `.next_stage
+        AND ` + task + `.next_stage <> 'review'
         AND claimed.state='claimed'
   )
 )`

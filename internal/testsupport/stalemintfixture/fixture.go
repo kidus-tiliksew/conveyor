@@ -2,8 +2,9 @@
 // prove the stage-mint predicate and the atomic stage-creation guards agree:
 // a historical order behind a newer stage never blocks a bounce-back mint, and
 // a recoverable stop the clock will not move stays an operator stop with no
-// successor (core.WorkOrderBlocksStageMint; component-work-orders "Stages and
-// order minting"; component-durable-queue; DEC-62).
+// successor (core.WorkOrderHoldsStage for non-review stages, and
+// core.WorkOrderBlocksStageMint for review rounds; component-work-orders
+// "Stages and order minting"; component-durable-queue; DEC-62).
 package stalemintfixture
 
 import (
@@ -204,8 +205,26 @@ func runDeadClaimBehindReview(t *testing.T, st store.Backend, executionDeadline 
 	if _, exists := h.orders(t)[h.task.ID+"-implement-2"]; exists {
 		t.Fatal("dead claim was bypassed before the order clock")
 	}
-	if _, err = taskops.New(h.st).TickOrderClock(h.ctx, now.Add(48*time.Hour)); err != nil {
+	if _, err = taskops.New(h.st).TickOrderClock(h.ctx, now); err != nil {
 		t.Fatal(err)
+	}
+	events, err := h.st.ListEvents(h.ctx, h.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantClockEvent := "work_order.expired"
+	if executionDeadline {
+		wantClockEvent = "work_order.timed_out"
+	}
+	foundClockEvent := false
+	for _, event := range events {
+		if event.Kind == wantClockEvent {
+			foundClockEvent = true
+			break
+		}
+	}
+	if !foundClockEvent {
+		t.Fatalf("clock event %q missing", wantClockEvent)
 	}
 	h.dispatch(t)
 	orders := h.orders(t)
