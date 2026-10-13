@@ -2025,7 +2025,6 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 		}
 
 		command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
-		autoApprove := false
 		if aggregate.Verdict == "changes_requested" {
 			count, countErr := q.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(decision.TaskID), Kind: "pipeline.bounced", WorkspaceID: workspace(ctx)})
 			if countErr != nil {
@@ -2059,28 +2058,14 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 				}
 			}
 			command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-		} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
-			autoApprove, recovery = true, ""
+		} else if store.ReviewAcceptAdmitted(decision, aggregate.Verdict) {
+			// DEC-64(8): one running -> approved edge, no intervention.
+			command, recovery = core.TaskReviewAccept, ""
 		}
 		fromState := core.TaskState(before.State)
 		state, transitionErr := core.TransitionTask(fromState, command)
 		if transitionErr != nil {
 			return transitionErr
-		}
-		if autoApprove {
-			approved, approveErr := core.TransitionTask(state, core.TaskInterventionApproveReview)
-			if approveErr != nil {
-				return approveErr
-			}
-			// Auto-approval currently projects running -> awaiting_human with
-			// gate.merge even though the merge gate is off. The table has no direct
-			// running -> approved edge; keep this explicit gap workaround visible
-			// until a table amendment supplies the intended command.
-			if err = insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
-				return err
-			}
-			fromState, state = state, approved
-			command = core.TaskInterventionApproveReview
 		}
 		nonAdvancingRefresh := store.NonAdvancingRefreshBinding(decision, aggregate.ApprovedHeadSHA)
 		if nonAdvancingRefresh {
@@ -2112,9 +2097,6 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 		}); err != nil {
 			return err
 		}
-		// When autoApprove is true, this second projection records an intervention
-		// command without a human intervention. It is the paired gap workaround for
-		// the absent running -> approved table edge.
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 			return err
 		}

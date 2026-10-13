@@ -30,6 +30,7 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T14", TaskAwaiting, TaskInterventionReject, TaskClosed},
 		{"T15", TaskAwaiting, TaskInterventionApproveSpec, TaskQueued},
 		{"T16", TaskAwaiting, TaskInterventionApproveReview, TaskApproved},
+		{"T16 review accept (DEC-64(8))", TaskRunning, TaskReviewAccept, TaskApproved},
 		{"T17", TaskAwaiting, TaskInterventionRedirect, TaskQueued},
 		{"T18", TaskApproved, TaskMergeConfirm, TaskMerged},
 		{"T18 gate recover", TaskAwaiting, TaskMergeRecover, TaskMerged},
@@ -67,6 +68,15 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 	}
 	if got := GateKindFor(TaskMerged, TaskInterventionMerge); got != "" {
 		t.Fatalf("merged intervention.merge gate_kind=%q", got)
+	}
+	// DEC-64(8): review.accept leaves running only.
+	for _, from := range []TaskState{TaskClaiming, TaskQueued, TaskAwaiting, TaskApproved, TaskParked, TaskMerged, TaskClosed} {
+		if _, err := TransitionTask(from, TaskReviewAccept); err == nil {
+			t.Fatalf("review.accept accepted from %q", from)
+		}
+	}
+	if got := GateKindFor(TaskApproved, TaskReviewAccept); got != "" {
+		t.Fatalf("review.accept gate_kind=%q", got)
 	}
 	if _, err := TransitionTask(TaskRunning, TaskCommand("triage.route_human")); err == nil {
 		t.Fatal("retired triage.route_human command remains in the current lifecycle")
@@ -201,6 +211,7 @@ func TestLifecycleStateDiagramIsGeneratedFromCanonicalTables(t *testing.T) {
 	for _, edge := range []string{
 		"task_claiming --> task_queued: intake.finalize",
 		"task_approved --> task_merged: merge.confirm",
+		"task_running --> task_approved: review.accept",
 		"order_claimed --> order_queued: claim.expire",
 		"order_queued --> order_timed_out: order.timeout",
 	} {

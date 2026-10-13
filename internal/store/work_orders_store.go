@@ -1182,7 +1182,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)})
 
 	command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
-	autoApprove := false
 	if aggregate.Verdict == "changes_requested" {
 		count := 0
 		for _, event := range m.events[decision.TaskID] {
@@ -1213,26 +1212,14 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			m.appendEventLocked(ctx, event)
 		}
 		command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-	} else if decision.ReviewKind == "refresh" || (decision.PolicyVersion > 0 && !decision.MergeApproval) || (decision.PolicyVersion == 0 && decision.Level == core.L0) {
-		autoApprove, recovery = true, ""
+	} else if ReviewAcceptAdmitted(decision, aggregate.Verdict) {
+		// DEC-64(8): one running -> approved edge, no intervention.
+		command, recovery = core.TaskReviewAccept, ""
 	}
 	fromState, fromStage := task.State, task.NextStage
 	state, err := core.TransitionTask(fromState, command)
 	if err != nil {
 		return err
-	}
-	if autoApprove {
-		approved, approveErr := core.TransitionTask(state, core.TaskInterventionApproveReview)
-		if approveErr != nil {
-			return approveErr
-		}
-		// Auto-approval currently projects running -> awaiting_human with
-		// gate.merge even though the merge gate is off. The table has no direct
-		// running -> approved edge; keep this explicit gap workaround visible
-		// until a table amendment supplies the intended command.
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
-		fromState, state = state, approved
-		command = core.TaskInterventionApproveReview
 	}
 	nonAdvancingRefresh := NonAdvancingRefreshBinding(decision, aggregate.ApprovedHeadSHA)
 	if nonAdvancingRefresh {
@@ -1251,9 +1238,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	task.State, task.NextStage, task.RecoveryStage = state, next, recovery
 	task.GateKind = core.GateKindFor(state, command)
 	m.tasks[task.ID] = task
-	// When autoApprove is true, this second projection records an intervention
-	// command without a human intervention. It is the paired gap workaround for
-	// the absent running -> approved table edge.
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": next, "recovery_stage": recovery, "state": state, "review_work_order_id": decision.ReviewWorkOrderID})})
 	return nil

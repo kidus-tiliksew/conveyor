@@ -188,12 +188,23 @@ func TestFoldTaskFlowStatusPrecedence(t *testing.T) {
 		}
 	})
 	t.Run("approved with the merge gate off is in progress", func(t *testing.T) {
-		task := approvalTask()
-		task.MergeApproval = false
-		ledger := new(flowLedger).created(task).transition(core.StageReview, core.StageMerge).state(core.TaskApproved, core.TaskInterventionApproveReview)
-		got := flowStage(t, ledger.fold(nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindMerging}), core.StageMerge).Status
-		if got != FlowInProgress {
-			t.Fatalf("merge = %s, want in_progress", got)
+		// DEC-64(8) R2: new histories record one review.accept; historical ones
+		// keep the gate.merge + intervention.approve_review pair. Both replay to
+		// approved with no gate.
+		histories := map[string]func(*flowLedger) *flowLedger{
+			"review.accept": func(l *flowLedger) *flowLedger { return l.state(core.TaskApproved, core.TaskReviewAccept) },
+			"historical pair": func(l *flowLedger) *flowLedger {
+				return l.state(core.TaskAwaiting, core.TaskGateMerge).state(core.TaskApproved, core.TaskInterventionApproveReview)
+			},
+		}
+		for name, accept := range histories {
+			task := approvalTask()
+			task.MergeApproval = false
+			ledger := accept(new(flowLedger).created(task).transition(core.StageReview, core.StageMerge))
+			got := flowStage(t, ledger.fold(nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindMerging}), core.StageMerge).Status
+			if got != FlowInProgress {
+				t.Fatalf("%s: merge = %s, want in_progress", name, got)
+			}
 		}
 	})
 	t.Run("merged makes visited stages done", func(t *testing.T) {

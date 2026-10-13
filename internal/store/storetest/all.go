@@ -224,6 +224,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"QueueReentryPins", true, runQueueReentryPins},
 		{"ReviewRounds", true, runReviewRounds},
 		{"ReviewAcceptance", true, runReviewAcceptance},
+		{"ReviewAccept", true, runReviewAccept},
 		{"Decisions", true, runDecisions},
 		{"ArchiveRestore", true, runArchiveRestore},
 		{"Monitor", true, runMonitor},
