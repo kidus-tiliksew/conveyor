@@ -325,8 +325,8 @@ func (p projectingOrders) ListTaskWorkOrdersStored(context.Context, string) ([]c
 // elapsed is no longer admitted as active, even before the order clock
 // persists its expiry: conflict fix orders keep their own admission rule over
 // projected state (component-work-orders "Stages and order minting";
-// component-durable-queue dispatch outcomes). A stored claim still holds the
-// stage for ordinary minting.
+// component-durable-queue dispatch outcomes). Stage holds over stored claims
+// are pinned by TestDispatchJobCompletesForExpiredHistoricalClaim.
 func TestMergeConflictAdmissionUsesProjectedClaimState(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	now := time.Now().UTC()
@@ -334,22 +334,18 @@ func TestMergeConflictAdmissionUsesProjectedClaimState(t *testing.T) {
 		return core.WorkOrder{ID: "t-implement-1", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderClaimed, ReasonCode: "merge-conflict", ClaimantID: "worker", SessionID: "s", AttemptID: "a", LeaseExpiresAt: lease, ExecutionDeadline: deadline, CreatedAt: now.Add(-time.Hour)}
 	}
 	for _, tc := range []struct {
-		name          string
-		order         core.WorkOrder
-		conflictLive  bool
-		stageHoldLive bool
+		name         string
+		order        core.WorkOrder
+		conflictLive bool
 	}{
-		{"live", claimed(now.Add(time.Hour), now.Add(time.Hour)), true, true},
-		{"lease-expired", claimed(now.Add(-time.Minute), now.Add(time.Hour)), false, true},
-		{"deadline-passed", claimed(now.Add(time.Hour), now.Add(-time.Minute)), false, true},
+		{"live", claimed(now.Add(time.Hour), now.Add(time.Hour)), true},
+		{"lease-expired", claimed(now.Add(-time.Minute), now.Add(time.Hour)), false},
+		{"deadline-passed", claimed(now.Add(time.Hour), now.Add(-time.Minute)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &Dispatcher{Store: projectingOrders{Store: store.NewMemory(), orders: []core.WorkOrder{tc.order}}}
 			if _, got, err := d.activeWorkOrder(ctx, "t", core.StageImplement, "merge-conflict"); err != nil || got != tc.conflictLive {
 				t.Fatalf("merge-conflict active=%v want %v err=%v", got, tc.conflictLive, err)
-			}
-			if _, got, err := d.activeWorkOrder(ctx, "t", core.StageImplement, ""); err != nil || got != tc.stageHoldLive {
-				t.Fatalf("stage hold active=%v want %v err=%v", got, tc.stageHoldLive, err)
 			}
 		})
 	}
