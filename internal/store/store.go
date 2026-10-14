@@ -244,9 +244,14 @@ type WorkOrderStore interface {
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
-	// ListTaskWorkOrdersSnapshot returns persisted order state without applying
-	// clock-driven lifecycle transitions. It is for observational responses
-	// whose reads must not mutate the work-order lifecycle.
+	// ListTaskWorkOrdersStored returns persisted work-order states without
+	// read-time clock projection. Dispatch stage holds use it so a dead claim
+	// remains a hold until the order clock persists its expiry
+	// (component-work-orders "Stages and order minting"; DEC-62).
+	ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error)
+	// ListTaskWorkOrdersSnapshot returns order state with elapsed clocks
+	// projected but never persisted. It is for observational responses whose
+	// reads must not mutate the work-order lifecycle.
 	ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error)
 	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)

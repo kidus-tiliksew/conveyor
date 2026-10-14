@@ -1903,23 +1903,6 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 	return result, nil
 }
 
-type storedWorkOrderReader interface {
-	ListTaskWorkOrdersStored(context.Context, string) ([]core.WorkOrder, error)
-}
-
-// ListTaskWorkOrdersStored returns persisted work-order states without applying
-// read-time clock projection. Dispatch uses this to preserve a historical
-// claimed hold until the order clock commits its expiry (component-work-orders
-// "Stages and order minting"; DEC-62).
-func ListTaskWorkOrdersStored(ctx context.Context, backend Store, taskID string) ([]core.WorkOrder, error) {
-	if reader, ok := backend.(storedWorkOrderReader); ok {
-		return reader.ListTaskWorkOrdersStored(ctx, taskID)
-	}
-	// Test doubles that override ListTaskWorkOrders already provide their
-	// stored fixture rows; retain that fallback without widening Store.
-	return backend.ListTaskWorkOrders(ctx, taskID)
-}
-
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
 // observational responses. It performs no store writes; the queue order clock
 // persists the same canonical commands asynchronously.

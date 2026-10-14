@@ -201,6 +201,16 @@ func newConcurrentSpecDispatchStore(st store.Store) *concurrentSpecDispatchStore
 }
 
 func (st *concurrentSpecDispatchStore) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	return st.raceRead(func() ([]core.WorkOrder, error) { return st.Store.ListTaskWorkOrders(ctx, taskID) })
+}
+
+// ListTaskWorkOrdersStored routes the dispatcher's stage-hold read through the
+// same two-arrival barrier so both dispatches snapshot before either creates.
+func (st *concurrentSpecDispatchStore) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	return st.raceRead(func() ([]core.WorkOrder, error) { return st.Store.ListTaskWorkOrdersStored(ctx, taskID) })
+}
+
+func (st *concurrentSpecDispatchStore) raceRead(read func() ([]core.WorkOrder, error)) ([]core.WorkOrder, error) {
 	st.mu.Lock()
 	st.arrivals++
 	arrival := st.arrivals
@@ -220,7 +230,7 @@ func (st *concurrentSpecDispatchStore) ListTaskWorkOrders(ctx context.Context, t
 		}
 	}
 
-	orders, err := st.Store.ListTaskWorkOrders(ctx, taskID)
+	orders, err := read()
 	st.mu.Lock()
 	concurrent := st.raceObserved
 	if concurrent {
@@ -302,8 +312,11 @@ func TestConcurrentSpecDispatchCreatesOneWorkOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.mu.Lock()
-	createCalls := st.createCalls
+	createCalls, arrivals, raced := st.createCalls, st.arrivals, st.raceObserved
 	st.mu.Unlock()
+	if arrivals != 2 || !raced {
+		t.Fatalf("dispatch order reads arrivals=%d raceObserved=%v, want both dispatches through the barrier", arrivals, raced)
+	}
 	if createCalls != 1 || len(orders) != 1 || orders[0].Stage != core.StageSpec {
 		t.Fatalf("create calls=%d orders=%+v, want one spec work order", createCalls, orders)
 	}
