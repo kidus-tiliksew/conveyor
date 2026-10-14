@@ -57,4 +57,6 @@ type DocumentationGateEvidence struct {
 	AgentAuthoredBody string          `json:"agent_authored_body"`
 	NoneStatement     string          `json:"none_statement"`
 	NoneReason        string          `json:"none_reason"`
+	Status            string          `json:"status,omitempty"`
+	RefusalReason     string          `json:"refusal_reason,omitempty"`
 }

@@ -66,6 +66,8 @@ func (d *Dispatcher) observedMergeExpectedHead(ctx context.Context, task core.Ta
 		}
 		return head, head != ""
 	case core.TaskAwaiting:
+		// Defensive: an awaiting merge gate is not approval for a changed head.
+		// Imported or concurrently observed stale state must finish refresh first.
 		if task.GateKind != core.GateKindMergeApproval || task.ApprovalStale {
 			return "", false
 		}
@@ -217,29 +219,59 @@ func (d *Dispatcher) refreshDocumentationEvidence(ctx context.Context, cfg *conf
 		return nil, nil
 	}
 	if d.DiscoverDocumentationPolicy == nil {
-		return nil, fmt.Errorf("documentation refresh policy reader is unavailable")
+		return nil, nil
 	}
 	declaration := d.DiscoverDocumentationPolicy(ctx, repo.GitHub, observed.BaseSHA)
+	evidence := core.DocumentationGateEvidence{
+		TaskID: task.ID, HeadSHA: observed.HeadSHA, BaseSHA: observed.BaseSHA,
+		PolicyJSON: json.RawMessage("null"), ChangedPaths: []string{},
+		MatchedPaths: []string{}, AffectedDocuments: []string{},
+	}
+	failed := func(status string, err error) (*core.DocumentationGateEvidence, error) {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		evidence.Status, evidence.RefusalReason = status, err.Error()
+		return &evidence, nil
+	}
 	switch declaration.State {
 	case "", "absent", "unknown":
 		return nil, ctx.Err()
 	case "present":
 		if declaration.Policy == nil || declaration.Revision != observed.BaseSHA {
-			return nil, fmt.Errorf("documentation refresh declaration revision mismatch")
+			return failed("unavailable", fmt.Errorf("documentation refresh declaration revision mismatch"))
 		}
+	case "malformed":
+		return failed("refused", fmt.Errorf("documentation refresh declaration malformed at base %s", observed.BaseSHA))
 	default:
-		return nil, fmt.Errorf("documentation refresh declaration %s at base %s", declaration.State, observed.BaseSHA)
+		return failed("unavailable", fmt.Errorf("documentation refresh declaration %s at base %s", declaration.State, observed.BaseSHA))
 	}
-	if d.SubmissionPR == nil {
-		return nil, fmt.Errorf("documentation refresh pull request reader is unavailable")
-	}
-	target, err := d.SubmissionPR(ctx, repo.GitHub, task.Branch)
+	policyJSON, err := json.Marshal(declaration.Policy)
 	if err != nil {
-		return nil, fmt.Errorf("read documentation refresh pull request: %w", err)
+		return failed("unavailable", err)
+	}
+	evidence.PolicyJSON = policyJSON
+	if d.SubmissionPR == nil {
+		return failed("unavailable", fmt.Errorf("documentation refresh pull request reader is unavailable"))
+	}
+	var target github.SubmissionPullRequest
+	for attempt := range 3 {
+		target, err = d.SubmissionPR(ctx, repo.GitHub, task.Branch)
+		if err == nil || !github.IsTransientReadError(err) || attempt == 2 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
+	if err != nil {
+		return failed("unavailable", fmt.Errorf("read documentation refresh pull request: %w", err))
 	}
 	if target.Number != observed.Number || target.Head.SHA != observed.HeadSHA ||
 		target.Head.Ref != task.Branch || target.Base.Ref != task.BaseBranch || target.Base.SHA != observed.BaseSHA {
-		return nil, fmt.Errorf("documentation refresh pull request changed before admission")
+		return failed("unavailable", fmt.Errorf("documentation refresh pull request changed before admission"))
 	}
 	comparison := task
 	comparison.ReviewedHeadSHA, comparison.BaseBranch = observed.HeadSHA, observed.BaseSHA
@@ -249,19 +281,13 @@ func (d *Dispatcher) refreshDocumentationEvidence(ctx context.Context, cfg *conf
 	}
 	paths, err := changedPaths(ctx, cfg, comparison)
 	if err != nil {
-		return nil, fmt.Errorf("resolve documentation refresh changed paths: %w", err)
+		return failed("unavailable", fmt.Errorf("resolve documentation refresh changed paths: %w", err))
 	}
-	policyJSON, err := json.Marshal(declaration.Policy)
+	evidence.ChangedPaths = paths
+	evidence.AgentAuthoredBody = github.AgentAuthoredPullRequestBody(target.Body)
+	evidence, err = store.NormalizeDocumentationGateEvidence(ctx, evidence)
 	if err != nil {
-		return nil, err
-	}
-	evidence, err := store.NormalizeDocumentationGateEvidence(ctx, core.DocumentationGateEvidence{
-		TaskID: task.ID, HeadSHA: observed.HeadSHA, BaseSHA: observed.BaseSHA,
-		PolicyJSON: policyJSON, ChangedPaths: paths,
-		AgentAuthoredBody: github.AgentAuthoredPullRequestBody(target.Body),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("documentation refresh refused before side effects: %w", err)
+		return failed("refused", fmt.Errorf("documentation refresh refused: %w", err))
 	}
 	return &evidence, nil
 }
@@ -297,6 +323,9 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, obs
 		return err
 	}
 	if evidence != nil {
+		if evidence.Status != "" && scope == config.RefreshReviewNone {
+			scope = config.RefreshReviewDelta
+		}
 		if err := d.Store.RecordDocumentationGateEvidence(ctx, *evidence); err != nil {
 			return err
 		}
@@ -1050,6 +1079,9 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 	}
 	reconciled := 0
 	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return reconciled, err
+		}
 		if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
 			continue
 		}
@@ -1077,10 +1109,14 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		if task.MergeApproval || task.State == core.TaskMerged || task.State == core.TaskClosed || task.State == core.TaskParked || task.State == core.TaskAwaiting {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return reconciled, err
+		}
 		if task.State != core.TaskApproved {
 			recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
 			if evidenceErr != nil {
-				return reconciled, evidenceErr
+				log.Printf("[task %s] merge readiness: %v", task.ID, evidenceErr)
+				continue
 			}
 			if !recoverable {
 				continue
@@ -1093,17 +1129,20 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 			}
 			after, getErr := d.Store.GetTask(ctx, task.ID)
 			if getErr != nil {
-				return reconciled, getErr
+				log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
+				continue
 			}
 			if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
 				reconciled++
 				continue
 			}
-			return reconciled, err
+			log.Printf("[task %s] merge readiness: %v", task.ID, err)
+			continue
 		}
 		after, getErr := d.Store.GetTask(ctx, task.ID)
 		if getErr != nil {
-			return reconciled, getErr
+			log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
+			continue
 		}
 		if before != after.State || after.State == core.TaskMerged {
 			reconciled++

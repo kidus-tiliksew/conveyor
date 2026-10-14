@@ -15,7 +15,7 @@ func (s *Store) RecordDocumentationGateEvidence(ctx context.Context, e core.Docu
 	if _, err := store.RequireActor(ctx); err != nil {
 		return err
 	}
-	normalized, err := store.NormalizeDocumentationGateEvidence(ctx, e)
+	normalized, err := store.NormalizeRecordedDocumentationGateEvidence(ctx, e)
 	if err != nil {
 		return err
 	}

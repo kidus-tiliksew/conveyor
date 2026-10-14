@@ -329,6 +329,27 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 	if !ok || repo.GitHub == "" {
 		return nil, false, nil
 	}
+	// Establish opt-in before reading the PR or resolving execution credentials.
+	base := task.BaseBranch
+	if s.DiscoverDocumentationPolicy == nil && len(base) != 40 {
+		client := s.GitHubApps
+		if client == nil {
+			client = github.DefaultAppClient
+		}
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		resolved, state := client.ResolveBranchHead(ctx, s.WorkspaceGitHubApps, workspace, repo.GitHub, base)
+		if state != "present" {
+			return nil, true, ctx.Err()
+		}
+		base = resolved
+	}
+	declaration := s.discoverDocumentationPolicy(ctx, repo.GitHub, base)
+	if declaration.State != "present" {
+		var target github.SubmissionPullRequest
+		target.Base.SHA = base
+		evidence, err := documentationSubmissionEvidence(ctx, task.ID, head, target, nil, declaration)
+		return evidence, true, err
+	}
 	forgeCtx := ctx
 	lookup := s.SubmissionPR
 	if lookup == nil {
@@ -339,11 +360,25 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 		}
 		lookup = github.SubmissionPRForBranch
 	}
-	target, err := lookup(forgeCtx, repo.GitHub, task.Branch)
+	var target github.SubmissionPullRequest
+	var err error
+	for attempt := range 3 {
+		target, err = lookup(forgeCtx, repo.GitHub, task.Branch)
+		if err == nil || !github.IsTransientReadError(err) || attempt == 2 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, true, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
 	if err != nil {
 		return nil, true, fmt.Errorf("read conflict-fix pull request: %w", err)
 	}
-	declaration := s.discoverDocumentationPolicy(ctx, repo.GitHub, target.Base.SHA)
+	if target.Base.SHA != declaration.Revision {
+		declaration = s.discoverDocumentationPolicy(ctx, repo.GitHub, target.Base.SHA)
+	}
 	if declaration.State != "present" {
 		evidence, err := documentationSubmissionEvidence(ctx, task.ID, head, target, nil, declaration)
 		return evidence, true, err

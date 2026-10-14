@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
@@ -145,4 +146,63 @@ func runDocumentationGate(t *testing.T, x Fixture) {
 	if completed != 2 {
 		t.Fatalf("no-config completed seats=%d", completed)
 	}
+	t.Run("atomic-submission-evidence", func(t *testing.T) {
+		for _, scenario := range []string{"write", "replace", "rollback", "remove"} {
+			t.Run(scenario, func(t *testing.T) {
+				order := newAggregateOrder(t, x)
+				claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("usr-submit"), OwnerUserID: "usr-submit", SessionID: "submitter", ClientToken: "fixture", Lease: time.Hour, ExecutionTimeout: time.Hour}
+				order, err := ClaimWorkOrder(ctx, st, order.ID, claim)
+				requireOK(t, err)
+				prior := evidence
+				prior.TaskID, prior.HeadSHA, prior.AgentAuthoredBody = order.TaskID, head, "docs: none PRIOR-REASON"
+				prior.ChangedPaths = []string{"internal/server.go"}
+				if scenario != "write" {
+					requireOK(t, st.RecordDocumentationGateEvidence(ctx, prior))
+				}
+				next := prior
+				next.AgentAuthoredBody = "docs: none CURRENT-REASON"
+				var admitted *core.DocumentationGateEvidence = &next
+				if scenario == "remove" {
+					admitted = nil
+				}
+				if scenario == "rollback" {
+					requireOK(t, st.UpdateJob(ctx, core.Job{ID: order.JobID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobFailed, EndedAt: time.Now().UTC()}))
+				}
+				beforeOrder, beforeJobs, beforeEvents, beforeTask := submissionSnapshot(t, x, order)
+				order.State, order.HeadSHA = core.WorkOrderSubmitted, head
+				_, submitErr := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdSubmitForReview, func(lease taskops.TaskLease) (core.Job, error) {
+					return st.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC(), DocumentationChecked: true, DocumentationEvidence: admitted})
+				})
+				got, gateErr := st.GetDocumentationGateEvidence(ctx, order.TaskID, head)
+				if scenario == "rollback" {
+					if submitErr == nil {
+						t.Fatal("non-running job admitted documentation submission")
+					}
+					afterOrder, afterJobs, afterEvents, afterTask := submissionSnapshot(t, x, order)
+					if !reflect.DeepEqual(beforeOrder, afterOrder) || !reflect.DeepEqual(beforeJobs, afterJobs) || beforeEvents != afterEvents || !reflect.DeepEqual(beforeTask, afterTask) {
+						t.Fatal("failed documentation submission changed order, jobs, task, or events")
+					}
+					if gateErr != nil || got.NoneReason != "PRIOR-REASON" {
+						t.Fatalf("rollback changed prior evidence: %+v %v", got, gateErr)
+					}
+					return
+				}
+				requireOK(t, submitErr)
+				if scenario == "remove" {
+					if !errors.Is(gateErr, store.ErrNotFound) {
+						t.Fatalf("absent/unknown submission retained same-head evidence: %+v %v", got, gateErr)
+					}
+					return
+				}
+				requireOK(t, gateErr)
+				if got.NoneReason != "CURRENT-REASON" || got.Status != "" {
+					t.Fatalf("submission did not atomically replace admitted evidence: %+v", got)
+				}
+				completedOrder, jobs, _, completedTask := submissionSnapshot(t, x, order)
+				if completedOrder.State != core.WorkOrderSubmitted || jobs[order.JobID] != core.JobDone || completedTask.ReviewedHeadSHA != head {
+					t.Fatalf("evidence admission did not complete exact order/head: %+v %v %+v", completedOrder, jobs, completedTask)
+				}
+			})
+		}
+	})
 }

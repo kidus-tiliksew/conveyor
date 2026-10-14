@@ -207,62 +207,208 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				calls := 0
 				f.service.DiscoverDocumentationPolicy = func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
-					calls++
 					return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "present", Policy: policy}
 				}
 				f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
 				before := f.eventCount(t)
 				if result, err := f.submit("fixer", head); err == nil || !strings.Contains(err.Error(), "docs/api.md") {
-					t.Fatalf("conflict fix bypassed admission: result=%v err=%v calls=%d", result, err, calls)
-				}
-				if calls != 1 {
-					t.Fatalf("policy discovery calls=%d", calls)
+					t.Fatalf("conflict fix bypassed admission: result=%v err=%v", result, err)
 				}
 				if f.eventCount(t) != before || f.jobState(t, f.order.JobID) != core.JobRunning {
 					t.Fatal("refused conflict fix had submission side effects")
 				}
 			})
-			t.Run("dispatched-conflict-fix-lookup-failure-has-no-effects", func(t *testing.T) {
-				for _, failure := range []string{"pr", "forge"} {
+			t.Run("dispatched-conflict-fix-legacy-off-removes-same-head-evidence", func(t *testing.T) {
+				for _, state := range []string{"absent", "unknown"} {
+					for _, failure := range []string{"pr", "forge"} {
+						t.Run(state+"/"+failure, func(t *testing.T) {
+							st := documentationCorrectionStore(t, backend)
+							f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+							head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+							f.prHead = func(int) string { return head }
+							f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
+							prior := core.DocumentationGateEvidence{TaskID: f.task.ID, HeadSHA: head, BaseSHA: base,
+								PolicyJSON:   []byte(`{"schema_version":1,"docs":[{"path":"docs/api.md","governs":["internal/**"]}],"rule":{"none_statement":"docs: none","reason_required":true}}`),
+								ChangedPaths: []string{"internal/server.go"}, AgentAuthoredBody: "docs: none STORED-REASON"}
+							if err := st.RecordDocumentationGateEvidence(f.ctx, prior); err != nil {
+								t.Fatal(err)
+							}
+							f.service.DiscoverDocumentationPolicy = func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+								return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: state}
+							}
+							if failure == "pr" {
+								f.service.SubmissionPR = func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
+									t.Fatal("legacy-off submission read the PR before establishing opt-in")
+									return githubtrigger.SubmissionPullRequest{}, errors.New("transient read failed")
+								}
+							} else {
+								f.service.SubmissionPR = nil
+							}
+							if _, err := f.submit("fixer", head); err != nil {
+								t.Fatal(err)
+							}
+							order, err := st.GetWorkOrder(f.ctx, f.order.ID)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if order.State != core.WorkOrderSubmitted || f.jobState(t, f.order.JobID) != core.JobDone {
+								t.Fatalf("legacy-off conflict fix did not complete: %+v", order)
+							}
+							if got, err := st.GetDocumentationGateEvidence(f.ctx, f.task.ID, head); !errors.Is(err, store.ErrNotFound) {
+								t.Fatalf("legacy-off submission retained same-head evidence: %+v %v", got, err)
+							}
+						})
+					}
+				}
+			})
+			t.Run("known-policy-retries-transient-conflict-pr-read", func(t *testing.T) {
+				st := documentationCorrectionStore(t, backend)
+				f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+				head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+				f.prHead = func(int) string { return head }
+				f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
+				policy, err := docsconfig.Parse([]byte("schema_version: 1\ndocs:\n  - path: docs/api.md\n    governs: ['internal/**']\n"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				known, calls := false, 0
+				f.service.DiscoverDocumentationPolicy = func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+					known = true
+					return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "present", Policy: policy}
+				}
+				f.service.SubmissionPR = func(_ context.Context, _, branch string) (githubtrigger.SubmissionPullRequest, error) {
+					if !known {
+						t.Fatal("PR read preceded documentation discovery")
+					}
+					calls++
+					if calls < 3 {
+						return githubtrigger.SubmissionPullRequest{}, githubtrigger.StatusError(503, errors.New("server unavailable"))
+					}
+					p := githubtrigger.SubmissionPullRequest{Number: 1098, Body: "docs: none conflict-only correction"}
+					p.Head.Ref, p.Head.SHA, p.Base.Ref, p.Base.SHA = branch, head, "main", base
+					return p, nil
+				}
+				f.service.SubmissionChangedPaths = func(context.Context, *config.Config, core.Task) ([]string, error) {
+					return []string{"internal/server.go"}, nil
+				}
+				if _, err := f.submit("fixer", head); err != nil {
+					t.Fatal(err)
+				}
+				if calls != 3 {
+					t.Fatalf("transient PR reads=%d", calls)
+				}
+				gate, err := st.GetDocumentationGateEvidence(f.ctx, f.task.ID, head)
+				if err != nil || gate.Status != "" || gate.NoneReason != "conflict-only correction" {
+					t.Fatalf("retried admission=%+v %v", gate, err)
+				}
+			})
+			t.Run("failed-refresh-reviews-and-does-not-block-later-merge", func(t *testing.T) {
+				for _, failure := range []string{"operator-only-none", "known-policy-unavailable"} {
 					t.Run(failure, func(t *testing.T) {
 						st := documentationCorrectionStore(t, backend)
-						f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
-						head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
-						f.prHead = func(int) string { return head }
-						f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
-						evidence := core.DocumentationGateEvidence{
-							TaskID: f.task.ID, HeadSHA: head, BaseSHA: base,
-							PolicyJSON:   []byte(`{"schema_version":1,"docs":[{"path":"docs/api.md","governs":["internal/**"]}],"rule":{"none_statement":"docs: none","reason_required":true}}`),
-							ChangedPaths: []string{"internal/server.go"}, AgentAuthoredBody: "docs: none STORED-REASON",
-						}
-						if err := st.RecordDocumentationGateEvidence(f.ctx, evidence); err != nil {
+						f := documentationSubmission(t, "present", "docs: none ORIGINAL-REASON", []string{"internal/server.go"}, func(store.Store) store.Store { return st })
+						oldHead, newHead, base := strings.Repeat("a", 40), strings.Repeat("c", 40), strings.Repeat("b", 40)
+						if _, err := f.service.SubmitForReview(f.ctx, f.job.ID, "implementer", oldHead); err != nil {
 							t.Fatal(err)
 						}
-						lookupErr := errors.New("transient current PR read failed")
-						if failure == "pr" {
-							f.service.SubmissionPR = func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
-								return githubtrigger.SubmissionPullRequest{}, lookupErr
-							}
-						} else {
-							f.service.SubmissionPR = nil
+						assessment := &core.DocumentationAssessment{Applicable: true, Summary: "Original behavior documented", UpdatedPaths: []string{}, Unresolved: []string{}, Conflicts: []string{}}
+						approveDocumentationSeats(t, f, assessment)
+						if _, err := taskops.New(st).Perform(f.ctx, f.task.ID, taskops.Command{Kind: core.TaskInterventionApproveReview}); err != nil {
+							t.Fatal(err)
 						}
-						before := f.eventCount(t)
-						_, err := f.submit("fixer", head)
-						if err == nil || failure == "pr" && !errors.Is(err, lookupErr) {
-							t.Fatalf("failed %s lookup completed refresh or lost the lookup error: %v", failure, err)
-						}
-						order, err := st.GetWorkOrder(f.ctx, f.order.ID)
+						current, err := st.GetTask(f.ctx, f.task.ID)
 						if err != nil {
 							t.Fatal(err)
 						}
-						if order.State != core.WorkOrderClaimed || f.jobState(t, f.order.JobID) != core.JobRunning || f.eventCount(t) != before {
-							t.Fatalf("failed PR read had submission effects: order=%+v", order)
+						clean := core.Task{ID: "zz-clean-later", Workspace: current.Workspace, Repo: current.Repo, Title: "Clean later task", Branch: "conveyor/zz-clean-later", BaseBranch: "main", State: core.TaskApproved, ApprovedHeadSHA: oldHead, ReviewedHeadSHA: oldHead, CreatedAt: time.Now()}
+						if err := st.CreateTask(f.ctx, clean); err != nil {
+							t.Fatal(err)
 						}
-						kept, err := st.GetDocumentationGateEvidence(f.ctx, f.task.ID, head)
-						if err != nil || kept.AgentAuthoredBody != "docs: none STORED-REASON" {
-							t.Fatalf("failed PR read changed evidence: %+v %v", kept, err)
+						d := f.service.Dispatcher
+						d.DiscoverDocumentationPolicy = f.service.DiscoverDocumentationPolicy
+						if failure == "known-policy-unavailable" {
+							d.DiscoverDocumentationPolicy = func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+								return githubtrigger.DocumentationPolicyDiscovery{State: "unavailable", Revision: revision}
+							}
+						}
+						d.SubmissionPR = func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
+							p := githubtrigger.SubmissionPullRequest{Number: 54, Body: "<!-- conveyor:task-link -->\ndocs: none OPERATOR-ONLY-REASON\n<!-- conveyor:lifecycle-end -->"}
+							p.Head.Ref, p.Head.SHA, p.Base.Ref, p.Base.SHA = current.Branch, newHead, "main", base
+							return p, nil
+						}
+						d.ReviewChangedPaths = func(context.Context, *config.Config, core.Task) ([]string, error) {
+							return []string{"internal/human-push.go"}, nil
+						}
+						merged := false
+						d.RequestMerge = func(_ context.Context, _ string, number int) error {
+							if number != 55 {
+								t.Fatalf("merge requested for failed documentation task: %d", number)
+							}
+							merged = true
+							return nil
+						}
+						d.ViewPullRequest = func(_ context.Context, _, branch string) (githubtrigger.PullRequest, error) {
+							if branch == clean.Branch {
+								return githubtrigger.PullRequest{Number: 55, State: "open", HeadSHA: oldHead, BaseSHA: base, Mergeable: "MERGEABLE", Merged: merged}, nil
+							}
+							return githubtrigger.PullRequest{Number: 54, State: "open", HeadSHA: newHead, BaseSHA: base, Mergeable: "MERGEABLE"}, nil
+						}
+						if _, err := d.ReconcileMergeReadiness(f.ctx); err != nil {
+							t.Fatal(err)
+						}
+						failed, err := st.GetTask(f.ctx, current.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						later, err := st.GetTask(f.ctx, clean.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !failed.ApprovalStale || failed.ReviewedHeadSHA != newHead || !merged || later.State != core.TaskMerged {
+							t.Fatalf("sweep did not isolate failed refresh: first=%+v later=%+v merged=%t", failed, later, merged)
+						}
+						gate, err := st.GetDocumentationGateEvidence(f.ctx, current.ID, newHead)
+						if err != nil || gate.Status == "" || gate.RefusalReason == "" || strings.Contains(gate.AgentAuthoredBody, "OPERATOR-ONLY-REASON") {
+							t.Fatalf("failed current-head gate=%+v %v", gate, err)
+						}
+						orders, err := st.ListTaskWorkOrders(f.ctx, current.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						found := false
+						for _, order := range orders {
+							if order.Stage != core.StageReview || order.HeadSHA != newHead || order.State != core.WorkOrderQueued {
+								continue
+							}
+							found = true
+							reviewCtx, err := f.service.contextForOrder(f.ctx, order)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if reviewCtx.DocumentationGateEvidence == nil || reviewCtx.DocumentationGateEvidence.Status != gate.Status || !strings.Contains(reviewCtx.RolePrompt, "approve is forbidden") || !strings.Contains(reviewCtx.RolePrompt, newHead) {
+								t.Fatalf("failed gate not surfaced in actual review context: %+v", reviewCtx.DocumentationGateEvidence)
+							}
+							session := "failed-review-" + order.ID
+							if _, err := f.service.Claim(f.ctx, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, ClaimantID: "reviewer", OwnerUserID: "usr-reviewer", Lease: time.Minute}); err != nil {
+								t.Fatal(err)
+							}
+							no := false
+							result := pipeline.Review{Verdict: "approve", ReasonCode: "verified", Summary: "Known-policy gate failed", RequirementCitations: &core.RequirementCitationAssessment{Applicable: false}, DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: false, Summary: "no plan"}, GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &no, DecisionCitable: &no}}
+							if _, err := f.service.SubmitVerdict(f.ctx, order.ID, session, result); !errors.Is(err, store.ErrDocumentationUnresolved) {
+								t.Fatalf("failed gate accepted approve: %v", err)
+							}
+							result.Verdict = "changes_requested"
+							result.Feedback = "Resolve the known repository documentation gate before approval"
+							if order.ReviewSeat == 2 {
+								result.DocumentationAssessment = &core.DocumentationAssessment{Applicable: true, Summary: "Policy unavailable; documentation coverage cannot be determined", UpdatedPaths: []string{"unobserved/document.md"}, Unresolved: []string{}, Conflicts: []string{}}
+							}
+							if _, err := f.service.SubmitVerdict(f.ctx, order.ID, session, result); err != nil {
+								t.Fatalf("failed gate rejected changes_requested without unavailable paths: %v", err)
+							}
+						}
+						if !found {
+							t.Fatal("failed known-policy refresh did not dispatch actual-head review")
 						}
 					})
 				}
@@ -280,7 +426,12 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 					t.Fatal(err)
 				}
 				f.service.Dispatcher.DiscoverDocumentationPolicy = f.service.DiscoverDocumentationPolicy
+				refreshReads := 0
 				f.service.Dispatcher.SubmissionPR = func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
+					refreshReads++
+					if refreshReads < 3 {
+						return githubtrigger.SubmissionPullRequest{}, githubtrigger.StatusError(503, errors.New("transient refreshed PR read"))
+					}
 					p := githubtrigger.SubmissionPullRequest{Number: 54, URL: "https://github.com/acme/app/pull/54", Body: "docs: none NEW-HEAD-REASON"}
 					p.Head.Ref, p.Head.SHA, p.Base.Ref, p.Base.SHA = f.task.Branch, newHead, "main", strings.Repeat("b", 40)
 					return p, nil
@@ -298,6 +449,9 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 				_, err = f.service.Dispatcher.ReadMergeReadiness(f.ctx, task)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if refreshReads != 3 {
+					t.Fatalf("transient refresh reads=%d", refreshReads)
 				}
 				orders, err := st.ListTaskWorkOrders(f.ctx, f.task.ID)
 				if err != nil {

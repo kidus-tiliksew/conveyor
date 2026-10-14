@@ -31,6 +31,9 @@ func NormalizeDocumentationGateEvidence(ctx context.Context, e core.Documentatio
 			return e, fmt.Errorf("documentation evidence requires full base and head SHA")
 		}
 	}
+	if e.Status != "" {
+		return e, fmt.Errorf("%w: %s", ErrDocumentationGateUnresolved, e.RefusalReason)
+	}
 	var c docsconfig.Config
 	d := json.NewDecoder(strings.NewReader(string(e.PolicyJSON)))
 	d.DisallowUnknownFields()
@@ -71,11 +74,58 @@ func normalizedDocumentationPaths(items []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// NormalizeRecordedDocumentationGateEvidence also admits failed refresh observations.
+// Such observations inform review; they never admit an implementation submission.
+func NormalizeRecordedDocumentationGateEvidence(ctx context.Context, e core.DocumentationGateEvidence) (core.DocumentationGateEvidence, error) {
+	if e.Status == "" {
+		return NormalizeDocumentationGateEvidence(ctx, e)
+	}
+	if err := ctx.Err(); err != nil {
+		return e, err
+	}
+	if e.Status != "refused" && e.Status != "unavailable" || strings.TrimSpace(e.RefusalReason) == "" {
+		return e, fmt.Errorf("documentation refresh requires a refused/unavailable status and reason")
+	}
+	if strings.TrimSpace(e.TaskID) == "" {
+		return e, fmt.Errorf("documentation evidence task_id is required")
+	}
+	for _, sha := range []string{e.HeadSHA, e.BaseSHA} {
+		b, err := hex.DecodeString(sha)
+		if err != nil || len(b) != 20 {
+			return e, fmt.Errorf("documentation evidence requires full base and head SHA")
+		}
+	}
+	observed := e
+	observed.Status, observed.RefusalReason = "", ""
+	if e.Status == "refused" && json.Valid(e.PolicyJSON) && string(e.PolicyJSON) != "null" {
+		normalized, err := NormalizeDocumentationGateEvidence(ctx, observed)
+		if err == nil {
+			return e, fmt.Errorf("documentation refresh marked refused without an admission failure")
+		}
+		e = normalized
+		e.Status, e.RefusalReason = "refused", err.Error()
+	}
+	if !json.Valid(e.PolicyJSON) {
+		e.PolicyJSON = json.RawMessage("null")
+	}
+	e.ChangedPaths = normalizedDocumentationPaths(e.ChangedPaths)
+	e.MatchedPaths = normalizedDocumentationPaths(e.MatchedPaths)
+	e.AffectedDocuments = normalizedDocumentationPaths(e.AffectedDocuments)
+	return e, nil
+}
+
 func ValidateDocumentationAssessment(e *core.DocumentationGateEvidence, verdict string, a *core.DocumentationAssessment) error {
 	if e == nil {
 		if a != nil {
 			return fmt.Errorf("review documentation_assessment supplied without documentation evidence")
 		}
+		return nil
+	}
+	if e.Status != "" && verdict == "approve" {
+		return fmt.Errorf("%w: %s (%s); submit changes_requested", ErrDocumentationUnresolved, e.Status, e.RefusalReason)
+	}
+	if e.Status != "" && a == nil {
 		return nil
 	}
 	if a == nil {
@@ -103,7 +153,7 @@ func ValidateDocumentationAssessment(e *core.DocumentationGateEvidence, verdict 
 			seen[key] = list.name
 		}
 	}
-	if !slices.Equal(normalizedDocumentationPaths(a.UpdatedPaths), normalizedDocumentationPaths(e.MatchedPaths)) {
+	if e.Status == "" && !slices.Equal(normalizedDocumentationPaths(a.UpdatedPaths), normalizedDocumentationPaths(e.MatchedPaths)) {
 		return fmt.Errorf("review documentation_assessment updated_paths do not match the recorded documentation gate evidence")
 	}
 	if verdict == "approve" && (len(a.Unresolved) > 0 || len(a.Conflicts) > 0) {
@@ -122,7 +172,7 @@ func (m *memory) RecordDocumentationGateEvidence(ctx context.Context, e core.Doc
 	if _, err := RequireActor(ctx); err != nil {
 		return err
 	}
-	normalized, err := NormalizeDocumentationGateEvidence(ctx, e)
+	normalized, err := NormalizeRecordedDocumentationGateEvidence(ctx, e)
 	if err != nil {
 		return err
 	}
