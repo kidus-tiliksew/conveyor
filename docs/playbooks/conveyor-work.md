@@ -525,23 +525,22 @@ and offer to record the decision (req-agent-skills AC-3.7):
    - System Design proposal: `<origin>/system-design?document=<id>`;
    - decision proposal: `<origin>/pending-proposals?task=<task-id>`.
 4. The replies the session accepts, from the table below, plus `wait`,
-   offered as **Structured choices** describes.
+   offered as **Text replies** describes.
 
-**Structured choices.** When the session's harness lists a structured question
-tool for the current turn, offer the replies through it instead of as text:
-`AskUserQuestion` in Claude Code, `request_user_input` in Codex, or `question`
-in OpenCode. Use the tool only when it is listed for the current turn; when no
-such tool is listed, list the replies as text. Never write the replies as a
-text multiple-choice question while the tool is available (req-agent-skills
-AC-3.7).
+**Text replies.** List the replies as message text. Never offer them through
+a question tool that blocks the turn until the operator answers in this chat:
+not `AskUserQuestion` in Claude Code, not `request_user_input` in Codex, and
+not `question` in OpenCode. The rule is the same for every harness, whether or
+not such a tool is available (req-agent-skills AC-3.7). A blocking question
+holds the turn, so the session cannot run `conveyor task wait` or observe a
+gate that resolves elsewhere, for example on the dashboard (req-agent-skills
+AC-3.11).
 
-- Put summary items 1–3 in the question text, including the dashboard link.
-  Give the question a short header that names the gate, such as `Plan gate` or
-  `Merge gate`.
-- Offer one option per reply that the table below allows for the gate, plus
-  `Wait`, within the tool's option limit:
+- Put summary items 1–3 before the replies, including the dashboard link.
+  Name the gate in the first line, such as `Plan gate` or `Merge gate`.
+- List each reply that the table below allows for the gate, plus `Wait`:
 
-  | Pending decision | Options |
+  | Pending decision | Replies |
   | --- | --- |
   | Plan approval | Approve · Request changes · Reject · Wait |
   | Merge approval | Approve and merge · Approve only · Request changes · Wait |
@@ -549,18 +548,20 @@ AC-3.7).
   | Plan-revision decision | Approve · Decline · Reject · Wait |
   | Proposal | Confirm · Dismiss · Wait |
 
-- Never preselect, rank, or mark an option as recommended. The decision
+- Never preselect, rank, or mark a reply as recommended. The decision
   belongs to the operator.
 - Request changes, decline, and reject carry the operator's own text. Take it
-  from the tool's free-text answer or notes. When the operator gave none, ask
-  for it in plain text; never write it for the operator.
-- A selected option is the operator's direct instruction in this
-  conversation, exactly like a typed reply. Record it as **Record on direct
-  instruction** describes, with the matching table row (req-agent-skills
-  AC-3.9). `Wait` records nothing and continues as **Wait otherwise**
-  describes.
-- The gate can resolve elsewhere while the question is open, for example on
-  the dashboard. Before recording a selection, read the task again, or
+  from the operator's typed reply. When the operator gave none, ask for it in
+  plain text; never write it for the operator.
+- A typed reply is the operator's direct instruction in this conversation.
+  Record it as **Record on direct instruction** describes, with the matching
+  table row (req-agent-skills AC-3.9). `Wait` records nothing and continues as
+  **Wait otherwise** describes.
+- After the offer, go straight into **Wait otherwise** without waiting for a
+  chat answer. A gate resolved on the dashboard ends the wait with exit 0 and
+  a re-read.
+- The gate can resolve elsewhere before the operator replies, for example on
+  the dashboard. Before recording a reply, read the task again, or
   `pending_gate` for the pending merge act. When the gate is no longer
   pending, or its kind or reviewed head changed, record nothing, report the
   new state, and offer the current gate when one is pending.
@@ -617,7 +618,7 @@ session's own. A planner, verifier, or reviewer that the session started never
 records one (req-agent-skills AC-3.10; DEC-45).
 
 **Wait otherwise.** When the conversation holds no answer, or the operator
-selected `Wait`, wait for the decision instead of stopping (req-agent-skills
+replied `Wait`, wait for the decision instead of stopping (req-agent-skills
 AC-3.11):
 
 ```sh
