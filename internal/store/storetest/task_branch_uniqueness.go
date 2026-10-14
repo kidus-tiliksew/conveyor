@@ -82,4 +82,38 @@ func runTaskBranchUniqueness(t *testing.T, x Fixture) {
 	if current.Branch != "feature/demo" {
 		t.Fatalf("persisted branch=%s", current.Branch)
 	}
+
+	// Open branches compare exact bytes, as the Postgres index
+	// tasks_open_repo_branch_idx does: a trailing space makes a distinct branch
+	// on create and attach, in either order (DEC-70).
+	branchTask := func(branch string) core.Task {
+		return core.Task{
+			ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", Title: "padded",
+			BaseBranch: "main", Branch: branch, State: core.TaskQueued, NextStage: core.StageImplement,
+		}
+	}
+	padded := "feature/padded-" + core.NewTaskID()
+	paddedOwner := branchTask(padded + " ")
+	requireOK(t, st.CreateTask(ctx, paddedOwner))
+	requireOK(t, st.CreateTask(ctx, branchTask(padded)))
+	unpadded := "feature/unpadded-" + core.NewTaskID()
+	requireOK(t, st.CreateTask(ctx, branchTask(unpadded)))
+	requireOK(t, st.CreateTask(ctx, branchTask(unpadded+" ")))
+	err = st.CreateTask(ctx, branchTask(padded+" "))
+	if !errors.Is(err, store.ErrTaskBranchConflict) || !strings.Contains(err.Error(), paddedOwner.ID) {
+		t.Fatalf("exact padded duplicate: %v", err)
+	}
+
+	occupied := "feature/occupied-" + core.NewTaskID()
+	requireOK(t, st.CreateTask(ctx, branchTask(occupied+" ")))
+	attacher := newAggregateTask(t, x)
+	attached, err := st.AttachTaskBranch(ctx, attacher.ID, occupied)
+	if err != nil {
+		t.Fatalf("attach beside a padded occupant: %v", err)
+	}
+	persisted, err := st.GetTask(ctx, attacher.ID)
+	requireOK(t, err)
+	if attached.Branch != occupied || persisted.Branch != occupied {
+		t.Fatalf("attached branch=%q persisted=%q, want %q", attached.Branch, persisted.Branch, occupied)
+	}
 }
