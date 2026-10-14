@@ -30,6 +30,23 @@ func RunReferenceDocumentConformance(t *testing.T, st store.Store, ctx context.C
 		core.ReferenceDocumentVersion{Filename: "duplicate.md", ContentType: "text/markdown", Content: "# Duplicate"}); err == nil {
 		t.Fatal("case-insensitive live-name duplicate was accepted")
 	}
+	// Live names compare as lower(name) without trimming or PAD SPACE, as the
+	// Postgres index reference_documents_live_name_idx does: a trailing space
+	// makes a distinct name, and case folding still applies to it (DEC-70).
+	padded, _, err := st.CreateReferenceDocument(ctx,
+		core.ReferenceDocument{ID: "ref-" + core.NewTaskID(), Name: document.Name + " "},
+		core.ReferenceDocumentVersion{Filename: "padded.md", ContentType: "text/markdown", Content: "# Padded"})
+	if err != nil {
+		t.Fatalf("trailing-space name distinct from a live name: %v", err)
+	}
+	if live, listErr := st.ListReferenceDocuments(ctx, false); listErr != nil || !containsReferenceDocument(live, document.ID) || !containsReferenceDocument(live, padded.ID) {
+		t.Fatalf("live documents with padded name=%+v err=%v", live, listErr)
+	}
+	if _, _, err = st.CreateReferenceDocument(ctx,
+		core.ReferenceDocument{ID: "ref-" + core.NewTaskID(), Name: strings.ToUpper(document.Name) + " "},
+		core.ReferenceDocumentVersion{Filename: "duplicate.md", ContentType: "text/markdown", Content: "# Duplicate"}); !errors.Is(err, store.ErrReferenceDocumentNameConflict) {
+		t.Fatalf("case-insensitive padded duplicate: %v", err)
+	}
 
 	results := make(chan struct {
 		version core.ReferenceDocumentVersion
