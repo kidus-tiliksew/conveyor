@@ -382,3 +382,88 @@ func TestResolveDriftDecodesGeneratedDesignDriftID(t *testing.T) {
 		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+// TestMonitorStatusOmitsUnsetTimestamps verifies that GET /v1/monitor omits the
+// last_successful_observation and backoff_until keys when the monitor has no
+// history, and includes them with correct values once history is recorded.
+//
+// This guards against encoding/json's omitempty silently serialising zero
+// time.Time values as "0001-01-01T00:00:00Z" — the monitor.Status struct now
+// uses omitzero (Go 1.24) so IsZero() is the omission predicate.
+func TestMonitorStatusOmitsUnsetTimestamps(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.Repos, server.BearerToken = "demo", []string{"conveyor"}, "secret"
+	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+	handler := server.Handler()
+
+	getStatus := func() map[string]json.RawMessage {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/monitor", nil)
+		authenticatedMemoryRead(server, request)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /v1/monitor status=%d body=%s", response.Code, response.Body.String())
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return raw
+	}
+
+	// With no monitor history, both timestamp keys must be absent from the JSON
+	// response (not "0001-01-01T00:00:00Z").
+	raw := getStatus()
+	if _, ok := raw["last_successful_observation"]; ok {
+		t.Errorf("last_successful_observation present in zero-history response; want key absent, got %s", raw["last_successful_observation"])
+	}
+	if _, ok := raw["backoff_until"]; ok {
+		t.Errorf("backoff_until present in zero-history response; want key absent, got %s", raw["backoff_until"])
+	}
+
+	// After recording a success, last_successful_observation must appear with
+	// the correct RFC 3339 value and backoff_until must still be absent.
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	successAt := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	if err := st.(monitor.Store).RecordMonitorSuccess(ctx, successAt); err != nil {
+		t.Fatal(err)
+	}
+	raw = getStatus()
+	if _, ok := raw["last_successful_observation"]; !ok {
+		t.Error("last_successful_observation missing after RecordMonitorSuccess")
+	} else {
+		var got string
+		if err := json.Unmarshal(raw["last_successful_observation"], &got); err != nil {
+			t.Fatalf("unmarshal last_successful_observation: %v", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, got)
+		if err != nil || !parsed.Equal(successAt) {
+			t.Errorf("last_successful_observation=%q want %s", got, successAt.Format(time.RFC3339))
+		}
+	}
+	if _, ok := raw["backoff_until"]; ok {
+		t.Errorf("backoff_until present after success; want key absent, got %s", raw["backoff_until"])
+	}
+
+	// After recording a failure with a real backoff time, backoff_until must
+	// appear with the expected value.
+	backoff := time.Date(2026, 10, 13, 9, 5, 0, 0, time.UTC)
+	if err := st.(monitor.Store).RecordMonitorFailure(ctx, "forge_status", "rate limited", backoff); err != nil {
+		t.Fatal(err)
+	}
+	raw = getStatus()
+	if _, ok := raw["backoff_until"]; !ok {
+		t.Error("backoff_until missing after RecordMonitorFailure")
+	} else {
+		var got string
+		if err := json.Unmarshal(raw["backoff_until"], &got); err != nil {
+			t.Fatalf("unmarshal backoff_until: %v", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, got)
+		if err != nil || !parsed.Equal(backoff) {
+			t.Errorf("backoff_until=%q want %s", got, backoff.Format(time.RFC3339))
+		}
+	}
+}

@@ -162,10 +162,10 @@ type Drift struct {
 type Status struct {
 	WorkspaceID        string              `json:"workspace_id"`
 	Enabled            bool                `json:"enabled"`
-	LastSuccessfulAt   time.Time           `json:"last_successful_observation,omitempty"`
+	LastSuccessfulAt   time.Time           `json:"last_successful_observation,omitzero"`
 	CurrentError       string              `json:"current_error,omitempty"`
 	ForgeErrorCategory string              `json:"forge_error_category,omitempty"`
-	BackoffUntil       time.Time           `json:"backoff_until,omitempty"`
+	BackoffUntil       time.Time           `json:"backoff_until,omitzero"`
 	Observations       []ObservationRecord `json:"observations"`
 	Drift              []Drift             `json:"drift"`
 	DriftCount         int                 `json:"drift_count"`

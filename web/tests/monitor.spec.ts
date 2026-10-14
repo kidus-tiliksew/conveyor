@@ -118,3 +118,78 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   await form.getByRole('button', { name: 'Resolve' }).click()
   await expect.poll(() => resolution).toEqual({ outcome: 'requirements_amended', requirement_id: 'req-confirmed' })
 })
+
+test('monitor page renders Never for zero timestamps and omits backoff line', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+  })
+  await page.route('**/v1/workspaces', (route) =>
+    route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),
+  )
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: { user: { id: 'usr_operator', role: 'operator' }, memberships: [] } }),
+  )
+  await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
+  await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
+
+  // Simulate a server (or a workspace with no history) that still sends the Go
+  // zero time "0001-01-01T00:00:00Z" via omitempty — or simply an absent key.
+  // Both must render as "Never" / no backoff line.
+  await page.route('**/v1/monitor?**', (route) =>
+    route.fulfill({
+      json: {
+        workspace_id: 'demo',
+        enabled: true,
+        last_successful_observation: '0001-01-01T00:00:00Z',
+        current_error: 'rate limited',
+        backoff_until: '0001-01-01T00:00:00Z',
+        observations: [],
+        drift: [],
+        drift_count: 0,
+        oldest_drift_age: 0,
+      },
+    }),
+  )
+
+  await page.goto('/monitor')
+  await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
+
+  // Zero last_successful_observation must render as "Never", not a year-1 date.
+  await expect(page.getByText('Never', { exact: true })).toBeVisible()
+
+  // Zero backoff_until must not produce a "Backoff until" line.
+  await expect(page.getByText(/Backoff until/)).toHaveCount(0)
+})
+
+test('monitor page renders a real timestamp for last_successful_observation', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+  })
+  await page.route('**/v1/workspaces', (route) =>
+    route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),
+  )
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: { user: { id: 'usr_operator', role: 'operator' }, memberships: [] } }),
+  )
+  await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
+  await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
+  await page.route('**/v1/monitor?**', (route) =>
+    route.fulfill({
+      json: {
+        workspace_id: 'demo',
+        enabled: true,
+        last_successful_observation: '2026-10-13T09:00:00Z',
+        observations: [],
+        drift: [],
+        drift_count: 0,
+        oldest_drift_age: 0,
+      },
+    }),
+  )
+
+  await page.goto('/monitor')
+  await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
+
+  // A real timestamp must NOT render as "Never".
+  await expect(page.getByText('Never', { exact: true })).toHaveCount(0)
+})
