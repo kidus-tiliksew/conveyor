@@ -34,11 +34,12 @@ delivery loop after implementation submission: it starts a separate verifier or
 reviewer agent per order, awaits the verdict with `await_review`, and claims
 each changes-requested successor under a fresh session ID and client token. At
 a pending human gate it summarizes the decision with a dashboard link and
-offers to record it, through the harness's structured question tool when one
-is listed for the turn (`AskUserQuestion`, `request_user_input`, `question`)
-and as text otherwise. It never preselects or recommends a gate option, reads
-the gate again before recording a selection, and otherwise waits with
-`conveyor task wait`. When its task
+offers to record it, listing the replies as message text. It never offers them
+through a question tool that blocks the turn until the operator answers in
+chat (`AskUserQuestion`, `request_user_input`, `question`), because a blocked
+turn cannot observe a gate resolved elsewhere. It never preselects or
+recommends a gate reply, reads the gate again before recording a typed reply,
+and goes straight into `conveyor task wait` after the offer. When its task
 merges or closes, it runs `conveyor done <task-id>` from the primary checkout
 and reports the result. After a merge it then fast-forwards a clean primary
 checkout that is on the base branch, and otherwise reports why it skipped

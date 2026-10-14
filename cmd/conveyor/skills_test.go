@@ -361,7 +361,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"continues the playbook's self-claimed delivery loop after implementation submission",
 		"awaits the verdict with `await_review`",
 		"At a pending human gate it summarizes the decision with a dashboard link and offers to record it",
-		"reads the gate again before recording a selection, and otherwise waits with `conveyor task wait`",
+		"reads the gate again before recording a typed reply, and goes straight into `conveyor task wait` after the offer",
 		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-45)",
 		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
 		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
@@ -1223,10 +1223,11 @@ func TestConveyorWorkSkillShipsApproveThenMergeSequence(t *testing.T) {
 	}
 }
 
-// The installed conveyor-work skill offers gate replies through the harness's
-// structured question tool when one is listed, and as text otherwise, without
-// changing who records a decision (req-agent-skills AC-3.7, AC-3.9, AC-3.10,
-// AC-3.11; DEC-45; component-cli-onboarding).
+// The installed conveyor-work skill offers gate replies as message text and
+// never through a question tool that blocks the turn, so the session can wait
+// for a gate that resolves elsewhere, without changing who records a decision
+// (req-agent-skills AC-3.7, AC-3.9, AC-3.10, AC-3.11; DEC-45;
+// component-cli-onboarding).
 func TestConveyorWorkSkillShipsStructuredGateChoices(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
@@ -1235,30 +1236,50 @@ func TestConveyorWorkSkillShipsStructuredGateChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	playbookRequired := []string{
-		"offered as **Structured choices** describes",
-		"When the session's harness lists a structured question tool for the current turn, offer the replies through it instead of as text: `AskUserQuestion` in Claude Code, `request_user_input` in Codex, or `question` in OpenCode",
-		"Use the tool only when it is listed for the current turn; when no such tool is listed, list the replies as text",
-		"Never write the replies as a text multiple-choice question while the tool is available",
-		"Put summary items 1–3 in the question text, including the dashboard link",
+		"offered as **Text replies** describes",
+		"**Text replies.** List the replies as message text",
+		"Never offer them through a question tool that blocks the turn until the operator answers in this chat: not `AskUserQuestion` in Claude Code, not `request_user_input` in Codex, and not `question` in OpenCode",
+		"The rule is the same for every harness, whether or not such a tool is available",
+		"A blocking question holds the turn, so the session cannot run `conveyor task wait` or observe a gate that resolves elsewhere",
+		"Put summary items 1–3 before the replies, including the dashboard link",
+		"List each reply that the table below allows for the gate, plus `Wait`",
 		"| Plan approval | Approve · Request changes · Reject · Wait |",
 		"| Merge approval | Approve and merge · Approve only · Request changes · Wait |",
 		"| Pending merge act | Merge · Wait |",
 		"| Plan-revision decision | Approve · Decline · Reject · Wait |",
 		"| Proposal | Confirm · Dismiss · Wait |",
-		"within the tool's option limit",
-		"Never preselect, rank, or mark an option as recommended",
-		"When the operator gave none, ask for it in plain text; never write it for the operator",
-		"A selected option is the operator's direct instruction in this conversation, exactly like a typed reply",
+		"Never preselect, rank, or mark a reply as recommended",
+		"Take it from the operator's typed reply. When the operator gave none, ask for it in plain text; never write it for the operator",
+		"A typed reply is the operator's direct instruction in this conversation",
 		"`Wait` records nothing and continues as **Wait otherwise** describes",
-		"Before recording a selection, read the task again, or `pending_gate` for the pending merge act",
+		"After the offer, go straight into **Wait otherwise** without waiting for a chat answer",
+		"A gate resolved on the dashboard ends the wait with exit 0 and a re-read",
+		"Before recording a reply, read the task again, or `pending_gate` for the pending merge act",
 		"When the gate is no longer pending, or its kind or reviewed head changed, record nothing",
 		"A planner, verifier, or reviewer that the session started never asks a gate question",
-		"When the conversation holds no answer, or the operator selected `Wait`, wait for the decision",
+		"When the conversation holds no answer, or the operator replied `Wait`, wait for the decision",
+		"Handle a reply the operator types between waits before the next wait",
 	}
 	wrapperRequired := []string{
-		"through the harness's structured question tool when one is listed for the turn (`AskUserQuestion`, `request_user_input`, `question`) and as text otherwise",
-		"It never preselects or recommends a gate option, reads the gate again before recording a selection",
+		"offers to record it, listing the replies as message text",
+		"It never offers them through a question tool that blocks the turn until the operator answers in chat (`AskUserQuestion`, `request_user_input`, `question`), because a blocked turn cannot observe a gate resolved elsewhere",
+		"It never preselects or recommends a gate reply, reads the gate again before recording a typed reply, and goes straight into `conveyor task wait` after the offer",
 	}
+	// The retired structured-choice rule directed gate offers through a
+	// blocking question tool; neither installed file may restore it.
+	forbidden := []string{
+		"**Structured choices**",
+		"structured question tool",
+		"offer the replies through it",
+		"through the harness's structured question tool",
+		"Never write the replies as a text multiple-choice question",
+		"within the tool's option limit",
+		"the tool's free-text answer",
+		"A selected option is",
+		"recording a selection",
+		"as text otherwise",
+	}
+	blockingTool := regexp.MustCompile("(?i)(offer|list|present|ask)[^.]*\\b(through|via|with|using)\\b[^.]*(`AskUserQuestion`|`request_user_input`|`question`)")
 	for _, destination := range destinations {
 		for file, required := range map[string][]string{
 			"conveyor-work.md": playbookRequired,
@@ -1272,6 +1293,16 @@ func TestConveyorWorkSkillShipsStructuredGateChoices(t *testing.T) {
 			for _, fragment := range required {
 				if !strings.Contains(normalized, fragment) {
 					t.Errorf("%s %s lacks %q", destination.root, file, fragment)
+				}
+			}
+			for _, fragment := range forbidden {
+				if strings.Contains(normalized, fragment) {
+					t.Errorf("%s %s still carries retired structured-choice text %q", destination.root, file, fragment)
+				}
+			}
+			for _, sentence := range strings.SplitAfter(normalized, ". ") {
+				if blockingTool.MatchString(sentence) && !strings.Contains(sentence, "Never offer") && !strings.Contains(sentence, "never offers") {
+					t.Errorf("%s %s directs a gate offer through a blocking question tool: %q", destination.root, file, sentence)
 				}
 			}
 		}
