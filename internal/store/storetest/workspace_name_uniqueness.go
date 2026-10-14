@@ -9,7 +9,7 @@ import (
 )
 
 // runWorkspaceNameUniqueness keeps case- and space-folded workspace names
-// consistent across every backend (DEC-63(7), DEC-68, component-persistence).
+// consistent across every backend (DEC-63(7), DEC-70, component-persistence).
 func runWorkspaceNameUniqueness(t *testing.T, x Fixture) {
 	t.Helper()
 	control, ok := x.Backend.(store.WorkspaceControlStore)

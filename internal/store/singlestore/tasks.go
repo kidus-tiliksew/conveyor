@@ -378,7 +378,7 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 				return err
 			}
 			// Lock the old and new branch rows in one order so concurrent swaps
-			// cannot deadlock; writeRow then releases and claims them (DEC-68,
+			// cannot deadlock; writeRow then releases and claims them (DEC-70,
 			// component-persistence Lock and transaction contract).
 			keys := []string{taskBranchClaimKey(ws, result.Repo, result.Branch), taskBranchClaimKey(ws, result.Repo, branch)}
 			sort.Strings(keys)
