@@ -2,9 +2,17 @@ package workorder
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -24,6 +32,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
+
+type documentationRefreshNoneStore struct{ store.Store }
+
+func (s documentationRefreshNoneStore) CreateTask(ctx context.Context, task core.Task) error {
+	task.SetupContract.RefreshReview = config.RefreshReviewNone
+	return s.Store.CreateTask(ctx, task)
+}
 
 // Each SQL case owns an isolated schema/database, including cleanup after failure.
 func documentationCorrectionStore(t *testing.T, backend string) store.Store {
@@ -307,7 +322,7 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 				for _, failure := range []string{"operator-only-none", "known-policy-unavailable"} {
 					t.Run(failure, func(t *testing.T) {
 						st := documentationCorrectionStore(t, backend)
-						f := documentationSubmission(t, "present", "docs: none ORIGINAL-REASON", []string{"internal/server.go"}, func(store.Store) store.Store { return st })
+						f := documentationSubmission(t, "present", "docs: none ORIGINAL-REASON", []string{"internal/server.go"}, func(store.Store) store.Store { return documentationRefreshNoneStore{st} })
 						oldHead, newHead, base := strings.Repeat("a", 40), strings.Repeat("c", 40), strings.Repeat("b", 40)
 						if _, err := f.service.SubmitForReview(f.ctx, f.job.ID, "implementer", oldHead); err != nil {
 							t.Fatal(err)
@@ -365,8 +380,17 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if !failed.ApprovalStale || failed.ReviewedHeadSHA != newHead || !merged || later.State != core.TaskMerged {
-							t.Fatalf("sweep did not isolate failed refresh: first=%+v later=%+v merged=%t", failed, later, merged)
+						if current.SetupContract.RefreshReview != config.RefreshReviewNone || !failed.ApprovalStale || failed.RefreshReviewScope != config.RefreshReviewDelta || failed.ReviewedHeadSHA != newHead || !merged || later.State != core.TaskMerged {
+							t.Fatalf("frozen none policy did not escalate failed refresh to delta: first=%+v later=%+v merged=%t", failed, later, merged)
+						}
+						events, err := st.ListEvents(f.ctx, current.ID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, event := range events {
+							if event.Kind == "review.refresh_skipped" {
+								t.Fatalf("failed gate took clean-update skip: %s", event.Payload)
+							}
 						}
 						gate, err := st.GetDocumentationGateEvidence(f.ctx, current.ID, newHead)
 						if err != nil || gate.Status == "" || gate.RefusalReason == "" || strings.Contains(gate.AgentAuthoredBody, "OPERATOR-ONLY-REASON") {
@@ -382,6 +406,9 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 								continue
 							}
 							found = true
+							if order.ReviewKind != "refresh" || order.ReviewScope != config.RefreshReviewDelta || order.BaselineSHA != oldHead {
+								t.Fatalf("failed gate did not mint a delta refresh seat: %+v", order)
+							}
 							reviewCtx, err := f.service.contextForOrder(f.ctx, order)
 							if err != nil {
 								t.Fatal(err)
@@ -485,6 +512,99 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 					}
 				}
 			})
+		})
+	}
+}
+
+type documentationAppStore struct {
+	store.WorkspaceGitHubAppStore
+	credential core.WorkspaceGitHubAppCredential
+}
+
+func (s documentationAppStore) GetWorkspaceGitHubAppForUse(context.Context, string) (core.WorkspaceGitHubAppCredential, error) {
+	return s.credential, nil
+}
+
+// Exercise conveyord's nil-discoverer prelude, not the injected policy shortcut.
+func TestProductionConflictFixDocumentationDiscovery(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	for _, backend := range []string{"memory", "postgres", "singlestore"} {
+		t.Run(backend, func(t *testing.T) {
+			for _, persistent := range []bool{false, true} {
+				t.Run(fmt.Sprintf("persistent-5xx=%t", persistent), func(t *testing.T) {
+					st := documentationCorrectionStore(t, backend)
+					f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+					head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+					tree, directory, blob := strings.Repeat("c", 40), strings.Repeat("d", 40), strings.Repeat("e", 40)
+					f.prHead = func(int) string { return head }
+					f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
+					f.service.DiscoverDocumentationPolicy = nil
+					f.service.WorkspaceGitHubApps = documentationAppStore{credential: core.WorkspaceGitHubAppCredential{
+						WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{WorkspaceID: "test", AppID: 41, InstallationID: 12, Connected: true},
+						PrivateKey:               private,
+					}}
+					refReads, policyReads, prReads := 0, 0, 0
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						switch r.URL.Path {
+						case "/app/installations/12":
+							fmt.Fprint(w, `{"id":12,"app_id":41,"account":{"login":"acme"},"suspended_at":null}`)
+						case "/app/installations/12/access_tokens":
+							_ = json.NewEncoder(w).Encode(map[string]any{"token": "fixture-secret", "expires_at": time.Now().Add(time.Hour)})
+						case "/installation/repositories":
+							fmt.Fprint(w, `{"repositories":[{"full_name":"acme/app"}]}`)
+						case "/repos/acme/app/git/ref/heads/main":
+							refReads++
+							if persistent || refReads == 1 {
+								w.WriteHeader(http.StatusBadGateway)
+								return
+							}
+							_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": base, "type": "commit"}})
+						case "/repos/acme/app/git/commits/" + base:
+							policyReads++
+							_ = json.NewEncoder(w).Encode(map[string]any{"sha": base, "tree": map[string]string{"sha": tree}})
+						case "/repos/acme/app/git/trees/" + tree:
+							_ = json.NewEncoder(w).Encode(map[string]any{"sha": tree, "tree": []map[string]string{{"path": ".conveyor", "mode": "040000", "type": "tree", "sha": directory}}})
+						case "/repos/acme/app/git/trees/" + directory:
+							_ = json.NewEncoder(w).Encode(map[string]any{"sha": directory, "tree": []map[string]string{{"path": "docs.yaml", "mode": "100644", "type": "blob", "sha": blob}}})
+						case "/repos/acme/app/git/blobs/" + blob:
+							content := "schema_version: 1\ndocs:\n  - path: docs/api.md\n    governs: ['internal/**']\n"
+							_ = json.NewEncoder(w).Encode(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(content)), "size": len(content)})
+						default:
+							t.Errorf("unexpected GitHub endpoint: %s", r.URL.Path)
+							w.WriteHeader(http.StatusNotFound)
+						}
+					}))
+					defer server.Close()
+					f.service.GitHubApps = githubtrigger.NewAppClient(server.Client(), server.URL)
+					f.service.SubmissionPR = func(_ context.Context, _, branch string) (githubtrigger.SubmissionPullRequest, error) {
+						prReads++
+						p := githubtrigger.SubmissionPullRequest{Number: 1098, URL: "https://github.com/acme/app/pull/1098"}
+						p.Head.Ref, p.Head.SHA, p.Base.Ref, p.Base.SHA = branch, head, "main", base
+						return p, nil
+					}
+					f.service.SubmissionChangedPaths = func(context.Context, *config.Config, core.Task) ([]string, error) {
+						return []string{"internal/server.go"}, nil
+					}
+					before := f.eventCount(t)
+					result, err := f.submit("fixer", head)
+					if persistent {
+						if err != nil || result["refresh_already_dispatched"] != true || refReads != 3 || policyReads != 0 || prReads != 0 {
+							t.Fatalf("exhausted discovery did not retain legacy admission: result=%v err=%v refs=%d policy=%d PR=%d", result, err, refReads, policyReads, prReads)
+						}
+					} else {
+						if err == nil || !strings.Contains(err.Error(), "docs/api.md") || refReads != 2 || policyReads != 1 || prReads != 1 {
+							t.Fatalf("transient base discovery bypassed gate: result=%v err=%v refs=%d policy=%d PR=%d", result, err, refReads, policyReads, prReads)
+						}
+						if f.eventCount(t) != before || f.jobState(t, f.order.JobID) != core.JobRunning {
+							t.Fatal("refused production conflict-fix wrote submission side effects")
+						}
+					}
+				})
+			}
 		})
 	}
 }
