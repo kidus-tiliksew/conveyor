@@ -2971,6 +2971,11 @@ func TestWarmSessionBounceClaimsNextOrderReusesPRAndCannotSelfReview(t *testing.
 }
 
 func prepareSubmissionTest(service *Service) {
+	if service.DiscoverDocumentationPolicy == nil {
+		service.DiscoverDocumentationPolicy = func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+			return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "absent"}
+		}
+	}
 	if service.SubmissionPR == nil {
 		service.SubmissionPR = func(ctx context.Context, repo, branch string) (githubtrigger.SubmissionPullRequest, error) {
 			pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/app/pull/7"}

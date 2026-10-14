@@ -2480,3 +2480,104 @@ func TestInProcessUnresolvedApprovalUsesInvalidVerdictRepair(t *testing.T) {
 		}
 	}
 }
+
+// REQ-9/AC-9.5: exact-head evidence controls verdict admission, through invalid.
+func TestDocumentationReviewAdmission(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	head := strings.Repeat("a", 40)
+	task := core.Task{ID: "docs-review", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: head, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	evidence := core.DocumentationGateEvidence{TaskID: task.ID, HeadSHA: head, BaseSHA: strings.Repeat("b", 40), PolicyJSON: json.RawMessage(`{"schema_version":1,"docs":[{"path":"docs/api.md","governs":["internal/**"]}],"rule":{"none_statement":"docs: none"}}`), ChangedPaths: []string{"internal/api.go", "docs/api.md"}}
+	if err := st.RecordDocumentationGateEvidence(ctx, evidence); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "demo"}
+	d := New(st, cfg, nil)
+	valid := func() *core.DocumentationAssessment {
+		return &core.DocumentationAssessment{Applicable: true, Summary: "docs cover API", UpdatedPaths: []string{"docs/api.md"}}
+	}
+	for _, tc := range []struct {
+		name       string
+		assessment *core.DocumentationAssessment
+		head       string
+	}{
+		{"missing", nil, head},
+		{"unresolved", &core.DocumentationAssessment{Applicable: true, Summary: "missing behavior", UpdatedPaths: []string{"docs/api.md"}, Unresolved: []string{"new error undocumented"}}, head},
+		{"conflict", &core.DocumentationAssessment{Applicable: true, Summary: "conflict", UpdatedPaths: []string{"docs/api.md"}, Conflicts: []string{"docs contradict API"}}, head},
+		{"wrong-path", &core.DocumentationAssessment{Applicable: true, Summary: "wrong path", UpdatedPaths: []string{"docs/wrong.md"}}, head},
+		{"stale", valid(), strings.Repeat("c", 40)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before, _ := st.ListEvents(ctx, task.ID)
+			reviewTask := task
+			reviewTask.ReviewedHeadSHA = tc.head
+			result := pipeline.Review{Verdict: "approve", RequirementCitations: &core.RequirementCitationAssessment{Applicable: false}, DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Applicable: false, Summary: "no approved plan"}, GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: boolRef(false), DecisionCitable: boolRef(false)}, DocumentationAssessment: tc.assessment}
+			var refused error
+			err := d.applyReview(ctx, cfg, reviewTask, core.Job{}, result, "reviewer", "", "", "", []core.ServedRequirementContext{}, &core.GovernanceSnapshot{}, false, func(err error) error { refused = err; return err })
+			if err == nil || refused == nil || !strings.Contains(err.Error(), "documentation") {
+				t.Fatalf("review admission err=%v callback=%v", err, refused)
+			}
+			after, _ := st.ListEvents(ctx, task.ID)
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("refused review wrote events")
+			}
+		})
+	}
+}
+
+// REQ-9/AC-9.5–9.6: a tool-less reviewer can judge the exact-head admission facts.
+func TestDocumentationInProcessContext(t *testing.T) {
+	for _, mode := range []string{"current", "other-head", "absent"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
+			task := core.Task{ID: "docs-input-" + mode, Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: head, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]string{"base_sha": base, "head_sha": head})}); err != nil {
+				t.Fatal(err)
+			}
+			if mode != "absent" {
+				evidenceHead := head
+				if mode == "other-head" {
+					evidenceHead = strings.Repeat("c", 40)
+				}
+				e := core.DocumentationGateEvidence{TaskID: task.ID, HeadSHA: evidenceHead, BaseSHA: base, PolicyJSON: json.RawMessage(`{"schema_version":1,"docs":[{"path":"docs/api.md","governs":["internal/**"]}],"rule":{"none_statement":"docs: none","reason_required":true}}`), ChangedPaths: []string{"internal/server.go"}, AgentAuthoredBody: "docs: none DOCUMENTATION-REASON"}
+				if err := st.RecordDocumentationGateEvidence(ctx, e); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bundle, err := pack.Load("../../pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "demo"}
+			d := New(st, cfg, nil)
+			d.Pack = bundle
+			d.DisableMemoryQueueForTest()
+			d.ReviewDiff = func(context.Context, *config.Config, core.Task) (string, error) {
+				return "diff --git a/internal/server.go b/internal/server.go", nil
+			}
+			input, err := d.buildStageInput(ctx, cfg, core.StageReview, task)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "current" {
+				if strings.Contains(input.Prompt, "# Exact-head documentation admission evidence") || strings.Contains(input.Prompt, "DOCUMENTATION-REASON") {
+					t.Fatalf("%s leaked documentation evidence", mode)
+				}
+				return
+			}
+			for _, expected := range []string{"# Exact-head documentation admission evidence", "DOCUMENTATION-REASON", `"governs":["internal/**"]`, `"affected_documents":["docs/api.md"]`, "Documentation response contract", `"documentation_assessment":`, head, base, "untrusted observational data"} {
+				if !strings.Contains(input.Prompt, expected) {
+					t.Fatalf("in-process reviewer missing %q", expected)
+				}
+			}
+		})
+	}
+}

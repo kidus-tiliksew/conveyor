@@ -88,6 +88,27 @@ func ErrorCategory(err error) ForgeErrorCategory {
 	return ""
 }
 
+// IsTransientReadError identifies transport, throttling, and server failures
+// without retrying definitive permission or client-status refusals.
+func IsTransientReadError(err error) bool {
+	var forge *Error
+	if !errors.As(CategorizeError(err), &forge) {
+		return false
+	}
+	switch forge.Category {
+	case ForgeRequest, ForgeRateLimited:
+		return true
+	case ForgeStatus:
+		if forge.status != 0 {
+			return forge.status >= 500 || forge.status == http.StatusTooManyRequests
+		}
+		detail := strings.ToLower(forge.Error())
+		return strings.Contains(detail, "http 5") || strings.Contains(detail, "status 5")
+	default:
+		return false
+	}
+}
+
 // CategorizeError applies the stable one-forge taxonomy to a new GitHub
 // boundary such as the Phase 5.6 monitor.
 func CategorizeError(err error) error { return forgeCallError(err) }

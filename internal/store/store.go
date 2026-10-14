@@ -122,6 +122,8 @@ type Store interface {
 // TaskStore owns the task, dependency, job and intervention contract.
 type TaskStore interface {
 	StartOverTaskCommand(context.Context, taskops.TaskLease, core.TaskStartOverRequest) (core.TaskStartOverResult, error)
+	RecordDocumentationGateEvidence(context.Context, core.DocumentationGateEvidence) error
+	GetDocumentationGateEvidence(context.Context, string, string) (core.DocumentationGateEvidence, error)
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
@@ -593,6 +595,7 @@ type memoryDecisionSweepKey struct {
 }
 
 type memory struct {
+	documentationEvidence       map[memoryScopedKey]map[string]core.DocumentationGateEvidence
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask

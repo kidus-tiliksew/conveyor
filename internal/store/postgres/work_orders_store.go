@@ -2209,19 +2209,20 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 }
 
 type completedReviewRecord struct {
-	ReviewWorkOrderID string `json:"review_work_order_id"`
-	Verdict           string `json:"verdict"`
-	ReasonCode        string `json:"reason_code"`
-	Summary           string `json:"summary"`
-	Feedback          string `json:"feedback"`
-	ReviewerModel     string `json:"reviewer_model"`
-	ReviewRound       int    `json:"review_round"`
-	ReviewSeat        int    `json:"review_seat"`
-	RequiredModel     string `json:"required_model"`
-	RequiredHarness   string `json:"required_harness"`
-	RequiredEffort    string `json:"required_effort"`
-	ModelEnforcement  string `json:"model_enforcement"`
-	ReviewedCommitSHA string `json:"reviewed_commit_sha"`
+	DocumentationAssessment *core.DocumentationAssessment `json:"documentation_assessment,omitempty"`
+	ReviewWorkOrderID       string                        `json:"review_work_order_id"`
+	Verdict                 string                        `json:"verdict"`
+	ReasonCode              string                        `json:"reason_code"`
+	Summary                 string                        `json:"summary"`
+	Feedback                string                        `json:"feedback"`
+	ReviewerModel           string                        `json:"reviewer_model"`
+	ReviewRound             int                           `json:"review_round"`
+	ReviewSeat              int                           `json:"review_seat"`
+	RequiredModel           string                        `json:"required_model"`
+	RequiredHarness         string                        `json:"required_harness"`
+	RequiredEffort          string                        `json:"required_effort"`
+	ModelEnforcement        string                        `json:"model_enforcement"`
+	ReviewedCommitSHA       string                        `json:"reviewed_commit_sha"`
 }
 
 type reviewRoundResultRecord struct {
@@ -2328,7 +2329,7 @@ func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) revi
 }
 
 func reviewDecisionPayload(decision core.ReviewDecision) []byte {
-	return core.JSONPayload(map[string]any{
+	payload := map[string]any{
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
@@ -2346,7 +2347,11 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
 		"publication_eligible": decision.PublicationEligible,
-	})
+	}
+	if decision.DocumentationAssessment != nil {
+		payload["documentation_assessment"] = decision.DocumentationAssessment
+	}
+	return core.JSONPayload(payload)
 }
 
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -4065,6 +4066,86 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 			afterOrderBytes, _ := json.Marshal(afterOrder)
 			if !bytes.Equal(beforeBytes, afterBytes) || !bytes.Equal(orderBytes, afterOrderBytes) {
 				t.Fatal("dashboard reads changed stored/execution-facing audit evidence")
+			}
+		})
+	}
+}
+
+// REQ-9/AC-9.5: activity exposes the review event's documentation judgment.
+func TestTaskActivityDocumentationAssessment(t *testing.T) {
+	assessment := &core.DocumentationAssessment{Applicable: true, Summary: "API docs verified", UpdatedPaths: []string{"docs/api.md"}, Unresolved: []string{}, Conflicts: []string{}}
+	for _, tc := range []struct {
+		name       string
+		assessment *core.DocumentationAssessment
+	}{
+		{"present", assessment},
+		{"no-config", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "documentation-activity-" + tc.name, Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			var jobs []core.Job
+			var orders []core.WorkOrder
+			for seat := 1; seat <= 2; seat++ {
+				id := task.ID + fmt.Sprint(seat)
+				jobs = append(jobs, core.Job{ID: id, TaskID: task.ID, Stage: core.StageReview, State: core.JobPending})
+				orders = append(orders, core.WorkOrder{ID: id, JobID: id, TaskID: task.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: seat, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour)})
+			}
+			if err := storetest.CreateReviewRound(ctx, st, task.ID, jobs, orders); err != nil {
+				t.Fatal(err)
+			}
+			for i, order := range orders {
+				if err := taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: i + 1, Verdict: "approve", ReasonCode: "verified", Summary: "actual review decision", ReviewedCommitSHA: strings.Repeat("a", 40), MaxBounces: 3, DocumentationAssessment: tc.assessment}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := NewServer(st)
+			server.Workspace = "demo"
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
+			if response.Code != http.StatusOK {
+				t.Fatalf("activity status=%d body=%s", response.Code, response.Body.String())
+			}
+			var activity struct {
+				Events []core.Event `json:"events"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &activity); err != nil {
+				t.Fatal(err)
+			}
+			completed := 0
+			for _, event := range activity.Events {
+				if event.Kind != "review.completed" {
+					continue
+				}
+				completed++
+				var payload map[string]json.RawMessage
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				value, exists := payload["documentation_assessment"]
+				if tc.assessment == nil {
+					if exists {
+						t.Fatalf("no-config activity must omit assessment, including null: %s", event.Payload)
+					}
+					continue
+				}
+				var got core.DocumentationAssessment
+				if !exists {
+					t.Fatalf("activity lost assessment: %s", event.Payload)
+				}
+				if err := json.Unmarshal(value, &got); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(&got, tc.assessment) {
+					t.Fatalf("activity assessment=%+v want=%+v", got, tc.assessment)
+				}
+			}
+			if completed != 2 {
+				t.Fatalf("activity review.completed events=%d", completed)
 			}
 		})
 	}

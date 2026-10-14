@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -569,6 +570,9 @@ func TestMCPSubmitForReviewAdmitsSubmissionWithoutVerificationEvidence(t *testin
 	server.WorkOrders = &workorder.Service{
 		Store: st, Dispatcher: dispatcher,
 		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		DiscoverDocumentationPolicy: func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+			return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "absent"}
+		},
 		SubmissionPR: func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
 			pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/api/pull/7"}
 			pr.Head.SHA, pr.Head.Ref = "abc123", task.Branch
@@ -2755,4 +2759,70 @@ func createOwnedWorker(st store.Store, ctx context.Context, worker core.Worker) 
 // requireMCPAuth derives for it, for tests that skip the middleware.
 func withWorkerActor(ctx context.Context, worker core.Worker) context.Context {
 	return store.WithActor(context.WithValue(ctx, workerContextKey{}, worker), store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker})
+}
+
+// REQ-9/AC-9.5: MCP preserves documentation assessment and refuses missing/unresolved.
+func TestMCPDocumentationAssessmentAdmission(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	head := strings.Repeat("a", 40)
+	task := core.Task{ID: "documentation-mcp", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: head, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	evidence := core.DocumentationGateEvidence{TaskID: task.ID, HeadSHA: head, BaseSHA: strings.Repeat("b", 40), PolicyJSON: json.RawMessage(`{"schema_version":1,"docs":[{"path":"docs/api.md","governs":["internal/**"]}],"rule":{"none_statement":"docs: none"}}`), ChangedPaths: []string{"internal/api.go", "docs/api.md"}}
+	if err := st.RecordDocumentationGateEvidence(ctx, evidence); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "docs-review", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("owner"), Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Repos: []config.Repo{{Name: "conveyor"}}}
+	d := dispatch.New(st, cfg, nil)
+	d.DisableMemoryQueueForTest()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "owner", OwnerUserID: "owner", Kind: core.CredentialUser}))
+	args := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "docs-review", "verdict": "approve", "reason_code": "verified", "summary": "docs cover behavior", "requirement_citations": map[string]any{"applicable": false}, "done_criteria_coverage": map[string]any{"applicable": false, "summary": "no approved plan"}, "governance_assessment": map[string]any{"design_applicable": false, "decision_citable": false}}
+	before, _ := st.ListEvents(ctx, task.ID)
+	for _, assessment := range []any{nil, map[string]any{"applicable": true, "summary": "missing API", "updated_paths": []string{"docs/api.md"}, "unresolved": []string{"missing new error"}, "conflicts": []string{}}} {
+		args["documentation_assessment"] = assessment
+		if _, err := server.callMCPTool(request, "submit_review_verdict", args); err == nil || !strings.Contains(err.Error(), "documentation") {
+			t.Fatalf("assessment=%v err=%v", assessment, err)
+		}
+	}
+	after, _ := st.ListEvents(ctx, task.ID)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("MCP refusal wrote events")
+	}
+	args["documentation_assessment"] = map[string]any{"applicable": true, "summary": "API docs updated", "updated_paths": []string{"docs/api.md"}, "unresolved": []string{}, "conflicts": []string{}}
+	if _, err := server.callMCPTool(request, "submit_review_verdict", args); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := st.ListEvents(ctx, task.ID)
+	found := false
+	for _, event := range events {
+		if event.Kind == "review.completed" {
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(payload["documentation_assessment"]), "API docs updated") {
+				t.Fatalf("MCP dropped assessment: %s", event.Payload)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no review completion")
+	}
 }

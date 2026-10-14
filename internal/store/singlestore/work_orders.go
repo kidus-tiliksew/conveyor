@@ -718,13 +718,14 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 // order update, missing job, or non-running job rolls back every write
 // (component-work-orders).
 func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
-	if err := store.ValidateImplementationSubmission(request); err != nil {
+	request, err := store.NormalizeImplementationSubmission(ctx, request)
+	if err != nil {
 		return core.Job{}, err
 	}
 	order := request.Order
 	var lifecycleErr error
 	var completed core.Job
-	err := s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
+	err = s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
 		if current.TaskID != order.TaskID || current.JobID != order.JobID || current.Stage != core.StageImplement {
 			return fmt.Errorf("work order %s does not match its submission", order.ID)
 		}
@@ -748,6 +749,16 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 		job.State, job.EndedAt = core.JobDone, ended
 		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='done',ended_at=?,updated_at=? WHERE workspace_id=? AND id=?`, ended, time.Now().UTC(), documentWorkspace(ctx), job.ID); err != nil {
 			return err
+		}
+		if request.DocumentationChecked {
+			if request.DocumentationEvidence == nil {
+				_, err = documentExec(ctx, tx, `DELETE FROM documentation_gate_evidence WHERE workspace_id=? AND task_id=? AND head_sha=?`, documentWorkspace(ctx), order.TaskID, order.HeadSHA)
+			} else {
+				_, err = documentExec(ctx, tx, `INSERT INTO documentation_gate_evidence(workspace_id,task_id,head_sha,payload_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE payload_json=VALUES(payload_json)`, documentWorkspace(ctx), order.TaskID, order.HeadSHA, core.JSONPayload(request.DocumentationEvidence))
+			}
+			if err != nil {
+				return err
+			}
 		}
 		completed = job
 		return taskEvent(ctx, tx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job)})

@@ -456,7 +456,7 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approved, newHead
 		if t.ApprovalStale && t.RefreshBaselineSHA == approved && t.RefreshHeadSHA == newHead {
 			return nil
 		}
-		if err = taskWrite(ctx, tx, id, map[string]any{"approved_head_sha": approved, "approval_stale": true, "refresh_baseline_sha": approved, "refresh_head_sha": newHead, "refresh_review_scope": scope}); err != nil {
+		if err = taskWrite(ctx, tx, id, map[string]any{"approved_head_sha": approved, "approval_stale": true, "refresh_baseline_sha": approved, "refresh_head_sha": newHead, "reviewed_head_sha": newHead, "refresh_review_scope": scope}); err != nil {
 			return err
 		}
 		if err = s.supersedeVerificationTx(ctx, tx, id, newHead); err != nil {
@@ -483,7 +483,7 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, head string) err
 		if t.RefreshHeadSHA == head {
 			return nil
 		}
-		if err = taskWrite(ctx, tx, id, map[string]any{"refresh_head_sha": head}); err != nil {
+		if err = taskWrite(ctx, tx, id, map[string]any{"refresh_head_sha": head, "reviewed_head_sha": head}); err != nil {
 			return err
 		}
 		if err = s.supersedeVerificationTx(ctx, tx, id, head); err != nil {

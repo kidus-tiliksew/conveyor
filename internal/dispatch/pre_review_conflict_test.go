@@ -73,6 +73,9 @@ func newPreReview(t *testing.T, verify bool) *preReview {
 		t.Fatal(err)
 	}
 	f.service = &workorder.Service{Store: f.st, Dispatcher: f.d, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		DiscoverDocumentationPolicy: func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+			return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "absent"}
+		},
 		SubmissionPR: func(_ context.Context, _ string, branch string) (githubtrigger.SubmissionPullRequest, error) {
 			pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/app/pull/7"}
 			pr.Head.Ref, pr.Head.SHA, pr.Base.Ref, pr.Base.SHA = branch, f.submitHead, "main", "base-sha"

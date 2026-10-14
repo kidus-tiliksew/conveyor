@@ -81,7 +81,7 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 		if task.RefreshHeadSha == newHeadSHA {
 			return nil
 		}
-		if _, err = tx.Exec(ctx, `UPDATE tasks SET refresh_head_sha=$1, updated_at=now() WHERE id=$2 AND workspace_id=$3`, newHeadSHA, id, workspace(ctx)); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE tasks SET refresh_head_sha=$1, reviewed_head_sha=$1, updated_at=now() WHERE id=$2 AND workspace_id=$3`, newHeadSHA, id, workspace(ctx)); err != nil {
 			return err
 		}
 		if err = s.supersedeVerificationTx(ctx, tx, id, newHeadSHA); err != nil {
@@ -274,13 +274,14 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 // update, missing job, or non-running job rolls back every write
 // (component-work-orders).
 func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
-	if err := store.ValidateImplementationSubmission(request); err != nil {
+	request, err := store.NormalizeImplementationSubmission(ctx, request)
+	if err != nil {
 		return core.Job{}, err
 	}
 	order := request.Order
 	var lifecycleErr error
 	var completed core.Job
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var storedTask, storedJob, storedStage string
 		if err := tx.QueryRow(ctx, `SELECT task_id, job_id, stage FROM work_orders WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.ID).Scan(&storedTask, &storedJob, &storedStage); err != nil {
 			return notFound(err, "work order %s", order.ID)
@@ -330,6 +331,16 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 		completed.State, completed.EndedAt = core.JobDone, ended
 		if _, err = q.UpdateJob(ctx, jobUpdateParams(completed, workspace(ctx))); err != nil {
 			return notFound(err, "job %s", completed.ID)
+		}
+		if request.DocumentationChecked {
+			if request.DocumentationEvidence == nil {
+				_, err = tx.Exec(ctx, `DELETE FROM documentation_gate_evidence WHERE workspace_id=$1 AND task_id=$2 AND head_sha=$3`, workspace(ctx), order.TaskID, order.HeadSHA)
+			} else {
+				_, err = tx.Exec(ctx, `INSERT INTO documentation_gate_evidence(workspace_id,task_id,head_sha,payload_json) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,task_id,head_sha) DO UPDATE SET payload_json=EXCLUDED.payload_json`, workspace(ctx), order.TaskID, order.HeadSHA, core.JSONPayload(request.DocumentationEvidence))
+			}
+			if err != nil {
+				return err
+			}
 		}
 		return insertEvent(ctx, q, core.Event{TaskID: completed.TaskID, JobID: completed.ID, Kind: "job.updated", Payload: core.JSONPayload(completed)})
 	})

@@ -652,6 +652,9 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 				dispatcher.DisableMemoryQueueForTest()
 				reads, writes := 0, 0
 				orders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+					DiscoverDocumentationPolicy: func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+						return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "absent"}
+					},
 					SubmissionPR: func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
 						pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/app/pull/7"}
 						pr.Head.SHA, pr.Head.Ref = "named-head", task.Branch

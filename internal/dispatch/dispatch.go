@@ -30,25 +30,27 @@ import (
 )
 
 type Dispatcher struct {
-	ReadVerificationPR         func(context.Context, string, int) (github.VerificationPullRequest, error)
-	WriteVerificationPR        func(context.Context, string, int, string) error
-	Store                      store.Store
-	Cfg                        *config.Config
-	Pack                       *pack.Bundle
-	Agent                      inprocess.Agent
-	ConfigProvider             func(context.Context) (*config.Config, error)
-	PullRequestForClose        func(context.Context, string, string) (github.PullRequest, error)
-	PullRequestForNumber       func(context.Context, string, int) (github.PullRequest, error)
-	ClosePullRequest           func(context.Context, string, int, string, string) error
-	PublishIssue               func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
-	PublishReview              func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
-	ViewPullRequest            func(context.Context, string, string) (github.PullRequest, error)
-	RequestMerge               func(context.Context, string, int) error
-	RequestMergeWithCredential func(context.Context, string, int, string) error
-	ListPullRequestFiles       func(context.Context, string, int) ([]string, error)
-	WorkspaceGitHubApps        store.WorkspaceGitHubAppStore
-	GitHubApps                 *github.AppClient
-	ObserveDesignMerge         func(context.Context, monitor.Observation, string) error
+	ReadVerificationPR          func(context.Context, string, int) (github.VerificationPullRequest, error)
+	WriteVerificationPR         func(context.Context, string, int, string) error
+	Store                       store.Store
+	Cfg                         *config.Config
+	Pack                        *pack.Bundle
+	Agent                       inprocess.Agent
+	ConfigProvider              func(context.Context) (*config.Config, error)
+	PullRequestForClose         func(context.Context, string, string) (github.PullRequest, error)
+	PullRequestForNumber        func(context.Context, string, int) (github.PullRequest, error)
+	ClosePullRequest            func(context.Context, string, int, string, string) error
+	PublishIssue                func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
+	PublishReview               func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
+	ViewPullRequest             func(context.Context, string, string) (github.PullRequest, error)
+	SubmissionPR                func(context.Context, string, string) (github.SubmissionPullRequest, error)
+	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
+	RequestMerge                func(context.Context, string, int) error
+	RequestMergeWithCredential  func(context.Context, string, int, string) error
+	ListPullRequestFiles        func(context.Context, string, int) ([]string, error)
+	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
+	GitHubApps                  *github.AppClient
+	ObserveDesignMerge          func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
 	// (component-work-orders). Injectable for tests.
@@ -66,6 +68,21 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		RequestMergeWithCredential: github.MergePullRequestWithCredential,
 
 		Now: func() time.Time { return time.Now().UTC() },
+	}
+	d.SubmissionPR = func(ctx context.Context, repo, branch string) (github.SubmissionPullRequest, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
+		if err != nil {
+			return github.SubmissionPullRequest{}, err
+		}
+		return github.SubmissionPRForBranch(forgeCtx, repo, branch)
+	}
+	d.DiscoverDocumentationPolicy = func(ctx context.Context, repo, revision string) github.DocumentationPolicyDiscovery {
+		client := d.GitHubApps
+		if client == nil {
+			client = github.DefaultAppClient
+		}
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		return client.DiscoverDocumentationPolicy(ctx, d.WorkspaceGitHubApps, workspace, repo, revision)
 	}
 	d.ReviewChangedPaths = func(ctx context.Context, cfg *config.Config, task core.Task) ([]string, error) {
 		repo, ok := cfg.Repo(task.Repo)
@@ -772,6 +789,14 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		contextGovernance = &governance
 		role = pack.WithGovernanceContract(role, stage, governance)
 	}
+	if stage == core.StageReview {
+		evidence, evidenceErr := d.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+		if evidenceErr == nil {
+			role += pack.DocumentationReviewContract(&evidence)
+		} else if !errors.Is(evidenceErr, store.ErrNotFound) {
+			return input, fmt.Errorf("resolve review documentation evidence: %w", evidenceErr)
+		}
+	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nPlan approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
@@ -1158,6 +1183,19 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		return err
 	}
+	documentation, documentationErr := d.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+	var documentationEvidence *core.DocumentationGateEvidence
+	if documentationErr == nil {
+		documentationEvidence = &documentation
+	} else if !errors.Is(documentationErr, store.ErrNotFound) {
+		return documentationErr
+	}
+	if err := store.ValidateDocumentationAssessment(documentationEvidence, result.Verdict, result.DocumentationAssessment); err != nil {
+		if invalid != nil {
+			return invalid(err)
+		}
+		return err
+	}
 	if reviewWorkOrderID == "" {
 		reviewWorkOrderID = job.ID
 	}
@@ -1224,7 +1262,8 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
 		VerificationAssessment: result.VerificationAssessment, RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
-		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
+		DocumentationAssessment: result.DocumentationAssessment,
+		ReviewerModel:           model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ClaimSession: func() string {
 			if claimAuthorized {
 				return session

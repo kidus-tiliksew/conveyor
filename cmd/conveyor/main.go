@@ -65,6 +65,7 @@ func main() {
 		mcpCmd(),
 		skillsCmd(),
 		repoCmd(),
+		docsCmd(),
 		taskCmd(),
 		inboxCmd(),
 		orderCmd(),

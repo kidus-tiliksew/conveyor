@@ -108,9 +108,9 @@ func RecordedLineage(task core.Task, events []core.Event, repository, githubSlug
 // RecordedPullRequestHead reports whether headSHA is a head Conveyor recorded
 // for pull request number in githubSlug: (a) the head of a pull_request.opened
 // for it, (b) the head of a merge.confirmed or merge.reconciled for it, or (c)
-// the task's approved head or `ReviewedHeadSHA` (the head last submitted for
-// review) when number is the task's latest recorded pull_request.opened. A
-// task-level approval never vouches for an older or foreign pull request.
+// the task's approved head or `ReviewedHeadSHA` when approval is not stale and
+// number is the task's latest recorded pull_request.opened. A pending refresh
+// head never vouches for a merge, nor does approval vouch for an older or foreign PR.
 // Empty heads never match (AC-3.5; AC-4.3; component-submission-merge
 // "Observed merges"; DEC-64(5)).
 func RecordedPullRequestHead(task core.Task, events []core.Event, githubSlug string, pullRequestNumber int, headSHA string) bool {
@@ -142,7 +142,7 @@ func RecordedPullRequestHead(task core.Task, events []core.Event, githubSlug str
 		}
 	}
 	return latest != 0 && latest == pullRequestNumber &&
-		(headSHA == task.ApprovedHeadSHA || headSHA == task.ReviewedHeadSHA)
+		(headSHA == task.ApprovedHeadSHA || (!task.ApprovalStale && headSHA == task.ReviewedHeadSHA))
 }
 
 // RecordedMergeCommit reports whether event is merge.confirmed or
