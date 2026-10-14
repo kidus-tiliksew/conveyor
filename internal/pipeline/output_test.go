@@ -322,3 +322,15 @@ func TestRenderStructuredSpecRejectsDecompositionCycle(t *testing.T) {
 		t.Fatalf("cycle error=%v", err)
 	}
 }
+
+// REQ-9/AC-9.5: review parsing carries and normalizes documentation findings.
+func TestParseDocumentationAssessment(t *testing.T) {
+	review, err := ParseReview("```conveyor:review\n" + `{"verdict":"approve","reason_code":"verified","summary":"done","documentation_assessment":{"applicable":true,"summary":" docs updated ","updated_paths":[" docs/api.md ","docs/api.md"],"unresolved":[],"conflicts":[]}}` + "\n```")
+	if err != nil || review.DocumentationAssessment == nil || review.DocumentationAssessment.Summary != "docs updated" || len(review.DocumentationAssessment.UpdatedPaths) != 1 || review.DocumentationAssessment.UpdatedPaths[0] != "docs/api.md" {
+		t.Fatalf("review=%+v err=%v", review, err)
+	}
+	_, err = ParseReview("```conveyor:review\n" + `{"verdict":"approve","reason_code":"verified","summary":"done","documentation_assessment":{"applicable":true,"summary":"docs","updated_paths":["docs/api.md"],"unresolved":["docs/api.md"],"conflicts":[]}}` + "\n```")
+	if err == nil {
+		t.Fatal("overlapping documentation classification accepted")
+	}
+}

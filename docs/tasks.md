@@ -360,3 +360,28 @@ history remains readable. Notes do not alter admission, dispatch, claiming,
 gates, or document authority. The claim-bound `get_work_order` response
 projects the same collection (req-260810-23b69f AC-5.2 and AC-5.4;
 `component-work-orders`).
+
+## Repository documentation closure
+
+A repository may declare `.conveyor/docs.yaml` with `schema_version: 1`,
+`docs` entries containing `path`, a required nonempty `governs` list of
+repository-relative source globs, and `description`, plus a `rule` containing
+`none_statement` (default `docs: none`), `reason_required`, and `text`.
+`conveyor docs validate [repository]` validates the closed YAML schema and
+reports each entry whose document or governing source glob matches no tracked
+file. It exits nonzero on malformed declarations or unmatched entries.
+An absent declaration exits zero and reports that the gate is off.
+
+At submission the declaration is read at the PR base SHA, not pinned at claim.
+For each document governing a changed source path, the PR must update that
+document or include a qualifying docs-none line in the agent-authored PR body.
+The server refuses before submission side effects if any affected document
+remains untouched without that line, or declaration discovery is unavailable or
+malformed. Refusal writes no evidence or events. No declaration (or no GitHub
+slug) preserves existing submission behavior and records nothing.
+
+Exact-task/head admission evidence requires a reviewer
+`documentation_assessment`; without evidence the field must be omitted.
+`updated_paths` must equal the evidence, and approvals require empty
+`unresolved` and `conflicts` lists. Review completion activity includes the
+assessment only when supplied (REQ-9/AC-9.1–9.6; DEC-71).

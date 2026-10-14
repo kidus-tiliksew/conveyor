@@ -4069,3 +4069,23 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 		})
 	}
 }
+
+// REQ-9/AC-9.5: activity exposes the review event's documentation judgment.
+func TestTaskActivityDocumentationAssessment(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "documentation-activity", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"documentation_assessment": core.DocumentationAssessment{Applicable: true, Summary: "API docs verified", UpdatedPaths: []string{"docs/api.md"}, Unresolved: []string{}, Conflicts: []string{}}})}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"documentation_assessment"`) || !strings.Contains(response.Body.String(), "API docs verified") {
+		t.Fatalf("activity status=%d body=%s", response.Code, response.Body.String())
+	}
+}

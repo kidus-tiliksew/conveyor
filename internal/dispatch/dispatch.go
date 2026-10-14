@@ -772,6 +772,14 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		contextGovernance = &governance
 		role = pack.WithGovernanceContract(role, stage, governance)
 	}
+	if stage == core.StageReview {
+		evidence, evidenceErr := d.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+		if evidenceErr == nil {
+			role += pack.DocumentationReviewContract(&evidence)
+		} else if !errors.Is(evidenceErr, store.ErrNotFound) {
+			return input, fmt.Errorf("resolve review documentation evidence: %w", evidenceErr)
+		}
+	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
 	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nPlan approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
@@ -1158,6 +1166,19 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		return err
 	}
+	documentation, documentationErr := d.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+	var documentationEvidence *core.DocumentationGateEvidence
+	if documentationErr == nil {
+		documentationEvidence = &documentation
+	} else if !errors.Is(documentationErr, store.ErrNotFound) {
+		return documentationErr
+	}
+	if err := store.ValidateDocumentationAssessment(documentationEvidence, result.Verdict, result.DocumentationAssessment); err != nil {
+		if invalid != nil {
+			return invalid(err)
+		}
+		return err
+	}
 	if reviewWorkOrderID == "" {
 		reviewWorkOrderID = job.ID
 	}
@@ -1224,7 +1245,8 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		Verdict: result.Verdict, ReasonCode: result.ReasonCode, Summary: result.Summary,
 		Feedback: result.Feedback, ReviewedCommitSHA: reviewedCommitSHA, EvidenceIDs: evidenceIDs,
 		VerificationAssessment: result.VerificationAssessment, RequirementCitations: result.RequirementCitations, DoneCriteriaAssessment: result.DoneCriteriaCoverage, GovernanceAssessment: result.GovernanceAssessment, Reviewer: reviewer,
-		ReviewerModel: model, ReviewerSession: "distinct", SameModelAsImplementer: same,
+		DocumentationAssessment: result.DocumentationAssessment,
+		ReviewerModel:           model, ReviewerSession: "distinct", SameModelAsImplementer: same,
 		ClaimSession: func() string {
 			if claimAuthorized {
 				return session

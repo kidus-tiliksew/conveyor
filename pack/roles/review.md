@@ -106,3 +106,12 @@ served requirements are supplied, set `requirement_citations.applicable=true`
 and assess their stable REQ-n identifiers in `cited_ids`, `unknown_ids`,
 `unserved_ids`, and `conflicts`. When none are supplied, set `applicable=false`
 and leave all four lists empty.
+
+Repository documentation closure (REQ-9; DEC-71):
+When exact-head documentation evidence exists, supply `documentation_assessment`
+with `applicable: true`, a nonempty `summary`, `updated_paths` equal to the
+recorded changed declared documents, and disjoint `unresolved` and `conflicts`
+lists. Judge whether each affected document update or agent-body docs-none
+reason covers the behavior change; evidence alone is not proof of adequacy.
+An approval requires both findings lists empty. A changes-requested verdict
+may carry findings. Without documentation evidence, omit the assessment.

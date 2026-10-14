@@ -127,6 +127,7 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
+	run("DocumentationGate", func(t *testing.T) { runDocumentationGate(t, factory.fresh(t, nil)) })
 	run("TaskFlow", func(t *testing.T) { runTaskFlow(t, factory) })
 	run("GateKind", func(t *testing.T) {
 		x := factory.fresh(t, nil)

@@ -183,6 +183,41 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 				return nil, fmt.Errorf("submission diff for head %s exceeds the 25 MiB review input limit", headSHA)
 			}
 		}
+		if repo.GitHub != "" {
+			discover := s.DiscoverDocumentationPolicy
+			if discover == nil {
+				client := s.GitHubApps
+				if client == nil {
+					client = github.DefaultAppClient
+				}
+				discover = func(ctx context.Context, slug, revision string) github.DocumentationPolicyDiscovery {
+					workspace, _ := store.WorkspaceFromContext(ctx)
+					return client.DiscoverDocumentationPolicy(ctx, s.WorkspaceGitHubApps, workspace, slug, revision)
+				}
+			}
+			declaration := discover(ctx, repo.GitHub, target.Base.SHA)
+			switch declaration.State {
+			case "absent":
+				// DEC-71: absence records nothing and leaves the existing path unchanged.
+			case "present":
+				if declaration.Revision != target.Base.SHA || declaration.Policy == nil {
+					return nil, fmt.Errorf("submission refused before side effects: documentation declaration revision mismatch")
+				}
+				policyJSON, marshalErr := json.Marshal(declaration.Policy)
+				if marshalErr != nil {
+					return nil, marshalErr
+				}
+				if err = s.Store.RecordDocumentationGateEvidence(ctx, core.DocumentationGateEvidence{
+					TaskID: task.ID, HeadSHA: headSHA, BaseSHA: target.Base.SHA,
+					PolicyJSON: policyJSON, ChangedPaths: paths,
+					AgentAuthoredBody: github.AgentAuthoredPullRequestBody(target.Body),
+				}); err != nil {
+					return nil, fmt.Errorf("submission refused before side effects: %w", err)
+				}
+			default:
+				return nil, fmt.Errorf("submission refused before side effects: documentation declaration %s at base %s", declaration.State, target.Base.SHA)
+			}
+		}
 		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
 			return nil, fmt.Errorf("attach submission governance: %w", err)
 		}

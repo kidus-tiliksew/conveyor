@@ -37,38 +37,40 @@ type Service struct {
 	ConfigProvider func(context.Context) (*config.Config, error)
 	SubmissionPR   func(context.Context, string, string) (github.SubmissionPullRequest, error)
 	// SubmissionPRWait replaces the bounded PR-head re-read delay in tests.
-	SubmissionPRWait       func(context.Context, time.Duration) error
-	ReconcileSubmissionPR  func(context.Context, string, github.SubmissionPullRequest, string) error
-	ReviewTarget           func(context.Context, string, string) (github.ReviewTarget, error)
-	ReviewDiffBetween      func(context.Context, string, string, string) (string, error)
-	ReviewPRDescription    func(context.Context, string, string) (string, error)
-	SubmissionChangedPaths func(context.Context, *config.Config, core.Task) ([]string, error)
-	Logf                   func(string, ...any)
-	RedactionSecrets       redact.SecretSource
-	WorkspaceGitHubApps    store.WorkspaceGitHubAppStore
-	GitHubApps             *github.AppClient
-	consultedMu            sync.Mutex
-	consulted              map[string]struct{}
+	SubmissionPRWait            func(context.Context, time.Duration) error
+	ReconcileSubmissionPR       func(context.Context, string, github.SubmissionPullRequest, string) error
+	ReviewTarget                func(context.Context, string, string) (github.ReviewTarget, error)
+	ReviewDiffBetween           func(context.Context, string, string, string) (string, error)
+	ReviewPRDescription         func(context.Context, string, string) (string, error)
+	SubmissionChangedPaths      func(context.Context, *config.Config, core.Task) ([]string, error)
+	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
+	Logf                        func(string, ...any)
+	RedactionSecrets            redact.SecretSource
+	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
+	GitHubApps                  *github.AppClient
+	consultedMu                 sync.Mutex
+	consulted                   map[string]struct{}
 }
 
 type Context struct {
-	ContextFreshness   core.ContextFreshness           `json:"context_freshness"`
-	Predecessor        *core.WorktreeIdentity          `json:"predecessor,omitempty"`
-	OperatorNotes      []core.OperatorNote             `json:"operator_notes,omitempty"`
-	Order              core.WorkOrder                  `json:"work_order"`
-	Task               core.Task                       `json:"task"`
-	AuthoritySource    string                          `json:"authority_source"`
-	ApprovedSpec       *core.SpecVersion               `json:"approved_spec,omitempty"`
-	PriorSpec          *core.SpecVersion               `json:"prior_spec,omitempty"`
-	TriageBrief        *pipeline.TriageBrief           `json:"triage_brief,omitempty"`
-	RolePrompt         string                          `json:"role_prompt"`
-	ServedRequirements []core.ServedRequirementContext `json:"served_requirements,omitempty"`
-	GovernanceSnapshot *core.GovernanceSnapshot        `json:"governance_snapshot,omitempty"`
-	BounceHistory      []json.RawMessage               `json:"bounce_history,omitempty"`
-	PriorFeedback      []string                        `json:"prior_feedback,omitempty"`
-	PlanRevision       *PlanRevisionContext            `json:"plan_revision,omitempty"`
-	Artifacts          []ArtifactReference             `json:"artifacts,omitempty"`
-	LineageContext     lineagecontext.Result           `json:"lineage_context"`
+	ContextFreshness          core.ContextFreshness           `json:"context_freshness"`
+	Predecessor               *core.WorktreeIdentity          `json:"predecessor,omitempty"`
+	OperatorNotes             []core.OperatorNote             `json:"operator_notes,omitempty"`
+	Order                     core.WorkOrder                  `json:"work_order"`
+	Task                      core.Task                       `json:"task"`
+	AuthoritySource           string                          `json:"authority_source"`
+	ApprovedSpec              *core.SpecVersion               `json:"approved_spec,omitempty"`
+	PriorSpec                 *core.SpecVersion               `json:"prior_spec,omitempty"`
+	TriageBrief               *pipeline.TriageBrief           `json:"triage_brief,omitempty"`
+	RolePrompt                string                          `json:"role_prompt"`
+	ServedRequirements        []core.ServedRequirementContext `json:"served_requirements,omitempty"`
+	GovernanceSnapshot        *core.GovernanceSnapshot        `json:"governance_snapshot,omitempty"`
+	DocumentationGateEvidence *core.DocumentationGateEvidence `json:"documentation_gate_evidence,omitempty"`
+	BounceHistory             []json.RawMessage               `json:"bounce_history,omitempty"`
+	PriorFeedback             []string                        `json:"prior_feedback,omitempty"`
+	PlanRevision              *PlanRevisionContext            `json:"plan_revision,omitempty"`
+	Artifacts                 []ArtifactReference             `json:"artifacts,omitempty"`
+	LineageContext            lineagecontext.Result           `json:"lineage_context"`
 	// ContextTruncated tells a client that the explicit lineage/node or
 	// artifact-reference budget was reached. Authorization uses the identical
 	// bounded selection, so an omitted artifact cannot be fetched by ID alone.
@@ -898,6 +900,15 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		authoritySource = "pinned"
 	}
 	result := Context{Order: order, Task: task, AuthoritySource: authoritySource, RolePrompt: role, ServedRequirements: servedRequirements, GovernanceSnapshot: governance, PlanRevision: planRevision}
+	if order.Stage == core.StageReview {
+		evidence, evidenceErr := s.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+		if evidenceErr == nil {
+			result.DocumentationGateEvidence = &evidence
+			result.RolePrompt += pack.DocumentationReviewContract(&evidence)
+		} else if !errors.Is(evidenceErr, store.ErrNotFound) {
+			return Context{}, fmt.Errorf("resolve review documentation evidence: %w", evidenceErr)
+		}
+	}
 	if order.Stage == core.StageImplement && order.State == core.WorkOrderClaimed && cfg != nil {
 		for _, repository := range cfg.Repos {
 			if repository.Name != task.Repo {
@@ -1784,6 +1795,16 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	}
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
+		return nil, err
+	}
+	documentation, documentationErr := s.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
+	var documentationEvidence *core.DocumentationGateEvidence
+	if documentationErr == nil {
+		documentationEvidence = &documentation
+	} else if !errors.Is(documentationErr, store.ErrNotFound) {
+		return nil, documentationErr
+	}
+	if err = store.ValidateDocumentationAssessment(documentationEvidence, validated.Verdict, validated.DocumentationAssessment); err != nil {
 		return nil, err
 	}
 	if task.SetupContract.VerifyStage {
