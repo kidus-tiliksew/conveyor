@@ -437,6 +437,33 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 			t.Fatalf("soft delete must release the name claim: %v", err)
 		}
 	})
+	// The claim and the committed-row count compare the same LOWER(name)
+	// bytes, without PAD SPACE, as Postgres lower(name) does (DEC-70).
+	t.Run("reference padded", func(t *testing.T) {
+		if err := write(reference("ref-spaced", "Spaced ")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM reference_documents WHERE id=?`, "ref-spaced")
+		if err := write(reference("ref-spaced-late", "spaced ")); !errors.Is(err, store.ErrReferenceDocumentNameConflict) {
+			t.Fatalf("padded live name against an unseen padded winner: %v", err)
+		}
+		if err := write(reference("ref-unpadded", "spaced")); err != nil {
+			t.Fatalf("unpadded name is distinct from an unseen padded winner: %v", err)
+		}
+	})
+	t.Run("reference legacy row", func(t *testing.T) {
+		// A row written before claims existed has no lock row; the count is
+		// its only guard.
+		if _, err := st.db.ExecContext(ctx, `INSERT INTO reference_documents(workspace_id,id,name,current_version,created_at,updated_at) VALUES('claims','ref-legacy','Legacy',1,?,?)`, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := write(reference("ref-legacy-case", "LEGACY")); !errors.Is(err, store.ErrReferenceDocumentNameConflict) {
+			t.Fatalf("case variant of an unclaimed legacy name: %v", err)
+		}
+		if err := write(reference("ref-legacy-padded", "legacy ")); err != nil {
+			t.Fatalf("padded name is distinct from an unclaimed legacy name: %v", err)
+		}
+	})
 	// Open-task branch claims (req-task-branch-assignment AC-4.1, AC-4.2;
 	// DEC-68, component-persistence Lock and transaction contract).
 	tasks := store.WithWorkspace(ctx, "branch-claims")

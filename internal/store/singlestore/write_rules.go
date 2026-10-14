@@ -212,6 +212,9 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		} else if !live || id == "" {
 			return nil, fmt.Errorf("reference insert requires a live document id")
 		}
+		// The claim and the count compare the same LOWER(name) bytes. BINARY
+		// drops PAD SPACE, so a trailing-space variant is distinct on both,
+		// as under the Postgres lower(name) index (DEC-70).
 		var folded string
 		if err := tx.QueryRowContext(ctx, `SELECT LOWER(?)`, name).Scan(&folded); err != nil {
 			return nil, err
@@ -223,7 +226,7 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		}
 		if live {
 			var count int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reference_documents WHERE workspace_id=? AND LOWER(name)=LOWER(?) AND deleted_at IS NULL AND id<>?`, ws, name, id).Scan(&count); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reference_documents WHERE workspace_id=? AND BINARY LOWER(name)=BINARY ? AND deleted_at IS NULL AND id<>?`, ws, folded, id).Scan(&count); err != nil {
 				return nil, err
 			}
 			if holder != "" && holder != id {
