@@ -183,14 +183,21 @@ func NormalizeSystemDesignContent(content string) string {
 	return strings.TrimSpace(content)
 }
 
-// MatchGovernedPath implements repository-relative doublestar matching without
-// granting absolute or parent-traversing paths. ** spans path separators;
-// ordinary * and ? remain segment-local.
-func MatchGovernedPath(glob, changedPath string) bool {
+// GovernedPathMatcher reuses a compiled repository-relative doublestar pattern.
+// ** spans separators; ordinary * and ? remain segment-local.
+type GovernedPathMatcher struct {
+	pattern *regexp.Regexp
+}
+
+func (m GovernedPathMatcher) Match(changedPath string) bool {
 	changedPath = strings.TrimPrefix(strings.ReplaceAll(changedPath, "\\", "/"), "./")
 	if changedPath == "" || strings.HasPrefix(changedPath, "/") || strings.Contains(changedPath, "../") {
 		return false
 	}
+	return m.pattern.MatchString(changedPath)
+}
+
+func CompileGovernedPath(glob string) (GovernedPathMatcher, error) {
 	var b strings.Builder
 	b.WriteByte('^')
 	for i := 0; i < len(glob); i++ {
@@ -214,7 +221,13 @@ func MatchGovernedPath(glob, changedPath string) bool {
 		}
 	}
 	b.WriteByte('$')
-	return regexp.MustCompile(b.String()).MatchString(changedPath)
+	pattern, err := regexp.Compile(b.String())
+	return GovernedPathMatcher{pattern: pattern}, err
+}
+
+func MatchGovernedPath(glob, changedPath string) bool {
+	matcher, err := CompileGovernedPath(glob)
+	return err == nil && matcher.Match(changedPath)
 }
 
 // GovernedDesignMatch carries the deterministic changed paths that place one

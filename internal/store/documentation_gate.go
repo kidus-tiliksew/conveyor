@@ -18,7 +18,10 @@ var ErrDocumentationGateUnresolved = errors.New("documentation gate unresolved")
 var ErrDocumentationUnresolved = errors.New("review documentation_assessment blocks approve")
 
 // NormalizeDocumentationGateEvidence recomputes all derived evidence before any write (AC-9.3).
-func NormalizeDocumentationGateEvidence(e core.DocumentationGateEvidence) (core.DocumentationGateEvidence, error) {
+func NormalizeDocumentationGateEvidence(ctx context.Context, e core.DocumentationGateEvidence) (core.DocumentationGateEvidence, error) {
+	if err := ctx.Err(); err != nil {
+		return e, err
+	}
 	if strings.TrimSpace(e.TaskID) == "" {
 		return e, fmt.Errorf("documentation evidence task_id is required")
 	}
@@ -38,15 +41,19 @@ func NormalizeDocumentationGateEvidence(e core.DocumentationGateEvidence) (core.
 		return e, err
 	}
 	e.ChangedPaths = normalizedDocumentationPaths(e.ChangedPaths)
-	e.MatchedPaths = normalizedDocumentationPaths(c.MatchedPaths(e.ChangedPaths))
-	e.AffectedDocuments = c.AffectedDocuments(e.ChangedPaths)
+	evaluation, err := c.Evaluate(ctx, e.ChangedPaths)
+	if err != nil {
+		return e, err
+	}
+	e.MatchedPaths = normalizedDocumentationPaths(evaluation.MatchedPaths)
+	e.AffectedDocuments = evaluation.AffectedDocuments
 	reason, qualified := docsconfig.MatchNoneStatement(e.AgentAuthoredBody, c.Rule.NoneStatement, c.Rule.ReasonRequired)
 	e.NoneStatement, e.NoneReason = "", ""
 	if qualified {
 		e.NoneStatement, e.NoneReason = c.Rule.NoneStatement, reason
 	}
 	if len(e.AffectedDocuments) > 0 && !qualified {
-		return e, fmt.Errorf("%w: affected documents not updated: %s; update them or supply %q%s", ErrDocumentationGateUnresolved, strings.Join(e.AffectedDocuments, ", "), c.Rule.NoneStatement, map[bool]string{true: " with a reason"}[c.Rule.ReasonRequired])
+		return e, fmt.Errorf("%w: affected documents not updated: %s; governed paths: %s; update the documents or supply %q%s", ErrDocumentationGateUnresolved, strings.Join(e.AffectedDocuments, ", "), strings.Join(normalizedDocumentationPaths(evaluation.GovernedPaths), ", "), c.Rule.NoneStatement, map[bool]string{true: " with a reason"}[c.Rule.ReasonRequired])
 	}
 	e.PolicyJSON, _ = json.Marshal(c)
 	return e, nil
@@ -105,17 +112,17 @@ func ValidateDocumentationAssessment(e *core.DocumentationGateEvidence, verdict 
 	return nil
 }
 func cloneDocumentationEvidence(e core.DocumentationGateEvidence) core.DocumentationGateEvidence {
-	e.PolicyJSON = append(json.RawMessage(nil), e.PolicyJSON...)
-	e.ChangedPaths = append([]string(nil), e.ChangedPaths...)
-	e.MatchedPaths = append([]string(nil), e.MatchedPaths...)
-	e.AffectedDocuments = append([]string(nil), e.AffectedDocuments...)
+	e.PolicyJSON = slices.Clone(e.PolicyJSON)
+	e.ChangedPaths = slices.Clone(e.ChangedPaths)
+	e.MatchedPaths = slices.Clone(e.MatchedPaths)
+	e.AffectedDocuments = slices.Clone(e.AffectedDocuments)
 	return e
 }
 func (m *memory) RecordDocumentationGateEvidence(ctx context.Context, e core.DocumentationGateEvidence) error {
 	if _, err := RequireActor(ctx); err != nil {
 		return err
 	}
-	normalized, err := NormalizeDocumentationGateEvidence(e)
+	normalized, err := NormalizeDocumentationGateEvidence(ctx, e)
 	if err != nil {
 		return err
 	}

@@ -7,20 +7,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/docsconfig"
 )
 
 type DocumentationPolicyDiscovery struct {
 	Revision string
-	State    string // present | absent | malformed | unavailable
+	State    string // present | absent | malformed | unavailable (known declaration) | unknown
 	Bytes    []byte
 	Policy   *docsconfig.Config
 }
 
-// DiscoverDocumentationPolicy proves absence with an untruncated tree at the PR base SHA (DEC-71).
+// DiscoverDocumentationPolicy checks only the root and declaration directory at the PR base SHA (DEC-71).
+// An unreadable repository does not establish an opt-in; a located, unreadable declaration does.
 func (c *AppClient) DiscoverDocumentationPolicy(ctx context.Context, st AppStore, workspace, slug, revision string) DocumentationPolicyDiscovery {
-	d := DocumentationPolicyDiscovery{Revision: revision, State: "unavailable"}
+	d := DocumentationPolicyDiscovery{Revision: revision, State: "unknown"}
 	sha, err := hex.DecodeString(revision)
 	if err != nil || len(sha) != 20 || strings.ToLower(revision) != revision {
 		return d
@@ -45,15 +47,21 @@ func (c *AppClient) DiscoverDocumentationPolicy(ctx context.Context, st AppStore
 	}
 	r := &restClient{http: client, baseURL: strings.TrimRight(base, "/"), token: token, identity: AppIdentity(workspace)}
 	get := func(endpoint string, target any) bool {
-		raw, _, _, err := r.request(ctx, http.MethodGet, endpoint, "application/vnd.github+json", nil)
-		if err != nil {
-			return false
+		for attempt := range 3 {
+			raw, _, status, err := r.request(ctx, http.MethodGet, endpoint, "application/vnd.github+json", nil)
+			if err == nil {
+				return json.Unmarshal(raw, target) == nil
+			}
+			if attempt == 2 || status != 0 && status != http.StatusTooManyRequests && status < 500 {
+				return false
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+			}
 		}
-		if json.Unmarshal(raw, target) != nil {
-			d.State = "malformed"
-			return false
-		}
-		return true
+		return false
 	}
 	var commit struct {
 		SHA  string `json:"sha"`
@@ -64,29 +72,48 @@ func (c *AppClient) DiscoverDocumentationPolicy(ctx context.Context, st AppStore
 	if !get("/repos/"+slug+"/git/commits/"+revision, &commit) || commit.SHA != revision || commit.Tree.SHA == "" {
 		return d
 	}
-	var tree struct {
-		Truncated bool                                     `json:"truncated"`
-		SHA       string                                   `json:"sha"`
-		Entries   []struct{ Path, Mode, Type, SHA string } `json:"tree"`
+	type treeEntry struct{ Path, Mode, Type, SHA string }
+	type gitTree struct {
+		Truncated bool        `json:"truncated"`
+		SHA       string      `json:"sha"`
+		Entries   []treeEntry `json:"tree"`
 	}
-	if !get("/repos/"+slug+"/git/trees/"+commit.Tree.SHA+"?recursive=1", &tree) {
+	var tree gitTree
+	if !get("/repos/"+slug+"/git/trees/"+commit.Tree.SHA, &tree) || tree.SHA != commit.Tree.SHA || tree.Entries == nil {
 		return d
 	}
-	if tree.Truncated || tree.SHA != commit.Tree.SHA || tree.Entries == nil {
+	directorySHA := ""
+	for _, entry := range tree.Entries {
+		if entry.Path == ".conveyor" && entry.Type == "tree" {
+			directorySHA = entry.SHA
+			break
+		}
+	}
+	if directorySHA == "" {
+		if !tree.Truncated {
+			d.State = "absent"
+		}
 		return d
 	}
-	blobOID, mode := "", ""
-	for _, e := range tree.Entries {
-		if e.Path == docsconfig.FilePath {
-			blobOID, mode = e.SHA, e.Mode
+	var directory gitTree
+	if !get("/repos/"+slug+"/git/trees/"+directorySHA, &directory) || directory.SHA != directorySHA || directory.Entries == nil {
+		return d
+	}
+	blobOID, mode, kind := "", "", ""
+	for _, entry := range directory.Entries {
+		if entry.Path == "docs.yaml" {
+			blobOID, mode, kind = entry.SHA, entry.Mode, entry.Type
 			break
 		}
 	}
 	if blobOID == "" {
-		d.State = "absent"
+		if !directory.Truncated {
+			d.State = "absent"
+		}
 		return d
 	}
-	if mode != "100644" && mode != "100755" {
+	d.State = "unavailable"
+	if kind != "blob" || mode != "100644" && mode != "100755" {
 		d.State = "malformed"
 		return d
 	}

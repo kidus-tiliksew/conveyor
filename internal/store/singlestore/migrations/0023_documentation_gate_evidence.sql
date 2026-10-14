@@ -6,4 +6,4 @@ CREATE ROWSTORE TABLE IF NOT EXISTS documentation_gate_evidence (
  payload_json JSON NOT NULL,
  PRIMARY KEY (workspace_id, task_id, head_sha),
  SHARD KEY (workspace_id, task_id)
-);
+) COLLATE utf8mb4_bin;

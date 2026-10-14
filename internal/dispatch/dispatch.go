@@ -30,25 +30,27 @@ import (
 )
 
 type Dispatcher struct {
-	ReadVerificationPR         func(context.Context, string, int) (github.VerificationPullRequest, error)
-	WriteVerificationPR        func(context.Context, string, int, string) error
-	Store                      store.Store
-	Cfg                        *config.Config
-	Pack                       *pack.Bundle
-	Agent                      inprocess.Agent
-	ConfigProvider             func(context.Context) (*config.Config, error)
-	PullRequestForClose        func(context.Context, string, string) (github.PullRequest, error)
-	PullRequestForNumber       func(context.Context, string, int) (github.PullRequest, error)
-	ClosePullRequest           func(context.Context, string, int, string, string) error
-	PublishIssue               func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
-	PublishReview              func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
-	ViewPullRequest            func(context.Context, string, string) (github.PullRequest, error)
-	RequestMerge               func(context.Context, string, int) error
-	RequestMergeWithCredential func(context.Context, string, int, string) error
-	ListPullRequestFiles       func(context.Context, string, int) ([]string, error)
-	WorkspaceGitHubApps        store.WorkspaceGitHubAppStore
-	GitHubApps                 *github.AppClient
-	ObserveDesignMerge         func(context.Context, monitor.Observation, string) error
+	ReadVerificationPR          func(context.Context, string, int) (github.VerificationPullRequest, error)
+	WriteVerificationPR         func(context.Context, string, int, string) error
+	Store                       store.Store
+	Cfg                         *config.Config
+	Pack                        *pack.Bundle
+	Agent                       inprocess.Agent
+	ConfigProvider              func(context.Context) (*config.Config, error)
+	PullRequestForClose         func(context.Context, string, string) (github.PullRequest, error)
+	PullRequestForNumber        func(context.Context, string, int) (github.PullRequest, error)
+	ClosePullRequest            func(context.Context, string, int, string, string) error
+	PublishIssue                func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
+	PublishReview               func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
+	ViewPullRequest             func(context.Context, string, string) (github.PullRequest, error)
+	SubmissionPR                func(context.Context, string, string) (github.SubmissionPullRequest, error)
+	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
+	RequestMerge                func(context.Context, string, int) error
+	RequestMergeWithCredential  func(context.Context, string, int, string) error
+	ListPullRequestFiles        func(context.Context, string, int) ([]string, error)
+	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
+	GitHubApps                  *github.AppClient
+	ObserveDesignMerge          func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
 	// (component-work-orders). Injectable for tests.
@@ -66,6 +68,21 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		RequestMergeWithCredential: github.MergePullRequestWithCredential,
 
 		Now: func() time.Time { return time.Now().UTC() },
+	}
+	d.SubmissionPR = func(ctx context.Context, repo, branch string) (github.SubmissionPullRequest, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
+		if err != nil {
+			return github.SubmissionPullRequest{}, err
+		}
+		return github.SubmissionPRForBranch(forgeCtx, repo, branch)
+	}
+	d.DiscoverDocumentationPolicy = func(ctx context.Context, repo, revision string) github.DocumentationPolicyDiscovery {
+		client := d.GitHubApps
+		if client == nil {
+			client = github.DefaultAppClient
+		}
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		return client.DiscoverDocumentationPolicy(ctx, d.WorkspaceGitHubApps, workspace, repo, revision)
 	}
 	d.ReviewChangedPaths = func(ctx context.Context, cfg *config.Config, task core.Task) ([]string, error) {
 		repo, ok := cfg.Repo(task.Repo)

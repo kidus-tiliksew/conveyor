@@ -96,7 +96,11 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if refresh, ok, refreshErr := s.dispatchedConflictRefresh(ctx, task, order, headSHA); refreshErr != nil {
 		return nil, refreshErr
 	} else if ok {
-		return s.completeDispatchedRefresh(ctx, cfg, task, order, headSHA, refresh)
+		documentation, checked, gateErr := s.dispatchedRefreshDocumentationAdmission(ctx, cfg, task, headSHA)
+		if gateErr != nil {
+			return nil, gateErr
+		}
+		return s.completeDispatchedRefresh(ctx, cfg, task, order, headSHA, refresh, checked, documentation)
 	}
 	// Read-only admission: the task must accept stage.advance and the order's
 	// own job must be completable before any submission side effect.
@@ -118,6 +122,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		return nil, fmt.Errorf("repo %s not found", task.Repo)
 	}
 	var target github.SubmissionPullRequest
+	var documentationEvidence *core.DocumentationGateEvidence
 	authorID := ""
 	forgeCtx := ctx
 	if repo.GitHub != "" {
@@ -184,38 +189,10 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 			}
 		}
 		if repo.GitHub != "" {
-			discover := s.DiscoverDocumentationPolicy
-			if discover == nil {
-				client := s.GitHubApps
-				if client == nil {
-					client = github.DefaultAppClient
-				}
-				discover = func(ctx context.Context, slug, revision string) github.DocumentationPolicyDiscovery {
-					workspace, _ := store.WorkspaceFromContext(ctx)
-					return client.DiscoverDocumentationPolicy(ctx, s.WorkspaceGitHubApps, workspace, slug, revision)
-				}
-			}
-			declaration := discover(ctx, repo.GitHub, target.Base.SHA)
-			switch declaration.State {
-			case "absent":
-				// DEC-71: absence records nothing and leaves the existing path unchanged.
-			case "present":
-				if declaration.Revision != target.Base.SHA || declaration.Policy == nil {
-					return nil, fmt.Errorf("submission refused before side effects: documentation declaration revision mismatch")
-				}
-				policyJSON, marshalErr := json.Marshal(declaration.Policy)
-				if marshalErr != nil {
-					return nil, marshalErr
-				}
-				if err = s.Store.RecordDocumentationGateEvidence(ctx, core.DocumentationGateEvidence{
-					TaskID: task.ID, HeadSHA: headSHA, BaseSHA: target.Base.SHA,
-					PolicyJSON: policyJSON, ChangedPaths: paths,
-					AgentAuthoredBody: github.AgentAuthoredPullRequestBody(target.Body),
-				}); err != nil {
-					return nil, fmt.Errorf("submission refused before side effects: %w", err)
-				}
-			default:
-				return nil, fmt.Errorf("submission refused before side effects: documentation declaration %s at base %s", declaration.State, target.Base.SHA)
+			declaration := s.discoverDocumentationPolicy(ctx, repo.GitHub, target.Base.SHA)
+			documentationEvidence, err = documentationSubmissionEvidence(ctx, task.ID, headSHA, target, paths, declaration)
+			if err != nil {
+				return nil, err
 			}
 		}
 		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
@@ -253,7 +230,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		}
 	}
 	freshness := s.refreshContext(ctx, order, "", "context.verdict_refresh_observed")
-	if err = s.completeImplementationSubmission(ctx, order, headSHA); err != nil {
+	if err = s.completeImplementationSubmission(ctx, order, headSHA, repo.GitHub != "", documentationEvidence); err != nil {
 		return nil, err
 	}
 	// Only a fix dispatched from the approved head refreshes that approval. A
@@ -301,6 +278,94 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		result["next_stage"] = nextStage
 	}
 	return result, nil
+}
+
+func (s *Service) discoverDocumentationPolicy(ctx context.Context, slug, revision string) github.DocumentationPolicyDiscovery {
+	if s.DiscoverDocumentationPolicy != nil {
+		return s.DiscoverDocumentationPolicy(ctx, slug, revision)
+	}
+	client := s.GitHubApps
+	if client == nil {
+		client = github.DefaultAppClient
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	return client.DiscoverDocumentationPolicy(ctx, s.WorkspaceGitHubApps, workspace, slug, revision)
+}
+
+func documentationSubmissionEvidence(ctx context.Context, taskID, headSHA string, target github.SubmissionPullRequest, paths []string, declaration github.DocumentationPolicyDiscovery) (*core.DocumentationGateEvidence, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	switch declaration.State {
+	case "", "absent", "unknown":
+		// DEC-71: an absent or unestablished opt-in contributes no evidence.
+		return nil, nil
+	case "present":
+		if declaration.Revision != target.Base.SHA || declaration.Policy == nil {
+			return nil, fmt.Errorf("submission refused before side effects: documentation declaration revision mismatch")
+		}
+		policyJSON, err := json.Marshal(declaration.Policy)
+		if err != nil {
+			return nil, err
+		}
+		evidence, err := store.NormalizeDocumentationGateEvidence(ctx, core.DocumentationGateEvidence{
+			TaskID: taskID, HeadSHA: headSHA, BaseSHA: target.Base.SHA,
+			PolicyJSON: policyJSON, ChangedPaths: paths,
+			AgentAuthoredBody: github.AgentAuthoredPullRequestBody(target.Body),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("submission refused before side effects: %w", err)
+		}
+		return &evidence, nil
+	default:
+		return nil, fmt.Errorf("submission refused before side effects: documentation declaration %s at base %s", declaration.State, target.Base.SHA)
+	}
+}
+
+// A dispatched refresh retains its existing handoff, but its conflict-fix head
+// still needs documentation admission before the order/job completion.
+func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, cfg *config.Config, task core.Task, head string) (*core.DocumentationGateEvidence, bool, error) {
+	repo, ok := cfg.Repo(task.Repo)
+	if !ok || repo.GitHub == "" {
+		return nil, false, nil
+	}
+	forgeCtx := ctx
+	lookup := s.SubmissionPR
+	if lookup == nil {
+		var err error
+		forgeCtx, err = s.workspaceForgeContext(ctx, repo.GitHub)
+		if err != nil {
+			return nil, true, fmt.Errorf("resolve conflict-fix forge context: %w", err)
+		}
+		lookup = github.SubmissionPRForBranch
+	}
+	target, err := lookup(forgeCtx, repo.GitHub, task.Branch)
+	if err != nil {
+		return nil, true, fmt.Errorf("read conflict-fix pull request: %w", err)
+	}
+	declaration := s.discoverDocumentationPolicy(ctx, repo.GitHub, target.Base.SHA)
+	if declaration.State != "present" {
+		evidence, err := documentationSubmissionEvidence(ctx, task.ID, head, target, nil, declaration)
+		return evidence, true, err
+	}
+	if target.Head.SHA != head || target.Head.Ref != task.Branch || target.Base.Ref != task.BaseBranch {
+		return nil, true, fmt.Errorf("submission refused before side effects: documentation declaration pull request does not match the conflict-fix head and branch")
+	}
+	comparison := task
+	comparison.ReviewedHeadSHA, comparison.BaseBranch = head, target.Base.SHA
+	changedPaths := s.SubmissionChangedPaths
+	if changedPaths == nil && s.Dispatcher != nil {
+		changedPaths = s.Dispatcher.ReviewChangedPaths
+	}
+	if changedPaths == nil {
+		changedPaths = dispatch.ReviewBranchChangedPaths
+	}
+	paths, err := changedPaths(forgeCtx, cfg, comparison)
+	if err != nil {
+		return nil, true, fmt.Errorf("resolve documentation admission changed paths: %w", err)
+	}
+	evidence, err := documentationSubmissionEvidence(ctx, task.ID, head, target, paths, declaration)
+	return evidence, true, err
 }
 
 // observeSubmissionPR reads the branch PR immediately and re-reads a valid PR
@@ -359,11 +424,11 @@ func (s *Service) submissionJobReady(ctx context.Context, order core.WorkOrder) 
 
 // completeImplementationSubmission records the submitted order and completes
 // its own job atomically; a completion failure leaves neither written.
-func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string) error {
+func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string, documentationChecked bool, documentation *core.DocumentationGateEvidence) error {
 	order.State = core.WorkOrderSubmitted
 	order.HeadSHA = headSHA
 	_, err := taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdSubmitForReview, func(lease taskops.TaskLease) (core.Job, error) {
-		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC()})
+		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC(), DocumentationChecked: documentationChecked, DocumentationEvidence: documentation})
 	})
 	return err
 }
@@ -460,11 +525,11 @@ func refreshScopeCovers(scope, minimum string) bool {
 
 // completeDispatchedRefresh completes the claimed conflict-fix order and its
 // own job once. The existing refresh keeps its round, seats, and dispatch.
-func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Config, task core.Task, order core.WorkOrder, head string, refresh dispatchedRefresh) (map[string]any, error) {
+func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Config, task core.Task, order core.WorkOrder, head string, refresh dispatchedRefresh, documentationChecked bool, documentation *core.DocumentationGateEvidence) (map[string]any, error) {
 	if err := s.submissionJobReady(ctx, order); err != nil {
 		return nil, err
 	}
-	if err := s.completeImplementationSubmission(ctx, order, head); err != nil {
+	if err := s.completeImplementationSubmission(ctx, order, head, documentationChecked, documentation); err != nil {
 		return nil, err
 	}
 	result := map[string]any{"pr_url": s.recordedPRURL(ctx, task.ID), "review_execution": cfg.Routing.Stages["review"].Execution, "await_review": true, "refresh_already_dispatched": true}

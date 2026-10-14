@@ -55,16 +55,27 @@ func validateLocalDocs(ctx context.Context, input string) (docsValidateReceipt, 
 		return fail(err)
 	}
 	declaration := abs
-	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fail(err)
+	}
+	if info.IsDir() {
 		declaration = filepath.Join(abs, filepath.FromSlash(docsconfig.FilePath))
 	}
 	receipt.Path = declaration
-	f, err := os.Open(declaration)
+	info, err = os.Lstat(declaration)
 	if err != nil {
 		if os.IsNotExist(err) {
 			receipt.Status = "gate off: declaration absent"
 			return receipt, nil
 		}
+		return fail(err)
+	}
+	if !info.Mode().IsRegular() {
+		return fail(fmt.Errorf("documentation declaration must be a regular file, not a symlink or directory"))
+	}
+	f, err := os.Open(declaration)
+	if err != nil {
 		return fail(err)
 	}
 	defer f.Close()
@@ -85,22 +96,36 @@ func validateLocalDocs(ctx context.Context, input string) (docsValidateReceipt, 
 		return fail(err)
 	}
 	files := strings.Split(string(tracked), "\x00")
-	for _, doc := range cfg.Docs {
-		missing := []string{}
-		for _, glob := range append([]string{doc.Path}, doc.Governs...) {
+	for entry, doc := range cfg.Docs {
+		for index := 0; index <= len(doc.Governs); index++ {
+			glob := doc.Path
+			if index > 0 {
+				glob = doc.Governs[index-1]
+			}
+			if err := ctx.Err(); err != nil {
+				return fail(err)
+			}
+			pattern, err := core.CompileGovernedPath(glob)
+			if err != nil {
+				return fail(err)
+			}
 			matched := false
 			for _, file := range files {
-				if core.MatchGovernedPath(glob, file) {
+				if err := ctx.Err(); err != nil {
+					return fail(err)
+				}
+				if pattern.Match(file) {
 					matched = true
 					break
 				}
 			}
 			if !matched {
-				missing = append(missing, glob)
+				key := fmt.Sprintf("docs[%d].path", entry)
+				if index > 0 {
+					key = fmt.Sprintf("docs[%d].governs[%d]", entry, index-1)
+				}
+				receipt.Diagnostics = append(receipt.Diagnostics, docsValidateDiagnostic{Path: key, Message: fmt.Sprintf("matches no tracked file: %s", glob)})
 			}
-		}
-		if len(missing) > 0 {
-			receipt.Diagnostics = append(receipt.Diagnostics, docsValidateDiagnostic{Path: doc.Path, Message: fmt.Sprintf("matches no tracked file: %s", strings.Join(missing, ", "))})
 		}
 	}
 	if len(receipt.Diagnostics) > 0 {

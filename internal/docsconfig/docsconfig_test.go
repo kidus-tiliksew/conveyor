@@ -1,6 +1,8 @@
 package docsconfig
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,11 +36,15 @@ func TestDeclarationClosure(t *testing.T) {
 		{[]string{"internal/server.go", "docs/api.md"}, []string{}, []string{"docs/api.md"}},
 		{[]string{"README.md"}, []string{}, []string{}},
 	} {
-		if got := c.AffectedDocuments(tc.paths); !reflect.DeepEqual(got, tc.affected) {
-			t.Fatalf("affected %v=%v", tc.paths, got)
+		evaluation, err := c.Evaluate(t.Context(), tc.paths)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if got := c.MatchedPaths(tc.paths); !reflect.DeepEqual(got, tc.matched) {
-			t.Fatalf("matched %v=%v", tc.paths, got)
+		if !reflect.DeepEqual(evaluation.AffectedDocuments, tc.affected) {
+			t.Fatalf("affected %v=%v", tc.paths, evaluation.AffectedDocuments)
+		}
+		if !reflect.DeepEqual(evaluation.MatchedPaths, tc.matched) {
+			t.Fatalf("matched %v=%v", tc.paths, evaluation.MatchedPaths)
 		}
 	}
 	for _, bad := range []string{
@@ -77,7 +83,23 @@ func TestNoneLineQualifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.MatchedPaths([]string{"docs/api.md", "docs/deep/guide.md"}); !reflect.DeepEqual(got, []string{"docs/api.md", "docs/deep/guide.md"}) {
-		t.Fatalf("shared doublestar dialect=%v", got)
+	evaluation, err := c.Evaluate(t.Context(), []string{"docs/api.md", "docs/deep/guide.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(evaluation.MatchedPaths, []string{"docs/api.md", "docs/deep/guide.md"}) {
+		t.Fatalf("shared doublestar dialect=%v", evaluation.MatchedPaths)
+	}
+}
+
+func TestDocumentationEvaluationCancellation(t *testing.T) {
+	declaration, err := Parse([]byte(validDeclaration))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := declaration.Evaluate(ctx, []string{"internal/server.go"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled evaluation error=%v", err)
 	}
 }

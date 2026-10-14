@@ -146,21 +146,33 @@ type ConflictFixRequest struct {
 // The command rechecks the live claim and session and completes only the job
 // named by Order.JobID, never the task's latest job.
 type ImplementationSubmission struct {
-	Order   core.WorkOrder
-	EndedAt time.Time
+	Order                 core.WorkOrder
+	EndedAt               time.Time
+	DocumentationChecked  bool
+	DocumentationEvidence *core.DocumentationGateEvidence
 }
 
-// ValidateImplementationSubmission checks the request shape shared by every
-// backend before any write.
-func ValidateImplementationSubmission(request ImplementationSubmission) error {
+// NormalizeImplementationSubmission validates the exact head and documentation
+// admission before the command atomically replaces evidence and completes its job.
+func NormalizeImplementationSubmission(ctx context.Context, request ImplementationSubmission) (ImplementationSubmission, error) {
 	order := request.Order
 	if order.ID == "" || order.TaskID == "" || order.JobID == "" {
-		return fmt.Errorf("implementation submission requires work order, task, and job identifiers")
+		return request, fmt.Errorf("implementation submission requires work order, task, and job identifiers")
 	}
 	if order.Stage != core.StageImplement || order.State != core.WorkOrderSubmitted || strings.TrimSpace(order.HeadSHA) == "" || order.SessionID == "" {
-		return fmt.Errorf("implementation submission for %s requires a submitted implement order with session and head", order.ID)
+		return request, fmt.Errorf("implementation submission for %s requires a submitted implement order with session and head", order.ID)
 	}
-	return nil
+	if request.DocumentationEvidence != nil {
+		if !request.DocumentationChecked || request.DocumentationEvidence.TaskID != order.TaskID || request.DocumentationEvidence.HeadSHA != order.HeadSHA {
+			return request, fmt.Errorf("documentation evidence must belong to the checked submission task and head")
+		}
+		evidence, err := NormalizeDocumentationGateEvidence(ctx, *request.DocumentationEvidence)
+		if err != nil {
+			return request, err
+		}
+		request.DocumentationEvidence = &evidence
+	}
+	return request, ctx.Err()
 }
 
 // ValidateSubmissionJob refuses completion of a missing, foreign, or
@@ -323,7 +335,8 @@ func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Job{}, err
 	}
-	if err := ValidateImplementationSubmission(request); err != nil {
+	request, err := NormalizeImplementationSubmission(ctx, request)
+	if err != nil {
 		return core.Job{}, err
 	}
 	m.mu.Lock()
@@ -338,6 +351,21 @@ func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.
 	}
 	if err := m.updateWorkOrderCommandLocked(ctx, lease, order, core.WorkOrderCmdSubmitForReview); err != nil {
 		return core.Job{}, err
+	}
+	if request.DocumentationChecked {
+		workspace, _ := WorkspaceFromContext(ctx)
+		key := memoryScopedKey{workspace: workspace, id: order.TaskID}
+		if request.DocumentationEvidence == nil {
+			delete(m.documentationEvidence[key], order.HeadSHA)
+		} else {
+			if m.documentationEvidence == nil {
+				m.documentationEvidence = map[memoryScopedKey]map[string]core.DocumentationGateEvidence{}
+			}
+			if m.documentationEvidence[key] == nil {
+				m.documentationEvidence[key] = map[string]core.DocumentationGateEvidence{}
+			}
+			m.documentationEvidence[key][order.HeadSHA] = cloneDocumentationEvidence(*request.DocumentationEvidence)
+		}
 	}
 	ended := request.EndedAt.UTC()
 	if ended.IsZero() {
@@ -432,6 +460,7 @@ func (m *memory) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA,
 	}
 	task.ApprovedHeadSHA, task.ApprovalStale = approvedHeadSHA, true
 	task.RefreshBaselineSHA, task.RefreshHeadSHA, task.RefreshReviewScope = approvedHeadSHA, newHeadSHA, scope
+	task.ReviewedHeadSHA = newHeadSHA
 	m.supersedeVerificationLocked(ctx, id, newHeadSHA)
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "approval.stale", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "reason_code": reason, "approved_head": approvedHeadSHA, "new_head": newHeadSHA, "review_scope": scope})})
@@ -459,7 +488,7 @@ func (m *memory) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA stri
 		return nil
 	}
 	prior := task.RefreshHeadSHA
-	task.RefreshHeadSHA = newHeadSHA
+	task.RefreshHeadSHA, task.ReviewedHeadSHA = newHeadSHA, newHeadSHA
 	m.supersedeVerificationLocked(ctx, id, newHeadSHA)
 	m.tasks[id] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "review.refresh_head_advanced", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": id, "approved_head": task.RefreshBaselineSHA, "prior_head": prior, "new_head": newHeadSHA, "review_scope": task.RefreshReviewScope})})

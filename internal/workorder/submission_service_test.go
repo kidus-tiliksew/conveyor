@@ -258,16 +258,19 @@ type evidenceSubmissionFixture struct {
 	prBody    *string
 }
 
-func newEvidenceSubmissionFixture(t *testing.T) evidenceSubmissionFixture {
+func newEvidenceSubmissionFixture(t *testing.T, wrap ...func(store.Store) store.Store) evidenceSubmissionFixture {
 	t.Helper()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	st := store.NewMemory()
+	var st store.Store = store.NewMemory()
+	for _, apply := range wrap {
+		st = apply(st)
+	}
 	task := core.Task{
 		ID: "evidence-task", Workspace: "demo", Repo: "app", Source: "roadmap:phase-5.4",
 		Title: "Evidence change", Branch: "conveyor/evidence-task", BaseBranch: "main",
 		State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now(),
 	}
-	otherTask := core.Task{ID: "other-task", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}
+	otherTask := core.Task{ID: "other-task", Workspace: "demo", Repo: "app", State: core.TaskRunning, CreatedAt: time.Now()}
 	for _, candidate := range []core.Task{task, otherTask} {
 		if err := st.CreateTask(ctx, candidate); err != nil {
 			t.Fatal(err)
@@ -974,8 +977,8 @@ func TestConflictFixSubmissionCompletesOnceWhenRefreshAlreadyDispatched(t *testi
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result["refresh_already_dispatched"] != true || f.reads != 0 || f.reconciled != 0 {
-				t.Fatalf("result=%v reads=%d reconciled=%d", result, f.reads, f.reconciled)
+			if result["refresh_already_dispatched"] != true || f.reconciled != 0 {
+				t.Fatalf("result=%v reconciled=%d", result, f.reconciled)
 			}
 			if test.stage == core.StageVerify && result["next_stage"] != core.StageVerify {
 				t.Fatalf("verify routing result=%v", result)
@@ -1001,7 +1004,7 @@ func TestConflictFixSubmissionCompletesOnceWhenRefreshAlreadyDispatched(t *testi
 			// The same session replays the identical head without any write.
 			events := f.eventCount(t)
 			replay, err := f.submit("fixer", "fix-head")
-			if err != nil || replay["replayed"] != true || f.eventCount(t) != events || f.reads != 0 {
+			if err != nil || replay["replayed"] != true || f.eventCount(t) != events {
 				t.Fatalf("replay=%v err=%v events before=%d after=%d", replay, err, events, f.eventCount(t))
 			}
 			if _, err = f.service.PullRequestTemplate(f.ctx, f.order.ID, "fixer"); err != nil {
@@ -1415,8 +1418,8 @@ func TestConflictFixSubmissionRefusesSupersededRefreshRound(t *testing.T) {
 		if replay, err := f.submit("fixer", "fix-head"); err == nil || replay != nil || !strings.Contains(err.Error(), "review handoff was not recorded") {
 			t.Fatalf("superseded refresh replay=%v err=%v", replay, err)
 		}
-		if f.eventCount(t) != events || f.reads != 0 || f.reconciled != 0 {
-			t.Fatalf("refused replay wrote state: events %d→%d reads=%d reconciled=%d", events, f.eventCount(t), f.reads, f.reconciled)
+		if f.eventCount(t) != events || f.reconciled != 0 {
+			t.Fatalf("refused replay wrote state: events %d→%d reconciled=%d", events, f.eventCount(t), f.reconciled)
 		}
 	})
 }

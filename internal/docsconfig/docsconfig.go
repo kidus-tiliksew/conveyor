@@ -3,6 +3,7 @@ package docsconfig
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"path"
@@ -106,41 +107,69 @@ func ValidateGlob(glob string) error {
 	return nil
 }
 
-// MatchedPaths preserves declaration order, with changed paths deduplicated.
-func (c *Config) MatchedPaths(changed []string) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, doc := range c.Docs {
-		for _, p := range changed {
-			if core.MatchGovernedPath(doc.Path, p) && !seen[p] {
-				out = append(out, p)
-				seen[p] = true
-			}
-		}
-	}
-	return out
+type Evaluation struct {
+	MatchedPaths      []string
+	AffectedDocuments []string
+	GovernedPaths     []string
 }
 
-// AffectedDocuments returns declared documents governing changed source but not updated.
-func (c *Config) AffectedDocuments(changed []string) []string {
-	out := []string{}
+// Evaluate compiles each declaration pattern once and observes cancellation during traversal.
+func (c *Config) Evaluate(ctx context.Context, changed []string) (Evaluation, error) {
+	result := Evaluation{MatchedPaths: []string{}, AffectedDocuments: []string{}, GovernedPaths: []string{}}
+	matched, governed := map[string]bool{}, map[string]bool{}
 	for _, doc := range c.Docs {
-		updated, affected := false, false
-		for _, p := range changed {
-			if core.MatchGovernedPath(doc.Path, p) {
-				updated = true
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		document, err := core.CompileGovernedPath(doc.Path)
+		if err != nil {
+			return result, fmt.Errorf("document %q: %w", doc.Path, err)
+		}
+		patterns := make([]core.GovernedPathMatcher, 0, len(doc.Governs))
+		for _, glob := range doc.Governs {
+			if err := ctx.Err(); err != nil {
+				return result, err
 			}
-			for _, glob := range doc.Governs {
-				if core.MatchGovernedPath(glob, p) {
-					affected = true
+			pattern, err := core.CompileGovernedPath(glob)
+			if err != nil {
+				return result, fmt.Errorf("document %q governs %q: %w", doc.Path, glob, err)
+			}
+			patterns = append(patterns, pattern)
+		}
+		updated := false
+		triggering := []string{}
+		for _, changedPath := range changed {
+			if err := ctx.Err(); err != nil {
+				return result, err
+			}
+			if document.Match(changedPath) {
+				updated = true
+				if !matched[changedPath] {
+					result.MatchedPaths = append(result.MatchedPaths, changedPath)
+					matched[changedPath] = true
+				}
+			}
+			for _, pattern := range patterns {
+				if err := ctx.Err(); err != nil {
+					return result, err
+				}
+				if pattern.Match(changedPath) {
+					triggering = append(triggering, changedPath)
+					break
 				}
 			}
 		}
-		if affected && !updated {
-			out = append(out, doc.Path)
+		if len(triggering) > 0 && !updated {
+			result.AffectedDocuments = append(result.AffectedDocuments, doc.Path)
+			for _, changedPath := range triggering {
+				if !governed[changedPath] {
+					result.GovernedPaths = append(result.GovernedPaths, changedPath)
+					governed[changedPath] = true
+				}
+			}
 		}
 	}
-	return out
+	return result, nil
 }
 func MatchNoneStatement(body, literal string, reasonRequired bool) (string, bool) {
 	if literal == "" {

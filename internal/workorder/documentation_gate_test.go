@@ -15,9 +15,9 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
-func documentationSubmission(t *testing.T, state, body string, paths []string) evidenceSubmissionFixture {
+func documentationSubmission(t *testing.T, state, body string, paths []string, wrap ...func(store.Store) store.Store) evidenceSubmissionFixture {
 	t.Helper()
-	f := newEvidenceSubmissionFixture(t)
+	f := newEvidenceSubmissionFixture(t, wrap...)
 	prepareSubmissionTest(f.service)
 	head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	f.service.ReviewTarget = func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
@@ -49,6 +49,7 @@ func documentationSubmission(t *testing.T, state, body string, paths []string) e
 
 // REQ-9/AC-9.3–9.6: refusal has no durable or forge side effects.
 func TestDocumentationSubmissionAdmission(t *testing.T) {
+	start, end := githubtrigger.VerificationRegionMarkers("demo", "task")
 	for _, tc := range []struct {
 		name, state, body string
 		paths             []string
@@ -57,6 +58,8 @@ func TestDocumentationSubmissionAdmission(t *testing.T) {
 		{"untouched", "present", "", []string{"internal/server.go"}, true},
 		{"reason-required", "present", "docs: none", []string{"internal/server.go"}, true},
 		{"embedded", "present", "quoted docs: none reason", []string{"internal/server.go"}, true},
+		{"operator-only-generated", "present", "<!-- conveyor:task-link -->\ndocs: none operator says no documentation\n<!-- conveyor:lifecycle-end -->", []string{"internal/server.go"}, true},
+		{"verification-only-generated", "present", start + "\ndocs: none generated evidence text\n" + end, []string{"internal/server.go"}, true},
 		{"reason", "present", "docs: none refactor preserves API", []string{"internal/server.go"}, false},
 		{"updated", "present", "", []string{"internal/server.go", "docs/api.md"}, false},
 		{"unaffected", "present", "", []string{"README.md"}, false},
@@ -73,6 +76,9 @@ func TestDocumentationSubmissionAdmission(t *testing.T) {
 			result, err := f.service.SubmitForReview(f.ctx, f.job.ID, "implementer", strings.Repeat("a", 40))
 			if (err != nil) != tc.refuse {
 				t.Fatalf("submit=%v err=%v", result, err)
+			}
+			if tc.refuse && tc.state == "present" && (!strings.Contains(err.Error(), "docs/api.md") || !strings.Contains(err.Error(), "internal/server.go")) {
+				t.Fatalf("refusal omits affected document or governed source path: %v", err)
 			}
 			evidence, evidenceErr := f.st.GetDocumentationGateEvidence(f.ctx, f.task.ID, strings.Repeat("a", 40))
 			if tc.refuse {
@@ -99,9 +105,18 @@ func TestDocumentationSubmissionAdmission(t *testing.T) {
 }
 func TestDocumentationAbsentSubmissionAndReviewUnchanged(t *testing.T) {
 	f := documentationSubmission(t, "absent", "", []string{"internal/server.go"})
+	originalStore := f.service.Store
+	f.service.Store = documentationLineageUnavailableStore{originalStore}
 	result, err := f.service.SubmitForReview(f.ctx, f.job.ID, "implementer", strings.Repeat("a", 40))
-	if err != nil || result["await_review"] != true {
-		t.Fatalf("submit=%v err=%v", result, err)
+	f.service.Store = originalStore
+	want := map[string]any{
+		"pr_url":            "https://github.com/acme/app/pull/54",
+		"review_execution":  config.ExecutionMCP,
+		"await_review":      true,
+		"context_freshness": core.ContextFreshness{SelectionSchema: 1, ComparisonStatus: "unavailable", Diagnostic: "refresh_unavailable"},
+	}
+	if err != nil || !reflect.DeepEqual(result, want) {
+		t.Fatalf("legacy receipt=%+v want=%+v err=%v", result, want, err)
 	}
 	if err := f.service.Dispatcher.DispatchNow(f.ctx, f.task.ID); err != nil {
 		t.Fatal(err)
@@ -138,6 +153,12 @@ func TestDocumentationAbsentSubmissionAndReviewUnchanged(t *testing.T) {
 			t.Fatalf("absent declaration changed events: %s %s", event.Kind, event.Payload)
 		}
 	}
+}
+
+type documentationLineageUnavailableStore struct{ store.Store }
+
+func (s documentationLineageUnavailableStore) ListLineageNeighborhood(context.Context, []core.LineageNode, core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	return nil, errors.New("lineage unavailable")
 }
 
 func TestDocumentationNoSlugSubmissionUnchanged(t *testing.T) {

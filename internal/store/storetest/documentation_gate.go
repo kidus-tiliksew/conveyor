@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -39,6 +40,16 @@ func runDocumentationGate(t *testing.T, x Fixture) {
 	if got.HeadSHA != head || got.BaseSHA != base || got.NoneReason != "internal refactor preserves documented behavior" || !reflect.DeepEqual(got.AffectedDocuments, []string{"docs/api.md"}) || string(got.PolicyJSON) == "" {
 		t.Fatalf("evidence lost admission facts: %+v", got)
 	}
+	if !reflect.DeepEqual(got.MatchedPaths, []string{}) {
+		t.Fatalf("empty matched paths must remain a JSON array: %+v", got)
+	}
+	var canonicalPolicy map[string]any
+	requireOK(t, json.Unmarshal(policy, &canonicalPolicy))
+	expected := got
+	expected.PolicyJSON = core.JSONPayload(canonicalPolicy)
+	if pack.DocumentationReviewContract(&got) != pack.DocumentationReviewContract(&expected) {
+		t.Fatal("backend JSON storage changed the exact-head documentation prompt")
+	}
 	if _, err := st.GetDocumentationGateEvidence(ctx, task.ID, strings.Repeat("c", 40)); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("evidence leaked to another head: %v", err)
 	}
@@ -52,7 +63,7 @@ func runDocumentationGate(t *testing.T, x Fixture) {
 	requireOK(t, st.RecordDocumentationGateEvidence(ctx, evidence))
 	updated, err := st.GetDocumentationGateEvidence(ctx, task.ID, evidence.HeadSHA)
 	requireOK(t, err)
-	if !reflect.DeepEqual(updated.MatchedPaths, []string{"docs/api.md"}) || len(updated.AffectedDocuments) != 0 || updated.NoneStatement != "" {
+	if !reflect.DeepEqual(updated.MatchedPaths, []string{"docs/api.md"}) || !reflect.DeepEqual(updated.AffectedDocuments, []string{}) || updated.NoneStatement != "" {
 		t.Fatalf("updated doc classification=%+v", updated)
 	}
 	got.PolicyJSON[0] = '!'
@@ -110,5 +121,28 @@ func runDocumentationGate(t *testing.T, x Fixture) {
 	}
 	if completed != 2 || !aggregated {
 		t.Fatalf("missing review payloads completed=%d aggregated=%t", completed, aggregated)
+	}
+	noConfig := newAggregateTask(t, x)
+	jobs, orders = reviewRound(noConfig.ID, 1)
+	requireOK(t, CreateReviewRound(ctx, st, noConfig.ID, jobs, orders))
+	for i, order := range orders {
+		requireOK(t, taskops.New(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: noConfig.ID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: i + 1, Verdict: "approve", ReasonCode: "verified", Summary: "legacy no-config review", ReviewedCommitSHA: head, MaxBounces: 3}))
+	}
+	events, err = st.ListEvents(ctx, noConfig.ID)
+	requireOK(t, err)
+	completed = 0
+	for _, event := range events {
+		if event.Kind != "review.completed" {
+			continue
+		}
+		var payload map[string]json.RawMessage
+		requireOK(t, json.Unmarshal(event.Payload, &payload))
+		if value, exists := payload["documentation_assessment"]; exists {
+			t.Fatalf("no-config payload must omit documentation_assessment, including null: %s (%s)", event.Payload, value)
+		}
+		completed++
+	}
+	if completed != 2 {
+		t.Fatalf("no-config completed seats=%d", completed)
 	}
 }
