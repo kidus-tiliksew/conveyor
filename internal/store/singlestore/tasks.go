@@ -387,8 +387,9 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 					return err
 				}
 			}
+			// Exact bytes, as in claimTaskBranch (DEC-70).
 			var occupant string
-			err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, result.Repo, branch, taskID).Scan(&occupant)
+			err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND BINARY repo_name=BINARY ? AND BINARY branch=BINARY ? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, result.Repo, branch, taskID).Scan(&occupant)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
