@@ -337,7 +337,7 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 			client = github.DefaultAppClient
 		}
 		workspace, _ := store.WorkspaceFromContext(ctx)
-		resolved, state := client.ResolveBranchHead(ctx, s.WorkspaceGitHubApps, workspace, repo.GitHub, base)
+		resolved, state := client.ResolveBranchHeadWithRetries(ctx, s.WorkspaceGitHubApps, workspace, repo.GitHub, base)
 		if state != "present" {
 			return nil, true, ctx.Err()
 		}
