@@ -40,6 +40,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("UsageTokenUpdates", func(t *testing.T) { runUsageTokenUpdates(t, x) })
 	t.Run("ImplementationSubmission", func(t *testing.T) { runImplementationSubmission(t, x) })
 	t.Run("BaseConflictCheck", func(t *testing.T) { runBaseConflictCheck(t, x) })
+	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
@@ -156,6 +157,42 @@ func runWorkOrderStageClocks(t *testing.T, x Fixture, stage core.Stage) {
 		if recovered.State != core.WorkOrderQueued || recovered.OperatorDirection != direction {
 			t.Fatal("recovery direction or state differs")
 		}
+	}
+}
+
+// runStoredReadKeepsExpiredClaim pins that ListTaskWorkOrdersStored returns a
+// claim whose execution deadline has elapsed as stored, while the projected
+// read reports it timed out, until the order clock persists the expiry
+// (component-work-orders "Stages and order minting"; DEC-62).
+func runStoredReadKeepsExpiredClaim(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	order := newAggregateOrder(t, x)
+	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "expired", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Nanosecond}
+	claimed, err := ClaimWorkOrder(ctx, st, order.ID, claim)
+	requireOK(t, err)
+	for !time.Now().After(claimed.ExecutionDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	find := func(orders []core.WorkOrder) core.WorkOrder {
+		t.Helper()
+		for _, candidate := range orders {
+			if candidate.ID == order.ID {
+				return candidate
+			}
+		}
+		t.Fatalf("order %s missing from %+v", order.ID, orders)
+		return core.WorkOrder{}
+	}
+	storedOrders, err := st.ListTaskWorkOrdersStored(ctx, order.TaskID)
+	requireOK(t, err)
+	stored := find(storedOrders)
+	if stored.State != core.WorkOrderClaimed || stored.SessionID != "expired" || stored.ClaimantID != claimed.ClaimantID || stored.AttemptID != claimed.AttemptID || !stored.ExecutionDeadline.Equal(claimed.ExecutionDeadline) {
+		t.Fatalf("stored read projected the expired claim: %+v", stored)
+	}
+	projectedOrders, err := st.ListTaskWorkOrders(ctx, order.TaskID)
+	requireOK(t, err)
+	if projected := find(projectedOrders); projected.State != core.WorkOrderTimedOut {
+		t.Fatalf("projected read state=%s, want %s", projected.State, core.WorkOrderTimedOut)
 	}
 }
 

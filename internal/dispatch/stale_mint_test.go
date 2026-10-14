@@ -296,6 +296,65 @@ func (f fixedOrders) ListTaskWorkOrders(context.Context, string) ([]core.WorkOrd
 	return f.orders, nil
 }
 
+func (f fixedOrders) ListTaskWorkOrdersStored(context.Context, string) ([]core.WorkOrder, error) {
+	return f.orders, nil
+}
+
+// projectingOrders mirrors the backend read contract pinned by storetest
+// StoredReadKeepsExpiredClaimUnprojected: the stored read returns rows as
+// persisted, the task read projects elapsed clocks.
+type projectingOrders struct {
+	store.Store
+	orders []core.WorkOrder
+}
+
+func (p projectingOrders) ListTaskWorkOrders(context.Context, string) ([]core.WorkOrder, error) {
+	now := time.Now().UTC()
+	out := make([]core.WorkOrder, 0, len(p.orders))
+	for _, order := range p.orders {
+		out = append(out, store.ProjectWorkOrderAt(order, now))
+	}
+	return out, nil
+}
+
+func (p projectingOrders) ListTaskWorkOrdersStored(context.Context, string) ([]core.WorkOrder, error) {
+	return p.orders, nil
+}
+
+// A claimed merge-conflict fix order whose lease or execution deadline has
+// elapsed is no longer admitted as active, even before the order clock
+// persists its expiry: conflict fix orders keep their own admission rule over
+// projected state (component-work-orders "Stages and order minting";
+// component-durable-queue dispatch outcomes). A stored claim still holds the
+// stage for ordinary minting.
+func TestMergeConflictAdmissionUsesProjectedClaimState(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	now := time.Now().UTC()
+	claimed := func(lease, deadline time.Time) core.WorkOrder {
+		return core.WorkOrder{ID: "t-implement-1", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderClaimed, ReasonCode: "merge-conflict", ClaimantID: "worker", SessionID: "s", AttemptID: "a", LeaseExpiresAt: lease, ExecutionDeadline: deadline, CreatedAt: now.Add(-time.Hour)}
+	}
+	for _, tc := range []struct {
+		name          string
+		order         core.WorkOrder
+		conflictLive  bool
+		stageHoldLive bool
+	}{
+		{"live", claimed(now.Add(time.Hour), now.Add(time.Hour)), true, true},
+		{"lease-expired", claimed(now.Add(-time.Minute), now.Add(time.Hour)), false, true},
+		{"deadline-passed", claimed(now.Add(time.Hour), now.Add(-time.Minute)), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Dispatcher{Store: projectingOrders{Store: store.NewMemory(), orders: []core.WorkOrder{tc.order}}}
+			if _, got, err := d.activeWorkOrder(ctx, "t", core.StageImplement, "merge-conflict"); err != nil || got != tc.conflictLive {
+				t.Fatalf("merge-conflict active=%v want %v err=%v", got, tc.conflictLive, err)
+			}
+			if _, got, err := d.activeWorkOrder(ctx, "t", core.StageImplement, ""); err != nil || got != tc.stageHoldLive {
+				t.Fatalf("stage hold active=%v want %v err=%v", got, tc.stageHoldLive, err)
+			}
+		})
+	}
+}
+
 // A stale review seat is a recoverable stop like any other order: redelivered
 // dispatch reuses the round and the order clock redispatches the seat, so no
 // second live round is minted (component-work-orders; DEC-62).

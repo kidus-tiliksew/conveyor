@@ -401,18 +401,26 @@ func (d *Dispatcher) activeImplementationWorkOrder(ctx context.Context, taskID, 
 }
 
 func (d *Dispatcher) activeWorkOrder(ctx context.Context, taskID string, stage core.Stage, reasonCode string) (core.WorkOrder, bool, error) {
-	orders, err := store.ListTaskWorkOrdersStored(ctx, d.Store, taskID)
-	if err != nil {
-		return core.WorkOrder{}, false, err
-	}
 	if reasonCode == "" {
 		// Stale and timed-out orders block minting so the order clock's bounded
 		// recovery owns them instead of a daily same-stage reissue (DEC-62;
 		// component-work-orders "Stages and order minting"). A stored claim
 		// remains an executor hold across a stage bounce until the order clock
 		// persists its expiry (component-durable-queue).
+		orders, err := d.Store.ListTaskWorkOrdersStored(ctx, taskID)
+		if err != nil {
+			return core.WorkOrder{}, false, err
+		}
 		order, active := core.WorkOrderHoldsStage(orders, stage)
 		return order, active, nil
+	}
+	// Reason-coded orders keep their own admission rule over projected state
+	// (component-work-orders: merge-conflict fix orders use
+	// WorkOrderActiveForConflictDispatch), so a dead claim does not hold a
+	// conflict episode while the order clock has not yet settled it.
+	orders, err := d.Store.ListTaskWorkOrders(ctx, taskID)
+	if err != nil {
+		return core.WorkOrder{}, false, err
 	}
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
