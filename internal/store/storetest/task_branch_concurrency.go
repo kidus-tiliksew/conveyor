@@ -11,7 +11,7 @@ import (
 
 // runTaskBranchConcurrentClaims races creates and attaches for one open-task
 // branch: exactly one writer wins and every loser is refused naming it
-// (req-task-branch-assignment AC-4.1; DEC-68, component-persistence).
+// (req-task-branch-assignment AC-4.1; DEC-70, component-persistence).
 func runTaskBranchConcurrentClaims(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	// Eight attachers is the smallest N with 2N+1 connections exceeding the old SingleStore pool cap of 16.

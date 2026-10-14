@@ -438,7 +438,7 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		}
 	})
 	// Open-task branch claims (req-task-branch-assignment AC-4.1, AC-4.2;
-	// DEC-68, component-persistence Lock and transaction contract).
+	// DEC-70, component-persistence Lock and transaction contract).
 	tasks := store.WithWorkspace(ctx, "branch-claims")
 	if _, err := st.CreateWorkspace(tasks, "branch-claims", "Branch claims", &config.Config{Workspace: "branch-claims"}); err != nil {
 		t.Fatal(err)
