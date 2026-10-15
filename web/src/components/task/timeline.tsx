@@ -56,6 +56,7 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { CurrentAttempt, CurrentAttemptProvider } from './current-attempt'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
 import {
@@ -181,12 +182,24 @@ export function Timeline({
   }, [decisionScrollRequest])
 
   // Reviewable tasks open scrolled to the gate — the decision point — not
-  // the top of a story the reviewer has often already read.
+  // the top of a story the reviewer has often already read. The next-action
+  // card above the timeline arrives on its own read and grows the page, so the
+  // scroll repeats once when that read first lands.
+  const nextActionLoaded = nextAction !== undefined
   useEffect(() => {
     if (showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate))) {
       gateRef.current?.scrollIntoView({ block: 'end' })
     }
-  }, [item.task.id, item.at_merge_gate, showGate, canOperate, canRecover, canRequestChanges, recoveryGate])
+  }, [
+    item.task.id,
+    item.at_merge_gate,
+    showGate,
+    canOperate,
+    canRecover,
+    canRequestChanges,
+    recoveryGate,
+    nextActionLoaded,
+  ])
 
   const tail = (
     executionActions
@@ -283,32 +296,37 @@ export function Timeline({
           )
         )}
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
-        <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
-          {entries.map((entry) => (
-            <TimelineRow
-              key={keyFor(entry)}
-              entry={entry}
-              item={item}
-              usageReportedOrderIDs={usageReportedOrderIDs}
-              operatorNotes={item.operator_notes}
-            />
-          ))}
-          {entries.length === 0 && tail.length === 0 && !showGate && (
-            <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
-          )}
-          {tail.map(({ key, dot, card }) => (
-            <li key={key} className="relative pl-7">
-              <TimelineDot className={dot} />
-              {card}
-            </li>
-          ))}
-          {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
-            <li ref={gateRef} className="relative pl-7">
-              <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
-              <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
-            </li>
-          )}
-        </ol>
+        <CurrentAttemptProvider action={nextAction}>
+          <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
+            {entries.map((entry) => (
+              <TimelineRow
+                key={keyFor(entry)}
+                entry={entry}
+                item={item}
+                usageReportedOrderIDs={usageReportedOrderIDs}
+                operatorNotes={item.operator_notes}
+              />
+            ))}
+            {entries.length === 0 && tail.length === 0 && !showGate && (
+              <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
+            )}
+            {tail.map(({ key, dot, card }) => (
+              <li key={key} className="relative pl-7">
+                <TimelineDot className={dot} />
+                {card}
+              </li>
+            ))}
+            {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
+              <li ref={gateRef} className="relative pl-7">
+                <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
+                <ReviewPanel
+                  item={item}
+                  onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)}
+                />
+              </li>
+            )}
+          </ol>
+        </CurrentAttemptProvider>
       </section>
       {(technicalEvents.length > 0 || (item.work_orders?.length ?? 0) > 0) && <TechnicalActivity item={item} />}
     </>
@@ -738,12 +756,15 @@ function TimelineRow({
         order={entry.order}
         dotSlot={(className) => <TimelineDot className={className} />}
         footer={
-          <JobFooter
-            job={entry.job}
-            model={entry.model}
-            order={entry.order}
-            usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
-          />
+          <>
+            <CurrentAttempt order={entry.order} className="border-t border-border px-4 py-2.5" />
+            <JobFooter
+              job={entry.job}
+              model={entry.model}
+              order={entry.order}
+              usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
+            />
+          </>
         }
       />
     )
@@ -773,6 +794,7 @@ function TimelineRow({
             {usageText(entry.order, usageReportedOrderIDs.has(entry.order.id))}
           </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+          <CurrentAttempt order={entry.order} className="mt-1 basis-full" />
         </div>
       </li>
     )
@@ -1040,6 +1062,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       {seat.status === 'deliberating' && progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
+      <CurrentAttempt order={seat.order} className="w-full" />
       <TranscriptCaptures captures={seat.order.transcript_captures} />
     </div>
   )
@@ -1272,6 +1295,7 @@ function JobEntry({
             <TranscriptCaptures captures={order.transcript_captures} />
           </div>
         ) : null}
+        <CurrentAttempt order={order} className="border-t border-border px-4 py-2.5" />
         <JobFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>

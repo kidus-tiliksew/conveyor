@@ -325,7 +325,8 @@ export function fetchTaskActivity(taskId: string) {
   return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
 }
 
-// The flow projection for task detail (NA-7), read in the query's workspace.
+// The flow projection for the opt-in Board stage stripe (NA-7), read in the
+// query's workspace.
 export async function fetchTaskFlow(workspace: string, taskId: string, signal?: AbortSignal) {
   const body = await getJSON<{ flow: TaskFlow }>(
     workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/flow`, workspace),

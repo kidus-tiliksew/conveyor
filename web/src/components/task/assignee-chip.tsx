@@ -20,7 +20,17 @@ function initials(name: string): string {
  * as two different things on two surfaces. The name is what the surface shows;
  * the account identifiers behind it belong in the tooltip.
  */
-export function AssigneeChip({ assignee, className = '' }: { assignee?: TaskAssignee; className?: string }) {
+export function AssigneeChip({
+  assignee,
+  className = '',
+  compact = false,
+}: {
+  assignee?: TaskAssignee
+  className?: string
+  // A Board card's single row holds the initials alone; the name stays in the
+  // chip's details and its accessible name.
+  compact?: boolean
+}) {
   if (!assignee) return null
   const name = assigneeName(assignee)
   const detail = [assignee.email, assignee.user_id].filter((value) => value && value !== name).join(' · ')
@@ -37,7 +47,7 @@ export function AssigneeChip({ assignee, className = '' }: { assignee?: TaskAssi
       >
         {initials(name)}
       </span>
-      <span className="truncate">{name}</span>
+      <span className={compact ? 'sr-only' : 'truncate'}>{name}</span>
     </Disclosure>
   )
 }
