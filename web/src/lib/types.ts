@@ -323,6 +323,134 @@ export interface TaskEvent {
   at: string
 }
 
+/**
+ * The top-level number and boolean fields an omitted payload keeps, plus the
+ * review work-order IDs of a `review.round_completed` (component-http-api,
+ * Bounded detail view).
+ */
+export type TaskEventPayloadIndex = {
+  review_work_order_ids?: string[]
+  [field: string]: number | boolean | string[] | undefined
+}
+
+/**
+ * One event of the bounded task-detail view or a task history page. `id` is a
+ * canonical decimal string: the dashboard never converts it to a number, sorts
+ * by it, or compares it numerically (component-web-dashboard, Contract layer).
+ * An oversized event arrives in its minimal form (`id`, `at`, `kind`,
+ * `payload_omitted`, `audit_available`), so the attribution fields are optional.
+ */
+export interface TaskEventView {
+  id: string
+  task_id?: string
+  job_id?: string
+  kind: string
+  actor_id?: string
+  actor_role?: TaskEvent['actor_role']
+  payload?: Record<string, unknown> | null
+  at: string
+  audit_available?: boolean
+  payload_omitted?: boolean
+  payload_bytes?: number
+  payload_index?: TaskEventPayloadIndex
+  payload_index_truncated?: boolean
+}
+
+/** The bounded view's page of human-timeline events. */
+export interface TaskEventPage {
+  limit: number
+  returned: number
+  kinds: 'human'
+  has_older: boolean
+  /** A human-selection history cursor with a 50-event page limit. */
+  older_cursor?: string
+}
+
+export type TaskHistorySelection = 'technical' | 'human'
+
+/** One page of `GET /v1/tasks/{id}/history`, events ascending by (`at`, `id`). */
+export interface TaskHistoryPage {
+  selection: TaskHistorySelection
+  limit: number
+  events: TaskEventView[]
+  boundary: { max_id: string; count: number }
+  has_older: boolean
+  has_newer: boolean
+  older_cursor?: string
+  newer_cursor?: string
+}
+
+/** A summary text value cut at 16,384 bytes names its event and marks the cut. */
+export interface TaskSummaryText {
+  text: string
+  event_id: string
+  truncated?: boolean
+}
+
+export interface TaskJobResult {
+  summary?: TaskSummaryText
+  stage_summary?: TaskSummaryText & { review_feedback?: string }
+  output_rejection?: { event_id: string; error: string }
+  failure_error?: TaskSummaryText
+}
+
+export interface TaskReviewResult {
+  verdict: 'approve' | 'changes_requested'
+  summary: string
+  feedback: string
+  at: string
+  event_id: string
+  truncated?: boolean
+}
+
+export interface TaskReviewRound {
+  event_id: string
+  verdict: 'approve' | 'changes_requested'
+  summary?: string
+  at: string
+}
+
+/**
+ * Current task facts the server folds from the complete ledger by (`at`, `id`)
+ * order, so no surface reads them from the bounded event page
+ * (component-http-api, Bounded detail view).
+ */
+export interface TaskSummaries {
+  creator?: { actor_id: string; actor_role: string }
+  pull_request?: {
+    url?: string
+    number?: number
+    repository?: string
+    head_sha?: string
+    base_sha?: string
+    event_id: string
+    at: string
+  }
+  review_round?: {
+    verdict: 'approve' | 'changes_requested'
+    summary?: string
+    review_count: number
+    event_id: string
+    at: string
+  }
+  returned_for_changes?: { feedback: string; at: string }
+  run_implementation?: boolean
+  plan_revision_request?: { rationale: string; plan_version: number; event_id: string; at: string }
+  latest_review_completed_event_id?: string
+  triage_failure?: {
+    job_id: string
+    event_id?: string
+    error: string
+    diagnostic?: { phase?: string; provider_code?: string }
+    superseded: boolean
+    at: string
+  }
+  job_results?: Record<string, TaskJobResult>
+  review_results?: { by_order?: Record<string, TaskReviewResult>; by_job?: Record<string, TaskReviewResult> }
+  review_rounds?: { by_round?: Record<string, TaskReviewRound>; by_order?: Record<string, TaskReviewRound> }
+  review_bounces?: Record<string, number>
+}
+
 export type LineageNodeType =
   | 'planning_session'
   | 'planning_bundle'
@@ -848,11 +976,18 @@ export interface OperatorNote {
   dismissed_at: string
 }
 
+/**
+ * The bounded task-detail view (`GET /v1/tasks/{id}/activity?view=bounded`):
+ * `events` holds at most the newest 100 human-timeline events, and current
+ * facts come from `summaries`, never from the page.
+ */
 export interface ActivityItem {
   operator_notes?: OperatorNote[]
   task: Task
   jobs: Job[]
-  events: TaskEvent[]
+  events: TaskEventView[]
+  event_page?: TaskEventPage
+  summaries?: TaskSummaries
   interventions: Intervention[]
   checkout_command?: string
   checkout_available: boolean

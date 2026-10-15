@@ -1,7 +1,8 @@
 // Visual-capture harness for the board and task detail surfaces: renders a
 // rich mocked activity feed and writes screenshots to test-results/shots/ for
 // design review. The idle-board state also guards uniform lane sizing.
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 const now = Date.now()

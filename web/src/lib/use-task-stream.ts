@@ -1,39 +1,50 @@
 import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { nextActionQueryKey, nextActionsQueryKey } from '../components/inbox/use-next-actions'
+import { taskDetailQueryKey } from './query-keys'
 
 // Waits before reopening the stream, indexed by consecutive connections that
 // ended without an activity frame; the last entry caps the delay.
 const taskStreamRetryDelaysMs = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
 
-// Live updates: the per-task SSE stream, read with `fetch`, feeds the Query
-// cache by invalidation. Every `activity` frame schedules a debounced refetch
-// of the task detail and the feed. `fetch` does not reconnect on its own, so
-// one serial loop per effect reopens the stream after it ends, errors, returns
-// a non-OK status, or has no body (including 204), waiting a bounded backoff.
-// Events committed while the stream was down produce no frame, so every usable
-// connection opened by a retry refetches both families once
-// (component-web-dashboard Server-state discipline).
+// The delay a ready or activity frame waits before its one refresh; frames
+// arriving inside it join that refresh.
+const taskStreamRefreshDelayMs = 250
+
+// Live updates: the per-task notify stream (`mode=notify`), read with `fetch`,
+// feeds the Query cache by invalidation (component-web-task-surfaces, Live
+// updates). The server never replays history in this mode: it sends `ready`
+// once it has read the task's history fingerprint and `activity` whenever the
+// fingerprint changes. Each frame schedules one refresh of the task detail, the
+// activity family, the task's next action, and the workspace inbox, all in the
+// workspace captured when the effect started; it never touches history pages,
+// audit records, or verification families. `fetch` does not reconnect on its
+// own, so one serial loop per effect reopens the stream after it ends, errors,
+// returns a non-OK status, or has no body (including 204), waiting a bounded
+// backoff. Every connection refreshes detail once through its `ready` frame,
+// which covers events committed before the subscription or during an outage.
 export function useTaskStream(taskId: string, workspace: string) {
   const queryClient = useQueryClient()
   useEffect(() => {
     if (!workspace) return
     const controller = new AbortController()
     const { signal } = controller
-    const url = `/v1/tasks/${encodeURIComponent(taskId)}/events/stream?workspace_id=${encodeURIComponent(workspace)}`
+    const url = `/v1/tasks/${encodeURIComponent(taskId)}/events/stream?mode=notify&workspace_id=${encodeURIComponent(workspace)}`
     let refresh: number | undefined
     const invalidate = () => {
+      refresh = undefined
       // An aborted effect belongs to another task, workspace, or an unmounted view.
       if (signal.aborted) return
-      void queryClient.invalidateQueries({ queryKey: ['task', workspace, taskId] })
+      void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(workspace, taskId) })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       // The task's next action and the inbox listing it move with its events.
       void queryClient.invalidateQueries({ queryKey: nextActionQueryKey(workspace, taskId) })
       void queryClient.invalidateQueries({ queryKey: nextActionsQueryKey(workspace) })
     }
     const refreshQueries = () => {
-      window.clearTimeout(refresh)
-      refresh = window.setTimeout(invalidate, 250)
+      // A frame inside the delay joins the refresh already scheduled.
+      if (refresh !== undefined || signal.aborted) return
+      refresh = window.setTimeout(invalidate, taskStreamRefreshDelayMs)
     }
     const wait = (ms: number) =>
       new Promise<void>((resolve) => {
@@ -49,7 +60,7 @@ export function useTaskStream(taskId: string, workspace: string) {
 
     // Reads one connection. Resolves whether it delivered an activity frame;
     // the decoder and partial-frame buffer never outlive their response.
-    const readConnection = async (reconnecting: boolean) => {
+    const readConnection = async () => {
       let framed = false
       try {
         const response = await fetch(url, { signal })
@@ -59,7 +70,6 @@ export function useTaskStream(taskId: string, workspace: string) {
           void response.body?.cancel().catch(() => undefined)
           return false
         }
-        if (reconnecting) invalidate()
         const reader = response.body.getReader(),
           decoder = new TextDecoder()
         let buffer = ''
@@ -70,9 +80,14 @@ export function useTaskStream(taskId: string, workspace: string) {
           const frames = buffer.split('\n\n')
           buffer = frames.pop() ?? ''
           for (const frame of frames) {
-            if (!frame.startsWith('event: activity')) continue
-            framed = true
-            refreshQueries()
+            const name = /^event: *(\S+)/m.exec(frame)?.[1]
+            if (name === 'activity') {
+              // Only an activity frame proves the stream carried a change.
+              framed = true
+              refreshQueries()
+            } else if (name === 'ready') {
+              refreshQueries()
+            }
           }
         }
       } catch {
@@ -88,7 +103,7 @@ export function useTaskStream(taskId: string, workspace: string) {
           await wait(taskStreamRetryDelaysMs[Math.min(failures, taskStreamRetryDelaysMs.length) - 1])
           if (signal.aborted) return
         }
-        const framed = await readConnection(attempt > 0)
+        const framed = await readConnection()
         // A frame proves the stream worked, so the next wait starts over at
         // the shortest delay; a connection that ended without one backs off.
         failures = framed ? 1 : failures + 1

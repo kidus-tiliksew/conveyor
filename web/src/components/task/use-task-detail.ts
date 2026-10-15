@@ -14,7 +14,7 @@ export function useTaskDetail(taskId: string) {
   const { workspace } = useWorkspaceSelection()
   const query = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
-    queryFn: () => fetchTaskActivity(taskId),
+    queryFn: ({ signal }) => fetchTaskActivity(workspace, taskId, signal),
     // A dependency can merge without emitting an event on this task. Poll only
     // while the task reports active blockers; SSE remains the fast path.
     refetchInterval: (current) => ((current.state.data?.task.blocking_task_ids?.length ?? 0) > 0 ? 15_000 : false),

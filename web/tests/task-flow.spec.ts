@@ -1,4 +1,5 @@
-import { expect, type Locator, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import type { ActivityItem, TaskFlow, TaskFlowNextAction, TaskFlowStage } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 import { projectNextAction, serveNextActionsFromActivity } from './helpers/next-action-stub'

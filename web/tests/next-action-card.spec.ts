@@ -1,4 +1,5 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import type { NextAction, WorkOrder } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 

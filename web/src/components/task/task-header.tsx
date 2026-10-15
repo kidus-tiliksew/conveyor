@@ -59,11 +59,11 @@ import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 // the whole page.
 export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
   const members = useWorkspaceMembers()
-  const creator = taskCreator(item.events, members.data)
+  const creator = taskCreator(item.summaries?.creator, members.data)
   const restartLinks = taskRestartLinks(item.task)
   const closeOutcome = restartPullRequestOutcome(item.task)
   const canOperate = useWorkspaceCapability('operate_gates')
-  const prURL = pullRequestURL(item.events)
+  const prURL = pullRequestURL(item.summaries)
   const Heading = variant === 'full' ? 'h1' : 'h2'
   const relatedRoute = relatedTaskRoute(variant)
   // The parent is a blueprint anchor, which no longer rides the activity feed;

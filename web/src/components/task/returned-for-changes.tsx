@@ -3,6 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { pendingUserRequestChanges, userRunImplementation } from '../../lib/activity'
 import { fetchCallerIdentity, fetchTaskActivity } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
+import { taskDetailQueryKey } from '../../lib/query-keys'
 import type { ActivityItem } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
 import { useActivity, useWorkspaceSelection } from '../app-shell'
@@ -17,7 +18,8 @@ import { Button } from '../ui/button'
 //
 // The shared workspace activity cache supplies the candidates. Caller identity
 // preserves the original assignee scope, and the task's own detail, which
-// carries the durable events, then decides and supplies the feedback.
+// carries the server's summaries of the durable events, then decides and
+// supplies the feedback.
 
 // Enough of the feedback to recognize which return this is, without turning an
 // attention entry into the task. The whole text is on the task itself.
@@ -31,7 +33,7 @@ function excerpt(feedback: string): string {
 // when bouncing work. A task-run claim needs the person to resume it; a worker
 // claim returns to the factory even when an operator separately holds the task.
 function nextStep(item: ActivityItem): string {
-  return userRunImplementation(item.events)
+  return userRunImplementation(item.summaries)
     ? `Nothing is running this — pick the feedback up by running the task again from your machine (conveyor run ${item.task.id}).`
     : 'The factory is already on it — a fresh implementation run is carrying this feedback.'
 }
@@ -53,8 +55,8 @@ export function ReturnedForChangesAttention() {
 
   const details = useQueries({
     queries: candidates.map((taskId) => ({
-      queryKey: ['task', workspace, taskId],
-      queryFn: () => fetchTaskActivity(taskId),
+      queryKey: taskDetailQueryKey(workspace, taskId),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchTaskActivity(workspace, taskId, signal),
       enabled: Boolean(workspace),
     })),
   })
@@ -63,7 +65,7 @@ export function ReturnedForChangesAttention() {
   for (const detail of details) {
     const item = detail.data as ActivityItem | undefined
     if (!item) continue
-    const returned = pendingUserRequestChanges(item.events)
+    const returned = pendingUserRequestChanges(item.summaries)
     if (!returned) continue
     items.push({
       id: `returned-${item.task.id}`,

@@ -1,4 +1,5 @@
-import { expect, type Page, type Request, type Route, test } from '@playwright/test'
+import { expect, type Page, type Request, type Route } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
 
 // The operator inbox (feature-operator-next-action NA-6; REQ-2) over stubbed

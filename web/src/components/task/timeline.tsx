@@ -21,16 +21,17 @@ import {
   Undo2,
   UserRound,
 } from 'lucide-react'
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   buildTimeline,
   type CurrentExecutionState,
   dependencyRelationLabel,
   deriveCurrentExecutionState,
   failedTriage,
+  historyNoteEntries,
   type PanelSeat,
   type TimelineEntry,
-  technicalActivity,
   userRequestChangesReason,
 } from '../../lib/activity'
 import {
@@ -40,12 +41,16 @@ import {
   stageLabels,
 } from '../../lib/contracts'
 import { type HarnessLogo, type ProviderLogo, selectModelLogo } from '../../lib/model-logo'
+import { taskDetailQueryKey } from '../../lib/query-keys'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type {
   ActivityItem,
   InterventionAction,
   Job,
   TaskAuditKind,
+  TaskEvent,
+  TaskEventView,
+  TaskHistorySelection,
   WorkOrder,
   WorkOrderActivitySnapshot,
   WorkOrderTranscriptCapture,
@@ -76,6 +81,7 @@ import {
   useSystemDesignProposals,
 } from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
+import { isHistoryRestart, useTaskHistory } from './use-task-history'
 import { VerificationEntry } from './verification-entry'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 import {
@@ -121,7 +127,7 @@ export function Timeline({
   const entries = buildTimeline(item, members.data ?? [])
   const nextAction = useNextAction(item.task.id).data
   const currentExecution = deriveCurrentExecutionState(item, nextAction)
-  const technicalEvents = technicalActivity(item)
+  const { workspace } = useWorkspaceSelection()
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)
   const showGate = isReviewable(item)
   const recoveryGate = item.next_action?.kind === 'merge_conflict'
@@ -293,6 +299,15 @@ export function Timeline({
               operatorNotes={item.operator_notes}
             />
           ))}
+          {item.event_page?.has_older && item.event_page.older_cursor && (
+            // Remounted closed for another task or workspace, which aborts its read.
+            <EarlierHistory
+              key={`${workspace}:${item.task.id}`}
+              item={item}
+              workspace={workspace}
+              usageReportedOrderIDs={usageReportedOrderIDs}
+            />
+          )}
           {entries.length === 0 && tail.length === 0 && !showGate && (
             <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
           )}
@@ -310,7 +325,8 @@ export function Timeline({
           )}
         </ol>
       </section>
-      {(technicalEvents.length > 0 || (item.work_orders?.length ?? 0) > 0) && <TechnicalActivity item={item} />}
+      {/* Remounted closed for another task or workspace, which aborts its read. */}
+      <TechnicalActivity key={`${workspace}:${item.task.id}`} item={item} workspace={workspace} />
     </>
   )
 }
@@ -513,11 +529,71 @@ function usageText(order: WorkOrder, available: boolean): string {
     .join(' · ')
 }
 
-function TechnicalActivity({ item }: { item: ActivityItem }) {
-  const { workspace } = useWorkspaceSelection()
-  const events = technicalActivity(item)
+// The technical activity disclosure (component-web-task-surfaces, History
+// pages). Its open state is the component's own: closed, it mounts no event
+// rows and issues no request; open, it pages the technical selection of the
+// task's stored events, at most 50 rows at a time.
+function TechnicalActivity({ item, workspace }: { item: ActivityItem; workspace: string }) {
+  const [open, setOpen] = useState(false)
+  const contentID = useId()
+  return (
+    <section className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={contentID}
+        className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2.5 text-left font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? <ChevronUp aria-hidden className="size-3.5" /> : <ChevronDown aria-hidden className="size-3.5" />}
+        Show technical activity
+      </button>
+      {open && (
+        <div id={contentID}>
+          <TaskUsage item={item} workspace={workspace} />
+          <HistoryPages
+            workspace={workspace}
+            taskId={item.task.id}
+            selection="technical"
+            newest=""
+            label="Technical activity history"
+            emptyText="No technical activity recorded."
+            renderRows={(events) => (
+              <ol aria-label="Technical activity events" className="divide-y divide-border border-t border-border">
+                {events.map((event) => (
+                  <li key={event.id} className="px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <code className="text-[11px] text-foreground">{event.kind}</code>
+                      <span className="text-[11px] text-faint">Event {event.id}</span>
+                      <time className="ml-auto text-[11px] text-faint">{absoluteTime(event.at)}</time>
+                    </div>
+                    {(event.audit_available ||
+                      event.payload_omitted ||
+                      (event.payload && Object.keys(event.payload).length > 0)) && (
+                      <AuditDisclosure
+                        key={`${workspace}:${item.task.id}:event:${event.id}`}
+                        taskId={item.task.id}
+                        kind="event"
+                        recordId={event.id}
+                        label="Event payload"
+                        event={event}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+          />
+        </div>
+      )}
+    </section>
+  )
+}
+
+function TaskUsage({ item, workspace }: { item: ActivityItem; workspace: string }) {
   const reported = reportedUsageOrderIDs(item)
   const orders = item.work_orders ?? []
+  if (orders.length === 0) return null
   const measured = orders.filter((order) => reported.has(order.id))
   const totals = measured.reduce(
     (sum, order) => ({
@@ -527,61 +603,227 @@ function TechnicalActivity({ item }: { item: ActivityItem }) {
     { tokensIn: 0, tokensOut: 0 },
   )
   return (
-    <details className="mt-5 rounded-lg border border-border bg-surface/35 text-xs text-muted">
-      <summary className="cursor-pointer rounded-lg px-3 py-2.5 font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
-        Show technical activity
-      </summary>
-      {orders.length > 0 && (
-        <section aria-label="Task usage telemetry" className="border-t border-border px-3 py-3">
-          <p className="font-medium text-foreground">Task usage</p>
-          <p className="mt-1 font-mono text-[11px] tabular-nums">
-            {measured.length > 0
-              ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
-              : 'Usage unavailable for every work order'}
-            {orders.length > measured.length
-              ? ` · ${orders.length - measured.length} ${orders.length - measured.length === 1 ? 'order' : 'orders'} unavailable`
-              : ''}
-          </p>
-          <ul className="mt-2 space-y-1" aria-label="Work-order usage">
-            {orders.map((order) => (
-              <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums">
-                <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
-                <code className="text-faint">{order.id}</code>
-                <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
-                <AuditDisclosure
-                  key={`${workspace}:${item.task.id}:work-order:${order.id}`}
-                  taskId={item.task.id}
-                  kind="work-order"
-                  recordId={order.id}
-                  label={`Work-order audit ${order.id} (current record)`}
-                />
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      <ol className="divide-y divide-border border-t border-border">
-        {events.map((event) => (
-          <li key={event.id} className="px-3 py-2">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <code className="text-[11px] text-foreground">{event.kind}</code>
-              <span className="text-[11px] text-faint">Event {event.id}</span>
-              <time className="ml-auto text-[11px] text-faint">{absoluteTime(event.at)}</time>
-            </div>
-            {(event.audit_available || (event.payload && Object.keys(event.payload).length > 0)) && (
-              <AuditDisclosure
-                key={`${workspace}:${item.task.id}:event:${event.id}`}
-                taskId={item.task.id}
-                kind="event"
-                recordId={String(event.id)}
-                label="Event payload"
-                event={event}
-              />
-            )}
+    <section aria-label="Task usage telemetry" className="border-t border-border px-3 py-3">
+      <p className="font-medium text-foreground">Task usage</p>
+      <p className="mt-1 font-mono text-[11px] tabular-nums">
+        {measured.length > 0
+          ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
+          : 'Usage unavailable for every work order'}
+        {orders.length > measured.length
+          ? ` · ${orders.length - measured.length} ${orders.length - measured.length === 1 ? 'order' : 'orders'} unavailable`
+          : ''}
+      </p>
+      <ul className="mt-2 space-y-1" aria-label="Work-order usage">
+        {orders.map((order) => (
+          <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums">
+            <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
+            <code className="text-faint">{order.id}</code>
+            <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
+            <AuditDisclosure
+              key={`${workspace}:${item.task.id}:work-order:${order.id}`}
+              taskId={item.task.id}
+              kind="work-order"
+              recordId={order.id}
+              label={`Work-order audit ${order.id} (current record)`}
+            />
           </li>
         ))}
-      </ol>
-    </details>
+      </ul>
+    </section>
+  )
+}
+
+// Earlier human history: the bounded view holds the newest human entries, and
+// this disclosure pages the older ones from the view's `older_cursor` with the
+// same bound, controls, and states as technical activity. Its rows render
+// through `noteFor`, so an omitted payload still renders a note.
+function EarlierHistory({
+  item,
+  workspace,
+  usageReportedOrderIDs,
+}: {
+  item: ActivityItem
+  workspace: string
+  usageReportedOrderIDs: Set<string>
+}) {
+  const [open, setOpen] = useState(false)
+  const contentID = useId()
+  const members = useWorkspaceMembers()
+  const queryClient = useQueryClient()
+  const newest = item.event_page?.older_cursor ?? ''
+  return (
+    <li className="relative pl-7">
+      <TimelineDot className="bg-edge" />
+      <section className="rounded-lg border border-border bg-surface/35 text-xs text-muted">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={contentID}
+          className="flex w-full cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? <ChevronUp aria-hidden className="size-3.5" /> : <ChevronDown aria-hidden className="size-3.5" />}
+          Earlier history
+        </button>
+        {open && (
+          <div id={contentID}>
+            <HistoryPages
+              workspace={workspace}
+              taskId={item.task.id}
+              selection="human"
+              newest={newest}
+              label="Earlier history pages"
+              emptyText="No earlier activity recorded."
+              // An expired start cursor restarts from the newest earlier page of
+              // a freshly read detail view.
+              resolveNewest={async () => {
+                const key = taskDetailQueryKey(workspace, item.task.id)
+                await queryClient.invalidateQueries({ queryKey: key, exact: true })
+                return queryClient.getQueryData<ActivityItem>(key)?.event_page?.older_cursor
+              }}
+              renderRows={(events) => (
+                <ol aria-label="Earlier history events" className="space-y-2 border-t border-border px-3 py-3">
+                  {historyNoteEntries(item, events, members.data ?? []).map((entry) => (
+                    <TimelineRow
+                      key={entry.key}
+                      entry={entry}
+                      item={item}
+                      usageReportedOrderIDs={usageReportedOrderIDs}
+                      operatorNotes={item.operator_notes}
+                    />
+                  ))}
+                </ol>
+              )}
+            />
+          </div>
+        )}
+      </section>
+    </li>
+  )
+}
+
+// One bounded history pager shared by technical activity and Earlier history.
+// Each step replaces the page, so at most one page of rows is mounted and only
+// the current page's data is kept. The control that moved keeps its place in
+// the viewport and its focus while the next page replaces the rows.
+function HistoryPages({
+  workspace,
+  taskId,
+  selection,
+  newest,
+  label,
+  emptyText,
+  renderRows,
+  resolveNewest,
+}: {
+  workspace: string
+  taskId: string
+  selection: TaskHistorySelection
+  newest: string
+  label: string
+  emptyText: string
+  renderRows: (events: TaskEventView[]) => ReactNode
+  resolveNewest?: () => Promise<string | undefined>
+}) {
+  const [cursor, setCursor] = useState(newest)
+  const query = useTaskHistory(workspace, taskId, selection, cursor)
+  const page = query.data
+  const rowsRef = useRef<HTMLDivElement>(null)
+  const moved = useRef<{ element: HTMLElement; top: number } | null>(null)
+  const [reservedHeight, setReservedHeight] = useState<number>()
+  const [restarting, setRestarting] = useState(false)
+  const loading = query.isFetching || restarting
+
+  const go = async (element: HTMLElement, next: string | undefined | (() => Promise<string | undefined>)) => {
+    if (loading || next === undefined) return
+    moved.current = { element, top: element.getBoundingClientRect().top }
+    setReservedHeight(rowsRef.current?.offsetHeight)
+    let target = next
+    if (typeof target === 'function') {
+      setRestarting(true)
+      try {
+        target = (await target()) ?? newest
+      } finally {
+        setRestarting(false)
+      }
+    }
+    if (target === cursor) void query.refetch()
+    else setCursor(target)
+  }
+
+  // Keep the moved control where it was and focused once the new page renders.
+  useLayoutEffect(() => {
+    const anchor = moved.current
+    if (!anchor) return
+    const delta = anchor.element.isConnected ? anchor.element.getBoundingClientRect().top - anchor.top : 0
+    if (delta !== 0) {
+      const container = scrollableAncestor(anchor.element)
+      if (container) container.scrollTop += delta
+      else window.scrollBy(0, delta)
+    }
+    if (anchor.element.isConnected && document.activeElement !== anchor.element) {
+      anchor.element.focus({ preventScroll: true })
+    }
+    if (!loading) {
+      moved.current = null
+      setReservedHeight(undefined)
+    }
+  })
+
+  const restart = isHistoryRestart(query.error)
+  const newerCursor = cursor !== newest ? page?.newer_cursor : undefined
+  const control = (name: string, next: string | undefined | (() => Promise<string | undefined>)) => {
+    const unavailable = loading || next === undefined
+    return (
+      <button
+        type="button"
+        aria-disabled={unavailable}
+        className={cn(
+          'rounded-md border border-border px-2 py-1 font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+          unavailable ? 'cursor-not-allowed opacity-50' : 'hover:bg-raised',
+        )}
+        onClick={(event) => void go(event.currentTarget, next)}
+      >
+        {name}
+      </button>
+    )
+  }
+  return (
+    <section aria-label={label} aria-busy={loading} className="border-t border-border">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        {control('Newest', cursor !== newest ? newest : undefined)}
+        {control('Newer', newerCursor)}
+        {control('Older', page?.older_cursor)}
+      </div>
+      <div ref={rowsRef} style={reservedHeight ? { minHeight: reservedHeight } : undefined}>
+        {loading && (
+          <p role="status" className="border-t border-border px-3 py-2">
+            Loading activity…
+          </p>
+        )}
+        {!loading && query.isError && restart && (
+          <div role="alert" className="border-t border-border px-3 py-2">
+            <p>Activity changed while paging</p>
+            {control('Restart from newest', resolveNewest ?? newest)}
+          </div>
+        )}
+        {!loading && query.isError && !restart && (
+          <div role="alert" className="border-t border-border px-3 py-2">
+            <p>Could not load activity: {query.error.message}</p>
+            {control('Retry', cursor)}
+          </div>
+        )}
+        {!loading && page && page.events.length === 0 && (
+          <p className="border-t border-border px-3 py-2">{emptyText}</p>
+        )}
+        {!loading && page && page.events.length > 0 && (
+          <>
+            {renderRows(page.events)}
+            {!page.older_cursor && <p className="border-t border-border px-3 py-2 text-faint">End of history.</p>}
+          </>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -596,7 +838,7 @@ function AuditDisclosure({
   kind: TaskAuditKind
   recordId: string
   label: string
-  event?: ActivityItem['events'][number]
+  event?: TaskEventView
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -604,7 +846,9 @@ function AuditDisclosure({
       <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
         {label}
       </summary>
-      {event && !event.audit_available ? (
+      {/* A loaded payload renders inline; an omitted snapshot or payload is
+          read from the audit record by its decimal ID. */}
+      {event && !event.audit_available && !event.payload_omitted ? (
         open && <AuditJSON payload={technicalPayload(event)} />
       ) : (
         <AuditPayload taskId={taskId} kind={kind} recordId={recordId} open={open} />
@@ -653,7 +897,7 @@ function AuditJSON({ payload }: { payload: unknown }) {
   )
 }
 
-function technicalPayload(event: ActivityItem['events'][number]): Record<string, unknown> {
+function technicalPayload(event: Pick<TaskEvent | TaskEventView, 'kind' | 'payload'>): Record<string, unknown> {
   if (!event.kind.endsWith('.output_invalid') || !Object.hasOwn(event.payload ?? {}, 'output'))
     return event.payload ?? {}
   const { output: _rejectedOutput, ...metadata } = event.payload ?? {}
@@ -751,7 +995,9 @@ function TimelineRow({
     return (
       <JobEntry
         job={entry.job}
+        taskId={item.task.id}
         summary={entry.summary}
+        summaryEventId={entry.summaryEventId}
         model={entry.model}
         tone={entry.tone}
         order={entry.order}
@@ -759,7 +1005,14 @@ function TimelineRow({
       />
     )
   if (entry.type === 'panel')
-    return <PanelEntry entry={entry} usageReportedOrderIDs={usageReportedOrderIDs} operatorNotes={operatorNotes} />
+    return (
+      <PanelEntry
+        entry={entry}
+        taskId={item.task.id}
+        usageReportedOrderIDs={usageReportedOrderIDs}
+        operatorNotes={operatorNotes}
+      />
+    )
   if (entry.type === 'order') {
     return (
       <li className="relative pl-7">
@@ -848,6 +1101,11 @@ function TimelineRow({
             </pre>
           </details>
         )}
+        {entry.omittedEventId && (
+          <div className="basis-full text-xs text-muted">
+            <AuditDisclosure taskId={item.task.id} kind="event" recordId={entry.omittedEventId} label="Event payload" />
+          </div>
+        )}
       </div>
     </li>
   )
@@ -859,10 +1117,12 @@ function TimelineRow({
 // attributed round. Vocabulary is the spec's own: panel, seats, verdicts.
 function PanelEntry({
   entry,
+  taskId,
   usageReportedOrderIDs,
   operatorNotes,
 }: {
   entry: Extract<TimelineEntry, { type: 'panel' }>
+  taskId: string
   usageReportedOrderIDs: Set<string>
   operatorNotes?: ActivityItem['operator_notes']
 }) {
@@ -965,7 +1225,7 @@ function PanelEntry({
                 <span className="pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
                   Seat {seat.seat}
                 </span>
-                <SeatNote seat={seat} />
+                <SeatNote seat={seat} taskId={taskId} />
               </div>
             ))}
           </div>
@@ -1058,7 +1318,7 @@ function reviewSeatProgress(progress?: string) {
 // collapsed height with overflow hidden and the shared bottom fade, plus a
 // small per-seat toggle shown only when the text actually overflows. State is
 // session-local and independent per seat.
-function SeatNote({ seat }: { seat: PanelSeat }) {
+function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
   const [expanded, setExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -1107,6 +1367,16 @@ function SeatNote({ seat }: { seat: PanelSeat }) {
           )}
           {expanded ? 'Less' : 'More'}
         </button>
+      )}
+      {seat.review?.truncatedEventId && (
+        <div className="text-xs text-muted">
+          <AuditDisclosure
+            taskId={taskId}
+            kind="event"
+            recordId={seat.review.truncatedEventId}
+            label="Full review text (shortened here)"
+          />
+        </div>
       )}
     </div>
   )
@@ -1199,14 +1469,18 @@ const placeholderSummaries = new Set([
 // stay in the API.
 function JobEntry({
   job,
+  taskId,
   summary,
+  summaryEventId,
   model,
   tone,
   order,
   usageAvailable,
 }: {
   job: Job
+  taskId: string
   summary: string
+  summaryEventId?: string
   model: string
   tone: Extract<TimelineEntry, { type: 'job' }>['tone']
   order?: WorkOrder
@@ -1267,6 +1541,17 @@ function JobEntry({
         >
           {summary}
         </MarkdownProse>
+        {summaryEventId && (
+          // The server cut this text at 16,384 bytes; its event holds the rest.
+          <div className="px-4 pb-3 text-xs text-muted">
+            <AuditDisclosure
+              taskId={taskId}
+              kind="event"
+              recordId={summaryEventId}
+              label="Full text (shortened here)"
+            />
+          </div>
+        )}
         {order?.transcript_captures?.length ? (
           <div className="px-4 pb-3">
             <TranscriptCaptures captures={order.transcript_captures} />

@@ -27,7 +27,7 @@ export function GateChoices({ taskId, action, onActed }: { taskId: string; actio
   const otherChoices = mergeChoice ? action.choices.filter((choice) => choice !== mergeChoice) : action.choices
   const { data: detail } = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
-    queryFn: () => fetchTaskActivity(taskId),
+    queryFn: ({ signal }) => fetchTaskActivity(workspace, taskId, signal),
     enabled: Boolean(workspace && mergeChoice),
   })
   return (
