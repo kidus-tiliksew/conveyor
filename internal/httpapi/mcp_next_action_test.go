@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // rest serves one GET through the full handler with token and returns the body.
@@ -320,6 +321,74 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 		if secondary.Kind == nextaction.KindDocumentProposal {
 			t.Fatalf("task-context proposal recorded as document_proposal: %+v", question.Details.Secondary)
 		}
+	}
+}
+
+// TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery confirms the cited
+// revision, runs one order-clock tick, and reads the task through REST and MCP:
+// both state the same ordinary queued work instead of the agent question, and
+// GET /v1/inbox/acts lists the factory's recovery (feature-bounded-automatic-recovery
+// AR-3a; req-260820-394cac AC-2.6; req-bounded-automatic-recovery AC-5.2).
+func TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	userToken, _ := f.user("usr_answered", core.WorkspaceRoleContributor)
+	design, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "component-answered", Title: "Answered", Category: "Component design"}, core.SystemDesignVersion{Content: "# Answered\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, design.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	order := f.order("answered", core.StageImplement)
+	f.claimWorker(order, "worker-answered", "usr_answered", "answered-session")
+	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-answered", core.WorkOrderRelease{
+		SessionID: "answered-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm component-answered.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: design.ID, CitedVersion: initial.Version, StatementOrSectionID: "Section"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proposed, err := f.store.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Answered\n\nRevised.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, design.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(f.store).TickOrderClock(store.WithActor(f.ctx, store.SystemActor("queue:order-clock")), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-answered"})
+	if isErr {
+		t.Fatalf("user read refused: %s", text)
+	}
+	rest := f.rest(userToken, "/v1/tasks/gov-task-answered/next-action?workspace_id="+governanceWorkspace)
+	if got, want := decodeJSON(t, []byte(text)), decodeJSON(t, rest); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MCP and REST next actions differ:\nmcp=%s\nrest=%s", text, rest)
+	}
+	var action nextaction.NextAction
+	if err = json.Unmarshal(rest, &action); err != nil {
+		t.Fatal(err)
+	}
+	if action.Kind == nextaction.KindAgentQuestion || action.Details.Checkpoint != "" || len(action.Details.Citations) != 0 {
+		t.Fatalf("next action still states the checkpoint: %s", rest)
+	}
+	if action.CurrentOrder == nil || action.CurrentOrder.ID != order {
+		t.Fatalf("next action order = %+v", action.CurrentOrder)
+	}
+	var acts struct {
+		Acts []nextaction.Act `json:"acts"`
+	}
+	if err = json.Unmarshal(f.rest(userToken, "/v1/inbox/acts?workspace_id="+governanceWorkspace), &acts); err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, act := range acts.Acts {
+		if act.TaskID == "gov-task-answered" && act.Kind == "recovered" && act.Automatic {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("inbox acts miss the recovery: %+v", acts.Acts)
 	}
 }
 

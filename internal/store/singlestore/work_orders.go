@@ -626,6 +626,7 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 		query += automaticRecoveryElapsedSQL
 		args = append(args, now, now)
 	}
+	query += answeredAuthorityElapsedSQL
 	query += `) ORDER BY task_id`
 	seen := map[string]struct{}{}
 	collect := func(query string, args ...any) error {
