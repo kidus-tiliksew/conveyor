@@ -29,8 +29,22 @@ func (detail taskDetailProjection) MarshalJSON() ([]byte, error) {
 		}
 		events = append(events, data)
 	}
-	orders := make([]json.RawMessage, 0, len(detail.WorkOrders))
-	for _, order := range detail.WorkOrders {
+	orders, err := projectWorkOrderViews(detail.WorkOrders)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		reviewItem
+		Events     []json.RawMessage `json:"events"`
+		WorkOrders []json.RawMessage `json:"work_orders"`
+	}{detail.reviewItem, events, orders})
+}
+
+// projectWorkOrderViews strips audit snapshots from work-order JSON for the
+// complete and bounded detail views alike.
+func projectWorkOrderViews(workOrders []workOrderActivityView) ([]json.RawMessage, error) {
+	orders := make([]json.RawMessage, 0, len(workOrders))
+	for _, order := range workOrders {
 		data, err := json.Marshal(order)
 		if err != nil {
 			return nil, err
@@ -52,11 +66,7 @@ func (detail taskDetailProjection) MarshalJSON() ([]byte, error) {
 		}
 		orders = append(orders, projected)
 	}
-	return json.Marshal(struct {
-		reviewItem
-		Events     []json.RawMessage `json:"events"`
-		WorkOrders []json.RawMessage `json:"work_orders"`
-	}{detail.reviewItem, events, orders})
+	return orders, nil
 }
 
 // RawMessage preserves integer precision and leaves every scalar untouched.
