@@ -720,7 +720,8 @@ export function generateLedger(options: {
   }
   const push = (event: Omit<CompleteEvent, 'id' | 'at' | 'task_id'>) => {
     const index = sequence++
-    events.push({ id: String(firstEventId + BigInt(index)), task_id: taskId, at: at(index), ...event })
+    // Odd decimal IDs above 2^53: no JavaScript number holds any of them exactly.
+    events.push({ id: String(firstEventId + 2n * BigInt(index)), task_id: taskId, at: at(index), ...event })
   }
   const triage = { id: `${taskId}-triage`, stage: 'triage' }
   const implement = { id: `${taskId}-implement`, stage: 'implement' }

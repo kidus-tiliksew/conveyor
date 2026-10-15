@@ -9,6 +9,7 @@ import { relativeTime } from '../../lib/utils'
 import { useActivity, useWorkspaceSelection } from '../app-shell'
 import { type AttentionItem, AttentionSurface } from '../documents/attention-surface'
 import { Button } from '../ui/button'
+import { withQuerySignal } from './use-task-detail'
 
 // Work that came back to the signed-in person, rendered in the attention
 // surface every other outstanding signal already uses rather than in a tray of
@@ -56,7 +57,8 @@ export function ReturnedForChangesAttention() {
   const details = useQueries({
     queries: candidates.map((taskId) => ({
       queryKey: taskDetailQueryKey(workspace, taskId),
-      queryFn: ({ signal }: { signal: AbortSignal }) => fetchTaskActivity(workspace, taskId, signal),
+      queryFn: (context: { signal: AbortSignal }) =>
+        withQuerySignal(context, (signal) => fetchTaskActivity(workspace, taskId, signal)),
       enabled: Boolean(workspace),
     })),
   })

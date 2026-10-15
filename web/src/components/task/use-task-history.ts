@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { fetchTaskHistory, TaskHistoryError } from '../../lib/api'
 import { taskHistoryQueryKey } from '../../lib/query-keys'
 import type { TaskHistorySelection } from '../../lib/types'
+import { withQuerySignal } from './use-task-detail'
 
 // One history page of a task (component-web-task-surfaces, History pages). A
 // component mounts this only while its disclosure is open, so a closed
@@ -15,16 +16,22 @@ import type { TaskHistorySelection } from '../../lib/types'
 export function useTaskHistory(workspace: string, taskId: string, selection: TaskHistorySelection, cursor: string) {
   const queryClient = useQueryClient()
   useEffect(() => {
+    const queryKey = taskHistoryQueryKey(workspace, taskId, selection, cursor)
     return () => {
-      void queryClient.cancelQueries({
-        queryKey: taskHistoryQueryKey(workspace, taskId, selection, cursor),
-        exact: true,
+      // Cancel once no observer remains. Deferring the check lets the
+      // StrictMode development rehearsal remount without aborting the read.
+      queueMicrotask(() => {
+        const query = queryClient.getQueryCache().find({ queryKey, exact: true })
+        if (query && query.getObserversCount() === 0) void query.cancel()
       })
     }
   }, [queryClient, workspace, taskId, selection, cursor])
   return useQuery({
     queryKey: taskHistoryQueryKey(workspace, taskId, selection, cursor),
-    queryFn: ({ signal }) => fetchTaskHistory(workspace, taskId, { selection, cursor: cursor || undefined }, signal),
+    queryFn: (context) =>
+      withQuerySignal(context, (signal) =>
+        fetchTaskHistory(workspace, taskId, { selection, cursor: cursor || undefined }, signal),
+      ),
     enabled: Boolean(taskId),
     retry: false,
     staleTime: 0,

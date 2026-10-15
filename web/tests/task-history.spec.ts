@@ -315,6 +315,7 @@ test('Older, Newer, and Newest replace the page and keep at most 50 rows', async
   const pageText = (index: number) => `Event ${ordered[ordered.length - 1 - index * 50].id}`
 
   for (let step = 1; step <= 3; step++) {
+    await older.scrollIntoViewIfNeeded()
     const top = (await older.boundingBox())?.y
     await older.click()
     await expect(technicalRows(scope).last()).toContainText(pageText(step))
@@ -432,7 +433,10 @@ test('closing, a task change, and a workspace change abort the read and drop the
   await technicalToggle(scope).click()
   await expect.poll(() => server.calls.length).toBe(3)
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
-  await expect.poll(() => server.aborts()).toHaveLength(3)
+  // The navigation above reloaded the page, which started a fresh abort log.
+  await expect
+    .poll(() => server.aborts())
+    .toEqual([`/v1/tasks/${first.taskId}/history?selection=technical&workspace_id=demo`])
   server.release()
   await page.waitForTimeout(300)
   await expect(mountedEventRows(page)).toHaveCount(0)

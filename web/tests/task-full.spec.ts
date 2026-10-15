@@ -7735,6 +7735,14 @@ test('recovery completion after workspace switch does not refresh the new worksp
     await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
   })
 
+  // Detail reads that delivered a response. A workspace change aborts the
+  // read in flight (component-web-task-surfaces), so an aborted request never
+  // reaches the page and is not a refresh.
+  const completedReads: string[] = []
+  page.on('requestfinished', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/tasks/recovery/activity') completedReads.push(url.searchParams.get('workspace_id') ?? '')
+  })
   await page.goto('/tasks/recovery/full')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryReceived).toBe(true)
@@ -7744,7 +7752,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
   await page.getByText('Recovery in other').first().click()
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
-  await expect.poll(() => detailReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  await expect.poll(() => completedReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  const otherReads = detailReads.filter((workspace) => workspace === 'other').length
   const demoReads = detailReads.filter((workspace) => workspace === 'demo').length
   const otherActivityReads = activityReads.filter((workspace) => workspace === 'other').length
 
@@ -7754,7 +7763,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
   await expect
     .poll(() => activityReads.filter((workspace) => workspace === 'other').length)
     .toBeGreaterThan(otherActivityReads)
-  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
+  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(otherReads)
+  expect(completedReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
   expect(detailReads.filter((workspace) => workspace === 'demo')).toHaveLength(demoReads)
 })
 
