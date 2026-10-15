@@ -2575,6 +2575,9 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
     await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
   })
   await page.goto('/tasks/operator-checkpoint/full')
+  // A checkpoint without a decision request keeps the released wording
+  // (req-260820-394cac AC-1.3).
+  await expect(page.getByRole('region', { name: 'Implementation paused — recovery needed' })).toBeVisible()
   await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
   await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
   const checkpointMessage = page.getByText('Agent checkpoint message').locator('..')
@@ -2810,6 +2813,245 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await direction.fill('Proceed using the confirmed checkpoint documents.')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryBody?.direction).toBe('Proceed using the confirmed checkpoint documents.')
+})
+
+// The checkpoint shape of task 261015-3721c6: seven citations across four
+// System Design documents, each with one pending task-authored proposal
+// (component-web-task-surfaces, Implementation checkpoints).
+const sevenCitationDocuments = [
+  {
+    id: 'component-http-api',
+    title: 'HTTP API',
+    cited: 43,
+    proposal: 44,
+    sections: ['Bounded detail view', 'Task operations'],
+  },
+  {
+    id: 'component-web-task-surfaces',
+    title: 'Web task surfaces',
+    cited: 7,
+    proposal: 8,
+    sections: ['Task detail composition', 'History pages', 'Audit disclosures'],
+  },
+  { id: 'component-web-dashboard', title: 'Web dashboard', cited: 25, proposal: 26, sections: ['Route tree'] },
+  { id: 'component-mcp-investigation-reads', title: 'MCP investigation reads', cited: 3, proposal: 4, sections: [''] },
+]
+const sevenCitationDecision =
+  'Confirm or dismiss component-http-api v44, component-web-task-surfaces v8, component-web-dashboard v26, and component-mcp-investigation-reads v4, then recover this order.'
+
+function sevenCitationCheckpoint(confirmed: Set<string>) {
+  return {
+    decision_request: sevenCitationDecision,
+    class: 'authority_conflict',
+    citations: sevenCitationDocuments.flatMap((document) =>
+      document.sections.map((section) => ({
+        document_id: document.id,
+        document_kind: 'system_design' as const,
+        document_title: document.title,
+        cited_version: document.cited,
+        ...(section ? { statement_or_section_id: section } : {}),
+        current_confirmed_version: confirmed.has(document.id) ? document.proposal : document.cited,
+        newer_confirmed: confirmed.has(document.id),
+        pending_proposals: confirmed.has(document.id)
+          ? []
+          : [
+              {
+                id: document.id,
+                title: document.title,
+                tier: 'system_design' as const,
+                version: document.proposal,
+                origin_type: 'task' as const,
+                origin_id: 'operator-checkpoint',
+                proposed_at: createdAt,
+              },
+            ],
+      })),
+    ),
+  }
+}
+
+async function routeSevenCitationCheckpoint(page: Page, confirmed: Set<string>) {
+  const confirms: Array<{ path: string; ifMatch?: string }> = []
+  const recoveries: Array<Record<string, unknown>> = []
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = sevenCitationCheckpoint(confirmed)
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/system-designs/*/versions/*/confirm**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    confirms.push({ path, ifMatch: route.request().headers()['if-match'] })
+    const id = path.split('/')[3]
+    confirmed.add(id)
+    await route.fulfill({ json: {} })
+  })
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    recoveries.push(route.request().postDataJSON() as Record<string, unknown>)
+    await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
+  })
+  return { confirms, recoveries }
+}
+
+test('an authority-conflict checkpoint states the server question and groups seven citations into four documents', async ({
+  page,
+}) => {
+  const confirmed = new Set<string>()
+  const { confirms, recoveries } = await routeSevenCitationCheckpoint(page, confirmed)
+  await page.goto('/tasks/operator-checkpoint/full')
+
+  // The current state is the server's label, the agent's decision request, and
+  // the server's question; nothing reads as a failure that needs recovery.
+  const banner = page.getByRole('region', { name: 'Cited revisions need a decision' })
+  await expect(banner).toBeVisible()
+  await expect(banner.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
+  await expect(
+    banner.getByText('Will you confirm or dismiss the cited revisions, then recover the order with direction?'),
+  ).toBeVisible()
+  await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
+  await expect(page.getByText(/try again/i)).toHaveCount(0)
+
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
+  await expect(
+    card.getByText(
+      'Confirm or dismiss the pending revisions of HTTP API, Web task surfaces, Web dashboard, and MCP investigation reads. That decision settles the conflict; recover the order with direction after it.',
+    ),
+  ).toBeVisible()
+  await expect(card.getByText(/Recovery without direction will repeat the checkpoint/)).toHaveCount(0)
+
+  // One block per document keeps every cited section, and each pending
+  // proposal gets one Confirm and one Review-or-dismiss action.
+  const blocks = card.getByRole('list', { name: /^Citations of / })
+  await expect(blocks).toHaveCount(4)
+  await expect(blocks.getByRole('listitem')).toHaveCount(7)
+  for (const document of sevenCitationDocuments) {
+    const citations = card.getByRole('list', { name: `Citations of ${document.title}` })
+    await expect(citations.getByRole('listitem')).toHaveCount(document.sections.length)
+    for (const section of document.sections) {
+      await expect(
+        citations.getByText(`Cited v${document.cited} · ${section || 'document-level reference'}`, { exact: true }),
+      ).toBeVisible()
+    }
+    await expect(card.getByRole('link', { name: document.title, exact: true })).toHaveCount(1)
+    await expect(card.getByRole('button', { name: `Confirm v${document.proposal}`, exact: true })).toHaveCount(1)
+    await expect(card.getByRole('link', { name: `Review or dismiss v${document.proposal}`, exact: true })).toHaveCount(
+      1,
+    )
+  }
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(4)
+  await expect(card.getByText(/^Still confirmed at v/)).toHaveCount(4)
+
+  // A partial advancement pre-fills nothing.
+  const direction = page.getByLabel('Operator direction')
+  await card.getByRole('button', { name: 'Confirm v44' }).click()
+  await expect(card.getByText('Now confirmed at v44')).toBeVisible()
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(3)
+  await expect(direction).toHaveValue('')
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeDisabled()
+
+  for (const version of [8, 26, 4]) {
+    await card.getByRole('button', { name: `Confirm v${version}`, exact: true }).click()
+    await expect(card.getByText(`Now confirmed at v${version}`, { exact: true })).toBeVisible()
+  }
+  expect(confirms.map((confirm) => confirm.path)).toEqual([
+    '/v1/system-designs/component-http-api/versions/44/confirm',
+    '/v1/system-designs/component-web-task-surfaces/versions/8/confirm',
+    '/v1/system-designs/component-web-dashboard/versions/26/confirm',
+    '/v1/system-designs/component-mcp-investigation-reads/versions/4/confirm',
+  ])
+  expect(confirms.map((confirm) => confirm.ifMatch)).toEqual(['"43"', '"7"', '"25"', '"3"'])
+
+  // Every document advanced: the direction names each one once, in block order.
+  await expect(direction).toHaveValue(
+    'Continue under the newly confirmed authority: component-http-api v44, component-web-task-surfaces v8, component-web-dashboard v26, component-mcp-investigation-reads v4.',
+  )
+  await direction.fill('Continue under the confirmed revisions.')
+  await page.getByRole('button', { name: 'Recover work order' }).click()
+  await expect.poll(() => recoveries.at(-1)?.direction).toBe('Continue under the confirmed revisions.')
+})
+
+test('an authority-conflict pre-fill never overwrites operator direction', async ({ page }) => {
+  const confirmed = new Set(sevenCitationDocuments.slice(1).map((document) => document.id))
+  await routeSevenCitationCheckpoint(page, confirmed)
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  const direction = page.getByLabel('Operator direction')
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(1)
+  await direction.fill('Keep the operator wording.')
+  await card.getByRole('button', { name: 'Confirm v44' }).click()
+  await expect(card.getByText('Now confirmed at v44')).toBeVisible()
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(0)
+  await expect(direction).toHaveValue('Keep the operator wording.')
+})
+
+test('an authority conflict without proposals asks for authorship', async ({ page }) => {
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = {
+      decision_request: 'Author a revision of the cited design, then recover this order.',
+      class: 'authority_conflict',
+      citations: [
+        {
+          document_id: 'component-web-dashboard',
+          document_kind: 'system_design',
+          document_title: 'Web dashboard',
+          cited_version: 25,
+          statement_or_section_id: 'Route tree',
+          current_confirmed_version: 25,
+          newer_confirmed: false,
+          pending_proposals: [],
+        },
+      ],
+    }
+    await route.fulfill({ json: item })
+  })
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByRole('region', { name: 'Cited documents need a revision' })).toBeVisible()
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(
+    card.getByText(
+      'No cited document has a pending revision. Author a revision of Web dashboard, then recover the order with direction.',
+    ),
+  ).toBeVisible()
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(0)
+  await expect(
+    card.getByText('No revision is waiting for a decision. Author one if the conflict remains.'),
+  ).toBeVisible()
+})
+
+test('a generic decision request keeps the generic direction guidance', async ({ page }) => {
+  let recoveryBody: Record<string, unknown> | undefined
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = { decision_request: 'Should the migration keep the legacy column?' }
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    recoveryBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
+  })
+  await page.goto('/tasks/operator-checkpoint/full')
+  const banner = page.getByRole('region', { name: 'Agent question' })
+  await expect(banner.getByText('Should the migration keep the legacy column?', { exact: true })).toBeVisible()
+  await expect(banner.getByText('Answer the agent?')).toBeVisible()
+  await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(
+    card.getByText(
+      'A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.',
+    ),
+  ).toBeVisible()
+  const recover = page.getByRole('button', { name: 'Recover work order' })
+  await expect(recover).toBeDisabled()
+  await page.getByLabel('Operator direction').fill('Keep the legacy column.')
+  await recover.click()
+  await expect.poll(() => recoveryBody?.direction).toBe('Keep the legacy column.')
 })
 
 test('structured authority checkpoint omits the standalone card when every proposal is cited', async ({ page }) => {

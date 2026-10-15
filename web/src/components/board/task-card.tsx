@@ -14,15 +14,24 @@ export type CardStatusTone = 'failure' | 'operator' | 'working' | 'merging' | 'w
 
 // The status mark's tone, first match wins (feature-operator-next-action NA-6):
 // a recorded failure outranks the actor, so a stalled operator item still reads
-// as a failure. The tone maps the server's actor and kind; it derives no actor,
-// kind, or reason of its own (AC-1.7).
+// as a failure. A deliberate checkpoint is the exception: its release message
+// is not a failure, so an agent question reads as the operator's. The tone maps
+// the server's actor and kind; it derives no actor, kind, or reason of its own
+// (AC-1.7).
 export function cardStatusTone(item: ActivitySummary): CardStatusTone {
   const action = item.next_action
-  if (item.stalled?.last_failure || item.forge_failure) return 'failure'
+  if (item.forge_failure || (item.stalled?.last_failure && !isAgentQuestion(item))) return 'failure'
   if (action?.actor === 'operator') return 'operator'
   if ((action?.actor === 'agent' || action?.actor === 'factory') && action.kind === 'working') return 'working'
   if (action?.kind === 'merging') return 'merging'
   return 'waiting'
+}
+
+// A checkpoint release also matches the stalled row, which the server records
+// only as a secondary signal; the next action's label and summary state the
+// pause, so no surface prints its release message as a failure.
+export function isAgentQuestion(item: { next_action?: { kind: string } }) {
+  return item.next_action?.kind === 'agent_question'
 }
 
 const statusMarks: Record<CardStatusTone, string> = {
@@ -112,7 +121,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
           {item.task.hold && <Badge variant="mono">Held</Badge>}
         </div>
       )}
-      {item.stalled?.last_failure && (
+      {item.stalled?.last_failure && !isAgentQuestion(item) && (
         <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-failure">
           {humanizeClaimRefusal(item.stalled.last_failure, item.task.assignee, members)}
         </p>

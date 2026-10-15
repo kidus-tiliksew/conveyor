@@ -409,6 +409,7 @@ export type CurrentExecutionKind =
   | 'released'
   | 'expired'
   | 'verification_checkpoint'
+  | 'checkpoint_decision'
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
@@ -569,13 +570,43 @@ export function deriveCurrentExecutionState(
             ? order.unsatisfiable_task_ids
             : action.blocked_by?.map((blocker) => blocker.task_id),
       }
-    case 'stalled':
     case 'agent_question':
+      return (
+        checkpointDecisionState(order, attemptId, action) ?? pausedExecutionState(item, order, attemptId, stage, action)
+      )
+    case 'stalled':
     case 'verification_disposition':
     case 'dispatch_exhausted':
       return pausedExecutionState(item, order, attemptId, stage, action)
     default:
       return undefined
+  }
+}
+
+// A deliberate checkpoint is a question for the operator, not a failure: its
+// title, next step, and blocker are the server's label and question and the
+// agent's own decision request, and the summary stays on NextActionCard
+// (component-web-task-surfaces, Implementation checkpoints;
+// req-operator-next-action AC-1.7). A checkpoint without a decision request
+// keeps the released wording (req-260820-394cac AC-1.3), and a verify order
+// keeps its verification checkpoint presentation.
+function checkpointDecisionState(
+  order: WorkOrder,
+  attemptId: string | undefined,
+  action: NextAction,
+): CurrentExecutionState | undefined {
+  const decisionRequest = order.checkpoint?.decision_request?.trim()
+  if (order.stage === 'verify' || !decisionRequest) return undefined
+  return {
+    kind: 'checkpoint_decision',
+    status: 'paused',
+    order,
+    attemptId,
+    title: action.label,
+    blocker: decisionRequest,
+    retry: 'No automatic retry is pending.',
+    nextAction: action.question,
+    action: 'recover',
   }
 }
 
