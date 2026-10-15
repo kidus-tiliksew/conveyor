@@ -278,8 +278,9 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
   const requestId = useRef(crypto.randomUUID())
   const [checkoutResolved, setCheckoutResolved] = useState(false)
   const requestedDecision = order.checkpoint?.decision_request?.trim() ?? ''
-  const citations = order.checkpoint?.citations ?? []
-  const resolvedDirection = checkpointResolvedDirection(order.checkpoint?.class, citations)
+  const authorityConflict = order.checkpoint?.class === 'authority_conflict'
+  const citedDocuments = citedDocumentsOf(order.checkpoint?.citations ?? [])
+  const resolvedDirection = checkpointResolvedDirection(order.checkpoint?.class, citedDocuments)
   const [direction, setDirection] = useState(resolvedDirection)
   const [attachingContext, setAttachingContext] = useState(false)
   const [now, setNow] = useState(Date.now())
@@ -367,7 +368,9 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         )}
       </div>
       <div className="space-y-2 text-xs leading-5 text-muted">
-        {checkpointReleased ? (
+        {checkpointReleased && authorityConflict && citedDocuments.length > 0 ? (
+          <AuthorityConflictGuidance documents={citedDocuments} />
+        ) : checkpointReleased ? (
           <p>
             A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.
           </p>
@@ -392,13 +395,13 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
             </pre>
           </details>
         )}
-        {checkpointReleased && order.checkpoint?.class === 'authority_conflict' && (
+        {checkpointReleased && authorityConflict && (
           <section className="space-y-2" aria-label="Authority conflict references">
             <p className="font-medium text-foreground">Authority in question</p>
-            {citations.map((citation) => (
-              <CheckpointCitation
-                key={`${citation.document_kind}:${citation.document_id}:${citation.cited_version}:${citation.statement_or_section_id ?? ''}`}
-                citation={citation}
+            {citedDocuments.map((document) => (
+              <CitedDocumentBlock
+                key={document.key}
+                document={document}
                 canConfirm={canConfirmDocuments}
                 activeKey={
                   confirmProposal.variables
@@ -407,7 +410,12 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
                 }
                 isPending={confirmProposal.isPending}
                 error={confirmProposal.error}
-                onConfirm={(proposal) => confirmProposal.mutate({ citation, proposal })}
+                onConfirm={(proposal) =>
+                  confirmProposal.mutate({
+                    citation: { ...document.citations[0], current_confirmed_version: document.currentConfirmedVersion },
+                    proposal,
+                  })
+                }
               />
             ))}
           </section>
@@ -481,81 +489,163 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
   )
 }
 
-function checkpointResolvedDirection(checkpointClass: string | undefined, citations: WorkOrderCheckpointCitation[]) {
+// One cited document of an authority-conflict checkpoint. A checkpoint cites
+// clauses, so one document can appear under several sections or versions; the
+// card decides per document (component-web-task-surfaces, Implementation
+// checkpoints): its newer-confirmed state holds only when every citation of it
+// is newer-confirmed, and each pending proposal appears once.
+interface CitedDocument {
+  key: string
+  citations: WorkOrderCheckpointCitation[]
+  currentConfirmedVersion: number
+  newerConfirmed: boolean
+  proposals: WorkOrderCheckpointPendingProposal[]
+}
+
+function citedDocumentsOf(citations: WorkOrderCheckpointCitation[]): CitedDocument[] {
+  const documents = new Map<string, CitedDocument>()
+  for (const citation of citations) {
+    const key = `${citation.document_kind}:${citation.document_id}`
+    const document = documents.get(key)
+    if (!document) {
+      documents.set(key, {
+        key,
+        citations: [citation],
+        currentConfirmedVersion: citation.current_confirmed_version,
+        newerConfirmed: citation.newer_confirmed,
+        proposals: [...citation.pending_proposals],
+      })
+      continue
+    }
+    document.citations.push(citation)
+    document.currentConfirmedVersion = Math.max(document.currentConfirmedVersion, citation.current_confirmed_version)
+    document.newerConfirmed &&= citation.newer_confirmed
+    for (const proposal of citation.pending_proposals) {
+      if (!document.proposals.some((seen) => seen.version === proposal.version)) document.proposals.push(proposal)
+    }
+  }
+  for (const document of documents.values()) {
+    document.proposals.sort((left, right) => (left.version ?? 0) - (right.version ?? 0))
+  }
+  return [...documents.values()]
+}
+
+function documentName(document: CitedDocument) {
+  return document.citations[0].document_title || document.citations[0].document_id
+}
+
+function nameList(documents: CitedDocument[]) {
+  const names = documents.map(documentName)
+  return names.length <= 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+}
+
+// The cited documents with pending proposals ask for a confirmation; the rest
+// ask for authorship (req-260820-394cac AC-3.2). Either decision is made on the
+// documents themselves, and recovery with direction follows it.
+function AuthorityConflictGuidance({ documents }: { documents: CitedDocument[] }) {
+  const pending = documents.filter((document) => document.proposals.length > 0)
+  const unproposed = documents.filter((document) => document.proposals.length === 0)
+  if (pending.length === 0) {
+    return (
+      <p>
+        No cited document has a pending revision. Author a revision of {nameList(unproposed)}, then recover the order
+        with direction.
+      </p>
+    )
+  }
+  return (
+    <div className="space-y-1">
+      <p>
+        Confirm or dismiss the pending {pending.length === 1 ? 'revision' : 'revisions'} of {nameList(pending)}. That
+        decision settles the conflict; recover the order with direction after it.
+      </p>
+      {unproposed.length > 0 && (
+        <p>No revision is waiting for {nameList(unproposed)}. Author one if the conflict remains.</p>
+      )}
+    </div>
+  )
+}
+
+function checkpointResolvedDirection(checkpointClass: string | undefined, documents: CitedDocument[]) {
   if (
     checkpointClass !== 'authority_conflict' ||
-    citations.length === 0 ||
-    !citations.every((item) => item.newer_confirmed)
+    documents.length === 0 ||
+    !documents.every((item) => item.newerConfirmed)
   )
     return ''
-  const versions = citations
-    .map((citation) => `${citation.document_id} v${citation.current_confirmed_version}`)
+  const versions = documents
+    .map((document) => `${document.citations[0].document_id} v${document.currentConfirmedVersion}`)
     .join(', ')
   return `Continue under the newly confirmed authority: ${versions}.`
 }
 
-function CheckpointCitation({
-  citation,
+function CitedDocumentBlock({
+  document,
   canConfirm,
   activeKey,
   isPending,
   error,
   onConfirm,
 }: {
-  citation: WorkOrderCheckpointCitation
+  document: CitedDocument
   canConfirm: boolean
   activeKey: string
   isPending: boolean
   error: Error | null
   onConfirm: (proposal: WorkOrderCheckpointPendingProposal) => void
 }) {
+  const [first] = document.citations
   return (
     <div className="space-y-2 rounded border border-attention/30 bg-surface/60 p-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          {citation.document_kind === 'requirement' ? (
+          {first.document_kind === 'requirement' ? (
             <Link
               to="/requirements"
-              search={{ requirement: citation.document_id }}
-              hash={citation.statement_or_section_id?.toLowerCase()}
+              search={{ requirement: first.document_id }}
+              hash={first.statement_or_section_id?.toLowerCase()}
               className="font-medium text-primary hover:underline"
             >
-              {citation.document_title || citation.document_id}
+              {documentName(document)}
             </Link>
           ) : (
             <Link
               to="/system-design"
-              search={{ document: citation.document_id }}
+              search={{ document: first.document_id }}
               className="font-medium text-primary hover:underline"
             >
-              {citation.document_title || citation.document_id}
+              {documentName(document)}
             </Link>
           )}
-          <p className="text-muted">
-            Cited v{citation.cited_version}
-            {citation.statement_or_section_id
-              ? ` · ${citation.statement_or_section_id}`
-              : ' · document-level reference'}
-          </p>
+          <ul aria-label={`Citations of ${documentName(document)}`} className="text-muted">
+            {document.citations.map((citation) => (
+              <li key={`${citation.cited_version}:${citation.statement_or_section_id ?? ''}`}>
+                Cited v{citation.cited_version}
+                {citation.statement_or_section_id
+                  ? ` · ${citation.statement_or_section_id}`
+                  : ' · document-level reference'}
+              </li>
+            ))}
+          </ul>
         </div>
-        <Badge variant={citation.newer_confirmed ? 'positive' : 'attention'}>
-          {citation.newer_confirmed
-            ? `Now confirmed at v${citation.current_confirmed_version}`
-            : `Still confirmed at v${citation.current_confirmed_version}`}
+        <Badge variant={document.newerConfirmed ? 'positive' : 'attention'}>
+          {document.newerConfirmed
+            ? `Now confirmed at v${document.currentConfirmedVersion}`
+            : `Still confirmed at v${document.currentConfirmedVersion}`}
         </Badge>
       </div>
-      {citation.pending_proposals.length === 0 ? (
+      {document.proposals.length === 0 ? (
         <p className="text-xs text-muted">No revision is waiting for a decision. Author one if the conflict remains.</p>
       ) : (
         <div className="space-y-2">
           <p className="text-xs font-medium text-attention">
-            {citation.pending_proposals.length === 1
+            {document.proposals.length === 1
               ? 'A revision is waiting for your decision.'
-              : `${citation.pending_proposals.length} revisions are waiting for your decision.`}
+              : `${document.proposals.length} revisions are waiting for your decision.`}
           </p>
           <div className="flex flex-wrap gap-2">
-            {citation.pending_proposals.map((proposal) => {
-              const key = `${citation.document_id}:${proposal.version ?? 0}`
+            {document.proposals.map((proposal) => {
+              const key = `${first.document_id}:${proposal.version ?? 0}`
               return (
                 <div key={key} className="flex flex-wrap items-center gap-2">
                   <Button size="sm" disabled={!canConfirm || isPending} onClick={() => onConfirm(proposal)}>
@@ -565,7 +655,7 @@ function CheckpointCitation({
                   {canConfirm && (
                     <Link
                       to="/inbox"
-                      search={{ document: citation.document_id, tier: citation.document_kind }}
+                      search={{ document: first.document_id, tier: first.document_kind }}
                       className="text-xs font-medium text-primary hover:underline"
                     >
                       Review or dismiss v{proposal.version}
@@ -576,7 +666,7 @@ function CheckpointCitation({
             })}
           </div>
           {!canConfirm && <p className="text-xs text-muted">Document confirmation capability is required.</p>}
-          {error != null && activeKey.startsWith(`${citation.document_id}:`) && (
+          {error != null && activeKey.startsWith(`${first.document_id}:`) && (
             <p className="text-xs text-failure">{errorMessage(error, 'Could not confirm this revision.')}</p>
           )}
         </div>

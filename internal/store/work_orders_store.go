@@ -1286,19 +1286,20 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 }
 
 type completedReview struct {
-	ReviewWorkOrderID string `json:"review_work_order_id"`
-	Verdict           string `json:"verdict"`
-	ReasonCode        string `json:"reason_code"`
-	Summary           string `json:"summary"`
-	Feedback          string `json:"feedback"`
-	ReviewerModel     string `json:"reviewer_model"`
-	ReviewRound       int    `json:"review_round"`
-	ReviewSeat        int    `json:"review_seat"`
-	RequiredModel     string `json:"required_model"`
-	RequiredHarness   string `json:"required_harness"`
-	RequiredEffort    string `json:"required_effort"`
-	ModelEnforcement  string `json:"model_enforcement"`
-	ReviewedCommitSHA string `json:"reviewed_commit_sha"`
+	DocumentationAssessment *core.DocumentationAssessment `json:"documentation_assessment,omitempty"`
+	ReviewWorkOrderID       string                        `json:"review_work_order_id"`
+	Verdict                 string                        `json:"verdict"`
+	ReasonCode              string                        `json:"reason_code"`
+	Summary                 string                        `json:"summary"`
+	Feedback                string                        `json:"feedback"`
+	ReviewerModel           string                        `json:"reviewer_model"`
+	ReviewRound             int                           `json:"review_round"`
+	ReviewSeat              int                           `json:"review_seat"`
+	RequiredModel           string                        `json:"required_model"`
+	RequiredHarness         string                        `json:"required_harness"`
+	RequiredEffort          string                        `json:"required_effort"`
+	ModelEnforcement        string                        `json:"model_enforcement"`
+	ReviewedCommitSHA       string                        `json:"reviewed_commit_sha"`
 }
 
 type reviewRoundResult struct {
@@ -1369,7 +1370,7 @@ func aggregateReviewRound(round int, reviews []completedReview) reviewRoundResul
 }
 
 func reviewDecisionPayload(decision core.ReviewDecision) []byte {
-	return core.JSONPayload(map[string]any{
+	payload := map[string]any{
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
@@ -1387,7 +1388,11 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
 		"publication_eligible": decision.PublicationEligible,
-	})
+	}
+	if decision.DocumentationAssessment != nil {
+		payload["documentation_assessment"] = decision.DocumentationAssessment
+	}
+	return core.JSONPayload(payload)
 }
 
 func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
@@ -2021,9 +2026,32 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
 		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 			order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
-		if elapsedExecution || elapsedClaim || elapsedQueue || m.automaticRecoveryCandidateLocked(order, now) {
+		// A released authority conflict is a candidate whatever the recovery
+		// bound (feature-bounded-automatic-recovery AR-3a).
+		answered := AnsweredAuthorityCandidate(m.tasks[order.TaskID], order)
+		if elapsedExecution || elapsedClaim || elapsedQueue || answered || m.automaticRecoveryCandidateLocked(order, now) {
 			seen[order.TaskID] = struct{}{}
 		}
+	}
+	orphans := map[string]struct{}{}
+	for _, order := range m.workOrders {
+		task := m.tasks[order.TaskID]
+		if (selected != "" && task.Workspace != selected) || !core.TaskTerminal(task.State) ||
+			order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+			continue
+		}
+		orphans[order.TaskID] = struct{}{}
+	}
+	orphanIDs := make([]string, 0, len(orphans))
+	for taskID := range orphans {
+		orphanIDs = append(orphanIDs, taskID)
+	}
+	sort.Strings(orphanIDs)
+	if len(orphanIDs) > TerminalOrphanTaskBatch {
+		orphanIDs = orphanIDs[:TerminalOrphanTaskBatch]
+	}
+	for _, taskID := range orphanIDs {
+		seen[taskID] = struct{}{}
 	}
 	result := make([]string, 0, len(seen))
 	for taskID := range seen {
@@ -2032,6 +2060,11 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 	sort.Strings(result)
 	return result, nil
 }
+
+// TerminalOrphanTaskBatch bounds how many merged or closed tasks still holding
+// a non-terminal order one order-clock tick selects per workspace, beside the
+// tasks with a due transition (component-work-orders "Three clocks").
+const TerminalOrphanTaskBatch = 100
 
 func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
 	if _, err := RequireActor(ctx); err != nil {
@@ -2042,6 +2075,13 @@ func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLeas
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// An order of a terminal task has no clock: retire what history left open
+	// instead of marking it stale or timed_out (component-work-orders "Three
+	// clocks").
+	if task, ok := m.tasks[taskID]; ok && core.TaskTerminal(task.State) {
+		actor := ActorFromContext(ctx)
+		return len(m.cancelTaskWorkOrdersLocked(ctx, taskID, "", actor.ID, actor.Role, now)), nil
+	}
 	count := 0
 	for id, order := range m.workOrders {
 		if order.TaskID != taskID {
@@ -2419,7 +2459,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	if len(refreeze) != 0 {
 		freeze = refreeze[0]
 	}
-	return m.recoverOrderLocked(ctx, order, requestID, direction, queueTimeout, now, freeze, false, config.RecoveryPolicy{})
+	return m.recoverOrderLocked(ctx, order, requestID, direction, queueTimeout, now, freeze, recoveryOperator, config.RecoveryPolicy{}, nil)
 }
 
 func (m *memory) repinTaskDesignContextLocked(ctx context.Context, taskID string, at time.Time) {

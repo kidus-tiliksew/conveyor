@@ -8,11 +8,11 @@ import { type AttentionItem, AttentionSurface } from '../components/documents/at
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import {
   archivedByDismissal,
+  DocumentReview,
   dismissalArchiveConsequence,
   dismissalArchiveDescription,
-  DocumentReview,
-  reviewVersionLabel,
   type ReviewSearch,
+  reviewVersionLabel,
   selectedReviewVersion,
 } from '../components/documents/document-review'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'

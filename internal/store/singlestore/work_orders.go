@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -625,21 +626,41 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 		query += automaticRecoveryElapsedSQL
 		args = append(args, now, now)
 	}
+	query += answeredAuthorityElapsedSQL
 	query += `) ORDER BY task_id`
-	rows, err := documentRows(ctx, s.db, query, args...)
-	if err != nil {
+	seen := map[string]struct{}{}
+	collect := func(query string, args ...any) error {
+		rows, err := documentRows(ctx, s.db, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				return err
+			}
+			seen[id] = struct{}{}
+		}
+		return rows.Err()
+	}
+	if err := collect(query, args...); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			return nil, err
-		}
+	// Merged or closed tasks that still hold a non-terminal order are visited
+	// without a due transition, bounded per tick, so the order clock retires
+	// them (component-work-orders "Three clocks").
+	if err := collect(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.state IN ('merged','closed')
+		AND EXISTS (SELECT 1 FROM work_orders o WHERE o.workspace_id=t.workspace_id AND o.task_id=t.id AND o.state NOT IN ('completed','cancelled'))
+		ORDER BY t.id LIMIT ?`, documentWorkspace(ctx), store.TerminalOrphanTaskBatch); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
 		out = append(out, id)
 	}
-	return out, rows.Err()
+	sort.Strings(out)
+	return out, nil
 }
 func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, id string, now time.Time) (int, error) {
 	if !lease.ValidFor(id) {
@@ -647,6 +668,19 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 	}
 	count := 0
 	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		// An order of a terminal task has no clock: retire what history left
+		// open instead of marking it stale or timed_out (component-work-orders
+		// "Three clocks").
+		var taskState core.TaskState
+		if err := documentRow(ctx, tx, `SELECT state FROM tasks WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id).Scan(&taskState); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if core.TaskTerminal(taskState) {
+			actor := store.ActorFromContext(ctx)
+			retired, err := cancelTaskWorkOrdersTx(ctx, tx, id, "", actor.ID, actor.Role, now)
+			count = len(retired)
+			return err
+		}
 		orders, err := s.listOrders(ctx, tx, []string{id})
 		if err != nil {
 			return err
@@ -718,13 +752,14 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 // order update, missing job, or non-running job rolls back every write
 // (component-work-orders).
 func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
-	if err := store.ValidateImplementationSubmission(request); err != nil {
+	request, err := store.NormalizeImplementationSubmission(ctx, request)
+	if err != nil {
 		return core.Job{}, err
 	}
 	order := request.Order
 	var lifecycleErr error
 	var completed core.Job
-	err := s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
+	err = s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
 		if current.TaskID != order.TaskID || current.JobID != order.JobID || current.Stage != core.StageImplement {
 			return fmt.Errorf("work order %s does not match its submission", order.ID)
 		}
@@ -748,6 +783,16 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 		job.State, job.EndedAt = core.JobDone, ended
 		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='done',ended_at=?,updated_at=? WHERE workspace_id=? AND id=?`, ended, time.Now().UTC(), documentWorkspace(ctx), job.ID); err != nil {
 			return err
+		}
+		if request.DocumentationChecked {
+			if request.DocumentationEvidence == nil {
+				_, err = documentExec(ctx, tx, `DELETE FROM documentation_gate_evidence WHERE workspace_id=? AND task_id=? AND head_sha=?`, documentWorkspace(ctx), order.TaskID, order.HeadSHA)
+			} else {
+				_, err = documentExec(ctx, tx, `INSERT INTO documentation_gate_evidence(workspace_id,task_id,head_sha,payload_json) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE payload_json=VALUES(payload_json)`, documentWorkspace(ctx), order.TaskID, order.HeadSHA, core.JSONPayload(request.DocumentationEvidence))
+			}
+			if err != nil {
+				return err
+			}
 		}
 		completed = job
 		return taskEvent(ctx, tx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job)})

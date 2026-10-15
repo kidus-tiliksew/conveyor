@@ -127,6 +127,7 @@ func RunAll(t *testing.T, factory Factory) {
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
+	run("DocumentationGate", func(t *testing.T) { runDocumentationGate(t, factory.fresh(t, nil)) })
 	run("TaskFlow", func(t *testing.T) { runTaskFlow(t, factory) })
 	run("GateKind", func(t *testing.T) {
 		x := factory.fresh(t, nil)
@@ -194,6 +195,12 @@ func RunAll(t *testing.T, factory Factory) {
 	run("TimedOutSiblingRetirement", func(t *testing.T) {
 		RunTimedOutSiblingRetirementConformance(t, factory.fresh(t, nil))
 	})
+	run("TerminalOrderRetirement", func(t *testing.T) {
+		RunTerminalOrderRetirementConformance(t, factory.fresh(t, nil))
+	})
+	run("TerminalOrderClock", func(t *testing.T) {
+		RunTerminalOrderClockConformance(t, factory.fresh(t, nil))
+	})
 	run("AutomaticPublicationRecovery", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		RunAutomaticPublicationRecoveryConformance(t, x.Backend, x.Context, x.Workspace, factory.ReviewSweep)
@@ -226,6 +233,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"AttemptObservability", true, runAttemptObservability},
 		{"MergeTaskAtGate", true, runMergeTaskAtGate},
 		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
+		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
 		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},
 		{"WorkOrderClocks", true, runWorkOrderClocks},

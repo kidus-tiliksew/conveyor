@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -202,6 +203,9 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		if flow.Side.Retrying == nil || *flow.Side.Retrying != want {
 			t.Fatalf("side.retrying = %+v, want %+v", flow.Side.Retrying, want)
 		}
+		if got := flow.Side.Labels[store.FlowSideRetrying]; got != "Retrying automatically" {
+			t.Fatalf("side.labels = %v, want the retrying label", flow.Side.Labels)
+		}
 	})
 
 	// An operator recovers a timed-out order by hand.
@@ -244,6 +248,9 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		if named[openDep] && len(flow.Side.BlockedBy) != 1 {
 			t.Fatalf("blocked_by = %+v, want the open edge the next action names", flow.Side.BlockedBy)
 		}
+		if _, labelled := flow.Side.Labels[store.FlowSideBlockedBy]; labelled != (len(flow.Side.BlockedBy) > 0) {
+			t.Fatalf("side.labels = %v with blocked_by %+v", flow.Side.Labels, flow.Side.BlockedBy)
+		}
 	})
 
 	parkedID := createRunningTask(t, st, ctx, workspace)
@@ -253,6 +260,9 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		if !flow.Side.Parked || flow.Side.Closed {
 			t.Fatalf("side = %+v", flow.Side)
 		}
+		if want := map[string]string{store.FlowSideParked: "Parked"}; !reflect.DeepEqual(flow.Side.Labels, want) {
+			t.Fatalf("side.labels = %v, want %v", flow.Side.Labels, want)
+		}
 	})
 
 	closedID := createRunningTask(t, st, ctx, workspace)
@@ -261,6 +271,9 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	add("closed", closedID, func(t *testing.T, flow store.TaskFlow) {
 		if !flow.Side.Closed || flow.Side.Parked {
 			t.Fatalf("side = %+v", flow.Side)
+		}
+		if want := map[string]string{store.FlowSideClosed: "Closed"}; !reflect.DeepEqual(flow.Side.Labels, want) {
+			t.Fatalf("side.labels = %v, want %v", flow.Side.Labels, want)
 		}
 	})
 
@@ -275,6 +288,9 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	add("agent question", questionID, func(t *testing.T, flow store.TaskFlow) {
 		if flow.NextAction.Kind != nextaction.KindAgentQuestion || !flow.Side.AgentQuestion {
 			t.Fatalf("next action = %s, side = %+v", flow.NextAction.Kind, flow.Side)
+		}
+		if want := map[string]string{store.FlowSideAgentQuestion: "Needs your answer"}; !reflect.DeepEqual(flow.Side.Labels, want) {
+			t.Fatalf("side.labels = %v, want %v", flow.Side.Labels, want)
 		}
 	})
 	return scenarios

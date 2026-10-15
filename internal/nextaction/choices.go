@@ -2,6 +2,8 @@ package nextaction
 
 import (
 	"fmt"
+	"net/url"
+	"sort"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -59,11 +61,119 @@ func dispositionChoices() []ChoiceSpec {
 	}
 }
 
-func proposalChoices() []ChoiceSpec {
-	return []ChoiceSpec{
-		{ID: "confirm", Label: "Confirm", Effect: "Confirms the proposal.", Method: "POST", Path: "/v1/documents/{id}/confirm", Capability: core.CapabilityConfirmDocuments},
-		{ID: "dismiss", Label: "Dismiss", Effect: "Dismisses the proposal.", Method: "POST", Path: "/v1/documents/{id}/dismiss", Capability: core.CapabilityConfirmDocuments},
+// Shared effect copy of the proposal choices, one pair per kind
+// (feature-operator-next-action NA-4). Deciding the last withholding version
+// releases a document_proposal wait by itself (req-260810-70ce2f AC-1.2), so
+// only the agent-question pair names recovery.
+const (
+	withheldConfirmEffect = "Confirms this pending revision."
+	withheldDismissEffect = "Dismisses this pending revision."
+	citedConfirmEffect    = "Confirms this pending revision. The order stays released until you recover it."
+	citedDismissEffect    = "Dismisses this pending revision. The order stays released until you recover it."
+)
+
+// withheldProposalChoices offers confirm and dismiss for each version that
+// withholds the task's verify and review claims (row 8).
+func withheldProposalChoices(refs []ProposalRef) []ChoiceSpec {
+	return versionProposalChoices(refs, withheldConfirmEffect, withheldDismissEffect)
+}
+
+// citedProposalChoices offers confirm and dismiss for each cited pending
+// version. They precede the answer choice and never recover the order
+// (req-260820-394cac AC-2.3, AC-2.5).
+func citedProposalChoices(refs []ProposalRef) []ChoiceSpec {
+	return versionProposalChoices(refs, citedConfirmEffect, citedDismissEffect)
+}
+
+// versionProposalChoices builds one confirm and one dismiss choice per
+// version on its version-specific requirement or System Design route, the
+// only document routes the server serves (req-operator-next-action AC-1.4).
+func versionProposalChoices(refs []ProposalRef, confirmEffect, dismissEffect string) []ChoiceSpec {
+	out := make([]ChoiceSpec, 0, 2*len(refs))
+	for _, ref := range refs {
+		collection := "/v1/system-designs/"
+		if ref.Tier == "requirement" {
+			collection = "/v1/requirements/"
+		}
+		route := fmt.Sprintf("%s%s/versions/%d", collection, url.PathEscape(ref.ID), ref.Version)
+		key := fmt.Sprintf("%s:%s:%d", ref.Tier, ref.ID, ref.Version)
+		name := fmt.Sprintf("%s v%d", ref.ID, ref.Version)
+		out = append(out,
+			ChoiceSpec{ID: "confirm:" + key, Label: "Confirm " + name, Effect: confirmEffect, Method: "POST", Path: route + "/confirm", Capability: core.CapabilityConfirmDocuments},
+			ChoiceSpec{ID: "dismiss:" + key, Label: "Dismiss " + name, Effect: dismissEffect, Method: "POST", Path: route + "/dismiss", Capability: core.CapabilityConfirmDocuments},
+		)
 	}
+	return out
+}
+
+// Shared effect copy of the context-proposal choices (feature-operator-next-action NA-4).
+const (
+	contextConfirmEffect = "Attaches the proposed context to this task."
+	contextDismissEffect = "Dismisses the proposed context."
+)
+
+// contextProposalChoices offers confirm and dismiss for each pending
+// task-context proposal on the task-context routes, which require
+// operate_gates, deduplicated and ordered by target kind and target ID
+// (req-intake-and-triage AC-7.3; component-task-lifecycle).
+func contextProposalChoices(taskID string, refs []ContextProposalRef) []ChoiceSpec {
+	sorted := append([]ContextProposalRef(nil), refs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Kind != sorted[j].Kind {
+			return sorted[i].Kind < sorted[j].Kind
+		}
+		return sorted[i].TargetID < sorted[j].TargetID
+	})
+	out := make([]ChoiceSpec, 0, 2*len(sorted))
+	seen := map[ContextProposalRef]bool{}
+	for _, ref := range sorted {
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		route := fmt.Sprintf("/v1/tasks/%s/context/proposals/%s/%s", url.PathEscape(taskID), url.PathEscape(ref.Kind), url.PathEscape(ref.TargetID))
+		key := fmt.Sprintf("task_context:%s:%s", ref.Kind, ref.TargetID)
+		name := fmt.Sprintf("context %s %s", ref.Kind, ref.TargetID)
+		out = append(out,
+			ChoiceSpec{ID: "confirm:" + key, Label: "Confirm " + name, Effect: contextConfirmEffect, Method: "POST", Path: route + "/confirm", Capability: core.CapabilityOperateGates},
+			ChoiceSpec{ID: "dismiss:" + key, Label: "Dismiss " + name, Effect: contextDismissEffect, Method: "POST", Path: route + "/dismiss", Capability: core.CapabilityOperateGates},
+		)
+	}
+	return out
+}
+
+// CitedProposals returns the pending requirement and System Design versions
+// whose document an authority-conflict citation names, whatever their
+// origin, deduplicated and ordered by tier, document ID, and version.
+// Decision and task-context proposals never match (component-work-orders,
+// Next action; req-operator-next-action AC-1.6).
+func CitedProposals(citations []core.WorkOrderAuthorityConflictCitation, pending []ProposalRef) []ProposalRef {
+	cited := map[string]bool{}
+	for _, citation := range citations {
+		cited[citation.DocumentID] = true
+	}
+	seen := map[ProposalRef]bool{}
+	var out []ProposalRef
+	for _, ref := range pending {
+		if ref.Tier != "requirement" && ref.Tier != "system_design" {
+			continue
+		}
+		if !cited[ref.ID] || ref.Version <= 0 || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Tier != out[j].Tier {
+			return out[i].Tier < out[j].Tier
+		}
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Version < out[j].Version
+	})
+	return out
 }
 
 func parkedChoices() []ChoiceSpec {

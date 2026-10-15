@@ -154,3 +154,15 @@ Stage exit discipline:
   implementation order with its own fresh session and delivered feedback. A
   self-claimed session claims that successor under a fresh session identifier
   and client token and continues in the existing task worktree and branch.
+
+Repository documentation closure (REQ-9; DEC-71):
+- If the repository declares `.conveyor/docs.yaml`, run `conveyor docs validate`.
+  Each declared document lists the source globs it `governs`.
+- Update every declared document affected by changed source paths, or add the
+  configured `rule.none_statement` (default `docs: none`) at the beginning of
+  an agent-authored PR-body line. Include a reason when `reason_required` is true.
+  Generated lifecycle and verification regions do not count.
+- Submission reads the declaration at the PR base SHA and refuses affected,
+  untouched documents without that qualifying line before any submission side
+  effects. Unavailable or malformed declarations fail closed. No declaration
+  means no new gate, evidence, or event.

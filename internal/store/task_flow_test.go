@@ -431,6 +431,65 @@ func TestFoldTaskFlowSide(t *testing.T) {
 	}
 }
 
+// Each present side state carries its server-stated label and an absent one
+// carries none; combined states carry one label each (feature-operator-next-action
+// NA-7; req-operator-next-action AC-1.8, AC-4.1).
+func TestFoldTaskFlowSideLabels(t *testing.T) {
+	policy := config.RecoveryPolicy{AutomaticRecoveries: 3, WindowText: "24h"}
+	if err := policy.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	blockedLedger := new(flowLedger).created(approvalTask())
+	blockedLedger.add("task.dependency_added", core.ActorHuman, "", map[string]any{"task_id": "task", "depends_on_task_id": "dep-a"})
+	blockedBy := []nextaction.BlockerRef{{TaskID: "dep-a", Title: "A", State: "running"}}
+	retryLedger := new(flowLedger).created(approvalTask()).order("impl-1", core.StageImplement, core.ActorSystem)
+	retryLedger.add("task.dependency_added", core.ActorHuman, "", map[string]any{"task_id": "task", "depends_on_task_id": "dep-a"})
+	cases := []struct {
+		name   string
+		events []core.Event
+		action nextaction.NextAction
+		want   map[string]string
+	}{
+		{"none", new(flowLedger).created(approvalTask()).events, nextaction.NextAction{Actor: nextaction.ActorAgent, Kind: nextaction.KindQueued}, map[string]string{}},
+		{"blocked_by", blockedLedger.events, nextaction.NextAction{Actor: nextaction.ActorDependency, Kind: nextaction.KindBlocked, BlockedBy: blockedBy}, map[string]string{FlowSideBlockedBy: "Waiting on another task"}},
+		{"retrying", new(flowLedger).created(approvalTask()).order("impl-1", core.StageImplement, core.ActorSystem).events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}, map[string]string{FlowSideRetrying: "Retrying automatically"}},
+		{"parked", new(flowLedger).created(approvalTask()).state(core.TaskParked, core.TaskTriagePark).events, nextaction.NextAction{Kind: nextaction.KindParked}, map[string]string{FlowSideParked: "Parked"}},
+		{"closed", new(flowLedger).created(approvalTask()).state(core.TaskClosed, core.TaskCancel).events, nextaction.NextAction{Kind: nextaction.KindTerminal}, map[string]string{FlowSideClosed: "Closed"}},
+		{"agent_question", new(flowLedger).created(approvalTask()).events, nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindAgentQuestion}, map[string]string{FlowSideAgentQuestion: "Needs your answer"}},
+		{"retrying and blocked_by", retryLedger.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}, BlockedBy: blockedBy}, map[string]string{FlowSideRetrying: "Retrying automatically", FlowSideBlockedBy: "Waiting on another task"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			side := FoldTaskFlow(tc.events, tc.action, policy, flowT0).Side
+			if !reflect.DeepEqual(side.Labels, tc.want) {
+				t.Fatalf("labels = %v, want %v (side %+v)", side.Labels, tc.want, side)
+			}
+			present := map[string]bool{
+				FlowSideBlockedBy: len(side.BlockedBy) > 0, FlowSideRetrying: side.Retrying != nil,
+				FlowSideParked: side.Parked, FlowSideClosed: side.Closed, FlowSideAgentQuestion: side.AgentQuestion,
+			}
+			for name, on := range present {
+				if _, labelled := side.Labels[name]; labelled != on {
+					t.Fatalf("%s present=%v labelled=%v", name, on, labelled)
+				}
+			}
+			raw, err := json.Marshal(side)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &wire); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"blocked_by", "retrying", "parked", "closed", "agent_question", "labels"} {
+				if _, ok := wire[field]; !ok {
+					t.Fatalf("side JSON %s lacks %s", raw, field)
+				}
+			}
+		})
+	}
+}
+
 func TestFoldTaskFlowRaw(t *testing.T) {
 	ledger := new(flowLedger).created(approvalTask()).
 		order("spec-2", core.StageSpec, core.ActorSystem).order("spec-1", core.StageSpec, core.ActorSystem).

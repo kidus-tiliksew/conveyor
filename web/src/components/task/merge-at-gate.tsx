@@ -10,6 +10,7 @@ import { NextActionChoices } from '../inbox/choice-button'
 import { nextActionQueryKey, nextActionsQueryKey } from '../inbox/use-next-actions'
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
+import { withQuerySignal } from './use-task-detail'
 
 type MergeReadiness = ActivityItem['merge_readiness']
 
@@ -27,7 +28,7 @@ export function GateChoices({ taskId, action, onActed }: { taskId: string; actio
   const otherChoices = mergeChoice ? action.choices.filter((choice) => choice !== mergeChoice) : action.choices
   const { data: detail } = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
-    queryFn: () => fetchTaskActivity(taskId),
+    queryFn: (context) => withQuerySignal(context, (signal) => fetchTaskActivity(workspace, taskId, signal)),
     enabled: Boolean(workspace && mergeChoice),
   })
   return (

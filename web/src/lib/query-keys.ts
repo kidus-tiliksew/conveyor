@@ -12,6 +12,15 @@ export function taskDetailQueryKey(workspace: string, taskId: string) {
 }
 
 /**
+ * The one task-history page key (component-web-task-surfaces, History pages).
+ * The empty cursor is the newest page. The task stream, dependency polling, and
+ * mutations never invalidate this family.
+ */
+export function taskHistoryQueryKey(workspace: string, taskId: string, selection: string, cursor: string) {
+  return ['task-history', workspace, taskId, selection, cursor] as const
+}
+
+/**
  * The context a task-detail mutation records in `onMutate`: the workspace the
  * operator acted in. Its `onSuccess` refreshes that workspace's detail even when
  * the selection changed while the request was in flight.

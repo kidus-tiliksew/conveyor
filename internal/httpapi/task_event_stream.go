@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -119,4 +120,113 @@ func writeTaskActivityFrame(w io.Writer, event core.Event) error {
 	frame = append(frame, "\n\n"...)
 	_, err = w.Write(frame)
 	return err
+}
+
+// taskEventFingerprintReader is the one window read a notify stream polls.
+type taskEventFingerprintReader interface {
+	ReadTaskEventWindow(ctx context.Context, query store.TaskEventWindowQuery) (store.TaskEventWindow, error)
+}
+
+// taskEventNotifyStream is the connection-local state of a mode=notify
+// stream. It reads no event pages and never replays history: the
+// fingerprint is the task's history boundary (maximum event ID, count at or
+// below it), which any newly visible event changes whatever its ID or
+// recorded time, and which never returns to an earlier value because events
+// are never deleted. written is the fingerprint of the last successfully
+// written frame (task 261015-3721c6; component-http-api "Live task event
+// stream").
+type taskEventNotifyStream struct {
+	reader  taskEventFingerprintReader
+	taskID  string
+	written *store.TaskEventBoundary
+}
+
+func newTaskEventNotifyStream(reader taskEventFingerprintReader, taskID string) *taskEventNotifyStream {
+	return &taskEventNotifyStream{reader: reader, taskID: taskID}
+}
+
+// fingerprint transfers at most one event row and no payload.
+func (s *taskEventNotifyStream) fingerprint(ctx context.Context) (store.TaskEventBoundary, error) {
+	window, err := s.reader.ReadTaskEventWindow(ctx, store.TaskEventWindowQuery{
+		TaskID: s.taskID, Descending: true, Limit: 1, MaxBytes: store.TaskEventWindowMaxBytes, PayloadLimit: 1,
+	})
+	if err != nil {
+		return store.TaskEventBoundary{}, fmt.Errorf("%w: %v", errTaskEventStreamRead, err)
+	}
+	return window.Boundary, nil
+}
+
+// start reads the first fingerprint and writes ready; the dashboard refreshes
+// detail once on ready, covering every event committed before or during the
+// subscription.
+func (s *taskEventNotifyStream) start(ctx context.Context, w io.Writer) error {
+	current, err := s.fingerprint(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "event: ready\ndata: {}\n\n"); err != nil {
+		return err
+	}
+	s.written = &current
+	return nil
+}
+
+// poll writes one activity frame when the fingerprint differs from the last
+// one written, however many commits happened since, and records the new
+// fingerprint only after the write succeeds.
+func (s *taskEventNotifyStream) poll(ctx context.Context, w io.Writer) error {
+	current, err := s.fingerprint(ctx)
+	if err != nil {
+		return err
+	}
+	if s.written != nil && *s.written == current {
+		return nil
+	}
+	if _, err := io.WriteString(w, "event: activity\ndata: {}\n\n"); err != nil {
+		return err
+	}
+	s.written = &current
+	return nil
+}
+
+func (s *Server) taskEventStreamTicker() (<-chan time.Time, func()) {
+	if s.taskEventStreamTicks != nil {
+		return s.taskEventStreamTicks()
+	}
+	ticker := time.NewTicker(time.Second)
+	return ticker.C, ticker.Stop
+}
+
+// streamTaskEventNotifications serves mode=notify: ready after the first
+// fingerprint, then one activity frame per changed fingerprint per poll. A
+// read failure writes an error frame and ends the stream; a write failure
+// ends it silently.
+func (s *Server) streamTaskEventNotifications(w http.ResponseWriter, flusher http.Flusher, r *http.Request, taskID string) {
+	ctx := r.Context()
+	stream := newTaskEventNotifyStream(s.Store, taskID)
+	ticks, stop := s.taskEventStreamTicker()
+	defer stop()
+	fail := func(err error) {
+		if errors.Is(err, errTaskEventStreamRead) {
+			_, _ = w.Write([]byte("event: error\ndata: {}\n\n"))
+			flusher.Flush()
+		}
+	}
+	if err := stream.start(ctx, w); err != nil {
+		fail(err)
+		return
+	}
+	flusher.Flush()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+		}
+		if err := stream.poll(ctx, w); err != nil {
+			fail(err)
+			return
+		}
+		flusher.Flush()
+	}
 }

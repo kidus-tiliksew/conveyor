@@ -8,8 +8,12 @@ import type {
   PendingProposal,
   Task,
   TaskAssignee,
-  TaskEvent,
+  TaskEventView,
+  TaskJobResult,
   TaskRelation,
+  TaskReviewResult,
+  TaskReviewRound,
+  TaskSummaries,
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
   WorkOrderVerificationCheckpointPermission,
@@ -26,22 +30,26 @@ export function assigneeName(assignee: TaskAssignee): string {
 
 // req-accounts-and-membership REQ-3 and AC-4.3: keep credential-derived
 // attribution and resolve names only through the current workspace roster.
-export function taskCreator(events: TaskEvent[], members: WorkspaceMembership[] = []) {
-  const event = events.find((entry) => entry.kind === 'task.created')
+// The creator is the server's `summaries.creator`, the actor of the first
+// task.created event in the complete ledger (component-http-api).
+export function taskCreator(creator: TaskSummaries['creator'], members: WorkspaceMembership[] = []) {
+  const event = creator
   if (!event) return { label: 'Unknown', detail: 'Creator information is unavailable' }
   const id = typeof event.actor_id === 'string' ? event.actor_id.trim() : ''
   const role = event.actor_role
   if (!id || !['human', 'agent', 'runner', 'system'].includes(role)) {
     return { label: 'Unknown', detail: 'Creator information is unavailable' }
   }
-  const prefix = { human: 'user:', agent: 'agent:', runner: 'worker:', system: 'system:' }[role]
+  const prefix = { human: 'user:', agent: 'agent:', runner: 'worker:', system: 'system:' }[
+    role as 'human' | 'agent' | 'runner' | 'system'
+  ]
   const identifier = id.startsWith(prefix) ? id.slice(prefix.length).trim() : id
   if (!identifier) return { label: 'Unknown', detail: 'Creator information is unavailable' }
   if (role === 'human') {
     const member = members.find((entry) => entry.user_id === identifier)
     return { label: member ? assigneeName(member) : `User · ${identifier}`, detail: `User · ${id}` }
   }
-  const actorClass = { agent: 'Agent', runner: 'Runner', system: 'System' }[role]
+  const actorClass = { agent: 'Agent', runner: 'Runner', system: 'System' }[role as 'agent' | 'runner' | 'system']
   return { label: `${actorClass} · ${identifier}`, detail: `${actorClass} · ${id}` }
 }
 
@@ -119,14 +127,10 @@ export function parseProvenance(source: string): { label: string; href?: string 
   return { label: source }
 }
 
-export function pullRequestURL(events: TaskEvent[]): string | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-    if (event.kind === 'pull_request.opened' && typeof event.payload?.url === 'string') {
-      return event.payload.url
-    }
-  }
-  return undefined
+// The latest pull_request.opened URL, from `summaries.pull_request`.
+export function pullRequestURL(summaries: TaskSummaries | undefined): string | undefined {
+  const url = summaries?.pull_request?.url
+  return typeof url === 'string' ? url : undefined
 }
 
 // What the merge gate is actually approving, read back off the durable record
@@ -143,35 +147,32 @@ export interface MergeGateReview {
   verdict?: { verdict: 'approve' | 'changes_requested'; summary?: string; seats: number }
 }
 
+// Both facts come from the server's summaries of the complete ledger: the
+// latest pull_request.opened and the latest review.round_completed, so the
+// gate states them even when their events lie outside the bounded page.
 export function mergeGateReview(item: ActivityItem): MergeGateReview {
   const review: MergeGateReview = { headSHA: item.task.reviewed_head_sha || undefined }
-  for (let i = item.events.length - 1; i >= 0; i--) {
-    const event = item.events[i]
-    const payload = event.payload ?? {}
-    if (event.kind !== 'pull_request.opened') continue
-    review.headSHA = review.headSHA ?? (typeof payload.head_sha === 'string' ? payload.head_sha : undefined)
-    review.baseSHA = typeof payload.base_sha === 'string' ? payload.base_sha : undefined
-    if (typeof payload.url === 'string' && payload.url) {
+  const pullRequest = item.summaries?.pull_request
+  if (pullRequest) {
+    review.headSHA = review.headSHA ?? (typeof pullRequest.head_sha === 'string' ? pullRequest.head_sha : undefined)
+    review.baseSHA = typeof pullRequest.base_sha === 'string' ? pullRequest.base_sha : undefined
+    if (typeof pullRequest.url === 'string' && pullRequest.url) {
       review.pullRequest = {
-        url: payload.url,
-        number: typeof payload.number === 'number' ? payload.number : undefined,
-        repository: typeof payload.repository === 'string' ? payload.repository : undefined,
+        url: pullRequest.url,
+        number: typeof pullRequest.number === 'number' ? pullRequest.number : undefined,
+        repository: typeof pullRequest.repository === 'string' ? pullRequest.repository : undefined,
       }
     }
-    break
   }
   // The last completed round is the verdict the gate opened on; the seats that
   // reported into it say how many independent reviewers stand behind it.
-  for (let i = item.events.length - 1; i >= 0; i--) {
-    const event = item.events[i]
-    if (event.kind !== 'review.round_completed') continue
-    const payload = event.payload ?? {}
+  const round = item.summaries?.review_round
+  if (round) {
     review.verdict = {
-      verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
-      summary: typeof payload.summary === 'string' && payload.summary.trim() ? payload.summary.trim() : undefined,
-      seats: (Array.isArray(payload.reviews) ? payload.reviews : []).length,
+      verdict: round.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+      summary: typeof round.summary === 'string' && round.summary.trim() ? round.summary.trim() : undefined,
+      seats: typeof round.review_count === 'number' ? round.review_count : 0,
     }
-    break
   }
   return review
 }
@@ -186,35 +187,24 @@ export interface ReturnedForChanges {
   at: string
 }
 
-// The server's user-request-changes attention marker, re-derived from the same
-// durable events it reads (store.UserRequestChangesPending): a bounce a person
-// asked for stays outstanding until an implementation run claims the work it
-// created. The marker itself reaches the dashboard only folded into
-// needs_attention, so this predicate is what tells that signal apart from the
+// The server's user-request-changes attention marker (store.UserRequestChangesPending),
+// folded from the complete ledger into `summaries.returned_for_changes`: a
+// bounce a person asked for stays outstanding until an implementation run
+// claims the work it created. The marker itself reaches the dashboard only
+// folded into needs_attention, so this is what tells that signal apart from the
 // other reasons a task wants a human — and it carries the feedback with it.
-export function pendingUserRequestChanges(events: TaskEvent[]): ReturnedForChanges | null {
-  let pending: ReturnedForChanges | null = null
-  for (const event of events) {
-    const payload = event.payload ?? {}
-    if (event.kind === 'pipeline.bounced' && payload.source === userRequestChangesReason) {
-      pending = { feedback: typeof payload.feedback === 'string' ? payload.feedback.trim() : '', at: event.at }
-    }
-    if (event.kind === 'work_order.claimed' && payload.stage === 'implement') pending = null
-  }
-  return pending
+export function pendingUserRequestChanges(summaries: TaskSummaries | undefined): ReturnedForChanges | null {
+  const returned = summaries?.returned_for_changes
+  if (!returned) return null
+  return { feedback: typeof returned.feedback === 'string' ? returned.feedback.trim() : '', at: returned.at }
 }
 
 // Match store.UserRequestChangesHold: the latest implement claim records
-// whether the bounced work originated in an explicit `conveyor run`. Hold is
-// deliberately not consulted because operators may hold worker-pipeline work.
-export function userRunImplementation(events: TaskEvent[]): boolean {
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event = events[index]
-    const payload = event.payload ?? {}
-    if (event.kind !== 'work_order.claimed' || payload.stage !== 'implement') continue
-    return typeof payload.claimant_id === 'string' && /^run:.+/.test(payload.claimant_id)
-  }
-  return false
+// whether the bounced work originated in an explicit `conveyor run`
+// (`summaries.run_implementation`). Hold is deliberately not consulted because
+// operators may hold worker-pipeline work.
+export function userRunImplementation(summaries: TaskSummaries | undefined): boolean {
+  return summaries?.run_implementation === true
 }
 
 // req-intake-and-triage REQ-3; req-task-centric-operations-view REQ-2:
@@ -248,30 +238,17 @@ export function failedTriage(item: ActivityItem): FailedTriage | undefined {
   )
   const latest = jobs.at(-1)
   if (!latest || latest.stage !== 'triage') return undefined
-  const events = [...(item.events ?? [])].sort((a, b) => a.id - b.id)
-  const failure = [...events].reverse().find((event) => event.job_id === latest.id && event.kind === 'job.failed')
+  // The server names the latest triage job's failure and whether a later
+  // dispatch, intervention, claim, job, or queued order superseded it, by
+  // (at, id) over the complete ledger (component-http-api, Bounded detail view).
+  // A superseded incident stays hidden even while a separately refreshed task
+  // projection still carries its old recovery stage.
+  const recordedFailure = item.summaries?.triage_failure
+  const failure = recordedFailure?.job_id === latest.id ? recordedFailure : undefined
   if (latest.state !== 'failed' && !failure) return undefined
-  // A later dispatch or intervention supersedes this incident even while a
-  // separately refreshed task projection still carries its old recovery stage.
-  const failureTime = failure?.at ?? latest.ended_at ?? latest.started_at ?? ''
-  if (
-    events.some(
-      (event) =>
-        (failure ? event.id > failure.id : Date.parse(event.at) > Date.parse(failureTime)) &&
-        (event.kind.startsWith('intervention.') ||
-          event.kind === 'pipeline.dispatched' ||
-          event.kind === 'job.created' ||
-          event.kind === 'work_order.claimed'),
-    ) ||
-    (item.work_orders ?? []).some(
-      (order) => Date.parse(order.created_at ?? order.queue_entered_at) > Date.parse(failureTime),
-    )
-  )
-    return undefined
-  const payload = failure?.payload ?? {}
-  const diagnostic =
-    payload.diagnostic && typeof payload.diagnostic === 'object' ? (payload.diagnostic as Record<string, unknown>) : {}
-  const recorded = typeof payload.error === 'string' ? payload.error.trim() : ''
+  if (failure?.superseded) return undefined
+  const diagnostic: Record<string, unknown> = failure?.diagnostic ?? {}
+  const recorded = typeof failure?.error === 'string' ? failure.error.trim() : ''
   const diagnosticText = [diagnostic.phase, diagnostic.provider_code]
     .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
     .join(' · ')
@@ -329,6 +306,99 @@ const attemptEventKinds = new Set([
   'work_order.redispatched',
 ])
 
+// Every kind `noteFor` has a case for. The type below makes the compiler hold
+// this list and the switch to the same members in both directions, and
+// internal/httpapi/task_detail_summaries_test.go parses these three literals,
+// so each stays a single array or Set literal of single-quoted strings.
+export const noteEventKinds = [
+  'task.assignee.set',
+  'task.assignee.cleared',
+  'work_order.child_failed',
+  'work_order.stalled',
+  'work_order.expired',
+  'work_order.recovered',
+  'pull_request.opened',
+  'pipeline.bounced',
+  'review.completed',
+  'pipeline.bounce_limit',
+  'job.timeout',
+  'work_order.plan_revision_requested',
+  'spec.version_created',
+  'spec.version_approved',
+  'blueprint.materialized',
+  'blueprint.closed',
+  'task.dependency_unsatisfiable',
+  'task.dependency_removed',
+  'github_issue.publication_queued',
+  'github_issue.publication_retry',
+  'github_issue.publication_published',
+  'github_issue.associated',
+  'github_issue.publication_failed',
+  'review.publication_retry',
+  'review.publication_failed',
+  'github.review_redirected',
+  'review.round_completed',
+  'work_order.released',
+  'work_order.preempted',
+  'merge.requested',
+  'merge.confirmed',
+  'merge.reconciled',
+  'merge.failed',
+  'merge.blocked',
+  'merge.conflict_fix_dispatched',
+  'approval.stale',
+  'review.refresh_head_advanced',
+  'review.refresh_round_created',
+  'review.refresh_skipped',
+  'dispatch.failed',
+  'job.log_stream_degraded',
+  'task.state_changed',
+  'task.dependency_added',
+] as const
+
+type NoteEventKind = (typeof noteEventKinds)[number]
+
+// Kinds `noteFor` never renders: the review cards, panels, and the approval
+// intervention already tell their story.
+const hiddenNoteKinds = new Set(['review.completed', 'spec.version_approved'])
+
+// Attempt kinds that read as an entry when the factory retries the run on its
+// own (req-operator-next-action AC-7.3); see automaticRetryEvent.
+const automaticRetryEventKinds = new Set(['work_order.child_failed', 'work_order.stalled'])
+
+// The effective human-timeline rule: every kind `noteFor` can render, minus the
+// attempt bookkeeping `buildTimeline` skips before `noteFor` runs other than
+// automatic retries, minus the kinds `noteFor` always hides. The server's human selection must equal this
+// list (component-http-api, Bounded detail view).
+export const humanTimelineEventKinds = noteEventKinds.filter(
+  (kind) => (!attemptEventKinds.has(kind) || automaticRetryEventKinds.has(kind)) && !hiddenNoteKinds.has(kind),
+)
+
+const humanTimelineKinds = new Set<string>(humanTimelineEventKinds)
+
+// Attempt history stays out of the timeline, except a failed or stalled run
+// the factory retries on its own: that retry is a state the task passed
+// through, so it reads as an entry (req-operator-next-action AC-7.3).
+function automaticRetryEvent(event: TaskEventView) {
+  // An omitted payload keeps its boolean fields in payload_index.
+  const fields = event.payload ?? event.payload_index ?? {}
+  return automaticRetryEventKinds.has(event.kind) && fields.retry_suppressed !== true
+}
+
+// An automatic retry reads as the state it is; the attempt's own failure detail
+// stays in technical activity. An omitted payload keeps its omission marker and
+// audit reference, so the complete record stays one disclosure away
+// (component-web-task-surfaces, History pages).
+function retryNote(note: NoteContent): NoteContent {
+  return note.omittedEventId
+    ? { title: note.title, alarm: note.alarm, detail: note.detail, omittedEventId: note.omittedEventId }
+    : { title: note.title, alarm: note.alarm }
+}
+
+// The closing commands whose own record already tells the story: a rejection
+// and a cancellation are interventions, a blueprint close has its own note.
+const closeCommandsWithEntries = new Set(['intervention.reject', 'task.cancel', 'blueprint.close'])
+
 export type CurrentExecutionKind =
   | 'running'
   | 'dependency_waiting'
@@ -339,6 +409,7 @@ export type CurrentExecutionKind =
   | 'released'
   | 'expired'
   | 'verification_checkpoint'
+  | 'checkpoint_decision'
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
@@ -499,13 +570,43 @@ export function deriveCurrentExecutionState(
             ? order.unsatisfiable_task_ids
             : action.blocked_by?.map((blocker) => blocker.task_id),
       }
-    case 'stalled':
     case 'agent_question':
+      return (
+        checkpointDecisionState(order, attemptId, action) ?? pausedExecutionState(item, order, attemptId, stage, action)
+      )
+    case 'stalled':
     case 'verification_disposition':
     case 'dispatch_exhausted':
       return pausedExecutionState(item, order, attemptId, stage, action)
     default:
       return undefined
+  }
+}
+
+// A deliberate checkpoint is a question for the operator, not a failure: its
+// title, next step, and blocker are the server's label and question and the
+// agent's own decision request, and the summary stays on NextActionCard
+// (component-web-task-surfaces, Implementation checkpoints;
+// req-operator-next-action AC-1.7). A checkpoint without a decision request
+// keeps the released wording (req-260820-394cac AC-1.3), and a verify order
+// keeps its verification checkpoint presentation.
+function checkpointDecisionState(
+  order: WorkOrder,
+  attemptId: string | undefined,
+  action: NextAction,
+): CurrentExecutionState | undefined {
+  const decisionRequest = order.checkpoint?.decision_request?.trim()
+  if (order.stage === 'verify' || !decisionRequest) return undefined
+  return {
+    kind: 'checkpoint_decision',
+    status: 'paused',
+    order,
+    attemptId,
+    title: action.label,
+    blocker: decisionRequest,
+    retry: 'No automatic retry is pending.',
+    nextAction: action.question,
+    action: 'recover',
   }
 }
 
@@ -606,10 +707,6 @@ function pausedExecutionState(
   )
 }
 
-export function technicalActivity(item: ActivityItem): TaskEvent[] {
-  return [...item.events].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
-}
-
 // The release reason the plan-revision command records, mirrored here so the
 // timeline can tell that one released claim apart from an ordinary one.
 const planRevisionReleaseReason = 'plan revision requested'
@@ -622,7 +719,9 @@ export interface PlanRevisionRequest {
 // The request event is the durable record of what is being contested: the
 // agent's rationale and the plan version it names. A payload missing either is
 // not a decidable request, so nothing is invented from it (REQ-1 AC-1.3).
-export function planRevisionRequestFrom(event: TaskEvent): PlanRevisionRequest | null {
+export function planRevisionRequestFrom(event: {
+  payload?: Record<string, unknown> | null
+}): PlanRevisionRequest | null {
   const rationale = typeof event.payload?.rationale === 'string' ? event.payload.rationale.trim() : ''
   const planVersion =
     typeof event.payload?.plan_version === 'number'
@@ -632,15 +731,15 @@ export function planRevisionRequestFrom(event: TaskEvent): PlanRevisionRequest |
   return { planVersion, rationale }
 }
 
-// The newest plan-revision request the agent recorded: the rationale and plan
-// version the decision card lays out. Whether that request is the open
-// decision is the server's next action (kind `plan_revision`), never this
-// event walk (feature-operator-next-action NA-9).
-export function latestPlanRevisionRequest(events: TaskEvent[]): PlanRevisionRequest | null {
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].kind === 'work_order.plan_revision_requested') return planRevisionRequestFrom(events[i])
-  }
-  return null
+// The newest plan-revision request the agent recorded, from
+// `summaries.plan_revision_request`: the rationale and plan version the
+// decision card lays out. Whether that request is the open decision is the
+// server's next action (kind `plan_revision`), never an event walk
+// (feature-operator-next-action NA-9).
+export function latestPlanRevisionRequest(summaries: TaskSummaries | undefined): PlanRevisionRequest | null {
+  const request = summaries?.plan_revision_request
+  if (!request) return null
+  return planRevisionRequestFrom({ payload: { rationale: request.rationale, plan_version: request.plan_version } })
 }
 
 export type TimelineEntry =
@@ -649,6 +748,9 @@ export type TimelineEntry =
       at: string
       job: Job
       summary: string
+      // Set when the summary text was cut at 16,384 bytes: the event whose
+      // audit read returns the full text.
+      summaryEventId?: string
       model: string
       tone: 'default' | 'warning'
       order?: WorkOrder
@@ -663,6 +765,9 @@ export type TimelineEntry =
       fullProgress?: string
       href?: string
       alarm?: boolean
+      // A selected event whose payload the server omitted: the note is titled
+      // from its kind and its audit disclosure loads the complete payload.
+      omittedEventId?: string
     }
   | {
       type: 'order'
@@ -686,6 +791,8 @@ export interface PanelSeatReview {
   summary: string
   feedback: string
   at: string
+  // Set when the summary or feedback was cut at 16,384 bytes.
+  truncatedEventId?: string
 }
 
 export interface PanelSeat {
@@ -717,15 +824,27 @@ interface PanelIndex {
   rounds: Set<number>
 }
 
-function isPanelReviewEvent(payload: Record<string, unknown>, index: PanelIndex): boolean {
-  const round = typeof payload.review_round === 'number' ? payload.review_round : undefined
+// Absorption is evaluated on the payload, or on `payload_index` when the
+// server omitted the payload, before any omitted-payload fallback, so an
+// absorbed round stays hidden whatever its size (component-http-api).
+function isPanelReviewEvent(event: TaskEventView, index: PanelIndex): boolean {
+  if (event.payload) {
+    const payload = event.payload
+    const round = typeof payload.review_round === 'number' ? payload.review_round : undefined
+    if (round !== undefined && round > 0) return index.rounds.has(round)
+    const reviews = Array.isArray(payload.reviews) ? payload.reviews : []
+    return reviews.some(
+      (review) =>
+        typeof (review as Record<string, unknown>)?.review_work_order_id === 'string' &&
+        index.orderIds.has((review as Record<string, unknown>).review_work_order_id as string),
+    )
+  }
+  const summary = event.payload_index
+  if (!summary) return false
+  const round = typeof summary.review_round === 'number' ? summary.review_round : undefined
   if (round !== undefined && round > 0) return index.rounds.has(round)
-  const reviews = Array.isArray(payload.reviews) ? payload.reviews : []
-  return reviews.some(
-    (review) =>
-      typeof (review as Record<string, unknown>)?.review_work_order_id === 'string' &&
-      index.orderIds.has((review as Record<string, unknown>).review_work_order_id as string),
-  )
+  const orderIDs = Array.isArray(summary.review_work_order_ids) ? summary.review_work_order_ids : []
+  return orderIDs.some((orderID) => typeof orderID === 'string' && index.orderIds.has(orderID))
 }
 
 function buildReviewPanels(item: ActivityItem): PanelIndex {
@@ -745,45 +864,24 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
   }
 
   const jobsById = new Map(item.jobs.map((job) => [job.id, job]))
-  const reviewByOrder = new Map<string, PanelSeatReview>()
-  const reviewByJob = new Map<string, PanelSeatReview>()
-  const resolutionByRound = new Map<number, PanelResolution>()
-  const resolutionByOrder = new Map<string, PanelResolution>()
-  const bounceByRound = new Map<number, number>()
-  for (const event of item.events) {
-    const payload = event.payload ?? {}
-    if (event.kind === 'review.completed') {
-      const review: PanelSeatReview = {
-        verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
-        summary: typeof payload.summary === 'string' ? payload.summary : '',
-        feedback: typeof payload.feedback === 'string' ? payload.feedback : '',
-        at: event.at,
-      }
-      if (typeof payload.review_work_order_id === 'string') reviewByOrder.set(payload.review_work_order_id, review)
-      // Older events carry no order id; the event's job is the review job.
-      if (event.job_id) reviewByJob.set(event.job_id, review)
+  // Seat verdicts, round resolutions, and bounce counts come from the server's
+  // summaries of the complete ledger, so a panel keeps its text when its
+  // events lie outside the bounded page (component-web-task-surfaces).
+  const summaries = item.summaries
+  const seatReview = (result: TaskReviewResult | undefined): PanelSeatReview | undefined =>
+    result && {
+      verdict: result.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+      summary: typeof result.summary === 'string' ? result.summary : '',
+      feedback: typeof result.feedback === 'string' ? result.feedback : '',
+      at: result.at,
+      truncatedEventId: result.truncated ? result.event_id : undefined,
     }
-    if (event.kind === 'review.round_completed') {
-      const resolution: PanelResolution = {
-        verdict: payload.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
-        summary: typeof payload.summary === 'string' ? payload.summary : undefined,
-        at: event.at,
-      }
-      const round = typeof payload.review_round === 'number' ? payload.review_round : 0
-      if (round > 0) resolutionByRound.set(round, resolution)
-      for (const review of Array.isArray(payload.reviews) ? payload.reviews : []) {
-        const orderID = (review as Record<string, unknown>)?.review_work_order_id
-        if (typeof orderID === 'string') resolutionByOrder.set(orderID, resolution)
-      }
+  const roundResolution = (round: TaskReviewRound | undefined): PanelResolution | undefined =>
+    round && {
+      verdict: round.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
+      summary: typeof round.summary === 'string' ? round.summary : undefined,
+      at: round.at,
     }
-    if (
-      event.kind === 'pipeline.bounced' &&
-      typeof payload.review_round === 'number' &&
-      typeof payload.count === 'number'
-    ) {
-      bounceByRound.set(payload.review_round, payload.count)
-    }
-  }
 
   for (const [key, group] of groups) {
     const seats: PanelSeat[] = group.orders
@@ -791,7 +889,11 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       .sort((a, b) => (a.review_seat ?? 0) - (b.review_seat ?? 0))
       .map((order) => {
         const job = jobsById.get(order.job_id)
-        const review = reviewByOrder.get(order.id) ?? reviewByJob.get(order.job_id)
+        // A seat's verdict is found by its order, then by its job: older
+        // review.completed events carry no order id.
+        const review = seatReview(
+          summaries?.review_results?.by_order?.[order.id] ?? summaries?.review_results?.by_job?.[order.job_id],
+        )
         index.jobIds.add(order.job_id)
         index.orderIds.add(order.id)
         return {
@@ -804,9 +906,13 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
         }
       })
     if (group.round > 0) index.rounds.add(group.round)
-    const resolution = group.round > 0 ? resolutionByRound.get(group.round) : resolutionByOrder.get(group.orders[0].id)
+    const resolution = roundResolution(
+      group.round > 0
+        ? summaries?.review_rounds?.by_round?.[String(group.round)]
+        : summaries?.review_rounds?.by_order?.[group.orders[0].id],
+    )
     if (resolution && resolution.verdict === 'changes_requested') {
-      resolution.bounce = bounceByRound.get(group.round)
+      resolution.bounce = summaries?.review_bounces?.[String(group.round)]
     }
     index.panels.push({
       type: 'panel',
@@ -839,29 +945,25 @@ function seatStatus(order: WorkOrder, job: Job | undefined, review?: PanelSeatRe
   }
 }
 
-function preferredJobSummary(job: Job, events: TaskEvent[]): string | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-    if (event.job_id !== job.id) continue
-    if (event.kind === 'job.summary' && typeof event.payload?.summary === 'string') {
-      return event.payload.summary
-    }
+interface JobSummaryText {
+  text: string
+  // The event whose audit read returns the full text when the server cut it.
+  truncatedEventId?: string
+}
+
+// A job's text comes from `summaries.job_results`, so a job whose summary
+// event is older than the bounded page keeps it (component-web-task-surfaces).
+function preferredJobSummary(results: TaskJobResult | undefined): JobSummaryText | undefined {
+  const summary = results?.summary
+  if (summary && typeof summary.text === 'string') {
+    return { text: summary.text, truncatedEventId: summary.truncated ? summary.event_id : undefined }
   }
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-    if (event.job_id !== job.id) continue
-    if (
-      (event.kind === 'triage.completed' || event.kind === 'review.completed') &&
-      typeof event.payload?.summary === 'string' &&
-      event.payload.summary
-    ) {
-      const feedback =
-        event.kind === 'review.completed' && typeof event.payload?.feedback === 'string'
-          ? event.payload.feedback.trim()
-          : ''
-      return [event.payload.summary, feedback ? `Reviewer feedback: ${feedback}` : undefined]
-        .filter(Boolean)
-        .join('\n\n')
+  const stage = results?.stage_summary
+  if (stage && typeof stage.text === 'string' && stage.text) {
+    const feedback = typeof stage.review_feedback === 'string' ? stage.review_feedback.trim() : ''
+    return {
+      text: [stage.text, feedback ? `Reviewer feedback: ${feedback}` : undefined].filter(Boolean).join('\n\n'),
+      truncatedEventId: stage.truncated ? stage.event_id : undefined,
     }
   }
   return undefined
@@ -869,58 +971,84 @@ function preferredJobSummary(job: Job, events: TaskEvent[]): string | undefined 
 
 const outputInvalidKinds = new Set(['triage.output_invalid', 'spec.output_invalid', 'review.output_invalid'])
 
-function rejectedOutputEvent(job: Job, events: TaskEvent[]): TaskEvent | undefined {
-  if (job.state !== 'done' || preferredJobSummary(job, events) !== undefined) return undefined
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]
-    if (event.job_id === job.id && outputInvalidKinds.has(event.kind)) return event
-  }
-  return undefined
+function rejectedOutput(job: Job, results: TaskJobResult | undefined): TaskJobResult['output_rejection'] {
+  if (job.state !== 'done' || preferredJobSummary(results) !== undefined) return undefined
+  return results?.output_rejection
 }
 
-function jobSummary(job: Job, events: TaskEvent[]): string {
+function jobSummary(job: Job, results: TaskJobResult | undefined): JobSummaryText {
   // Prefer the harness's own narration (job.summary), then accepted structured
   // stage outputs, then a job-specific output rejection and state fallback.
-  const preferred = preferredJobSummary(job, events)
+  const preferred = preferredJobSummary(results)
   if (preferred !== undefined) return preferred
 
-  const rejected = rejectedOutputEvent(job, events)
+  const rejected = rejectedOutput(job, results)
   if (rejected) {
-    const error = typeof rejected.payload?.error === 'string' ? rejected.payload.error.trim() : ''
+    const error = typeof rejected.error === 'string' ? rejected.error.trim() : ''
     const punctuation = error && !/[.!?]$/.test(error) ? '.' : ''
-    return error
-      ? `Output rejected by the pipeline — ${error}${punctuation} Retrying with this feedback.`
-      : 'Output rejected by the pipeline. Retrying with this feedback.'
+    return {
+      text: error
+        ? `Output rejected by the pipeline — ${error}${punctuation} Retrying with this feedback.`
+        : 'Output rejected by the pipeline. Retrying with this feedback.',
+    }
   }
 
   switch (job.state) {
     case 'pending':
-      return job.harness === 'external-mcp' ? 'Queued for an operator-owned agent over MCP.' : 'Queued.'
+      return { text: job.harness === 'external-mcp' ? 'Queued for an operator-owned agent over MCP.' : 'Queued.' }
     case 'running':
-      return 'In progress.'
+      return { text: 'In progress.' }
     case 'failed': {
-      for (let i = events.length - 1; i >= 0; i--) {
-        const event = events[i]
-        if (event.job_id !== job.id) continue
-        if (event.kind === 'job.failed' && typeof event.payload?.error === 'string' && event.payload.error) {
-          return event.payload.error
-        }
+      const failure = results?.failure_error
+      if (failure && typeof failure.text === 'string' && failure.text) {
+        return { text: failure.text, truncatedEventId: failure.truncated ? failure.event_id : undefined }
       }
-      return 'The job failed before producing a summary.'
+      return { text: 'The job failed before producing a summary.' }
     }
     default:
-      return 'Completed.'
+      return { text: 'Completed.' }
   }
 }
 
+type NoteContent = Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'>
+
+function humanizeKind(kind: string) {
+  const text = kind.replaceAll(/[._]/g, ' ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+// One selected event as a timeline note. Panel absorption is evaluated first,
+// on the payload or its index; a selected event whose payload was omitted then
+// renders as a note titled from its kind with an audit disclosure, so an
+// omitted payload never removes a human row (component-web-task-surfaces).
 function noteFor(
-  event: TaskEvent,
+  event: TaskEventView,
   panels: PanelIndex,
   assignee?: TaskAssignee,
   members: WorkspaceMembership[] = [],
-): Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'> | undefined {
-  const payload = event.payload ?? {}
-  switch (event.kind) {
+): NoteContent | undefined {
+  if (event.kind === 'review.round_completed' && isPanelReviewEvent(event, panels)) return undefined
+  if (event.payload_omitted && !event.payload) {
+    if (!humanTimelineKinds.has(event.kind)) return undefined
+    const title = noteContent(event.kind, event.payload_index ?? {}, panels, assignee, members)?.title
+    return {
+      title: title ?? humanizeKind(event.kind),
+      detail: 'Details omitted from this page',
+      omittedEventId: event.id,
+    }
+  }
+  return noteContent(event.kind, event.payload ?? {}, panels, assignee, members)
+}
+
+function noteContent(
+  kind: string,
+  payload: Record<string, unknown>,
+  panels: PanelIndex,
+  assignee?: TaskAssignee,
+  members: WorkspaceMembership[] = [],
+): NoteContent | undefined {
+  const noteKind = kind as NoteEventKind
+  switch (noteKind) {
     // Assignment is an audited operator act, so it folds into the timeline
     // beside the other decisions rather than being legible only as a header
     // field that silently changed (REQ-4, AC-1.2). The event payload carries
@@ -978,9 +1106,49 @@ function noteFor(
     // Review cards and panels already render outcome, feedback, and bounce
     // context. Keep the audit events, but do not duplicate these two semantic
     // review-transition records as standalone timeline notes.
-    case 'pipeline.bounced':
     case 'review.completed':
       return undefined
+    // A panel round carries its own bounce count. A bounce outside any panel
+    // round would otherwise leave no trace, so it reads as an entry with its
+    // count; a merge-gate return is told by its intervention entry instead.
+    case 'pipeline.bounced': {
+      const round = typeof payload.review_round === 'number' ? payload.review_round : undefined
+      if (round !== undefined && panels.rounds.has(round)) return undefined
+      // A review bounce without a round (older payloads name no stage at all)
+      // belongs to the per-order panels that predate rounds, which tell it.
+      if (round === undefined && (payload.from ?? 'review') === 'review' && panels.panels.length > 0) return undefined
+      if (payload.source === userRequestChangesReason) return undefined
+      const to =
+        typeof payload.to === 'string'
+          ? (workOrderStageLabels[payload.to] ?? stageLabels[payload.to] ?? payload.to)
+          : 'implementation'
+      return {
+        title: `Sent back to ${to.toLowerCase()}`,
+        detail: typeof payload.count === 'number' ? `Bounce ${payload.count}` : undefined,
+      }
+    }
+    case 'task.state_changed': {
+      const command = typeof payload.command === 'string' ? payload.command : ''
+      if (payload.to === 'parked')
+        return {
+          title: 'Parked',
+          detail:
+            command === 'triage.park'
+              ? 'Triage parked the task for an operator decision'
+              : command === 'dispatch.fail_final'
+                ? 'Dispatch kept failing after its retries'
+                : undefined,
+          alarm: true,
+        }
+      if (payload.to === 'closed' && !closeCommandsWithEntries.has(command))
+        return { title: command === 'task.start_over' ? 'Closed — started over as a new task' : 'Closed' }
+      return undefined
+    }
+    case 'task.dependency_added':
+      return {
+        title: 'Waiting on another task',
+        detail: typeof payload.depends_on_task_id === 'string' ? payload.depends_on_task_id : undefined,
+      }
     case 'pipeline.bounce_limit': {
       const source = typeof payload.source === 'string' ? payload.source.trim() : ''
       const sourceLabel = outputInvalidKinds.has(source)
@@ -1003,7 +1171,7 @@ function noteFor(
       // The request opens the decision gate, so the rationale reads inline
       // rather than behind a disclosure — it is the whole case the operator is
       // being asked to judge (REQ-4 AC-4.1).
-      const request = planRevisionRequestFrom(event)
+      const request = planRevisionRequestFrom({ payload })
       if (!request) return undefined
       return {
         title: `The agent asked to revise plan v${request.planVersion}`,
@@ -1072,8 +1240,8 @@ function noteFor(
     case 'github.review_redirected':
       return { title: 'Review comments on GitHub sent the task back for changes' }
     case 'review.round_completed':
-      // The panel card's resolution banner is this event, rendered richer.
-      if (isPanelReviewEvent(payload, panels)) return undefined
+      // A round a panel absorbs never reaches here: the panel card's
+      // resolution banner is this event, rendered richer (see noteFor).
       return {
         title: `Review panel: ${String(payload.verdict ?? 'completed')}`,
         detail: typeof payload.summary === 'string' ? payload.summary : undefined,
@@ -1154,8 +1322,12 @@ function noteFor(
       }
     case 'job.log_stream_degraded':
       return { title: 'Live logs unavailable — the full transcript is still archived' }
-    default:
+    default: {
+      // Every listed kind has a case; an unlisted kind renders no note.
+      const unlisted: never = noteKind
+      void unlisted
       return undefined
+    }
   }
 }
 
@@ -1213,6 +1385,65 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
   }
 }
 
+// A finished job's entry reads as its completion, so it sits where the job
+// ended and follows the events the job produced; a running job sits where it
+// started. A finished job without an end time keeps its start. A verify job
+// renders as its own entry stamped with its start, so it stays there
+// (req-task-centric-operations-view AC-2.2; component-web-task-surfaces).
+export function jobTimelineAt(job: Job): string | undefined {
+  if (job.stage === 'verify' || job.state === 'running' || job.state === 'pending') return job.started_at
+  return job.ended_at ?? job.started_at
+}
+
+function finishedJobEntry(entry: TimelineEntry): boolean {
+  return entry.type === 'job' && entry.job.ended_at !== undefined && entry.at === entry.job.ended_at
+}
+
+// Attempt bookkeeping the server can report as an order's last agent activity
+// (agentActivityLabel in internal/httpapi/server.go). Technical activity keeps
+// the events; the human timeline tells no story with them.
+const bookkeepingActivityLabels = new Set([
+  'Work order claimed',
+  'Claim lease renewed',
+  'Attempt worktree checkpointed',
+  'Usage telemetry reported',
+  'Usage and rate-limit telemetry reported',
+  'Transcript uploaded',
+])
+
+const finishedOrderStates = new Set<WorkOrder['state']>(['submitted', 'completed', 'cancelled'])
+
+// A later order for the same stage and seat replaced this one.
+function supersededOrder(order: WorkOrder, orders: WorkOrder[]): boolean {
+  const entered = Date.parse(order.queue_entered_at)
+  return orders.some(
+    (other) =>
+      other.id !== order.id &&
+      other.stage === order.stage &&
+      (other.review_seat ?? 0) === (order.review_seat ?? 0) &&
+      Date.parse(other.queue_entered_at) > entered,
+  )
+}
+
+// Only a live order's own reports read as agent activity. A finished or
+// superseded order's job or order entry already tells its story.
+function agentActivityNote(
+  order: WorkOrder,
+  orders: WorkOrder[],
+): Extract<TimelineEntry, { type: 'note' }> | undefined {
+  const label = order.last_agent_activity_label
+  if (!order.last_agent_activity_at || !label) return undefined
+  if (bookkeepingActivityLabels.has(label) || finishedOrderStates.has(order.state)) return undefined
+  if (supersededOrder(order, orders)) return undefined
+  return {
+    type: 'note',
+    at: order.last_agent_activity_at,
+    key: `agent-activity-${order.id}`,
+    title: `Agent activity — ${label}`,
+    fullProgress: order.progress && label.startsWith('Progress:') ? order.progress : undefined,
+  }
+}
+
 // The costed event timeline: one entry per stage execution,
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
@@ -1226,33 +1457,40 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   for (const job of item.jobs) {
     if (!job.started_at || panels.jobIds.has(job.id)) continue
     const order = orderByJob.get(job.id)
-    let summary = jobSummary(job, item.events)
+    const results = item.summaries?.job_results?.[job.id]
+    const text = jobSummary(job, results)
+    let summary = text.text
     if (order?.progress && genericSummaries.has(summary)) summary = order.progress
     // BYOA jobs carry a placeholder tier; the work order knows the model
     // the operator's agent actually ran.
     const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
-    const tone = rejectedOutputEvent(job, item.events) ? 'warning' : 'default'
-    entries.push({ type: 'job', at: job.started_at, job, summary, model, tone, order })
+    const tone = rejectedOutput(job, results) ? 'warning' : 'default'
+    entries.push({
+      type: 'job',
+      at: jobTimelineAt(job) ?? job.started_at,
+      job,
+      summary,
+      summaryEventId: summary === text.text ? text.truncatedEventId : undefined,
+      model,
+      tone,
+      order,
+    })
   }
-  for (const order of item.work_orders ?? []) {
-    if (order.last_agent_activity_at && order.last_agent_activity_label) {
-      entries.push({
-        type: 'note',
-        at: order.last_agent_activity_at,
-        key: `agent-activity-${order.id}`,
-        title: `Agent activity — ${order.last_agent_activity_label}`,
-        fullProgress:
-          order.progress && order.last_agent_activity_label.startsWith('Progress:') ? order.progress : undefined,
-      })
-    }
+  const orders = item.work_orders ?? []
+  for (const order of orders) {
+    const activity = agentActivityNote(order, orders)
+    if (activity) entries.push(activity)
     if (panels.orderIds.has(order.id)) continue
     const entry = order.id === dependencyBlockedOrder?.id ? undefined : orderEntry(order, startedJobs.has(order.job_id))
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
-    if (attemptEventKinds.has(event.kind)) continue
+    const retry = automaticRetryEvent(event)
+    if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, item.task.assignee, members)
-    if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
+    if (!note) continue
+    const shown = retry ? retryNote(note) : note
+    entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
   }
   for (const diagnostic of item.review_diagnostics ?? []) {
     // Active claims already appear as deliberating seats in the review panel.
@@ -1286,7 +1524,32 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       continue
     entries.push({ type: 'intervention', at: intervention.at, intervention })
   }
-  return entries.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+  // At an equal instant a finished job follows what it produced, such as the
+  // plan version it drafted; other ties keep their insertion order.
+  return entries.sort(
+    (a, b) =>
+      new Date(a.at).getTime() - new Date(b.at).getTime() || Number(finishedJobEntry(a)) - Number(finishedJobEntry(b)),
+  )
+}
+
+// Earlier human history rows, rendered through the same `noteFor` and panel
+// absorption the timeline uses (component-web-task-surfaces, History pages).
+export function historyNoteEntries(
+  item: ActivityItem,
+  events: TaskEventView[],
+  members: WorkspaceMembership[] = [],
+): Extract<TimelineEntry, { type: 'note' }>[] {
+  const panels = buildReviewPanels(item)
+  const entries: Extract<TimelineEntry, { type: 'note' }>[] = []
+  for (const event of events) {
+    const retry = automaticRetryEvent(event)
+    if (attemptEventKinds.has(event.kind) && !retry) continue
+    const note = noteFor(event, panels, item.task.assignee, members)
+    if (!note) continue
+    const shown = retry ? retryNote(note) : note
+    entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
+  }
+  return entries
 }
 
 export function taskRestartLinks(task: Pick<Task, 'supersedes' | 'superseded_by'>) {
@@ -1317,7 +1580,7 @@ export function taskPendingRestartProposals(proposals: PendingProposal[], taskId
 export function restartPullRequestURL(item: ActivityItem) {
   const closeState = item.task.pull_request_close_state?.trim() || item.task.pull_request_close?.state?.trim()
   if (closeState === 'closed' || closeState === 'skipped' || item.task.state === 'merged') return undefined
-  return pullRequestURL(item.events ?? [])?.trim() || undefined
+  return pullRequestURL(item.summaries)?.trim() || undefined
 }
 
 export function restartPullRequestOutcome(task: Task): string | undefined {

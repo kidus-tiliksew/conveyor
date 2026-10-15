@@ -77,6 +77,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	waiting, err := ClaimWaitingProposals(ctx, st, orders)
+	if err != nil {
+		return nil, err
+	}
 	ordersByTask := map[string][]core.WorkOrder{}
 	for _, order := range orders {
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockers[order.TaskID]))
@@ -87,7 +91,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	}
 	out := make(map[string]nextaction.NextAction, len(tasks))
 	for _, task := range tasks {
-		input, err := assembleInput(ctx, st, task, ordersByTask[task.ID], markerByTask[task.ID], proposals, opts)
+		input, err := assembleInput(ctx, st, task, ordersByTask[task.ID], markerByTask[task.ID], proposals, waiting[task.ID], opts)
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +115,7 @@ func withDependencyBlockers(order core.WorkOrder, blockers DependencyBlockers) c
 	return order
 }
 
-func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, opts NextActionOptions) (nextaction.Input, error) {
+func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, waiting []ClaimBlockingProposal, opts NextActionOptions) (nextaction.Input, error) {
 	var events []core.Event
 	if task.State == core.TaskParked || task.State == core.TaskApproved || task.State == core.TaskAwaiting {
 		var err error
@@ -140,8 +144,8 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	conflict := mergeConflictFromEvents(events, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
-		ClaimWaiting: claimWaiting(proposals, orders, task.ID),
-		Blockers:     blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
+		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals), ContextProposals: contextProposalRefs(proposals, task.ID),
+		Blockers: blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
 	}
 	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && opts.MergeReadiness != nil {
@@ -188,13 +192,24 @@ func markersFrom(marker ActivityMarker, events []core.Event, orders []core.WorkO
 		out.InterruptedReview = true
 	}
 	for _, order := range orders {
-		if order.Checkpoint != nil && order.Checkpoint.DecisionRequest != "" {
-			out.CheckpointDecision = true
-			out.Checkpoint = order.Checkpoint.DecisionRequest
-		}
 		if order.Checkpoint != nil && order.Checkpoint.Verification != nil {
 			out.VerificationDisposition = true
 		}
+	}
+	// The agent question reads the checkpoint of the order it selects, the
+	// latest queued order, never an older order's (component-work-orders,
+	// Next action).
+	for i := len(orders) - 1; i >= 0; i-- {
+		if orders[i].State != core.WorkOrderQueued {
+			continue
+		}
+		if checkpoint := orders[i].Checkpoint; checkpoint != nil && checkpoint.DecisionRequest != "" {
+			out.CheckpointDecision = true
+			out.Checkpoint = checkpoint.DecisionRequest
+			out.CheckpointClass = checkpoint.Class
+			out.Citations = append([]core.WorkOrderAuthorityConflictCitation(nil), checkpoint.Citations...)
+		}
+		break
 	}
 	return out
 }
@@ -214,26 +229,36 @@ func parkCommand(events []core.Event) string {
 	return ""
 }
 
-func claimWaiting(proposals []core.PendingProposal, orders []core.WorkOrder, taskID string) []nextaction.ProposalRef {
-	refs := proposalRefs(proposals, taskID)
-	if pendingAuthorityTaskIDs(orders, proposals)[taskID] {
-		return refs
+// claimWaitingRefs carries the task's claim-wait selection to row 8, so the
+// next action waits on a proposal exactly when a verify or review claim is
+// withheld (req-operator-next-action AC-1.7; req-260810-70ce2f AC-1.3).
+func claimWaitingRefs(waiting []ClaimBlockingProposal) []nextaction.ProposalRef {
+	var out []nextaction.ProposalRef
+	for _, item := range waiting {
+		out = append(out, nextaction.ProposalRef{Tier: item.Tier, ID: item.ID, Version: item.Version})
 	}
-	var context []nextaction.ProposalRef
-	for _, ref := range refs {
-		if ref.Tier == "task_context" {
-			context = append(context, ref)
-		}
-	}
-	return context
+	return out
 }
 
-func proposalRefs(proposals []core.PendingProposal, taskID string) []nextaction.ProposalRef {
-	var out []nextaction.ProposalRef
+// contextProposalRefs is the task's pending task-context proposals for the
+// context_proposal row (req-intake-and-triage AC-7.3).
+func contextProposalRefs(proposals []core.PendingProposal, taskID string) []nextaction.ContextProposalRef {
+	var out []nextaction.ContextProposalRef
 	for _, item := range proposals {
-		if item.OriginType == "task" && item.OriginID == taskID {
-			out = append(out, nextaction.ProposalRef{Tier: item.Tier, ID: item.ID, Version: item.Version})
+		if item.Tier == "task_context" && item.OriginType == "task" && item.OriginID == taskID {
+			out = append(out, nextaction.ContextProposalRef{Kind: item.TargetKind, TargetID: item.ID})
 		}
+	}
+	return out
+}
+
+// pendingProposalRefs is the workspace's pending set for agent-question
+// presentation; the projection keeps only cited requirement and System Design
+// versions.
+func pendingProposalRefs(proposals []core.PendingProposal) []nextaction.ProposalRef {
+	out := make([]nextaction.ProposalRef, 0, len(proposals))
+	for _, item := range proposals {
+		out = append(out, nextaction.ProposalRef{Tier: item.Tier, ID: item.ID, Version: item.Version})
 	}
 	return out
 }

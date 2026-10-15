@@ -1,9 +1,10 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 import type { NextAction, WorkOrder } from '../src/lib/types'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
 // Task detail leads with the server's next action and acts only through the
-// server's choices (feature-operator-next-action NA-6, NA-4; AC-4.4, AC-1.7).
+// server's choices (feature-operator-next-action NA-6, NA-4; AC-7.1, AC-1.7).
 // Every next action here is a server-shaped projection; the assertions check
 // that the card, the human gate and the recovery card render what the server
 // stated and derive nothing from events.
@@ -24,7 +25,7 @@ function activity(state: string, nextAction: NextAction, workOrders: WorkOrder[]
     },
     jobs: [],
     // An event that once implied a different gate: the client must not read it.
-    events: [{ id: 'evt-1', task_id: taskId, kind: 'job.timeout', at: timestamp, payload: {} }],
+    events: [{ id: '9007199254741001', task_id: taskId, kind: 'job.timeout', at: timestamp, payload: {} }],
     work_orders: workOrders,
     reviews: [],
     interventions: [],

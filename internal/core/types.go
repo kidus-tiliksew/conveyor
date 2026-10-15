@@ -890,6 +890,7 @@ const (
 	WorkOrderFailureDetailLimit                     = 2 * 1024
 	WorkOrderDecisionRequestLimit                   = 1024
 	WorkOrderCheckpointClassAuthorityConflict       = "authority_conflict"
+	TaskTerminalSuppressionReason                   = "task_terminal"
 )
 
 // WorkOrderCheckpoint is operator-facing context recorded by a deliberate
@@ -1233,40 +1234,41 @@ type ReviewPublication struct {
 // review attempt. GitHub publication is queued in the same store transaction;
 // the external GitHub side effects remain asynchronous.
 type ReviewDecision struct {
-	VerificationAssessment *VerificationAssessment
-	TaskID                 string
-	JobID                  string
-	ReviewWorkOrderID      string
-	Verdict                string
-	ReasonCode             string
-	Summary                string
-	Feedback               string
-	ReviewedCommitSHA      string
-	EvidenceIDs            []string
-	RequirementCitations   *RequirementCitationAssessment
-	DoneCriteriaAssessment *DoneCriteriaAssessment
-	GovernanceAssessment   *GovernanceAssessment
-	Reviewer               string
-	ReviewerModel          string
-	ReviewerSession        string
-	ClaimSession           string
-	SameModelAsImplementer string
-	ReviewRound            int
-	ReviewSeat             int
-	ReviewKind             string
-	ReviewScope            string
-	BaselineSHA            string
-	HeadSHA                string
-	RequiredModel          string
-	RequiredHarness        string
-	RequiredEffort         string
-	ModelEnforcement       string
-	InterventionActorID    string
-	PublicationEligible    bool
-	Level                  EscalationLevel
-	PolicyVersion          int
-	MergeApproval          bool
-	MaxBounces             int
+	VerificationAssessment  *VerificationAssessment
+	DocumentationAssessment *DocumentationAssessment
+	TaskID                  string
+	JobID                   string
+	ReviewWorkOrderID       string
+	Verdict                 string
+	ReasonCode              string
+	Summary                 string
+	Feedback                string
+	ReviewedCommitSHA       string
+	EvidenceIDs             []string
+	RequirementCitations    *RequirementCitationAssessment
+	DoneCriteriaAssessment  *DoneCriteriaAssessment
+	GovernanceAssessment    *GovernanceAssessment
+	Reviewer                string
+	ReviewerModel           string
+	ReviewerSession         string
+	ClaimSession            string
+	SameModelAsImplementer  string
+	ReviewRound             int
+	ReviewSeat              int
+	ReviewKind              string
+	ReviewScope             string
+	BaselineSHA             string
+	HeadSHA                 string
+	RequiredModel           string
+	RequiredHarness         string
+	RequiredEffort          string
+	ModelEnforcement        string
+	InterventionActorID     string
+	PublicationEligible     bool
+	Level                   EscalationLevel
+	PolicyVersion           int
+	MergeApproval           bool
+	MaxBounces              int
 }
 
 type ArtifactRole string

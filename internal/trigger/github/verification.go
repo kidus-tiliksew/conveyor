@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
@@ -236,6 +237,16 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 // (component-verification-kit-contract); no local checkout participates. States are present, permission,
 // unknown_revision or transport.
 func (c *AppClient) ResolveBranchHead(ctx context.Context, st AppStore, workspace, slug, branch string) (string, string) {
+	return c.resolveBranchHead(ctx, st, workspace, slug, branch, 1)
+}
+
+// ResolveBranchHeadWithRetries uses the documentation-discovery retry budget
+// before an unproven base revision can take the legacy submission path.
+func (c *AppClient) ResolveBranchHeadWithRetries(ctx context.Context, st AppStore, workspace, slug, branch string) (string, string) {
+	return c.resolveBranchHead(ctx, st, workspace, slug, branch, 3)
+}
+
+func (c *AppClient) resolveBranchHead(ctx context.Context, st AppStore, workspace, slug, branch string, attempts int) (string, string) {
 	parts := strings.Split(slug, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(slug, "?#%\\") {
 		return "", "transport"
@@ -268,7 +279,19 @@ func (c *AppClient) ResolveBranchHead(ctx context.Context, st AppStore, workspac
 		base = "https://api.github.com"
 	}
 	r := &restClient{http: client, baseURL: strings.TrimRight(base, "/"), token: token, identity: AppIdentity(workspace)}
-	raw, _, status, err := r.request(ctx, http.MethodGet, "/repos/"+slug+"/git/ref/heads/"+strings.Join(segments, "/"), "application/vnd.github+json", nil)
+	var raw []byte
+	var status int
+	for attempt := range attempts {
+		raw, _, status, err = r.request(ctx, http.MethodGet, "/repos/"+slug+"/git/ref/heads/"+strings.Join(segments, "/"), "application/vnd.github+json", nil)
+		if err == nil || attempt == attempts-1 || status != 0 && status != http.StatusTooManyRequests && status < 500 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", "transport"
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
+	}
 	switch {
 	case err == nil:
 	case status == 401 || status == 403:

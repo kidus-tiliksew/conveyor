@@ -55,6 +55,26 @@ var flowStatusCopy = map[string]flowStatusText{
 	FlowUpcoming:      {"Upcoming", func(name string) string { return name + " has not started yet." }},
 }
 
+// flowSideLabels is the server-stated label of each side state; the state
+// names stay machine identifiers (feature-operator-next-action NA-7;
+// req-operator-next-action AC-1.8, AC-4.1).
+var flowSideLabels = map[string]string{
+	FlowSideBlockedBy:     "Waiting on another task",
+	FlowSideRetrying:      "Retrying automatically",
+	FlowSideParked:        "Parked",
+	FlowSideClosed:        "Closed",
+	FlowSideAgentQuestion: "Needs your answer",
+}
+
+// Side-state names: the keys of FlowSide.Labels and its JSON field names.
+const (
+	FlowSideBlockedBy     = "blocked_by"
+	FlowSideRetrying      = "retrying"
+	FlowSideParked        = "parked"
+	FlowSideClosed        = "closed"
+	FlowSideAgentQuestion = "agent_question"
+)
+
 // flowGateWaitText names the gate when the operator's decision is the gate
 // the stage carries.
 var flowGateWaitText = map[core.GateKind]string{
@@ -109,12 +129,15 @@ type FlowLoop struct {
 	Count int        `json:"count"`
 }
 
+// FlowSide keeps each side state's own field and adds Labels, which holds a
+// label for each present side state and no entry for an absent one.
 type FlowSide struct {
 	BlockedBy     []nextaction.BlockerRef `json:"blocked_by"`
 	Retrying      *FlowRetrying           `json:"retrying"`
 	Parked        bool                    `json:"parked"`
 	Closed        bool                    `json:"closed"`
 	AgentQuestion bool                    `json:"agent_question"`
+	Labels        map[string]string       `json:"labels"`
 }
 
 type FlowRetrying struct {
@@ -467,7 +490,7 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 	flow := TaskFlow{
 		Stages:     make([]FlowStage, 0, len(taskFlowStages)),
 		Loops:      []FlowLoop{},
-		Side:       FlowSide{BlockedBy: []nextaction.BlockerRef{}},
+		Side:       FlowSide{BlockedBy: []nextaction.BlockerRef{}, Labels: map[string]string{}},
 		NextAction: action,
 		Raw: FlowRaw{
 			State: state, NextStage: nextStage, RecoveryStage: recoveryStage, GateKind: string(gateKind),
@@ -587,6 +610,17 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 				flow.Side.BlockedBy = append(flow.Side.BlockedBy, blocker)
 				break
 			}
+		}
+	}
+	for name, present := range map[string]bool{
+		FlowSideBlockedBy:     len(flow.Side.BlockedBy) > 0,
+		FlowSideRetrying:      flow.Side.Retrying != nil,
+		FlowSideParked:        flow.Side.Parked,
+		FlowSideClosed:        flow.Side.Closed,
+		FlowSideAgentQuestion: flow.Side.AgentQuestion,
+	} {
+		if present {
+			flow.Side.Labels[name] = flowSideLabels[name]
 		}
 	}
 	return flow

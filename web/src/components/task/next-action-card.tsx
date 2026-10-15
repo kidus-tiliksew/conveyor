@@ -6,10 +6,11 @@ import { GateChoices } from './merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
 
 // The server's next action, leading task detail on the Board sheet and the full
-// task route (feature-operator-next-action NA-6; AC-4.4). Every line is server
-// text; the card derives nothing. While the human gate is open on the same
-// page it carries the choices beside the evidence, so the card does not repeat
-// them (`gateOpen`).
+// task route, directly above the timeline (feature-operator-next-action NA-6;
+// req-operator-next-action AC-7.1). Every line is server text; the card
+// derives nothing. While the human gate is open on the same page it carries
+// the choices beside the evidence, so the card does not repeat them
+// (`gateOpen`).
 export function NextActionCard({ taskId, gateOpen }: { taskId: string; gateOpen: boolean }) {
   const { data: action, isLoading } = useNextAction(taskId)
   if (isLoading) return <Skeleton className="h-20" />

@@ -1030,7 +1030,7 @@ func TestConflictResolutionForcesDeltaWhenFrozenPolicyIsNone(t *testing.T) {
 	}
 	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	current, _ := st.GetTask(ctx, task.ID)
-	if err := d.beginRefreshLocked(ctx, current, "resolved-head", "merge-conflict", true); err != nil {
+	if err := d.beginRefreshLocked(ctx, current, githubtrigger.PullRequest{HeadSHA: "resolved-head"}, "merge-conflict", true); err != nil {
 		t.Fatal(err)
 	}
 	current, _ = st.GetTask(ctx, task.ID)
@@ -1659,7 +1659,7 @@ func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
 	}
 	d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}
 	current, _ := st.GetTask(ctx, task.ID)
-	if err := d.beginRefreshLocked(ctx, current, "new-head", "approval-stale", false); err != nil {
+	if err := d.beginRefreshLocked(ctx, current, githubtrigger.PullRequest{HeadSHA: "new-head"}, "approval-stale", false); err != nil {
 		t.Fatal(err)
 	}
 	staleCount := func() int {
@@ -1673,7 +1673,7 @@ func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
 	// transition, no additional round.
 	for i := 0; i < 3; i++ {
 		current, _ = st.GetTask(ctx, task.ID)
-		if err := d.beginRefreshLocked(ctx, current, "new-head", "approval-stale", false); err != nil {
+		if err := d.beginRefreshLocked(ctx, current, githubtrigger.PullRequest{HeadSHA: "new-head"}, "approval-stale", false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1683,7 +1683,7 @@ func TestEngagedRefreshIsNotRemarkedForUnchangedHeadPair(t *testing.T) {
 		t.Fatalf("unchanged pair re-marked: stale=%d orders=%d", staleCount(), len(orders))
 	}
 	// A genuinely new head re-engages.
-	if err := d.beginRefreshLocked(ctx, current, "newer-head", "approval-stale", false); err != nil {
+	if err := d.beginRefreshLocked(ctx, current, githubtrigger.PullRequest{HeadSHA: "newer-head"}, "approval-stale", false); err != nil {
 		t.Fatal(err)
 	}
 	if staleCount() != 2 {

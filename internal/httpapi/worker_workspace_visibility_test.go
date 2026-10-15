@@ -72,6 +72,9 @@ func newVisibilityFixture(t *testing.T, claimant string) *visibilityFixture {
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
 	orders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+		DiscoverDocumentationPolicy: func(_ context.Context, _, revision string) githubtrigger.DocumentationPolicyDiscovery {
+			return githubtrigger.DocumentationPolicyDiscovery{Revision: revision, State: "absent"}
+		},
 		SubmissionPR: func(context.Context, string, string) (githubtrigger.SubmissionPullRequest, error) {
 			f.submissionPRCalls++
 			pr := githubtrigger.SubmissionPullRequest{Number: 7, URL: "https://github.com/acme/app/pull/7"}

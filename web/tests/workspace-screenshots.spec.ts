@@ -1,5 +1,5 @@
 // Visual-capture harness for the policy-only workspace settings page.
-import { test, type Page, type Route } from '@playwright/test'
+import { type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 
 const document = {

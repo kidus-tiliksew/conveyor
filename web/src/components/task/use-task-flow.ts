@@ -8,12 +8,14 @@ export function taskFlowQueryKey(workspace: string, taskId: string) {
   return ['task-flow', workspace, taskId] as const
 }
 
-// The flow chart refreshes when the task detail does (NA-7). It doesn't refresh
-// on its own clock: SSE invalidation, blocker polling and mutations all refresh
-// the detail entry. This hook watches that cache entry without adding an
-// observer to it (an observer without the detail's queryFn would take over its
-// refetches), and refetches the flow each time the entry updates. That way the
-// chart never disagrees with the timeline under it.
+// The flow's one dashboard reader is the opt-in Board stage stripe
+// (feature-operator-next-action NA-7; req-operator-next-action AC-3.3). The
+// flow refreshes when the task detail does. It doesn't refresh on its own
+// clock: SSE invalidation, blocker polling and mutations all refresh the
+// detail entry. This hook watches that cache entry without adding an observer
+// to it (an observer without the detail's queryFn would take over its
+// refetches), and refetches the flow each time the entry updates. A stripe
+// that is not mounted reads nothing.
 export function useTaskFlow(taskId: string) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
@@ -31,7 +33,7 @@ export function useTaskFlow(taskId: string) {
     enabled: Boolean(workspace && taskId),
   })
   // The flow's own first fetch already reads the detail as it stood when the
-  // chart mounted, so only later detail updates trigger a refetch.
+  // stripe mounted, so only later detail updates trigger a refetch.
   const seen = useRef(dataUpdatedAt)
   useEffect(() => {
     if (dataUpdatedAt === seen.current) return

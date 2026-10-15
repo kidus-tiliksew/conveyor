@@ -53,6 +53,14 @@ type Server struct {
 	planningBundleDispatched map[string]struct{}
 	passwordLimiterOnce      sync.Once
 	passwordLimiter          *passwordAttemptLimiter
+	// historyCursors signs task history cursors under a key drawn once per
+	// process; tests may install a codec before first use (task 261015-3721c6).
+	historyCursorsOnce sync.Once
+	historyCursors     *taskHistoryCursorCodec
+	historyCursorsErr  error
+	// taskEventStreamTicks replaces the notify stream's one-second poll
+	// ticker in tests; nil selects time.NewTicker.
+	taskEventStreamTicks func() (<-chan time.Time, func())
 	// Repos is the set of valid repo names; nil skips validation.
 	Repos []string
 	// multipartTaskIntakeLimit overrides maxMultipartTaskIntakeBytes in tests;
@@ -242,6 +250,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/events", s.listEvents)
 			r.Get("/tasks/{id}/events/stream", s.streamEvents)
 			r.Get("/tasks/{id}/activity", s.getTaskActivity)
+			r.Get("/tasks/{id}/history", s.getTaskHistory)
 			r.Get("/tasks/{id}/verification", s.getTaskVerification)
 			r.Get("/tasks/{id}/verification/contexts/{context_id}/{collection}", s.getTaskVerificationPage)
 			r.Get("/tasks/{id}/verification/contexts/{context_id}/evidence/{evidence_id}", s.getTaskVerificationEvidence)
@@ -1315,6 +1324,16 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
+	// mode=notify is the dashboard's fingerprint stream; without mode the
+	// legacy replay is unchanged (task 261015-3721c6; component-http-api).
+	notify := false
+	if values, present := r.URL.Query()["mode"]; present {
+		if len(values) != 1 || values[0] != "notify" {
+			http.Error(w, "mode must be notify or omitted", http.StatusBadRequest)
+			return
+		}
+		notify = true
+	}
 	if _, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -1327,6 +1346,10 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
+	if notify {
+		s.streamTaskEventNotifications(w, flusher, r, chi.URLParam(r, "id"))
+		return
+	}
 	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"))
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -1591,7 +1614,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders, proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2121,6 +2144,17 @@ func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, ev
 }
 
 func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
+	// view=bounded is the dashboard's detail read; without view the complete
+	// representation is unchanged for every existing caller (task
+	// 261015-3721c6; component-http-api "Bounded detail view").
+	bounded := false
+	if values, present := r.URL.Query()["view"]; present {
+		if len(values) != 1 || values[0] != "bounded" {
+			http.Error(w, "view must be bounded or omitted", http.StatusBadRequest)
+			return
+		}
+		bounded = true
+	}
 	id := chi.URLParam(r, "id")
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
@@ -2299,7 +2333,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), workOrders, proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), workOrders)
 	if err != nil {
 		log.Printf("project proposal claim wait: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2319,7 +2353,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	compact := nextaction.CompactFrom(action)
-	writeJSON(w, http.StatusOK, taskDetailProjection{reviewItem{
+	item := reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
 		NeedsAttention:            action.Actor == nextaction.ActorOperator,
@@ -2340,7 +2374,23 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
 		OperatorNotes:             operatorNotes,
-	}})
+	}
+	if !bounded {
+		writeJSON(w, http.StatusOK, taskDetailProjection{item})
+		return
+	}
+	// Every derivation above ran on the complete ledger; the bounded view
+	// changes only how events are presented and adds the summaries.
+	pageEvents, eventPage, err := s.boundedTaskEventSection(r, id, events)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	summaries := deriveTaskDetailSummaries(events, jobs, workOrders)
+	item.Events = nil
+	w.Header().Set("X-Conveyor-Detail-View", "bounded")
+	writeJSON(w, http.StatusOK, boundedTaskDetailProjection{reviewItem: item, events: pageEvents, eventPage: eventPage, summaries: summaries})
 }
 
 func (s *Server) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {

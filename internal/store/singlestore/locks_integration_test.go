@@ -519,6 +519,42 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "mover")
 		refusedBy(t, st.CreateTask(tasks, task("b2-taker", "b2")), "mover")
 	})
+	// The claim and the occupant checks compare the same exact repo and branch
+	// bytes, without PAD SPACE, as the Postgres open-branch index does (DEC-70).
+	t.Run("task branch padded", func(t *testing.T) {
+		if err := st.CreateTask(tasks, task("padded-winner", "spaced ")); err != nil {
+			t.Fatal(err)
+		}
+		hide(`DELETE FROM tasks WHERE workspace_id='branch-claims' AND id=?`, "padded-winner")
+		refusedBy(t, st.CreateTask(tasks, task("padded-late", "spaced ")), "padded-winner")
+		if err := st.CreateTask(tasks, task("unpadded", "spaced")); err != nil {
+			t.Fatalf("unpadded branch is distinct from an unseen padded winner: %v", err)
+		}
+	})
+	paddedRepo := func(id, branch string) core.Task {
+		padded := task(id, branch)
+		padded.Repo = "repo "
+		return padded
+	}
+	t.Run("task branch padded repo", func(t *testing.T) {
+		if err := st.CreateTask(tasks, paddedRepo("repo-padded", "repo-pad")); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(tasks, task("repo-unpadded", "repo-pad")); err != nil {
+			t.Fatalf("same branch in an unpadded repo is distinct: %v", err)
+		}
+	})
+	t.Run("task branch padded repo attach", func(t *testing.T) {
+		if err := st.CreateTask(tasks, paddedRepo("repo-occupant", "repo-attach")); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateTask(tasks, task("repo-attacher", "repo-attacher-own")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AttachTaskBranch(tasks, "repo-attacher", "repo-attach"); err != nil {
+			t.Fatalf("attach beside a padded-repo occupant: %v", err)
+		}
+	})
 	intakeWorkspace := "intake-claims"
 	intakeCtx := store.WithWorkspace(ctx, intakeWorkspace)
 	if _, err := st.CreateWorkspace(intakeCtx, intakeWorkspace, "Intake claims", &config.Config{Workspace: intakeWorkspace}); err != nil {

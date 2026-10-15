@@ -3,10 +3,24 @@ import { useEffect, useMemo } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { fetchTaskActivity, fetchTaskAudit, fetchVerificationPage, fetchVerificationSummary } from '../../lib/api'
 import { stageGroups } from '../../lib/contracts'
-import type { TaskAuditKind, VerificationCollection } from '../../lib/types'
 import { taskDetailQueryKey } from '../../lib/query-keys'
+import type { TaskAuditKind, VerificationCollection } from '../../lib/types'
 import { useTaskStream } from '../../lib/use-task-stream'
 import { useActivity, useWorkspaceSelection } from '../app-shell'
+
+// Reads a query's abort signal one microtask after the query function starts.
+// React StrictMode mounts, unmounts, and remounts every effect once in
+// development, and TanStack Query cancels an in-flight read whose signal was
+// already read when its last observer leaves, so a synchronous read would
+// abort and repeat every first read. Deferring it lets the rehearsal pass;
+// a real unmount, task change, or workspace change still aborts the read.
+export async function withQuerySignal<T>(
+  context: { signal: AbortSignal },
+  read: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  await Promise.resolve()
+  return read(context.signal)
+}
 
 // Shared by the sheet and the full page: the task-detail query plus the SSE
 // stream that keeps it (and the board) fresh.
@@ -14,7 +28,7 @@ export function useTaskDetail(taskId: string) {
   const { workspace } = useWorkspaceSelection()
   const query = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
-    queryFn: () => fetchTaskActivity(taskId),
+    queryFn: (context) => withQuerySignal(context, (signal) => fetchTaskActivity(workspace, taskId, signal)),
     // A dependency can merge without emitting an event on this task. Poll only
     // while the task reports active blockers; SSE remains the fast path.
     refetchInterval: (current) => ((current.state.data?.task.blocking_task_ids?.length ?? 0) > 0 ? 15_000 : false),

@@ -25,15 +25,23 @@ and historical phase status lives in the "Roadmap" reference document.
   convention is retired.
 - `TODO(phase1)` was the blocking-gap marker; none may remain on the closed
   Phase 1 baseline. `TODO(phase1-followup)` marks accepted deferred work.
-- Build/test: `make build`, `make vet`, `make fmt-check`, `make test`, and
-  `make test-integration`. `make test` is the ordinary local aggregate: Go
-  tests plus web typecheck, Biome lint/format checking, and Playwright. CI
-  reports the complete gate on every pull request; blocking merges requires
-  operator-enabled branch protection, which is unavailable on the current
-  GitHub plan. Its PostgreSQL service uses the CI-only
-  `make test-integration-ci` entrypoint.
-- Local validation evidence (task scratch space, `make validate`, retained
-  evidence bundles, and validation resource recovery) follows
+- Build/test: `make build`, `make vet`, `make fmt-check`, `make test`,
+  `make validate`, `make test-integration`, and
+  `make test-integration-singlestore-ci` are available locally for focused
+  iteration and CI-failure diagnosis. `make test` is the ordinary local
+  aggregate: Go tests plus web typecheck, Biome lint/format checking, and
+  Playwright. Review evidence for these heavy gates is a green run of every
+  `.github/workflows/ci.yml` job on the task pull request at the exact reviewed
+  head (DEC-72); its PostgreSQL service uses the CI-only
+  `make test-integration-ci` entrypoint. Do not run `make validate`,
+  `make test-integration`, or `make test-integration-singlestore-ci` locally
+  to satisfy review, and record the CI run URL, attempt, head SHA, and every
+  job's conclusion, including failed attempts. CI adds no merge gate; blocking
+  merges requires operator-enabled branch protection, which is unavailable on
+  the current GitHub plan.
+- Local validation evidence (task scratch space, records for local-only
+  acceptance gates such as `make test-validation-docker`, retained diagnostic
+  runs, and validation resource recovery) follows
   [docs/validation-evidence.md](docs/validation-evidence.md).
 
 ## Worktrees and branches
@@ -67,7 +75,7 @@ CLAUDE.md`. Refresh its guidance directly in the task worktree with
 `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' repo init --guidance-only`.
 This preserves the source skill wrappers and existing symlink. Deliver the
 updated guidance through the task's review lifecycle.
-<!-- conveyor:repo-init owner=v1 version=v0.37.0 -->
+<!-- conveyor:repo-init owner=v1 version=9b815519 -->
 ## Conveyor factory work
 
 Repository: `conveyor`. Base branch: `main`.

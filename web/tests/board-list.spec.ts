@@ -1,4 +1,5 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
 // UI coverage for the list-first Tasks view. The projection is mocked so each
@@ -483,6 +484,60 @@ test('tasks view reports why a stalled task cannot move on its own', async ({ pa
   const healthy = rows(page).filter({ hasText: 'Shipped web change' })
   await expect(healthy.getByText('Stalled', { exact: false })).toHaveCount(0)
   await expect(healthy.getByLabel('Needs operator')).toHaveCount(0)
+})
+
+// A deliberate checkpoint release also matches the stalled row, but its release
+// message is not a failure: the row prints the server's agent-question label
+// and summary in the attention tone instead (component-web-task-surfaces,
+// Board and Tasks list; feature-operator-next-action NA-6).
+test('an agent-question row states the server question instead of a stalled failure', async ({ page }) => {
+  await routeTasksSurface(page)
+  const stuck = operations.find((item) => item.task.id === 'task-stuck')
+  if (!stuck) throw new Error('Expected the stalled fixture row.')
+  const checkpoint = {
+    ...stuck,
+    task: {
+      ...stuck.task,
+      id: 'task-checkpoint',
+      title: 'Checkpointed conveyor change',
+      created_at: '2026-08-07T10:00:00Z',
+    },
+    stalled: { needed: true, reason: 'retry suppressed', last_failure: 'operator checkpoint reached' },
+    next_action: {
+      label: 'Cited revisions need a decision',
+      actor: 'operator',
+      kind: 'agent_question',
+      judgment: true,
+      summary:
+        'The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.',
+      deadline: null,
+    },
+  }
+  await page.route('**/v1/task-operations?**', (route) =>
+    route.fulfill({
+      body: JSON.stringify([checkpoint, stuck]),
+      headers: {
+        'content-type': 'application/json',
+        'X-Conveyor-Total': '2',
+        'X-Conveyor-Limit': '25',
+        'X-Conveyor-Offset': '0',
+      },
+    }),
+  )
+  await page.goto('/?view=list')
+  const row = rows(page).filter({ hasText: 'Checkpointed conveyor change' })
+  const statement = row.getByText(checkpoint.next_action.summary)
+  await expect(statement).toBeVisible()
+  await expect(statement).toHaveClass(/text-attention/)
+  await expect(statement).toContainText('Cited revisions need a decision')
+  await expect(row.getByText(/Stalled —/)).toHaveCount(0)
+  await expect(row).not.toContainText('operator checkpoint reached')
+  await expect(row.locator('.text-failure')).toHaveCount(0)
+  // An ordinary stalled row keeps its failure line.
+  const ordinary = rows(page).filter({ hasText: 'Stuck conveyor change' })
+  await expect(
+    ordinary.getByText('Stalled — dispatch is failing repeatedly: harness exited before completing work order'),
+  ).toHaveClass(/text-failure/)
 })
 
 // REQ-4/AC-4.3: assignment is claim-eligibility routing, so the row names who

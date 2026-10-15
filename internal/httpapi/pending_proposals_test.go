@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -133,6 +134,20 @@ func (f claimParityFixture) submitImplementation(taskID string) {
 	if err = storetest.For(f.st).UpdateWorkOrder(f.ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
 		f.t.Fatal(err)
 	}
+}
+
+func readNextActionKind(t *testing.T, server *Server, taskID string) nextaction.NextAction {
+	t.Helper()
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/next-action?workspace_id=demo", nil)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("next-action status=%d body=%s", response.Code, response.Body.String())
+	}
+	var action nextaction.NextAction
+	if err := json.Unmarshal(response.Body.Bytes(), &action); err != nil {
+		t.Fatal(err)
+	}
+	return action
 }
 
 type claimParityView struct {
@@ -269,6 +284,16 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 			}
 			return expectation{}
 		},
+		"archived System Design": func(f claimParityFixture) expectation {
+			document := f.design("design-archived")
+			version := f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
+			if err := f.st.ArchiveSystemDesign(f.ctx, document.ID, "operator", nil); err != nil {
+				f.t.Fatal(err)
+			}
+			// The claim still counts a pending version of an archived document;
+			// the pending list, and so the attention signal, omits it.
+			return expectation{waiting: []waitingProposal{{Tier: "system_design", ID: document.ID, Version: version.Version}}}
+		},
 		"another workspace's System Design": func(f claimParityFixture) expectation {
 			sibling := claimParityFixture{ctx: store.WithWorkspace(store.WithActor(f.t.Context(), store.SystemActor()), "sibling"), st: f.st, t: f.t}
 			document := sibling.design("design-sibling")
@@ -326,6 +351,14 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 				if detail.PendingAuthority != want.pendingAuthority || row.PendingAuthority != want.pendingAuthority {
 					t.Fatalf("pending authority detail=%t activity=%t want %t", detail.PendingAuthority, row.PendingAuthority, want.pendingAuthority)
 				}
+				// Next-action row 8 reads the same selection, so it matches exactly
+				// when proposal_claim_waiting is true (req-operator-next-action
+				// AC-1.7; feature-operator-next-action NA-3).
+				if action := readNextActionKind(t, server, claimParityTask); (action.Kind == nextaction.KindDocumentProposal) != waiting {
+					t.Fatalf("next action kind=%s pending_proposals=%+v, proposal_claim_waiting=%t", action.Kind, action.Details.PendingProposals, waiting)
+				} else if waiting && fmt.Sprint(action.Details.PendingProposals) != fmt.Sprint(want.waiting) {
+					t.Fatalf("row 8 pending_proposals=%+v want %+v", action.Details.PendingProposals, want.waiting)
+				}
 
 				cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{
 					string(stage): {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
@@ -373,35 +406,24 @@ func TestProposalClaimWaitingRequiresSubmittedWork(t *testing.T) {
 	}
 }
 
-type versionReadStore struct {
+type blockingReadStore struct {
 	store.Store
-	reads          int
-	requirementErr error
-	resolveDesign  bool
+	tasks []string
+	err   error
 }
 
-func (s *versionReadStore) GetRequirementVersion(ctx context.Context, id string, version int) (core.RequirementVersion, error) {
-	s.reads++
-	if s.requirementErr != nil {
-		return core.RequirementVersion{}, s.requirementErr
+func (s *blockingReadStore) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
+	s.tasks = append(s.tasks, taskID)
+	if s.err != nil {
+		return nil, s.err
 	}
-	return s.Store.GetRequirementVersion(ctx, id, version)
+	return s.Store.ListClaimBlockingProposalsForTask(ctx, taskID)
 }
 
-func (s *versionReadStore) GetSystemDesignVersion(ctx context.Context, id string, version int) (core.SystemDesignVersion, error) {
-	s.reads++
-	item, err := s.Store.GetSystemDesignVersion(ctx, id, version)
-	if err == nil && s.resolveDesign {
-		// The operator dismissed the version between the queue read and
-		// this re-read; its current state decides eligibility.
-		item.Dismissed = true
-	}
-	return item, err
-}
-
-// Version reads stay bounded to candidates authored by tasks in their claim
-// window, a version resolved during the read is judged on its re-read state,
-// and a storage failure is a read error, never "not waiting".
+// The claim-wait read is store.ClaimWaitingProposals: one claim-blocking read
+// per task inside its claim window, none for a task outside it, the decided
+// state of each version as the claim sees it, and a storage failure as a read
+// error, never "not waiting" (component-document-corpus).
 func TestProposalClaimWaitingReadsAreBoundedAndTruthful(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	base := store.NewMemory()
@@ -424,34 +446,36 @@ func TestProposalClaimWaitingReadsAreBoundedAndTruthful(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	counting := &versionReadStore{Store: base}
+	counting := &blockingReadStore{Store: base}
 	server := NewServer(counting)
 	server.BearerToken, server.Workspace = "operator-token", "demo"
-	detail, _ := readClaimParity(t, server, claimParityTask)
-	if counting.reads != 4 { // two candidates on the detail read, two on the activity read
-		t.Fatalf("version reads=%d", counting.reads)
-	}
-	if !detail.ProposalClaimWaiting || len(detail.WaitingProposals) != 2 {
-		t.Fatalf("detail=%+v", detail)
-	}
-
-	counting.resolveDesign = true
 	detail, row := readClaimParity(t, server, claimParityTask)
-	if !detail.ProposalClaimWaiting || !row.ProposalClaimWaiting || len(detail.WaitingProposals) != 1 || detail.WaitingProposals[0].Tier != "requirement" {
-		t.Fatalf("resolved design still counted: detail=%+v activity=%+v (design %s v%d)", detail, row, design.ID, designVersion.Version)
+	if len(counting.tasks) == 0 {
+		t.Fatal("claim-wait read issued no claim-blocking read")
+	}
+	for _, taskID := range counting.tasks {
+		if taskID != claimParityTask {
+			t.Fatalf("claim-blocking reads=%v, want only the windowed task %s", counting.tasks, claimParityTask)
+		}
+	}
+	if !detail.ProposalClaimWaiting || !row.ProposalClaimWaiting || len(detail.WaitingProposals) != 2 || detail.WaitingProposals[0].Tier != "system_design" {
+		t.Fatalf("detail=%+v activity=%+v", detail, row)
 	}
 
-	counting.requirementErr = errors.New("version read failed")
+	if _, _, err := base.DismissSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+		t.Fatal(err)
+	}
+	detail, row = readClaimParity(t, server, claimParityTask)
+	if !detail.ProposalClaimWaiting || !row.ProposalClaimWaiting || len(detail.WaitingProposals) != 1 || detail.WaitingProposals[0].Tier != "requirement" {
+		t.Fatalf("dismissed design still counted: detail=%+v activity=%+v", detail, row)
+	}
+
+	counting.err = errors.New("claim-blocking read failed")
 	for _, path := range []string{"/v1/tasks/" + claimParityTask + "/activity", "/v1/activity", "/v1/reviews"} {
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path+"?workspace_id=demo", nil)))
 		if response.Code != http.StatusInternalServerError {
 			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
 		}
-	}
-	counting.requirementErr = fmt.Errorf("%w: requirement removed", store.ErrNotFound)
-	detail, _ = readClaimParity(t, server, claimParityTask)
-	if detail.ProposalClaimWaiting || len(detail.WaitingProposals) != 0 {
-		t.Fatalf("removed version still counted: %+v", detail)
 	}
 }

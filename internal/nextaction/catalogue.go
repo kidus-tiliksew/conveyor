@@ -46,8 +46,17 @@ type RunGate struct {
 }
 
 type catalogueKey struct {
-	kind, stall, release, gate string
+	kind, stall, release, gate, variant string
 }
+
+// Agent-question catalogue variants for an authority_conflict checkpoint: the
+// operator is asked to decide cited pending revisions, or to author a
+// revision when no cited document has one (req-260820-394cac AC-3.2;
+// feature-operator-next-action NA-4).
+const (
+	AgentQuestionCitedRevisions = "cited_revisions"
+	AgentQuestionRevisionNeeded = "revision_needed"
+)
 
 var catalogueTable = map[catalogueKey]Entry{}
 
@@ -56,7 +65,7 @@ func init() {
 		return func(Vars) string { return s }
 	}
 	put := func(kind, stall, release, gate string, entry Entry) {
-		catalogueTable[catalogueKey{kind, stall, release, gate}] = entry
+		catalogueTable[catalogueKey{kind, stall, release, gate, ""}] = entry
 	}
 	kindEntries := []struct {
 		kind, label, summary, question, ignored string
@@ -74,7 +83,8 @@ func init() {
 		{KindMergeConflict, "Merge conflict", "Automatic conflict fixes are exhausted.", "", "The conflict stays until someone fixes it.", conflictChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMergeExecution, "Merge", "The merge gate is on and the branch is ready to merge.", "Merge this branch?", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMerging, "Merging", "Conveyor is merging this branch.", "", "The merge continues.", nil, nil},
-		{KindDocumentProposal, "Document proposal", "A document proposal is withholding the next claim.", "Confirm or dismiss the proposal?", "The claim stays withheld.", proposalChoices(), nil},
+		{KindDocumentProposal, "Document proposal", "A document proposal is withholding the next claim.", "Confirm or dismiss the proposal?", "The claim stays withheld.", nil, nil},
+		{KindContextProposal, "Context proposal", "A context proposal is waiting for a decision.", "Confirm or dismiss the proposed context?", "The proposal stays pending.", nil, nil},
 		{KindAgentQuestion, "Agent question", "The agent stopped for a decision.", "Answer the agent?", "The order stays released.", answerChoices(), nil},
 		{KindVerificationDisposition, "Verification disposition", "Verification needs a disposition.", "Was the change applied?", "The verify order stays at the checkpoint.", dispositionChoices(), nil},
 		{KindForgeFailure, "Forge failure", "A forge write failed.", "", "The forge failure stays until it is retried.", roundChoices(), nil},
@@ -98,6 +108,18 @@ func init() {
 		}
 		put(item.kind, "", "", "", entry)
 	}
+	for _, item := range []struct{ variant, label, summary, question string }{
+		{AgentQuestionCitedRevisions, "Cited revisions need a decision",
+			"The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",
+			"Will you confirm or dismiss the cited revisions, then recover the order with direction?"},
+		{AgentQuestionRevisionNeeded, "Cited documents need a revision",
+			"The agent asks you to author a revision of the cited documents, then recover the order with direction.",
+			"Will you author a revision of the cited documents, then recover the order with direction?"},
+	} {
+		entry := catalogueTable[catalogueKey{KindAgentQuestion, "", "", "", ""}]
+		entry.Label, entry.Summary, entry.Question = item.label, text(item.summary), text(item.question)
+		catalogueTable[catalogueKey{KindAgentQuestion, "", "", "", item.variant}] = entry
+	}
 	for _, reason := range []struct{ code, label, summary string }{
 		{StallRetrySuppressed, "Retry suppressed", "Automatic retry is suppressed."},
 		{StallStale, "Stale", "The queue deadline expired before anyone claimed it."},
@@ -106,7 +128,7 @@ func init() {
 		{StallDispatchFailing, "Dispatch failing", "Dispatch is failing repeatedly."},
 		{StallAutomaticRecoveryExhausted, "Recovery exhausted", "Automatic recovery is exhausted."},
 	} {
-		base := catalogueTable[catalogueKey{KindStalled, "", "", ""}]
+		base := catalogueTable[catalogueKey{KindStalled, "", "", "", ""}]
 		base.Label = reason.label
 		base.Summary = text(reason.summary)
 		put(KindStalled, reason.code, "", "", base)
@@ -123,29 +145,45 @@ func init() {
 		put("", "", outcome.code, "", Entry{Label: outcome.label, Summary: text(outcome.label + " release."), Choices: answerChoices()})
 	}
 	for _, gate := range []core.GateKind{core.GateKindPlanApproval, core.GateKindPlanRevision, core.GateKindMergeApproval, core.GateKindReviewBounceLimit, core.GateKindJobFailure} {
-		if _, ok := catalogueTable[catalogueKey{string(gate), "", "", string(gate)}]; ok {
+		if _, ok := catalogueTable[catalogueKey{string(gate), "", "", string(gate), ""}]; ok {
 			continue
 		}
-		base := catalogueTable[catalogueKey{string(gate), "", "", ""}]
+		base := catalogueTable[catalogueKey{string(gate), "", "", "", ""}]
 		put(string(gate), "", "", string(gate), base)
 	}
 }
 
 func Lookup(kind, stall, release, gate string) (Entry, bool) {
-	if entry, ok := catalogueTable[catalogueKey{kind, stall, release, gate}]; ok {
+	return LookupVariant(kind, stall, release, gate, "")
+}
+
+// LookupVariant prefers the kind's variant entry when one exists, then
+// falls back as Lookup does.
+func LookupVariant(kind, stall, release, gate, variant string) (Entry, bool) {
+	if variant != "" {
+		if entry, ok := catalogueTable[catalogueKey{kind, "", "", "", variant}]; ok {
+			return entry, true
+		}
+	}
+	if entry, ok := catalogueTable[catalogueKey{kind, stall, release, gate, ""}]; ok {
 		return entry, true
 	}
-	if entry, ok := catalogueTable[catalogueKey{kind, stall, "", ""}]; ok {
+	if entry, ok := catalogueTable[catalogueKey{kind, stall, "", "", ""}]; ok {
 		return entry, true
 	}
-	if entry, ok := catalogueTable[catalogueKey{kind, "", release, ""}]; ok {
+	if entry, ok := catalogueTable[catalogueKey{kind, "", release, "", ""}]; ok {
 		return entry, true
 	}
-	if entry, ok := catalogueTable[catalogueKey{kind, "", "", gate}]; ok {
+	if entry, ok := catalogueTable[catalogueKey{kind, "", "", gate, ""}]; ok {
 		return entry, true
 	}
-	entry, ok := catalogueTable[catalogueKey{kind, "", "", ""}]
+	entry, ok := catalogueTable[catalogueKey{kind, "", "", "", ""}]
 	return entry, ok
+}
+
+// AgentQuestionVariants are the agent-question variants the catalogue must cover.
+func AgentQuestionVariants() []string {
+	return []string{AgentQuestionCitedRevisions, AgentQuestionRevisionNeeded}
 }
 
 // Kinds, StallReasons, ReleaseOutcomes, and GateKinds are the constants the
@@ -154,7 +192,7 @@ func Kinds() []string {
 	return []string{
 		KindTerminal, KindParked, KindDispatchExhausted, KindPlanApproval, KindPlanRevision,
 		KindMergeApproval, KindReviewBounceLimit, KindJobFailure, KindMergeConflict, KindMergeExecution,
-		KindMerging, KindDocumentProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
+		KindMerging, KindDocumentProposal, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
 		KindReviewRecovery, KindDependencyUnsatisfiable, KindStalled, KindBlocked, KindWorking, KindQueued, KindRetrying,
 	}
 }

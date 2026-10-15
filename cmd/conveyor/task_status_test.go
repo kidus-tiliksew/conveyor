@@ -5,8 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 // Tests for conveyor task status (req-operator-next-action REQ-5, AC-5.1,
@@ -106,8 +112,10 @@ func TestTaskStatusChoiceEquivalents(t *testing.T) {
 		{"answer", "POST", orderPath + "/recover", "cli: conveyor order recover " + order + ` --direction "<answer>"`},
 		{"applied", "POST", orderPath + "/recover", "no CLI command; use the dashboard: POST " + orderPath + "/recover"},
 		{"not_applied", "POST", orderPath + "/recover", "no CLI command; use the dashboard: POST " + orderPath + "/recover"},
-		{"confirm", "POST", "/v1/documents/design-x/confirm", "no CLI command; use the dashboard: POST /v1/documents/design-x/confirm"},
-		{"dismiss", "POST", "/v1/documents/design-x/dismiss", "no CLI command; use the dashboard: POST /v1/documents/design-x/dismiss"},
+		{"confirm:system_design:design-x:3", "POST", "/v1/system-designs/design-x/versions/3/confirm", "no CLI command; use the dashboard: POST /v1/system-designs/design-x/versions/3/confirm"},
+		{"dismiss:system_design:design-x:3", "POST", "/v1/system-designs/design-x/versions/3/dismiss", "no CLI command; use the dashboard: POST /v1/system-designs/design-x/versions/3/dismiss"},
+		{"confirm:requirement:req-x:2", "POST", "/v1/requirements/req-x/versions/2/confirm", "no CLI command; use the dashboard: POST /v1/requirements/req-x/versions/2/confirm"},
+		{"dismiss:requirement:req-x:2", "POST", "/v1/requirements/req-x/versions/2/dismiss", "no CLI command; use the dashboard: POST /v1/requirements/req-x/versions/2/dismiss"},
 		{"recover", "POST", taskPath + "/redispatch", "cli: conveyor order redispatch 261011-aaaaaa-spec-9"},
 		{"start_over", "POST", taskPath + "/restart", "cli: conveyor task restart " + task},
 		{"recover", "POST", orderPath + "/recover", "cli: conveyor order recover " + order},
@@ -158,6 +166,72 @@ func TestTaskStatusChoiceEquivalents(t *testing.T) {
 	})
 }
 
+const taskStatusAgentQuestionFixture = `{
+  "label": "Cited revisions need a decision",
+  "actor": "operator",
+  "kind": "agent_question",
+  "judgment": true,
+  "summary": "The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",
+  "question": "Will you confirm or dismiss the cited revisions, then recover the order with direction?",
+  "choices": [
+    {"id": "confirm:system_design:component-http-api:44", "label": "Confirm component-http-api v44", "effect": "Confirms this pending revision. The order stays released until you recover it.", "method": "POST", "path": "/v1/system-designs/component-http-api/versions/44/confirm", "capability": "confirm_documents", "allowed": true},
+    {"id": "dismiss:system_design:component-http-api:44", "label": "Dismiss component-http-api v44", "effect": "Dismisses this pending revision. The order stays released until you recover it.", "method": "POST", "path": "/v1/system-designs/component-http-api/versions/44/dismiss", "capability": "confirm_documents", "allowed": true},
+    {"id": "answer", "label": "Answer", "effect": "Recovers the order with direction.", "method": "POST", "path": "/v1/work-orders/261011-aaaaaa-implement-1/recover", "capability": "recover_work", "allowed": false}
+  ],
+  "if_ignored": "The order stays released.",
+  "deadline": null,
+  "details": {
+    "release_outcome": "checkpoint",
+    "checkpoint": "Confirm component-http-api v44, then recover this order.",
+    "checkpoint_class": "authority_conflict",
+    "citations": [{"document_id": "component-http-api", "cited_version": 43, "statement_or_section_id": "Route index"}, {"document_id": "req-checkpoints", "cited_version": 2}],
+    "pending_proposals": [{"tier": "system_design", "id": "component-http-api", "version": 44}]
+  }
+}`
+
+// The agent question prints the server's wording, choices, and checkpoint
+// context; the class prints with the machine identifiers (AC-1.6, AC-1.8, AC-5.1).
+func TestTaskStatusPrintsAgentQuestionCheckpoint(t *testing.T) {
+	var out bytes.Buffer
+	if err := runTaskStatus(serveTaskStatus(t, taskStatusAgentQuestionFixture), &out, taskStatusTestTask, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	ordered := []string{
+		"Cited revisions need a decision\nThe agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.\n",
+		"question:      Will you confirm or dismiss the cited revisions, then recover the order with direction?",
+		"request:       Confirm component-http-api v44, then recover this order.",
+		"cites:         component-http-api v43 (Route index)",
+		"cites:         req-checkpoints v2\n",
+		"proposal:      component-http-api v44 (system_design, pending)",
+		"  - Confirm component-http-api v44: Confirms this pending revision. The order stays released until you recover it.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-http-api/versions/44/confirm",
+		"  - Dismiss component-http-api v44: Dismisses this pending revision. The order stays released until you recover it.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-http-api/versions/44/dismiss",
+		"  - Answer: Recovers the order with direction.",
+		"      cli: conveyor order recover 261011-aaaaaa-implement-1 --direction \"<answer>\"",
+		"      not permitted for this credential",
+		"kind:          agent_question",
+		"release:       checkpoint",
+		"checkpoint:    authority_conflict",
+	}
+	at := 0
+	for _, want := range ordered {
+		index := strings.Index(text[at:], want)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", want, at, text)
+		}
+		at += index + len(want)
+	}
+	var raw bytes.Buffer
+	if err := runTaskStatus(serveTaskStatus(t, taskStatusAgentQuestionFixture), &raw, taskStatusTestTask, true); err != nil {
+		t.Fatal(err)
+	}
+	if raw.String() != taskStatusAgentQuestionFixture+"\n" {
+		t.Fatalf("--json did not print the server body verbatim:\n%s", raw.String())
+	}
+}
+
 func TestTaskStatusJSONVerbatim(t *testing.T) {
 	body := `{"label":"Running","actor":"agent","kind":"running","judgment":false,"summary":"s","choices":[],"deadline":null,"details":{},"future_field":{"nested":[1,2]}}`
 	var out bytes.Buffer
@@ -169,5 +243,133 @@ func TestTaskStatusJSONVerbatim(t *testing.T) {
 	}
 	if !json.Valid(out.Bytes()) {
 		t.Fatal("output is not JSON")
+	}
+}
+
+// TestTaskStatusPrintsRealServerClaimWait runs task status against the real
+// handler for a row-8 claim wait: --json prints the statement GET
+// /v1/tasks/{id}/next-action returns, and the text names the withholding
+// version and its version routes, never a /v1/documents/ route
+// (req-operator-next-action AC-1.4, AC-5.1; feature-operator-next-action NA-8).
+func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
+	isolateLocalAuthTest(t)
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	const taskID = "261015-claimw"
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: taskID + "-review-1", TaskID: taskID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: taskID + "-review-1", TaskID: taskID, JobID: taskID + "-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	governs := "```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
+	design, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "component-claim-wait", Title: "Claim wait", Category: "Component design"}, core.SystemDesignVersion{Content: "# Claim wait\n\n" + governs, Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Claim wait\n\nRevised.\n\n" + governs, Origin: core.SystemDesignOriginImplementation, OriginTaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "operator-secret-token"
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	t.Setenv("CONVEYOR_ADDR", httpServer.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "operator-secret-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+
+	request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/v1/tasks/"+taskID+"/next-action?workspace_id=demo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer operator-secret-token")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var rest bytes.Buffer
+	if _, err = rest.ReadFrom(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	var raw bytes.Buffer
+	if err = runTaskStatus(newClient(), &raw, taskID, true); err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	if err = json.Unmarshal(raw.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(rest.Bytes(), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("task status --json differs from REST:\ncli=%s\nrest=%s", raw.String(), rest.String())
+	}
+
+	var out bytes.Buffer
+	if err = runTaskStatus(newClient(), &out, taskID, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	ordered := []string{
+		"Document proposal\nA document proposal is withholding the next claim.\n",
+		"question:      Confirm or dismiss the proposal?",
+		"proposal:      component-claim-wait v2 (system_design, pending)",
+		"  - Confirm component-claim-wait v2: Confirms this pending revision.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-claim-wait/versions/2/confirm",
+		"  - Dismiss component-claim-wait v2: Dismisses this pending revision.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-claim-wait/versions/2/dismiss",
+		"if ignored:    The claim stays withheld.",
+		"kind:          document_proposal",
+	}
+	at := 0
+	for _, line := range ordered {
+		index := strings.Index(text[at:], line)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", line, at, text)
+		}
+		at += index + len(line)
+	}
+	if strings.Contains(text, "/v1/documents/") {
+		t.Fatalf("task status names /v1/documents/:\n%s", text)
+	}
+
+	// A context-only task prints the context row and its task-context routes
+	// (req-intake-and-triage AC-7.3).
+	const contextTask = "261015-ctxonl"
+	if err = st.CreateTask(ctx, core.Task{ID: contextTask, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextTask, TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."}); err != nil || suppressed {
+		t.Fatalf("suppressed=%t err=%v", suppressed, err)
+	}
+	var contextOut bytes.Buffer
+	if err = runTaskStatus(newClient(), &contextOut, contextTask, false); err != nil {
+		t.Fatal(err)
+	}
+	contextText := contextOut.String()
+	at = 0
+	for _, line := range []string{
+		"Context proposal\nA context proposal is waiting for a decision.\n",
+		"question:      Confirm or dismiss the proposed context?",
+		"  - Confirm context system_design component-claim-wait: Attaches the proposed context to this task.",
+		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/confirm",
+		"  - Dismiss context system_design component-claim-wait: Dismisses the proposed context.",
+		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/dismiss",
+		"if ignored:    The proposal stays pending.",
+		"kind:          context_proposal",
+	} {
+		index := strings.Index(contextText[at:], line)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", line, at, contextText)
+		}
+		at += index + len(line)
 	}
 }

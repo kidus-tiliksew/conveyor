@@ -459,7 +459,9 @@ func taskBranchRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
 }
 
 // claimTaskBranch refuses a branch whose claim or committed open row belongs
-// to another task, then records id as the holder.
+// to another task, then records id as the holder. The claim key and the
+// occupant check compare the same exact repo and branch bytes; BINARY drops
+// PAD SPACE, as the Postgres tasks_open_repo_branch_idx compares text (DEC-70).
 func claimTaskBranch(ctx context.Context, tx *sql.Tx, ws, repo, branch, id string) error {
 	key := taskBranchClaimKey(ws, repo, branch)
 	holder, err := claimKey(ctx, tx, key)
@@ -470,7 +472,7 @@ func claimTaskBranch(ctx context.Context, tx *sql.Tx, ws, repo, branch, id strin
 		return store.TaskBranchInUseError(branch, holder)
 	}
 	var occupant string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND branch=? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, repo, branch, id).Scan(&occupant)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE workspace_id=? AND BINARY repo_name=BINARY ? AND BINARY branch=BINARY ? AND state NOT IN ('merged','closed') AND id<>? LIMIT 1`, ws, repo, branch, id).Scan(&occupant)
 	if err == nil {
 		return store.TaskBranchInUseError(branch, occupant)
 	}

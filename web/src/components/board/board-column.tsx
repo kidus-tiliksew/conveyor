@@ -6,8 +6,8 @@ import {
   GitMerge,
   GitPullRequest,
   ListFilter,
-  ShieldCheck,
   type LucideIcon,
+  ShieldCheck,
 } from 'lucide-react'
 import type { GroupKey } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'

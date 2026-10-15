@@ -698,7 +698,7 @@ func TestReconcileMergeReadinessGateOnNotStarvedByErrors(t *testing.T) {
 		return nil
 	}
 	_, err := d.ReconcileMergeReadiness(ctx)
-	if err == nil || strings.Contains(err.Error(), "gate-on view failed") || !strings.Contains(err.Error(), "gate-off merge failed") || gateOffMerges != 1 {
+	if err != nil || gateOffMerges != 1 {
 		t.Fatalf("error=%v gate-off merges=%d", err, gateOffMerges)
 	}
 	current, getErr := st.GetTask(ctx, success.ID)

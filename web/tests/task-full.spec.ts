@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
-import { expect, type Locator, type Page, type Route, test } from '@playwright/test'
+import { expect, type Locator, type Page, type Route } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
+import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
 
 const createdAt = '2026-07-15T12:00:00Z'
 
@@ -2573,6 +2575,9 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
     await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
   })
   await page.goto('/tasks/operator-checkpoint/full')
+  // A checkpoint without a decision request keeps the released wording
+  // (req-260820-394cac AC-1.3).
+  await expect(page.getByRole('region', { name: 'Implementation paused — recovery needed' })).toBeVisible()
   await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
   await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
   const checkpointMessage = page.getByText('Agent checkpoint message').locator('..')
@@ -2808,6 +2813,245 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await direction.fill('Proceed using the confirmed checkpoint documents.')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryBody?.direction).toBe('Proceed using the confirmed checkpoint documents.')
+})
+
+// The checkpoint shape of task 261015-3721c6: seven citations across four
+// System Design documents, each with one pending task-authored proposal
+// (component-web-task-surfaces, Implementation checkpoints).
+const sevenCitationDocuments = [
+  {
+    id: 'component-http-api',
+    title: 'HTTP API',
+    cited: 43,
+    proposal: 44,
+    sections: ['Bounded detail view', 'Task operations'],
+  },
+  {
+    id: 'component-web-task-surfaces',
+    title: 'Web task surfaces',
+    cited: 7,
+    proposal: 8,
+    sections: ['Task detail composition', 'History pages', 'Audit disclosures'],
+  },
+  { id: 'component-web-dashboard', title: 'Web dashboard', cited: 25, proposal: 26, sections: ['Route tree'] },
+  { id: 'component-mcp-investigation-reads', title: 'MCP investigation reads', cited: 3, proposal: 4, sections: [''] },
+]
+const sevenCitationDecision =
+  'Confirm or dismiss component-http-api v44, component-web-task-surfaces v8, component-web-dashboard v26, and component-mcp-investigation-reads v4, then recover this order.'
+
+function sevenCitationCheckpoint(confirmed: Set<string>) {
+  return {
+    decision_request: sevenCitationDecision,
+    class: 'authority_conflict',
+    citations: sevenCitationDocuments.flatMap((document) =>
+      document.sections.map((section) => ({
+        document_id: document.id,
+        document_kind: 'system_design' as const,
+        document_title: document.title,
+        cited_version: document.cited,
+        ...(section ? { statement_or_section_id: section } : {}),
+        current_confirmed_version: confirmed.has(document.id) ? document.proposal : document.cited,
+        newer_confirmed: confirmed.has(document.id),
+        pending_proposals: confirmed.has(document.id)
+          ? []
+          : [
+              {
+                id: document.id,
+                title: document.title,
+                tier: 'system_design' as const,
+                version: document.proposal,
+                origin_type: 'task' as const,
+                origin_id: 'operator-checkpoint',
+                proposed_at: createdAt,
+              },
+            ],
+      })),
+    ),
+  }
+}
+
+async function routeSevenCitationCheckpoint(page: Page, confirmed: Set<string>) {
+  const confirms: Array<{ path: string; ifMatch?: string }> = []
+  const recoveries: Array<Record<string, unknown>> = []
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = sevenCitationCheckpoint(confirmed)
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/system-designs/*/versions/*/confirm**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    confirms.push({ path, ifMatch: route.request().headers()['if-match'] })
+    const id = path.split('/')[3]
+    confirmed.add(id)
+    await route.fulfill({ json: {} })
+  })
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    recoveries.push(route.request().postDataJSON() as Record<string, unknown>)
+    await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
+  })
+  return { confirms, recoveries }
+}
+
+test('an authority-conflict checkpoint states the server question and groups seven citations into four documents', async ({
+  page,
+}) => {
+  const confirmed = new Set<string>()
+  const { confirms, recoveries } = await routeSevenCitationCheckpoint(page, confirmed)
+  await page.goto('/tasks/operator-checkpoint/full')
+
+  // The current state is the server's label, the agent's decision request, and
+  // the server's question; nothing reads as a failure that needs recovery.
+  const banner = page.getByRole('region', { name: 'Cited revisions need a decision' })
+  await expect(banner).toBeVisible()
+  await expect(banner.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
+  await expect(
+    banner.getByText('Will you confirm or dismiss the cited revisions, then recover the order with direction?'),
+  ).toBeVisible()
+  await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
+  await expect(page.getByText(/try again/i)).toHaveCount(0)
+
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
+  await expect(
+    card.getByText(
+      'Confirm or dismiss the pending revisions of HTTP API, Web task surfaces, Web dashboard, and MCP investigation reads. That decision settles the conflict; recover the order with direction after it.',
+    ),
+  ).toBeVisible()
+  await expect(card.getByText(/Recovery without direction will repeat the checkpoint/)).toHaveCount(0)
+
+  // One block per document keeps every cited section, and each pending
+  // proposal gets one Confirm and one Review-or-dismiss action.
+  const blocks = card.getByRole('list', { name: /^Citations of / })
+  await expect(blocks).toHaveCount(4)
+  await expect(blocks.getByRole('listitem')).toHaveCount(7)
+  for (const document of sevenCitationDocuments) {
+    const citations = card.getByRole('list', { name: `Citations of ${document.title}` })
+    await expect(citations.getByRole('listitem')).toHaveCount(document.sections.length)
+    for (const section of document.sections) {
+      await expect(
+        citations.getByText(`Cited v${document.cited} · ${section || 'document-level reference'}`, { exact: true }),
+      ).toBeVisible()
+    }
+    await expect(card.getByRole('link', { name: document.title, exact: true })).toHaveCount(1)
+    await expect(card.getByRole('button', { name: `Confirm v${document.proposal}`, exact: true })).toHaveCount(1)
+    await expect(card.getByRole('link', { name: `Review or dismiss v${document.proposal}`, exact: true })).toHaveCount(
+      1,
+    )
+  }
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(4)
+  await expect(card.getByText(/^Still confirmed at v/)).toHaveCount(4)
+
+  // A partial advancement pre-fills nothing.
+  const direction = page.getByLabel('Operator direction')
+  await card.getByRole('button', { name: 'Confirm v44' }).click()
+  await expect(card.getByText('Now confirmed at v44')).toBeVisible()
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(3)
+  await expect(direction).toHaveValue('')
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeDisabled()
+
+  for (const version of [8, 26, 4]) {
+    await card.getByRole('button', { name: `Confirm v${version}`, exact: true }).click()
+    await expect(card.getByText(`Now confirmed at v${version}`, { exact: true })).toBeVisible()
+  }
+  expect(confirms.map((confirm) => confirm.path)).toEqual([
+    '/v1/system-designs/component-http-api/versions/44/confirm',
+    '/v1/system-designs/component-web-task-surfaces/versions/8/confirm',
+    '/v1/system-designs/component-web-dashboard/versions/26/confirm',
+    '/v1/system-designs/component-mcp-investigation-reads/versions/4/confirm',
+  ])
+  expect(confirms.map((confirm) => confirm.ifMatch)).toEqual(['"43"', '"7"', '"25"', '"3"'])
+
+  // Every document advanced: the direction names each one once, in block order.
+  await expect(direction).toHaveValue(
+    'Continue under the newly confirmed authority: component-http-api v44, component-web-task-surfaces v8, component-web-dashboard v26, component-mcp-investigation-reads v4.',
+  )
+  await direction.fill('Continue under the confirmed revisions.')
+  await page.getByRole('button', { name: 'Recover work order' }).click()
+  await expect.poll(() => recoveries.at(-1)?.direction).toBe('Continue under the confirmed revisions.')
+})
+
+test('an authority-conflict pre-fill never overwrites operator direction', async ({ page }) => {
+  const confirmed = new Set(sevenCitationDocuments.slice(1).map((document) => document.id))
+  await routeSevenCitationCheckpoint(page, confirmed)
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  const direction = page.getByLabel('Operator direction')
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(1)
+  await direction.fill('Keep the operator wording.')
+  await card.getByRole('button', { name: 'Confirm v44' }).click()
+  await expect(card.getByText('Now confirmed at v44')).toBeVisible()
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(0)
+  await expect(direction).toHaveValue('Keep the operator wording.')
+})
+
+test('an authority conflict without proposals asks for authorship', async ({ page }) => {
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = {
+      decision_request: 'Author a revision of the cited design, then recover this order.',
+      class: 'authority_conflict',
+      citations: [
+        {
+          document_id: 'component-web-dashboard',
+          document_kind: 'system_design',
+          document_title: 'Web dashboard',
+          cited_version: 25,
+          statement_or_section_id: 'Route tree',
+          current_confirmed_version: 25,
+          newer_confirmed: false,
+          pending_proposals: [],
+        },
+      ],
+    }
+    await route.fulfill({ json: item })
+  })
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(page.getByRole('region', { name: 'Cited documents need a revision' })).toBeVisible()
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(
+    card.getByText(
+      'No cited document has a pending revision. Author a revision of Web dashboard, then recover the order with direction.',
+    ),
+  ).toBeVisible()
+  await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(0)
+  await expect(
+    card.getByText('No revision is waiting for a decision. Author one if the conflict remains.'),
+  ).toBeVisible()
+})
+
+test('a generic decision request keeps the generic direction guidance', async ({ page }) => {
+  let recoveryBody: Record<string, unknown> | undefined
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = { decision_request: 'Should the migration keep the legacy column?' }
+    await route.fulfill({ json: item })
+  })
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    recoveryBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
+  })
+  await page.goto('/tasks/operator-checkpoint/full')
+  const banner = page.getByRole('region', { name: 'Agent question' })
+  await expect(banner.getByText('Should the migration keep the legacy column?', { exact: true })).toBeVisible()
+  await expect(banner.getByText('Answer the agent?')).toBeVisible()
+  await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(
+    card.getByText(
+      'A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.',
+    ),
+  ).toBeVisible()
+  const recover = page.getByRole('button', { name: 'Recover work order' })
+  await expect(recover).toBeDisabled()
+  await page.getByLabel('Operator direction').fill('Keep the legacy column.')
+  await recover.click()
+  await expect.poll(() => recoveryBody?.direction).toBe('Keep the legacy column.')
 })
 
 test('structured authority checkpoint omits the standalone card when every proposal is cited', async ({ page }) => {
@@ -5209,9 +5453,11 @@ test('board cards show a neutral, keyboard-reachable dependency chip using title
   )
   await page.goto('/')
   const card = page.getByRole('link', { name: /Short task/ })
-  await expect(card.getByText('Waiting on dependencies')).toBeVisible()
+  // The dependency mark replaces the chip (req-operator-next-action AC-3.4).
+  const mark = card.locator('[data-dependency-mark="waiting"]')
+  await expect(mark).toBeVisible()
   await card.focus()
-  await expect(card.getByRole('tooltip')).toContainText('Runtime')
+  await expect(mark.locator('[role="tooltip"]')).toContainText('Runtime')
 })
 
 test('unsatisfiable dependency is attention-worthy and can be unlinked with an audited reason only from detail', async ({
@@ -5270,7 +5516,10 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
 
   await page.goto('/')
   const card = page.getByRole('link', { name: /Short task/ })
-  await expect(card.getByText('Dependency needs attention')).toBeVisible()
+  await expect(card.locator('[data-dependency-mark="unsatisfiable"]')).toHaveAttribute(
+    'aria-label',
+    /closed without merging/,
+  )
   await expect(card.getByRole('button', { name: /Unlink dependency/ })).toHaveCount(0)
   await card.click()
 
@@ -7296,116 +7545,9 @@ test('failed triage predicate orders fractional-second execution timestamps chro
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
 })
 
-// Stream reconnection (component-web-dashboard Server-state discipline). The
-// page's own `fetch` is replaced for the task stream only, so each connection
-// stays pending until the test opens, fails, or answers it, and an opened body
-// stays open until the test closes or errors it. Playwright's clock holds the
-// retry waits and the 250 ms frame debounce, so no assertion races wall time.
-type TaskStreamControl = {
-  urls(): string[]
-  aborted(): boolean[]
-  open(): void
-  respond(status: number, body: string | null): void
-  fail(): void
-  send(text: string): void
-  close(): void
-  error(): void
-}
-
-async function controlTaskStreams(page: Page) {
-  await page.addInitScript(() => {
-    type Connection = {
-      url: string
-      aborted: boolean
-      settled: boolean
-      resolve: (response: Response) => void
-      reject: (reason: unknown) => void
-      body?: ReadableStreamDefaultController<Uint8Array>
-    }
-    const connections: Connection[] = []
-    const nativeFetch = window.fetch.bind(window)
-    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (!url.includes('/events/stream')) return nativeFetch(input, init)
-      return new Promise<Response>((resolve, reject) => {
-        const connection: Connection = { url, aborted: false, settled: false, resolve, reject }
-        connections.push(connection)
-        init?.signal?.addEventListener('abort', () => {
-          connection.aborted = true
-          const reason = new DOMException('The operation was aborted.', 'AbortError')
-          reject(reason)
-          try {
-            connection.body?.error(reason)
-          } catch {
-            // The body already ended.
-          }
-        })
-      })
-    }
-    // The newest connection the page has not aborted; StrictMode's discarded
-    // first effect leaves an aborted connection behind it.
-    const live = () => {
-      const connection = connections.findLast((candidate) => !candidate.aborted)
-      if (!connection) throw new Error('no live task stream connection')
-      return connection
-    }
-    const settle = (response: Response | Error) => {
-      const connection = live()
-      if (connection.settled) throw new Error('the live task stream connection was already answered')
-      connection.settled = true
-      if (response instanceof Error) connection.reject(response)
-      else connection.resolve(response)
-      return connection
-    }
-    const control: TaskStreamControl = {
-      urls: () => connections.map((connection) => connection.url),
-      aborted: () => connections.map((connection) => connection.aborted),
-      open: () => {
-        let body: ReadableStreamDefaultController<Uint8Array> | undefined
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            body = controller
-          },
-        })
-        settle(new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })).body = body
-      },
-      respond: (status, body) => {
-        settle(new Response(body, { status }))
-      },
-      fail: () => {
-        settle(new TypeError('Failed to fetch'))
-      },
-      send: (text) => live().body?.enqueue(new TextEncoder().encode(text)),
-      close: () => live().body?.close(),
-      error: () => live().body?.error(new TypeError('network error')),
-    }
-    ;(window as unknown as { __taskStreams: TaskStreamControl }).__taskStreams = control
-  })
-  const call = <K extends keyof TaskStreamControl>(name: K, ...args: Parameters<TaskStreamControl[K]>) =>
-    page.evaluate(
-      ([method, values]) =>
-        // biome-ignore lint/suspicious/noExplicitAny: forwards a typed call into the page.
-        (window as unknown as { __taskStreams: Record<string, (...input: any[]) => unknown> }).__taskStreams[method](
-          ...values,
-        ) as ReturnType<TaskStreamControl[K]>,
-      [name, args] as const,
-    )
-  return {
-    urls: () => call('urls'),
-    count: async () => (await call('urls')).length,
-    countFor: async (taskId: string) =>
-      (await call('urls')).filter((url) => url.includes(`/v1/tasks/${taskId}/events/stream`)).length,
-    aborted: () => call('aborted'),
-    open: () => call('open'),
-    respond: (status: number, body: string | null) => call('respond', status, body),
-    fail: () => call('fail'),
-    send: (text: string) => call('send', text),
-    close: () => call('close'),
-    error: () => call('error'),
-  }
-}
-
-const activityFrame = 'event: activity\ndata: {"id":1}\n\n'
+// Stream reconnection and the notify stream's ready refresh
+// (component-web-task-surfaces, Live updates) run against the controlled
+// `fetch` in helpers/task-streams.ts.
 
 // Freeze the installed clock at a moment with no stream timer pending.
 async function pauseClock(page: Page) {
@@ -7417,15 +7559,15 @@ function fullTaskHeader(page: Page) {
   return page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
 }
 
-test('a closed task stream reconnects and refreshes task detail without an activity frame', async ({ page }) => {
+test('every task stream connection refreshes task detail once through its ready frame', async ({ page }) => {
   const streams = await controlTaskStreams(page)
   let detailRequests = 0
   let activityRequests = 0
   await page.route('**/v1/tasks/stream-gap/activity*', async (route) => {
     detailRequests++
     const item = activity('stream-gap', false)
-    // Server-shaped lightweight detail that changed while the stream was down.
-    item.task.title = detailRequests === 1 ? 'Before the stream gap' : 'After the stream gap'
+    // Detail that changed while the stream was down.
+    item.task.title = detailRequests <= 2 ? 'Before the stream gap' : 'After the stream gap'
     await route.fulfill({ json: item })
   })
   await page.route('**/v1/activity*', async (route) => {
@@ -7437,12 +7579,20 @@ test('a closed task stream reconnects and refreshes task detail without an activ
   await expect(fullTaskHeader(page)).toContainText('Before the stream gap')
   await expect.poll(() => streams.countFor('stream-gap')).toBeGreaterThan(0)
 
-  // The first successful connection is not a reconnect and adds no refresh.
+  // Opening a connection refreshes nothing until the server's ready frame,
+  // which arrives after the server read the history fingerprint.
   await streams.open()
   await pauseClock(page)
   const connections = await streams.count()
   const feedRequests = activityRequests
+  await page.clock.runFor(1_000)
   expect(detailRequests).toBe(1)
+  await streams.send(readyFrame)
+  await page.clock.runFor(249)
+  expect(detailRequests).toBe(1)
+  await page.clock.runFor(1)
+  await expect.poll(() => detailRequests).toBe(2)
+  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
 
   // A proxy idle timeout or restart ends the response cleanly.
   await streams.close()
@@ -7450,16 +7600,20 @@ test('a closed task stream reconnects and refreshes task detail without an activ
   expect(await streams.count()).toBe(connections)
   await page.clock.runFor(1)
   await expect.poll(() => streams.count()).toBe(connections + 1)
-  expect((await streams.urls()).at(-1)).toContain('/v1/tasks/stream-gap/events/stream?workspace_id=demo')
-  expect(detailRequests).toBe(1)
+  expect((await streams.urls()).at(-1)).toContain('/v1/tasks/stream-gap/events/stream?mode=notify&workspace_id=demo')
+  expect(detailRequests).toBe(2)
 
-  // The reopened stream sends no activity frame; the reconnect alone refetches.
+  // The reconnect's ready frame refreshes detail once, covering the outage.
   await streams.open()
-  await expect.poll(() => detailRequests).toBe(2)
-  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
+  await page.clock.runFor(1_000)
+  expect(detailRequests).toBe(2)
+  await streams.send(readyFrame)
+  await page.clock.runFor(250)
+  await expect.poll(() => detailRequests).toBe(3)
+  await expect.poll(() => activityRequests).toBe(feedRequests + 2)
   await page.clock.resume()
   await expect(fullTaskHeader(page)).toContainText('After the stream gap')
-  expect(detailRequests).toBe(2)
+  expect(detailRequests).toBe(3)
 })
 
 test('task stream retries errors, non-OK and bodyless responses with bounded backoff', async ({ page }) => {
@@ -7492,10 +7646,14 @@ test('task stream retries errors, non-OK and bodyless responses with bounded bac
   await expectRetryAfter(4_000)
   const beforeUsable = detailRequests
   await streams.open() // usable, then a read error
+  await streams.send(readyFrame)
+  await page.clock.runFor(250)
   await expect.poll(() => detailRequests).toBe(beforeUsable + 1)
   await streams.error()
+  // A ready frame does not reset the wait; only an activity frame does.
   await expectRetryAfter(8_000)
-  await streams.open() // usable, then a clean close without a frame
+  await streams.open() // usable, then a clean close without an activity frame
+  await streams.send(readyFrame)
   await streams.close()
   await expectRetryAfter(16_000)
   await streams.fail()
@@ -7508,10 +7666,12 @@ test('task stream retries errors, non-OK and bodyless responses with bounded bac
   await streams.send(activityFrame)
   await streams.close()
   await expectRetryAfter(1_000)
-  expect(new Set(await streams.urls())).toEqual(new Set(['/v1/tasks/stream-retry/events/stream?workspace_id=demo']))
+  expect(new Set(await streams.urls())).toEqual(
+    new Set(['/v1/tasks/stream-retry/events/stream?mode=notify&workspace_id=demo']),
+  )
 })
 
-test('activity frames keep the 250 ms debounce on the initial connection', async ({ page }) => {
+test('ready and activity frames inside 250 ms join one refresh', async ({ page }) => {
   const streams = await controlTaskStreams(page)
   let detailRequests = 0
   await page.route('**/v1/tasks/stream-debounce/activity*', async (route) => {
@@ -7526,17 +7686,24 @@ test('activity frames keep the 250 ms debounce on the initial connection', async
   await pauseClock(page)
   expect(detailRequests).toBe(1)
 
-  // Frames split across chunks still parse; three frames coalesce into one refresh.
-  await streams.send('event: activity\ndata: {"id":1}\n\nevent: act')
-  await streams.send('ivity\ndata: {"id":2}\n\n')
+  // The ready frame schedules one refresh 250 ms out; frames split across
+  // chunks still parse, and frames inside the delay join that refresh.
+  await streams.send(readyFrame)
   await page.clock.runFor(100)
-  await streams.send(activityFrame)
-  await page.clock.runFor(249)
+  await streams.send('event: activity\ndata: {}\n\nevent: act')
+  await streams.send('ivity\ndata: {}\n\n')
+  await page.clock.runFor(149)
   expect(detailRequests).toBe(1)
   await page.clock.runFor(1)
   await expect.poll(() => detailRequests).toBe(2)
   await page.clock.runFor(5_000)
   expect(detailRequests).toBe(2)
+  // A frame after the refresh schedules the next one.
+  await streams.send(activityFrame)
+  await page.clock.runFor(249)
+  expect(detailRequests).toBe(2)
+  await page.clock.runFor(1)
+  await expect.poll(() => detailRequests).toBe(3)
 })
 
 test('changing tasks stops the old stream, its retry wait, and its pending refresh', async ({ page }) => {
@@ -7815,6 +7982,14 @@ test('recovery completion after workspace switch does not refresh the new worksp
     await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
   })
 
+  // Detail reads that delivered a response. A workspace change aborts the
+  // read in flight (component-web-task-surfaces), so an aborted request never
+  // reaches the page and is not a refresh.
+  const completedReads: string[] = []
+  page.on('requestfinished', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/tasks/recovery/activity') completedReads.push(url.searchParams.get('workspace_id') ?? '')
+  })
   await page.goto('/tasks/recovery/full')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryReceived).toBe(true)
@@ -7824,7 +7999,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
   await page.getByText('Recovery in other').first().click()
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
-  await expect.poll(() => detailReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  await expect.poll(() => completedReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  const otherReads = detailReads.filter((workspace) => workspace === 'other').length
   const demoReads = detailReads.filter((workspace) => workspace === 'demo').length
   const otherActivityReads = activityReads.filter((workspace) => workspace === 'other').length
 
@@ -7834,7 +8010,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
   await expect
     .poll(() => activityReads.filter((workspace) => workspace === 'other').length)
     .toBeGreaterThan(otherActivityReads)
-  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
+  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(otherReads)
+  expect(completedReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
   expect(detailReads.filter((workspace) => workspace === 'demo')).toHaveLength(demoReads)
 })
 

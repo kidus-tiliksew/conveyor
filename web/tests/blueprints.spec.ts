@@ -1,4 +1,5 @@
-import { expect, type Page, type Route, test } from '@playwright/test'
+import { expect, type Page, type Route } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
 // Blueprint presentation surface. The anchor is an intent

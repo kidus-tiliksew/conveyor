@@ -1602,6 +1602,14 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	return order, nil
 }
 
+// terminalOrphanTasksSQL selects, in task-ID order and bounded by $3, merged or
+// closed tasks of workspace $1 that still hold a non-terminal order, so the
+// order clock retires them without a due transition (component-work-orders
+// "Three clocks").
+const terminalOrphanTasksSQL = `SELECT t.id FROM tasks t WHERE t.workspace_id=$1 AND t.state IN ('merged','closed')
+		AND EXISTS (SELECT 1 FROM work_orders o WHERE o.workspace_id=t.workspace_id AND o.task_id=t.id AND o.state NOT IN ('completed','cancelled'))
+		ORDER BY t.id LIMIT $3`
+
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
 	bound, policyErr := clockPolicyBound(ctx, s)
 	if policyErr != nil {
@@ -1615,8 +1623,9 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 	if bound != 0 {
 		query += automaticRecoveryElapsedSQL
 	}
-	query += `) ORDER BY task_id`
-	rows, err := s.boundary.Query(ctx, query, workspace(ctx), now)
+	query += answeredAuthorityElapsedSQL
+	query += ` OR task_id IN (` + terminalOrphanTasksSQL + `)) ORDER BY task_id`
+	rows, err := s.boundary.Query(ctx, query, workspace(ctx), now, store.TerminalOrphanTaskBatch)
 	if err != nil {
 		return nil, err
 	}
@@ -1637,9 +1646,22 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
 	}
 	count := 0
-	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		key := "conveyor:task-operation:" + workspace(ctx) + ":" + taskID
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", key); err != nil {
+			return err
+		}
+		// An order of a terminal task has no clock: retire what history left
+		// open instead of marking it stale or timed_out (component-work-orders
+		// "Three clocks").
+		var taskState core.TaskState
+		if err := tx.QueryRow(ctx, `SELECT state FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID).Scan(&taskState); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if core.TaskTerminal(taskState) {
+			actor := store.ActorFromContext(ctx)
+			retired, err := cancelTaskWorkOrdersTx(ctx, tx, q, taskID, "", actor.ID, actor.Role, now)
+			count = len(retired)
 			return err
 		}
 		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state IN ('queued','claimed') FOR UPDATE", workspace(ctx), taskID)
@@ -2209,19 +2231,20 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 }
 
 type completedReviewRecord struct {
-	ReviewWorkOrderID string `json:"review_work_order_id"`
-	Verdict           string `json:"verdict"`
-	ReasonCode        string `json:"reason_code"`
-	Summary           string `json:"summary"`
-	Feedback          string `json:"feedback"`
-	ReviewerModel     string `json:"reviewer_model"`
-	ReviewRound       int    `json:"review_round"`
-	ReviewSeat        int    `json:"review_seat"`
-	RequiredModel     string `json:"required_model"`
-	RequiredHarness   string `json:"required_harness"`
-	RequiredEffort    string `json:"required_effort"`
-	ModelEnforcement  string `json:"model_enforcement"`
-	ReviewedCommitSHA string `json:"reviewed_commit_sha"`
+	DocumentationAssessment *core.DocumentationAssessment `json:"documentation_assessment,omitempty"`
+	ReviewWorkOrderID       string                        `json:"review_work_order_id"`
+	Verdict                 string                        `json:"verdict"`
+	ReasonCode              string                        `json:"reason_code"`
+	Summary                 string                        `json:"summary"`
+	Feedback                string                        `json:"feedback"`
+	ReviewerModel           string                        `json:"reviewer_model"`
+	ReviewRound             int                           `json:"review_round"`
+	ReviewSeat              int                           `json:"review_seat"`
+	RequiredModel           string                        `json:"required_model"`
+	RequiredHarness         string                        `json:"required_harness"`
+	RequiredEffort          string                        `json:"required_effort"`
+	ModelEnforcement        string                        `json:"model_enforcement"`
+	ReviewedCommitSHA       string                        `json:"reviewed_commit_sha"`
 }
 
 type reviewRoundResultRecord struct {
@@ -2328,7 +2351,7 @@ func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) revi
 }
 
 func reviewDecisionPayload(decision core.ReviewDecision) []byte {
-	return core.JSONPayload(map[string]any{
+	payload := map[string]any{
 		"review_work_order_id": decision.ReviewWorkOrderID, "verdict": decision.Verdict,
 		"reason_code": decision.ReasonCode, "summary": decision.Summary, "feedback": decision.Feedback,
 		"reviewed_commit_sha": decision.ReviewedCommitSHA, "reviewer": decision.Reviewer,
@@ -2346,7 +2369,11 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 		"required_effort":      decision.RequiredEffort,
 		"model_enforcement":    decision.ModelEnforcement,
 		"publication_eligible": decision.PublicationEligible,
-	})
+	}
+	if decision.DocumentationAssessment != nil {
+		payload["documentation_assessment"] = decision.DocumentationAssessment
+	}
+	return core.JSONPayload(payload)
 }
 
 func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) {

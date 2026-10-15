@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // rest serves one GET through the full handler with token and returns the body.
@@ -158,6 +160,235 @@ func TestMCPGetTaskStatusParity(t *testing.T) {
 	after := f.snapshot(claimed)
 	if !after.order.LeaseExpiresAt.Equal(before.order.LeaseExpiresAt) || after.events != before.events {
 		t.Fatalf("status read mutated the claim: lease %v -> %v, events %d -> %d", before.order.LeaseExpiresAt, after.order.LeaseExpiresAt, before.events, after.events)
+	}
+}
+
+// TestMCPGetTaskStatusAgentQuestionParity pins one statement for an
+// authority_conflict checkpoint: GET /v1/tasks/{id}/next-action and MCP
+// get_task_status return the same label, choices, and checkpoint details,
+// including the cited pending proposal (req-operator-next-action AC-1.6,
+// AC-1.7, AC-5.3; component-http-api, Next-action and task-flow reads).
+func TestMCPGetTaskStatusAgentQuestionParity(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	userToken, _ := f.user("usr_question", core.WorkspaceRoleContributor)
+	design, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "component-question", Title: "Question", Category: "Component design"}, core.SystemDesignVersion{Content: "# Question\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, design.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	proposed, err := f.store.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Question\n\nRevised.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := f.order("question", core.StageImplement)
+	f.claimWorker(order, "worker-question", "usr_question", "question-session")
+	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-question", core.WorkOrderRelease{
+		SessionID: "question-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm component-question.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: design.ID, CitedVersion: initial.Version, StatementOrSectionID: "Section"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-question"})
+	if isErr {
+		t.Fatalf("user read refused: %s", text)
+	}
+	rest := f.rest(userToken, "/v1/tasks/gov-task-question/next-action?workspace_id="+governanceWorkspace)
+	if got, want := decodeJSON(t, []byte(text)), decodeJSON(t, rest); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MCP and REST next actions differ:\nmcp=%s\nrest=%s", text, rest)
+	}
+	var action nextaction.NextAction
+	if err = json.Unmarshal(rest, &action); err != nil {
+		t.Fatal(err)
+	}
+	wantProposals := []nextaction.ProposalRef{{Tier: "system_design", ID: design.ID, Version: proposed.Version}}
+	if action.Kind != nextaction.KindAgentQuestion || action.Label != "Cited revisions need a decision" || !reflect.DeepEqual(action.Details.PendingProposals, wantProposals) ||
+		action.Details.Checkpoint != "Confirm component-question." || action.Details.CheckpointClass != core.WorkOrderCheckpointClassAuthorityConflict || len(action.Details.Citations) != 1 {
+		t.Fatalf("next action = %s %q details %+v", action.Kind, action.Label, action.Details)
+	}
+	if len(action.Choices) != 3 || action.Choices[0].Path != "/v1/system-designs/component-question/versions/2/confirm" || action.Choices[2].ID != "answer" {
+		t.Fatalf("choices = %+v", action.Choices)
+	}
+}
+
+// TestMCPGetTaskStatusClaimWaitParity pins one statement for a row-8 claim
+// wait and for the 261015-676ea5 shape: GET /v1/tasks/{id}/next-action and MCP
+// get_task_status agree, row 8 lists the withholding version on its version
+// route, a triage task-context proposal never selects row 8, and no choice
+// names /v1/documents/ (req-operator-next-action AC-1.4, AC-1.7, AC-5.3;
+// req-260810-70ce2f AC-1.1, AC-1.3).
+func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	userToken, _ := f.user("usr_claim_wait", core.WorkspaceRoleOperator)
+	governs := "```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
+	design := func(id string) core.SystemDesign {
+		t.Helper()
+		created, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: id, Title: id, Category: "Component design"}, core.SystemDesignVersion{Content: "# " + id + "\n\n" + governs, Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, created.ID, initial.Version); err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+	propose := func(documentID, taskID string) int {
+		t.Helper()
+		proposed, err := f.store.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: documentID, Content: "# " + documentID + "\n\nRevised for " + taskID + ".\n\n" + governs, Origin: core.SystemDesignOriginImplementation, OriginTaskID: taskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return proposed.Version
+	}
+	suggest := func(taskID, documentID string) {
+		t.Helper()
+		if _, suppressed, err := f.store.ProposeTaskContext(f.ctx, core.TaskContextProposalInput{TaskID: taskID, TargetKind: core.TaskContextProposalSystemDesign, TargetID: documentID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."}); err != nil || suppressed {
+			t.Fatalf("suppressed=%t err=%v", suppressed, err)
+		}
+	}
+	read := func(taskID string) nextaction.NextAction {
+		t.Helper()
+		text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": taskID})
+		if isErr {
+			t.Fatalf("user read refused: %s", text)
+		}
+		rest := f.rest(userToken, "/v1/tasks/"+taskID+"/next-action?workspace_id="+governanceWorkspace)
+		if got, want := decodeJSON(t, []byte(text)), decodeJSON(t, rest); !reflect.DeepEqual(got, want) {
+			t.Fatalf("MCP and REST next actions differ:\nmcp=%s\nrest=%s", text, rest)
+		}
+		if strings.Contains(string(rest), "/v1/documents/") {
+			t.Fatalf("next action names /v1/documents/: %s", rest)
+		}
+		var action nextaction.NextAction
+		if err := json.Unmarshal(rest, &action); err != nil {
+			t.Fatal(err)
+		}
+		return action
+	}
+
+	suggested := design("component-claim-wait-context")
+	withheld := design("component-claim-wait")
+	f.order("claim-wait", core.StageReview)
+	suggest("gov-task-claim-wait", suggested.ID)
+	version := propose(withheld.ID, "gov-task-claim-wait")
+	action := read("gov-task-claim-wait")
+	route := fmt.Sprintf("/v1/system-designs/%s/versions/%d", withheld.ID, version)
+	wantProposals := []nextaction.ProposalRef{{Tier: "system_design", ID: withheld.ID, Version: version}}
+	if action.Kind != nextaction.KindDocumentProposal || !reflect.DeepEqual(action.Details.PendingProposals, wantProposals) {
+		t.Fatalf("row 8 = %s details %+v", action.Kind, action.Details)
+	}
+	if len(action.Choices) != 2 || action.Choices[0].Path != route+"/confirm" || action.Choices[1].Path != route+"/dismiss" || !action.Choices[0].Allowed || !action.Choices[1].Allowed {
+		t.Fatalf("row 8 choices = %+v", action.Choices)
+	}
+
+	// A context-only task keeps operator attention through the context row,
+	// with task-context routes under operate_gates and no claim wait
+	// (req-intake-and-triage AC-7.3).
+	f.order("context-only", core.StageImplement)
+	suggest("gov-task-context-only", suggested.ID)
+	contextOnly := read("gov-task-context-only")
+	contextRoute := "/v1/tasks/gov-task-context-only/context/proposals/system_design/" + suggested.ID
+	if contextOnly.Kind != nextaction.KindContextProposal || contextOnly.Actor != nextaction.ActorOperator || len(contextOnly.Details.PendingProposals) != 0 ||
+		len(contextOnly.Choices) != 2 || contextOnly.Choices[0].Path != contextRoute+"/confirm" || contextOnly.Choices[1].Path != contextRoute+"/dismiss" || !contextOnly.Choices[0].Allowed {
+		t.Fatalf("context-only = %s choices %+v details %+v", contextOnly.Kind, contextOnly.Choices, contextOnly.Details)
+	}
+	inbox, isErr := f.call(userToken, "list_operator_inbox", map[string]any{"workspace_id": governanceWorkspace, "band": "decisions"})
+	if isErr || !strings.Contains(inbox, `"gov-task-context-only"`) || !strings.Contains(inbox, `"context_proposal"`) {
+		t.Fatalf("inbox decisions omit the context-only task: err=%t %s", isErr, inbox)
+	}
+
+	first, second := design("component-cited-a"), design("component-cited-b")
+	order := f.order("context-question", core.StageImplement)
+	suggest("gov-task-context-question", suggested.ID)
+	firstVersion, secondVersion := propose(first.ID, "gov-task-context-question"), propose(second.ID, "gov-task-context-question")
+	f.claimWorker(order, "worker-context-question", "usr_claim_wait", "context-question-session")
+	if _, err := storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-context-question", core.WorkOrderRelease{
+		SessionID: "context-question-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm or dismiss both revisions.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{
+			{DocumentID: first.ID, CitedVersion: 1, StatementOrSectionID: "Section A"},
+			{DocumentID: second.ID, CitedVersion: 1, StatementOrSectionID: "Section B"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	question := read("gov-task-context-question")
+	wantCited := []nextaction.ProposalRef{{Tier: "system_design", ID: first.ID, Version: firstVersion}, {Tier: "system_design", ID: second.ID, Version: secondVersion}}
+	if question.Kind != nextaction.KindAgentQuestion || !reflect.DeepEqual(question.Details.PendingProposals, wantCited) {
+		t.Fatalf("676ea5 shape = %s details %+v", question.Kind, question.Details)
+	}
+	for _, secondary := range question.Details.Secondary {
+		if secondary.Kind == nextaction.KindDocumentProposal {
+			t.Fatalf("task-context proposal recorded as document_proposal: %+v", question.Details.Secondary)
+		}
+	}
+}
+
+// TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery confirms the cited
+// revision, runs one order-clock tick, and reads the task through REST and MCP:
+// both state the same ordinary queued work instead of the agent question, and
+// GET /v1/inbox/acts lists the factory's recovery (feature-bounded-automatic-recovery
+// AR-3a; req-260820-394cac AC-2.6; req-bounded-automatic-recovery AC-5.2).
+func TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	userToken, _ := f.user("usr_answered", core.WorkspaceRoleContributor)
+	design, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "component-answered", Title: "Answered", Category: "Component design"}, core.SystemDesignVersion{Content: "# Answered\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, design.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	order := f.order("answered", core.StageImplement)
+	f.claimWorker(order, "worker-answered", "usr_answered", "answered-session")
+	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-answered", core.WorkOrderRelease{
+		SessionID: "answered-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm component-answered.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: design.ID, CitedVersion: initial.Version, StatementOrSectionID: "Section"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proposed, err := f.store.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Answered\n\nRevised.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, design.ID, proposed.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = taskops.New(f.store).TickOrderClock(store.WithActor(f.ctx, store.SystemActor("queue:order-clock")), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-answered"})
+	if isErr {
+		t.Fatalf("user read refused: %s", text)
+	}
+	rest := f.rest(userToken, "/v1/tasks/gov-task-answered/next-action?workspace_id="+governanceWorkspace)
+	if got, want := decodeJSON(t, []byte(text)), decodeJSON(t, rest); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MCP and REST next actions differ:\nmcp=%s\nrest=%s", text, rest)
+	}
+	var action nextaction.NextAction
+	if err = json.Unmarshal(rest, &action); err != nil {
+		t.Fatal(err)
+	}
+	if action.Kind == nextaction.KindAgentQuestion || action.Details.Checkpoint != "" || len(action.Details.Citations) != 0 {
+		t.Fatalf("next action still states the checkpoint: %s", rest)
+	}
+	if action.CurrentOrder == nil || action.CurrentOrder.ID != order {
+		t.Fatalf("next action order = %+v", action.CurrentOrder)
+	}
+	var acts struct {
+		Acts []nextaction.Act `json:"acts"`
+	}
+	if err = json.Unmarshal(f.rest(userToken, "/v1/inbox/acts?workspace_id="+governanceWorkspace), &acts); err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, act := range acts.Acts {
+		if act.TaskID == "gov-task-answered" && act.Kind == "recovered" && act.Automatic {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("inbox acts miss the recovery: %+v", acts.Acts)
 	}
 }
 
