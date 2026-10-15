@@ -3,6 +3,7 @@ import { useLocation, useSearch } from '@tanstack/react-router'
 import { CheckCircle2, PlugZap, Terminal } from 'lucide-react'
 import { useEffect } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
+import { BoardPreferencesCard } from '../components/settings/board-preferences-card'
 import { PasswordCard } from '../components/settings/password-card'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ProfileCard } from '../components/settings/profile-card'
@@ -63,6 +64,7 @@ export function SettingsPage() {
         <ProfileCard />
         <PasswordCard />
         <PersonalTokensCard />
+        <BoardPreferencesCard />
         {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}
         <Card className="mt-4">
           <CardHeader>
