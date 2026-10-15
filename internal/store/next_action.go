@@ -140,8 +140,8 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	conflict := mergeConflictFromEvents(events, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
-		ClaimWaiting: claimWaiting(proposals, orders, task.ID),
-		Blockers:     blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
+		ClaimWaiting: claimWaiting(proposals, orders, task.ID), PendingProposals: pendingProposalRefs(proposals),
+		Blockers: blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
 	}
 	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && opts.MergeReadiness != nil {
@@ -188,13 +188,24 @@ func markersFrom(marker ActivityMarker, events []core.Event, orders []core.WorkO
 		out.InterruptedReview = true
 	}
 	for _, order := range orders {
-		if order.Checkpoint != nil && order.Checkpoint.DecisionRequest != "" {
-			out.CheckpointDecision = true
-			out.Checkpoint = order.Checkpoint.DecisionRequest
-		}
 		if order.Checkpoint != nil && order.Checkpoint.Verification != nil {
 			out.VerificationDisposition = true
 		}
+	}
+	// The agent question reads the checkpoint of the order it selects, the
+	// latest queued order, never an older order's (component-work-orders,
+	// Next action).
+	for i := len(orders) - 1; i >= 0; i-- {
+		if orders[i].State != core.WorkOrderQueued {
+			continue
+		}
+		if checkpoint := orders[i].Checkpoint; checkpoint != nil && checkpoint.DecisionRequest != "" {
+			out.CheckpointDecision = true
+			out.Checkpoint = checkpoint.DecisionRequest
+			out.CheckpointClass = checkpoint.Class
+			out.Citations = append([]core.WorkOrderAuthorityConflictCitation(nil), checkpoint.Citations...)
+		}
+		break
 	}
 	return out
 }
@@ -226,6 +237,17 @@ func claimWaiting(proposals []core.PendingProposal, orders []core.WorkOrder, tas
 		}
 	}
 	return context
+}
+
+// pendingProposalRefs is the workspace's pending set for agent-question
+// presentation; the projection keeps only cited requirement and System Design
+// versions.
+func pendingProposalRefs(proposals []core.PendingProposal) []nextaction.ProposalRef {
+	out := make([]nextaction.ProposalRef, 0, len(proposals))
+	for _, item := range proposals {
+		out = append(out, nextaction.ProposalRef{Tier: item.Tier, ID: item.ID, Version: item.Version})
+	}
+	return out
 }
 
 func proposalRefs(proposals []core.PendingProposal, taskID string) []nextaction.ProposalRef {
