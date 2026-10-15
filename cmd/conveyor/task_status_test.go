@@ -158,6 +158,72 @@ func TestTaskStatusChoiceEquivalents(t *testing.T) {
 	})
 }
 
+const taskStatusAgentQuestionFixture = `{
+  "label": "Cited revisions need a decision",
+  "actor": "operator",
+  "kind": "agent_question",
+  "judgment": true,
+  "summary": "The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",
+  "question": "Will you confirm or dismiss the cited revisions, then recover the order with direction?",
+  "choices": [
+    {"id": "confirm:system_design:component-http-api:44", "label": "Confirm component-http-api v44", "effect": "Confirms this pending revision. The order stays released until you recover it.", "method": "POST", "path": "/v1/system-designs/component-http-api/versions/44/confirm", "capability": "confirm_documents", "allowed": true},
+    {"id": "dismiss:system_design:component-http-api:44", "label": "Dismiss component-http-api v44", "effect": "Dismisses this pending revision. The order stays released until you recover it.", "method": "POST", "path": "/v1/system-designs/component-http-api/versions/44/dismiss", "capability": "confirm_documents", "allowed": true},
+    {"id": "answer", "label": "Answer", "effect": "Recovers the order with direction.", "method": "POST", "path": "/v1/work-orders/261011-aaaaaa-implement-1/recover", "capability": "recover_work", "allowed": false}
+  ],
+  "if_ignored": "The order stays released.",
+  "deadline": null,
+  "details": {
+    "release_outcome": "checkpoint",
+    "checkpoint": "Confirm component-http-api v44, then recover this order.",
+    "checkpoint_class": "authority_conflict",
+    "citations": [{"document_id": "component-http-api", "cited_version": 43, "statement_or_section_id": "Route index"}, {"document_id": "req-checkpoints", "cited_version": 2}],
+    "pending_proposals": [{"tier": "system_design", "id": "component-http-api", "version": 44}]
+  }
+}`
+
+// The agent question prints the server's wording, choices, and checkpoint
+// context; the class prints with the machine identifiers (AC-1.6, AC-1.8, AC-5.1).
+func TestTaskStatusPrintsAgentQuestionCheckpoint(t *testing.T) {
+	var out bytes.Buffer
+	if err := runTaskStatus(serveTaskStatus(t, taskStatusAgentQuestionFixture), &out, taskStatusTestTask, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	ordered := []string{
+		"Cited revisions need a decision\nThe agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.\n",
+		"question:      Will you confirm or dismiss the cited revisions, then recover the order with direction?",
+		"request:       Confirm component-http-api v44, then recover this order.",
+		"cites:         component-http-api v43 (Route index)",
+		"cites:         req-checkpoints v2\n",
+		"proposal:      component-http-api v44 (system_design, pending)",
+		"  - Confirm component-http-api v44: Confirms this pending revision. The order stays released until you recover it.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-http-api/versions/44/confirm",
+		"  - Dismiss component-http-api v44: Dismisses this pending revision. The order stays released until you recover it.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-http-api/versions/44/dismiss",
+		"  - Answer: Recovers the order with direction.",
+		"      cli: conveyor order recover 261011-aaaaaa-implement-1 --direction \"<answer>\"",
+		"      not permitted for this credential",
+		"kind:          agent_question",
+		"release:       checkpoint",
+		"checkpoint:    authority_conflict",
+	}
+	at := 0
+	for _, want := range ordered {
+		index := strings.Index(text[at:], want)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", want, at, text)
+		}
+		at += index + len(want)
+	}
+	var raw bytes.Buffer
+	if err := runTaskStatus(serveTaskStatus(t, taskStatusAgentQuestionFixture), &raw, taskStatusTestTask, true); err != nil {
+		t.Fatal(err)
+	}
+	if raw.String() != taskStatusAgentQuestionFixture+"\n" {
+		t.Fatalf("--json did not print the server body verbatim:\n%s", raw.String())
+	}
+}
+
 func TestTaskStatusJSONVerbatim(t *testing.T) {
 	body := `{"label":"Running","actor":"agent","kind":"running","judgment":false,"summary":"s","choices":[],"deadline":null,"details":{},"future_field":{"nested":[1,2]}}`
 	var out bytes.Buffer

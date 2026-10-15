@@ -161,6 +161,55 @@ func TestMCPGetTaskStatusParity(t *testing.T) {
 	}
 }
 
+// TestMCPGetTaskStatusAgentQuestionParity pins one statement for an
+// authority_conflict checkpoint: GET /v1/tasks/{id}/next-action and MCP
+// get_task_status return the same label, choices, and checkpoint details,
+// including the cited pending proposal (req-operator-next-action AC-1.6,
+// AC-1.7, AC-5.3; component-http-api, Next-action and task-flow reads).
+func TestMCPGetTaskStatusAgentQuestionParity(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	userToken, _ := f.user("usr_question", core.WorkspaceRoleContributor)
+	design, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "component-question", Title: "Question", Category: "Component design"}, core.SystemDesignVersion{Content: "# Question\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.store.ConfirmSystemDesignVersion(f.ctx, design.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	proposed, err := f.store.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Question\n\nRevised.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := f.order("question", core.StageImplement)
+	f.claimWorker(order, "worker-question", "usr_question", "question-session")
+	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-question", core.WorkOrderRelease{
+		SessionID: "question-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm component-question.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: design.ID, CitedVersion: initial.Version, StatementOrSectionID: "Section"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-question"})
+	if isErr {
+		t.Fatalf("user read refused: %s", text)
+	}
+	rest := f.rest(userToken, "/v1/tasks/gov-task-question/next-action?workspace_id="+governanceWorkspace)
+	if got, want := decodeJSON(t, []byte(text)), decodeJSON(t, rest); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MCP and REST next actions differ:\nmcp=%s\nrest=%s", text, rest)
+	}
+	var action nextaction.NextAction
+	if err = json.Unmarshal(rest, &action); err != nil {
+		t.Fatal(err)
+	}
+	wantProposals := []nextaction.ProposalRef{{Tier: "system_design", ID: design.ID, Version: proposed.Version}}
+	if action.Kind != nextaction.KindAgentQuestion || action.Label != "Cited revisions need a decision" || !reflect.DeepEqual(action.Details.PendingProposals, wantProposals) ||
+		action.Details.Checkpoint != "Confirm component-question." || action.Details.CheckpointClass != core.WorkOrderCheckpointClassAuthorityConflict || len(action.Details.Citations) != 1 {
+		t.Fatalf("next action = %s %q details %+v", action.Kind, action.Label, action.Details)
+	}
+	if len(action.Choices) != 3 || action.Choices[0].Path != "/v1/system-designs/component-question/versions/2/confirm" || action.Choices[2].ID != "answer" {
+		t.Fatalf("choices = %+v", action.Choices)
+	}
+}
+
 // TestMCPListOperatorInbox pins the MCP inbox to GET /v1/next-actions: the
 // same items in the same server order for one filter and band, refused to
 // agent and worker credentials.

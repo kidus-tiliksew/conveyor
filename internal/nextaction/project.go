@@ -18,6 +18,9 @@ type built struct {
 	blocked     []BlockerRef
 	proposals   []ProposalRef
 	checkpoint  string
+	class       string
+	citations   []core.WorkOrderAuthorityConflictCitation
+	variant     string
 }
 
 type rule struct {
@@ -74,10 +77,7 @@ func rules() []rule {
 		{match: claimWaiting, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindDocumentProposal, judgment: true, proposals: append([]ProposalRef(nil), in.ClaimWaiting...)}
 		}},
-		{match: agentQuestion, build: func(in Input) built {
-			order := latestQueued(in.Orders)
-			return built{actor: ActorOperator, kind: KindAgentQuestion, judgment: true, release: ReleaseCheckpoint, checkpoint: in.Markers.Checkpoint, order: order}
-		}},
+		{match: agentQuestion, build: agentQuestionBuild},
 		{match: verificationDisposition, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: verifyOrder(in.Orders)}
 		}},
@@ -163,6 +163,28 @@ func agentQuestion(in Input) bool {
 	return in.Markers.CheckpointDecision && latestQueued(in.Orders) != nil
 }
 
+// agentQuestionBuild presents the latest queued order's checkpoint. An
+// authority_conflict class selects the catalogue variant by whether any cited
+// document has a pending proposal; other classes keep the base entry
+// (req-operator-next-action AC-1.6; req-260820-394cac AC-3.2).
+func agentQuestionBuild(in Input) built {
+	row := built{
+		actor: ActorOperator, kind: KindAgentQuestion, judgment: true, release: ReleaseCheckpoint,
+		checkpoint: in.Markers.Checkpoint, class: in.Markers.CheckpointClass,
+		citations: append([]core.WorkOrderAuthorityConflictCitation(nil), in.Markers.Citations...),
+		order:     latestQueued(in.Orders),
+	}
+	if row.class != core.WorkOrderCheckpointClassAuthorityConflict {
+		return row
+	}
+	row.proposals = CitedProposals(in.Markers.Citations, in.PendingProposals)
+	row.variant = AgentQuestionRevisionNeeded
+	if len(row.proposals) > 0 {
+		row.variant = AgentQuestionCitedRevisions
+	}
+	return row
+}
+
 func verificationDisposition(in Input) bool {
 	return in.Markers.VerificationDisposition || (in.Markers.VerificationHoldDeadline != nil && verifyOrder(in.Orders) != nil)
 }
@@ -196,13 +218,17 @@ func factoryWorking(in Input) bool {
 }
 
 func finish(in Input, row built, secondary []Secondary) NextAction {
-	entry, _ := Lookup(row.kind, row.stall, row.release, row.gate)
+	entry, _ := LookupVariant(row.kind, row.stall, row.release, row.gate, row.variant)
 	vars := varsFor(in, row)
 	summary := render(entry.Summary, vars)
 	if row.kind == KindRetrying {
 		summary = summaryWithRetry(summary, vars)
 	}
-	choices, refusals := selectChoices(in, entry.Choices, row.order)
+	specs := entry.Choices
+	if row.kind == KindAgentQuestion && len(row.proposals) > 0 {
+		specs = append(citedProposalChoices(row.proposals), entry.Choices...)
+	}
+	choices, refusals := selectChoices(in, specs, row.order)
 	if in.Task.GateKind == core.GateKindPlanRevision {
 		if text := core.NextActionPlainApproveRefusal(in.Task.GateKind); text != "" {
 			refusals = append(refusals, Refusal{Choice: "approve", Text: text})
@@ -215,7 +241,8 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 		CurrentOrder: orderView(row.order), Attempt: attemptView(in, row.order),
 		Details: Details{
 			GateKind: row.gate, ReasonCode: row.reason, StallReason: row.stall, ReleaseOutcome: row.release,
-			OrderIDs: orderIDs(row.order), Checkpoint: row.checkpoint, PendingProposals: row.proposals,
+			OrderIDs: orderIDs(row.order), Checkpoint: row.checkpoint, CheckpointClass: row.class,
+			Citations: row.citations, PendingProposals: row.proposals,
 			Secondary: secondary, Refusals: refusals,
 		},
 	}

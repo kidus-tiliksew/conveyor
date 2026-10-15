@@ -62,12 +62,31 @@ type nextActionRefusal struct {
 	Text   string `json:"text"`
 }
 
+type nextActionCitation struct {
+	DocumentID           string `json:"document_id"`
+	CitedVersion         int    `json:"cited_version"`
+	StatementOrSectionID string `json:"statement_or_section_id,omitempty"`
+}
+
+type nextActionProposal struct {
+	Tier    string `json:"tier"`
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// nextActionDetails carries the agent-question checkpoint context the server
+// states: the decision request, its class, citations, and the cited pending
+// proposals (req-operator-next-action AC-1.6; feature-operator-next-action NA-8).
 type nextActionDetails struct {
-	GateKind       string              `json:"gate_kind,omitempty"`
-	ReasonCode     string              `json:"reason_code,omitempty"`
-	StallReason    string              `json:"stall_reason,omitempty"`
-	ReleaseOutcome string              `json:"release_outcome,omitempty"`
-	Refusals       []nextActionRefusal `json:"refusals,omitempty"`
+	GateKind         string               `json:"gate_kind,omitempty"`
+	ReasonCode       string               `json:"reason_code,omitempty"`
+	StallReason      string               `json:"stall_reason,omitempty"`
+	ReleaseOutcome   string               `json:"release_outcome,omitempty"`
+	Checkpoint       string               `json:"checkpoint,omitempty"`
+	CheckpointClass  string               `json:"checkpoint_class,omitempty"`
+	Citations        []nextActionCitation `json:"citations,omitempty"`
+	PendingProposals []nextActionProposal `json:"pending_proposals,omitempty"`
+	Refusals         []nextActionRefusal  `json:"refusals,omitempty"`
 }
 
 type nextActionView struct {
@@ -137,6 +156,19 @@ func writeTaskStatus(w io.Writer, taskID string, action nextActionView) error {
 	if action.Question != "" {
 		fmt.Fprintf(&b, "question:      %s\n", action.Question)
 	}
+	if action.Details.Checkpoint != "" {
+		fmt.Fprintf(&b, "request:       %s\n", action.Details.Checkpoint)
+	}
+	for _, citation := range action.Details.Citations {
+		line := fmt.Sprintf("%s v%d", citation.DocumentID, citation.CitedVersion)
+		if citation.StatementOrSectionID != "" {
+			line += " (" + citation.StatementOrSectionID + ")"
+		}
+		fmt.Fprintf(&b, "cites:         %s\n", line)
+	}
+	for _, proposal := range action.Details.PendingProposals {
+		fmt.Fprintf(&b, "proposal:      %s v%d (%s, pending)\n", proposal.ID, proposal.Version, proposal.Tier)
+	}
 	if len(action.Choices) > 0 {
 		b.WriteString("choices:\n")
 		for _, choice := range action.Choices {
@@ -195,6 +227,7 @@ func writeTaskStatus(w io.Writer, taskID string, action nextActionView) error {
 		{"reason code:   ", action.Details.ReasonCode},
 		{"stall reason:  ", action.Details.StallReason},
 		{"release:       ", action.Details.ReleaseOutcome},
+		{"checkpoint:    ", action.Details.CheckpointClass},
 	} {
 		if field[1] != "" {
 			fmt.Fprintf(&b, "%s%s\n", field[0], field[1])
