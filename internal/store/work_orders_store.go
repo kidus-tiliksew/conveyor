@@ -2026,7 +2026,10 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 		elapsedClaim := order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.IsZero() && !order.LeaseExpiresAt.After(now)
 		elapsedQueue := order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 			order.QueueBlockedAt.IsZero() && !order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now)
-		if elapsedExecution || elapsedClaim || elapsedQueue || m.automaticRecoveryCandidateLocked(order, now) {
+		// A released authority conflict is a candidate whatever the recovery
+		// bound (feature-bounded-automatic-recovery AR-3a).
+		answered := AnsweredAuthorityCandidate(m.tasks[order.TaskID], order)
+		if elapsedExecution || elapsedClaim || elapsedQueue || answered || m.automaticRecoveryCandidateLocked(order, now) {
 			seen[order.TaskID] = struct{}{}
 		}
 	}
@@ -2456,7 +2459,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	if len(refreeze) != 0 {
 		freeze = refreeze[0]
 	}
-	return m.recoverOrderLocked(ctx, order, requestID, direction, queueTimeout, now, freeze, false, config.RecoveryPolicy{})
+	return m.recoverOrderLocked(ctx, order, requestID, direction, queueTimeout, now, freeze, recoveryOperator, config.RecoveryPolicy{}, nil)
 }
 
 func (m *memory) repinTaskDesignContextLocked(ctx context.Context, taskID string, at time.Time) {

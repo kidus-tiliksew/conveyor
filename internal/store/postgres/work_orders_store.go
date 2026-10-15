@@ -1623,6 +1623,7 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 	if bound != 0 {
 		query += automaticRecoveryElapsedSQL
 	}
+	query += answeredAuthorityElapsedSQL
 	query += ` OR task_id IN (` + terminalOrphanTasksSQL + `)) ORDER BY task_id`
 	rows, err := s.boundary.Query(ctx, query, workspace(ctx), now, store.TerminalOrphanTaskBatch)
 	if err != nil {

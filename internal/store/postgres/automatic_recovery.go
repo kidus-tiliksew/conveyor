@@ -123,6 +123,16 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx pgx.Tx, taskID 
 		if refusal := store.WorkOrderRecoveryRefusal(task, order, orders); refusal != nil {
 			order.RecoveryRefusal = refusal.Error()
 		}
+		if store.AnsweredAuthorityCandidate(task, order) {
+			recovered, recoverErr := s.recoverAnsweredAuthorityTx(ctx, tx, q, task, order, queueTimeout, now)
+			if recoverErr != nil {
+				return acted, recoverErr
+			}
+			if recovered {
+				acted++
+			}
+			continue
+		}
 		decision := store.DecideAutomaticRecovery(policy, task, order, now)
 		switch decision.Kind {
 		case store.AutomaticRecoverySchedule:
