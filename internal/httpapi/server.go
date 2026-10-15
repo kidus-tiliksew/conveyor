@@ -1614,7 +1614,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders, proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2333,7 +2333,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), workOrders, proposals)
+	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), workOrders)
 	if err != nil {
 		log.Printf("project proposal claim wait: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

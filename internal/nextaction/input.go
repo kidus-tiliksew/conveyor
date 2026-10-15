@@ -27,6 +27,7 @@ const (
 	KindMergeExecution          = "merge_execution"
 	KindMerging                 = "merging"
 	KindDocumentProposal        = "document_proposal"
+	KindContextProposal         = "context_proposal"
 	KindAgentQuestion           = "agent_question"
 	KindVerificationDisposition = "verification_disposition"
 	KindForgeFailure            = "forge_failure"
@@ -70,6 +71,11 @@ type Input struct {
 	// selects the document_proposal row or changes claim eligibility
 	// (component-work-orders, Next action).
 	PendingProposals []ProposalRef
+	// ContextProposals is the task's pending task-context proposals. It
+	// selects only the context_proposal row and never enters ClaimWaiting or
+	// PendingProposals (req-intake-and-triage AC-7.3; req-260810-70ce2f
+	// AC-1.3).
+	ContextProposals []ContextProposalRef
 	Blockers         []BlockerRef
 	MergeConflict    MergeConflict
 	MergeReadiness   *MergeReadiness
@@ -122,6 +128,13 @@ type ProposalRef struct {
 	Tier    string `json:"tier"`
 	ID      string `json:"id"`
 	Version int    `json:"version"`
+}
+
+// ContextProposalRef identifies one pending task-context proposal by its
+// target kind and target ID.
+type ContextProposalRef struct {
+	Kind     string `json:"kind"`
+	TargetID string `json:"target_id"`
 }
 
 type BlockerRef struct {

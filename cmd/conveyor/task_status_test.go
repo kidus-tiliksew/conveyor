@@ -5,8 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 // Tests for conveyor task status (req-operator-next-action REQ-5, AC-5.1,
@@ -106,8 +112,10 @@ func TestTaskStatusChoiceEquivalents(t *testing.T) {
 		{"answer", "POST", orderPath + "/recover", "cli: conveyor order recover " + order + ` --direction "<answer>"`},
 		{"applied", "POST", orderPath + "/recover", "no CLI command; use the dashboard: POST " + orderPath + "/recover"},
 		{"not_applied", "POST", orderPath + "/recover", "no CLI command; use the dashboard: POST " + orderPath + "/recover"},
-		{"confirm", "POST", "/v1/documents/design-x/confirm", "no CLI command; use the dashboard: POST /v1/documents/design-x/confirm"},
-		{"dismiss", "POST", "/v1/documents/design-x/dismiss", "no CLI command; use the dashboard: POST /v1/documents/design-x/dismiss"},
+		{"confirm:system_design:design-x:3", "POST", "/v1/system-designs/design-x/versions/3/confirm", "no CLI command; use the dashboard: POST /v1/system-designs/design-x/versions/3/confirm"},
+		{"dismiss:system_design:design-x:3", "POST", "/v1/system-designs/design-x/versions/3/dismiss", "no CLI command; use the dashboard: POST /v1/system-designs/design-x/versions/3/dismiss"},
+		{"confirm:requirement:req-x:2", "POST", "/v1/requirements/req-x/versions/2/confirm", "no CLI command; use the dashboard: POST /v1/requirements/req-x/versions/2/confirm"},
+		{"dismiss:requirement:req-x:2", "POST", "/v1/requirements/req-x/versions/2/dismiss", "no CLI command; use the dashboard: POST /v1/requirements/req-x/versions/2/dismiss"},
 		{"recover", "POST", taskPath + "/redispatch", "cli: conveyor order redispatch 261011-aaaaaa-spec-9"},
 		{"start_over", "POST", taskPath + "/restart", "cli: conveyor task restart " + task},
 		{"recover", "POST", orderPath + "/recover", "cli: conveyor order recover " + order},
@@ -235,5 +243,133 @@ func TestTaskStatusJSONVerbatim(t *testing.T) {
 	}
 	if !json.Valid(out.Bytes()) {
 		t.Fatal("output is not JSON")
+	}
+}
+
+// TestTaskStatusPrintsRealServerClaimWait runs task status against the real
+// handler for a row-8 claim wait: --json prints the statement GET
+// /v1/tasks/{id}/next-action returns, and the text names the withholding
+// version and its version routes, never a /v1/documents/ route
+// (req-operator-next-action AC-1.4, AC-5.1; feature-operator-next-action NA-8).
+func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
+	isolateLocalAuthTest(t)
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	const taskID = "261015-claimw"
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: taskID + "-review-1", TaskID: taskID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: taskID + "-review-1", TaskID: taskID, JobID: taskID + "-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	governs := "```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
+	design, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "component-claim-wait", Title: "Claim wait", Category: "Component design"}, core.SystemDesignVersion{Content: "# Claim wait\n\n" + governs, Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, initial.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Claim wait\n\nRevised.\n\n" + governs, Origin: core.SystemDesignOriginImplementation, OriginTaskID: taskID}); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "operator-secret-token"
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	t.Setenv("CONVEYOR_ADDR", httpServer.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "operator-secret-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+
+	request, err := http.NewRequest(http.MethodGet, httpServer.URL+"/v1/tasks/"+taskID+"/next-action?workspace_id=demo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer operator-secret-token")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var rest bytes.Buffer
+	if _, err = rest.ReadFrom(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	var raw bytes.Buffer
+	if err = runTaskStatus(newClient(), &raw, taskID, true); err != nil {
+		t.Fatal(err)
+	}
+	var got, want any
+	if err = json.Unmarshal(raw.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(rest.Bytes(), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("task status --json differs from REST:\ncli=%s\nrest=%s", raw.String(), rest.String())
+	}
+
+	var out bytes.Buffer
+	if err = runTaskStatus(newClient(), &out, taskID, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	ordered := []string{
+		"Document proposal\nA document proposal is withholding the next claim.\n",
+		"question:      Confirm or dismiss the proposal?",
+		"proposal:      component-claim-wait v2 (system_design, pending)",
+		"  - Confirm component-claim-wait v2: Confirms this pending revision.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-claim-wait/versions/2/confirm",
+		"  - Dismiss component-claim-wait v2: Dismisses this pending revision.",
+		"      no CLI command; use the dashboard: POST /v1/system-designs/component-claim-wait/versions/2/dismiss",
+		"if ignored:    The claim stays withheld.",
+		"kind:          document_proposal",
+	}
+	at := 0
+	for _, line := range ordered {
+		index := strings.Index(text[at:], line)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", line, at, text)
+		}
+		at += index + len(line)
+	}
+	if strings.Contains(text, "/v1/documents/") {
+		t.Fatalf("task status names /v1/documents/:\n%s", text)
+	}
+
+	// A context-only task prints the context row and its task-context routes
+	// (req-intake-and-triage AC-7.3).
+	const contextTask = "261015-ctxonl"
+	if err = st.CreateTask(ctx, core.Task{ID: contextTask, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextTask, TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."}); err != nil || suppressed {
+		t.Fatalf("suppressed=%t err=%v", suppressed, err)
+	}
+	var contextOut bytes.Buffer
+	if err = runTaskStatus(newClient(), &contextOut, contextTask, false); err != nil {
+		t.Fatal(err)
+	}
+	contextText := contextOut.String()
+	at = 0
+	for _, line := range []string{
+		"Context proposal\nA context proposal is waiting for a decision.\n",
+		"question:      Confirm or dismiss the proposed context?",
+		"  - Confirm context system_design component-claim-wait: Attaches the proposed context to this task.",
+		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/confirm",
+		"  - Dismiss context system_design component-claim-wait: Dismisses the proposed context.",
+		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/dismiss",
+		"if ignored:    The proposal stays pending.",
+		"kind:          context_proposal",
+	} {
+		index := strings.Index(contextText[at:], line)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", line, at, contextText)
+		}
+		at += index + len(line)
 	}
 }

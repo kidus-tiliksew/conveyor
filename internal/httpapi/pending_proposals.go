@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -103,79 +102,22 @@ type waitingProposal struct {
 	Version int    `json:"version"`
 }
 
-// store.RequirementVersionWithholdsClaims and
-// store.SystemDesignVersionWithholdsClaims are the claim-gate predicate of
-// req-260810-70ce2f REQ-1 (AC-1.1–AC-1.4), stated once in the store package.
-// Work-order listing, the claim precheck, and the store claim transactions
-// apply the same predicate (component-work-orders); the parity tests in
-// pending_proposals_test.go claim real verify and review orders against each
-// fixture this projection classifies. Decisions, task-context suggestions, and
-// operator, session, drift, or other-task origins never withhold a claim.
-
-// claimWaitWindowTasks reports the tasks whose verify or review claim is
-// pending or in flight: a submitted implementation (which stays submitted until
-// its review round is terminal) or a verify or review order not yet terminal.
-func claimWaitWindowTasks(orders []core.WorkOrder) map[string]bool {
-	result := make(map[string]bool)
-	for _, order := range orders {
-		switch {
-		case order.Stage == core.StageImplement && order.State == core.WorkOrderSubmitted:
-			result[order.TaskID] = true
-		case (order.Stage == core.StageVerify || order.Stage == core.StageReview) &&
-			(order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted):
-			result[order.TaskID] = true
-		}
-	}
-	return result
-}
-
 // proposalClaimWaitingByTask returns, for each task in its claim window, the
-// pending proposals that withhold its verify and review claims. The normalized
-// PendingProposal drops the raw origin, so each candidate requirement or System
-// Design version authored by a windowed task is re-read and judged by the
-// claim-gate predicate. Reads are bounded by those candidates and deduplicated
-// within the call; a version resolved or removed between the list and the read
-// is judged on its re-read state. Other storage failures are returned.
-func (s *Server) proposalClaimWaitingByTask(ctx context.Context, orders []core.WorkOrder, proposals []core.PendingProposal) (map[string][]waitingProposal, error) {
-	window := claimWaitWindowTasks(orders)
-	result := make(map[string][]waitingProposal)
-	seen := make(map[waitingProposal]bool)
-	for _, proposal := range proposals {
-		if proposal.OriginType != "task" || !window[proposal.OriginID] {
-			continue
-		}
-		if proposal.Tier != "requirement" && proposal.Tier != "system_design" {
-			continue
-		}
-		identity := waitingProposal{Tier: proposal.Tier, ID: proposal.ID, Version: proposal.Version}
-		if seen[identity] {
-			continue
-		}
-		seen[identity] = true
-		taskID := proposal.OriginID
-		var withholds bool
-		switch proposal.Tier {
-		case "requirement":
-			version, err := s.Store.GetRequirementVersion(ctx, proposal.ID, proposal.Version)
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			withholds = store.RequirementVersionWithholdsClaims(taskID, version)
-		case "system_design":
-			version, err := s.Store.GetSystemDesignVersion(ctx, proposal.ID, proposal.Version)
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			withholds = store.SystemDesignVersionWithholdsClaims(taskID, version)
-		}
-		if withholds {
-			result[taskID] = append(result[taskID], identity)
+// versions that withhold its verify and review claims. It is
+// store.ClaimWaitingProposals, the selection next-action row 8 also reads, so
+// proposal_claim_waiting, waiting_proposals, and the next action agree with
+// the claim gate (req-260810-70ce2f REQ-1; component-document-corpus). The
+// normalized pending list is never filtered here: it drops the raw origin and
+// archived documents, which the claim still counts.
+func (s *Server) proposalClaimWaitingByTask(ctx context.Context, orders []core.WorkOrder) (map[string][]waitingProposal, error) {
+	selected, err := store.ClaimWaitingProposals(ctx, s.Store, orders)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]waitingProposal, len(selected))
+	for taskID, items := range selected {
+		for _, item := range items {
+			result[taskID] = append(result[taskID], waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
 		}
 	}
 	return result, nil
@@ -188,7 +130,7 @@ func (s *Server) proposalSignals(ctx context.Context, proposals []core.PendingPr
 	if err != nil {
 		return nil, nil, err
 	}
-	waiting, err := s.proposalClaimWaitingByTask(ctx, orders, proposals)
+	waiting, err := s.proposalClaimWaitingByTask(ctx, orders)
 	if err != nil {
 		return nil, nil, err
 	}
