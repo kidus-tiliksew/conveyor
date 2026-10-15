@@ -380,7 +380,19 @@ const humanTimelineKinds = new Set<string>(humanTimelineEventKinds)
 // the factory retries on its own: that retry is a state the task passed
 // through, so it reads as an entry (req-operator-next-action AC-7.3).
 function automaticRetryEvent(event: TaskEventView) {
-  return automaticRetryEventKinds.has(event.kind) && event.payload?.retry_suppressed !== true
+  // An omitted payload keeps its boolean fields in payload_index.
+  const fields = event.payload ?? event.payload_index ?? {}
+  return automaticRetryEventKinds.has(event.kind) && fields.retry_suppressed !== true
+}
+
+// An automatic retry reads as the state it is; the attempt's own failure detail
+// stays in technical activity. An omitted payload keeps its omission marker and
+// audit reference, so the complete record stays one disclosure away
+// (component-web-task-surfaces, History pages).
+function retryNote(note: NoteContent): NoteContent {
+  return note.omittedEventId
+    ? { title: note.title, alarm: note.alarm, detail: note.detail, omittedEventId: note.omittedEventId }
+    : { title: note.title, alarm: note.alarm }
 }
 
 // The closing commands whose own record already tells the story: a rejection
@@ -1394,9 +1406,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, item.task.assignee, members)
     if (!note) continue
-    // An automatic retry reads as the state it is; the attempt's own failure
-    // detail stays in technical activity with the rest of attempt history.
-    const shown = retry ? { title: note.title, alarm: note.alarm } : note
+    const shown = retry ? retryNote(note) : note
     entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
   }
   for (const diagnostic of item.review_diagnostics ?? []) {
@@ -1448,7 +1458,7 @@ export function historyNoteEntries(
     if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, item.task.assignee, members)
     if (!note) continue
-    const shown = retry ? { title: note.title, alarm: note.alarm } : note
+    const shown = retry ? retryNote(note) : note
     entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
   }
   return entries

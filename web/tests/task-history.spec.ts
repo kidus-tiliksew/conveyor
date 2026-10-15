@@ -502,6 +502,102 @@ test('Earlier history pages the human selection and renders omitted payloads as 
   expect(server.calls.every((call) => call.selection === 'human' && call.workspace === 'demo')).toBe(true)
 })
 
+// Automatic retries whose payloads exceed the presentation limit: the
+// suppression flag survives in payload_index, an unsuppressed retry keeps its
+// omission marker and audit reference, and a suppressed one stays attempt
+// history, on the initial page and on an older human page (review round 3).
+function retryLedger(): GeneratedLedger {
+  const generated = generateLedger({ taskId: 'ledger-retry', total: 3_000, reconciled: 2_700, human: 160 })
+  const events = generated.item.events
+  const reconciledAt = (from: number, step: number) => {
+    for (let index = from; index > 0 && index < events.length; index += step)
+      if (events[index].kind === 'dispatch.reconciled') return index
+    throw new Error('no reconciliation event to replace')
+  }
+  const retry = (index: number, kind: 'work_order.child_failed' | 'work_order.stalled', suppressed: boolean) => {
+    events[index] = {
+      ...events[index],
+      kind,
+      job_id: `${generated.taskId}-implement`,
+      actor_id: 'conveyor',
+      actor_role: 'system',
+      payload: {
+        retry_suppressed: suppressed,
+        attempt: index,
+        reason: 'agent process exited',
+        detail: `stack trace ${'x'.repeat(9_000)}`,
+      },
+    }
+    return events[index].id
+  }
+  const newestFailed = reconciledAt(events.length - 3, -1)
+  const newestStalled = reconciledAt(newestFailed - 2, -1)
+  const oldStalled = reconciledAt(200, 1)
+  const oldFailed = reconciledAt(oldStalled + 2, 1)
+  return {
+    ...generated,
+    retryIds: {
+      newestFailed: retry(newestFailed, 'work_order.child_failed', false),
+      newestSuppressedStalled: retry(newestStalled, 'work_order.stalled', true),
+      oldStalled: retry(oldStalled, 'work_order.stalled', false),
+      oldSuppressedFailed: retry(oldFailed, 'work_order.child_failed', true),
+    },
+  } as GeneratedLedger & { retryIds: Record<string, string> }
+}
+
+test('automatic retries with omitted payloads keep their audit disclosure and suppression on both pages', async ({
+  page,
+}) => {
+  const generated = retryLedger() as GeneratedLedger & { retryIds: Record<string, string> }
+  const view = boundedView(generated.item)
+  const byId = new Map(view.events.map((event) => [event.id, event]))
+  // The newest unsuppressed retry is on the initial page, omitted, with its flag indexed.
+  expect(byId.get(generated.retryIds.newestFailed)?.payload_omitted).toBe(true)
+  expect(byId.get(generated.retryIds.newestFailed)?.payload_index?.retry_suppressed).toBe(false)
+  expect(byId.get(generated.retryIds.newestSuppressedStalled)?.payload_index?.retry_suppressed).toBe(true)
+  expect(view.event_page?.has_older).toBe(true)
+  const server = await serveLedgers(page, [generated])
+  const scope = await openDetail(page, 'full route', generated)
+  const timeline = scope.getByRole('region', { name: 'Execution event timeline' })
+
+  const failedRow = timeline.getByRole('listitem').filter({ hasText: 'The agent’s run failed — retrying' })
+  await expect(failedRow).toHaveCount(1)
+  await expect(failedRow.getByText('Details omitted from this page')).toBeVisible()
+  await expect(failedRow.getByText(/stack trace/)).toHaveCount(0)
+  await failedRow.getByText('Event payload', { exact: true }).click()
+  await expect
+    .poll(() => server.auditCalls)
+    .toEqual([`/v1/tasks/${generated.taskId}/audit/event/${generated.retryIds.newestFailed}`])
+  await expect(failedRow.locator('pre').filter({ hasText: 'stack trace' })).toBeVisible()
+  // A suppressed retry is attempt history, with or without its payload.
+  await expect(timeline.getByText(/The agent stopped responding/)).toHaveCount(0)
+
+  await scope.getByRole('button', { name: 'Earlier history' }).click()
+  const earlierPager = pager(scope, 'Earlier history pages')
+  const earlierRows = scope.getByRole('list', { name: 'Earlier history events' }).getByRole('listitem')
+  await expect(earlierRows.first()).toBeVisible()
+  const olderButton = earlierPager.getByRole('button', { name: 'Older' })
+  const stalledRow = earlierRows.filter({ hasText: 'The agent stopped responding — retrying' })
+  for (let step = 0; step < 10 && (await stalledRow.count()) === 0; step++) {
+    await expect(earlierRows.getByText(/not retried automatically/)).toHaveCount(0)
+    if ((await earlierPager.getByText('End of history.').count()) > 0) break
+    const firstRow = (await earlierRows.first().textContent()) ?? ''
+    await olderButton.click()
+    await expect(earlierRows.first()).not.toHaveText(firstRow)
+    expect(await mountedEventRows(page).count()).toBeLessThanOrEqual(50)
+  }
+  await expect(stalledRow).toHaveCount(1)
+  await expect(stalledRow.getByText('Details omitted from this page')).toBeVisible()
+  await expect(earlierRows.getByText(/not retried automatically/)).toHaveCount(0)
+  await stalledRow.getByText('Event payload', { exact: true }).click()
+  await expect
+    .poll(() => server.auditCalls.at(-1))
+    .toBe(`/v1/tasks/${generated.taskId}/audit/event/${generated.retryIds.oldStalled}`)
+  // Decimal IDs above 2^53 reach the audit read unchanged.
+  expect(BigInt(generated.retryIds.oldStalled)).toBeGreaterThan(2n ** 53n)
+  expect(String(Number(generated.retryIds.oldStalled))).not.toBe(generated.retryIds.oldStalled)
+})
+
 // The text the dashboard showed before the bounded view, derived from the
 // complete ledger exactly as the previous client did.
 function completeHistoryJobText(jobId: string, events: CompleteEvent[]) {
