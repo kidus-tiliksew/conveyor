@@ -25,7 +25,7 @@ function activity(state: string, nextAction: NextAction, workOrders: WorkOrder[]
     },
     jobs: [],
     // An event that once implied a different gate: the client must not read it.
-    events: [{ id: 'evt-1', task_id: taskId, kind: 'job.timeout', at: timestamp, payload: {} }],
+    events: [{ id: '9007199254741001', task_id: taskId, kind: 'job.timeout', at: timestamp, payload: {} }],
     work_orders: workOrders,
     reviews: [],
     interventions: [],
