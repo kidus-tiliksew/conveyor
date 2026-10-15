@@ -212,11 +212,22 @@ the server body verbatim.
 |---|---|
 | `conveyor order recover <order-id>` | Post `{request_id, direction}` to `POST /v1/work-orders/{id}/recover`. Optional `--direction <text>`, `--request-id <id>`, and `--json`. |
 | `conveyor order redispatch <order-id>` | Resolve the order's task from `GET /v1/work-orders`, then post to `POST /v1/tasks/{task_id}/redispatch`. An order missing from the list exits `1` with `work order <id> not found`. Optional `--request-id <id>` and `--json`. |
+| `conveyor order retire <order-id> --reason <text>` | Read the order from `GET /v1/work-orders`, then post `{reason, request_id}` to `POST /v1/work-orders/{id}/preempt`, which retires a queued or stale order to `cancelled`. Prints `retired work order <id>: state cancelled (request <id>)`. Optional `--request-id <id>` and `--json`. |
 
-Both commands generate a 32-hex request ID unless `--request-id` is given and
-send it as body `request_id` and as `X-Request-Id` and `X-Idempotency-Key`
-headers. The server enforces the `recover_work` capability; a refusal prints
-the server's status and message unchanged and exits `1`.
+Every order command generates a 32-hex request ID unless `--request-id` is
+given and sends it as body `request_id` and as `X-Request-Id` and
+`X-Idempotency-Key` headers. The server enforces the `recover_work`
+capability; a refusal prints the server's status and message unchanged and
+exits `1`.
+
+`order retire` sends nothing and exits `1` when `--reason` is blank, when the
+order is missing from the list (`work order <id> not found`), when it is
+`claimed` (stop a live attempt with operator preemption instead), or when it is
+in any state other than `queued` or `stale`. If the order is claimed between
+the read and the post, the preempt route revokes the claim and requeues the
+order instead of retiring it. The command then prints the state the server
+returned and exits `1` with `work order <id> was not retired`. Retirement
+touches no branch, worktree, or pull request.
 
 ## run
 
