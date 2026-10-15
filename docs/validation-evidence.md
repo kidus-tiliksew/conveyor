@@ -48,9 +48,11 @@ export npm_config_cache="$CONVEYOR_TASK_CACHE/npm"
 `PLAYWRIGHT_BROWSERS_PATH` controls the browser download used by this
 repository's `npx playwright install` command, while `npm_config_cache` routes
 npm/npx package cache data. The task cache contains only unreferenced scratch.
-Any complete success or failure log, report, or other file relied upon for
-acceptance belongs in a durable per-attempt evidence bundle described below;
-copying a tail into a transcript does not preserve the original log.
+Any complete success or failure log, report, or other file from a local run
+relied upon for a local-only acceptance gate or for diagnosis belongs in a
+durable per-attempt evidence bundle described below; copying a tail into a
+transcript does not preserve the original log. Gates CI runs are evidenced by
+the exact-head CI job record instead (DEC-72).
 
 Register the supported cleanup command for normal exit, command failure, and
 catchable interruption, and run it explicitly when the claim concludes. Pass
@@ -267,6 +269,35 @@ this fallback when the claim ends.
 
 ## Run one validation session and preserve its evidence
 
+DEC-72 splits review evidence by where a gate runs:
+
+- **Gates CI runs.** For task review, a green run of every job in
+  `.github/workflows/ci.yml` on the task's pull request at the exact reviewed
+  head is the evidence for build, vet, fmt-check, `make test` including
+  Playwright, PostgreSQL integration (`make test-integration-ci`), and
+  SingleStore integration (`make test-integration-singlestore-ci`)
+  (DEC-72(1)). Do not run `make validate`, `make test-integration`, or
+  `make test-integration-singlestore-ci` locally to satisfy review. Reviewers
+  require no local manifest or complete-log reference for any gate CI runs.
+  The CI PostgreSQL job runs against a service container created for that run
+  and satisfies the integration run a schema change needs (DEC-72(2)).
+- **Gates CI does not run.** `make test-validation-docker` runs only locally.
+  When a change touches the managed-container lifecycle that
+  `component-validation-tooling` owns (the managed PostgreSQL container,
+  Compose isolation, the invocation inventory, sealing, owned teardown, or
+  recovery), run it directly as a local-only acceptance gate and retain its
+  record with `scripts/validation_evidence.py run` as described below. CI's
+  PostgreSQL job never exercises that lifecycle (DEC-72(3)).
+- **Iteration and diagnosis.** Focused checks while iterating, such as a
+  single-package `go test`, need no retained record unless the approved plan
+  names them as acceptance gates. Running a heavy target locally to diagnose a
+  CI failure is allowed; retain that record under the rules below, but it
+  never replaces the exact-head CI job (DEC-72(3)).
+
+The rest of this section, the resource rules, and the evidence helper describe
+local execution: the target mechanics for iteration and diagnosis, and the
+record kept for a local-only acceptance gate.
+
 For this repository, `make validate` runs the existing `build`, `vet`,
 `fmt-check`, and complete `test` aggregate in one Make graph. It installs web
 dependencies once with `npm ci` and builds the dashboard once. This is the
@@ -281,15 +312,19 @@ also part of `make test`. `make test-validation-docker` runs the real Docker
 and PostgreSQL resource-lifecycle fixtures; `make test-integration` depends on
 it, and missing Docker fails it as missing evidence rather than skipping.
 
-The complete ordinary gate still includes Compose isolation, installer checks,
-Go tests, dashboard TypeScript compilation, Biome, and Playwright. Explicit
-capability-parity typechecking remains in `make test-web`. Run configured
-`make test-integration` and `make test-integration-singlestore-ci` separately
-when the contract requires them. An unset backend, skipped suite, narrowed
-command, failed aggregate, or local reuse never satisfies a mandatory fresh
-boundary. Each database run uses disposable isolated fixtures.
+The complete ordinary gate includes Compose isolation, installer checks, Go
+tests, dashboard TypeScript compilation, Biome, and Playwright. TypeScript is
+checked by `tsc` in the dashboard build, and `make test-web` also runs the
+`web-typecheck` prerequisite (`npm run typecheck`, which runs `tsc` alone).
+`make test-integration` and `make test-integration-singlestore-ci` stay
+available locally for iteration and CI-failure diagnosis; CI runs the
+integration gates for review. A local run never stands in for a missing,
+cancelled, or failed CI job. For a local-only acceptance gate, an unset
+backend, skipped suite, narrowed command, failed aggregate, or local reuse
+never satisfies a mandatory fresh boundary. Each local database run uses
+disposable isolated fixtures.
 
-Each required database run uses the repository fixture lifecycle. Preparation
+Each local database run uses the repository fixture lifecycle. Preparation
 checks the configured endpoint, repository Go driver, optional external Docker
 network, and configured disk threshold, then creates a unique database ending in
 `_test` and writes a task-owned ownership record without a DSN or credential.
@@ -441,10 +476,12 @@ cd web && python3 ../scripts/validation_resources.py launch --task "$task_id" \
 The launcher stops its group when it receives `SIGINT`, `SIGTERM`, or
 `SIGHUP`, when its parent exits, or after `--timeout`.
 
-`scripts/validation_evidence.py` records a fresh command with `run`, checks an
-existing record with `check`, and associates eligible evidence with the actual
-pushed branch using `bind`. It never skips a Make prerequisite or changes a
-required gate. Run it from the dedicated worktree. By default, `run` exclusively
+`scripts/validation_evidence.py` records a fresh local command with `run`,
+checks an existing record with `check`, and associates eligible evidence with
+the actual pushed branch using `bind`. Use it for a local-only acceptance gate
+and for a retained diagnostic run; a gate CI runs needs no local record
+(DEC-72(2)). It never skips a Make prerequisite or changes a required gate.
+Run it from the dedicated worktree. By default, `run` exclusively
 creates a unique attempt directory under
 `$XDG_STATE_HOME/conveyor/<task-id>/` (default
 `$HOME/.local/state/conveyor/<task-id>/`), outside both checkouts and all task
@@ -556,8 +593,19 @@ resolved gofmt runtime; target names alone do not establish independence.
 
 Local manifests and logs are task-context evidence, not artifacts carrying the
 `verification_evidence` role, whose permitted image/recording types remain
-unchanged. Record fresh exact-head CI independently. Local equivalence never
-makes a prior reviewed-head approval current or replaces independent reviewer
-judgment, mandatory done criteria, or either operator gate
+unchanged. They serve local-only acceptance gates and retained diagnosis; no
+local record, checked or bound, stands in for a gate CI runs.
+
+For gates CI runs, the review evidence is the `ci.yml` run at the exact pushed
+head of the task's pull request (DEC-72(1)). Record it in `report_progress` and
+in the pull request body: the run URL, the run attempt, the exact head SHA,
+every job name with its conclusion, and every failed or cancelled attempt on
+that head. A missing, cancelled, or failed job leaves its gate unsatisfied. A
+passing rerun attempt on the same head satisfies it when the pull request lists
+the failed attempts, and a newer commit, including a merge of the base branch,
+needs its own green run (DEC-72(4)). CI stays review evidence and adds no merge
+gate; both task gates are unchanged (DEC-72(5)). Neither CI nor local
+equivalence makes a prior reviewed-head approval current or replaces
+independent reviewer judgment, mandatory done criteria, or either operator gate
 (`req-review-gates-evidence` REQ-4/AC-4.1 and REQ-7/AC-7.1;
-`component-verification-strategy`; DEC-53).
+`component-verification-strategy`; DEC-53; DEC-72).
