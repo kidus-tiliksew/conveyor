@@ -58,6 +58,11 @@ export const serverHumanTimelineEventKinds = [
   'review.refresh_skipped',
   'dispatch.failed',
   'job.log_stream_degraded',
+  'pipeline.bounced',
+  'task.state_changed',
+  'task.dependency_added',
+  'work_order.child_failed',
+  'work_order.stalled',
 ] as const
 
 const humanKinds = new Set<string>(serverHumanTimelineEventKinds)

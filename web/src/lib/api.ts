@@ -8,11 +8,11 @@ import type {
   InterventionAction,
   LineageGraph,
   LineageNodeType,
+  MonitorDriftOutcome,
+  MonitorStatus,
   NextAction,
   NextActionChoice,
   NextActionsPage,
-  MonitorDriftOutcome,
-  MonitorStatus,
   PendingProposalsResponse,
   PlanningBundle,
   PlanningMessage,
@@ -382,7 +382,8 @@ export async function fetchTaskHistory(
   return response.json() as Promise<TaskHistoryPage>
 }
 
-// The flow projection for task detail (NA-7), read in the query's workspace.
+// The flow projection for the opt-in Board stage stripe (NA-7), read in the
+// query's workspace.
 export async function fetchTaskFlow(workspace: string, taskId: string, signal?: AbortSignal) {
   const body = await getJSON<{ flow: TaskFlow }>(
     workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/flow`, workspace),

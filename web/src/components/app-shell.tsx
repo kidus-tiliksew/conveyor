@@ -25,8 +25,8 @@ import {
   fetchWorkspaces,
   signOutDashboardSession,
 } from '../lib/api'
-import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
 import type { WorkspaceCapability, WorkspaceRole } from '../lib/types'
+import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'

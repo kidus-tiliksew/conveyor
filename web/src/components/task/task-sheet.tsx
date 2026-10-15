@@ -11,7 +11,6 @@ import { NextActionCard } from './next-action-card'
 import { isReviewable } from './review-panel'
 import { SpecCard } from './spec-card'
 import { TaskContextCard } from './task-context-card'
-import { TaskFlowChart } from './task-flow'
 import { TaskHeader } from './task-header'
 import { Timeline } from './timeline'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
@@ -120,7 +119,6 @@ function SheetBody({ item }: { item: ActivityItem }) {
       {/* Relationships are read in the explorer panel, not inline: the panel
           is the one rendering of this task's lineage. */}
       <NextActionCard taskId={item.task.id} gateOpen={isReviewable(item)} />
-      <TaskFlowChart taskId={item.task.id} />
       <Timeline item={item} routeVariant="sheet" />
     </div>
   )

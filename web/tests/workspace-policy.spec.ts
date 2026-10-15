@@ -1,5 +1,5 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
 import { readFileSync } from 'node:fs'
+import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 
 const document = {

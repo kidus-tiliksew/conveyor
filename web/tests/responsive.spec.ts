@@ -3,9 +3,9 @@
 // canvas, and no surface scrolls sideways at phone width.
 import { expect, type Locator, type Page } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
-import { waitForSheetSettled } from './helpers/sheet'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
+import { waitForSheetSettled } from './helpers/sheet'
 
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }

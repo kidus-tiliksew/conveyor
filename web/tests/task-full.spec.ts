@@ -5211,9 +5211,11 @@ test('board cards show a neutral, keyboard-reachable dependency chip using title
   )
   await page.goto('/')
   const card = page.getByRole('link', { name: /Short task/ })
-  await expect(card.getByText('Waiting on dependencies')).toBeVisible()
+  // The dependency mark replaces the chip (req-operator-next-action AC-3.4).
+  const mark = card.locator('[data-dependency-mark="waiting"]')
+  await expect(mark).toBeVisible()
   await card.focus()
-  await expect(card.getByRole('tooltip')).toContainText('Runtime')
+  await expect(mark.locator('[role="tooltip"]')).toContainText('Runtime')
 })
 
 test('unsatisfiable dependency is attention-worthy and can be unlinked with an audited reason only from detail', async ({
@@ -5272,7 +5274,10 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
 
   await page.goto('/')
   const card = page.getByRole('link', { name: /Short task/ })
-  await expect(card.getByText('Dependency needs attention')).toBeVisible()
+  await expect(card.locator('[data-dependency-mark="unsatisfiable"]')).toHaveAttribute(
+    'aria-label',
+    /closed without merging/,
+  )
   await expect(card.getByRole('button', { name: /Unlink dependency/ })).toHaveCount(0)
   await card.click()
 

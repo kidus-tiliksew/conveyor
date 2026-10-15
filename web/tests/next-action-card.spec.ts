@@ -1,10 +1,10 @@
 import { expect, type Page } from '@playwright/test'
-import { test } from './helpers/bounded-detail'
 import type { NextAction, WorkOrder } from '../src/lib/types'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
 // Task detail leads with the server's next action and acts only through the
-// server's choices (feature-operator-next-action NA-6, NA-4; AC-4.4, AC-1.7).
+// server's choices (feature-operator-next-action NA-6, NA-4; AC-7.1, AC-1.7).
 // Every next action here is a server-shaped projection; the assertions check
 // that the card, the human gate and the recovery card render what the server
 // stated and derive nothing from events.

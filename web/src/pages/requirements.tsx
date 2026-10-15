@@ -23,11 +23,11 @@ import { type AttentionItem, AttentionSurface } from '../components/documents/at
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import {
   archivedByDismissal,
+  DocumentReview,
   dismissalArchiveConsequence,
   dismissalArchiveDescription,
-  DocumentReview,
-  reviewVersionLabel,
   type ReviewSearch,
+  reviewVersionLabel,
   selectedReviewVersion,
 } from '../components/documents/document-review'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
@@ -70,9 +70,9 @@ import {
   uploadArtifact,
   uploadReferenceDocument,
 } from '../lib/api'
-import { taskDetailQueryKey } from '../lib/query-keys'
 import { sessionGoalLabel, taskStateLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
+import { taskDetailQueryKey } from '../lib/query-keys'
 import type {
   CheckpointContextCandidate,
   ReferenceDocument,

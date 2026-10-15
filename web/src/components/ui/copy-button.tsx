@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Button } from './button'
 
 export function CopyButton({

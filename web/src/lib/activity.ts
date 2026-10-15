@@ -352,23 +352,40 @@ export const noteEventKinds = [
   'review.refresh_skipped',
   'dispatch.failed',
   'job.log_stream_degraded',
+  'task.state_changed',
+  'task.dependency_added',
 ] as const
 
 type NoteEventKind = (typeof noteEventKinds)[number]
 
 // Kinds `noteFor` never renders: the review cards, panels, and the approval
 // intervention already tell their story.
-const hiddenNoteKinds = new Set(['pipeline.bounced', 'review.completed', 'spec.version_approved'])
+const hiddenNoteKinds = new Set(['review.completed', 'spec.version_approved'])
+
+// Attempt kinds that read as an entry when the factory retries the run on its
+// own (req-operator-next-action AC-7.3); see automaticRetryEvent.
+const automaticRetryEventKinds = new Set(['work_order.child_failed', 'work_order.stalled'])
 
 // The effective human-timeline rule: every kind `noteFor` can render, minus the
-// attempt bookkeeping `buildTimeline` skips before `noteFor` runs, minus the
-// kinds `noteFor` always hides. The server's human selection must equal this
+// attempt bookkeeping `buildTimeline` skips before `noteFor` runs other than
+// automatic retries, minus the kinds `noteFor` always hides. The server's human selection must equal this
 // list (component-http-api, Bounded detail view).
 export const humanTimelineEventKinds = noteEventKinds.filter(
-  (kind) => !attemptEventKinds.has(kind) && !hiddenNoteKinds.has(kind),
+  (kind) => (!attemptEventKinds.has(kind) || automaticRetryEventKinds.has(kind)) && !hiddenNoteKinds.has(kind),
 )
 
 const humanTimelineKinds = new Set<string>(humanTimelineEventKinds)
+
+// Attempt history stays out of the timeline, except a failed or stalled run
+// the factory retries on its own: that retry is a state the task passed
+// through, so it reads as an entry (req-operator-next-action AC-7.3).
+function automaticRetryEvent(event: TaskEventView) {
+  return automaticRetryEventKinds.has(event.kind) && event.payload?.retry_suppressed !== true
+}
+
+// The closing commands whose own record already tells the story: a rejection
+// and a cancellation are interventions, a blueprint close has its own note.
+const closeCommandsWithEntries = new Set(['intervention.reject', 'task.cancel', 'blueprint.close'])
 
 export type CurrentExecutionKind =
   | 'running'
@@ -970,19 +987,20 @@ function noteFor(
   if (event.kind === 'review.round_completed' && isPanelReviewEvent(event, panels)) return undefined
   if (event.payload_omitted && !event.payload) {
     if (!humanTimelineKinds.has(event.kind)) return undefined
-    const title = noteContent(event.kind, event.payload_index ?? {}, assignee, members)?.title
+    const title = noteContent(event.kind, event.payload_index ?? {}, panels, assignee, members)?.title
     return {
       title: title ?? humanizeKind(event.kind),
       detail: 'Details omitted from this page',
       omittedEventId: event.id,
     }
   }
-  return noteContent(event.kind, event.payload ?? {}, assignee, members)
+  return noteContent(event.kind, event.payload ?? {}, panels, assignee, members)
 }
 
 function noteContent(
   kind: string,
   payload: Record<string, unknown>,
+  panels: PanelIndex,
   assignee?: TaskAssignee,
   members: WorkspaceMembership[] = [],
 ): NoteContent | undefined {
@@ -1045,9 +1063,49 @@ function noteContent(
     // Review cards and panels already render outcome, feedback, and bounce
     // context. Keep the audit events, but do not duplicate these two semantic
     // review-transition records as standalone timeline notes.
-    case 'pipeline.bounced':
     case 'review.completed':
       return undefined
+    // A panel round carries its own bounce count. A bounce outside any panel
+    // round would otherwise leave no trace, so it reads as an entry with its
+    // count; a merge-gate return is told by its intervention entry instead.
+    case 'pipeline.bounced': {
+      const round = typeof payload.review_round === 'number' ? payload.review_round : undefined
+      if (round !== undefined && panels.rounds.has(round)) return undefined
+      // A review bounce without a round (older payloads name no stage at all)
+      // belongs to the per-order panels that predate rounds, which tell it.
+      if (round === undefined && (payload.from ?? 'review') === 'review' && panels.panels.length > 0) return undefined
+      if (payload.source === userRequestChangesReason) return undefined
+      const to =
+        typeof payload.to === 'string'
+          ? (workOrderStageLabels[payload.to] ?? stageLabels[payload.to] ?? payload.to)
+          : 'implementation'
+      return {
+        title: `Sent back to ${to.toLowerCase()}`,
+        detail: typeof payload.count === 'number' ? `Bounce ${payload.count}` : undefined,
+      }
+    }
+    case 'task.state_changed': {
+      const command = typeof payload.command === 'string' ? payload.command : ''
+      if (payload.to === 'parked')
+        return {
+          title: 'Parked',
+          detail:
+            command === 'triage.park'
+              ? 'Triage parked the task for an operator decision'
+              : command === 'dispatch.fail_final'
+                ? 'Dispatch kept failing after its retries'
+                : undefined,
+          alarm: true,
+        }
+      if (payload.to === 'closed' && !closeCommandsWithEntries.has(command))
+        return { title: command === 'task.start_over' ? 'Closed — started over as a new task' : 'Closed' }
+      return undefined
+    }
+    case 'task.dependency_added':
+      return {
+        title: 'Waiting on another task',
+        detail: typeof payload.depends_on_task_id === 'string' ? payload.depends_on_task_id : undefined,
+      }
     case 'pipeline.bounce_limit': {
       const source = typeof payload.source === 'string' ? payload.source.trim() : ''
       const sourceLabel = outputInvalidKinds.has(source)
@@ -1332,9 +1390,14 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
-    if (attemptEventKinds.has(event.kind)) continue
+    const retry = automaticRetryEvent(event)
+    if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, item.task.assignee, members)
-    if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
+    if (!note) continue
+    // An automatic retry reads as the state it is; the attempt's own failure
+    // detail stays in technical activity with the rest of attempt history.
+    const shown = retry ? { title: note.title, alarm: note.alarm } : note
+    entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
   }
   for (const diagnostic of item.review_diagnostics ?? []) {
     // Active claims already appear as deliberating seats in the review panel.
@@ -1381,9 +1444,12 @@ export function historyNoteEntries(
   const panels = buildReviewPanels(item)
   const entries: Extract<TimelineEntry, { type: 'note' }>[] = []
   for (const event of events) {
-    if (attemptEventKinds.has(event.kind)) continue
+    const retry = automaticRetryEvent(event)
+    if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, item.task.assignee, members)
-    if (note) entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...note })
+    if (!note) continue
+    const shown = retry ? { title: note.title, alarm: note.alarm } : note
+    entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
   }
   return entries
 }

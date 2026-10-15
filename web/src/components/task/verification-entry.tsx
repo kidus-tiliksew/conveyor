@@ -24,8 +24,8 @@ import {
   useVerificationEvidence,
   VerificationObservationForm,
 } from './verification-evidence'
-import { CollectionPages } from './verification-stage'
 import { VerificationPermissions } from './verification-permissions'
+import { CollectionPages } from './verification-stage'
 
 // The verify stage is a structured result, not a narration, so like the
 // review panel it gets its own timeline entry instead of the generic job

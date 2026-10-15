@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { nextActionQueryKey, nextActionsQueryKey } from '../components/inbox/use-next-actions'
 import { taskDetailQueryKey } from './query-keys'
 

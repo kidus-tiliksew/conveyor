@@ -1,6 +1,6 @@
 import { expect, type Page, type Route, test } from '@playwright/test'
-import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
+import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 
 // No production role holds confirm_documents without propose_documents. The
 // server serves whatever list its bundle table yields, so these cases serve

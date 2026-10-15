@@ -42,8 +42,9 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 	noteKinds := literal("noteEventKinds", `export const noteEventKinds = \[([^\]]*)\]\s*as const`)
 	attemptKinds := literal("attemptEventKinds", `const attemptEventKinds = new Set\(\[([^\]]*)\]\)`)
 	hiddenKinds := literal("hiddenNoteKinds", `const hiddenNoteKinds = new Set\(\[([^\]]*)\]\)`)
-	if !regexp.MustCompile(`export const humanTimelineEventKinds = noteEventKinds\.filter\(\s*\(kind\) => !attemptEventKinds\.has\(kind\) && !hiddenNoteKinds\.has\(kind\),?\s*\)`).MatchString(text) {
-		t.Fatal("humanTimelineEventKinds is not computed as noteEventKinds minus attemptEventKinds and hiddenNoteKinds")
+	retryKinds := literal("automaticRetryEventKinds", `const automaticRetryEventKinds = new Set\(\[([^\]]*)\]\)`)
+	if !regexp.MustCompile(`export const humanTimelineEventKinds = noteEventKinds\.filter\(\s*\(kind\) => \(!attemptEventKinds\.has\(kind\) \|\| automaticRetryEventKinds\.has\(kind\)\) && !hiddenNoteKinds\.has\(kind\),?\s*\)`).MatchString(text) {
+		t.Fatal("humanTimelineEventKinds is not computed as noteEventKinds minus non-retry attemptEventKinds and hiddenNoteKinds")
 	}
 	// noteEventKinds must be exactly the case labels the note switch renders,
 	// from noteFor through its helpers up to the next timeline section.
@@ -69,12 +70,12 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 	}
 	var want []string
 	for _, kind := range noteKinds {
-		if !slices.Contains(attemptKinds, kind) && !slices.Contains(hiddenKinds, kind) {
+		if (!slices.Contains(attemptKinds, kind) || slices.Contains(retryKinds, kind)) && !slices.Contains(hiddenKinds, kind) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 33 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 33 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 38 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 38 distinct kinds: %v", humanTimelineEventKinds)
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))

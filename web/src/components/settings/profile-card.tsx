@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { UserRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Input } from '../ui/input'
-import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
 
 export function ProfileCard() {
   const { workspace } = useWorkspaceSelection()

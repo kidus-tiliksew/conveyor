@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { BookOpenText, Download, ExternalLink, X } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
 import { downloadLineageEvidence, fetchLineage } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { LineageGraph, LineageLink, LineageNode, LineageNodeType } from '../../lib/types'

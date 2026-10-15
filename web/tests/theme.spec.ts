@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 
 async function mockShellAPIs(page: Page) {
   await page.route('**/v1/**', async (route: Route) => {
