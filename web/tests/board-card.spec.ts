@@ -86,6 +86,15 @@ const stalled = {
   summary: 'Server summary: the latest order cannot be claimed.',
   deadline: null,
 }
+const agentQuestion = {
+  label: 'Cited revisions need a decision',
+  actor: 'operator',
+  kind: 'agent_question',
+  judgment: true,
+  summary:
+    'The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.',
+  deadline: null,
+}
 
 const items = [
   card('task-proposal', 'Confirm the dashboard proposal', 'spec', proposal),
@@ -123,6 +132,16 @@ const items = [
   ),
   card('task-failed', 'Recover the stalled order', 'implement', stalled, {
     stalled: { last_failure: 'claim refused: no live claimant' },
+  }),
+  // A deliberate checkpoint release also matches the stalled row, so the
+  // activity item carries its release message (component-web-task-surfaces,
+  // Board and Tasks list).
+  card('task-checkpoint', 'Fix checkpoint presentation', 'implement', agentQuestion, {
+    stalled: { needed: true, reason: 'retry suppressed', last_failure: 'operator checkpoint reached' },
+  }),
+  card('task-checkpoint-forge', 'Publish the checkpoint comment', 'implement', agentQuestion, {
+    stalled: { needed: true, reason: 'retry suppressed', last_failure: 'operator checkpoint reached' },
+    forge_failure: { surface: 'pull request comment', detail: 'GitHub refused the comment', category: 'forge' },
   }),
 ]
 
@@ -293,6 +312,23 @@ test('status marks follow the server actor and kind, with a recorded failure fir
   await expect(assigned.getByRole('button', { name: /Kidus Tiliksew/ })).toContainText('KT')
   const label = assigned.locator('[data-next-action-label]')
   expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+})
+
+test('an agent-question checkpoint card reads as the operator question, not a failure', async ({ page }) => {
+  await mockBoard(page)
+  await page.goto('/')
+  const checkpoint = cardFor(page, 'Fix checkpoint presentation')
+  await expect(checkpoint.locator('[data-next-action-label]')).toHaveText(agentQuestion.label)
+  await expect(checkpoint.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'operator')
+  await expect(checkpoint.locator('[data-next-action-label]')).toHaveClass(/text-attention/)
+  await expect(checkpoint).not.toContainText('operator checkpoint reached')
+  await expect(checkpoint.locator('.text-failure')).toHaveCount(0)
+  await expect(checkpoint).toHaveAccessibleDescription(agentQuestion.summary)
+  // A forge failure on the same task still prints and still sets the tone.
+  const forge = cardFor(page, 'Publish the checkpoint comment')
+  await expect(forge.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'failure')
+  await expect(forge.getByText(/GitHub refused the comment/)).toHaveClass(/text-failure/)
+  await expect(forge).not.toContainText('operator checkpoint reached')
 })
 
 test('an operator card is not tinted; only the mark and the label carry the colour', async ({ page }) => {

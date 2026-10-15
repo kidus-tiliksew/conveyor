@@ -35,6 +35,7 @@ import { Card, CardContent } from '../ui/card'
 import { Disclosure } from '../ui/disclosure'
 import { Skeleton } from '../ui/skeleton'
 import { type BoardSearch, boardSearchFilter } from './board-search'
+import { isAgentQuestion } from './task-card'
 
 const PAGE_SIZE = 25
 
@@ -364,13 +365,19 @@ function TaskRow({
         <CalendarDays className="size-4 shrink-0 text-faint" aria-hidden="true" />
         <span>Updated {relativeTime(item.last_event_at || task.created_at)}</span>
       </Disclosure>
-      {item.stalled?.needed && (
-        <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
-          Stalled — {item.stalled.reason}
-          {item.stalled.last_failure
-            ? `: ${humanizeClaimRefusal(item.stalled.last_failure, task.assignee, members)}`
-            : ''}
+      {item.stalled?.needed && item.next_action && isAgentQuestion(item) ? (
+        <p className="col-span-full mt-2 border-t border-attention/30 pt-2 text-xs text-attention">
+          <span className="font-medium">{item.next_action.label}</span> — {item.next_action.summary}
         </p>
+      ) : (
+        item.stalled?.needed && (
+          <p className="col-span-full mt-2 border-t border-failure/20 pt-2 text-xs text-failure">
+            Stalled — {item.stalled.reason}
+            {item.stalled.last_failure
+              ? `: ${humanizeClaimRefusal(item.stalled.last_failure, task.assignee, members)}`
+              : ''}
+          </p>
+        )
       )}
     </li>
   )

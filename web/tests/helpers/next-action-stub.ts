@@ -85,6 +85,21 @@ const catalogue: Record<string, { label: string; summary: string; question?: str
     question: 'Answer the agent?',
     choices: [],
   },
+  // The two authority-conflict variants of catalogue.go (NA-4), selected by
+  // whether any cited document has a pending proposal.
+  'agent_question:cited_revisions': {
+    label: 'Cited revisions need a decision',
+    summary:
+      'The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.',
+    question: 'Will you confirm or dismiss the cited revisions, then recover the order with direction?',
+    choices: [],
+  },
+  'agent_question:revision_needed': {
+    label: 'Cited documents need a revision',
+    summary: 'The agent asks you to author a revision of the cited documents, then recover the order with direction.',
+    question: 'Will you author a revision of the cited documents, then recover the order with direction?',
+    choices: [],
+  },
   verification_disposition: {
     label: 'Verification disposition',
     summary: 'Verification needs a disposition.',
@@ -200,7 +215,31 @@ export function projectNextAction(item: ActivityItem): NextAction {
     kind = current?.kind ?? 'working'
     order = current?.order
   }
-  const entry = catalogue[kind]
+  // The agent-question details the server copies from the selected order's
+  // checkpoint (project.go): the decision request, class, and the pending
+  // versions of cited documents, one per document and version.
+  const checkpoint = kind === 'agent_question' ? order?.checkpoint : undefined
+  const details: NextAction['details'] = {}
+  let variant = kind
+  if (checkpoint?.decision_request) {
+    details.checkpoint = checkpoint.decision_request
+    if (checkpoint.class === 'authority_conflict') {
+      const proposals = new Map<string, { tier: string; id: string; version: number }>()
+      for (const citation of checkpoint.citations ?? []) {
+        for (const proposal of citation.pending_proposals ?? []) {
+          const version = proposal.version ?? 0
+          proposals.set(`${citation.document_id}:${version}`, {
+            tier: citation.document_kind,
+            id: citation.document_id,
+            version,
+          })
+        }
+      }
+      details.pending_proposals = [...proposals.values()]
+      variant = proposals.size > 0 ? 'agent_question:cited_revisions' : 'agent_question:revision_needed'
+    }
+  }
+  const entry = catalogue[variant]
   const choices: NextActionChoice[] = entry.choices.map(([id, label, method, path]) => ({
     id,
     label,
@@ -233,7 +272,7 @@ export function projectNextAction(item: ActivityItem): NextAction {
       execution_deadline: null,
       lease_expires_at: null,
     },
-    details: {},
+    details,
   }
 }
 
