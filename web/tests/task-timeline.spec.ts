@@ -1,5 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
-import type { NextAction, WorkOrder } from '../src/lib/types'
+import { buildTimeline, type TimelineEntry } from '../src/lib/activity'
+import type { ActivityItem, NextAction, WorkOrder } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 
 // Task detail tells the task's story through its timeline
@@ -296,6 +297,167 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
   await expect(timeline.getByText('Closed — started over as a new task')).toBeVisible()
   await expect(timeline.getByText('Closed', { exact: true })).toHaveCount(0)
 })
+
+// A plan stage shaped like task 261015-3721c6's: claimed at 06:31:37Z, lease
+// renewed at 06:32:22Z, and the plan drafted and the job ended at 06:34:18Z
+// (req-task-centric-operations-view AC-2.2; component-web-task-surfaces).
+const planStart = '2026-10-15T06:31:37Z'
+const planRenewed = '2026-10-15T06:32:22Z'
+const planEnd = '2026-10-15T06:34:18Z'
+
+function planStage(extra: { jobEnd?: string; draftedAt?: string } = {}) {
+  const id = `${taskId}-spec-1`
+  return activity({
+    latest_stage: 'implement',
+    jobs: [job(id, 'spec', 'done', { started_at: planStart, ended_at: extra.jobEnd ?? planEnd })],
+    work_orders: [
+      order(id, {
+        stage: 'spec',
+        state: 'completed',
+        queue_entered_at: planStart,
+        last_agent_activity_at: planRenewed,
+        last_agent_activity_label: 'Claim lease renewed',
+      }),
+    ],
+    events: [
+      event(779742, 'work_order.claimed', planStart, { id, stage: 'spec' }),
+      event(779755, 'work_order.lease_renewed', planRenewed, { lease_expires_at: '2026-10-15T07:31:37Z' }),
+      event(779762, 'spec.version_created', extra.draftedAt ?? planEnd, { version: 1 }),
+    ],
+  })
+}
+
+const timelineOf = (item: object) => buildTimeline(item as ActivityItem)
+
+function titleOf(entry: TimelineEntry) {
+  if (entry.type === 'job') return `${entry.job.stage} job`
+  return 'title' in entry ? entry.title : entry.type
+}
+
+const agentActivity = (entries: TimelineEntry[]) =>
+  entries.filter((entry) => entry.type === 'note' && entry.title.startsWith('Agent activity'))
+
+test('a completed plan entry sits at its end, after the plan version it drafted', () => {
+  for (const drafted of [planEnd, '2026-10-15T06:34:17.900Z']) {
+    const titles = timelineOf(planStage({ draftedAt: drafted })).map(titleOf)
+    expect(titles).toEqual(['Plan v1 drafted', 'spec job'])
+  }
+  const [entry] = timelineOf(planStage()).filter((item) => item.type === 'job')
+  expect(entry.at).toBe(planEnd)
+})
+
+test('a running job sits at its start, and a finished job without an end keeps its start', () => {
+  const running = activity({ jobs: [job(`${taskId}-implement-1`, 'implement', 'running')] })
+  expect(timelineOf(running).find((entry) => entry.type === 'job')?.at).toBe(minutes(6))
+  const legacy = activity({ jobs: [job(`${taskId}-implement-1`, 'implement', 'failed')] })
+  expect(timelineOf(legacy).find((entry) => entry.type === 'job')?.at).toBe(minutes(6))
+  const failed = activity({
+    jobs: [job(`${taskId}-implement-1`, 'implement', 'failed', { ended_at: minutes(9) })],
+  })
+  expect(timelineOf(failed).find((entry) => entry.type === 'job')?.at).toBe(minutes(9))
+})
+
+test('attempt bookkeeping and finished or superseded orders add no agent-activity note', () => {
+  expect(agentActivity(timelineOf(planStage()))).toEqual([])
+  for (const label of [
+    'Work order claimed',
+    'Claim lease renewed',
+    'Attempt worktree checkpointed',
+    'Usage telemetry reported',
+    'Usage and rate-limit telemetry reported',
+    'Transcript uploaded',
+  ]) {
+    const live = activity({
+      work_orders: [
+        order(`${taskId}-implement-1`, { last_agent_activity_at: minutes(7), last_agent_activity_label: label }),
+      ],
+    })
+    expect(agentActivity(timelineOf(live)), label).toEqual([])
+  }
+  const progress = { last_agent_activity_at: minutes(7), last_agent_activity_label: 'Progress: wiring the timeline' }
+  for (const state of ['submitted', 'completed', 'cancelled'] as const) {
+    const finished = activity({ work_orders: [order(`${taskId}-implement-1`, { state, ...progress })] })
+    expect(agentActivity(timelineOf(finished)), state).toEqual([])
+  }
+  const superseded = activity({
+    work_orders: [
+      order(`${taskId}-implement-1`, { state: 'stale', ...progress }),
+      order(`${taskId}-implement-2`, { state: 'queued', queue_entered_at: minutes(30) }),
+    ],
+  })
+  expect(agentActivity(timelineOf(superseded))).toEqual([])
+})
+
+test('a live order keeps its progress note and the full report', () => {
+  for (const state of ['claimed', 'queued'] as const) {
+    const live = activity({
+      work_orders: [
+        order(`${taskId}-implement-1`, {
+          state,
+          last_agent_activity_at: minutes(7),
+          last_agent_activity_label: 'Progress: wiring the timeline',
+          progress: 'Wiring the timeline in full detail.',
+        }),
+      ],
+    })
+    const notes = agentActivity(timelineOf(live))
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toMatchObject({
+      at: minutes(7),
+      title: 'Agent activity — Progress: wiring the timeline',
+      fullProgress: 'Wiring the timeline in full detail.',
+    })
+  }
+})
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} lists the completed plan after its draft and keeps lease renewals technical`, async ({
+    page,
+  }) => {
+    const item = planStage()
+    await mockAPI(page, item, {
+      ...nextAction(`${taskId}-implement-1`),
+      current_order: undefined,
+      attempt: undefined,
+    })
+    await page.route(`**/v1/tasks/${taskId}/history*`, (route) =>
+      route.fulfill({
+        json: {
+          selection: 'technical',
+          limit: 50,
+          events: item.events.map((entry) => ({ ...(entry as object), id: String((entry as { id: number }).id) })),
+          boundary: { max_id: '779762', count: 3 },
+          has_older: false,
+          has_newer: false,
+        },
+      }),
+    )
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const drafted = timeline.getByText('Plan v1 drafted')
+    const completed = timeline.getByText('Plan completed')
+    await expect(drafted).toBeVisible()
+    await expect(completed).toBeVisible()
+    const follows = await drafted.evaluate(
+      (element, other) => Boolean(element.compareDocumentPosition(other as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
+      await completed.elementHandle(),
+    )
+    expect(follows).toBe(true)
+    const row = completed.locator('..')
+    await expect(row.getByText('2m 41s')).toBeVisible()
+    const endTime = await page.evaluate(
+      (value) =>
+        new Date(value).toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      planEnd,
+    )
+    await expect(row.locator('time')).toHaveText(endTime)
+    await expect(timeline.getByText(/Claim lease renewed/)).toHaveCount(0)
+    await page.getByRole('button', { name: 'Show technical activity' }).click()
+    await expect(
+      page.getByRole('list', { name: 'Technical activity events' }).getByText('work_order.lease_renewed'),
+    ).toBeVisible()
+  })
+}
 
 for (const theme of ['light', 'dark'] as const) {
   test(`the current attempt renders in the ${theme} theme`, async ({ page }) => {
