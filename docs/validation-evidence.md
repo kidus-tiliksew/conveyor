@@ -282,12 +282,13 @@ DEC-72 splits review evidence by where a gate runs:
   The CI PostgreSQL job runs against a service container created for that run
   and satisfies the integration run a schema change needs (DEC-72(2)).
 - **Gates CI does not run.** `make test-validation-docker` runs only locally.
-  When a change touches the managed-container lifecycle that
-  `component-validation-tooling` owns (the managed PostgreSQL container,
-  Compose isolation, the invocation inventory, sealing, owned teardown, or
-  recovery), run it directly as a local-only acceptance gate and retain its
-  record with `scripts/validation_evidence.py run` as described below. CI's
-  PostgreSQL job never exercises that lifecycle (DEC-72(3)).
+  When a change touches the validation helpers' Docker, container, network,
+  database, Compose, or fixture lifecycle, or the Playwright server lifecycle
+  (`component-verification-strategy` "Evidence by risk"), run it directly as a
+  local-only acceptance gate and retain its record with
+  `scripts/validation_evidence.py run` as described below. CI's PostgreSQL job
+  runs against its own service container and never exercises the managed
+  container lifecycle (DEC-72(3)).
 - **Iteration and diagnosis.** Focused checks while iterating, such as a
   single-package `go test`, need no retained record unless the approved plan
   names them as acceptance gates. Running a heavy target locally to diagnose a
