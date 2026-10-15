@@ -426,6 +426,21 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 	}
 }
 
+// TerminalSweepPayload is the work_order.cancelled payload every backend's
+// terminal sweep records. taskCommand names the terminal task command and is
+// omitted when the order clock retires an order that history left open on a
+// terminal task (component-task-lifecycle "Terminal retirement of work orders").
+func TerminalSweepPayload(id, attemptID, sessionID string, from core.WorkOrderState, taskCommand core.TaskCommand) json.RawMessage {
+	payload := map[string]any{
+		"id": id, "attempt_id": attemptID, "session_id": sessionID, "state": core.WorkOrderCancelled,
+		"from": from, "command": core.WorkOrderCmdCancel, "reason": core.TaskTerminalSuppressionReason,
+	}
+	if taskCommand != "" {
+		payload["task_command"] = taskCommand
+	}
+	return core.JSONPayload(payload)
+}
+
 func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Task{}, err
@@ -471,6 +486,8 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 	m.tasks[id] = task
 	if core.TaskTerminal(state) {
 		m.deleteProposedTaskContextLocked(task.ID)
+		actor := ActorFromContext(ctx)
+		m.cancelTaskWorkOrdersLocked(ctx, id, command.Kind, actor.ID, actor.Role, time.Now().UTC())
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
 	if command.FailureMessage != "" {
@@ -518,6 +535,8 @@ func (m *memory) closeBlueprintParentLocked(ctx context.Context, parentID string
 	parent.GateKind = core.GateKindFor(closed, core.TaskBlueprintClose)
 	m.tasks[parent.ID] = parent
 	m.deleteProposedTaskContextLocked(parent.ID)
+	actor := ActorFromContext(ctx)
+	m.cancelTaskWorkOrdersLocked(ctx, parent.ID, core.TaskBlueprintClose, actor.ID, actor.Role, time.Now().UTC())
 	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": closed, "command": core.TaskBlueprintClose})})
 	m.appendEventLocked(ctx, core.Event{TaskID: parent.ID, Kind: "blueprint.closed", Payload: core.JSONPayload(map[string]any{"children": childCount, "terminal_states": []core.TaskState{core.TaskMerged, core.TaskClosed}})})
 	m.recordDependencyOutcomeLocked(ctx, parent.ID, closed, time.Now().UTC())

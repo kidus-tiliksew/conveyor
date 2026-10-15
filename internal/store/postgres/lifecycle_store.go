@@ -82,6 +82,10 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			if err := deleteProposedTaskContextTx(ctx, tx, id); err != nil {
 				return err
 			}
+			actor := store.ActorFromContext(ctx)
+			if _, err := cancelTaskWorkOrdersTx(ctx, tx, q, id, command.Kind, actor.ID, actor.Role, time.Now().UTC()); err != nil {
+				return err
+			}
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
@@ -160,6 +164,10 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		return false, err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, parentID); err != nil {
+		return false, err
+	}
+	actor := store.ActorFromContext(ctx)
+	if _, err = cancelTaskWorkOrdersTx(ctx, tx, q, parentID, core.TaskBlueprintClose, actor.ID, actor.Role, time.Now().UTC()); err != nil {
 		return false, err
 	}
 	if err = insertEvent(ctx, q, core.Event{TaskID: parentID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
