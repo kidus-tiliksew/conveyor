@@ -65,16 +65,21 @@ type Input struct {
 	GateSpecVersion int
 	Markers         Markers
 	ClaimWaiting    []ProposalRef
-	Blockers        []BlockerRef
-	MergeConflict   MergeConflict
-	MergeReadiness  *MergeReadiness
-	Recommendation  string
-	Assignee        *core.TaskAssignee
-	Capabilities    map[core.Capability]bool
-	LiveClaimants   *ClaimantView
-	Recovery        map[string]AutomaticRecovery
-	Now             time.Time
-	PullRequest     int
+	// PendingProposals is the workspace's pending document proposals, read
+	// for agent-question presentation only. Unlike ClaimWaiting it never
+	// selects the document_proposal row or changes claim eligibility
+	// (component-work-orders, Next action).
+	PendingProposals []ProposalRef
+	Blockers         []BlockerRef
+	MergeConflict    MergeConflict
+	MergeReadiness   *MergeReadiness
+	Recommendation   string
+	Assignee         *core.TaskAssignee
+	Capabilities     map[core.Capability]bool
+	LiveClaimants    *ClaimantView
+	Recovery         map[string]AutomaticRecovery
+	Now              time.Time
+	PullRequest      int
 }
 
 // Markers are the activity facts the assembler already folded.
@@ -88,6 +93,8 @@ type Markers struct {
 	VerificationDisposition  bool
 	CheckpointDecision       bool
 	Checkpoint               string
+	CheckpointClass          string
+	Citations                []core.WorkOrderAuthorityConflictCitation
 	ReleaseOutcome           string
 }
 
@@ -197,16 +204,20 @@ type Refusal struct {
 }
 
 type Details struct {
-	GateKind         string        `json:"gate_kind,omitempty"`
-	ReasonCode       string        `json:"reason_code,omitempty"`
-	StallReason      string        `json:"stall_reason,omitempty"`
-	ReleaseOutcome   string        `json:"release_outcome,omitempty"`
-	OrderIDs         []string      `json:"order_ids,omitempty"`
-	Checkpoint       string        `json:"checkpoint,omitempty"`
-	PendingProposals []ProposalRef `json:"pending_proposals,omitempty"`
-	Secondary        []Secondary   `json:"secondary,omitempty"`
-	Refusals         []Refusal     `json:"refusals,omitempty"`
-	MergeReadiness   string        `json:"merge_readiness,omitempty"`
+	GateKind        string   `json:"gate_kind,omitempty"`
+	ReasonCode      string   `json:"reason_code,omitempty"`
+	StallReason     string   `json:"stall_reason,omitempty"`
+	ReleaseOutcome  string   `json:"release_outcome,omitempty"`
+	OrderIDs        []string `json:"order_ids,omitempty"`
+	Checkpoint      string   `json:"checkpoint,omitempty"`
+	CheckpointClass string   `json:"checkpoint_class,omitempty"`
+	// Citations are the checkpoint's citations with the cited version and
+	// statement or section unchanged (req-260820-394cac AC-4.1).
+	Citations        []core.WorkOrderAuthorityConflictCitation `json:"citations,omitempty"`
+	PendingProposals []ProposalRef                             `json:"pending_proposals,omitempty"`
+	Secondary        []Secondary                               `json:"secondary,omitempty"`
+	Refusals         []Refusal                                 `json:"refusals,omitempty"`
+	MergeReadiness   string                                    `json:"merge_readiness,omitempty"`
 }
 
 // Compact is the list-item shape. Label is the same catalogue entry as the full shape.

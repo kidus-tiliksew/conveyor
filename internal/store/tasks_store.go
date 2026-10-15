@@ -1474,39 +1474,7 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 	m.interventions[task.ID] = append(m.interventions[task.ID], intervention)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: intervention.JobID, Kind: "intervention.cancel", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"reason_code": intervention.ReasonCode, "comment": intervention.Comment}), At: intervention.At})
 
-	cancelled := make([]string, 0)
-	for id, order := range m.workOrders {
-		if order.TaskID != task.ID || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
-			continue
-		}
-		attemptID, sessionID := order.AttemptID, order.SessionID
-		if attemptID != "" {
-			order.LastAttemptID = attemptID
-			clearActiveAttempt(&order)
-		}
-		if order.State == core.WorkOrderClaimed {
-			order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
-		}
-		orderState, transitionErr := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel)
-		if transitionErr != nil {
-			return core.Task{}, transitionErr
-		}
-		order.State, order.Claimable, order.UpdatedAt = orderState, false, intervention.At
-		m.workOrders[id] = order
-		eventOrder := order
-		eventOrder.AttemptID = attemptID
-		eventOrder.SessionID = sessionID
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(eventOrder), At: intervention.At})
-		cancelled = append(cancelled, id)
-		if jobs := m.jobs[task.ID]; len(jobs) != 0 {
-			for i := range jobs {
-				if jobs[i].ID == order.JobID && jobs[i].State != core.JobDone {
-					jobs[i].State, jobs[i].EndedAt = core.JobFailed, intervention.At
-				}
-			}
-			m.jobs[task.ID] = jobs
-		}
-	}
+	cancelled := m.cancelTaskWorkOrdersLocked(ctx, task.ID, core.TaskCancel, intervention.ActorID, intervention.ActorRole, intervention.At)
 	from := task.State
 	task.State, task.NextStage, task.RecoveryStage = taskState, "", ""
 	task.GateKind = core.GateKindFor(taskState, core.TaskCancel)
@@ -1516,6 +1484,50 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.cancelled", ActorID: intervention.ActorID, ActorRole: intervention.ActorRole, Payload: core.JSONPayload(map[string]any{"actor": intervention.ActorID, "reason": intervention.ReasonCode, "comment": intervention.Comment, "from": from, "cancelled_work_orders": cancelled}), At: intervention.At})
 	m.recordDependencyOutcomeLocked(ctx, task.ID, taskState, intervention.At)
 	return task, nil
+}
+
+// cancelTaskWorkOrdersLocked is the terminal sweep: every order of the task
+// that is not completed or cancelled moves to cancelled under order.cancel,
+// loses its claim, has retry suppressed, fails its job, and records one
+// work_order.cancelled event. Cancellation and every other edge into merged or
+// closed share it (component-task-lifecycle "Terminal retirement of work
+// orders"; req-task-lifecycle-and-queue AC-8.1).
+func (m *memory) cancelTaskWorkOrdersLocked(ctx context.Context, taskID string, taskCommand core.TaskCommand, actorID string, actorRole core.ActorRole, at time.Time) []string {
+	ids := make([]string, 0)
+	for id, order := range m.workOrders {
+		if order.TaskID != taskID || order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+			continue
+		}
+		if _, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdCancel); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		order := m.workOrders[id]
+		from, attemptID, sessionID := order.State, order.AttemptID, order.SessionID
+		if attemptID != "" {
+			order.LastAttemptID = attemptID
+			clearActiveAttempt(&order)
+		}
+		if from == core.WorkOrderClaimed {
+			order.LastAttemptOutcome = core.WorkOrderOutcomeCancelled
+		}
+		order.State, order.Claimable, order.UpdatedAt = core.WorkOrderCancelled, false, at
+		order.RetrySuppressed, order.RetrySuppressionReason, order.NextRetryAt = true, core.TaskTerminalSuppressionReason, time.Time{}
+		m.workOrders[id] = order
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: order.JobID, Kind: "work_order.cancelled", ActorID: actorID, ActorRole: actorRole, Payload: TerminalSweepPayload(id, attemptID, sessionID, from, taskCommand), At: at})
+		if jobs := m.jobs[taskID]; len(jobs) != 0 {
+			for i := range jobs {
+				if jobs[i].ID == order.JobID && jobs[i].State != core.JobDone {
+					jobs[i].State, jobs[i].EndedAt = core.JobFailed, at
+				}
+			}
+			m.jobs[taskID] = jobs
+		}
+	}
+	return ids
 }
 
 func (m *memory) ListInterventions(_ context.Context, taskID string) ([]core.Intervention, error) {

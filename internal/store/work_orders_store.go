@@ -2030,6 +2030,26 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 			seen[order.TaskID] = struct{}{}
 		}
 	}
+	orphans := map[string]struct{}{}
+	for _, order := range m.workOrders {
+		task := m.tasks[order.TaskID]
+		if (selected != "" && task.Workspace != selected) || !core.TaskTerminal(task.State) ||
+			order.State == core.WorkOrderCompleted || order.State == core.WorkOrderCancelled {
+			continue
+		}
+		orphans[order.TaskID] = struct{}{}
+	}
+	orphanIDs := make([]string, 0, len(orphans))
+	for taskID := range orphans {
+		orphanIDs = append(orphanIDs, taskID)
+	}
+	sort.Strings(orphanIDs)
+	if len(orphanIDs) > TerminalOrphanTaskBatch {
+		orphanIDs = orphanIDs[:TerminalOrphanTaskBatch]
+	}
+	for _, taskID := range orphanIDs {
+		seen[taskID] = struct{}{}
+	}
 	result := make([]string, 0, len(seen))
 	for taskID := range seen {
 		result = append(result, taskID)
@@ -2037,6 +2057,11 @@ func (m *memory) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time)
 	sort.Strings(result)
 	return result, nil
 }
+
+// TerminalOrphanTaskBatch bounds how many merged or closed tasks still holding
+// a non-terminal order one order-clock tick selects per workspace, beside the
+// tasks with a due transition (component-work-orders "Three clocks").
+const TerminalOrphanTaskBatch = 100
 
 func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
 	if _, err := RequireActor(ctx); err != nil {
@@ -2047,6 +2072,13 @@ func (m *memory) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLeas
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// An order of a terminal task has no clock: retire what history left open
+	// instead of marking it stale or timed_out (component-work-orders "Three
+	// clocks").
+	if task, ok := m.tasks[taskID]; ok && core.TaskTerminal(task.State) {
+		actor := ActorFromContext(ctx)
+		return len(m.cancelTaskWorkOrdersLocked(ctx, taskID, "", actor.ID, actor.Role, now)), nil
+	}
 	count := 0
 	for id, order := range m.workOrders {
 		if order.TaskID != taskID {

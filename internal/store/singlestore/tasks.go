@@ -880,6 +880,10 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 			if err := deleteProposedTaskContextTx(ctx, tx, id); err != nil {
 				return err
 			}
+			actor := store.ActorFromContext(ctx)
+			if _, err := cancelTaskWorkOrdersTx(ctx, tx, id, command.Kind, actor.ID, actor.Role, time.Now().UTC()); err != nil {
+				return err
+			}
 		}
 		if err := taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
@@ -951,6 +955,10 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx *sql.Tx, parentID
 		return false, err
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, parentID); err != nil {
+		return false, err
+	}
+	actor := store.ActorFromContext(ctx)
+	if _, err = cancelTaskWorkOrdersTx(ctx, tx, parentID, core.TaskBlueprintClose, actor.ID, actor.Role, time.Now().UTC()); err != nil {
 		return false, err
 	}
 	if err = taskEvent(ctx, tx, core.Event{TaskID: parentID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{
@@ -1111,57 +1119,9 @@ func (s *Store) cancelTaskTx(ctx context.Context, tx *sql.Tx, i core.Interventio
 	if err = event("intervention.cancel", map[string]any{"reason_code": i.ReasonCode, "comment": i.Comment}, i.JobID); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT id,job_id,state,attempt_id,session_id FROM work_orders WHERE workspace_id=? AND task_id=? AND state NOT IN ('completed','cancelled') FOR UPDATE`, documentWorkspace(ctx), i.TaskID)
+	cancelled, err := cancelTaskWorkOrdersTx(ctx, tx, i.TaskID, core.TaskCancel, i.ActorID, i.ActorRole, i.At)
 	if err != nil {
 		return err
-	}
-	type cancelledOrder struct {
-		id, job, attempt, session string
-		state                     core.WorkOrderState
-	}
-	var orders []cancelledOrder
-	for rows.Next() {
-		var o cancelledOrder
-		if err = rows.Scan(&o.id, &o.job, &o.state, &o.attempt, &o.session); err != nil {
-			rows.Close()
-			return err
-		}
-		if _, err = core.TransitionWorkOrder(o.state, core.WorkOrderCmdCancel); err != nil {
-			rows.Close()
-			return err
-		}
-		orders = append(orders, o)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	var cancelled []string
-	for _, o := range orders {
-		v := map[string]any{"state": core.WorkOrderCancelled, "attempt_id": "", "updated_at": i.At}
-		if o.state == core.WorkOrderClaimed {
-			v["last_attempt_outcome"] = "cancelled"
-		}
-		if o.attempt != "" {
-			v["last_attempt_id"] = o.attempt
-			for _, key := range []string{"claimant_id", "session_id", "client_token_hash", "agent", "model", "worker_id", "model_enforcement"} {
-				v[key] = ""
-			}
-			for _, key := range []string{"lease_expires_at", "execution_started_at", "execution_deadline"} {
-				v[key] = nil
-			}
-		}
-		if _, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: v, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": o.id}}); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',ended_at=?,updated_at=? WHERE workspace_id=? AND task_id=? AND id=? AND state<>'done'`, i.At, i.At, documentWorkspace(ctx), i.TaskID, o.job); err != nil {
-			return err
-		}
-		cancelled = append(cancelled, o.id)
-		if err = event("work_order.cancelled", map[string]any{"id": o.id, "attempt_id": o.attempt, "session_id": o.session, "state": core.WorkOrderCancelled, "from": o.state, "command": core.WorkOrderCmdCancel}, o.job); err != nil {
-			return err
-		}
 	}
 	if err = taskWrite(ctx, tx, i.TaskID, map[string]any{"state": state, "gate_kind": string(core.GateKindFor(core.TaskState(state), core.TaskCancel)), "next_stage": "", "recovery_stage": ""}); err != nil {
 		return err
@@ -1176,6 +1136,73 @@ func (s *Store) cancelTaskTx(ctx context.Context, tx *sql.Tx, i core.Interventio
 		return err
 	}
 	return s.recordDependencyOutcomeTx(ctx, tx, i.TaskID, state, i.At)
+}
+
+// cancelTaskWorkOrdersTx is the terminal sweep: every order of the task that
+// is not completed or cancelled moves to cancelled under order.cancel, loses its
+// claim, has retry suppressed, fails its job, and records one
+// work_order.cancelled event. Cancellation and every other edge into merged or
+// closed share it (component-task-lifecycle "Terminal retirement of work
+// orders"; req-task-lifecycle-and-queue AC-8.1).
+func cancelTaskWorkOrdersTx(ctx context.Context, tx *sql.Tx, taskID string, taskCommand core.TaskCommand, actorID string, actorRole core.ActorRole, at time.Time) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,job_id,state,attempt_id,session_id FROM work_orders WHERE workspace_id=? AND task_id=? AND state NOT IN ('completed','cancelled') ORDER BY id FOR UPDATE`, documentWorkspace(ctx), taskID)
+	if err != nil {
+		return nil, err
+	}
+	type cancelledOrder struct {
+		id, job, attempt, session string
+		state                     core.WorkOrderState
+	}
+	var orders []cancelledOrder
+	for rows.Next() {
+		var o cancelledOrder
+		if err = rows.Scan(&o.id, &o.job, &o.state, &o.attempt, &o.session); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if _, err = core.TransitionWorkOrder(o.state, core.WorkOrderCmdCancel); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		orders = append(orders, o)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	cancelled := []string{}
+	for _, o := range orders {
+		v := map[string]any{"state": core.WorkOrderCancelled, "attempt_id": "", "updated_at": at,
+			"retry_suppressed": true, "retry_suppression_reason": core.TaskTerminalSuppressionReason, "next_retry_at": nil}
+		if o.state == core.WorkOrderClaimed {
+			v["last_attempt_outcome"] = core.WorkOrderOutcomeCancelled
+		}
+		if o.attempt != "" {
+			v["last_attempt_id"] = o.attempt
+			for _, key := range []string{"claimant_id", "session_id", "client_token_hash", "agent", "model", "worker_id", "model_enforcement"} {
+				v[key] = ""
+			}
+			for _, key := range []string{"lease_expires_at", "execution_started_at", "execution_deadline"} {
+				v[key] = nil
+			}
+		}
+		result, writeErr := writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: v, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": o.id, "state": o.state}})
+		if writeErr != nil {
+			return nil, writeErr
+		}
+		if affected, affectedErr := result.RowsAffected(); affectedErr != nil || affected != 1 {
+			return nil, fmt.Errorf("work order %s changed during terminal retirement", o.id)
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',ended_at=?,updated_at=? WHERE workspace_id=? AND task_id=? AND id=? AND state<>'done'`, at, at, documentWorkspace(ctx), taskID, o.job); err != nil {
+			return nil, err
+		}
+		cancelled = append(cancelled, o.id)
+		if err = taskEvent(ctx, tx, core.Event{TaskID: taskID, JobID: o.job, Kind: "work_order.cancelled", ActorID: actorID, ActorRole: actorRole, Payload: store.TerminalSweepPayload(o.id, o.attempt, o.session, o.state, taskCommand), At: at}); err != nil {
+			return nil, err
+		}
+	}
+	return cancelled, nil
 }
 
 func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {

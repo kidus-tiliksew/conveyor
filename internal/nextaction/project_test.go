@@ -120,6 +120,13 @@ func TestCatalogueCoverage(t *testing.T) {
 			t.Fatalf("release %s missing", outcome)
 		}
 	}
+	for _, variant := range AgentQuestionVariants() {
+		entry, ok := LookupVariant(KindAgentQuestion, "", ReleaseCheckpoint, "", variant)
+		base, _ := Lookup(KindAgentQuestion, "", "", "")
+		if !ok || entry.Label == "" || entry.Label == base.Label || entry.Summary == nil || entry.Question == nil {
+			t.Fatalf("agent question variant %s missing", variant)
+		}
+	}
 	for _, gate := range GateKinds() {
 		entry, ok := Lookup(string(gate), "", "", string(gate))
 		if !ok || entry.Label == "" || entry.RunGate == nil || entry.RunGate.Label == "" {

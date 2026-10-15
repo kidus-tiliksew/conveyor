@@ -890,6 +890,7 @@ const (
 	WorkOrderFailureDetailLimit                     = 2 * 1024
 	WorkOrderDecisionRequestLimit                   = 1024
 	WorkOrderCheckpointClassAuthorityConflict       = "authority_conflict"
+	TaskTerminalSuppressionReason                   = "task_terminal"
 )
 
 // WorkOrderCheckpoint is operator-facing context recorded by a deliberate

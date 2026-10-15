@@ -117,9 +117,13 @@ req-usage-telemetry REQ-1, REQ-2).
 
 When an operator asks a coordinator to supervise a bounded task queue, display
 each task's frozen plan and merge policy before admitting it to work. Preserve
-that policy for the task's lifetime. Requiring exact-head green CI before
-independent review is a coordinator admission rule; it neither creates a merge
-gate nor promises a later gate for a task whose `merge_approval` is false.
+that policy for the task's lifetime. Exact-head green CI can come from two
+sources. A repository's validation documentation can designate CI as a gate's
+review evidence, as [Record CI-designated gates](#record-ci-designated-gates)
+describes. A coordinator can also require it before independent review as an
+admission rule. Neither source creates a merge gate, changes branch
+protection, or promises a later gate for a task whose `merge_approval` is
+false.
 
 Use these outcomes when reporting queue progress:
 
@@ -163,6 +167,31 @@ for scratch space, required gates, fixtures, and retained evidence: its
 `AGENTS.md` or `CLAUDE.md` guidance and any testing-strategy document. Report
 an unavailable environment or missing evidence as a blocker rather than a
 pass.
+
+### Record CI-designated gates
+
+The repository's validation documentation can designate continuous
+integration (CI) jobs as a gate's review evidence. For each such gate:
+
+1. Commit, push the task branch, and open its pull request so the designated
+   jobs run on the exact head you will submit.
+2. Wait for every designated job to finish on that head.
+3. Before `submit_for_review`, record each job's run URL, attempt, conclusion,
+   and head SHA in `report_progress` and in the pull request body. Also record
+   every failed attempt on that head.
+4. Then run `conveyor submit <task-id>`. It reuses the open pull request and
+   submits the same head.
+
+Do not rerun a CI-designated gate locally to satisfy review. Local runs remain
+for focused checks while iterating, for diagnosing a CI failure, and for gates
+the documentation does not assign to CI. Those runs follow the documentation's
+own evidence rules.
+
+A designated job that is missing, cancelled, or failed on the submitted head
+leaves its gate unsatisfied. A passing rerun attempt on the same head satisfies
+the gate only when the pull request body lists the failed attempts. A new
+commit needs its own green run. CI evidence is review evidence, not a merge
+gate. It changes neither task gate nor the frozen merge policy.
 
 ## Keep the lease alive
 
