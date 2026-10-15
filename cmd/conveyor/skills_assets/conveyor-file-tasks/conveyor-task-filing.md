@@ -92,11 +92,12 @@ contract.
   gate and does not promise a later merge gate.
 
 A queue that requires one decision per pull request must set
-`merge_approval: true` at intake. A coordinator may require exact-head green CI
-before admitting work to independent review, but that queue procedure is not a
-new runtime gate and does not change the frozen merge policy. Never manually
-hold a gate-off queue while describing it as waiting for a later merge
-decision.
+`merge_approval: true` at intake. A repository's validation documentation may
+designate exact-head green CI as a gate's review evidence. A coordinator may
+also require exact-head green CI before admitting work to independent review.
+Neither is a new runtime gate, and neither changes the frozen merge policy or
+branch protection. Never manually hold a gate-off queue while describing it as
+waiting for a later merge decision.
 
 ## Body house style
 
@@ -118,8 +119,10 @@ Structure that has survived contact with the agents:
    shrink; new edge kinds ship with projector + two-store conformance +
    vocabulary lockstep + rebuild proof on day one.
 4. `## Exit` — observable, agent-satisfiable criteria ending with the
-   gates: `make test` (and `make test-integration` when stores/migrations
-   are touched) green.
+   gates the repository's validation documentation names for the touched
+   scope. Where that documentation designates CI as a gate's evidence, the
+   gate is exact-head green CI recorded in the pull request body: run URL,
+   attempt, each job's conclusion, head SHA, and any failed attempts.
 
 Task bodies are read by people and agents who never saw the filing session
 (DEC-28). Attribute actions and observations to people by name, never by

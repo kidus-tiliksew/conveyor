@@ -167,30 +167,61 @@ func TestConveyorWorkSkillOmitsRepositoryValidationProcedure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Playbooks ship to every repository, so CI-designated evidence is
+	// described without this repository's targets or workflow (DEC-72).
 	forbidden := []string{
 		"make validate",
+		"make test",
+		"ci.yml",
 		"validation_evidence.py",
 		"validation_resources.py",
 		"validation_fixtures.py",
 	}
-	required := []string{
-		"Run the validation the work-order contract names",
-		"`AGENTS.md` or `CLAUDE.md` guidance and any testing-strategy document",
+	tests := []struct {
+		path     string
+		required []string
+	}{
+		{
+			path: filepath.Join("conveyor-work", "conveyor-work.md"),
+			required: []string{
+				"Run the validation the work-order contract names",
+				"`AGENTS.md` or `CLAUDE.md` guidance and any testing-strategy document",
+				"validation documentation can designate continuous integration (CI) jobs as a gate's review evidence",
+				"push the task branch, and open its pull request so the designated jobs run on the exact head you will submit",
+				"record each job's run URL, attempt, conclusion, and head SHA in `report_progress` and in the pull request body",
+				"Also record every failed attempt on that head",
+				"Do not rerun a CI-designated gate locally to satisfy review",
+				"missing, cancelled, or failed on the submitted head leaves its gate unsatisfied",
+				"only when the pull request body lists the failed attempts",
+				"CI evidence is review evidence, not a merge gate",
+				"Neither source creates a merge gate, changes branch protection",
+			},
+		},
+		{
+			path: filepath.Join("conveyor-file-tasks", "conveyor-task-filing.md"),
+			required: []string{
+				"ending with the gates the repository's validation documentation names for the touched scope",
+				"the gate is exact-head green CI recorded in the pull request body",
+				"may designate exact-head green CI as a gate's review evidence",
+			},
+		},
 	}
 	for _, destination := range destinations {
-		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		normalized := strings.Join(strings.Fields(string(content)), " ")
-		for _, fragment := range forbidden {
-			if strings.Contains(normalized, fragment) {
-				t.Errorf("%s installed conveyor-work playbook ships repository-specific %q", destination.tool.name, fragment)
+		for _, test := range tests {
+			content, err := os.ReadFile(filepath.Join(destination.root, test.path))
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		for _, fragment := range required {
-			if !strings.Contains(normalized, fragment) {
-				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
+			normalized := strings.Join(strings.Fields(string(content)), " ")
+			for _, fragment := range forbidden {
+				if strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s ships repository-specific %q", destination.tool.name, test.path, fragment)
+				}
+			}
+			for _, fragment := range test.required {
+				if !strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s missing %q", destination.tool.name, test.path, fragment)
+				}
 			}
 		}
 	}
