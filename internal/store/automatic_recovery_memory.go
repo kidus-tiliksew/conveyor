@@ -69,6 +69,16 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 		if err := WorkOrderRecoveryRefusal(task, current, orders); err != nil {
 			current.RecoveryRefusal = err.Error()
 		}
+		if AnsweredAuthorityCandidate(task, current) {
+			recovered, err := m.recoverAnsweredAuthorityLocked(ctx, task, current, queueTimeout, now)
+			if err != nil {
+				return acted, err
+			}
+			if recovered {
+				acted++
+			}
+			continue
+		}
 		decision := DecideAutomaticRecovery(policy, task, current, now)
 		switch decision.Kind {
 		case AutomaticRecoverySchedule:
@@ -90,7 +100,7 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 			if decision.Kind == AutomaticRecoveryRedispatch {
 				current, err = m.redispatchOrderLocked(ctx, current, queueTimeout, now, true, policy, requestID)
 			} else {
-				current, err = m.recoverOrderLocked(ctx, current, requestID, "", queueTimeout, now, nil, true, policy)
+				current, err = m.recoverOrderLocked(ctx, current, requestID, "", queueTimeout, now, nil, recoveryMechanical, policy, nil)
 			}
 			if err != nil {
 				return acted, err
@@ -103,7 +113,75 @@ func (m *memory) applyAutomaticRecoveryLocked(ctx context.Context, taskID string
 	return acted, nil
 }
 
-func (m *memory) recoverOrderLocked(ctx context.Context, order core.WorkOrder, requestID, direction string, queueTimeout time.Duration, now time.Time, refreeze *RecoveryRefreeze, automatic bool, policy config.RecoveryPolicy) (core.WorkOrder, error) {
+// recoveryMode selects the ledger and audit of one recovery transition: an
+// operator recovery resets the ledger, a mechanical recovery stamps it (AR-3),
+// and an authority-confirmed recovery leaves it unchanged and clears the
+// answered checkpoint (feature-bounded-automatic-recovery AR-3a).
+type recoveryMode int
+
+const (
+	recoveryOperator recoveryMode = iota
+	recoveryMechanical
+	recoveryAuthorityConfirmed
+)
+
+// recoverAnsweredAuthorityLocked reads the cited documents under the mutex,
+// decides, and recovers the order once for its release (DEC-73).
+func (m *memory) recoverAnsweredAuthorityLocked(ctx context.Context, task core.Task, order core.WorkOrder, queueTimeout time.Duration, now time.Time) (bool, error) {
+	workspace := workspaceOrDefault(ctx, "")
+	documents := m.authorityDocumentsLocked(workspace, AnsweredAuthorityDocumentIDs(order))
+	decision := DecideAnsweredAuthorityRecovery(task, order, documents)
+	if !decision.Recover {
+		return false, nil
+	}
+	var releaseEventID int64
+	for _, event := range m.events[order.TaskID] {
+		if event.Kind == "work_order.released" && ReleaseEventAttemptID(event) == order.LastAttemptID {
+			releaseEventID = event.ID
+		}
+	}
+	if releaseEventID == 0 {
+		return false, nil
+	}
+	payload := AuthorityConfirmedEventPayload(workspace, order, decision, releaseEventID)
+	recovered, err := m.recoverOrderLocked(ctx, order, decision.RequestID, decision.Direction, queueTimeout, now, nil, recoveryAuthorityConfirmed, config.RecoveryPolicy{}, payload)
+	if err != nil {
+		return false, err
+	}
+	return recovered.Checkpoint == nil && recovered.LastAttemptOutcome == "", nil
+}
+
+// authorityDocumentsLocked snapshots each cited document: a requirement first,
+// then a System Design, as the checkpoint card resolves it. Pending versions
+// follow listPendingProposalsLocked for every origin.
+func (m *memory) authorityDocumentsLocked(workspace string, ids []string) map[string]AuthorityDocument {
+	out := make(map[string]AuthorityDocument, len(ids))
+	for _, id := range ids {
+		key := memoryScopedKey{workspace: workspace, id: id}
+		if requirement, ok := m.requirements[key]; ok {
+			document := AuthorityDocument{ID: id, Kind: "requirement", Found: !requirement.Archived, CurrentVersion: requirement.CurrentVersion}
+			for _, version := range m.requirementVersions[key] {
+				if !version.Confirmed && !version.Retired && version.Version > requirement.CurrentVersion {
+					document.PendingVersions++
+				}
+			}
+			out[id] = document
+			continue
+		}
+		if design, ok := m.systemDesigns[key]; ok {
+			document := AuthorityDocument{ID: id, Kind: "system_design", Found: !design.Archived, CurrentVersion: design.CurrentVersion}
+			for _, version := range m.systemDesignVersions[key] {
+				if !version.Confirmed && !version.Dismissed {
+					document.PendingVersions++
+				}
+			}
+			out[id] = document
+		}
+	}
+	return out
+}
+
+func (m *memory) recoverOrderLocked(ctx context.Context, order core.WorkOrder, requestID, direction string, queueTimeout time.Duration, now time.Time, refreeze *RecoveryRefreeze, mode recoveryMode, policy config.RecoveryPolicy, authorityPayload map[string]any) (core.WorkOrder, error) {
 	workspace, _ := WorkspaceFromContext(ctx)
 	key := workspace + "/" + order.ID + "/" + requestID
 	if _, exists := m.recoveries[key]; exists {
@@ -120,7 +198,9 @@ func (m *memory) recoverOrderLocked(ctx context.Context, order core.WorkOrder, r
 	eventKind := "work_order.recovered"
 	if priorState == core.WorkOrderQueued {
 		lifecycleCommand = ""
-		eventKind = "work_order.redispatched"
+		if mode != recoveryAuthorityConfirmed {
+			eventKind = "work_order.redispatched"
+		}
 	}
 	next := priorState
 	if lifecycleCommand != "" {
@@ -144,9 +224,12 @@ func (m *memory) recoverOrderLocked(ctx context.Context, order core.WorkOrder, r
 	order.ClearExecutionPins()
 	number := 0
 	windowStart := time.Time{}
-	if automatic {
+	switch mode {
+	case recoveryMechanical:
 		number, windowStart = StampAutomaticRecovery(&order, policy, now)
-	} else {
+	case recoveryAuthorityConfirmed:
+		order.Checkpoint = nil
+	default:
 		ResetAutomaticRecoveryLedger(&order)
 	}
 	if order.Stage == core.StageImplement {
@@ -163,12 +246,16 @@ func (m *memory) recoverOrderLocked(ctx context.Context, order core.WorkOrder, r
 	m.recoveries[key] = struct{}{}
 	payload := map[string]any{"attempt_id": priorAttemptID, "workspace_id": workspace, "work_order_id": order.ID, "request_id": requestID, "prior_state": priorState, "prior_outcome": prior, "new_state": order.State, "command": lifecycleCommand, "reason": "operator recovery", "direction": direction, "failure_category": priorFailureCategory, "consecutive_transient_failures": priorTransientFailures, "next_retry_at": priorNextRetryAt}
 	eventCtx := ctx
-	if automatic {
+	switch mode {
+	case recoveryMechanical:
 		payload["automatic"] = true
 		payload["recovery_number"] = number
 		payload["window_started_at"] = windowStart
 		payload["next_automatic_recovery_at"] = nil
 		payload["reason"] = core.AutomaticRecoveryReason
+		eventCtx = WithActor(ctx, SystemActor("queue:"+order.JobID))
+	case recoveryAuthorityConfirmed:
+		payload = authorityPayload
 		eventCtx = WithActor(ctx, SystemActor("queue:"+order.JobID))
 	}
 	m.appendEventLocked(eventCtx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: eventKind, Payload: core.JSONPayload(payload), At: now})
