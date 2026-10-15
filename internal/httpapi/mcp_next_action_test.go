@@ -281,6 +281,22 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 		t.Fatalf("row 8 choices = %+v", action.Choices)
 	}
 
+	// A context-only task keeps operator attention through the context row,
+	// with task-context routes under operate_gates and no claim wait
+	// (req-intake-and-triage AC-7.3).
+	f.order("context-only", core.StageImplement)
+	suggest("gov-task-context-only", suggested.ID)
+	contextOnly := read("gov-task-context-only")
+	contextRoute := "/v1/tasks/gov-task-context-only/context/proposals/system_design/" + suggested.ID
+	if contextOnly.Kind != nextaction.KindContextProposal || contextOnly.Actor != nextaction.ActorOperator || len(contextOnly.Details.PendingProposals) != 0 ||
+		len(contextOnly.Choices) != 2 || contextOnly.Choices[0].Path != contextRoute+"/confirm" || contextOnly.Choices[1].Path != contextRoute+"/dismiss" || !contextOnly.Choices[0].Allowed {
+		t.Fatalf("context-only = %s choices %+v details %+v", contextOnly.Kind, contextOnly.Choices, contextOnly.Details)
+	}
+	inbox, isErr := f.call(userToken, "list_operator_inbox", map[string]any{"workspace_id": governanceWorkspace, "band": "decisions"})
+	if isErr || !strings.Contains(inbox, `"gov-task-context-only"`) || !strings.Contains(inbox, `"context_proposal"`) {
+		t.Fatalf("inbox decisions omit the context-only task: err=%t %s", isErr, inbox)
+	}
+
 	first, second := design("component-cited-a"), design("component-cited-b")
 	order := f.order("context-question", core.StageImplement)
 	suggest("gov-task-context-question", suggested.ID)

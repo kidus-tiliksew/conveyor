@@ -28,7 +28,7 @@ type rule struct {
 	build func(Input) built
 }
 
-// Project applies the 18 precedence rows. The first match wins. Every later
+// Project applies the precedence rows. The first match wins. Every later
 // match is recorded in details.secondary so clients do not recompute it.
 func Project(in Input) NextAction {
 	if in.Now.IsZero() {
@@ -90,6 +90,9 @@ func rules() []rule {
 		{match: stalled, build: func(in Input) built {
 			hit := Stall(in.Task, in.Orders, in.Recovery, in.LiveClaimants, in.Now)
 			return built{actor: ActorOperator, kind: KindStalled, stall: hit.Reason, reason: hit.Reason, order: &hit.Order, deadline: queueDeadline(hit.Order)}
+		}},
+		{match: contextProposal, build: func(Input) built {
+			return built{actor: ActorOperator, kind: KindContextProposal, judgment: true}
 		}},
 		{match: blocked, build: func(in Input) built {
 			order := latestBlocking(in.Orders)
@@ -205,6 +208,11 @@ func stalled(in Input) bool {
 	return hit != nil && hit.Reason != ""
 }
 
+// contextProposal keeps a task with a pending task-context proposal in
+// operator attention below every other operator row; it holds no claim
+// (req-intake-and-triage AC-7.3; feature-operator-next-action NA-3).
+func contextProposal(in Input) bool { return len(in.ContextProposals) > 0 }
+
 func blocked(in Input) bool { return latestBlocking(in.Orders) != nil }
 
 func recoveryScheduled(in Input) bool { return scheduledOrder(in) != nil }
@@ -228,6 +236,8 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	switch {
 	case row.kind == KindDocumentProposal:
 		specs = withheldProposalChoices(row.proposals)
+	case row.kind == KindContextProposal:
+		specs = contextProposalChoices(in.Task.ID, in.ContextProposals)
 	case row.kind == KindAgentQuestion && len(row.proposals) > 0:
 		specs = append(citedProposalChoices(row.proposals), entry.Choices...)
 	}

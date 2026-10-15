@@ -340,4 +340,36 @@ func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
 	if strings.Contains(text, "/v1/documents/") {
 		t.Fatalf("task status names /v1/documents/:\n%s", text)
 	}
+
+	// A context-only task prints the context row and its task-context routes
+	// (req-intake-and-triage AC-7.3).
+	const contextTask = "261015-ctxonl"
+	if err = st.CreateTask(ctx, core.Task{ID: contextTask, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if _, suppressed, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextTask, TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."}); err != nil || suppressed {
+		t.Fatalf("suppressed=%t err=%v", suppressed, err)
+	}
+	var contextOut bytes.Buffer
+	if err = runTaskStatus(newClient(), &contextOut, contextTask, false); err != nil {
+		t.Fatal(err)
+	}
+	contextText := contextOut.String()
+	at = 0
+	for _, line := range []string{
+		"Context proposal\nA context proposal is waiting for a decision.\n",
+		"question:      Confirm or dismiss the proposed context?",
+		"  - Confirm context system_design component-claim-wait: Attaches the proposed context to this task.",
+		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/confirm",
+		"  - Dismiss context system_design component-claim-wait: Dismisses the proposed context.",
+		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/dismiss",
+		"if ignored:    The proposal stays pending.",
+		"kind:          context_proposal",
+	} {
+		index := strings.Index(contextText[at:], line)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", line, at, contextText)
+		}
+		at += index + len(line)
+	}
 }

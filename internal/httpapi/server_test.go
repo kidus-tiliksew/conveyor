@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -1537,6 +1538,18 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 		!strings.Contains(detail.Body.String(), `"target_id":"`+requirement.ID+`"`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
+	// The attention comes from the context_proposal row, never from the
+	// claim-wait row: nothing is withheld (req-intake-and-triage AC-7.3;
+	// req-260810-70ce2f AC-1.3; feature-operator-next-action NA-3).
+	if !strings.Contains(detail.Body.String(), `"proposal_claim_waiting":false`) {
+		t.Fatalf("context proposal reported a claim wait: %s", detail.Body.String())
+	}
+	action := readNextActionKind(t, server, task.ID)
+	route := "/v1/tasks/" + task.ID + "/context/proposals/requirement/" + requirement.ID
+	if action.Kind != nextaction.KindContextProposal || action.Actor != nextaction.ActorOperator || !action.Judgment || len(action.Details.PendingProposals) != 0 ||
+		len(action.Choices) != 2 || action.Choices[0].Path != route+"/confirm" || action.Choices[1].Path != route+"/dismiss" || action.Choices[0].Capability != string(core.CapabilityOperateGates) {
+		t.Fatalf("next action = %s/%s choices %+v details %+v", action.Actor, action.Kind, action.Choices, action.Details)
+	}
 	activity := request("/v1/activity")
 	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) ||
 		!strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"pending_authority":false`) {
@@ -1578,6 +1591,9 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 	pending = request("/v1/pending-proposals")
 	if json.Unmarshal(pending.Body.Bytes(), &projection) != nil || projection.Attention.TaskCount != 0 || projection.Attention.Total != 0 {
 		t.Fatalf("resolved projection=%+v body=%s", projection, pending.Body.String())
+	}
+	if action := readNextActionKind(t, server, task.ID); action.Kind == nextaction.KindContextProposal || action.Actor == nextaction.ActorOperator {
+		t.Fatalf("dismissed context proposal still needs the operator: %s/%s", action.Actor, action.Kind)
 	}
 }
 

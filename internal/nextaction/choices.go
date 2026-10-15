@@ -106,6 +106,42 @@ func versionProposalChoices(refs []ProposalRef, confirmEffect, dismissEffect str
 	return out
 }
 
+// Shared effect copy of the context-proposal choices (feature-operator-next-action NA-4).
+const (
+	contextConfirmEffect = "Attaches the proposed context to this task."
+	contextDismissEffect = "Dismisses the proposed context."
+)
+
+// contextProposalChoices offers confirm and dismiss for each pending
+// task-context proposal on the task-context routes, which require
+// operate_gates, deduplicated and ordered by target kind and target ID
+// (req-intake-and-triage AC-7.3; component-task-lifecycle).
+func contextProposalChoices(taskID string, refs []ContextProposalRef) []ChoiceSpec {
+	sorted := append([]ContextProposalRef(nil), refs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Kind != sorted[j].Kind {
+			return sorted[i].Kind < sorted[j].Kind
+		}
+		return sorted[i].TargetID < sorted[j].TargetID
+	})
+	out := make([]ChoiceSpec, 0, 2*len(sorted))
+	seen := map[ContextProposalRef]bool{}
+	for _, ref := range sorted {
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		route := fmt.Sprintf("/v1/tasks/%s/context/proposals/%s/%s", url.PathEscape(taskID), url.PathEscape(ref.Kind), url.PathEscape(ref.TargetID))
+		key := fmt.Sprintf("task_context:%s:%s", ref.Kind, ref.TargetID)
+		name := fmt.Sprintf("context %s %s", ref.Kind, ref.TargetID)
+		out = append(out,
+			ChoiceSpec{ID: "confirm:" + key, Label: "Confirm " + name, Effect: contextConfirmEffect, Method: "POST", Path: route + "/confirm", Capability: core.CapabilityOperateGates},
+			ChoiceSpec{ID: "dismiss:" + key, Label: "Dismiss " + name, Effect: contextDismissEffect, Method: "POST", Path: route + "/dismiss", Capability: core.CapabilityOperateGates},
+		)
+	}
+	return out
+}
+
 // CitedProposals returns the pending requirement and System Design versions
 // whose document an authority-conflict citation names, whatever their
 // origin, deduplicated and ordered by tier, document ID, and version.

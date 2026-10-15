@@ -144,7 +144,7 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	conflict := mergeConflictFromEvents(events, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
-		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals),
+		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals), ContextProposals: contextProposalRefs(proposals, task.ID),
 		Blockers: blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
 	}
@@ -236,6 +236,18 @@ func claimWaitingRefs(waiting []ClaimBlockingProposal) []nextaction.ProposalRef 
 	var out []nextaction.ProposalRef
 	for _, item := range waiting {
 		out = append(out, nextaction.ProposalRef{Tier: item.Tier, ID: item.ID, Version: item.Version})
+	}
+	return out
+}
+
+// contextProposalRefs is the task's pending task-context proposals for the
+// context_proposal row (req-intake-and-triage AC-7.3).
+func contextProposalRefs(proposals []core.PendingProposal, taskID string) []nextaction.ContextProposalRef {
+	var out []nextaction.ContextProposalRef
+	for _, item := range proposals {
+		if item.Tier == "task_context" && item.OriginType == "task" && item.OriginID == taskID {
+			out = append(out, nextaction.ContextProposalRef{Kind: item.TargetKind, TargetID: item.ID})
+		}
 	}
 	return out
 }

@@ -84,7 +84,7 @@ func TestNoChoiceNamesDocumentsRoute(t *testing.T) {
 
 // The 261015-676ea5 shape: with row 8 fed only by the claim-wait selection,
 // a task-context proposal no longer masks a released authority-conflict
-// checkpoint. The task resolves to its agent question with only the cited
+// checkpoint; the context row ranks below it. The task resolves to its agent question with only the cited
 // versions listed and no document_proposal secondary (req-operator-next-action
 // AC-1.6, AC-1.7; req-260810-70ce2f AC-1.3).
 func TestTaskContextProposalDoesNotMaskAgentQuestion(t *testing.T) {
@@ -99,6 +99,7 @@ func TestTaskContextProposalDoesNotMaskAgentQuestion(t *testing.T) {
 		{Tier: "system_design", ID: "component-web-dashboard", Version: 28},
 	}
 	in := checkpointInput(now, core.WorkOrderCheckpointClassAuthorityConflict, citations, pending)
+	in.ContextProposals = []ContextProposalRef{{Kind: "system_design", TargetID: "component-verification-strategy"}}
 	in.Capabilities = map[core.Capability]bool{core.CapabilityRecoverWork: true}
 	got := Project(in)
 	if got.Kind != KindAgentQuestion || got.Actor != ActorOperator {
@@ -111,8 +112,8 @@ func TestTaskContextProposalDoesNotMaskAgentQuestion(t *testing.T) {
 	if !reflect.DeepEqual(got.Details.PendingProposals, want) {
 		t.Fatalf("pending_proposals = %+v, want %+v", got.Details.PendingProposals, want)
 	}
-	if hasSecondary(got, KindDocumentProposal) {
-		t.Fatalf("secondary = %+v, want no document_proposal", got.Details.Secondary)
+	if hasSecondary(got, KindDocumentProposal) || !hasSecondary(got, KindContextProposal) {
+		t.Fatalf("secondary = %+v, want context_proposal and no document_proposal", got.Details.Secondary)
 	}
 	answer := got.Choices[len(got.Choices)-1]
 	if answer.ID != "answer" || !answer.Allowed {
