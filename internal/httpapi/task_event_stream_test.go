@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,5 +251,340 @@ func TestTaskEventStreamFrameShape(t *testing.T) {
 	}
 	if !strings.HasPrefix(buf.String(), "event: activity\ndata: {\"id\":42,") || !strings.HasSuffix(buf.String(), "}\n\n") {
 		t.Fatalf("frame=%q", buf.String())
+	}
+}
+
+// Notify mode (task 261015-3721c6; component-http-api "Live task event
+// stream"): the stream polls a fingerprint, never an event page.
+
+// fingerprintLedger answers the notify fingerprint read over events committed
+// in any ID order and records every query.
+type fingerprintLedger struct {
+	events  []core.Event
+	err     error
+	queries []store.TaskEventWindowQuery
+}
+
+func (f *fingerprintLedger) ReadTaskEventWindow(_ context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
+	f.queries = append(f.queries, q)
+	if f.err != nil {
+		return store.TaskEventWindow{}, f.err
+	}
+	window := store.TaskEventWindow{Events: []core.Event{}}
+	var newest *core.Event
+	for i := range f.events {
+		window.Boundary.MaxID = max(window.Boundary.MaxID, f.events[i].ID)
+		window.Boundary.Count++
+		if newest == nil || store.TaskEventAfter(f.events[i], store.TaskEventPosition{At: newest.At, ID: newest.ID}) {
+			newest = &f.events[i]
+		}
+	}
+	if newest != nil {
+		event := *newest
+		event.Payload = nil
+		window.Events = append(window.Events, event)
+	}
+	return window, nil
+}
+
+func (f *fingerprintLedger) commit(events ...core.Event) { f.events = append(f.events, events...) }
+
+// notifyWriter records notify frames and can fail on a chosen write.
+type notifyWriter struct {
+	frames []string
+	failAt int
+	writes int
+}
+
+func (w *notifyWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.failAt > 0 && w.writes == w.failAt {
+		return 0, errors.New("client disconnected")
+	}
+	w.frames = append(w.frames, string(p))
+	return len(p), nil
+}
+
+const (
+	readyFrame    = "event: ready\ndata: {}\n\n"
+	activityFrame = "event: activity\ndata: {}\n\n"
+	errorFrame    = "event: error\ndata: {}\n\n"
+)
+
+func notifyPoll(t *testing.T, s *taskEventNotifyStream) []string {
+	t.Helper()
+	w := &notifyWriter{}
+	if err := s.poll(context.Background(), w); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	return w.frames
+}
+
+func TestTaskEventNotifyStreamReadyAfterOneFingerprint(t *testing.T) {
+	ledger := &fingerprintLedger{}
+	ledger.commit(streamEvent(3, 0), streamEvent(1, time.Second), streamEvent(2, 2*time.Second))
+	stream := newTaskEventNotifyStream(ledger, "stream-task")
+	w := &notifyWriter{}
+	if err := stream.start(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(w.frames, []string{readyFrame}) || len(ledger.queries) != 1 {
+		t.Fatalf("start frames=%q queries=%d", w.frames, len(ledger.queries))
+	}
+	q := ledger.queries[0]
+	if q.TaskID != "stream-task" || !q.Descending || q.Limit != 1 || q.PayloadLimit != 1 || q.MaxBytes != store.TaskEventWindowMaxBytes || q.Boundary != nil || q.Kind != "" || q.Kinds != nil {
+		t.Fatalf("fingerprint query=%+v", q)
+	}
+	if *stream.written != (store.TaskEventBoundary{MaxID: 3, Count: 3}) {
+		t.Fatalf("fingerprint=%+v", *stream.written)
+	}
+	if frames := notifyPoll(t, stream); len(frames) != 0 {
+		t.Fatalf("idle poll frames=%q", frames)
+	}
+}
+
+func TestTaskEventNotifyStreamOneFramePerChangedPoll(t *testing.T) {
+	ledger := &fingerprintLedger{}
+	stream := newTaskEventNotifyStream(ledger, "stream-task")
+	// An empty ledger has the fingerprint (0, 0).
+	if err := stream.start(context.Background(), &notifyWriter{}); err != nil || *stream.written != (store.TaskEventBoundary{}) {
+		t.Fatalf("empty start err=%v fingerprint=%+v", err, stream.written)
+	}
+	if frames := notifyPoll(t, stream); len(frames) != 0 {
+		t.Fatalf("empty idle poll frames=%q", frames)
+	}
+	for i := int64(0); i < 40; i++ {
+		ledger.commit(streamEvent(highRange+i, time.Duration(i)*time.Millisecond))
+	}
+	if frames := notifyPoll(t, stream); !slices.Equal(frames, []string{activityFrame}) {
+		t.Fatalf("40 commits between polls frames=%q", frames)
+	}
+	if frames := notifyPoll(t, stream); len(frames) != 0 {
+		t.Fatalf("no commit frames=%q", frames)
+	}
+	// A delayed lower-ID event with an earlier recorded time leaves the
+	// maximum ID unchanged but raises the count.
+	ledger.commit(streamEvent(lowRange, -time.Hour))
+	if frames := notifyPoll(t, stream); !slices.Equal(frames, []string{activityFrame}) {
+		t.Fatalf("delayed lower-ID commit frames=%q", frames)
+	}
+	if *stream.written != (store.TaskEventBoundary{MaxID: highRange + 39, Count: 41}) {
+		t.Fatalf("fingerprint=%+v", *stream.written)
+	}
+	for _, q := range ledger.queries {
+		if q.Limit != 1 || q.PayloadLimit != 1 || !q.Descending {
+			t.Fatalf("notify read an event page: %+v", q)
+		}
+	}
+}
+
+func TestTaskEventNotifyStreamRecordsOnlyAfterWriteAndReportsReadFailure(t *testing.T) {
+	ledger := &fingerprintLedger{}
+	stream := newTaskEventNotifyStream(ledger, "stream-task")
+	if err := stream.start(context.Background(), &notifyWriter{failAt: 1}); err == nil || errors.Is(err, errTaskEventStreamRead) || stream.written != nil {
+		t.Fatalf("failed ready write err=%v written=%v", err, stream.written)
+	}
+	if err := stream.start(context.Background(), &notifyWriter{}); err != nil {
+		t.Fatal(err)
+	}
+	ledger.commit(streamEvent(5, 0))
+	if err := stream.poll(context.Background(), &notifyWriter{failAt: 1}); err == nil || errors.Is(err, errTaskEventStreamRead) {
+		t.Fatalf("failed activity write err=%v", err)
+	}
+	if *stream.written != (store.TaskEventBoundary{}) {
+		t.Fatalf("failed write recorded %+v", *stream.written)
+	}
+	if frames := notifyPoll(t, stream); !slices.Equal(frames, []string{activityFrame}) {
+		t.Fatalf("retry after failed write frames=%q", frames)
+	}
+	ledger.err = errors.New("database unavailable")
+	if err := stream.poll(context.Background(), &notifyWriter{}); !errors.Is(err, errTaskEventStreamRead) {
+		t.Fatalf("read failure err=%v", err)
+	}
+	if err := newTaskEventNotifyStream(ledger, "stream-task").start(context.Background(), &notifyWriter{}); !errors.Is(err, errTaskEventStreamRead) {
+		t.Fatalf("start read failure err=%v", err)
+	}
+}
+
+// windowCountingStore counts the event reads a stream makes.
+type windowCountingStore struct {
+	store.Store
+	mu            sync.Mutex
+	windowQueries []store.TaskEventWindowQuery
+	pageReads     int
+	failWindow    bool
+}
+
+func (s *windowCountingStore) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
+	s.mu.Lock()
+	s.windowQueries = append(s.windowQueries, q)
+	fail := s.failWindow
+	s.mu.Unlock()
+	if fail {
+		return store.TaskEventWindow{}, errors.New("database unavailable")
+	}
+	return s.Store.ReadTaskEventWindow(ctx, q)
+}
+
+func (s *windowCountingStore) ReadTaskEventStream(ctx context.Context, q store.TaskEventStreamQuery) (store.TaskEventStreamPage, error) {
+	s.mu.Lock()
+	s.pageReads++
+	s.mu.Unlock()
+	return s.Store.ReadTaskEventStream(ctx, q)
+}
+
+func (s *windowCountingStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	s.mu.Lock()
+	s.pageReads++
+	s.mu.Unlock()
+	return s.Store.ListEvents(ctx, taskID)
+}
+
+func (s *windowCountingStore) counts() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.windowQueries), s.pageReads
+}
+
+// sseRecorder hands the bytes written since the previous flush to the test
+// on every flush, a deterministic barrier with no sleeps.
+type sseRecorder struct {
+	header  http.Header
+	mu      sync.Mutex
+	pending bytes.Buffer
+	code    int
+	flushes chan string
+}
+
+func newSSERecorder() *sseRecorder {
+	return &sseRecorder{header: http.Header{}, flushes: make(chan string)}
+}
+
+func (r *sseRecorder) Header() http.Header { return r.header }
+func (r *sseRecorder) WriteHeader(code int) {
+	r.code = code
+}
+func (r *sseRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pending.Write(p)
+}
+func (r *sseRecorder) Flush() {
+	r.mu.Lock()
+	chunk := r.pending.String()
+	r.pending.Reset()
+	r.mu.Unlock()
+	r.flushes <- chunk
+}
+
+type notifyConnection struct {
+	recorder *sseRecorder
+	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
+func openNotifyStream(h *historyHarness, taskID, query string) *notifyConnection {
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/events/stream"+query, nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer "+historyTokenA)
+	connection := &notifyConnection{recorder: newSSERecorder(), cancel: cancel, done: make(chan struct{})}
+	go func() {
+		h.handler.ServeHTTP(connection.recorder, request)
+		close(connection.done)
+	}()
+	return connection
+}
+
+func (c *notifyConnection) close() {
+	c.cancel()
+	<-c.done
+}
+
+func TestTaskEventNotifyStreamHTTP(t *testing.T) {
+	base := store.NewMemory()
+	events := seedHistoryFixture(t, base, "notify-task", 100_000, 99_400, 0)
+	counting := &windowCountingStore{Store: base}
+	h := newHistoryHarness(t, counting)
+	ticks := make(chan time.Time)
+	h.srv.taskEventStreamTicks = func() (<-chan time.Time, func()) { return ticks, func() {} }
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), historyWorkspace)
+
+	if response := h.get(historyTokenA, "/v1/tasks/notify-task/events/stream?mode=replay"); response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown mode: %d", response.Code)
+	}
+	connection := openNotifyStream(h, "notify-task", "?mode=notify&workspace_id="+historyWorkspace)
+	if frame := <-connection.recorder.flushes; frame != readyFrame {
+		t.Fatalf("first frame=%q", frame)
+	}
+	if connection.recorder.header.Get("Content-Type") != "text/event-stream" || connection.recorder.header.Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("headers=%v", connection.recorder.header)
+	}
+	// One fingerprint read, no event page and no replay over 100,000 events.
+	if windows, pages := counting.counts(); windows != 1 || pages != 0 {
+		t.Fatalf("ready over %d events used %d window reads and %d page reads", len(events), windows, pages)
+	}
+	counting.mu.Lock()
+	q := counting.windowQueries[0]
+	counting.mu.Unlock()
+	if q.Limit != 1 || q.PayloadLimit != 1 || !q.Descending {
+		t.Fatalf("fingerprint query=%+v", q)
+	}
+	ticks <- time.Time{}
+	if frame := <-connection.recorder.flushes; frame != "" {
+		t.Fatalf("idle poll frame=%q", frame)
+	}
+	for i := 0; i < 25; i++ {
+		if err := base.AppendEvent(ctx, core.Event{TaskID: "notify-task", Kind: "dispatch.reconciled"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ticks <- time.Time{}
+	if frame := <-connection.recorder.flushes; frame != activityFrame {
+		t.Fatalf("25 commits frame=%q", frame)
+	}
+	connection.close()
+
+	// A reconnect reads the fingerprint again and sends ready; commits during
+	// the gap are covered by the refresh ready triggers.
+	if err := base.AppendEvent(ctx, core.Event{TaskID: "notify-task", Kind: "merge.requested"}); err != nil {
+		t.Fatal(err)
+	}
+	reconnect := openNotifyStream(h, "notify-task", "?mode=notify&workspace_id="+historyWorkspace)
+	if frame := <-reconnect.recorder.flushes; frame != readyFrame {
+		t.Fatalf("reconnect frame=%q", frame)
+	}
+	ticks <- time.Time{}
+	if frame := <-reconnect.recorder.flushes; frame != "" {
+		t.Fatalf("reconnect idle frame=%q", frame)
+	}
+	// A read failure writes an error frame and ends the stream.
+	counting.mu.Lock()
+	counting.failWindow = true
+	counting.mu.Unlock()
+	ticks <- time.Time{}
+	if frame := <-reconnect.recorder.flushes; frame != errorFrame {
+		t.Fatalf("read failure frame=%q", frame)
+	}
+	<-reconnect.done
+	reconnect.cancel()
+	if _, pages := counting.counts(); pages != 0 {
+		t.Fatalf("notify mode read %d event pages", pages)
+	}
+}
+
+func TestTaskEventStreamLegacyModeUnchanged(t *testing.T) {
+	base := store.NewMemory()
+	seedHistoryFixture(t, base, "legacy-task", 8, 2, 0)
+	counting := &windowCountingStore{Store: base}
+	h := newHistoryHarness(t, counting)
+	h.srv.taskEventStreamTicks = func() (<-chan time.Time, func()) { t.Fatal("legacy mode used the notify ticker"); return nil, nil }
+	connection := openNotifyStream(h, "legacy-task", "?workspace_id="+historyWorkspace)
+	frame := <-connection.recorder.flushes
+	if strings.Count(frame, "event: activity\ndata: {\"id\":") != 8 || strings.Contains(frame, "event: ready") {
+		t.Fatalf("legacy replay=%q", frame)
+	}
+	connection.close()
+	if windows, pages := counting.counts(); windows != 0 || pages == 0 {
+		t.Fatalf("legacy reads windows=%d pages=%d", windows, pages)
 	}
 }

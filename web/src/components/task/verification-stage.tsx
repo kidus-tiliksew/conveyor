@@ -139,12 +139,14 @@ export function VerificationReviewResult({ item }: { item: ActivityItem }) {
 
 function VerificationReviewResultBody({ item }: { item: ActivityItem }) {
   const [open, setOpen] = useState(false)
-  const event = [...(item.events ?? [])].reverse().find((event) => event.kind === 'review.completed')
-  const audit = useTaskAudit(item.task.id, 'event', event ? String(event.id) : '', open)
+  // The latest review.completed in the complete ledger, named by the server's
+  // summaries; its decimal ID reaches the audit read unchanged.
+  const eventId = item.summaries?.latest_review_completed_event_id
+  const audit = useTaskAudit(item.task.id, 'event', eventId ?? '', open)
   const payload = audit.data?.kind === 'event' ? audit.data.event.payload : undefined
   const assessment = payload?.verification_assessment as VerificationAssessment | undefined
   if (
-    !event ||
+    !eventId ||
     (!item.task.policy_contract?.verify_stage && !(item.work_orders ?? []).some((order) => order.stage === 'verify'))
   )
     return null

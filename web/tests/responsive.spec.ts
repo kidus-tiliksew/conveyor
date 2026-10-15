@@ -1,10 +1,11 @@
 // Narrow viewports: the shell folds its two navigation columns into a drawer
 // behind a top bar, the document pages fold their tree into a drawer above the
 // canvas, and no surface scrolls sideways at phone width.
-import { expect, type Locator, type Page, test } from '@playwright/test'
-import { waitForSheetSettled } from './helpers/sheet'
+import { expect, type Locator, type Page } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
+import { waitForSheetSettled } from './helpers/sheet'
 
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }

@@ -1,12 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArrowRight, Bot, CheckCircle2, FileUp, Send, Square, User } from 'lucide-react'
-import { Badge } from '../ui/badge'
-import { Button } from '../ui/button'
-import { Attachment, Bubble, Marker, Message, MessageScroller } from '../ui/chat'
-import { Dialog } from '../ui/dialog'
-import { Input } from '../ui/input'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   abandonPlanningSession,
   fetchArtifacts,
@@ -19,6 +14,11 @@ import { sessionGoalLabel } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
 import type { Artifact, PlanningMessage, PlanningMessagePart, PlanningSession } from '../../lib/types'
 import { useWorkspaceCapability } from '../app-shell'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Attachment, Bubble, Marker, Message, MessageScroller } from '../ui/chat'
+import { Dialog } from '../ui/dialog'
+import { Input } from '../ui/input'
 
 export const sessionStatusLabels: Record<PlanningSession['status'], string> = {
   active: 'Active',

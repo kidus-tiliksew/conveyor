@@ -1,6 +1,6 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'

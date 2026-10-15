@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
-import { expect, type Locator, type Page, type Route, test } from '@playwright/test'
+import { expect, type Locator, type Page, type Route } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
+import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
 
 const createdAt = '2026-07-15T12:00:00Z'
 
@@ -7301,116 +7303,9 @@ test('failed triage predicate orders fractional-second execution timestamps chro
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
 })
 
-// Stream reconnection (component-web-dashboard Server-state discipline). The
-// page's own `fetch` is replaced for the task stream only, so each connection
-// stays pending until the test opens, fails, or answers it, and an opened body
-// stays open until the test closes or errors it. Playwright's clock holds the
-// retry waits and the 250 ms frame debounce, so no assertion races wall time.
-type TaskStreamControl = {
-  urls(): string[]
-  aborted(): boolean[]
-  open(): void
-  respond(status: number, body: string | null): void
-  fail(): void
-  send(text: string): void
-  close(): void
-  error(): void
-}
-
-async function controlTaskStreams(page: Page) {
-  await page.addInitScript(() => {
-    type Connection = {
-      url: string
-      aborted: boolean
-      settled: boolean
-      resolve: (response: Response) => void
-      reject: (reason: unknown) => void
-      body?: ReadableStreamDefaultController<Uint8Array>
-    }
-    const connections: Connection[] = []
-    const nativeFetch = window.fetch.bind(window)
-    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (!url.includes('/events/stream')) return nativeFetch(input, init)
-      return new Promise<Response>((resolve, reject) => {
-        const connection: Connection = { url, aborted: false, settled: false, resolve, reject }
-        connections.push(connection)
-        init?.signal?.addEventListener('abort', () => {
-          connection.aborted = true
-          const reason = new DOMException('The operation was aborted.', 'AbortError')
-          reject(reason)
-          try {
-            connection.body?.error(reason)
-          } catch {
-            // The body already ended.
-          }
-        })
-      })
-    }
-    // The newest connection the page has not aborted; StrictMode's discarded
-    // first effect leaves an aborted connection behind it.
-    const live = () => {
-      const connection = connections.findLast((candidate) => !candidate.aborted)
-      if (!connection) throw new Error('no live task stream connection')
-      return connection
-    }
-    const settle = (response: Response | Error) => {
-      const connection = live()
-      if (connection.settled) throw new Error('the live task stream connection was already answered')
-      connection.settled = true
-      if (response instanceof Error) connection.reject(response)
-      else connection.resolve(response)
-      return connection
-    }
-    const control: TaskStreamControl = {
-      urls: () => connections.map((connection) => connection.url),
-      aborted: () => connections.map((connection) => connection.aborted),
-      open: () => {
-        let body: ReadableStreamDefaultController<Uint8Array> | undefined
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            body = controller
-          },
-        })
-        settle(new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })).body = body
-      },
-      respond: (status, body) => {
-        settle(new Response(body, { status }))
-      },
-      fail: () => {
-        settle(new TypeError('Failed to fetch'))
-      },
-      send: (text) => live().body?.enqueue(new TextEncoder().encode(text)),
-      close: () => live().body?.close(),
-      error: () => live().body?.error(new TypeError('network error')),
-    }
-    ;(window as unknown as { __taskStreams: TaskStreamControl }).__taskStreams = control
-  })
-  const call = <K extends keyof TaskStreamControl>(name: K, ...args: Parameters<TaskStreamControl[K]>) =>
-    page.evaluate(
-      ([method, values]) =>
-        // biome-ignore lint/suspicious/noExplicitAny: forwards a typed call into the page.
-        (window as unknown as { __taskStreams: Record<string, (...input: any[]) => unknown> }).__taskStreams[method](
-          ...values,
-        ) as ReturnType<TaskStreamControl[K]>,
-      [name, args] as const,
-    )
-  return {
-    urls: () => call('urls'),
-    count: async () => (await call('urls')).length,
-    countFor: async (taskId: string) =>
-      (await call('urls')).filter((url) => url.includes(`/v1/tasks/${taskId}/events/stream`)).length,
-    aborted: () => call('aborted'),
-    open: () => call('open'),
-    respond: (status: number, body: string | null) => call('respond', status, body),
-    fail: () => call('fail'),
-    send: (text: string) => call('send', text),
-    close: () => call('close'),
-    error: () => call('error'),
-  }
-}
-
-const activityFrame = 'event: activity\ndata: {"id":1}\n\n'
+// Stream reconnection and the notify stream's ready refresh
+// (component-web-task-surfaces, Live updates) run against the controlled
+// `fetch` in helpers/task-streams.ts.
 
 // Freeze the installed clock at a moment with no stream timer pending.
 async function pauseClock(page: Page) {
@@ -7422,15 +7317,15 @@ function fullTaskHeader(page: Page) {
   return page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
 }
 
-test('a closed task stream reconnects and refreshes task detail without an activity frame', async ({ page }) => {
+test('every task stream connection refreshes task detail once through its ready frame', async ({ page }) => {
   const streams = await controlTaskStreams(page)
   let detailRequests = 0
   let activityRequests = 0
   await page.route('**/v1/tasks/stream-gap/activity*', async (route) => {
     detailRequests++
     const item = activity('stream-gap', false)
-    // Server-shaped lightweight detail that changed while the stream was down.
-    item.task.title = detailRequests === 1 ? 'Before the stream gap' : 'After the stream gap'
+    // Detail that changed while the stream was down.
+    item.task.title = detailRequests <= 2 ? 'Before the stream gap' : 'After the stream gap'
     await route.fulfill({ json: item })
   })
   await page.route('**/v1/activity*', async (route) => {
@@ -7442,12 +7337,20 @@ test('a closed task stream reconnects and refreshes task detail without an activ
   await expect(fullTaskHeader(page)).toContainText('Before the stream gap')
   await expect.poll(() => streams.countFor('stream-gap')).toBeGreaterThan(0)
 
-  // The first successful connection is not a reconnect and adds no refresh.
+  // Opening a connection refreshes nothing until the server's ready frame,
+  // which arrives after the server read the history fingerprint.
   await streams.open()
   await pauseClock(page)
   const connections = await streams.count()
   const feedRequests = activityRequests
+  await page.clock.runFor(1_000)
   expect(detailRequests).toBe(1)
+  await streams.send(readyFrame)
+  await page.clock.runFor(249)
+  expect(detailRequests).toBe(1)
+  await page.clock.runFor(1)
+  await expect.poll(() => detailRequests).toBe(2)
+  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
 
   // A proxy idle timeout or restart ends the response cleanly.
   await streams.close()
@@ -7455,16 +7358,20 @@ test('a closed task stream reconnects and refreshes task detail without an activ
   expect(await streams.count()).toBe(connections)
   await page.clock.runFor(1)
   await expect.poll(() => streams.count()).toBe(connections + 1)
-  expect((await streams.urls()).at(-1)).toContain('/v1/tasks/stream-gap/events/stream?workspace_id=demo')
-  expect(detailRequests).toBe(1)
+  expect((await streams.urls()).at(-1)).toContain('/v1/tasks/stream-gap/events/stream?mode=notify&workspace_id=demo')
+  expect(detailRequests).toBe(2)
 
-  // The reopened stream sends no activity frame; the reconnect alone refetches.
+  // The reconnect's ready frame refreshes detail once, covering the outage.
   await streams.open()
-  await expect.poll(() => detailRequests).toBe(2)
-  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
+  await page.clock.runFor(1_000)
+  expect(detailRequests).toBe(2)
+  await streams.send(readyFrame)
+  await page.clock.runFor(250)
+  await expect.poll(() => detailRequests).toBe(3)
+  await expect.poll(() => activityRequests).toBe(feedRequests + 2)
   await page.clock.resume()
   await expect(fullTaskHeader(page)).toContainText('After the stream gap')
-  expect(detailRequests).toBe(2)
+  expect(detailRequests).toBe(3)
 })
 
 test('task stream retries errors, non-OK and bodyless responses with bounded backoff', async ({ page }) => {
@@ -7497,10 +7404,14 @@ test('task stream retries errors, non-OK and bodyless responses with bounded bac
   await expectRetryAfter(4_000)
   const beforeUsable = detailRequests
   await streams.open() // usable, then a read error
+  await streams.send(readyFrame)
+  await page.clock.runFor(250)
   await expect.poll(() => detailRequests).toBe(beforeUsable + 1)
   await streams.error()
+  // A ready frame does not reset the wait; only an activity frame does.
   await expectRetryAfter(8_000)
-  await streams.open() // usable, then a clean close without a frame
+  await streams.open() // usable, then a clean close without an activity frame
+  await streams.send(readyFrame)
   await streams.close()
   await expectRetryAfter(16_000)
   await streams.fail()
@@ -7513,10 +7424,12 @@ test('task stream retries errors, non-OK and bodyless responses with bounded bac
   await streams.send(activityFrame)
   await streams.close()
   await expectRetryAfter(1_000)
-  expect(new Set(await streams.urls())).toEqual(new Set(['/v1/tasks/stream-retry/events/stream?workspace_id=demo']))
+  expect(new Set(await streams.urls())).toEqual(
+    new Set(['/v1/tasks/stream-retry/events/stream?mode=notify&workspace_id=demo']),
+  )
 })
 
-test('activity frames keep the 250 ms debounce on the initial connection', async ({ page }) => {
+test('ready and activity frames inside 250 ms join one refresh', async ({ page }) => {
   const streams = await controlTaskStreams(page)
   let detailRequests = 0
   await page.route('**/v1/tasks/stream-debounce/activity*', async (route) => {
@@ -7531,17 +7444,24 @@ test('activity frames keep the 250 ms debounce on the initial connection', async
   await pauseClock(page)
   expect(detailRequests).toBe(1)
 
-  // Frames split across chunks still parse; three frames coalesce into one refresh.
-  await streams.send('event: activity\ndata: {"id":1}\n\nevent: act')
-  await streams.send('ivity\ndata: {"id":2}\n\n')
+  // The ready frame schedules one refresh 250 ms out; frames split across
+  // chunks still parse, and frames inside the delay join that refresh.
+  await streams.send(readyFrame)
   await page.clock.runFor(100)
-  await streams.send(activityFrame)
-  await page.clock.runFor(249)
+  await streams.send('event: activity\ndata: {}\n\nevent: act')
+  await streams.send('ivity\ndata: {}\n\n')
+  await page.clock.runFor(149)
   expect(detailRequests).toBe(1)
   await page.clock.runFor(1)
   await expect.poll(() => detailRequests).toBe(2)
   await page.clock.runFor(5_000)
   expect(detailRequests).toBe(2)
+  // A frame after the refresh schedules the next one.
+  await streams.send(activityFrame)
+  await page.clock.runFor(249)
+  expect(detailRequests).toBe(2)
+  await page.clock.runFor(1)
+  await expect.poll(() => detailRequests).toBe(3)
 })
 
 test('changing tasks stops the old stream, its retry wait, and its pending refresh', async ({ page }) => {
@@ -7820,6 +7740,14 @@ test('recovery completion after workspace switch does not refresh the new worksp
     await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
   })
 
+  // Detail reads that delivered a response. A workspace change aborts the
+  // read in flight (component-web-task-surfaces), so an aborted request never
+  // reaches the page and is not a refresh.
+  const completedReads: string[] = []
+  page.on('requestfinished', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/tasks/recovery/activity') completedReads.push(url.searchParams.get('workspace_id') ?? '')
+  })
   await page.goto('/tasks/recovery/full')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryReceived).toBe(true)
@@ -7829,7 +7757,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
   await page.getByText('Recovery in other').first().click()
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
-  await expect.poll(() => detailReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  await expect.poll(() => completedReads.filter((workspace) => workspace === 'other').length).toBe(1)
+  const otherReads = detailReads.filter((workspace) => workspace === 'other').length
   const demoReads = detailReads.filter((workspace) => workspace === 'demo').length
   const otherActivityReads = activityReads.filter((workspace) => workspace === 'other').length
 
@@ -7839,7 +7768,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
   await expect
     .poll(() => activityReads.filter((workspace) => workspace === 'other').length)
     .toBeGreaterThan(otherActivityReads)
-  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
+  expect(detailReads.filter((workspace) => workspace === 'other')).toHaveLength(otherReads)
+  expect(completedReads.filter((workspace) => workspace === 'other')).toHaveLength(1)
   expect(detailReads.filter((workspace) => workspace === 'demo')).toHaveLength(demoReads)
 })
 

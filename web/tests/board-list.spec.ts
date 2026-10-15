@@ -1,4 +1,5 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
 // UI coverage for the list-first Tasks view. The projection is mocked so each

@@ -1,5 +1,5 @@
-import { forwardRef, type HTMLAttributes, type ReactNode } from 'react'
 import { CheckCircle2, FileText, LoaderCircle, TriangleAlert } from 'lucide-react'
+import { forwardRef, type HTMLAttributes, type ReactNode } from 'react'
 import { cn } from '../../lib/utils'
 
 export const MessageScroller = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(function MessageScroller(

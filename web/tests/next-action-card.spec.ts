@@ -1,5 +1,6 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
 import type { NextAction, WorkOrder } from '../src/lib/types'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
 // Task detail leads with the server's next action and acts only through the
@@ -24,7 +25,7 @@ function activity(state: string, nextAction: NextAction, workOrders: WorkOrder[]
     },
     jobs: [],
     // An event that once implied a different gate: the client must not read it.
-    events: [{ id: 'evt-1', task_id: taskId, kind: 'job.timeout', at: timestamp, payload: {} }],
+    events: [{ id: '9007199254741001', task_id: taskId, kind: 'job.timeout', at: timestamp, payload: {} }],
     work_orders: workOrders,
     reviews: [],
     interventions: [],

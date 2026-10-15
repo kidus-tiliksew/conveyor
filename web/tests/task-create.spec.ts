@@ -1,4 +1,5 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route } from '@playwright/test'
+import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
 const createdAt = '2026-07-18T00:00:00Z'

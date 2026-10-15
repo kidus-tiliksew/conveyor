@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -299,6 +300,103 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		if err != nil || job.Active() != wantActive {
 			t.Fatalf("task %s job active=%v want %v err=%v", id, job.Active(), wantActive, err)
 		}
+	}
+	runReconcileStoredHoldsAndConcurrentRepair(t, st, ctx, workspace, durable, newQueued, withOrder, now)
+}
+
+// runReconcileStoredHoldsAndConcurrentRepair pins the incident shape behind
+// task 261015-3721c6: a held queued task whose implement order went stale and
+// was followed by a fresh queued order accumulated one dispatch.reconciled
+// event per reconcile tick on a release without the 261013-2bd2e8 hold. Stored
+// stale and timed-out current-stage orders hold the stage, so repeated ticks
+// append nothing and enqueue nothing. A genuinely missing dispatch is repaired
+// exactly once even when reconcilers run concurrently, because the
+// per-workspace queue-reconcile lock serializes them and the second pass finds
+// an active job (component-durable-queue "Reconciliation between tasks and
+// jobs"; DEC-62; req-task-lifecycle-and-queue AC-1.2, AC-1.3).
+func runReconcileStoredHoldsAndConcurrentRepair(t *testing.T, st store.Store, ctx context.Context, workspace string, durable durableQueue, newQueued func(core.Stage) string, withOrder func(string, core.Stage, time.Time), now time.Time) {
+	t.Helper()
+	transition := func(orderID string, state core.WorkOrderState, command core.WorkOrderCommand) {
+		t.Helper()
+		order, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order.State = state
+		if err := UpdateWorkOrder(ctx, st, order, command); err != nil {
+			t.Fatalf("order %s -> %s: %v", orderID, state, err)
+		}
+	}
+	storedStale := newQueued(core.StageImplement)
+	withOrder(storedStale, core.StageImplement, now.Add(time.Hour))
+	transition(storedStale+"-implement-1", core.WorkOrderStale, core.WorkOrderCmdMarkStale)
+	storedTimedOut := newQueued(core.StageImplement)
+	withOrder(storedTimedOut, core.StageImplement, now.Add(time.Hour))
+	transition(storedTimedOut+"-implement-1", core.WorkOrderTimedOut, core.WorkOrderCmdTimeout)
+	// The incident: implement-1 went stale and the order clock minted
+	// implement-2, which waits queued for a claim.
+	incident := newQueued(core.StageImplement)
+	withOrder(incident, core.StageImplement, now.Add(time.Hour))
+	transition(incident+"-implement-1", core.WorkOrderStale, core.WorkOrderCmdMarkStale)
+	second := incident + "-implement-2"
+	if err := st.CreateJob(ctx, core.Job{ID: second, TaskID: incident, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: second, TaskID: incident, JobID: second, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	missing := newQueued(core.StageImplement)
+	held := []string{storedStale, storedTimedOut, incident}
+	for _, id := range append(append([]string{}, held...), missing) {
+		completeDispatchJob(t, ctx, durable.Log(), workspace, id)
+	}
+
+	// Concurrent reconcilers start together behind a barrier.
+	const reconcilers = 6
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, reconcilers)
+	for range reconcilers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := durable.ReconcileQueuedTasks(ctx); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent reconcile: %v", err)
+	}
+	// Repeated ticks after the repair change nothing.
+	for tick := range 3 {
+		if _, err := durable.ReconcileQueuedTasks(ctx); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+	}
+	kind := queue.DispatchTaskArgs{}.Kind()
+	for _, id := range held {
+		if n, err := st.CountEvents(ctx, id, "dispatch.reconciled"); err != nil || n != 0 {
+			t.Fatalf("held task %s dispatch.reconciled=%d err=%v, want 0", id, n, err)
+		}
+		job, err := logqueue.Load(ctx, durable.Log(), workspace, logqueue.StreamFor(kind, id))
+		if err != nil || job.Active() {
+			t.Fatalf("held task %s job active=%v err=%v, want no useless dispatch", id, job.Active(), err)
+		}
+		if err := st.EnsureTaskEnqueued(ctx, id); !errors.Is(err, store.ErrTaskHeldByWorkOrder) {
+			t.Fatalf("held task %s redispatch err=%v, want ErrTaskHeldByWorkOrder", id, err)
+		}
+	}
+	if n, err := st.CountEvents(ctx, missing, "dispatch.reconciled"); err != nil || n != 1 {
+		t.Fatalf("missing task dispatch.reconciled=%d err=%v, want exactly 1 after concurrent passes", n, err)
+	}
+	job, err := logqueue.Load(ctx, durable.Log(), workspace, logqueue.StreamFor(kind, missing))
+	if err != nil || !job.Active() {
+		t.Fatalf("missing task job active=%v err=%v, want one repaired dispatch", job.Active(), err)
 	}
 }
 

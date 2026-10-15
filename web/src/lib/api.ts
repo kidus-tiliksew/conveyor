@@ -8,11 +8,11 @@ import type {
   InterventionAction,
   LineageGraph,
   LineageNodeType,
+  MonitorDriftOutcome,
+  MonitorStatus,
   NextAction,
   NextActionChoice,
   NextActionsPage,
-  MonitorDriftOutcome,
-  MonitorStatus,
   PendingProposalsResponse,
   PlanningBundle,
   PlanningMessage,
@@ -27,6 +27,8 @@ import type {
   TaskAuditKind,
   TaskAuditResponse,
   TaskFlow,
+  TaskHistoryPage,
+  TaskHistorySelection,
   TaskOperationsItem,
   TaskOperationsPage,
   TaskRestartInput,
@@ -321,8 +323,63 @@ export async function postNextActionChoice(
   if (!response.ok) throw await gateMutationError(response)
 }
 
-export function fetchTaskActivity(taskId: string) {
-  return getJSON<ActivityItem>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity`))
+// The bounded task-detail view, read in the query's workspace with its abort
+// signal so a task or workspace change cancels the read (component-web-dashboard).
+export function fetchTaskActivity(workspace: string, taskId: string, signal?: AbortSignal) {
+  return getJSON<ActivityItem>(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/activity?view=bounded`, workspace),
+    signal,
+  )
+}
+
+/**
+ * A refused history page. It keeps the HTTP status and the JSON `error` code
+ * (`history_restart`, `history_cursor_invalid`, `invalid_history_request`) so
+ * callers branch on them, never on message text.
+ */
+export class TaskHistoryError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message)
+  }
+}
+
+export interface TaskHistoryRequest {
+  selection: TaskHistorySelection
+  cursor?: string
+  limit?: number
+}
+
+// One page of a task's stored events (component-http-api, Task history pages),
+// always in the explicit workspace of the page's cache key.
+export async function fetchTaskHistory(
+  workspace: string,
+  taskId: string,
+  { selection, cursor, limit }: TaskHistoryRequest,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ selection })
+  if (cursor) params.set('cursor', cursor)
+  if (limit) params.set('limit', String(limit))
+  const response = await fetch(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/history?${params.toString()}`, workspace),
+    { signal },
+  )
+  if (!response.ok) {
+    const body = await response.text()
+    let code: string | undefined
+    try {
+      const parsed = JSON.parse(body) as { error?: unknown }
+      code = typeof parsed.error === 'string' ? parsed.error : undefined
+    } catch {
+      code = undefined
+    }
+    throw new TaskHistoryError(apiErrorMessage(body, response.statusText), response.status, code)
+  }
+  return response.json() as Promise<TaskHistoryPage>
 }
 
 // The flow projection for the opt-in Board stage stripe (NA-7), read in the

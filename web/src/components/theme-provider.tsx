@@ -1,11 +1,11 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, type ReactNode, useContext, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import {
   applyResolvedTheme,
   DARK_MEDIA_QUERY,
   persistThemeChoice,
+  type ResolvedTheme,
   readThemeChoice,
   resolveTheme,
-  type ResolvedTheme,
   type ThemeChoice,
 } from '../lib/theme'
 

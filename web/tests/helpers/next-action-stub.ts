@@ -1,5 +1,6 @@
 import type { Page, Route } from '@playwright/test'
 import type { ActivityItem, NextAction, NextActionChoice, WorkOrder } from '../../src/lib/types'
+import { completeActivityFor } from './bounded-detail'
 
 // A fake server for GET /v1/tasks/{id}/next-action in specs whose fixtures
 // predate the next-action projection. It stands in for internal/nextaction:
@@ -265,7 +266,13 @@ export async function serveNextActionsFromActivity(page: Page) {
       .then(async (response) => {
         if (response?.ok()) {
           const body = (await response.json().catch(() => undefined)) as ActivityItem | undefined
-          if (body?.task) latest.set(decodeURIComponent(id), body)
+          // The bounded view carries only the newest human events; the
+          // projection reads the complete fixture the page was served.
+          if (body?.task)
+            latest.set(
+              decodeURIComponent(id),
+              (completeActivityFor(page, decodeURIComponent(id)) as unknown as ActivityItem | undefined) ?? body,
+            )
         }
       })
       .catch(() => undefined)

@@ -1,4 +1,4 @@
-import { expect, test, type Route } from '@playwright/test'
+import { expect, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 
 const invitationToken = 'cv_signin_invite-once'

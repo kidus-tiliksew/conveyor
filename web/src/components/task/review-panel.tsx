@@ -192,7 +192,7 @@ const toneStyles: Record<GateTone, { card: string; header: string; title: string
 // Whether the plan revision is the open decision is the server's next action.
 export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
   const canOperate = useWorkspaceCapability('operate_gates')
-  const revisionRequest = item.next_action?.kind === 'plan_revision' ? latestPlanRevisionRequest(item.events) : null
+  const revisionRequest = item.next_action?.kind === 'plan_revision' ? latestPlanRevisionRequest(item.summaries) : null
   if (revisionRequest)
     return canOperate ? (
       <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
