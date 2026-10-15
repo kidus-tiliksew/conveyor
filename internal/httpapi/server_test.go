@@ -2091,7 +2091,7 @@ func TestPlanRevisionReviewDecisionsUseFixedAuditedContract(t *testing.T) {
 	}{
 		{name: "approve revision", body: `{"action":"redirect","reason_code":"plan-revision-approved","comment":"Keep compatibility."}`, wantStatus: http.StatusAccepted, wantTask: core.TaskQueued, wantOrder: core.WorkOrderCancelled, wantReason: dispatch.PlanRevisionApprovedReasonCode},
 		{name: "decline with direction", body: `{"action":"redirect","reason_code":"plan-revision-declined","comment":"Continue with plan v1."}`, wantStatus: http.StatusAccepted, wantTask: core.TaskQueued, wantOrder: core.WorkOrderQueued, wantReason: dispatch.PlanRevisionDeclinedReasonCode, wantDirect: "Continue with plan v1."},
-		{name: "reject", body: `{"action":"reject","reason_code":"plan-revision-rejected"}`, wantStatus: http.StatusAccepted, wantTask: core.TaskClosed, wantOrder: core.WorkOrderQueued, wantReason: dispatch.PlanRevisionRejectedReasonCode},
+		{name: "reject", body: `{"action":"reject","reason_code":"plan-revision-rejected"}`, wantStatus: http.StatusAccepted, wantTask: core.TaskClosed, wantOrder: core.WorkOrderCancelled, wantReason: dispatch.PlanRevisionRejectedReasonCode},
 		{name: "decline requires direction", body: `{"action":"redirect","reason_code":"plan-revision-declined","comment":" "}`, wantStatus: http.StatusBadRequest, wantTask: core.TaskAwaiting, wantOrder: core.WorkOrderQueued},
 		{name: "generic redirect is rejected", body: `{"action":"redirect","reason_code":"spec-wrong"}`, wantStatus: http.StatusBadRequest, wantTask: core.TaskAwaiting, wantOrder: core.WorkOrderQueued},
 	} {
