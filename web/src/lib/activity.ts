@@ -1385,6 +1385,65 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
   }
 }
 
+// A finished job's entry reads as its completion, so it sits where the job
+// ended and follows the events the job produced; a running job sits where it
+// started. A finished job without an end time keeps its start. A verify job
+// renders as its own entry stamped with its start, so it stays there
+// (req-task-centric-operations-view AC-2.2; component-web-task-surfaces).
+export function jobTimelineAt(job: Job): string | undefined {
+  if (job.stage === 'verify' || job.state === 'running' || job.state === 'pending') return job.started_at
+  return job.ended_at ?? job.started_at
+}
+
+function finishedJobEntry(entry: TimelineEntry): boolean {
+  return entry.type === 'job' && entry.job.ended_at !== undefined && entry.at === entry.job.ended_at
+}
+
+// Attempt bookkeeping the server can report as an order's last agent activity
+// (agentActivityLabel in internal/httpapi/server.go). Technical activity keeps
+// the events; the human timeline tells no story with them.
+const bookkeepingActivityLabels = new Set([
+  'Work order claimed',
+  'Claim lease renewed',
+  'Attempt worktree checkpointed',
+  'Usage telemetry reported',
+  'Usage and rate-limit telemetry reported',
+  'Transcript uploaded',
+])
+
+const finishedOrderStates = new Set<WorkOrder['state']>(['submitted', 'completed', 'cancelled'])
+
+// A later order for the same stage and seat replaced this one.
+function supersededOrder(order: WorkOrder, orders: WorkOrder[]): boolean {
+  const entered = Date.parse(order.queue_entered_at)
+  return orders.some(
+    (other) =>
+      other.id !== order.id &&
+      other.stage === order.stage &&
+      (other.review_seat ?? 0) === (order.review_seat ?? 0) &&
+      Date.parse(other.queue_entered_at) > entered,
+  )
+}
+
+// Only a live order's own reports read as agent activity. A finished or
+// superseded order's job or order entry already tells its story.
+function agentActivityNote(
+  order: WorkOrder,
+  orders: WorkOrder[],
+): Extract<TimelineEntry, { type: 'note' }> | undefined {
+  const label = order.last_agent_activity_label
+  if (!order.last_agent_activity_at || !label) return undefined
+  if (bookkeepingActivityLabels.has(label) || finishedOrderStates.has(order.state)) return undefined
+  if (supersededOrder(order, orders)) return undefined
+  return {
+    type: 'note',
+    at: order.last_agent_activity_at,
+    key: `agent-activity-${order.id}`,
+    title: `Agent activity — ${label}`,
+    fullProgress: order.progress && label.startsWith('Progress:') ? order.progress : undefined,
+  }
+}
+
 // The costed event timeline: one entry per stage execution,
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
@@ -1408,7 +1467,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     const tone = rejectedOutput(job, results) ? 'warning' : 'default'
     entries.push({
       type: 'job',
-      at: job.started_at,
+      at: jobTimelineAt(job) ?? job.started_at,
       job,
       summary,
       summaryEventId: summary === text.text ? text.truncatedEventId : undefined,
@@ -1417,17 +1476,10 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       order,
     })
   }
-  for (const order of item.work_orders ?? []) {
-    if (order.last_agent_activity_at && order.last_agent_activity_label) {
-      entries.push({
-        type: 'note',
-        at: order.last_agent_activity_at,
-        key: `agent-activity-${order.id}`,
-        title: `Agent activity — ${order.last_agent_activity_label}`,
-        fullProgress:
-          order.progress && order.last_agent_activity_label.startsWith('Progress:') ? order.progress : undefined,
-      })
-    }
+  const orders = item.work_orders ?? []
+  for (const order of orders) {
+    const activity = agentActivityNote(order, orders)
+    if (activity) entries.push(activity)
     if (panels.orderIds.has(order.id)) continue
     const entry = order.id === dependencyBlockedOrder?.id ? undefined : orderEntry(order, startedJobs.has(order.job_id))
     if (entry) entries.push(entry)
@@ -1472,7 +1524,12 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       continue
     entries.push({ type: 'intervention', at: intervention.at, intervention })
   }
-  return entries.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+  // At an equal instant a finished job follows what it produced, such as the
+  // plan version it drafted; other ties keep their insertion order.
+  return entries.sort(
+    (a, b) =>
+      new Date(a.at).getTime() - new Date(b.at).getTime() || Number(finishedJobEntry(a)) - Number(finishedJobEntry(b)),
+  )
 }
 
 // Earlier human history rows, rendered through the same `noteFor` and panel

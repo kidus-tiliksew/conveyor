@@ -1015,6 +1015,7 @@ function TimelineRow({
   if (entry.type === 'job')
     return (
       <JobEntry
+        at={entry.at}
         job={entry.job}
         taskId={item.task.id}
         summary={entry.summary}
@@ -1491,6 +1492,7 @@ const placeholderSummaries = new Set([
 // only as the chip's logo fallback; auth mode, confinement, and actor plumbing
 // stay in the API.
 function JobEntry({
+  at,
   job,
   taskId,
   summary,
@@ -1500,6 +1502,8 @@ function JobEntry({
   order,
   usageAvailable,
 }: {
+  // The instant the timeline placed this entry: its end once finished.
+  at: string
   job: Job
   taskId: string
   summary: string
@@ -1534,7 +1538,7 @@ function JobEntry({
           <span className="font-mono text-[11px] tabular-nums text-faint">
             {duration(job.started_at, job.ended_at)}
           </span>
-          <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
+          <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
           {order && !providerUsage && (
             <span className="basis-full font-mono text-[11px] tabular-nums text-faint">
               {usageText(order, usageAvailable === true)}
@@ -1556,7 +1560,7 @@ function JobEntry({
           {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
-          <time className="ml-auto text-[11px] text-faint">{absoluteTime(job.started_at)}</time>
+          <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
         </div>
         <MarkdownProse
           className="px-4 py-3 text-sm leading-6 text-foreground/85"
