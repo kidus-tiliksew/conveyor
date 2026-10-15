@@ -129,26 +129,6 @@ func pendingTaskContextIDs(proposals []core.PendingProposal) map[string]bool {
 	return result
 }
 
-func pendingAuthorityTaskIDs(orders []core.WorkOrder, proposals []core.PendingProposal) map[string]bool {
-	origins := make(map[string]bool)
-	for _, proposal := range proposals {
-		if proposal.OriginType == "task" && proposal.OriginID != "" {
-			origins[proposal.OriginID] = true
-		}
-	}
-	result := make(map[string]bool)
-	for _, order := range orders {
-		if !origins[order.TaskID] {
-			continue
-		}
-		if order.Stage == core.StageImplement && order.State == core.WorkOrderSubmitted ||
-			order.Stage == core.StageReview && (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted) {
-			result[order.TaskID] = true
-		}
-	}
-	return result
-}
-
 func sortPendingProposals(items []core.PendingProposal) {
 	sort.Slice(items, func(i, j int) bool {
 		if !items[i].ProposedAt.Equal(items[j].ProposedAt) {

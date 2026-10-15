@@ -61,23 +61,34 @@ func dispositionChoices() []ChoiceSpec {
 	}
 }
 
-func proposalChoices() []ChoiceSpec {
-	return []ChoiceSpec{
-		{ID: "confirm", Label: "Confirm", Effect: "Confirms the proposal.", Method: "POST", Path: "/v1/documents/{id}/confirm", Capability: core.CapabilityConfirmDocuments},
-		{ID: "dismiss", Label: "Dismiss", Effect: "Dismisses the proposal.", Method: "POST", Path: "/v1/documents/{id}/dismiss", Capability: core.CapabilityConfirmDocuments},
-	}
-}
-
-// Shared effect copy of the agent-question proposal choices (feature-operator-next-action NA-4).
+// Shared effect copy of the proposal choices, one pair per kind
+// (feature-operator-next-action NA-4). Deciding the last withholding version
+// releases a document_proposal wait by itself (req-260810-70ce2f AC-1.2), so
+// only the agent-question pair names recovery.
 const (
-	citedConfirmEffect = "Confirms this pending revision. The order stays released until you recover it."
-	citedDismissEffect = "Dismisses this pending revision. The order stays released until you recover it."
+	withheldConfirmEffect = "Confirms this pending revision."
+	withheldDismissEffect = "Dismisses this pending revision."
+	citedConfirmEffect    = "Confirms this pending revision. The order stays released until you recover it."
+	citedDismissEffect    = "Dismisses this pending revision. The order stays released until you recover it."
 )
 
+// withheldProposalChoices offers confirm and dismiss for each version that
+// withholds the task's verify and review claims (row 8).
+func withheldProposalChoices(refs []ProposalRef) []ChoiceSpec {
+	return versionProposalChoices(refs, withheldConfirmEffect, withheldDismissEffect)
+}
+
 // citedProposalChoices offers confirm and dismiss for each cited pending
-// version on its version-specific document route. They precede the answer
-// choice and never recover the order (req-260820-394cac AC-2.3, AC-2.5).
+// version. They precede the answer choice and never recover the order
+// (req-260820-394cac AC-2.3, AC-2.5).
 func citedProposalChoices(refs []ProposalRef) []ChoiceSpec {
+	return versionProposalChoices(refs, citedConfirmEffect, citedDismissEffect)
+}
+
+// versionProposalChoices builds one confirm and one dismiss choice per
+// version on its version-specific requirement or System Design route, the
+// only document routes the server serves (req-operator-next-action AC-1.4).
+func versionProposalChoices(refs []ProposalRef, confirmEffect, dismissEffect string) []ChoiceSpec {
 	out := make([]ChoiceSpec, 0, 2*len(refs))
 	for _, ref := range refs {
 		collection := "/v1/system-designs/"
@@ -88,8 +99,8 @@ func citedProposalChoices(refs []ProposalRef) []ChoiceSpec {
 		key := fmt.Sprintf("%s:%s:%d", ref.Tier, ref.ID, ref.Version)
 		name := fmt.Sprintf("%s v%d", ref.ID, ref.Version)
 		out = append(out,
-			ChoiceSpec{ID: "confirm:" + key, Label: "Confirm " + name, Effect: citedConfirmEffect, Method: "POST", Path: route + "/confirm", Capability: core.CapabilityConfirmDocuments},
-			ChoiceSpec{ID: "dismiss:" + key, Label: "Dismiss " + name, Effect: citedDismissEffect, Method: "POST", Path: route + "/dismiss", Capability: core.CapabilityConfirmDocuments},
+			ChoiceSpec{ID: "confirm:" + key, Label: "Confirm " + name, Effect: confirmEffect, Method: "POST", Path: route + "/confirm", Capability: core.CapabilityConfirmDocuments},
+			ChoiceSpec{ID: "dismiss:" + key, Label: "Dismiss " + name, Effect: dismissEffect, Method: "POST", Path: route + "/dismiss", Capability: core.CapabilityConfirmDocuments},
 		)
 	}
 	return out

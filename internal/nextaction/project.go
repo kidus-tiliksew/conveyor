@@ -225,7 +225,10 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 		summary = summaryWithRetry(summary, vars)
 	}
 	specs := entry.Choices
-	if row.kind == KindAgentQuestion && len(row.proposals) > 0 {
+	switch {
+	case row.kind == KindDocumentProposal:
+		specs = withheldProposalChoices(row.proposals)
+	case row.kind == KindAgentQuestion && len(row.proposals) > 0:
 		specs = append(citedProposalChoices(row.proposals), entry.Choices...)
 	}
 	choices, refusals := selectChoices(in, specs, row.order)

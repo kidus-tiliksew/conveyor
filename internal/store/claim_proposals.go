@@ -10,8 +10,9 @@ import (
 
 // The claim-blocking predicate of req-260810-70ce2f REQ-1 (AC-1.1–AC-1.4),
 // stated once over raw versions. Work-order listing, the service's claim
-// precheck, each backend's locked claim, and the HTTP claim-wait projection
-// all apply it (component-work-orders; component-document-corpus). Decisions,
+// precheck, each backend's locked claim, and the claim-wait selection behind
+// next-action row 8 and the HTTP claim-wait reads all apply it
+// (component-work-orders; component-document-corpus). Decisions,
 // task-context proposals, and operator, session, drift, or other-task origins
 // never block. A pending version of an archived document still blocks.
 
@@ -72,6 +73,57 @@ func ClaimBlockingProposalError(taskID string, proposal ClaimBlockingProposal) e
 		tier = "System Design"
 	}
 	return fmt.Errorf("review for task %s is waiting on task-authored %s proposal %s v%d", taskID, tier, proposal.ID, proposal.Version)
+}
+
+// ClaimWaitWindowTasks reports the tasks whose verify or review claim is
+// pending or in flight: a submitted implementation, which stays submitted until
+// its review round is terminal, or a verify or review order not yet terminal.
+func ClaimWaitWindowTasks(orders []core.WorkOrder) map[string]bool {
+	result := make(map[string]bool)
+	for _, order := range orders {
+		switch {
+		case order.Stage == core.StageImplement && order.State == core.WorkOrderSubmitted:
+			result[order.TaskID] = true
+		case (order.Stage == core.StageVerify || order.Stage == core.StageReview) &&
+			(order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderSubmitted):
+			result[order.TaskID] = true
+		}
+	}
+	return result
+}
+
+// ClaimBlockingProposalReader is the one read the claim-wait selection needs.
+type ClaimBlockingProposalReader interface {
+	ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]ClaimBlockingProposal, error)
+}
+
+// ClaimWaitingProposals is the one claim-wait selection: for each task inside
+// its claim window, the versions that withhold its verify and review claims,
+// read through ListClaimBlockingProposalsForTask, the read listing and the
+// claim precheck use. Next-action row 8 and the proposal_claim_waiting and
+// waiting_proposals reads all call it, so they agree with the claim gate
+// (req-260810-70ce2f AC-1.1, AC-1.3; req-operator-next-action AC-1.7;
+// component-work-orders, Next action). Tasks outside the window cost no read,
+// tasks without a withholding version are absent, and a read failure is
+// returned.
+func ClaimWaitingProposals(ctx context.Context, st ClaimBlockingProposalReader, orders []core.WorkOrder) (map[string][]ClaimBlockingProposal, error) {
+	window := ClaimWaitWindowTasks(orders)
+	ids := make([]string, 0, len(window))
+	for id := range window {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := make(map[string][]ClaimBlockingProposal)
+	for _, id := range ids {
+		items, err := st.ListClaimBlockingProposalsForTask(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if len(items) > 0 {
+			result[id] = items
+		}
+	}
+	return result, nil
 }
 
 func (m *memory) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]ClaimBlockingProposal, error) {

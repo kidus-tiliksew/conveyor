@@ -83,7 +83,7 @@ func init() {
 		{KindMergeConflict, "Merge conflict", "Automatic conflict fixes are exhausted.", "", "The conflict stays until someone fixes it.", conflictChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMergeExecution, "Merge", "The merge gate is on and the branch is ready to merge.", "Merge this branch?", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMerging, "Merging", "Conveyor is merging this branch.", "", "The merge continues.", nil, nil},
-		{KindDocumentProposal, "Document proposal", "A document proposal is withholding the next claim.", "Confirm or dismiss the proposal?", "The claim stays withheld.", proposalChoices(), nil},
+		{KindDocumentProposal, "Document proposal", "A document proposal is withholding the next claim.", "Confirm or dismiss the proposal?", "The claim stays withheld.", nil, nil},
 		{KindAgentQuestion, "Agent question", "The agent stopped for a decision.", "Answer the agent?", "The order stays released.", answerChoices(), nil},
 		{KindVerificationDisposition, "Verification disposition", "Verification needs a disposition.", "Was the change applied?", "The verify order stays at the checkpoint.", dispositionChoices(), nil},
 		{KindForgeFailure, "Forge failure", "A forge write failed.", "", "The forge failure stays until it is retried.", roundChoices(), nil},

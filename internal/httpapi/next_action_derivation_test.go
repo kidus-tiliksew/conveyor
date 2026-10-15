@@ -279,14 +279,22 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, requirementVersion.Version); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateTask(ctx, core.Task{ID: "proposal", Workspace: "demo", Repo: "conveyor", Branch: "proposal", State: core.TaskRunning}); err != nil {
+	// Row 8: a task-authored requirement version withholds the queued review
+	// claim, so details.pending_proposals names it with its version.
+	if err := st.CreateTask(ctx, core.Task{ID: "proposal", Workspace: "demo", Repo: "conveyor", Branch: "proposal", State: core.TaskRunning, NextStage: core.StageReview}); err != nil {
 		t.Fatal(err)
 	}
-	if _, suppressed, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: "proposal", TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID, Source: core.TaskContextProposalTriage, Justification: "The task implements REQ-1."}); err != nil || suppressed {
-		t.Fatalf("proposal suppressed=%t err=%v", suppressed, err)
+	if err := st.CreateJob(ctx, core.Job{ID: "proposal-review-1", TaskID: "proposal", Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "proposal-review-1", TaskID: "proposal", JobID: "proposal-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Shape", Origin: core.RequirementOriginImplementation, OriginTaskID: "proposal", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pin the field and its version."}}}); err != nil {
+		t.Fatal(err)
 	}
 	proposals := requireRaw(t, objectField(t, nextActionObject(t, server, "proposal"), "details"), "pending_proposals")
-	if !strings.Contains(string(proposals), `"tier"`) || !strings.Contains(string(proposals), `"id"`) {
+	if !strings.Contains(string(proposals), `"tier":"requirement"`) || !strings.Contains(string(proposals), `"id":"req-shape"`) || !strings.Contains(string(proposals), `"version":2`) {
 		t.Fatalf("pending_proposals %s", proposals)
 	}
 }
