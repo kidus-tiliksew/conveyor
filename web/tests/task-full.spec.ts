@@ -2424,7 +2424,9 @@ test('Work on this guidance shows the guidance without an agent prompt', async (
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
   await expect(page.getByText('Work on this locally', { exact: true })).toBeVisible()
   await expect(page.getByText('Prompt for AI Agents')).toHaveCount(0)
-  await expect(page.getByRole('tablist')).toHaveCount(0)
+  // The only tablist is the activity's Timeline and Flow; the guidance has none.
+  await expect(page.getByRole('tablist')).toHaveCount(1)
+  await expect(page.getByRole('tablist')).toHaveAccessibleName('Task activity view')
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
   await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
 })
