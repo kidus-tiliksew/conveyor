@@ -8,6 +8,12 @@ import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-st
 
 const createdAt = '2026-07-15T12:00:00Z'
 
+// The one next-action box on task detail; it carries the current execution
+// state, and its supporting title has the stable `current-execution-title` ID
+// (component-web-task-surfaces, Next-action card).
+const nextActionBox = (page: Page) => page.getByRole('region', { name: 'Next action' })
+const executionTitle = (page: Page) => nextActionBox(page).locator('#current-execution-title')
+
 async function showAllBoardTasks(page: Page) {
   await page.addInitScript(() =>
     localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' })),
@@ -2469,10 +2475,12 @@ test('a claimed attempt exposes reasoned operator preemption with the renewal gr
     })
   })
   await page.goto('/tasks/setup-claimed/full')
-  // At rest it is one quiet trigger in the current-state summary — never an
-  // entry or tail card inside the Activity event list.
+  // At rest it is one quiet trigger in the next-action box — never an entry or
+  // tail card inside the Activity event list.
   const trigger = page.getByRole('button', { name: 'Stop attempt' })
   await expect(trigger).toBeVisible()
+  await expect(trigger).toHaveCount(1)
+  await expect(nextActionBox(page).getByRole('button', { name: 'Stop attempt' })).toBeVisible()
   await expect(
     page.locator('section[aria-label="Execution event timeline"] > ol').getByRole('button', { name: /Stop/ }),
   ).toHaveCount(0)
@@ -2577,7 +2585,7 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
   await page.goto('/tasks/operator-checkpoint/full')
   // A checkpoint without a decision request keeps the released wording
   // (req-260820-394cac AC-1.3).
-  await expect(page.getByRole('region', { name: 'Implementation paused — recovery needed' })).toBeVisible()
+  await expect(executionTitle(page)).toHaveText('Implementation paused — recovery needed')
   await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
   await expect(page.getByText(/Recovery without direction will repeat the checkpoint/)).toBeVisible()
   const checkpointMessage = page.getByText('Agent checkpoint message').locator('..')
@@ -2903,8 +2911,8 @@ test('an authority-conflict checkpoint states the server question and groups sev
 
   // The current state is the server's label, the agent's decision request, and
   // the server's question; nothing reads as a failure that needs recovery.
-  const banner = page.getByRole('region', { name: 'Cited revisions need a decision' })
-  await expect(banner).toBeVisible()
+  const banner = nextActionBox(page)
+  await expect(executionTitle(page)).toHaveText('Cited revisions need a decision')
   await expect(banner.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
   await expect(
     banner.getByText('Will you confirm or dismiss the cited revisions, then recover the order with direction?'),
@@ -3010,7 +3018,7 @@ test('an authority conflict without proposals asks for authorship', async ({ pag
     await route.fulfill({ json: item })
   })
   await page.goto('/tasks/operator-checkpoint/full')
-  await expect(page.getByRole('region', { name: 'Cited documents need a revision' })).toBeVisible()
+  await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(
     card.getByText(
@@ -3037,7 +3045,8 @@ test('a generic decision request keeps the generic direction guidance', async ({
     await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
   })
   await page.goto('/tasks/operator-checkpoint/full')
-  const banner = page.getByRole('region', { name: 'Agent question' })
+  const banner = nextActionBox(page)
+  await expect(executionTitle(page)).toHaveText('Agent question')
   await expect(banner.getByText('Should the migration keep the legacy column?', { exact: true })).toBeVisible()
   await expect(banner.getByText('Answer the agent?')).toBeVisible()
   await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
@@ -3330,13 +3339,14 @@ test('checkout-blocked recovery explains the safe operator sequence before recov
   await page.goto('/tasks/checkout-blocked-recovery/full')
 
   const failure = page.getByText('The primary checkout has pre-existing changes, so Conveyor left them untouched.')
-  const resolveFirst = page
-    .getByRole('region', { name: 'Implementation paused — checkout needs attention' })
-    .getByText('Resolve the primary checkout changes, then retry the implementation.')
+  const resolveFirst = nextActionBox(page).getByText(
+    'Resolve the primary checkout changes, then retry the implementation.',
+  )
   const recoveryEffect = page.getByText(/Conveyor will not clean, commit, stash, or discard them/)
   const action = page.getByRole('button', { name: 'Retry implementation' })
 
   await expect(failure).toBeVisible()
+  await expect(executionTitle(page)).toHaveText('Implementation paused — checkout needs attention')
   await expect(resolveFirst).toBeVisible()
   await expect(recoveryEffect).toBeVisible()
   await expect(action).toBeVisible()
@@ -3350,7 +3360,7 @@ test('attempt recovery keeps the later checkout blocker authoritative without a 
 }) => {
   await page.goto('/tasks/attempt-recovery/full')
 
-  await expect(page.getByRole('heading', { name: 'Implementation paused — checkout needs attention' })).toBeVisible()
+  await expect(executionTitle(page)).toHaveText('Implementation paused — checkout needs attention')
   await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
   await expect(page.getByText('The provider usage or capacity limit stopped the last attempt.')).toHaveCount(0)
   await expect(
@@ -3436,7 +3446,8 @@ test('a running attempt becoming paused is announced through the live region', a
   })
 
   await page.goto('/tasks/live-pause/full')
-  await expect(page.getByRole('heading', { name: 'Implementation is in progress' })).toBeVisible()
+  await expect(nextActionBox(page).getByText('Implementation · Progressing')).toBeVisible()
+  await expect(executionTitle(page)).toHaveCount(0)
   releaseStream()
   await expect(page.getByRole('status')).toContainText('Implementation paused — provider limit reached')
   await expect(page.getByRole('status')).toContainText('Retry the implementation after the provider limit has cleared.')
@@ -4572,10 +4583,11 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
   await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
   await expect(timelineRows.nth(2)).toContainText('Pull request opened')
-  // The claimed attempt's stop affordance lives with the current-state
-  // summary, never as a row in the event list.
+  // The claimed attempt's stop affordance lives once in the next-action box,
+  // never as a row in the event list.
   await expect(timelineRows.getByRole('button', { name: /Stop/ })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
+  await expect(nextActionBox(page).getByRole('button', { name: 'Stop attempt' })).toBeVisible()
 
   // The task sheet uses the same historical rendering boundary.
   await page.goto('/tasks/diagnostics')
@@ -5347,15 +5359,19 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   await expect(page.getByRole('link', { name: 'Runtime' }).first()).toBeVisible()
 
   await page.goto('/tasks/blueprint-child/full')
-  await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
-  await expect(page.getByText('Current state · Progressing')).toBeVisible()
-  await expect(
-    page.locator('section[aria-labelledby="current-execution-title"]').getByRole('link', { name: 'Runtime · Waiting' }),
-  ).toHaveAttribute('href', '/tasks/blueprint-sub-2/full')
-  await expect(page.getByText('Not applicable.')).toBeVisible()
-  // The summary is NextActionCard's alone; the panel keeps the dependency links (DEC-61).
+  const box = nextActionBox(page)
+  await expect(box.getByRole('heading', { name: 'This task is waiting on another task.' })).toBeVisible()
+  await expect(box.getByText('Implementation · Progressing')).toBeVisible()
+  await expect(box.getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute(
+    'href',
+    '/tasks/blueprint-sub-2/full',
+  )
+  await expect(box.getByText('Not applicable.')).toBeVisible()
+  // The summary is the box's one headline; the derived "Waiting on
+  // dependencies" title states the same fact and is not printed (DEC-61).
   await expect(page.getByText('This task is waiting on another task.', { exact: true })).toHaveCount(1)
-  await expect(page.getByRole('region', { name: 'Next action' })).toContainText('This task is waiting on another task.')
+  await expect(box.getByText('Waiting on dependencies', { exact: true })).toHaveCount(0)
+  await expect(executionTitle(page)).toHaveCount(0)
   await expect(page.getByText('What to do next')).toHaveCount(0)
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
   await expect(page.getByText('Any agent connected over MCP can claim this.', { exact: false })).toHaveCount(0)
@@ -5398,12 +5414,16 @@ test('blueprint history describes a missing stored spec as a missing plan versio
 test('blocked detail polling clears waiting state without a reload and stays off when unblocked', async ({ page }) => {
   await page.clock.install()
   await page.goto('/tasks/blocked-refresh/full')
-  await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
+  await expect(
+    nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
+  ).toBeVisible()
   expect(detailRequestCounts.get('blocked-refresh')).toBe(1)
 
   await page.clock.fastForward(15_100)
   await expect.poll(() => detailRequestCounts.get('blocked-refresh') ?? 0).toBeGreaterThan(1)
-  await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toHaveCount(0)
+  await expect(nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' })).toHaveCount(
+    0,
+  )
   await expect(page.getByRole('link', { name: 'Backend contract · Satisfied' })).toBeVisible()
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
@@ -5417,21 +5437,26 @@ test('blocked detail polling clears waiting state without a reload and stays off
 
 test('dependency links follow the detail route variant and spec claiming stays available', async ({ page }) => {
   await page.goto('/tasks/blueprint-child')
-  await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
   await expect(
-    page.getByRole('region', { name: 'Execution event timeline' }).getByRole('link', { name: 'Runtime · Waiting' }),
-  ).toHaveAttribute('href', '/tasks/blueprint-sub-2')
+    nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
+  ).toBeVisible()
+  await expect(nextActionBox(page).getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute(
+    'href',
+    '/tasks/blueprint-sub-2',
+  )
 
   await page.goto('/tasks/spec-while-blocked/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByRole('heading', { name: 'Waiting on dependencies' })).toBeVisible()
+  await expect(
+    nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
+  ).toBeVisible()
   await expect(timeline.getByText('Plan — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
 })
 
 test('a pending decision blocker links directly to its System Design decision card', async ({ page }) => {
   await page.goto('/tasks/decision-blocker/full')
-  const blocker = page.locator('section[aria-labelledby="current-execution-title"]')
+  const blocker = nextActionBox(page)
   const decision = blocker.getByRole('link', { name: 'Open DEC-2 in System Design' })
   await expect(decision).toHaveAttribute('href', '/system-design#decision-dec-2')
   await decision.click()
@@ -5440,13 +5465,18 @@ test('a pending decision blocker links directly to its System Design decision ca
 
 test('recovery-needing work stays primary when dependencies are also unresolved', async ({ page }) => {
   await page.goto('/tasks/blocked-suppressed/full')
-  const currentState = page.locator('section[aria-labelledby="current-execution-title"]')
-  await expect(currentState.getByRole('heading', { name: 'Implementation paused — recovery needed' })).toBeVisible()
+  const currentState = nextActionBox(page)
+  await expect(executionTitle(page)).toHaveText('Implementation paused — recovery needed')
   await expect(currentState.getByText('Schema migration · Waiting')).toBeVisible()
   await expect(currentState.getByText(/task remains dependency-gated/i)).toBeVisible()
   await expect(page.getByText(/starts automatically/i)).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
-  await expect(currentState.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
+  // The box offers Redispatch only as the server's own choice; its execution
+  // state adds none.
+  await expect(currentState.locator('dl').getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
+  await expect(currentState.getByRole('button', { name: 'Redispatch' })).toHaveCount(
+    await currentState.locator('[data-next-action-choices]').getByRole('button', { name: 'Redispatch' }).count(),
+  )
 })
 
 test('board cards show a neutral, keyboard-reachable dependency chip using titles', async ({ page }) => {
@@ -5529,13 +5559,17 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect(card.getByRole('button', { name: /Unlink dependency/ })).toHaveCount(0)
   await card.click()
 
-  const currentState = page.locator('section[aria-labelledby="current-execution-title"]')
+  const currentState = nextActionBox(page)
   await expect(page.getByRole('region', { name: 'Dependency needs attention' }).first()).toBeVisible()
-  await expect(currentState.getByRole('heading', { name: 'Dependency needs attention' })).toBeVisible()
+  // The summary states the unsatisfied edge, so the derived "Dependency needs
+  // attention" title is not repeated in the box (DEC-61).
+  await expect(currentState.getByRole('heading', { name: 'A dependency ended without merging.' })).toBeVisible()
+  await expect(executionTitle(page)).toHaveCount(0)
+  await expect(currentState.getByText('Implementation · Paused — needs attention')).toBeVisible()
   await expect(currentState.getByText('Retired API plan · Needs attention')).toBeVisible()
   await expect(currentState.getByText('Active schema work · Waiting')).toBeVisible()
   await expect(currentState.getByText(/Unlink the dead dependency.*cancel this task/i)).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Waiting on dependencies' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'This task is waiting on another task.' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Task actions' }).click()

@@ -108,8 +108,8 @@ function FullBody({ item }: { item: ActivityItem }) {
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
         <section aria-label="Activity" className="space-y-4 px-4 py-4 sm:px-6">
-          <NextActionCard taskId={item.task.id} gateOpen={isReviewable(item)} />
-          <Timeline item={item} routeVariant="full" />
+          <NextActionCard item={item} routeVariant="full" gateOpen={isReviewable(item)} />
+          <Timeline item={item} />
         </section>
       </div>
     </section>

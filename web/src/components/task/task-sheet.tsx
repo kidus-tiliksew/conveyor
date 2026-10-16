@@ -118,8 +118,8 @@ function SheetBody({ item }: { item: ActivityItem }) {
       <AttachmentsCard attachments={item.attachments ?? []} />
       {/* Relationships are read in the explorer panel, not inline: the panel
           is the one rendering of this task's lineage. */}
-      <NextActionCard taskId={item.task.id} gateOpen={isReviewable(item)} />
-      <Timeline item={item} routeVariant="sheet" />
+      <NextActionCard item={item} routeVariant="sheet" gateOpen={isReviewable(item)} />
+      <Timeline item={item} />
     </div>
   )
 }

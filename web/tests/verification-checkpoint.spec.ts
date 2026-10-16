@@ -490,7 +490,13 @@ test('viewer sees the verification checkpoint but no recovery', async ({ page })
 test('a running verify order is labelled Verification', async ({ page }) => {
   await fixture(page, { claimed: true })
   await page.goto(`/tasks/${taskId}/full`)
-  await expect(page.locator('#current-execution-title')).toHaveText('Verification is in progress')
+  // The running state's title repeats the summary, so the stage reads on the
+  // next-action box's status line instead (component-web-task-surfaces,
+  // Next-action card).
+  const box = page.getByRole('region', { name: 'Next action' })
+  await expect(box.getByText('Verification · Progressing', { exact: true })).toBeVisible()
+  await expect(box.getByText('Review · Progressing')).toHaveCount(0)
+  await expect(page.locator('#current-execution-title')).toHaveCount(0)
 })
 
 // The verification-checkpoint recovery mutation refreshes task detail under its

@@ -177,6 +177,133 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
   })
 }
 
+// A running agent attempt reads as one box: the server's statement with the
+// current order's execution state folded in, its empty-state rows omitted, and
+// the stop and client-activity affordances printed once (DEC-61;
+// component-web-task-surfaces, Next-action card).
+const runningOrder = {
+  id: 'order-impl-running',
+  task_id: taskId,
+  job_id: 'job-impl-running',
+  stage: 'implement',
+  state: 'claimed',
+  claimable: false,
+  attempt_id: 'attempt-running',
+  claimed_by: 'run:operator',
+  created_at: timestamp,
+  queue_entered_at: timestamp,
+  updated_at: timestamp,
+  activity_snapshot: {
+    attempt_id: 'attempt-running',
+    content: 'running focused tests\nall green so far',
+    captured_at: timestamp,
+  },
+} as unknown as WorkOrder
+
+const workingAction: NextAction = {
+  label: 'Working',
+  actor: 'agent',
+  kind: 'working',
+  judgment: false,
+  summary: 'An agent is working on this task.',
+  if_ignored: 'The attempt continues.',
+  deadline: '2026-10-12T14:00:00Z',
+  choices: [],
+  current_order: {
+    id: 'order-impl-running',
+    stage: 'implement',
+    state: 'claimed',
+    queue_deadline: null,
+    execution_deadline: '2026-10-12T14:00:00Z',
+    lease_expires_at: '2026-10-12T10:05:00Z',
+  },
+  details: {},
+}
+
+for (const surface of [
+  { name: 'Board sheet', path: `/tasks/${taskId}`, detail: 'dialog', label: 'Task detail' },
+  { name: 'full route', path: `/tasks/${taskId}/full`, detail: 'region', label: 'Task content' },
+] as const) {
+  test(`a running attempt on the ${surface.name} shows one next-action box above Activity at 390 px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await mockAPI(
+      page,
+      () => activity('running', workingAction, [runningOrder]),
+      () => workingAction,
+    )
+    await page.goto(surface.path)
+    const card = page.getByRole('region', { name: 'Next action' })
+    await expect(card).toHaveCount(1)
+
+    // The server's statement: label and actor, the summary once as the box's
+    // one headline, what happens if ignored, and the deadline.
+    await expect(card.getByText('Working', { exact: true })).toBeVisible()
+    await expect(card.locator('[data-actor]')).toHaveText('agent')
+    await expect(card.getByRole('heading', { name: 'An agent is working on this task.' })).toBeVisible()
+    // The Board behind the sheet keeps the summary in its card tooltip, so the
+    // count is taken over task detail.
+    const detail = page.getByRole(surface.detail, { name: surface.label })
+    await expect(detail.getByText('An agent is working on this task.', { exact: true })).toHaveCount(1)
+    await expect(card.getByText('If ignored: The attempt continues.')).toBeVisible()
+    await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
+    await expect(card.getByText('Implementation · Progressing', { exact: true })).toBeVisible()
+
+    // The execution state adds nothing the summary already says: no derived
+    // title, no empty-state rows, and no second current-state section.
+    await expect(page.getByText('Implementation is in progress')).toHaveCount(0)
+    await expect(page.locator('#current-execution-title')).toHaveCount(0)
+    await expect(page.locator('section[aria-labelledby="current-execution-title"]')).toHaveCount(0)
+    for (const label of ['Current blocker', 'Retry', 'What to do next']) {
+      await expect(page.locator('dt').getByText(label, { exact: true })).toHaveCount(0)
+    }
+    for (const empty of ['No current blocker.', 'No retry is needed.', 'No operator action is needed.']) {
+      await expect(page.getByText(empty)).toHaveCount(0)
+    }
+
+    // The stop affordance and the client machine activity render once, in the box.
+    await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
+    await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(1)
+    await expect(card.getByRole('region', { name: 'Client machine activity' })).toBeVisible()
+
+    // The box sits directly above the Activity heading.
+    const activityHeading = page.getByRole('heading', { name: 'Activity', exact: true })
+    const cardBox = await card.boundingBox()
+    const headingBox = await activityHeading.boundingBox()
+    expect(cardBox && headingBox && cardBox.y + cardBox.height <= headingBox.y).toBe(true)
+
+    // Nothing scrolls sideways at 390 px.
+    const overflow = await card.evaluate((element) => ({
+      card: element.scrollWidth > element.clientWidth,
+      page: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }))
+    expect(overflow).toEqual({ card: false, page: false })
+  })
+}
+
+// A claimed order the next action does not name as current, such as a claimed
+// refresh-review round, maps no execution state; its stop affordance still
+// renders once, in the box.
+test('a claimed order without a mapped execution state keeps one Stop attempt in the box', async ({ page }) => {
+  const reviewOrder = { ...runningOrder, id: 'order-review-refresh', stage: 'review', activity_snapshot: undefined }
+  const unnamed: NextAction = { ...workingAction, current_order: undefined }
+  await mockAPI(
+    page,
+    () => activity('running', unnamed, [reviewOrder as WorkOrder]),
+    () => unnamed,
+  )
+  for (const path of [`/tasks/${taskId}/full`, `/tasks/${taskId}`]) {
+    await page.goto(path)
+    const card = page.getByRole('region', { name: 'Next action' })
+    await expect(card.getByRole('heading', { name: 'An agent is working on this task.' })).toBeVisible()
+    await expect(card.locator('[data-execution-status]')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
+    await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+  }
+})
+
 test('the card carries the choices of an operator action outside the human gate', async ({ page }) => {
   const question: NextAction = {
     label: 'Agent question',
