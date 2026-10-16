@@ -785,12 +785,12 @@ func TestConflictFixDispatchFailureBudgetResetsForChangedAndClearedEpisodes(t *t
 	}
 }
 
-func TestConflictFixInterruptedReviewRecoveryPrecedesHeldDispatch(t *testing.T) {
+// The interrupted review seat holds the review stage (a work-order stage hold,
+// core.WorkOrderHoldsStage), so its recovery precedes conflict-fix dispatch.
+// No per-task hold is involved; that reservation is retired (DEC-74(3)).
+func TestConflictFixInterruptedReviewRecoveryPrecedesStageHeldDispatch(t *testing.T) {
 	ctx, st, task, d := approvedMergeFixtureWithScope(t, "acme/app", config.RefreshReviewNone)
 	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.SetTaskHold(ctx, task.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}

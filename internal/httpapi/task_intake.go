@@ -105,6 +105,13 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 			return taskCreateResult{Task: existing}, nil
 		}
 	}
+	// Hold is retired: a task carries no worker reservation (DEC-74(3)). The
+	// refusal follows the idempotency lookup so a retry of a task stored with
+	// hold before the retirement still returns that original task
+	// (component-http-api, Task intake).
+	if req.Hold {
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Code: taskHoldRetired, Message: taskHoldRetiredIntakeMessage}
+	}
 	repos := s.Repos
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	var current *config.Config
@@ -121,10 +128,10 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if current != nil {
 		selectedSetup = current.FreezePolicy()
 	}
-	// No mode axis and no intake-time health gating: serviceability is
-	// advisory and orders queue openly. Hold is the only reservation input
-	// (DEC-55(2)-(3); component-task-lifecycle).
-	hold, specApproval, mergeApproval := resolvedIntakePolicy(req, current)
+	// No mode axis, no reservation, and no intake-time health gating:
+	// serviceability is advisory and orders queue openly (DEC-74(2), DEC-74(3);
+	// component-task-lifecycle).
+	specApproval, mergeApproval := resolvedIntakePolicy(req, current)
 	if repos != nil && !contains(repos, req.Repo) {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown repo " + req.Repo}
 	}
@@ -165,7 +172,6 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		Title:         title,
 		Body:          req.Body,
 		Level:         req.Level,
-		Hold:          hold,
 		SpecApproval:  specApproval,
 		MergeApproval: mergeApproval,
 		PolicyVersion: 1,
@@ -222,6 +228,11 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 }
 
 const (
+	// taskHoldRetired refuses a new hold: true intake and answers the retired
+	// PUT /v1/tasks/{id}/hold route (DEC-74(3); component-http-api).
+	taskHoldRetired              = "task_hold_retired"
+	taskHoldRetiredIntakeMessage = "hold is retired (DEC-74); a task carries no worker reservation, so omit hold or send false"
+	taskHoldRetiredRouteMessage  = "task hold is retired (DEC-74); a task carries no worker reservation"
 	// agentGateDisableForbidden refuses an agent input that would turn a
 	// human gate off (req-intake-and-triage AC-4.2; DEC-60).
 	agentGateDisableForbidden = "agent_gate_disable_forbidden"
@@ -234,8 +245,8 @@ const (
 // input an agent can supply. Omitted gates take the workspace defaults, even
 // off ones; true is accepted; false is refused by name, never ignored. The
 // legacy level is a gate input: L2 and L3 map every gate on and are accepted,
-// while L0 and L1 map a gate off. Hold is a reservation input, not a gate
-// (DEC-55(3)), so either value is accepted and confers no later hold rights.
+// while L0 and L1 map a gate off. Hold is retired for every caller (DEC-74(3))
+// and is refused by the shared intake after the idempotency lookup, never here.
 // TestCreateTaskRequestPolicyFieldsAreAgentChecked pins createTaskReq so a new
 // policy field cannot bypass this check unnoticed.
 func agentIntakePolicyError(req createTaskReq) error {
@@ -257,17 +268,14 @@ func agentIntakePolicyError(req createTaskReq) error {
 	}
 }
 
-// resolvedIntakePolicy maps the request onto the three intake policy
-// decisions: hold, spec approval, merge approval (DEC-55(1), DEC-55(3);
-// component-task-lifecycle). A legacy escalation level
-// contributes through its accepted mapping; explicit gate overrides win last.
-func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool, bool) {
-	hold := req.Hold
+// resolvedIntakePolicy maps the request onto the two intake policy decisions:
+// spec approval and merge approval (DEC-74(1); component-task-lifecycle). A
+// legacy escalation level contributes through its gate mapping and implies no
+// reservation (DEC-74(3)); explicit gate overrides win last.
+func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool) {
 	var specApproval, mergeApproval bool
 	if req.Level != "" {
-		var legacyHold bool
-		legacyHold, specApproval, mergeApproval = core.LegacyPolicy(req.Level)
-		hold = hold || legacyHold
+		specApproval, mergeApproval = core.LegacyPolicy(req.Level)
 	} else if current != nil {
 		specApproval, mergeApproval = current.Execution.SpecApproval, current.Execution.MergeApproval
 	} else {
@@ -279,9 +287,12 @@ func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool
 	if req.MergeApproval != nil {
 		mergeApproval = *req.MergeApproval
 	}
-	return hold, specApproval, mergeApproval
+	return specApproval, mergeApproval
 }
 
+// sameIntakeRequest decides whether a keyed retry repeats the original
+// request. It never compares hold: a retry of a task stored with hold before
+// the retirement returns that original task (DEC-74(3); component-http-api).
 func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskContextInput) bool {
 	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
 		return false
@@ -300,9 +311,6 @@ func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskConte
 	if !reflect.DeepEqual(intake.RequirementIDs, req.RequirementIDs) || !reflect.DeepEqual(intake.DesignIDs, req.SystemDesignIDs) {
 		return false
 	}
-	if req.Hold && !task.Hold {
-		return false
-	}
 	if req.SpecApproval != nil && task.SpecApproval != *req.SpecApproval {
 		return false
 	}
@@ -310,14 +318,11 @@ func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskConte
 		return false
 	}
 	if req.Level != "" {
-		legacyHold, specApproval, mergeApproval := core.LegacyPolicy(req.Level)
+		specApproval, mergeApproval := core.LegacyPolicy(req.Level)
 		if req.SpecApproval == nil && task.SpecApproval != specApproval {
 			return false
 		}
 		if req.MergeApproval == nil && task.MergeApproval != mergeApproval {
-			return false
-		}
-		if legacyHold && !task.Hold {
 			return false
 		}
 	}

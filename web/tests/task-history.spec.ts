@@ -338,6 +338,37 @@ test('Older, Newer, and Newest replace the page and keep at most 50 rows', async
   expect(server.calls.at(-1)?.cursor).toBeNull()
 })
 
+// Hold events recorded before the retirement stay readable exactly as stored,
+// while the task projection carries no hold (DEC-74(3); component-http-api).
+test('historical hold events stay readable in technical activity without a task hold', async ({ page }) => {
+  const small = ledger('small')
+  const events = small.item.events.map((event) => ({ ...event }))
+  const newest = events.length - 1
+  events[newest] = { ...events[newest], kind: 'task.hold.set', job_id: undefined, payload: { hold: true } }
+  events[newest - 1] = {
+    ...events[newest - 1],
+    kind: 'task.hold_changed',
+    job_id: undefined,
+    payload: { hold: true, reason_code: 'user-request-changes' },
+  }
+  const historical: GeneratedLedger = {
+    ...small,
+    taskId: 'ledger-hold-history',
+    item: {
+      ...small.item,
+      task: { ...small.item.task, id: 'ledger-hold-history', title: 'Historical hold events' },
+      events,
+    },
+  }
+  await serveLedgers(page, [historical])
+  const scope = await openDetail(page, 'full route', historical)
+  await expect(scope.getByText('Held', { exact: true })).toHaveCount(0)
+  await technicalToggle(scope).click()
+  await expect(technicalRows(scope).last()).toContainText('task.hold.set')
+  await expect(technicalRows(scope).last()).toContainText(`Event ${events[newest].id}`)
+  await expect(technicalRows(scope).filter({ hasText: 'task.hold_changed' })).toHaveCount(1)
+})
+
 test('history states: loading, empty, error with Retry, end of history, and restart', async ({ page }) => {
   const small = ledger('small')
   const empty: GeneratedLedger = {

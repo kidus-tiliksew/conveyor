@@ -253,8 +253,8 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		"complete revision proposals first",
 		"pending proposal identifiers",
 		"proposals already pending",
-		"For gate approval, repository-drift resolution, and task cancel/hold",
-		"task cancel/hold",
+		"For gate approval, repository-drift resolution, and task cancellation",
+		"task cancellation",
 		"no applicable task-authored proposal surface is available",
 		`"pause and report until the operator has done X,"`,
 		"state why proposing is unavailable",
@@ -330,8 +330,8 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		"cite their pending identifiers",
 		"bare pause-and-report checkpoint",
 		"neither a proposal step nor a stated reason why proposing is unavailable",
-		"gate approval, repository-drift resolution, task cancel/hold",
-		"task cancel/hold",
+		"gate approval, repository-drift resolution, task cancellation",
+		"task cancellation",
 		"without an applicable proposal surface",
 		"agent obligation ends when reached",
 		"reasoned reviewer check, not a text parser",
@@ -343,6 +343,9 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	for _, obsolete := range []string{
 		"For gate approval, repository-drift resolution, requirement-clause revisions",
 		"repository-drift resolution, requirement-clause revisions, task cancel/hold",
+		// The per-task hold is retired (DEC-74(3)); no role names it as an
+		// operator act.
+		"cancel/hold",
 	} {
 		if strings.Contains(normalizedSpec, obsolete) || strings.Contains(normalizedReview, obsolete) {
 			t.Errorf("role still classifies requirement revisions as non-proposable: %q", obsolete)

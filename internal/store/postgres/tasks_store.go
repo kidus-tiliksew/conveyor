@@ -557,31 +557,6 @@ func (s *Store) hydrateTaskAssignees(ctx context.Context, tasks []core.Task) err
 	return rows.Err()
 }
 
-func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
-	var result core.Task
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
-		if err != nil {
-			return notFound(err, "task %s", id)
-		}
-		if before.Hold == hold {
-			result = taskFromDB(before)
-			return nil
-		}
-		updated, err := q.UpdateTaskHold(ctx, db.UpdateTaskHoldParams{ID: id, WorkspaceID: workspace(ctx), Hold: hold})
-		if err != nil {
-			return err
-		}
-		result = taskFromDB(updated)
-		kind := "task.hold.set"
-		if !hold {
-			kind = "task.hold.cleared"
-		}
-		return insertEvent(ctx, q, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
-	})
-	return result, err
-}
-
 func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
 	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
 		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
@@ -692,15 +667,6 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 			return err
 		}
 		result = taskFromDB(updated)
-		if request.Hold && !before.Hold {
-			if _, err = tx.Exec(ctx, `UPDATE tasks SET hold=true,updated_at=now() WHERE workspace_id=$1 AND id=$2`, workspace(ctx), request.TaskID); err != nil {
-				return err
-			}
-			result.Hold = true
-			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.hold_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": store.UserRequestChangesReason})}); err != nil {
-				return err
-			}
-		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": plan.Command})}); err != nil {
 			return err
 		}
@@ -979,7 +945,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
 				Title:  title,
 				Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
-				Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
+				Class:  parent.Class, Level: parent.Level,
 				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
 				PolicyVersion: parent.PolicyVersion,
 				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
@@ -1617,7 +1583,9 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		ID: task.ID, WorkspaceID: task.Workspace, Source: task.Source,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
-		Mode: string(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		// Every insert stores hold false; a task carries no worker reservation
+		// (DEC-74(3); component-persistence).
+		Mode: string(task.Mode), Hold: false, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int32(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setupContractJSON(task.SetupContract),
 		ReviewedHeadSha: task.ReviewedHeadSHA, ApprovedHeadSha: task.ApprovedHeadSHA, ApprovalStale: task.ApprovalStale,

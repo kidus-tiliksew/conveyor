@@ -86,25 +86,6 @@ func runTaskLifecycle(t *testing.T, x Fixture) {
 	jobs, err := st.ListJobs(ctx, task.ID)
 	requireOK(t, err)
 	requireJSONArray(t, "fresh task jobs", jobs)
-	before, err := st.ListEvents(ctx, task.ID)
-	requireOK(t, err)
-	held, err := st.SetTaskHold(ctx, task.ID, true)
-	requireOK(t, err)
-	if !held.Hold {
-		t.Fatal("hold projection did not change")
-	}
-	after, err := st.ListEvents(ctx, task.ID)
-	requireOK(t, err)
-	if len(after) != len(before)+1 || after[len(after)-1].Kind != "task.hold.set" {
-		t.Fatal("hold projection lacks its event")
-	}
-	_, err = st.SetTaskHold(ctx, task.ID, true)
-	requireOK(t, err)
-	idempotent, err := st.ListEvents(ctx, task.ID)
-	requireOK(t, err)
-	if len(idempotent) != len(after) {
-		t.Fatal("idempotent hold added an event")
-	}
 	requireOK(t, st.UpdateTaskClassification(ctx, task.ID, "chore"))
 	current, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
@@ -124,12 +105,12 @@ func runTaskLifecycle(t *testing.T, x Fixture) {
 	}
 	// A rejected lifecycle command must leave both projections and events
 	// unchanged. Reads use the same public transaction boundary as callers.
-	before, err = st.ListEvents(ctx, task.ID)
+	before, err := st.ListEvents(ctx, task.ID)
 	requireOK(t, err)
 	if _, err := taskops.New(st).Cancel(ctx, intervention); err == nil {
 		t.Fatal("terminal task accepted another cancellation")
 	}
-	after, err = st.ListEvents(ctx, task.ID)
+	after, err := st.ListEvents(ctx, task.ID)
 	requireOK(t, err)
 	current, err = st.GetTask(ctx, task.ID)
 	requireOK(t, err)
@@ -153,18 +134,24 @@ func runTaskEventAtomicity(t *testing.T, x Fixture) {
 	task := newAggregateTask(t, x)
 	before, err := st.ListEvents(ctx, task.ID)
 	requireOK(t, err)
+	beforeTask, err := st.GetTask(ctx, task.ID)
+	requireOK(t, err)
 	// A NUL in the audit actor cannot be represented by the reference
-	// backend's text ledger. The hold row is updated before that insert.
-	// This public input therefore tests rollback after projection mutation.
+	// backend's text ledger. Cancellation moves the task row before that
+	// insert, so this public input tests rollback after projection mutation;
+	// the volatile backend refuses the same input before its first write.
 	badActor := store.WithActor(ctx, store.Actor{ID: "invalid\x00actor", Role: core.ActorUser})
-	if _, err := st.SetTaskHold(badActor, task.ID, true); err == nil {
-		t.Fatal("hold committed despite an unrepresentable audit actor")
+	intervention := core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "operator_cancel", Comment: "atomicity probe"}
+	if _, err := taskops.New(st).Cancel(badActor, intervention); err == nil {
+		t.Fatal("cancellation committed despite an unrepresentable audit actor")
 	}
 	current, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
 	after, err := st.ListEvents(ctx, task.ID)
 	requireOK(t, err)
-	if current.Hold || len(after) != len(before) {
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	requireOK(t, err)
+	if current.State != beforeTask.State || len(after) != len(before) || len(interventions) != 0 {
 		t.Fatal("failed event insertion left a committed projection or partial event")
 	}
 }

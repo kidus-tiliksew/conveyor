@@ -83,9 +83,10 @@ for the long tail of chores.
 Conveyor treats the light level as configuration.
 
 Running light, a person is in the loop at every step. Plan approval and
-merge approval are on. Tasks are created with `hold`, so no worker touches
-them; the operator runs `conveyor run <task-id>`, watches the output live,
-and answers gates inline. Claimable stages chain by default. Per-stage
+merge approval are on, and the operator runs `conveyor run <task-id>`,
+watches the output live, and answers gates inline. A task carries no
+reservation: to keep work on one person's machine, assign it to them and run
+no worker for them (DEC-74). Claimable stages chain by default. Per-stage
 confirmation is available with `--step`.
 
 Running dark, the queue drives itself. Gates are off (per task or workspace
@@ -98,7 +99,7 @@ pending proposals, drift, staleness.
 
 Because the switches are per task, the practical answer is rarely one end.
 The workspace default can be dark while the tasks that touch governed
-architecture carry gates, or hold, or an assignee. Bounce limits are the
+architecture carry gates or an assignee. Bounce limits are the
 backstop for the dark end: review rounds that keep failing park the task at
 a human gate after `max_bounces` rounds rather than burning tokens forever.
 

@@ -52,6 +52,36 @@ type Fixture struct {
 	// JSON, modelling rows an earlier encoding wrote. No public writer accepts
 	// a raw contract; the volatile backend decodes it into the task.
 	SeedSetupContract func(t *testing.T, ctx context.Context, taskID, raw string)
+	// SeedStoredTaskHold sets one task's stored historical hold column to
+	// true, modelling a row written before the hold retirement (DEC-74(3)).
+	// No public writer can; each backend seeds it directly in its test
+	// binary. The hold-retirement cases require it and never skip.
+	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
+	// WorkerService exercises the real worker.Service over this fixture's
+	// backend and configuration. storetest cannot import internal/worker,
+	// because worker tests import storetest, so each conformance entry point
+	// constructs it (component-verification-strategy). The hold-retirement
+	// cases require it and never skip.
+	WorkerService func(t *testing.T) WorkerExercise
+}
+
+// WorkerExercise is the worker-service surface the Workers hold-retirement
+// cases call: listing, visible orders, and claim, each through the real
+// service rather than the store (component-work-orders, Workers).
+type WorkerExercise struct {
+	ListClaimable     func(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error)
+	ListVisibleOrders func(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error)
+	ClaimForWorker    func(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
+}
+
+// requireStoredTaskHoldSeed returns the fixture's historical hold seed or
+// fails the case; a fixture without it cannot prove the retirement.
+func requireStoredTaskHoldSeed(t *testing.T, seed func(*testing.T, context.Context, string)) func(*testing.T, context.Context, string) {
+	t.Helper()
+	if seed == nil {
+		t.Fatal("conformance fixture must provide SeedStoredTaskHold for the hold-retirement cases (DEC-74(3))")
+	}
+	return seed
 }
 
 // Factory creates an isolated backend and workspace on every call. Cleanup
@@ -123,7 +153,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("Blueprint", func(t *testing.T) {
 		RunBlueprintConformance(t, func(t *testing.T, repos []config.Repo) BlueprintFixture {
 			x := factory.fresh(t, repos)
-			return BlueprintFixture{x.Backend, x.Context, x.Workspace}
+			return BlueprintFixture{x.Backend, x.Context, x.Workspace, x.SeedStoredTaskHold}
 		})
 	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
