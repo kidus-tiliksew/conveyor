@@ -66,8 +66,10 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       harness.inboxRequests.push(url.search)
       const band = url.searchParams.get('band')
       const items = band ? f.items.filter((item) => item.band === band) : f.items
+      const offset = Number(url.searchParams.get('offset') ?? 0)
+      const limit = Number(url.searchParams.get('limit') ?? items.length)
       return route.fulfill({
-        json: { items, acts: f.acts ?? [] },
+        json: { items: items.slice(offset, offset + limit), acts: f.acts ?? [] },
         headers: { 'X-Conveyor-Total': String(items.length) },
       })
     }
@@ -950,4 +952,23 @@ test('without a binding the disposition choices stay disabled with the server re
   await expect(card.getByRole('button', { name: 'No, it didn’t…' })).toBeDisabled()
   await expect(choices.getByText('Take this from the task page.')).toBeVisible()
   expect(harness.posts).toHaveLength(0)
+})
+
+test('band counts cover every page of the inbox', async ({ page }) => {
+  const fixture = decisionsFixture()
+  for (let index = 0; index < 120; index++) {
+    fixture.items.push({
+      band: 'automatic',
+      task: task(`T-run-${index}`, `Running task ${index}`, 'running'),
+      next_action: { kind: 'working', label: 'Working', actor: 'agent', judgment: false, summary: 'Working.' },
+    })
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox')
+  const chips = page.getByRole('navigation', { name: 'Inbox bands' })
+  await expect(chips.locator('[data-band-chip="automatic"]')).toHaveText('Auto121')
+  await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
+  const offsets = harness.inboxRequests.map((search) => new URLSearchParams(search).get('offset'))
+  expect(offsets).toContain('0')
+  expect(offsets).toContain('100')
 })

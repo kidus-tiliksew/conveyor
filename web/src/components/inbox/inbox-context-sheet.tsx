@@ -191,8 +191,8 @@ function PlanFiles({ section }: { section: string }) {
   if (files.length === 0) return <MarkdownProse className="text-sm">{section}</MarkdownProse>
   return (
     <ul className="divide-y divide-border rounded-md border border-border">
-      {files.map((file) => (
-        <li key={file.path} className="min-w-0 px-3 py-2">
+      {files.map((file, index) => (
+        <li key={`${index}:${file.path}`} className="min-w-0 px-3 py-2">
           <code className="break-all font-mono text-xs">{file.path}</code>
           {file.note && <p className="mt-0.5 break-words text-xs text-muted">{file.note}</p>}
         </li>
