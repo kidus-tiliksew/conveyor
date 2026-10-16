@@ -475,7 +475,32 @@ test('task-context proposals are decided from the inbox one at a time and the it
           proposals: [],
         },
       },
-      events: [],
+      // The decisions as the audited routes record them: kind, target, and
+      // the requirement ID the confirm route adds for a requirement.
+      events: [
+        {
+          id: '901',
+          task_id: 'T-ctx',
+          kind: 'task.context_proposal_confirmed',
+          actor_id: 'user:usr_operator',
+          actor_role: 'operator',
+          at: '2026-10-16T18:10:00.000000Z',
+          payload: {
+            target_kind: 'requirement',
+            target_id: 'req-review-gates-evidence',
+            requirement_id: 'req-review-gates-evidence',
+          },
+        },
+        {
+          id: '902',
+          task_id: 'T-ctx',
+          kind: 'task.context_proposal_dismissed',
+          actor_id: 'user:usr_operator',
+          actor_role: 'operator',
+          at: '2026-10-16T18:11:00.000000Z',
+          payload: { target_kind: 'system_design', target_id: 'component-web-dashboard' },
+        },
+      ],
       jobs: [],
       work_orders: [],
       interventions: [],
@@ -488,6 +513,10 @@ test('task-context proposals are decided from the inbox one at a time and the it
       .getByLabel('Review gates and evidence (req-review-gates-evidence)'),
   ).toBeVisible()
   await expect(page.getByRole('region', { name: 'Suggested context' })).toHaveCount(0)
+  // Both inbox decisions read as the audited acts in the task timeline.
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Context confirmed: requirement req-review-gates-evidence')).toBeVisible()
+  await expect(timeline.getByText('Context dismissed: System Design component-web-dashboard')).toBeVisible()
 })
 
 test('task-context choices a caller may not take stay disabled in the inbox with the capability reason', async ({

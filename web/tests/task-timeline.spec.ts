@@ -371,6 +371,43 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
   await expect(timeline.getByText('Closed', { exact: true })).toHaveCount(0)
 })
 
+// A task-context decision is the operator's audited act, so it reads as a note
+// naming the document; a payload without target fields, or an omitted payload,
+// keeps a readable title and the audit disclosure (req-operator-next-action
+// AC-2.2; component-web-task-surfaces, Work-order timeline entries).
+test('task-context decisions read as Context confirmed and Context dismissed notes', async ({ page }) => {
+  const item = activity({
+    events: [
+      event(1, 'task.context_proposal_confirmed', minutes(1), {
+        target_kind: 'requirement',
+        target_id: 'req-review-gates-evidence',
+        requirement_id: 'req-review-gates-evidence',
+      }),
+      event(2, 'task.context_proposal_dismissed', minutes(2), {
+        target_kind: 'system_design',
+        target_id: 'component-web-dashboard',
+      }),
+      event(3, 'task.context_proposal_confirmed', minutes(3), {}),
+      {
+        ...event(4, 'task.context_proposal_dismissed', minutes(4), {}),
+        payload: null,
+        payload_omitted: true,
+        payload_bytes: 9000,
+        audit_available: true,
+      },
+    ],
+  })
+  await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
+  await page.goto(`/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Context confirmed: requirement req-review-gates-evidence')).toBeVisible()
+  await expect(timeline.getByText('Context dismissed: System Design component-web-dashboard')).toBeVisible()
+  await expect(timeline.getByText('Context confirmed', { exact: true })).toHaveCount(1)
+  await expect(timeline.getByText('Context dismissed', { exact: true })).toHaveCount(1)
+  await expect(timeline.getByText('Details omitted from this page')).toHaveCount(1)
+  await expect(timeline).not.toContainText('undefined')
+})
+
 // A plan stage shaped like task 261015-3721c6's: claimed at 06:31:37Z, lease
 // renewed at 06:32:22Z, and the plan drafted and the job ended at 06:34:18Z
 // (req-task-centric-operations-view AC-2.2; component-web-task-surfaces).
