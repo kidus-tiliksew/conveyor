@@ -6150,7 +6150,7 @@ type TaskEventFixture = {
 // req-task-lifecycle-and-queue AC-2.4/AC-2.5: an operator routes the task by
 // picking a workspace co-member, and the audited outcome reads back in the
 // timeline like every other operator act. Assignment constrains who may claim
-// it and nothing else (AC-2.3, AC-2.7; DEC-55).
+// it and nothing else (AC-2.3, AC-2.7; DEC-74(4)).
 test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
   await routeAssignment(page, { operator: true })
 
@@ -6696,9 +6696,9 @@ for (const variant of ['sheet', 'full']) {
     // tooltip, never as visible text that competes with the title.
     await expect(trigger).toHaveAttribute('aria-label', 'Task actions')
     await expect(trigger).toHaveText('')
-    // Hold stays visible beside the menu rather than inside it.
-    const hold = page.getByRole('button', { name: 'Hold', exact: true })
-    await expect(hold).toHaveCount(1)
+    // A task carries no hold, so no Hold or Release action sits beside the
+    // menu or inside it (DEC-74(3)).
+    await expect(page.getByRole('button', { name: /^(Hold|Release)$/ })).toHaveCount(0)
     await expect(menu).toHaveCount(0)
     await trigger.focus()
     await page.keyboard.press('ArrowDown')
@@ -6717,12 +6717,6 @@ for (const variant of ['sheet', 'full']) {
     await expect(menu).toHaveCount(0)
     await link.getByRole('button', { name: 'Cancel', exact: true }).click()
     await expect(link).toHaveCount(0)
-    await hold.focus()
-    await page.keyboard.press('Space')
-    const dialog = page.getByRole('dialog', { name: 'Hold task', exact: true })
-    await expect(dialog).toBeVisible()
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-    await expect(hold).toBeFocused()
     await trigger.focus()
     await page.keyboard.press('ArrowUp')
     await expect(menu.getByRole('menuitem', { name: 'Start over' })).toBeFocused()
@@ -6738,99 +6732,32 @@ for (const variant of ['sheet', 'full']) {
     if (variant === 'sheet') await expect(page.getByRole('dialog', { name: 'Task detail', exact: true })).toBeVisible()
   })
 
-  for (const initialHold of [false, true]) {
-    const action = initialHold ? 'Release' : 'Hold'
-    test(`${action} requires confirmation and refreshes server state in ${variant}`, async ({ page }) => {
-      let hold = initialHold
-      const requests: { method: string; body: unknown; csrf?: string; workspace: string | null }[] = []
-      let reads = 0
-      await page.route('**/v1/tasks/full-header-id/activity*', (route) => {
-        reads++
-        const item = activity('full-header-id', false)
-        return route.fulfill({ json: { ...item, task: { ...item.task, hold } } })
-      })
-      let releaseRequest = () => {}
-      const pending = new Promise<void>((resolve) => {
-        releaseRequest = resolve
-      })
-      await page.route('**/v1/tasks/full-header-id/hold*', async (route) => {
-        const request = route.request()
-        requests.push({
-          method: request.method(),
-          body: request.postDataJSON(),
-          csrf: request.headers()['x-conveyor-csrf'],
-          workspace: new URL(request.url()).searchParams.get('workspace_id'),
-        })
-        await pending
-        hold = !initialHold
-        await route.fulfill({ json: { ...activity('full-header-id', false).task, hold } })
-      })
-      await page.goto(`/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
-      const trigger = page.getByRole('button', { name: action, exact: true })
-      const open = () => trigger.click()
-      await open()
-      const dialog = page.getByRole('dialog', { name: `${action} task`, exact: true })
-      await expect(dialog).toContainText('Short task')
-      await expect(dialog).toContainText(initialHold ? 'eligible work orders again' : 'Active work continues')
-      expect(requests).toHaveLength(0)
-      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-      expect(requests).toHaveLength(0)
-      await expect(trigger).toBeFocused()
-      await open()
-      await page.keyboard.press('Escape')
-      await expect(dialog).toHaveCount(0)
-      await expect(trigger).toBeFocused()
-      expect(requests).toHaveLength(0)
-      await open()
-      const before = reads
-      await dialog
-        .getByRole('button', { name: `${action} task`, exact: true })
-        .evaluate((button: HTMLButtonElement) => {
-          button.click()
-          button.click()
-        })
-      await expect.poll(() => requests.length).toBe(1)
-      await expect(dialog.getByRole('button', { name: initialHold ? 'Releasing…' : 'Holding…' })).toBeDisabled()
-      await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled()
-      await page.keyboard.press('Escape')
-      await page.keyboard.press('Tab')
-      await expect(dialog).toBeFocused()
-      await dialog
-        .locator('..')
-        .locator('[aria-hidden]')
-        .click({ position: { x: 2, y: 2 } })
-      await expect(dialog).toBeVisible()
-      expect(requests).toEqual([{ method: 'PUT', body: { hold: !initialHold }, csrf: '1', workspace: 'demo' }])
-      releaseRequest()
-      await expect(dialog).toHaveCount(0)
-      await expect.poll(() => reads).toBeGreaterThan(before)
-      await expect(page.getByRole('button', { name: initialHold ? 'Hold' : 'Release', exact: true })).toBeVisible()
-      expect(requests).toHaveLength(1)
-      if (variant === 'sheet')
-        await expect(page.getByRole('dialog', { name: 'Task detail', exact: true })).toBeVisible()
+  test(`no hold action, badge, or request renders in ${variant} even for a stale hold`, async ({ page }) => {
+    // A response from before the retirement may still carry hold: true; the
+    // header ignores it and offers no reservation (DEC-74(3)).
+    let holdRequests = 0
+    await page.route('**/v1/tasks/full-header-id/activity*', (route) => {
+      const item = activity('full-header-id', false)
+      return route.fulfill({ json: { ...item, task: { ...item.task, hold: true } } })
     })
-  }
-}
-
-test('hold refusal stays visible and retry preserves the requested transition', async ({ page }) => {
-  let attempts = 0
-  await page.route('**/v1/tasks/full-header-id/hold*', (route) => {
-    attempts++
-    expect(route.request().postDataJSON()).toEqual({ hold: true })
-    return route.fulfill({ status: 409, json: { error: 'Task is no longer open.' } })
+    await page.route('**/v1/tasks/full-header-id/hold*', (route) => {
+      holdRequests++
+      return route.fulfill({ status: 410, json: { error: 'task_hold_retired' } })
+    })
+    await page.goto(`/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
+    await expect(page.getByRole('heading', { name: 'Short task', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^(Hold|Release)$/ })).toHaveCount(0)
+    await expect(page.getByText('Held', { exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Task actions' }).click()
+    await expect(page.getByRole('menu', { name: 'Task actions' }).getByRole('menuitem')).toHaveText([
+      'Link dependency',
+      'Assign',
+      'Cancel task',
+      'Start over',
+    ])
+    expect(holdRequests).toBe(0)
   })
-  await page.goto('/tasks/full-header-id/full')
-  await page.getByRole('button', { name: 'Hold', exact: true }).click()
-  const dialog = page.getByRole('dialog', { name: 'Hold task', exact: true })
-  await dialog.getByRole('button', { name: 'Hold task', exact: true }).click()
-  await expect(dialog.getByRole('alert')).toContainText('Task is no longer open.')
-  await expect(dialog.getByRole('button', { name: 'Hold task', exact: true })).toBeEnabled()
-  expect(attempts).toBe(1)
-  await dialog.getByRole('button', { name: 'Hold task', exact: true }).click()
-  await expect.poll(() => attempts).toBe(2)
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Hold', exact: true })).toBeVisible()
-})
+}
 
 // Mirrors component-http-api's lightweight record shape, with the full bodies
 // available only from the selected audit route.
