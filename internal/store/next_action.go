@@ -466,7 +466,13 @@ func readDispositionInput(ctx context.Context, st Store, task core.Task, orders 
 	if err != nil {
 		return nextaction.DispositionInput{}, err
 	}
-	return verificationDispositionBinding(task, order, state.Rows), nil
+	// The binding checks the order's served-requirement and governance pins,
+	// which list projections may omit, so it reads the full stored order
+	// returned with the verification records.
+	if state.Order.ID != order.ID {
+		return nextaction.DispositionInput{Refusal: fmt.Sprintf("verify order %s is not readable with its verification records", orderID)}, nil
+	}
+	return verificationDispositionBinding(task, state.Order, state.Rows), nil
 }
 
 // ApplyRecoveryRefusal is the one refusal fold shared by claim projection and next action.

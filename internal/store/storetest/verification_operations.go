@@ -521,7 +521,7 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 	action := projectVerificationDisposition(t, x, order.TaskID, gates)
 	want := &nextaction.Disposition{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{operationID}, InputDigest: verificationSHA([]byte("{}"))}
 	if !reflect.DeepEqual(action.Details.Disposition, want) {
-		t.Fatalf("disposition = %+v, want %+v", action.Details.Disposition, want)
+		t.Fatalf("disposition = %+v, want %+v (refusals %+v)", action.Details.Disposition, want, action.Details.Refusals)
 	}
 	for _, id := range []string{"applied", "not_applied"} {
 		found := false
