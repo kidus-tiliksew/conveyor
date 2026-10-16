@@ -407,6 +407,7 @@ func taskCmd() *cobra.Command {
 	cmd.AddCommand(newCmd, listCmd, showCmd,
 		taskWaitCmd(),
 		taskStatusCmd(),
+		taskContextCmd(),
 		restartTaskCmd(),
 		closeTaskCmd(),
 		addTaskDependencyCmd(),
