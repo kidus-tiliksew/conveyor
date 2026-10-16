@@ -702,7 +702,10 @@ for (const surface of ['board sheet', 'full route'] as const) {
     const scope = await openDetail(page, surface, generated)
 
     await expect(scope.getByText('User · usr_operator', { exact: true })).toBeVisible()
-    await expect(scope.getByRole('link', { name: /acme\/widgets\/pull\/4242/ }).first()).toBeVisible()
+    // The header reads the pull request as owner/repo#number and links its URL.
+    const pullRequest = scope.getByRole('link', { name: /acme\/widgets#4242/ }).first()
+    await expect(pullRequest).toBeVisible()
+    await expect(pullRequest).toHaveAttribute('href', /acme\/widgets\/pull\/4242/)
 
     const gate = scope.getByRole('region', { name: 'What you are approving' })
     await expect(gate).toContainText('feedface')
