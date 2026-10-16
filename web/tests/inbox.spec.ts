@@ -1027,3 +1027,25 @@ test('the plan panel keeps a preamble and the Files touched intro beside the fiv
   await expect(files).toContainText('nested detail stays with its file')
   await expect(sheet.locator('[data-sheet-choices]').getByRole('button', { name: 'Approve plan' })).toBeVisible()
 })
+
+test('the inbox reads past 2,000 items to the server total', async ({ page }) => {
+  const fixture = decisionsFixture()
+  for (let index = 0; index < 2001; index++) {
+    fixture.items.push({
+      band: 'blocked',
+      task: task(`T-held-${index}`, `Held task ${index}`, 'queued'),
+      next_action: { kind: 'blocked', label: 'Blocked', actor: 'dependency', judgment: false, summary: 'Blocked.' },
+      blockers: [{ task_id: 'T-zeta', title: 'Zeta plan everyone waits on', state: 'awaiting_spec_approval' }],
+    })
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox?band=blocked')
+  const chips = page.getByRole('navigation', { name: 'Inbox bands' })
+  await expect(chips.locator('[data-band-chip="blocked"]')).toHaveText('Blocked by tasks2002')
+  await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
+  await expect(
+    page.getByRole('region', { name: 'Blocked' }).getByText('Held task 2000', { exact: true }),
+  ).toBeAttached()
+  const offsets = harness.inboxRequests.map((search) => new URLSearchParams(search).get('offset'))
+  expect(offsets).toContain('2000')
+})

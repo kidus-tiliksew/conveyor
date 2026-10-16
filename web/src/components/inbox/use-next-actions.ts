@@ -29,9 +29,6 @@ export function useNextActions() {
   })
 }
 
-// Bounds the page walk so a total that keeps growing cannot loop forever.
-const INBOX_MAX_PAGES = 20
-
 function inboxKey(item: InboxItem) {
   return item.proposal
     ? `${item.proposal.tier}:${item.proposal.id}:${item.proposal.version ?? 0}`
@@ -39,13 +36,15 @@ function inboxKey(item: InboxItem) {
 }
 
 // Reads every page of the inbox in server order, so the band counts cover the
-// whole inbox and not its first page. An item an act moved between two page
-// reads can arrive twice; the first occurrence keeps its place.
+// whole inbox and not its first page. The first page's total is the walk's
+// finite target; a page that returns nothing ends the walk early, and the
+// query's abort signal cancels it. An item an act moved between two page reads
+// can arrive twice; the first occurrence keeps its place.
 async function fetchWholeInbox(workspace: string, signal?: AbortSignal): Promise<NextActionsPage> {
   const first = await fetchNextActions(workspace, { limit: INBOX_PAGE_SIZE, offset: 0 }, signal)
   const items = [...first.items]
   let offset = first.items.length
-  for (let page = 1; page < INBOX_MAX_PAGES && offset < first.total; page++) {
+  while (offset < first.total) {
     const next = await fetchNextActions(workspace, { limit: INBOX_PAGE_SIZE, offset }, signal)
     if (next.items.length === 0) break
     items.push(...next.items)
