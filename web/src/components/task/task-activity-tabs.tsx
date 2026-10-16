@@ -80,7 +80,7 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
 
   return (
     <div className="space-y-4">
-      <NextActionCard taskId={item.task.id} gateOpen={gateOpen} />
+      <NextActionCard item={item} routeVariant={routeVariant} gateOpen={gateOpen} />
       <div className="space-y-3">
         <div
           role="tablist"
@@ -123,7 +123,7 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
           data-activity-panel={view}
         >
           {view === 'timeline' ? (
-            <Timeline item={item} routeVariant={routeVariant} />
+            <Timeline item={item} />
           ) : (
             <TaskFlowChart key={`${workspace}:${item.task.id}`} taskId={item.task.id} />
           )}

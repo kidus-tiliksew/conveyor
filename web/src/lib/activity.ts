@@ -403,18 +403,36 @@ export type CurrentExecutionKind =
   | 'verification_checkpoint'
   | 'checkpoint_decision'
 
+export type CurrentExecutionStage = 'Plan' | 'Implementation' | 'Review' | 'Verification'
+
+// Which of a state's lines carry information beyond the server's summary. The
+// next-action card prints only the marked ones beside that summary, so a fact
+// prints once and an empty-state sentence never becomes a row; the recovery
+// card reads the strings themselves and ignores these flags
+// (component-web-task-surfaces, Next-action card; DEC-61).
+export interface CurrentExecutionFacts {
+  title: boolean
+  blocker: boolean
+  retry: boolean
+  nextAction: boolean
+}
+
+const allFacts: CurrentExecutionFacts = { title: true, blocker: true, retry: true, nextAction: true }
+
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
   status: 'progressing' | 'paused'
+  stage: CurrentExecutionStage
   order: WorkOrder
   attemptId?: string
   title: string
   blocker: string
   retry: string
-  // Client guidance for the recovery and execution panels. Absent when the
-  // only guidance is the server's own summary, which NextActionCard already
-  // states once per surface (DEC-61; feature-operator-next-action NA-6).
+  // Client guidance for the recovery card and the next-action card. Absent
+  // when the only guidance is the server's own summary, which NextActionCard
+  // already states once per surface (DEC-61; feature-operator-next-action NA-6).
   nextAction?: string
+  facts: CurrentExecutionFacts
   action: 'none' | 'retry_implementation' | 'recover' | 'resolve_checkout'
   blockingDependencies?: TaskRelation[]
   unsatisfiableDependencyIDs?: string[]
@@ -435,7 +453,7 @@ export function isDirtyPrimaryCheckout(order: WorkOrder) {
 
 // Dependency gating suspends the implementation order's queue clock and makes
 // it unclaimable. Keep this predicate shared by the
-// current-state summary, timeline narration, and queued affordances so they
+// next-action card, timeline narration, and queued affordances so they
 // cannot disagree about whether implementation is actually available.
 export function dependencyBlockedImplementationOrder(item: ActivityItem): WorkOrder | undefined {
   const blockingIDs = item.task.blocking_task_ids ?? []
@@ -484,7 +502,7 @@ function withDependencyContext(state: CurrentExecutionState, item: ActivityItem)
 }
 
 // The server's next action names the order that is current; this maps it onto
-// the execution summary the timeline and recovery card render. Which order is
+// the execution state the next-action card and the recovery card render. Which order is
 // current, and whether it is running, retrying, waiting or paused, is the
 // server's statement (feature-operator-next-action NA-6); only the paused
 // variant is refined from the order's own recorded failure.
@@ -496,7 +514,7 @@ export function deriveCurrentExecutionState(
   const order = current && (item.work_orders ?? []).find((candidate) => candidate.id === current.id)
   if (!action || !order) return undefined
   const attemptId = action.attempt?.attempt_id || order.last_attempt_id || order.attempt_id
-  const stage =
+  const stage: CurrentExecutionStage =
     order.stage === 'spec'
       ? 'Plan'
       : order.stage === 'review'
@@ -510,18 +528,23 @@ export function deriveCurrentExecutionState(
       return {
         kind: 'running',
         status: 'progressing',
+        stage,
         order,
         attemptId,
         title: `${stage} is in progress`,
         blocker: 'No current blocker.',
         retry: 'No retry is needed.',
         nextAction: 'No operator action is needed.',
+        // The summary already says an agent is working; every other line is
+        // an empty state.
+        facts: { title: false, blocker: false, retry: false, nextAction: false },
         action: 'none',
       }
     case 'retrying':
       return {
         kind: 'retry_pending',
         status: 'progressing',
+        stage,
         order,
         attemptId,
         title: 'Automatic retry scheduled',
@@ -531,18 +554,21 @@ export function deriveCurrentExecutionState(
             : 'The last attempt ended before completion.',
         retry: 'Conveyor will retry automatically.',
         nextAction: 'No operator action is needed.',
+        facts: { title: false, blocker: true, retry: true, nextAction: false },
         action: 'none',
       }
     case 'blocked':
       return {
         kind: 'dependency_waiting',
         status: 'progressing',
+        stage,
         order,
         title: 'Waiting on dependencies',
         blocker: 'Implementation is gated by unresolved task dependencies.',
         retry: 'Not applicable.',
-        // No nextAction: the summary is NextActionCard's (DEC-61); the panel
+        // No nextAction: the summary is NextActionCard's (DEC-61); the card
         // keeps only the dependency links.
+        facts: { title: false, blocker: true, retry: true, nextAction: false },
         action: 'none',
         blockingDependencies: blockingDependencies(item),
       }
@@ -550,11 +576,13 @@ export function deriveCurrentExecutionState(
       return {
         kind: 'dependency_attention',
         status: 'paused',
+        stage,
         order,
         title: 'Dependency needs attention',
         blocker: 'A required dependency closed without merging.',
         retry: 'Redispatch is unavailable while the dependency is unsatisfiable.',
         nextAction: 'Unlink the dead dependency with an audit reason, or cancel this task.',
+        facts: { ...allFacts, title: false },
         action: 'none',
         blockingDependencies: blockingDependencies(item),
         unsatisfiableDependencyIDs:
@@ -564,7 +592,8 @@ export function deriveCurrentExecutionState(
       }
     case 'agent_question':
       return (
-        checkpointDecisionState(order, attemptId, action) ?? pausedExecutionState(item, order, attemptId, stage, action)
+        checkpointDecisionState(order, attemptId, stage, action) ??
+        pausedExecutionState(item, order, attemptId, stage, action)
       )
     case 'stalled':
     case 'verification_disposition':
@@ -585,6 +614,7 @@ export function deriveCurrentExecutionState(
 function checkpointDecisionState(
   order: WorkOrder,
   attemptId: string | undefined,
+  stage: CurrentExecutionStage,
   action: NextAction,
 ): CurrentExecutionState | undefined {
   const decisionRequest = order.checkpoint?.decision_request?.trim()
@@ -592,12 +622,15 @@ function checkpointDecisionState(
   return {
     kind: 'checkpoint_decision',
     status: 'paused',
+    stage,
     order,
     attemptId,
     title: action.label,
     blocker: decisionRequest,
     retry: 'No automatic retry is pending.',
     nextAction: action.question,
+    // The next step is the question, which the next-action card prints.
+    facts: { ...allFacts, nextAction: false },
     action: 'recover',
   }
 }
@@ -606,7 +639,7 @@ function pausedExecutionState(
   item: ActivityItem,
   order: WorkOrder,
   attemptId: string | undefined,
-  stage: string,
+  stage: CurrentExecutionStage,
   action: NextAction,
 ): CurrentExecutionState {
   const verificationCheckpoint = order.stage === 'verify' ? order.checkpoint?.verification : undefined
@@ -614,12 +647,14 @@ function pausedExecutionState(
     return {
       kind: 'verification_checkpoint',
       status: 'paused',
+      stage,
       order,
       attemptId,
       title: 'Verification checkpoint — operator action required',
       blocker: verificationCheckpoint.reason,
       retry: 'Automatic replay is suppressed until an operator recovers this order.',
       nextAction: verificationCheckpoint.required_action,
+      facts: allFacts,
       action: 'recover',
     }
   }
@@ -628,12 +663,14 @@ function pausedExecutionState(
       {
         kind: 'checkout_blocked',
         status: 'paused',
+        stage,
         order,
         attemptId,
         title: `${stage} paused — checkout needs attention`,
         blocker: 'The primary checkout has pre-existing changes, so Conveyor left them untouched.',
         retry: 'Conveyor will not retry automatically while this safety gate is unresolved.',
         nextAction: 'Resolve the primary checkout changes, then retry the implementation.',
+        facts: allFacts,
         action: 'resolve_checkout',
       },
       item,
@@ -644,12 +681,14 @@ function pausedExecutionState(
       {
         kind: 'provider_usage_limit',
         status: 'paused',
+        stage,
         order,
         attemptId,
         title: `${stage} paused — provider limit reached`,
         blocker: 'The provider usage or capacity limit stopped the last attempt.',
         retry: 'No automatic retry is pending.',
         nextAction: 'Retry the implementation after the provider limit has cleared.',
+        facts: allFacts,
         action: 'retry_implementation',
       },
       item,
@@ -667,6 +706,7 @@ function pausedExecutionState(
       {
         kind: 'expired',
         status: 'paused',
+        stage,
         order,
         attemptId,
         title: `${stage} paused — recovery needed`,
@@ -676,6 +716,7 @@ function pausedExecutionState(
             : 'The claim or execution window ended before completion.',
         retry: 'No automatic retry is pending.',
         nextAction: 'Recover the work order to try again.',
+        facts: allFacts,
         action: 'recover',
       },
       item,
@@ -685,6 +726,7 @@ function pausedExecutionState(
     {
       kind: 'released',
       status: 'paused',
+      stage,
       order,
       attemptId,
       title: `${stage} paused — recovery needed`,
@@ -693,6 +735,7 @@ function pausedExecutionState(
         'The latest attempt released the work before completion.',
       retry: 'No automatic retry is pending.',
       nextAction: 'Recover the work order to try again.',
+      facts: allFacts,
       action: 'recover',
     },
     item,
