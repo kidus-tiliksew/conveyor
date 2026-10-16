@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,14 +45,49 @@ type createWorkspaceDocument struct {
 	Monitor                   *config.MonitorConfig   `json:"monitor,omitempty"`
 }
 
+// canCreateWorkspaces is the single workspace-creation policy. It admits
+// POST /v1/workspaces through requireWorkspaceCreation and computes the
+// can_create_workspaces field of /v1/me, so the two cannot disagree. It reads
+// only the credential owner, never a selected workspace, query, header, role,
+// or capability. This preparatory baseline keeps creation owner-only: it
+// answers false without a membership authority and otherwise delegates to
+// AuthorizeInstanceAdministration. Dependent task 261016-751a10 widens this
+// function alone under DEC-75 and req-accounts-and-membership AC-1.4
+// (component-http-api, component-identity-membership).
+func (s *Server) canCreateWorkspaces(ctx context.Context, userID string) (bool, error) {
+	if s.Memberships == nil {
+		return false, nil
+	}
+	return s.Memberships.AuthorizeInstanceAdministration(ctx, userID)
+}
+
+// requireWorkspaceCreation admits POST /v1/workspaces for a human whose
+// creation right canCreateWorkspaces confirms (component-http-api).
+func (s *Server) requireWorkspaceCreation(next http.Handler) http.Handler {
+	return s.requireHumanAdministration("authorize workspace creation", s.canCreateWorkspaces, next)
+}
+
 // requireInstanceAdministration admits only the instance-administration
 // principal: the active owner of the deployment marker, presenting its own
-// user credential of any scope. Credential-class refusals keep 401 and
-// session proof keeps 403; every other authenticated human receives the
-// uniform 404 before the handler parses a subject or writes anything, and a
-// deployment without a membership authority fails closed
+// user credential of any scope. Account provisioning stays on this owner-only
+// check and does not widen with workspace creation
 // (req-accounts-and-membership AC-1.3, AC-4.3; DEC-63(2), DEC-63(5)).
 func (s *Server) requireInstanceAdministration(next http.Handler) http.Handler {
+	return s.requireHumanAdministration("authorize instance administration", func(ctx context.Context, userID string) (bool, error) {
+		if s.Memberships == nil {
+			return false, nil
+		}
+		return s.Memberships.AuthorizeInstanceAdministration(ctx, userID)
+	}, next)
+}
+
+// requireHumanAdministration is the shared pipeline of the human
+// administration mounts. Credential-class refusals keep 401 and session proof
+// keeps 403. The credential and its user actor are stamped before authorize
+// runs with the credential owner; an authority error answers a generic 500,
+// and every refused authenticated human receives the uniform 404 before the
+// handler parses a subject or writes anything (DEC-63(5); component-http-api).
+func (s *Server) requireHumanAdministration(operation string, authorize func(context.Context, string) (bool, error), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, err := s.authenticateHumanCredential(w, r)
 		if err != nil {
@@ -66,15 +102,11 @@ func (s *Server) requireInstanceAdministration(next http.Handler) http.Handler {
 		if !s.requireSessionMutationProof(w, r, credential) {
 			return
 		}
-		if s.Memberships == nil {
-			writeWorkspaceNotFound(w)
-			return
-		}
 		ctx := store.WithCredential(r.Context(), credential)
 		ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser})
-		allowed, err := s.Memberships.AuthorizeInstanceAdministration(ctx, credential.OwnerUserID)
+		allowed, err := authorize(ctx, credential.OwnerUserID)
 		if err != nil {
-			log.Printf("authorize instance administration: %v", err)
+			log.Printf("%s: %v", operation, err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}

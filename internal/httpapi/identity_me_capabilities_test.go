@@ -3,9 +3,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -22,6 +24,10 @@ type boundCallerIdentityFixture struct {
 	beforeRead func(userID, workspaceID string)
 	calls      int
 	workspaces []string
+	// storeCanCreate makes every read return CanCreateWorkspaces true, so a
+	// test can prove the handler overwrites a store value.
+	storeCanCreate bool
+	displayName    string
 }
 
 func (f *boundCallerIdentityFixture) GetCallerIdentity(_ context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
@@ -30,7 +36,7 @@ func (f *boundCallerIdentityFixture) GetCallerIdentity(_ context.Context, userID
 	if f.beforeRead != nil {
 		f.beforeRead(userID, workspaceID)
 	}
-	identity := core.CallerIdentity{ID: userID, Email: userID + "@example.test", DisplayName: "Caller"}
+	identity := core.CallerIdentity{ID: userID, Email: userID + "@example.test", DisplayName: "Caller", CanCreateWorkspaces: f.storeCanCreate}
 	if workspaceID == "" {
 		return identity, nil
 	}
@@ -40,6 +46,12 @@ func (f *boundCallerIdentityFixture) GetCallerIdentity(_ context.Context, userID
 	}
 	identity.Role = role
 	return identity, nil
+}
+
+func (f *boundCallerIdentityFixture) SetOwnDisplayName(_ context.Context, userID, _, displayName string) (core.CallerIdentity, error) {
+	f.calls++
+	f.displayName = displayName
+	return core.CallerIdentity{ID: userID, Email: userID + "@example.test", DisplayName: displayName, CanCreateWorkspaces: f.storeCanCreate}, nil
 }
 
 // governedCapabilities is the complete capability vocabulary used to compute
@@ -60,11 +72,23 @@ var governedCapabilities = []core.Capability{
 }
 
 type callerIdentityProjectionBody struct {
-	ID           string   `json:"id"`
-	Role         *string  `json:"role"`
-	Capabilities []string `json:"capabilities"`
-	Roles        []string `json:"roles"`
-	raw          map[string]json.RawMessage
+	ID                  string   `json:"id"`
+	Role                *string  `json:"role"`
+	Capabilities        []string `json:"capabilities"`
+	Roles               []string `json:"roles"`
+	CanCreateWorkspaces *bool    `json:"can_create_workspaces"`
+	raw                 map[string]json.RawMessage
+}
+
+// creationRight reads the explicit can_create_workspaces boolean; an absent
+// or non-boolean field fails the test rather than reading as false.
+func (b callerIdentityProjectionBody) creationRight(t *testing.T) bool {
+	t.Helper()
+	raw, present := b.raw["can_create_workspaces"]
+	if !present || (string(raw) != "true" && string(raw) != "false") || b.CanCreateWorkspaces == nil {
+		t.Fatalf("can_create_workspaces must be an explicit boolean: %v", b.raw)
+	}
+	return *b.CanCreateWorkspaces
 }
 
 func decodeCallerIdentityProjection(t *testing.T, response *httptest.ResponseRecorder) callerIdentityProjectionBody {
@@ -305,5 +329,166 @@ func TestCallerIdentityProjectionClearsUnscopedLists(t *testing.T) {
 	future := callerIdentityProjection(core.CallerIdentity{ID: "usr-owner", Role: "owner"}, "demo")
 	if len(future.Capabilities) != 0 || !slices.Equal(future.Roles, core.WorkspaceRoles()) {
 		t.Fatalf("unknown role projection=%+v", future)
+	}
+}
+
+// creationRightServer serves one caller under either human credential form.
+// The session fixture authenticates every cookie as the same caller, so each
+// caller and credential form gets its own server.
+func creationRightServer(identities *boundCallerIdentityFixture, memberships *membershipFixture, userID, method string) *Server {
+	server := NewServer(identities)
+	server.CallerIdentities = identities
+	server.OwnProfiles = identities
+	if memberships != nil {
+		server.Memberships = memberships
+	}
+	server.Credentials = staticCredentialVerifier{
+		"human-secret": {ID: "pat-" + userID, OwnerUserID: userID, Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+	server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
+		ID: "ses-" + userID, OwnerUserID: userID, Kind: core.CredentialUser,
+		Scope: core.CredentialScopeUser, Method: core.CredentialMethodSession,
+	}}
+	return server
+}
+
+func creationRightRequest(server *Server, method, httpMethod, target, header, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(httpMethod, "http://conveyor.example"+target, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if method == "pat" {
+		request.Header.Set("Authorization", "Bearer human-secret")
+	} else {
+		request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
+		request.Header.Set("X-Conveyor-CSRF", "1")
+		request.Header.Set("Origin", "http://conveyor.example")
+	}
+	if header != "" {
+		request.Header.Set("X-Workspace-ID", header)
+	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+// TestCallerIdentityCanCreateWorkspaces proves every successful /v1/me read
+// serves the caller's own creation right from the instance-administration
+// authority, identically for unscoped, query-scoped, and header-scoped reads
+// under a personal access token and a dashboard session, without changing the
+// role projection (component-identity-membership; req-accounts-and-membership
+// REQ-4, AC-1.3, AC-5.1).
+func TestCallerIdentityCanCreateWorkspaces(t *testing.T) {
+	t.Parallel()
+	bindings := map[string]map[string]core.WorkspaceRole{
+		"usr-owner":         {"demo": core.WorkspaceRoleViewer},
+		"usr-operator":      {"demo": core.WorkspaceRoleOperator},
+		"usr-unbound-owner": {},
+	}
+	admins := map[string]bool{"usr-owner": true, "usr-unbound-owner": true}
+	scopes := []struct{ name, target, header string }{
+		{"unscoped", "/v1/me", ""},
+		{"query", "/v1/me?workspace_id=demo", ""},
+		{"header", "/v1/me", "demo"},
+	}
+	for _, caller := range []struct {
+		id   string
+		want bool
+	}{{"usr-owner", true}, {"usr-operator", false}, {"usr-unbound-owner", true}} {
+		for _, method := range []string{"pat", "session"} {
+			t.Run(caller.id+"/"+method, func(t *testing.T) {
+				t.Parallel()
+				identities := &boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings}
+				memberships := &membershipFixture{roles: bindings, instanceAdmins: admins}
+				server := creationRightServer(identities, memberships, caller.id, method)
+				for _, scope := range scopes {
+					identityCalls, instanceCalls := identities.calls, memberships.instanceCalls
+					response := creationRightRequest(server, method, http.MethodGet, scope.target, scope.header, "")
+					role, bound := bindings[caller.id]["demo"]
+					if scope.name != "unscoped" && !bound {
+						// No binding: the uniform 404 precedes every identity and
+						// creation read, so the right never leaks through context.
+						if response.Code != http.StatusNotFound || response.Body.String() != uniformNotFound || identities.calls != identityCalls || memberships.instanceCalls != instanceCalls {
+							t.Fatalf("%s unbound status=%d body=%s identity_calls=%d instance_calls=%d", scope.name, response.Code, response.Body.String(), identities.calls-identityCalls, memberships.instanceCalls-instanceCalls)
+						}
+						continue
+					}
+					body := decodeCallerIdentityProjection(t, response)
+					if got := body.creationRight(t); got != caller.want {
+						t.Fatalf("%s can_create_workspaces=%v, want %v", scope.name, got, caller.want)
+					}
+					if scope.name == "unscoped" {
+						for _, field := range []string{"role", "capabilities", "roles"} {
+							if _, present := body.raw[field]; present {
+								t.Fatalf("unscoped response carries %q: %v", field, body.raw)
+							}
+						}
+						continue
+					}
+					if body.Role == nil || *body.Role != string(role) || !slices.Equal(body.Capabilities, expectedCapabilityNames(role)) || !slices.Equal(body.Roles, expectedRoleChain) {
+						t.Fatalf("%s projection changed: %+v", scope.name, body)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestCallerIdentityCanCreateWorkspacesFailsClosed proves the field is an
+// explicit false without a membership authority, an authority error answers
+// the generic 500 without its text, and a store value never grants the right.
+func TestCallerIdentityCanCreateWorkspacesFailsClosed(t *testing.T) {
+	t.Parallel()
+	bindings := map[string]map[string]core.WorkspaceRole{"usr-operator": {"demo": core.WorkspaceRoleOperator}}
+
+	withoutAuthority := creationRightServer(&boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings, storeCanCreate: true}, nil, "usr-operator", "pat")
+	if got := decodeCallerIdentityProjection(t, creationRightRequest(withoutAuthority, "pat", http.MethodGet, "/v1/me", "", "")).creationRight(t); got {
+		t.Fatal("no membership authority served can_create_workspaces=true")
+	}
+
+	const detail = "instance authority unreachable: secret-dsn"
+	failing := &membershipFixture{roles: bindings, instanceAdminErr: errors.New(detail)}
+	for _, method := range []string{"pat", "session"} {
+		server := creationRightServer(&boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings}, failing, "usr-operator", method)
+		for _, target := range []string{"/v1/me", "/v1/me?workspace_id=demo"} {
+			response := creationRightRequest(server, method, http.MethodGet, target, "", "")
+			if response.Code != http.StatusInternalServerError || response.Body.String() != "internal server error\n" || strings.Contains(response.Body.String(), "secret") {
+				t.Fatalf("%s %s status=%d body=%q", method, target, response.Code, response.Body.String())
+			}
+		}
+	}
+
+	stale := &boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings, storeCanCreate: true}
+	server := creationRightServer(stale, &membershipFixture{roles: bindings, instanceAdmins: map[string]bool{}}, "usr-operator", "session")
+	for _, target := range []string{"/v1/me", "/v1/me?workspace_id=demo"} {
+		if got := decodeCallerIdentityProjection(t, creationRightRequest(server, "session", http.MethodGet, target, "", "")).creationRight(t); got {
+			t.Fatalf("%s served a store-returned creation right", target)
+		}
+	}
+}
+
+// TestOwnDisplayNameCanCreateWorkspaces proves PUT /v1/me, which returns the
+// same CallerIdentity shape, computes the creation right with the same
+// predicate before writing, and writes nothing on an authority error.
+func TestOwnDisplayNameCanCreateWorkspaces(t *testing.T) {
+	t.Parallel()
+	for _, caller := range []struct {
+		id   string
+		want bool
+	}{{"usr-owner", true}, {"usr-operator", false}} {
+		identities := &boundCallerIdentityFixture{Store: store.NewMemory(), storeCanCreate: !caller.want}
+		server := creationRightServer(identities, &membershipFixture{instanceAdmins: map[string]bool{"usr-owner": true}}, caller.id, "session")
+		response := creationRightRequest(server, "session", http.MethodPut, "/v1/me", "", `{"display_name":"Renamed"}`)
+		body := decodeCallerIdentityProjection(t, response)
+		if got := body.creationRight(t); got != caller.want || identities.displayName != "Renamed" {
+			t.Fatalf("%s can_create_workspaces=%v want %v name=%q", caller.id, got, caller.want, identities.displayName)
+		}
+	}
+
+	identities := &boundCallerIdentityFixture{Store: store.NewMemory()}
+	server := creationRightServer(identities, &membershipFixture{instanceAdminErr: errors.New("authority down")}, "usr-owner", "session")
+	response := creationRightRequest(server, "session", http.MethodPut, "/v1/me", "", `{"display_name":"Renamed"}`)
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "internal server error\n" || identities.calls != 0 || identities.displayName != "" {
+		t.Fatalf("authority error status=%d body=%q writes=%d name=%q", response.Code, response.Body.String(), identities.calls, identities.displayName)
 	}
 }
