@@ -191,7 +191,9 @@ async function fixture(page: Page, options: Options = {}) {
         ],
       })
     if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.role ?? 'operator' }) })
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', role: options.role ?? 'operator' }, route.request()),
+      })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: false }] })
     if (path.endsWith('/activity')) return route.fulfill({ json: item })

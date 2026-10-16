@@ -735,6 +735,10 @@ export interface CallerIdentity {
   role?: WorkspaceRole
   capabilities?: WorkspaceCapability[]
   roles?: WorkspaceRole[]
+  // The caller's own workspace-creation right, served on every successful
+  // read whatever the workspace context (component-identity-membership).
+  // Optional here so a missing field is modelled and denies.
+  can_create_workspaces?: boolean
 }
 
 export interface WorkspaceMembership {

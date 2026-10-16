@@ -8,7 +8,8 @@ test('workspace summary shows the automatic recovery bound', async ({ page }) =>
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
-    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }) })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }, route.request()) })
     if (path === '/v1/workspace') {
       return route.fulfill({
         json: {
@@ -33,7 +34,8 @@ test('workspace summary shows off when automatic recovery is disabled', async ({
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] })
-    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }) })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }, route.request()) })
     if (path === '/v1/workspace') {
       return route.fulfill({
         json: {

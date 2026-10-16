@@ -386,7 +386,9 @@ async function seedReview(
     const path = url.pathname
     const workspace = url.searchParams.get('workspace_id') ?? 'demo'
     if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.reader ? 'viewer' : 'operator' }) })
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', role: options.reader ? 'viewer' : 'operator' }, route.request()),
+      })
     if (path === '/v1/workspaces')
       return route.fulfill({
         json: [

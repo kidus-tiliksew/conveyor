@@ -2076,7 +2076,7 @@ async function mockTaskAPIs(page: Page) {
       return
     }
     if (url.pathname === '/v1/me') {
-      await route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
+      await route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) })
       return
     }
     const taskMatch = url.pathname.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
@@ -4163,7 +4163,7 @@ for (const state of ['running', 'merged', 'closed']) {
       await mockContextManagement(page, { state })
       if (state === 'running')
         await page.route('**/v1/me**', (route) =>
-          route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }) }),
+          route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }, route.request()) }),
         )
       await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       await expect(page.getByRole('region', { name: 'Attached context' })).toBeVisible()
@@ -4304,7 +4304,7 @@ test('task context suggestions show justification and become attachments or disa
 
 test('task context suggestions remain visible without decision controls for non-operators', async ({ page }) => {
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'contributor' }) }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'contributor' }, route.request()) }),
   )
   await page.route('**/v1/tasks/context-suggestion-viewer/activity*', (route) => {
     const item = activity('context-suggestion-viewer', false)
@@ -5102,12 +5102,15 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
 test('contributor assignee can request merge-gate changes without gate approval controls', async ({ page }) => {
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: callerIdentity({
-        id: 'usr_contributor',
-        email: 'contributor@example.test',
-        display_name: 'Connie Contributor',
-        role: 'contributor',
-      }),
+      json: callerIdentity(
+        {
+          id: 'usr_contributor',
+          email: 'contributor@example.test',
+          display_name: 'Connie Contributor',
+          role: 'contributor',
+        },
+        route.request(),
+      ),
     }),
   )
   await page.route('**/v1/tasks/merge-request-changes/activity*', (route) => {
@@ -5138,12 +5141,15 @@ test('contributor assignee can request merge-gate changes without gate approval 
 test("non-assignee contributor cannot request changes at another user's merge gate", async ({ page }) => {
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: callerIdentity({
-        id: 'usr_contributor',
-        email: 'contributor@example.test',
-        display_name: 'Connie Contributor',
-        role: 'contributor',
-      }),
+      json: callerIdentity(
+        {
+          id: 'usr_contributor',
+          email: 'contributor@example.test',
+          display_name: 'Connie Contributor',
+          role: 'contributor',
+        },
+        route.request(),
+      ),
     }),
   )
   await page.route('**/v1/tasks/merge-request-changes/activity*', (route) => {
@@ -5792,7 +5798,7 @@ test("a task's own System Design proposal is confirmable from its detail and cle
 test('maintainer sees a pending task System Design proposal without an enabled Confirm action', async ({ page }) => {
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }) }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }, route.request()) }),
   )
   await page.route('**/v1/tasks/design-proposal/activity*', (route) => {
     const item = activity('design-proposal', false)
@@ -6099,12 +6105,15 @@ async function routeAssignment(page: Page, options: { operator: boolean }) {
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: callerIdentity({
-        id: 'usr_ada',
-        email: 'ada@example.test',
-        display_name: 'Ada Owner',
-        role: options.operator ? 'operator' : 'contributor',
-      }),
+      json: callerIdentity(
+        {
+          id: 'usr_ada',
+          email: 'ada@example.test',
+          display_name: 'Ada Owner',
+          role: options.operator ? 'operator' : 'contributor',
+        },
+        route.request(),
+      ),
     }),
   )
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ json: assignmentMembers }))
@@ -6343,7 +6352,7 @@ const restartProposal = {
 
 async function mockRestart(page: Page, options: { role?: string; proposals?: (typeof restartProposal)[] } = {}) {
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_restart', role: options.role ?? 'operator' }) }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_restart', role: options.role ?? 'operator' }, route.request()) }),
   )
   await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: restartFixture() }))
   await page.route('**/v1/pending-proposals*', (route) =>
@@ -7315,7 +7324,9 @@ test('failed triage accepted retry with stale detail refreshes status without re
 })
 
 test('failed triage capability refusal keeps the reason visible without a retry action', async ({ page }) => {
-  await page.route('**/v1/me*', (route) => route.fulfill({ json: callerIdentity({ id: 'reader', role: 'viewer' }) }))
+  await page.route('**/v1/me*', (route) =>
+    route.fulfill({ json: callerIdentity({ id: 'reader', role: 'viewer' }, route.request()) }),
+  )
   await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: failedTriageFixture() }))
   await page.goto('/tasks/failed-triage/full')
   const recovery = page.getByRole('region', { name: 'Triage recovery' })

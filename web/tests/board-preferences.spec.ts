@@ -74,7 +74,7 @@ async function mockAPI(page: Page, { stored }: { stored?: string } = {}) {
     if (path === '/v1/workspaces') return route.fulfill({ json: workspaces })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }),
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }, route.request()),
       })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: url.searchParams.get('workspace_id') ?? 'demo', repos: [] } })

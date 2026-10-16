@@ -7,7 +7,7 @@ import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
-import { useActivity, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useActivity, useCanCreateWorkspaces, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { MCPSetup } from '../mcp/mcp-setup-dialog'
 import { TaskCreateSheet } from '../task/task-create-sheet'
 import {
@@ -165,9 +165,11 @@ function Kanban() {
 }
 
 // The board is the landing page, so it also owns first-run guidance when the
-// signed-in user has no workspace or needs to pick one.
+// signed-in user has no workspace or needs to pick one. Creation follows the
+// caller's own unscoped right, not a workspace capability: no workspace is
+// selected here (component-web-task-surfaces).
 function Onboarding() {
-  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
+  const canCreateWorkspaces = useCanCreateWorkspaces()
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
@@ -176,7 +178,7 @@ function Onboarding() {
     <div className="grid h-full place-items-center px-6">
       <div className="max-w-md text-center">
         <h1 className="text-lg font-semibold tracking-tight">Welcome to Conveyor</h1>
-        {(workspaces?.length ?? 0) === 0 && canManageWorkspace ? (
+        {(workspaces?.length ?? 0) === 0 && canCreateWorkspaces ? (
           <>
             <p className="mt-2 text-sm leading-6 text-muted">No workspaces yet. Create one to start the line.</p>
             <Link to="/workspaces/new" className="mt-4 inline-block">

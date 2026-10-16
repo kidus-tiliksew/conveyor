@@ -83,12 +83,15 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
     if (path === '/v1/me') {
       const workspaceRole = role === 'operator' ? 'operator' : role === 'viewer' ? 'viewer' : 'contributor'
       return route.fulfill({
-        json: callerIdentity({
-          id: `usr_${role}`,
-          email: `${role}@example.test`,
-          display_name: role,
-          role: workspaceRole,
-        }),
+        json: callerIdentity(
+          {
+            id: `usr_${role}`,
+            email: `${role}@example.test`,
+            display_name: role,
+            role: workspaceRole,
+          },
+          route.request(),
+        ),
       })
     }
     if (path === '/v1/activity') return route.fulfill({ json: [] })

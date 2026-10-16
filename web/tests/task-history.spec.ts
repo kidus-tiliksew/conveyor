@@ -143,7 +143,7 @@ async function serveLedgers(page: Page, served: GeneratedLedger[]) {
     }),
   )
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) }),
   )
   await page.route('**/v1/activity?**', (route) => {
     const workspace = new URL(route.request().url()).searchParams.get('workspace_id') ?? 'demo'

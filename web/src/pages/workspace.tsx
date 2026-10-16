@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
+import {
+  useCanCreateWorkspaces,
+  useWorkspace,
+  useWorkspaceCapability,
+  useWorkspaceSelection,
+} from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -54,6 +59,9 @@ function tabForField(field: string): TabId {
 
 export function WorkspacePage() {
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
+  // Creating another workspace follows the caller's own right; editing the
+  // selected workspace keeps manage_workspace (component-web-dashboard).
+  const canCreateWorkspaces = useCanCreateWorkspaces()
   const queryClient = useQueryClient()
   const { workspace } = useWorkspaceSelection()
   const { data: snapshot } = useWorkspace()
@@ -121,7 +129,7 @@ export function WorkspacePage() {
             <h1 className="text-xl font-semibold">Workspace</h1>
             {draft && <Badge variant="mono">{draft.workspace}</Badge>}
           </div>
-          {canManageWorkspace && (
+          {canCreateWorkspaces && (
             <Link to="/workspaces/new">
               <Button variant="secondary" tabIndex={-1}>
                 <Plus />
@@ -136,13 +144,17 @@ export function WorkspacePage() {
               <CardTitle>No workspace selected</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-muted">
-                Pick a workspace from the left rail, or{' '}
-                <Link to="/workspaces/new" className="text-primary hover:underline">
-                  create one
-                </Link>{' '}
-                to get started.
-              </p>
+              {canCreateWorkspaces ? (
+                <p className="text-sm text-muted">
+                  Pick a workspace from the left rail, or{' '}
+                  <Link to="/workspaces/new" className="text-primary hover:underline">
+                    create one
+                  </Link>{' '}
+                  to get started.
+                </p>
+              ) : (
+                <p className="text-sm text-muted">Pick a workspace from the left rail to get started.</p>
+              )}
             </CardContent>
           </Card>
         )}

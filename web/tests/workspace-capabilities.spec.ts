@@ -7,9 +7,18 @@ import { installQueryClientProbe, withQueryClient } from './helpers/query-client
 // table, so these cases serve lists directly, including role and capability
 // strings the dashboard has never seen (req-accounts-and-membership AC-5.1).
 // The server side of the contract is proven by
-// internal/httpapi/identity_me_capabilities_test.go.
+// internal/httpapi/identity_me_capabilities_test.go. Workspace creation
+// follows the caller's own can_create_workspaces right from the unscoped read,
+// never manage_workspace, so the dispatcher serves that read from its own
+// source (component-web-dashboard, component-web-task-surfaces).
 
-type Identity = { status?: number; role?: string; capabilities?: string[]; roles?: string[] }
+type Identity = {
+  status?: number
+  role?: string
+  capabilities?: string[]
+  roles?: string[]
+  can_create_workspaces?: boolean
+}
 
 const workspaceConfig = {
   workspace: 'alpha',
@@ -23,7 +32,10 @@ const workspaceConfig = {
 const managerCapabilities = ['view_workspace', 'manage_membership', 'manage_workspace']
 
 type ShellOptions = {
+  // Scoped reads, keyed by the requested workspace_id.
   identities: Record<string, Identity | (() => Identity | Promise<Identity>)>
+  // The unscoped read; defaults to an explicit false creation right.
+  unscoped?: Identity
   members?: Record<string, Array<{ user_id: string; email: string; display_name: string; role: string }>>
   grants?: Array<{ workspace: string; email: string; role: string }>
   identityRequests?: string[]
@@ -33,8 +45,9 @@ async function mockShell(page: Page, options: ShellOptions) {
   const workspaces = Object.keys(options.identities)
   await page.addInitScript((selected) => {
     localStorage.setItem('conveyor-theme', 'dark')
-    localStorage.setItem('conveyor-workspace', selected)
-  }, workspaces[0])
+    if (selected) localStorage.setItem('conveyor-workspace', selected)
+    else localStorage.removeItem('conveyor-workspace')
+  }, workspaces[0] ?? '')
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -45,6 +58,14 @@ async function mockShell(page: Page, options: ShellOptions) {
       })
     if (path === '/v1/me') {
       const workspace = url.searchParams.get('workspace_id') ?? ''
+      const caller = { id: 'usr_caller', email: 'caller@example.test', display_name: 'Caller' }
+      if (!workspace) {
+        // The unscoped read carries no role or lists, only the creation right.
+        expect(request.headers()['x-workspace-id']).toBeUndefined()
+        const unscoped = options.unscoped ?? { can_create_workspaces: false }
+        if (unscoped.status) return route.fulfill({ status: unscoped.status, json: { error: 'identity unavailable' } })
+        return route.fulfill({ json: { ...caller, ...unscoped } })
+      }
       options.identityRequests?.push(workspace)
       const source = options.identities[workspace]
       const identity = typeof source === 'function' ? await source() : source
@@ -52,9 +73,8 @@ async function mockShell(page: Page, options: ShellOptions) {
       if (identity.status) return route.fulfill({ status: identity.status, json: { error: 'identity unavailable' } })
       return route.fulfill({
         json: {
-          id: 'usr_caller',
-          email: 'caller@example.test',
-          display_name: 'Caller',
+          ...caller,
+          can_create_workspaces: options.unscoped?.can_create_workspaces ?? false,
           ...identity,
         },
       })
@@ -104,7 +124,13 @@ async function refetchIdentity(page: Page) {
 }
 
 test.describe('served capabilities control affordances', () => {
-  const cases: Array<{ name: string; identity: Identity; newTask: boolean; addWorkspace: boolean }> = [
+  const cases: Array<{
+    name: string
+    identity: Identity
+    creation?: boolean
+    newTask: boolean
+    addWorkspace: boolean
+  }> = [
     {
       name: 'same role without create_tasks',
       identity: { role: 'maintainer', capabilities: ['view_workspace', 'operate_gates'] },
@@ -148,8 +174,16 @@ test.describe('served capabilities control affordances', () => {
       addWorkspace: false,
     },
     {
-      name: 'workspace management without task intake',
-      identity: { role: 'viewer', capabilities: ['view_workspace', 'manage_workspace'] },
+      name: 'workspace management without the creation right',
+      identity: { role: 'operator', capabilities: ['view_workspace', 'manage_workspace', 'create_tasks'] },
+      creation: false,
+      newTask: true,
+      addWorkspace: false,
+    },
+    {
+      name: 'creation right without workspace management',
+      identity: { role: 'viewer', capabilities: ['view_workspace'] },
+      creation: true,
       newTask: false,
       addWorkspace: true,
     },
@@ -157,7 +191,11 @@ test.describe('served capabilities control affordances', () => {
   for (const item of cases) {
     test(item.name, async ({ page }) => {
       const identityRequests: string[] = []
-      await mockShell(page, { identities: { alpha: item.identity }, identityRequests })
+      await mockShell(page, {
+        identities: { alpha: item.identity },
+        unscoped: { can_create_workspaces: item.creation ?? false },
+        identityRequests,
+      })
       await page.goto('/')
       await expect(page.getByRole('navigation', { name: 'Workspaces' })).toBeVisible()
       await expect.poll(() => identityRequests.length).toBeGreaterThan(0)
@@ -185,7 +223,11 @@ test.describe('served capabilities control affordances', () => {
     })
     await page.goto('/')
     await expect(page.getByRole('button', { name: 'New task' })).toBeVisible()
-    const failed = page.waitForResponse((response) => new URL(response.url()).pathname === '/v1/me')
+    const failed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/v1/me' &&
+        new URL(response.url()).searchParams.get('workspace_id') === 'alpha',
+    )
     await refetchIdentity(page)
     expect((await failed).status()).toBe(500)
     await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
@@ -289,7 +331,11 @@ test.describe('served role chain drives membership picker', () => {
     await picker.selectOption('auditor')
     await expect(picker).toHaveValue('auditor')
 
-    const refreshed = page.waitForResponse((response) => new URL(response.url()).pathname === '/v1/me')
+    const refreshed = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/v1/me' &&
+        new URL(response.url()).searchParams.get('workspace_id') === 'alpha',
+    )
     await refetchIdentity(page)
     await refreshed
     await expect(picker.locator('option')).toHaveText(['Viewer', 'Contributor', 'Operator'])
@@ -332,6 +378,11 @@ test('workspace switch isolates delayed identity', async ({ page }) => {
   })
   await page.goto('/')
   await alphaArrived
+  const betaServed = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/v1/me' &&
+      new URL(response.url()).searchParams.get('workspace_id') === 'beta',
+  )
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Beta' }).click()
   await expect(page.getByRole('button', { name: 'Switch to Beta' })).toHaveAttribute('aria-current', 'true')
   const alphaDelivered = page.waitForResponse(
@@ -340,12 +391,12 @@ test('workspace switch isolates delayed identity', async ({ page }) => {
       new URL(response.url()).searchParams.get('workspace_id') === 'alpha',
   )
   // Beta's own projection grants manage_workspace and not create_tasks.
-  await expect(page.getByRole('link', { name: 'Add workspace' })).toBeVisible()
+  await betaServed
   releaseAlpha()
   await alphaDelivered
   // Alpha's late projection, which grants create_tasks and another chain,
   // never reaches the beta controls.
-  await expect(page.getByRole('link', { name: 'Add workspace' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Switch to Beta' })).toHaveAttribute('aria-current', 'true')
   await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
 
   await page.getByRole('link', { name: 'Workspace', exact: true }).first().click()
@@ -358,4 +409,34 @@ test('workspace switch isolates delayed identity', async ({ page }) => {
   await form.getByRole('button', { name: 'Invite' }).click()
   await expect.poll(() => grants).toEqual([{ workspace: 'beta', email: 'new@example.test', role: 'reader' }])
   expect(identityRequests.filter((workspace) => workspace !== 'alpha' && workspace !== 'beta')).toEqual([])
+})
+
+test.describe('empty Board offers Create workspace only with the creation right', () => {
+  for (const creation of [true, false]) {
+    test(`zero workspaces with can_create_workspaces ${creation}`, async ({ page }) => {
+      const unscopedRead = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === '/v1/me' && !new URL(response.url()).searchParams.has('workspace_id'),
+      )
+      const identityRequests: string[] = []
+      await mockShell(page, { identities: {}, unscoped: { can_create_workspaces: creation }, identityRequests })
+      await page.goto('/')
+      await expect(page.getByRole('heading', { name: 'Welcome to Conveyor' })).toBeVisible()
+      // The creation read runs with no selection and no membership.
+      await unscopedRead
+      const create = page.getByRole('link', { name: 'Create workspace' })
+      if (!creation) {
+        await expect(page.getByText('Pick a workspace from the left rail to see its board.')).toBeVisible()
+        await expect(create).toHaveCount(0)
+        await expect(page.getByRole('link', { name: 'Add workspace' })).toHaveCount(0)
+        expect(identityRequests).toEqual([])
+        return
+      }
+      await expect(page.getByText('No workspaces yet. Create one to start the line.')).toBeVisible()
+      await create.click()
+      await expect(page).toHaveURL(/\/workspaces\/new$/)
+      await expect(page.getByRole('dialog', { name: 'Create workspace' }).getByLabel('Name')).toBeVisible()
+      expect(identityRequests).toEqual([])
+    })
+  }
 })
