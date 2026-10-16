@@ -1,22 +1,30 @@
 import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
-import type { ActivityItem } from '../../lib/types'
+import type { ActivityItem, SpecVersion } from '../../lib/types'
+import { absoluteTime } from '../../lib/utils'
 import { usePendingProposals } from '../app-shell'
+import { GateChoices } from '../task/merge-at-gate'
 import { SpecCard } from '../task/spec-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
 import { useTaskDetail } from '../task/use-task-detail'
 import { VerificationEntry } from '../task/verification-entry'
 import { Button } from '../ui/button'
+import { MarkdownProse } from '../ui/markdown-prose'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
+import { planFiles, planHeadings, splitPlanSections } from './plan-sections'
 import { useNextAction } from './use-next-actions'
 
 type JobEntry = Extract<TimelineEntry, { type: 'job' }>
 
+const planKinds = new Set(['plan_approval', 'plan_revision'])
+
 // The context a decision needs, opened beside the Inbox without leaving it
 // (AC-2.3). The section is chosen by the server's next-action kind; each one
-// is the task-detail component that already renders that context.
+// is the task-detail component that already renders that context. A plan
+// decision repeats the card's choices in the sheet footer, so it can be taken
+// where it is read (feature-operator-next-action NA-6).
 export function InboxContextSheet({ taskId, kind, onClose }: { taskId: string; kind: string; onClose: () => void }) {
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   return (
@@ -35,14 +43,15 @@ export function InboxContextSheet({ taskId, kind, onClose }: { taskId: string; k
         {error && <p className="text-sm text-failure">Could not load this task.</p>}
         {item && <ContextSection item={item} kind={kind} />}
       </div>
+      {planKinds.has(kind) && <PlanSheetChoices taskId={taskId} onActed={onClose} />}
     </Sheet>
   )
 }
 
 function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
-  if (kind === 'plan_approval' || kind === 'plan_revision')
+  if (planKinds.has(kind))
     return item.spec ? (
-      <SpecCard spec={item.spec} overflowExpandable routeVariant="sheet" />
+      <PlanContext item={item} spec={item.spec} />
     ) : (
       <p className="text-sm text-muted">No plan has been submitted.</p>
     )
@@ -110,6 +119,98 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
         )}
       </section>
       <SystemDesignProposalCard task={item.task} proposals={proposals} pending={pending} />
+    </div>
+  )
+}
+
+// The card's choices repeated under the plan, so the decision can be taken
+// where it is read. It mounts only for a plan decision.
+function PlanSheetChoices({ taskId, onActed }: { taskId: string; onActed: () => void }) {
+  const { data: action } = useNextAction(taskId)
+  if (!action || action.choices.length === 0) return null
+  return (
+    <div data-sheet-choices className="border-t border-border px-4 py-3 text-[13px]">
+      <GateChoices taskId={taskId} action={action} onActed={onActed} />
+    </div>
+  )
+}
+
+// A plan split at its five required headings, under a header naming the
+// version, the served requirements, and who submitted it. A plan without
+// those headings renders whole through the task-detail plan card.
+function PlanContext({ item, spec }: { item: ActivityItem; spec: SpecVersion }) {
+  const sections = splitPlanSections(spec.content)
+  const planner = item.work_orders
+    ?.filter((order) => order.stage === 'spec' && order.agent)
+    .sort((a, b) => a.queue_entered_at.localeCompare(b.queue_entered_at))
+    .at(-1)
+  const submittedBy = planner
+    ? ` by the plan agent (${[planner.agent, planner.model].filter(Boolean).join(' · ')})`
+    : ''
+  const requirements = item.task.context?.requirements ?? []
+  return (
+    <section aria-label="Plan" data-plan-context className="space-y-4">
+      <header className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-base font-semibold">Plan v{spec.version}</h3>
+          {requirements.map((requirement) => (
+            <span
+              key={requirement.id}
+              className="inline-flex min-w-0 max-w-full items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs"
+            >
+              <span className="font-mono text-primary">{requirement.id}</span>
+              <span className="min-w-0 truncate">{requirement.title}</span>
+            </span>
+          ))}
+        </div>
+        <p className="text-xs text-muted" data-plan-submitted>
+          Submitted {absoluteTime(spec.created_at)}
+          {submittedBy}.
+        </p>
+      </header>
+      {sections ? (
+        <>
+          {sections.preamble && (
+            <div data-plan-preamble>
+              <MarkdownProse className="text-sm">{sections.preamble}</MarkdownProse>
+            </div>
+          )}
+          {planHeadings.map((heading) => (
+            <section key={heading} aria-label={heading} data-plan-section={heading}>
+              <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{heading}</h4>
+              {heading === 'Files touched' ? (
+                <PlanFiles section={sections.sections[heading]} />
+              ) : (
+                <MarkdownProse className="text-sm">{sections.sections[heading]}</MarkdownProse>
+              )}
+            </section>
+          ))}
+        </>
+      ) : (
+        <SpecCard spec={spec} overflowExpandable routeVariant="sheet" />
+      )}
+    </section>
+  )
+}
+
+function PlanFiles({ section }: { section: string }) {
+  const { intro, files } = planFiles(section)
+  if (files.length === 0) return <MarkdownProse className="text-sm">{section}</MarkdownProse>
+  return (
+    <div className="space-y-2">
+      {intro && (
+        <div data-plan-files-intro>
+          <MarkdownProse className="text-sm">{intro}</MarkdownProse>
+        </div>
+      )}
+      <ul className="divide-y divide-border rounded-md border border-border">
+        {files.map((file, index) => (
+          <li key={`${index}:${file.path}`} className="min-w-0 px-3 py-2">
+            <code className="break-all font-mono text-xs">{file.path}</code>
+            {file.note && <p className="mt-0.5 break-words text-xs text-muted">{file.note}</p>}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
