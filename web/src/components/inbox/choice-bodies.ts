@@ -1,4 +1,5 @@
 import { defaultReasonCode, planRevisionReasonCodes } from '../../lib/contracts'
+import type { NextActionDetails } from '../../lib/types'
 
 // The request body each server choice needs, keyed by the choice id the
 // server's catalogue states (internal/nextaction/choices.go). The server owns
@@ -11,8 +12,34 @@ export interface ChoiceBody {
   input?: { label: string; required: boolean }
   // Acts the server deduplicates by request id carry one per send.
   idempotent?: boolean
-  body: (input: string, requestId: string) => Record<string, unknown> | undefined
+  // `details` is the next action's own; a body built from server state reads it there.
+  body: (input: string, requestId: string, details?: NextActionDetails) => Record<string, unknown> | undefined
+  // Why the act cannot be sent from the state the server stated, or undefined when it can.
+  unavailable?: (details?: NextActionDetails) => string | undefined
 }
+
+// A verification disposition posts the server's row-10 binding with the
+// operator's reason (feature-operator-next-action NA-3, NA-6). Without the
+// binding the act stays disabled with the server's refusal.
+const disposition = (value: 'applied' | 'not_applied'): ChoiceBody => ({
+  input: { label: 'Reason', required: true },
+  idempotent: true,
+  unavailable: (details) =>
+    details?.disposition
+      ? undefined
+      : (details?.refusals?.find((refusal) => refusal.choice === value)?.text ?? 'Take this from the task page.'),
+  body: (input, requestId, details) => ({
+    request_id: requestId,
+    verification: details?.disposition && {
+      context_id: details.disposition.context_id,
+      run_id: details.disposition.run_id,
+      operation_ids: details.disposition.operation_ids,
+      input_digest: details.disposition.input_digest,
+      disposition: value,
+      reason: input.trim(),
+    },
+  }),
+})
 
 const review = (action: string, reasonCode: string) => (input: string) => ({
   action,
@@ -54,4 +81,6 @@ export const choiceBodies: Record<string, ChoiceBody> = {
     idempotent: true,
     body: (input, requestId) => ({ request_id: requestId, reason: input.trim() }),
   },
+  applied: disposition('applied'),
+  not_applied: disposition('not_applied'),
 }
