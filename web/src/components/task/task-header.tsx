@@ -50,14 +50,18 @@ import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 // (component-web-task-surfaces). Anything the specification card or the timeline already states is
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
-export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+//
+// The header's sections, each usable on its own: the sheet and the Tasks panel
+// stack them through TaskHeader, and the full route places them in its
+// reading column and inspector (component-web-task-surfaces, Task detail
+// composition).
+function useTaskHeaderState(item: ActivityItem, variant: 'sheet' | 'full') {
   const members = useWorkspaceMembers()
   const creator = taskCreator(item.summaries?.creator, members.data)
   const restartLinks = taskRestartLinks(item.task)
   const closeOutcome = restartPullRequestOutcome(item.task)
   const canOperate = useWorkspaceCapability('operate_gates')
   const prURL = pullRequestURL(item.summaries)
-  const Heading = variant === 'full' ? 'h1' : 'h2'
   const relatedRoute = relatedTaskRoute(variant)
   // The parent is a blueprint anchor, which no longer rides the activity feed;
   // the blueprint projection is where its title now lives.
@@ -82,6 +86,47 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
     .filter(Boolean)
     .join(' · ')
 
+  return {
+    creator,
+    restartLinks,
+    closeOutcome,
+    canOperate,
+    prURL,
+    relatedRoute,
+    parent,
+    blockingIDs,
+    unsatisfiableIDs,
+    triageFailure,
+    stateLabel,
+    childRollup,
+  }
+}
+
+export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  return (
+    <div>
+      <TaskIdentity item={item} variant={variant} />
+      <TaskFacts item={item} variant={variant} columns={variant === 'full' ? 'two' : 'one'} />
+      <div className="mt-4">
+        <TaskAgentPrompt item={item} />
+      </div>
+    </div>
+  )
+}
+
+// Status row, notices, title, and description.
+export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  const {
+    restartLinks,
+    closeOutcome,
+    canOperate,
+    relatedRoute,
+    blockingIDs,
+    unsatisfiableIDs,
+    triageFailure,
+    stateLabel,
+  } = useTaskHeaderState(item, variant)
+  const Heading = variant === 'full' ? 'h1' : 'h2'
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
@@ -139,12 +184,34 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       )}
       <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
       {item.task.body && <TaskBody body={item.task.body} />}
+    </div>
+  )
+}
 
+// The facts grid, the unlink control for an unsatisfiable dependency, and the
+// blueprint children. `columns: 'two'` pairs facts from lg up; the full
+// route's inspector keeps one column.
+export function TaskFacts({
+  item,
+  variant,
+  columns,
+  className,
+}: {
+  item: ActivityItem
+  variant: 'sheet' | 'full'
+  columns: 'one' | 'two'
+  className?: string
+}) {
+  const { creator, canOperate, prURL, relatedRoute, parent, blockingIDs, unsatisfiableIDs, childRollup } =
+    useTaskHeaderState(item, variant)
+  return (
+    <div>
       <dl
         className={cn(
           'mt-5 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-2 border-y border-border py-3.5 text-[13px] leading-5',
-          variant === 'full' &&
+          columns === 'two' &&
             'lg:grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)_minmax(6.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
+          className,
         )}
       >
         <Fact label="Repository" value={item.task.repo} />
@@ -323,10 +390,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           </ul>
         </section>
       )}
-
-      <div className="mt-4">
-        <Checkout item={item} />
-      </div>
     </div>
   )
 }
@@ -832,7 +895,7 @@ function agentPrompt(item: ActivityItem, workspace: string): string {
 // with its blank line kept, and a long unbroken token breaks anywhere rather
 // than widening the row (component-web-task-surfaces, Agent prompt). It
 // renders nothing until the workspace selection resolves.
-function Checkout({ item }: { item: ActivityItem }) {
+export function TaskAgentPrompt({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   const [open, setOpen] = useState(false)
   const promptID = useId()
