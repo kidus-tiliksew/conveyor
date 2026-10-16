@@ -360,9 +360,9 @@ func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
 		"Context proposal\nA context proposal is waiting for a decision.\n",
 		"question:      Confirm or dismiss the proposed context?",
 		"  - Confirm context system_design component-claim-wait: Attaches the proposed context to this task.",
-		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/confirm",
+		"      cli: conveyor task context confirm " + contextTask + " system_design component-claim-wait",
 		"  - Dismiss context system_design component-claim-wait: Dismisses the proposed context.",
-		"      no CLI command; use the dashboard: POST /v1/tasks/" + contextTask + "/context/proposals/system_design/component-claim-wait/dismiss",
+		"      cli: conveyor task context dismiss " + contextTask + " system_design component-claim-wait",
 		"if ignored:    The proposal stays pending.",
 		"kind:          context_proposal",
 	} {

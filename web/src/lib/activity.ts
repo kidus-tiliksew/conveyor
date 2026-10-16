@@ -346,6 +346,8 @@ export const noteEventKinds = [
   'job.log_stream_degraded',
   'task.state_changed',
   'task.dependency_added',
+  'task.context_proposal_confirmed',
+  'task.context_proposal_dismissed',
 ] as const
 
 type NoteEventKind = (typeof noteEventKinds)[number]
@@ -1047,6 +1049,16 @@ function jobSummary(job: Job, results: TaskJobResult | undefined): JobSummaryTex
 
 type NoteContent = Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'>
 
+const contextKindWords: Record<string, string> = { requirement: 'requirement', system_design: 'System Design' }
+
+function contextDecisionTitle(act: string, payload: Record<string, unknown>) {
+  const kind =
+    typeof payload.target_kind === 'string' ? (contextKindWords[payload.target_kind] ?? payload.target_kind) : ''
+  const target = typeof payload.target_id === 'string' ? payload.target_id.trim() : ''
+  const subject = [kind, target].filter(Boolean).join(' ')
+  return subject ? `${act}: ${subject}` : act
+}
+
 function humanizeKind(kind: string) {
   const text = kind.replaceAll(/[._]/g, ' ')
   return text.charAt(0).toUpperCase() + text.slice(1)
@@ -1184,6 +1196,14 @@ function noteContent(
         title: 'Waiting on another task',
         detail: typeof payload.depends_on_task_id === 'string' ? payload.depends_on_task_id : undefined,
       }
+    // A task-context decision is the operator's audited act on a proposed
+    // document, whichever surface recorded it (req-operator-next-action AC-2.2;
+    // component-web-task-surfaces, Work-order timeline entries). An omitted
+    // payload keeps no strings, so the title falls back to the act alone.
+    case 'task.context_proposal_confirmed':
+      return { title: contextDecisionTitle('Context confirmed', payload) }
+    case 'task.context_proposal_dismissed':
+      return { title: contextDecisionTitle('Context dismissed', payload) }
     case 'pipeline.bounce_limit': {
       const source = typeof payload.source === 'string' ? payload.source.trim() : ''
       const sourceLabel = outputInvalidKinds.has(source)

@@ -74,8 +74,8 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 38 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 38 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 40 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 40 distinct kinds: %v", humanTimelineEventKinds)
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))
