@@ -84,7 +84,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		// Only the first workspace of an empty registry binds the active
 		// owner of the deployment marker. The workspace-registry lock row,
 		// which BootstrapIdentity also takes first, serializes the check
-		// with identity bootstrap (DEC-63(4)).
+		// with identity bootstrap (DEC-75(4)).
 		if existingWorkspaces == 0 {
 			owner, found, ownerErr := deploymentOwner(ctx, tx)
 			if ownerErr != nil {

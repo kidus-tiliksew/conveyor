@@ -48,21 +48,30 @@ type createWorkspaceDocument struct {
 // canCreateWorkspaces is the single workspace-creation policy. It admits
 // POST /v1/workspaces through requireWorkspaceCreation and computes the
 // can_create_workspaces field of /v1/me, so the two cannot disagree. It reads
-// only the credential owner, never a selected workspace, query, header, role,
-// or capability. This preparatory baseline keeps creation owner-only: it
-// answers false without a membership authority and otherwise delegates to
-// AuthorizeInstanceAdministration. Dependent task 261016-751a10 widens this
-// function alone under DEC-75 and req-accounts-and-membership AC-1.4
+// only the credential owner, never a selected workspace, query, header, or
+// credential scope. It admits the active instance-administration principal
+// or a workspace creator, an active account holding an operator binding in at
+// least one workspace (req-accounts-and-membership AC-1.4; DEC-75(2)). The
+// owner check runs first: its error is returned without consulting the
+// workspace-creator check, so an ownership failure never falls through to a
+// grant, and its success admits the owner even without bindings. Only after
+// it refuses does AuthorizeDeployment answer for manage_workspace, which every
+// backend grants only to an active account with an operator binding anywhere
 // (component-http-api, component-identity-membership).
 func (s *Server) canCreateWorkspaces(ctx context.Context, userID string) (bool, error) {
 	if s.Memberships == nil {
 		return false, nil
 	}
-	return s.Memberships.AuthorizeInstanceAdministration(ctx, userID)
+	owner, err := s.Memberships.AuthorizeInstanceAdministration(ctx, userID)
+	if err != nil || owner {
+		return owner, err
+	}
+	return s.Memberships.AuthorizeDeployment(ctx, userID, core.CapabilityManageWorkspace)
 }
 
 // requireWorkspaceCreation admits POST /v1/workspaces for a human whose
-// creation right canCreateWorkspaces confirms (component-http-api).
+// creation right canCreateWorkspaces confirms (DEC-75(2), DEC-75(5);
+// component-http-api).
 func (s *Server) requireWorkspaceCreation(next http.Handler) http.Handler {
 	return s.requireHumanAdministration("authorize workspace creation", s.canCreateWorkspaces, next)
 }
@@ -71,7 +80,7 @@ func (s *Server) requireWorkspaceCreation(next http.Handler) http.Handler {
 // principal: the active owner of the deployment marker, presenting its own
 // user credential of any scope. Account provisioning stays on this owner-only
 // check and does not widen with workspace creation
-// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-63(2), DEC-63(5)).
+// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-75(2), DEC-75(5)).
 func (s *Server) requireInstanceAdministration(next http.Handler) http.Handler {
 	return s.requireHumanAdministration("authorize instance administration", func(ctx context.Context, userID string) (bool, error) {
 		if s.Memberships == nil {
@@ -86,7 +95,7 @@ func (s *Server) requireInstanceAdministration(next http.Handler) http.Handler {
 // keeps 403. The credential and its user actor are stamped before authorize
 // runs with the credential owner; an authority error answers a generic 500,
 // and every refused authenticated human receives the uniform 404 before the
-// handler parses a subject or writes anything (DEC-63(5); component-http-api).
+// handler parses a subject or writes anything (DEC-75(5); component-http-api).
 func (s *Server) requireHumanAdministration(operation string, authorize func(context.Context, string) (bool, error), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, err := s.authenticateHumanCredential(w, r)
@@ -121,7 +130,7 @@ func (s *Server) requireHumanAdministration(operation string, authorize func(con
 // provisionIdentityUser answers the same acknowledgement for a new, an
 // existing active, and an existing deactivated account. It never returns
 // stored account fields, and the deactivated case is a no-op: the store
-// refuses it before redeeming any invitation (DEC-63(6)).
+// refuses it before redeeming any invitation (DEC-75(6)).
 func (s *Server) provisionIdentityUser(w http.ResponseWriter, r *http.Request) {
 	if s.IdentityProvisioner == nil {
 		http.Error(w, "user provisioning unavailable", http.StatusNotFound)
@@ -413,8 +422,9 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := s.Workspaces.CreateWorkspace(r.Context(), request.ID, request.Name, next)
 	if errors.Is(err, store.ErrWorkspaceConflict) {
-		// One answer for an ID or normalized-name collision; it names neither
-		// field nor the hidden workspace (DEC-63(7)).
+		// One answer for an ID or normalized-name collision for every admitted
+		// creator; it names neither field nor the hidden workspace
+		// (req-accounts-and-membership AC-1.5; DEC-75(7)).
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "workspace_conflict", "message": "workspace could not be created"})
 		return
 	}

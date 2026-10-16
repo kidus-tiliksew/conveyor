@@ -196,11 +196,13 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireSelfServiceCredential).Put("/me", s.putOwnDisplayName)
-		// Instance administration (DEC-63): only the deployment marker owner's
-		// own user credential reaches account provisioning; every other
-		// authenticated human gets the uniform 404. Workspace creation is
-		// mounted below with requireWorkspaceCreation, whose single policy
-		// function also serves /v1/me can_create_workspaces.
+		// Instance administration (DEC-75(2), DEC-75(5)): only the deployment
+		// marker owner's own user credential reaches account provisioning;
+		// every other authenticated human, a workspace operator included, gets
+		// the uniform 404. Workspace creation is mounted below with
+		// requireWorkspaceCreation, which also admits an active operator of any
+		// workspace and whose single policy function also serves /v1/me
+		// can_create_workspaces (req-accounts-and-membership AC-1.4).
 		r.With(s.requireInstanceAdministration).Post("/users", s.provisionIdentityUser)
 		// Self-service credential routes carry no subject in the path: the owner
 		// is the presented credential, so no capability applies and no request

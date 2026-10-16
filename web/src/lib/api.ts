@@ -482,8 +482,11 @@ export interface CreateWorkspaceInput {
 }
 
 // The one explanation shown wherever the caller lacks the right to create
-// workspaces: the guarded dialog and a refused creation request.
-export const workspaceCreationRefusal = "Your account can't create workspaces. Ask the instance administrator."
+// workspaces: the guarded dialog and a refused creation request. It names who
+// may create a workspace (req-accounts-and-membership AC-1.4; DEC-75(2)); the
+// browser still reads only the served can_create_workspaces boolean.
+export const workspaceCreationRefusal =
+  'Creating a workspace requires being an operator of an existing workspace or the instance administrator.'
 
 // The server answers a caller without the creation right with the uniform
 // 404 workspace_not_found (component-http-api). Only that exact status and

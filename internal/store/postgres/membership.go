@@ -34,7 +34,7 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 
 // AuthorizeInstanceAdministration answers whether the active user owns the
 // sole deployment_credential marker. No role, binding, or credential scope
-// participates (DEC-63(1)).
+// participates (DEC-75(1)).
 func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID string) (bool, error) {
 	if userID == "" {
 		return false, nil

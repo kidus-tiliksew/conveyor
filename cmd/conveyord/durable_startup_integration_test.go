@@ -82,7 +82,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
-		// DEC-63(3), DEC-63(4): a deployment without a configured workspace
+		// DEC-75(3), DEC-75(4): a deployment without a configured workspace
 		// serves its owner, who creates the first workspace through the API.
 		t.Run(name+"/NoConfiguredWorkspaceFirstCreation", func(t *testing.T) {
 			raw := durableStartupDatabase(t, name)
@@ -121,7 +121,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 				t.Fatalf("organizations=%s", orgs)
 			}
 		})
-		// DEC-63(4): a demotion and an exclusion survive a real restart.
+		// DEC-75(4): a demotion and an exclusion survive a real restart.
 		t.Run(name+"/MembershipDecisionsSurviveRestart", func(t *testing.T) {
 			raw := durableStartupDatabase(t, name)
 			cfgPath := filepath.Join(t.TempDir(), "conveyor.yaml")

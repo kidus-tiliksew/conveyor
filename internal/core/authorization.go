@@ -175,7 +175,7 @@ type IdentityUser struct {
 // CanCreateWorkspaces is the caller's own workspace-creation right. The HTTP
 // handler always computes it from the same predicate that admits
 // POST /v1/workspaces and always serializes it, also when false; it is not a
-// role or capability and depends on no workspace context (REQ-4, AC-1.3).
+// role or capability and depends on no workspace context (REQ-4, AC-1.4).
 type CallerIdentity struct {
 	ID                  string          `json:"id"`
 	Email               string          `json:"email"`

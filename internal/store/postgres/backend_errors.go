@@ -38,7 +38,7 @@ var uniqueConstraintErrors = map[string]error{
 	"decisions_pkey":                            store.ErrDecisionIDConflict,
 	"decisions_confirmed_supersedes_key":        store.ErrDecisionSupersessionConflict,
 	// A case- and space-normalized workspace name collision is the same
-	// generic creation conflict as an ID collision (DEC-63(7)).
+	// generic creation conflict as an ID collision (DEC-75(7)).
 	"workspaces_name_lower_unique": store.ErrWorkspaceConflict,
 }
 
