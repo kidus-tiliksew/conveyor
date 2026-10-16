@@ -972,3 +972,58 @@ test('band counts cover every page of the inbox', async ({ page }) => {
   expect(offsets).toContain('0')
   expect(offsets).toContain('100')
 })
+
+test('the plan panel keeps a preamble and the Files touched intro beside the five sections', async ({ page }) => {
+  const fixture = decisionsFixture()
+  fixture.activity = {
+    'T-zeta': {
+      task: task('T-zeta', 'Zeta plan everyone waits on'),
+      events: [],
+      jobs: [],
+      interventions: [],
+      work_orders: [],
+      spec: {
+        task_id: 'T-zeta',
+        version: 3,
+        content: [
+          'Constraint: keep the public API frozen until the migration lands.',
+          '',
+          '## Approach',
+          'Pin the generators.',
+          '',
+          '## Files touched',
+          'Only change the following files; preserve existing data.',
+          '- `tools/tools.go` — new module',
+          '  - nested detail stays with its file',
+          '',
+          '## Ordering',
+          '1. Pin, then regenerate.',
+          '',
+          '## Risks',
+          '- None beyond a rebase.',
+          '',
+          '## Done criteria',
+          '- CI fails on drift.',
+        ].join('\n'),
+        acceptance_criteria: [],
+        created_at: proposedAt,
+      },
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  await decisionCards(page).first().locator('[data-context-link]').click()
+  const sheet = page.getByRole('dialog', { name: 'Decision context' })
+  const plan = sheet.locator('[data-plan-context]')
+  await expect(plan.locator('[data-plan-section]')).toHaveCount(5)
+  await expect(plan.locator('[data-plan-preamble]')).toHaveText(
+    'Constraint: keep the public API frozen until the migration lands.',
+  )
+  const files = plan.locator('[data-plan-section="Files touched"]')
+  await expect(files.locator('[data-plan-files-intro]')).toHaveText(
+    'Only change the following files; preserve existing data.',
+  )
+  await expect(files.locator('code')).toHaveText(['tools/tools.go'])
+  await expect(files).toContainText('nested detail stays with its file')
+  await expect(sheet.locator('[data-sheet-choices]').getByRole('button', { name: 'Approve plan' })).toBeVisible()
+})

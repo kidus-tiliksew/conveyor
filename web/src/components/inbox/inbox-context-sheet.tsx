@@ -169,16 +169,23 @@ function PlanContext({ item, spec }: { item: ActivityItem; spec: SpecVersion }) 
         </p>
       </header>
       {sections ? (
-        planHeadings.map((heading) => (
-          <section key={heading} aria-label={heading} data-plan-section={heading}>
-            <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{heading}</h4>
-            {heading === 'Files touched' ? (
-              <PlanFiles section={sections[heading]} />
-            ) : (
-              <MarkdownProse className="text-sm">{sections[heading]}</MarkdownProse>
-            )}
-          </section>
-        ))
+        <>
+          {sections.preamble && (
+            <div data-plan-preamble>
+              <MarkdownProse className="text-sm">{sections.preamble}</MarkdownProse>
+            </div>
+          )}
+          {planHeadings.map((heading) => (
+            <section key={heading} aria-label={heading} data-plan-section={heading}>
+              <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{heading}</h4>
+              {heading === 'Files touched' ? (
+                <PlanFiles section={sections.sections[heading]} />
+              ) : (
+                <MarkdownProse className="text-sm">{sections.sections[heading]}</MarkdownProse>
+              )}
+            </section>
+          ))}
+        </>
       ) : (
         <SpecCard spec={spec} overflowExpandable routeVariant="sheet" />
       )}
@@ -187,16 +194,23 @@ function PlanContext({ item, spec }: { item: ActivityItem; spec: SpecVersion }) 
 }
 
 function PlanFiles({ section }: { section: string }) {
-  const files = planFiles(section)
+  const { intro, files } = planFiles(section)
   if (files.length === 0) return <MarkdownProse className="text-sm">{section}</MarkdownProse>
   return (
-    <ul className="divide-y divide-border rounded-md border border-border">
-      {files.map((file, index) => (
-        <li key={`${index}:${file.path}`} className="min-w-0 px-3 py-2">
-          <code className="break-all font-mono text-xs">{file.path}</code>
-          {file.note && <p className="mt-0.5 break-words text-xs text-muted">{file.note}</p>}
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-2">
+      {intro && (
+        <div data-plan-files-intro>
+          <MarkdownProse className="text-sm">{intro}</MarkdownProse>
+        </div>
+      )}
+      <ul className="divide-y divide-border rounded-md border border-border">
+        {files.map((file, index) => (
+          <li key={`${index}:${file.path}`} className="min-w-0 px-3 py-2">
+            <code className="break-all font-mono text-xs">{file.path}</code>
+            {file.note && <p className="mt-0.5 break-words text-xs text-muted">{file.note}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
