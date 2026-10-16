@@ -143,9 +143,23 @@ func TestTaskStatusPrintsTaskContextCommands(t *testing.T) {
 		// shell-quoted, so the printed command reproduces it.
 		{"confirm:task_context:system_design:a b/c'd", base + "system_design/a%20b%2Fc%27d/confirm",
 			"cli: conveyor task context confirm " + task + ` system_design 'a b/c'\''d'`},
+		// A target with a colon keeps it; the id is compared whole.
+		{"dismiss:task_context:requirement:req:x y", base + "requirement/req:x%20y/dismiss",
+			"cli: conveyor task context dismiss " + task + " requirement 'req:x y'"},
 		// A route whose action disagrees with the id prints no command.
 		{"confirm:task_context:requirement:req-x", base + "requirement/req-x/dismiss",
 			"no CLI command; use the dashboard: POST " + base + "requirement/req-x/dismiss"},
+		// A route on another task never prints a command for this one.
+		{"confirm:task_context:requirement:req-x", "/v1/tasks/261099-other/context/proposals/requirement/req-x/confirm",
+			"no CLI command; use the dashboard: POST /v1/tasks/261099-other/context/proposals/requirement/req-x/confirm"},
+		// A route whose target or kind disagrees with the id prints no command.
+		{"confirm:task_context:requirement:req-x", base + "requirement/req-y/confirm",
+			"no CLI command; use the dashboard: POST " + base + "requirement/req-y/confirm"},
+		{"confirm:task_context:requirement:req-x", base + "system_design/req-x/confirm",
+			"no CLI command; use the dashboard: POST " + base + "system_design/req-x/confirm"},
+		// An unsupported kind prints no command even when id and route agree.
+		{"confirm:task_context:decision:DEC-1", base + "decision/DEC-1/confirm",
+			"no CLI command; use the dashboard: POST " + base + "decision/DEC-1/confirm"},
 		// A document-proposal choice keeps its version route.
 		{"confirm:system_design:design-x:3", "/v1/system-designs/design-x/versions/3/confirm",
 			"no CLI command; use the dashboard: POST /v1/system-designs/design-x/versions/3/confirm"},
@@ -164,6 +178,19 @@ func TestTaskStatusPrintsTaskContextCommands(t *testing.T) {
 				t.Fatalf("want line %q in:\n%s", tc.want, out.String())
 			}
 		})
+	}
+}
+
+func TestTaskContextChoiceCommandRequiresPost(t *testing.T) {
+	const task = taskStatusTestTask
+	path := "/v1/tasks/" + task + "/context/proposals/requirement/req-x/confirm"
+	choice := nextActionChoice{ID: "confirm:task_context:requirement:req-x", Method: http.MethodDelete, Path: path}
+	if command, ok := taskContextChoiceCommand(task, choice); ok {
+		t.Fatalf("a DELETE route printed %q", command)
+	}
+	choice.Method = http.MethodPost
+	if _, ok := taskContextChoiceCommand(task, choice); !ok {
+		t.Fatal("the POST route printed no command")
 	}
 }
 

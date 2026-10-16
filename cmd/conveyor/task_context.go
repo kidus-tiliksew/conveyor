@@ -84,13 +84,16 @@ func (c *client) decideTaskContextProposal(taskID, kind, targetID, action string
 }
 
 // taskContextChoiceCommand maps a confirm:task_context:<kind>:<target-id> or
-// dismiss:task_context:<kind>:<target-id> choice to its CLI equivalent. The
-// kind and target come from the server-stated route, not the id, because a
-// target ID may contain a colon; the route's final segment must match the id's
-// action, so an unrelated route never yields a command.
+// dismiss:task_context:<kind>:<target-id> choice to its CLI equivalent only
+// when the offered route states exactly that act: a POST on this task's
+// task-context route, a supported kind, and the id's action, kind, and target.
+// The kind and target are compared after unescaping the route, so a target ID
+// containing a colon keeps it. Any disagreement prints no command, so the CLI
+// never offers an act other than the one the server stated
+// (req-operator-next-action AC-1.7, AC-5.5).
 func taskContextChoiceCommand(taskID string, choice nextActionChoice) (string, bool) {
 	action, _, found := strings.Cut(choice.ID, ":task_context:")
-	if !found || (action != "confirm" && action != "dismiss") {
+	if !found || (action != "confirm" && action != "dismiss") || choice.Method != http.MethodPost {
 		return "", false
 	}
 	parts := strings.Split(strings.Trim(choice.Path, "/"), "/")
@@ -99,15 +102,19 @@ func taskContextChoiceCommand(taskID string, choice nextActionChoice) (string, b
 		parts[4] != "proposals" || parts[7] != action {
 		return "", false
 	}
+	routeTask, err := url.PathUnescape(parts[2])
+	if err != nil || routeTask != taskID {
+		return "", false
+	}
 	kind, err := url.PathUnescape(parts[5])
-	if err != nil {
+	if err != nil || (kind != "requirement" && kind != "system_design") {
 		return "", false
 	}
 	target, err := url.PathUnescape(parts[6])
-	if err != nil {
+	if err != nil || target == "" || choice.ID != action+":task_context:"+kind+":"+target {
 		return "", false
 	}
-	return "conveyor task context " + action + " " + shellWord(taskID) + " " + shellWord(kind) + " " + shellWord(target), true
+	return "conveyor task context " + action + " " + shellWord(taskID) + " " + kind + " " + shellWord(target), true
 }
 
 var shellSafe = regexp.MustCompile(`^[A-Za-z0-9._/:=@%+,-]+$`)
