@@ -86,7 +86,7 @@ export function NextActionChoices({
           const reason = !choice.allowed
             ? `Needs the ${choice.capability.replaceAll('_', ' ')} capability.`
             : !body
-              ? 'Take this from the CLI or MCP; it needs input this page cannot send yet.'
+              ? 'This page cannot send this choice.'
               : (body.unavailable?.(details) ?? '')
           return (
             // A long server label (a task-context choice names its target)
