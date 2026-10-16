@@ -8,7 +8,6 @@ import {
   ExternalLink,
   GitBranch,
   GitPullRequest,
-  Hand,
   Link2,
   Link2Off,
   RotateCcw,
@@ -25,14 +24,7 @@ import {
   taskCreator,
   taskRestartLinks,
 } from '../../lib/activity'
-import {
-  addTaskDependency,
-  cancelTask,
-  fetchTasks,
-  removeTaskDependency,
-  setTaskAssignee,
-  setTaskHold,
-} from '../../lib/api'
+import { addTaskDependency, cancelTask, fetchTasks, removeTaskDependency, setTaskAssignee } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
@@ -117,7 +109,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             Started over as {restartLinks.to}
           </Link>
         )}
-        {item.task.hold && <Badge variant="mono">Held</Badge>}
         {unsatisfiableIDs.size > 0 ? (
           <Badge variant="attention">Dependency needs attention</Badge>
         ) : (
@@ -313,31 +304,16 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 
 function TaskActions({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
   const [action, setAction] = useState<'dependency' | 'assign' | 'cancel' | 'restart' | null>(null)
-  const [hold, setHold] = useState<boolean | null>(null)
   const canAssign = useWorkspaceCapability('set_assignee')
   const { workspace } = useWorkspaceSelection()
   const close = () => setAction(null)
   if (item.task.state === 'merged' || item.task.state === 'closed') return null
   return (
     <div className="ml-auto flex items-center gap-0.5">
-      {/* Hold stays out of the menu: it is the operator act toggled most often
-          and its label doubles as visible state. The rest of the operations
-          live behind the overflow menu so the header stays quieter than the
-          title. Both confirm before acting; the confirmation returns focus to
-          whichever control opened it. */}
-      <button
-        type="button"
-        onClick={() => setHold(!item.task.hold)}
-        title={
-          item.task.hold
-            ? 'Held — your worker won’t claim this task. Release it back to the queue.'
-            : 'Hold this task so your worker won’t claim it; you attach an agent and claim it yourself.'
-        }
-        className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&_svg]:size-3.5"
-      >
-        <Hand aria-hidden="true" />
-        {item.task.hold ? 'Release' : 'Hold'}
-      </button>
+      {/* The operations live behind the overflow menu so the header stays
+          quieter than the title. Each confirms before acting; the
+          confirmation returns focus to whichever control opened it. A task
+          carries no hold, so there is no hold action (DEC-74(3)). */}
       <DropdownMenu label="Task actions" trigger="overflow">
         <DropdownMenuItem onSelect={() => setAction('dependency')}>
           <Link2 /> Link dependency
@@ -359,7 +335,6 @@ function TaskActions({ item, variant }: { item: ActivityItem; variant: 'sheet' |
       {action === 'assign' && <AssigneeControl item={item} onClose={close} />}
       {action === 'cancel' && <CancelControl item={item} onClose={close} />}
       {action === 'restart' && <TaskRestartControl item={item} variant={variant} onClose={close} />}
-      {hold !== null && <HoldControl item={item} hold={hold} onClose={() => setHold(null)} />}
     </div>
   )
 }
@@ -561,7 +536,7 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
 }
 
 // Cancel is lifecycle, not an execution affordance, so the blueprint detail
-// keeps it while suppressing checkout, branch, and hold. Its
+// keeps it while suppressing checkout and branch. Its
 // consequences for children are whatever the backend does today.
 export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?: () => void }) {
   const queryClient = useQueryClient()
@@ -686,94 +661,11 @@ function TaskBody({ body }: { body: string }) {
   )
 }
 
-// Hold changes worker claim eligibility only (req-task-lifecycle-and-queue REQ-3).
-function HoldControl({ item, hold, onClose }: { item: ActivityItem; hold: boolean; onClose: () => void }) {
-  const queryClient = useQueryClient()
-  const submitting = useRef(false)
-  const panel = useRef<HTMLDivElement>(null)
-  const label = hold ? 'Hold' : 'Release'
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-  useEffect(() => {
-    // The confirmation owns Escape even when it is above a task sheet.
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopImmediatePropagation()
-        if (!submitting.current) onCloseRef.current()
-      }
-      if (event.key === 'Tab') {
-        const buttons = panel.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
-        const first = buttons?.[0]
-        const last = buttons?.[buttons.length - 1]
-        if (!first) {
-          event.preventDefault()
-          panel.current?.parentElement?.focus()
-        } else if (
-          !panel.current?.contains(document.activeElement) ||
-          (event.shiftKey ? document.activeElement === first : document.activeElement === last)
-        ) {
-          event.preventDefault()
-          ;(event.shiftKey ? last : first)?.focus()
-        }
-      }
-    }
-    document.addEventListener('keydown', onKeyDown, true)
-    return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [])
-  const mutation = useMutation({
-    mutationFn: () => setTaskHold(item.task.id, hold),
-    onSuccess: async () => {
-      await Promise.all(
-        ['activity', 'task', 'task-operations', 'tasks'].map((key) =>
-          queryClient.invalidateQueries({ queryKey: [key, item.task.workspace] }),
-        ),
-      )
-      onClose()
-    },
-    onSettled: () => {
-      submitting.current = false
-    },
-  })
-  return (
-    <Dialog label={`${label} task`} onClose={() => !submitting.current && onClose()}>
-      <div ref={panel} className="space-y-4 p-5">
-        <h2 className="font-semibold">{label} this task?</h2>
-        <p className="text-sm font-medium">{item.task.title}</p>
-        <p className="text-sm leading-6 text-muted">
-          {hold
-            ? 'Workers will not claim this task’s work orders while it is held. Active work continues, an operator-attached agent can still claim explicitly, and approved work can still merge.'
-            : 'Workers can claim this task’s eligible work orders again. Assignment, dependencies, and other queue rules still apply.'}
-        </p>
-        {mutation.error != null && (
-          <p role="alert" className="text-sm text-failure">
-            {errorMessage(mutation.error)}
-          </p>
-        )}
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" disabled={mutation.isPending} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            disabled={mutation.isPending}
-            onClick={() => {
-              if (submitting.current) return
-              submitting.current = true
-              mutation.mutate()
-            }}
-          >
-            {mutation.isPending ? (hold ? 'Holding…' : 'Releasing…') : `${label} task`}
-          </Button>
-        </div>
-      </div>
-    </Dialog>
-  )
-}
-
 /**
  * Set, reassign, or clear the task's assignee from the workspace's own member
  * list (req-task-lifecycle-and-queue AC-2.4, AC-2.5). Assigning constrains who
  * may claim the task's work orders; it never touches queue order
- * (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-55).
+ * (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-74(4)).
  *
  * Assignment is an operator act, carried by the `set_assignee` capability. The
  * caller's role for this workspace comes from the server's own self-identity

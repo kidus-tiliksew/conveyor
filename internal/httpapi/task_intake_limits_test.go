@@ -28,7 +28,7 @@ type multipartIntakeBody struct {
 func newMultipartIntakeBody(intakeKey string, attachments map[string][]byte, fillerField string, filler int64, epilogue string) multipartIntakeBody {
 	var prefix strings.Builder
 	prefix.WriteString("--" + intakeBoundary + "\r\nContent-Disposition: form-data; name=\"task\"\r\n\r\n")
-	prefix.WriteString(`{"body":"Bounded intake","repo":"api","hold":true}` + "\r\n")
+	prefix.WriteString(`{"body":"Bounded intake","repo":"api"}` + "\r\n")
 	if intakeKey != "" {
 		prefix.WriteString("--" + intakeBoundary + "\r\nContent-Disposition: form-data; name=\"idempotency_key\"\r\n\r\n" + intakeKey + "\r\n")
 	}
@@ -39,6 +39,23 @@ func newMultipartIntakeBody(intakeKey string, attachments map[string][]byte, fil
 	}
 	prefix.WriteString("--" + intakeBoundary + "\r\nContent-Disposition: form-data; name=\"" + fillerField + "\"; filename=\"filler.txt\"\r\nContent-Type: text/plain\r\n\r\n")
 	return multipartIntakeBody{prefix: prefix.String(), filler: filler, suffix: "\r\n--" + intakeBoundary + "--\r\n" + epilogue}
+}
+
+// withTaskJSON returns the same body with different task metadata.
+func (b multipartIntakeBody) withTaskJSON(task string) multipartIntakeBody {
+	b.prefix = strings.Replace(b.prefix, `{"body":"Bounded intake","repo":"api"}`, task, 1)
+	return b
+}
+
+// historicalHoldLookup reads every keyed task as stored with hold before the
+// retirement. No public writer sets hold any more (DEC-74(3)), so intake tests
+// model a historical row at the idempotency lookup.
+type historicalHoldLookup struct{ store.Store }
+
+func (h historicalHoldLookup) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
+	task, found, err := h.Store.GetTaskByIntakeKey(ctx, key)
+	task.Hold = found
+	return task, found, err
 }
 
 // overhead is the request size without filler bytes.
@@ -288,6 +305,46 @@ func TestMultipartTaskIntakeBoundPreservesValidation(t *testing.T) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body)
 		}
 		fixture.assertNoSideEffects(t)
+	})
+	t.Run("retired hold is refused before any side effect", func(t *testing.T) {
+		fixture := newIntakeFixture(t, 0)
+		body := newMultipartIntakeBody("fresh-hold", map[string][]byte{"design.png": testimage.PNG("hold")}, "padding", 16, "").withTaskJSON(`{"body":"Bounded intake","repo":"api","hold":true}`)
+		request, _ := body.request(true)
+		response := fixture.serve(request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "task_hold_retired") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body)
+		}
+		fixture.assertNoSideEffects(t)
+	})
+	t.Run("historical held task replays without orphan attachments", func(t *testing.T) {
+		fixture := newIntakeFixture(t, 0)
+		original := newMultipartIntakeBody("held-replay", map[string][]byte{"design.png": testimage.PNG("held")}, "padding", 16, "")
+		first, _ := original.request(true)
+		if response := fixture.serve(first); response.Code != http.StatusCreated {
+			t.Fatalf("first status=%d body=%s", response.Code, response.Body)
+		}
+		// The keyed task reads as stored with hold before the retirement; a
+		// retry that repeats the original hold: true returns it unchanged.
+		fixture.server.Store = historicalHoldLookup{Store: fixture.store}
+		retry, _ := original.withTaskJSON(`{"body":"Bounded intake","repo":"api","hold":true}`).request(true)
+		response := fixture.serve(retry)
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"hold"`) {
+			t.Fatalf("replay status=%d body=%s", response.Code, response.Body)
+		}
+		ctx := store.WithWorkspace(t.Context(), "demo")
+		tasks, err := fixture.store.ListTasks(ctx)
+		if err != nil || len(tasks) != 1 {
+			t.Fatalf("tasks=%+v err=%v", tasks, err)
+		}
+		artifacts, err := fixture.store.ListArtifacts(ctx)
+		if err != nil || len(artifacts) != 1 {
+			t.Fatalf("replay orphaned attachments: %+v %v", artifacts, err)
+		}
+		created, err := fixture.store.CountEvents(ctx, tasks[0].ID, "task.created")
+		if err != nil || created != 1 || fixture.titles.Load() != 1 || fixture.enqueued.Load() != 1 {
+			t.Fatalf("task.created=%d titles=%d enqueued=%d err=%v", created, fixture.titles.Load(), fixture.enqueued.Load(), err)
+		}
+		fixture.assertNoTempFiles(t)
 	})
 	t.Run("idempotent replay", func(t *testing.T) {
 		fixture := newIntakeFixture(t, 0)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
@@ -42,6 +43,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("OperatorCheckpoint", func(t *testing.T) { runVerificationCheckpoint(t, x) })
 	t.Run("Checkpoints", func(t *testing.T) { runVerificationCheckpoints(t, x) })
 	t.Run("SealedReviewAcceptance", func(t *testing.T) { runSealedVerificationReview(t, x) })
+	t.Run("NextActionDispositionBinding", func(t *testing.T) { runNextActionDispositionBinding(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
@@ -441,5 +443,144 @@ func runVerificationCheckpoint(t *testing.T, x Fixture) {
 	}
 	if _, err = x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage}})); err == nil {
 		t.Fatal("released checkpoint claim sealed success")
+	}
+}
+
+// sealVerificationCheckpoint seals an operator_action_required checkpoint
+// whose blocked attempt leaves one prepared operation unresolved, or none
+// when withOperation is false, and returns the released verify order.
+func sealVerificationCheckpoint(t *testing.T, v *verificationFixture, withOperation bool) (core.WorkOrder, string) {
+	t.Helper()
+	obligation := store.VerificationObligation{ID: "disposition-" + v.access.TaskID, Description: "External action", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "action", Kind: "script", Argv: []string{"action"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
+	r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+	v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: r.Digest}
+	v.start(t, "disposition")
+	operationID := ""
+	if withOperation {
+		operationID = v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "disposition-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}}).ID
+	}
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "blocked", Explanation: "Provider acknowledgement is unknown"}})
+	coverage := verificationFixtureCoverage(v.snapshot(t))
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: coverage, Feedback: "Provider acknowledgement is unknown", RequiredAction: "Inspect provider and authorize disposition"}})
+	order, err := v.x.Backend.GetWorkOrder(v.x.Context, v.access.WorkOrderID)
+	requireOK(t, err)
+	if order.State != core.WorkOrderQueued || order.Checkpoint == nil || order.Checkpoint.Verification == nil {
+		t.Fatalf("sealed checkpoint order = %+v", order)
+	}
+	return order, operationID
+}
+
+// projectVerificationDisposition projects the task with row 10 selected. A
+// sealed release also records the checkpoint's decision_request, which row 9
+// (agent_question) outranks, so the projection reads the same stored order
+// with only that agent-question marker withheld; the binding itself comes
+// from the backend's verification records
+// (feature-operator-next-action NA-3, Disposition binding).
+func projectVerificationDisposition(t *testing.T, x Fixture, taskID string, caps map[core.Capability]bool) nextaction.NextAction {
+	t.Helper()
+	task, err := x.Backend.GetTask(x.Context, taskID)
+	requireOK(t, err)
+	orders, err := x.Backend.ListWorkOrdersForTasks(x.Context, []string{taskID})
+	requireOK(t, err)
+	for i := range orders {
+		if orders[i].Checkpoint != nil && orders[i].Checkpoint.Verification != nil {
+			checkpoint := *orders[i].Checkpoint
+			checkpoint.DecisionRequest = ""
+			orders[i].Checkpoint = &checkpoint
+		}
+	}
+	projected, err := store.ReadNextActions(x.Context, x.Backend, []core.Task{task}, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: caps, OrdersLoaded: true, Orders: orders})
+	requireOK(t, err)
+	action := projected[taskID]
+	if action.Kind != nextaction.KindVerificationDisposition {
+		t.Fatalf("next action = %s, want verification_disposition", action.Kind)
+	}
+	return action
+}
+
+// runNextActionDispositionBinding proves that row 10's details.disposition
+// names the sealed checkpoint's context, the attempt that recorded its
+// unresolved operation, that operation, and the attempt's safe-input digest,
+// so a recovery built only from those fields, a disposition, and a reason
+// passes PrepareVerificationRecovery on the ordinary recovery path. Row 9
+// never carries the binding, the response exposes no verification record,
+// and a checkpoint without an unresolved operation offers neither
+// disposition (feature-operator-next-action NA-3; req-operator-next-action
+// AC-1.4, AC-2.2; component-verification-service).
+func runNextActionDispositionBinding(t *testing.T, x Fixture) {
+	gates := map[core.Capability]bool{core.CapabilityOperateGates: true}
+	v := newVerificationFixture(t, x, true)
+	order, operationID := sealVerificationCheckpoint(t, &v, true)
+
+	question, err := store.ReadNextAction(x.Context, x.Backend, order.TaskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: gates})
+	requireOK(t, err)
+	if question.Kind != nextaction.KindAgentQuestion || question.Details.Disposition != nil {
+		t.Fatalf("sealed checkpoint = %s disposition %+v, want agent_question without a binding", question.Kind, question.Details.Disposition)
+	}
+
+	action := projectVerificationDisposition(t, x, order.TaskID, gates)
+	want := &nextaction.Disposition{ContextID: v.contextID, RunID: v.runID, OperationIDs: []string{operationID}, InputDigest: verificationSHA([]byte("{}"))}
+	if !reflect.DeepEqual(action.Details.Disposition, want) {
+		t.Fatalf("disposition = %+v, want %+v (refusals %+v)", action.Details.Disposition, want, action.Details.Refusals)
+	}
+	for _, id := range []string{"applied", "not_applied"} {
+		found := false
+		for _, choice := range action.Choices {
+			if choice.ID == id {
+				found = choice.Capability == string(core.CapabilityOperateGates) && choice.Allowed && choice.Path == "/v1/work-orders/"+order.ID+"/recover"
+			}
+		}
+		if !found {
+			t.Fatalf("choice %s missing or not bound to operate_gates: %+v", id, action.Choices)
+		}
+	}
+	recoverOnly := projectVerificationDisposition(t, x, order.TaskID, map[core.Capability]bool{core.CapabilityRecoverWork: true})
+	for _, choice := range recoverOnly.Choices {
+		if (choice.ID == "applied" || choice.ID == "not_applied") && choice.Allowed {
+			t.Fatalf("recover_work alone allowed %s", choice.ID)
+		}
+	}
+	raw, err := json.Marshal(action)
+	requireOK(t, err)
+	for _, leaked := range []string{"safe_inputs", "client_token", "token_hash", "verification-fixture-token"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Fatalf("next action exposes %s: %s", leaked, raw)
+		}
+	}
+
+	operator, owner := bootstrapOwner(t, x)
+	operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	disposition := &store.VerificationRecoveryDisposition{ContextID: want.ContextID, RunID: want.RunID, OperationIDs: want.OperationIDs, InputDigest: want.InputDigest, Disposition: "not_applied", Reason: "Operator inspected the provider; the change did not apply."}
+	_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "disposition-recovery-"+order.ID, time.Hour)
+	requireOK(t, err)
+	events, err := x.Backend.ListEvents(x.Context, order.TaskID)
+	requireOK(t, err)
+	authorized := false
+	for _, event := range events {
+		authorized = authorized || event.Kind == "verification.recovery_authorized"
+	}
+	if !authorized {
+		t.Fatal("recovery built from the binding recorded no verification authorization")
+	}
+
+	empty := newVerificationFixture(t, x, true)
+	bare, _ := sealVerificationCheckpoint(t, &empty, false)
+	unbound := projectVerificationDisposition(t, x, bare.TaskID, gates)
+	if unbound.Details.Disposition != nil {
+		t.Fatalf("checkpoint without unresolved operations bound %+v", unbound.Details.Disposition)
+	}
+	for _, id := range []string{"applied", "not_applied"} {
+		for _, choice := range unbound.Choices {
+			if choice.ID == id {
+				t.Fatalf("choice %s offered without an unresolved operation", id)
+			}
+		}
+		refused := false
+		for _, refusal := range unbound.Details.Refusals {
+			refused = refused || (refusal.Choice == id && strings.Contains(refusal.Text, "no unresolved operations"))
+		}
+		if !refused {
+			t.Fatalf("refusals = %+v, want %s refused for missing operations", unbound.Details.Refusals, id)
+		}
 	}
 }

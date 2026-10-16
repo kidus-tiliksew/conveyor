@@ -6,7 +6,7 @@ import "github.com/kidus-tiliksew/conveyor/internal/core"
 // running through core.TaskReviewAccept (running -> approved) instead of the
 // merge_approval gate (DEC-64(8); component-task-lifecycle v13,
 // component-submission-merge v6). verdict is the round's aggregate verdict;
-// the policy fields are the task row's, frozen at intake (DEC-55(1)).
+// the policy fields are the task row's, frozen at intake (DEC-74(1)).
 //
 // Admitted: any refresh round, gate on or off; a policy >0 task with the merge
 // gate off; a legacy policy-0 task at L0. Every backend's

@@ -66,7 +66,7 @@ Create and inspect tasks. Titles are always generated from the body.
 
 | Command | What it does |
 |---|---|
-| `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--hold`, `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
+| `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
 | `conveyor task list` | List tasks: ID, state, repo, source, title. |
 | `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
 | `conveyor task status <id>` | Print the server's next-action statement for the task (`GET /v1/tasks/{id}/next-action`). `--json` prints the server body verbatim. See [task status](#task-status). |

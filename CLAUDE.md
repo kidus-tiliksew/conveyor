@@ -68,7 +68,7 @@ operator-only acts.
 ## Scope bars
 
 - Memory-store scope is defined by DEC-9.
-- Task priority, phase, assignment, and queue-order scope is defined by DEC-55.
+- Task priority, phase, assignment, queue-order, and hold-retirement scope is defined by DEC-74.
 
 This repository maintains the Conveyor skill sources and uses `AGENTS.md ->
 CLAUDE.md`. Refresh its guidance directly in the task worktree with

@@ -61,7 +61,7 @@ Method:
   confirmation. Record a blocking authority-boundary finding when a plan
   reduces such a proposable conflict to a bare pause-and-report checkpoint with
   neither a proposal step nor a stated reason why proposing is unavailable. For
-  gate approval, repository-drift resolution, task cancel/hold, or another act
+  gate approval, repository-drift resolution, task cancellation, or another act
   without an applicable proposal surface, accept a pause-and-report checkpoint
   whose agent obligation ends when reached and whose plan states why proposing
   is unavailable. This is a reasoned reviewer check, not a text parser.

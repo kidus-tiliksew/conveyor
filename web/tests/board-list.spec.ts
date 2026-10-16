@@ -852,8 +852,10 @@ test('My tasks shows only the signed-in user assignments that still need them', 
 // decided from the task's own durable events rather than inferred from state
 // (REQ-6).
 const returnedFeedback = 'The retry path still swallows the provider error — surface it before merging.'
+const returnedNextStep =
+  'This implementation order is queued. Pick it up with conveyor run task-returned, or an eligible worker can claim it.'
 
-function returnedSummary(hold: boolean) {
+function returnedSummary() {
   return {
     task: {
       id: 'task-returned',
@@ -864,7 +866,6 @@ function returnedSummary(hold: boolean) {
       branch: 'conveyor/task-returned',
       state: 'queued',
       next_stage: 'implement',
-      hold,
       assignee: { user_id: 'usr-assigned', email: 'assigned@example.test', display_name: 'Assigned User' },
       created_at: '2026-08-06T10:00:00Z',
     },
@@ -874,7 +875,7 @@ function returnedSummary(hold: boolean) {
   }
 }
 
-function returnedDetail(hold: boolean, claimantID: string, claimedAfter = false) {
+function returnedDetail(claimantID: string, claimedAfter = false) {
   const events = [
     {
       id: 1,
@@ -907,7 +908,7 @@ function returnedDetail(hold: boolean, claimantID: string, claimedAfter = false)
     })
   }
   return {
-    task: returnedSummary(hold).task,
+    task: returnedSummary().task,
     jobs: [],
     events,
     interventions: [],
@@ -919,7 +920,7 @@ function returnedDetail(hold: boolean, claimantID: string, claimedAfter = false)
   }
 }
 
-async function openTasksWithReturn(page: Page, options: { hold: boolean; claimantID: string; claimedAfter?: boolean }) {
+async function openTasksWithReturn(page: Page, options: { claimantID: string; claimedAfter?: boolean }) {
   await routeTasksSurface(page)
   // Registered after the surface defaults, so these win.
   await page.route('**/v1/activity?**', (route) =>
@@ -929,18 +930,18 @@ async function openTasksWithReturn(page: Page, options: { hold: boolean; claiman
         'X-Conveyor-Limit': '100',
         'X-Conveyor-Offset': '0',
       },
-      json: [returnedSummary(options.hold)],
+      json: [returnedSummary()],
     }),
   )
   await page.route('**/v1/tasks/task-returned/activity**', (route) =>
-    route.fulfill({ json: returnedDetail(options.hold, options.claimantID, options.claimedAfter) }),
+    route.fulfill({ json: returnedDetail(options.claimantID, options.claimedAfter) }),
   )
   await page.goto('/?view=list')
   await expect(page.getByRole('button', { name: 'List', pressed: true })).toBeVisible()
 }
 
-test('a run-claimed bounce tells the signed-in user to resume it regardless of hold', async ({ page }) => {
-  await openTasksWithReturn(page, { hold: false, claimantID: 'run:usr-assigned' })
+test("a run-claimed bounce says the queued order is the user's or an eligible worker's", async ({ page }) => {
+  await openTasksWithReturn(page, { claimantID: 'run:usr-assigned' })
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
   await expect(attention.getByText(returnedFeedback, { exact: false })).toBeVisible()
@@ -949,25 +950,48 @@ test('a run-claimed bounce tells the signed-in user to resume it regardless of h
     '/tasks/task-returned?view=list',
   )
 
-  // Held work was run from someone's own machine, so nothing picks the feedback
-  // up until they run it again.
-  await expect(attention.getByText('running the task again from your machine', { exact: false })).toBeVisible()
-  await expect(attention.getByText('conveyor run task-returned', { exact: false })).toBeVisible()
+  // Every bounce re-queues an ordinary eligible order (DEC-74(3)): the user
+  // can resume it, or an eligible worker can claim it.
+  await expect(attention.getByText(returnedNextStep, { exact: false })).toBeVisible()
+  await expect(attention.getByText('Nothing is running this', { exact: false })).toHaveCount(0)
 })
 
-test('operator-held worker-pipeline work says the factory continues it once released', async ({ page }) => {
-  await openTasksWithReturn(page, { hold: true, claimantID: 'worker-1' })
+test('a worker-claimed bounce states the same queued next step', async ({ page }) => {
+  await openTasksWithReturn(page, { claimantID: 'worker-1' })
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention.getByText('Returned conveyor change came back to you with feedback')).toBeVisible()
-  await expect(attention.getByText('The factory is already on it', { exact: false })).toBeVisible()
-  await expect(attention.getByText('from your machine', { exact: false })).toHaveCount(0)
+  await expect(attention.getByText(returnedNextStep, { exact: false })).toBeVisible()
+  await expect(attention.getByText('The factory is already on it', { exact: false })).toHaveCount(0)
+})
+
+// A response from before the retirement may still carry hold: true. Neither
+// the Board card nor the Tasks row renders a hold badge (DEC-74(3)).
+test('stale hold never renders a Held or On hold badge on the Board or Tasks list', async ({ page }) => {
+  await routeTasksSurface(page)
+  const stale = { ...returnedSummary(), task: { ...returnedSummary().task, hold: true } }
+  await page.route('**/v1/activity?**', (route) =>
+    route.fulfill({
+      headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
+      json: [stale],
+    }),
+  )
+  await page.route('**/v1/task-operations?**', (route) =>
+    route.fulfill({ json: operations.map((item) => ({ ...item, task: { ...item.task, hold: true } })) }),
+  )
+  await page.goto('/')
+  await expect(page.getByRole('region', { name: 'Task board' })).toBeVisible()
+  await expect(page.getByText('Returned conveyor change', { exact: true })).toBeVisible()
+  await expect(page.getByText('Held', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'List' }).click()
+  await expect(rows(page)).toHaveCount(operations.length)
+  await expect(page.getByText('On hold', { exact: true })).toHaveCount(0)
 })
 
 // The signal clears exactly where the server clears its own marker: once an
 // implementation run has claimed the work the return created. Presentation of
 // an existing marker, with no derivation of its own.
 test('the returned-with-feedback entry clears once implementation picks it up', async ({ page }) => {
-  await openTasksWithReturn(page, { hold: true, claimantID: 'worker-1', claimedAfter: true })
+  await openTasksWithReturn(page, { claimantID: 'worker-1', claimedAfter: true })
   await expect(page.getByRole('region', { name: 'Needs your attention' })).toHaveCount(0)
   // The list itself is untouched by the band above it.
   await expect(rows(page)).toHaveCount(operations.length)

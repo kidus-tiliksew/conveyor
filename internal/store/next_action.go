@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -73,7 +74,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	blockers, err := st.ListDependencyBlockers(ctx, ids)
+	dependencies, err := readDependencyView(ctx, st, tasks, orders)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	}
 	ordersByTask := map[string][]core.WorkOrder{}
 	for _, order := range orders {
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, blockers[order.TaskID]))
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, dependencies.blockers[order.TaskID]))
 	}
 	markerByTask := map[string]ActivityMarker{}
 	for _, marker := range markers {
@@ -95,9 +96,139 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		if err != nil {
 			return nil, err
 		}
-		out[task.ID] = nextaction.Project(input)
+		input.Blockers = dependencies.forward[task.ID]
+		input.Blocks = dependencies.blocks[task.ID]
+		action := nextaction.Project(input)
+		// Row 10 reads its selected order's sealed checkpoint only when it
+		// wins, so no other row ever carries the binding
+		// (feature-operator-next-action NA-3, Disposition binding).
+		if action.Kind == nextaction.KindVerificationDisposition && action.CurrentOrder != nil {
+			disposition, err := readDispositionInput(ctx, st, task, input.Orders, action.CurrentOrder.ID)
+			if err != nil {
+				return nil, err
+			}
+			input.Dispositions = map[string]nextaction.DispositionInput{action.CurrentOrder.ID: disposition}
+			action = nextaction.Project(input)
+		}
+		out[task.ID] = action
 	}
 	return out, nil
+}
+
+// dependencyView is one reading of the workspace's dependency edges. Forward
+// references fill blocked_by on a dependent; blocks lists, on a blocker, the
+// open dependents whose latest queued order names it. Both come from the same
+// ListDependencyBlockers result, the one that stamps blocking_task_ids on the
+// dependents' orders, so the two sides always describe the same edges
+// (feature-operator-next-action NA-3, Dependents; req-operator-next-action
+// AC-2.1).
+type dependencyView struct {
+	blockers map[string]DependencyBlockers
+	forward  map[string][]nextaction.BlockerRef
+	blocks   map[string][]nextaction.BlockerRef
+}
+
+var openTaskStates = []core.TaskState{core.TaskClaiming, core.TaskQueued, core.TaskRunning, core.TaskAwaiting, core.TaskApproved, core.TaskParked}
+
+// readDependencyView reads the workspace's open tasks before applying the
+// requested subset, so a blocker projected alone, or inside a filtered page,
+// still names dependents outside the request. Orders are read only for
+// dependents the request did not already load.
+func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders []core.WorkOrder) (dependencyView, error) {
+	view := dependencyView{blockers: map[string]DependencyBlockers{}, forward: map[string][]nextaction.BlockerRef{}, blocks: map[string][]nextaction.BlockerRef{}}
+	if len(tasks) == 0 {
+		return view, nil
+	}
+	open, err := st.ListTasksFiltered(ctx, TaskFilter{States: openTaskStates})
+	if err != nil {
+		return view, err
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	known := map[string]core.Task{}
+	requested := map[string]bool{}
+	ids := make([]string, 0, len(tasks)+len(open))
+	var candidates []core.Task
+	for _, task := range open {
+		if (workspace != "" && task.Workspace != workspace) || core.TaskTerminal(task.State) {
+			continue
+		}
+		known[task.ID] = task
+		candidates = append(candidates, task)
+		ids = append(ids, task.ID)
+	}
+	for _, task := range tasks {
+		requested[task.ID] = true
+		if _, listed := known[task.ID]; !listed {
+			ids = append(ids, task.ID)
+		}
+		known[task.ID] = task
+	}
+	view.blockers, err = st.ListDependencyBlockers(ctx, ids)
+	if err != nil {
+		return view, err
+	}
+	ordersByTask := map[string][]core.WorkOrder{}
+	for _, order := range orders {
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+	}
+	var dependents []core.Task
+	var unloaded []string
+	for _, task := range candidates {
+		for _, blocker := range view.blockers[task.ID].BlockingTaskIDs {
+			if requested[blocker] {
+				dependents = append(dependents, task)
+				if !requested[task.ID] {
+					unloaded = append(unloaded, task.ID)
+				}
+				break
+			}
+		}
+	}
+	if len(unloaded) > 0 {
+		more, err := st.ListWorkOrdersForTasks(ctx, unloaded)
+		if err != nil {
+			return view, err
+		}
+		for _, order := range more {
+			ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+		}
+	}
+	for _, dependent := range dependents {
+		taskOrders := make([]core.WorkOrder, 0, len(ordersByTask[dependent.ID]))
+		for _, order := range ordersByTask[dependent.ID] {
+			taskOrders = append(taskOrders, withDependencyBlockers(order, view.blockers[dependent.ID]))
+		}
+		latest := nextaction.LatestQueued(taskOrders)
+		if latest == nil {
+			continue
+		}
+		for _, blocker := range latest.BlockingTaskIDs {
+			if requested[blocker] {
+				view.blocks[blocker] = append(view.blocks[blocker], nextaction.BlockerRef{TaskID: dependent.ID, Title: dependent.Title, State: string(dependent.State)})
+			}
+		}
+	}
+	for id := range view.blocks {
+		refs := view.blocks[id]
+		sort.Slice(refs, func(i, j int) bool { return refs[i].TaskID < refs[j].TaskID })
+	}
+	for id := range requested {
+		blockerIDs := view.blockers[id].BlockingTaskIDs
+		refs := make([]nextaction.BlockerRef, 0, len(blockerIDs))
+		for _, blockerID := range blockerIDs {
+			blocker, ok := known[blockerID]
+			if !ok {
+				blocker, err = st.GetTask(ctx, blockerID)
+				if err != nil {
+					return view, err
+				}
+				known[blockerID] = blocker
+			}
+			refs = append(refs, nextaction.BlockerRef{TaskID: blocker.ID, Title: blocker.Title, State: string(blocker.State)})
+		}
+		view.forward[id] = refs
+	}
+	return view, nil
 }
 
 // withDependencyBlockers returns an implement or verify order carrying the
@@ -133,10 +264,6 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 			return nextaction.Input{}, err
 		}
 	}
-	blockers, err := blockerRefs(ctx, st, task.ID)
-	if err != nil {
-		return nextaction.Input{}, err
-	}
 	for i := range orders {
 		pendingRevision := task.State == core.TaskAwaiting && task.GateKind == core.GateKindPlanRevision
 		ApplyRecoveryRefusal(&orders[i], task, orders, pendingRevision)
@@ -145,8 +272,9 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
 		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals), ContextProposals: contextProposalRefs(proposals, task.ID),
-		Blockers: blockers, MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
+		MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
+		PullRequest: recordedPullRequest(events), BounceCount: recordedBounceCount(events),
 	}
 	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && opts.MergeReadiness != nil {
 		input.MergeReadiness = opts.MergeReadiness(ctx, task)
@@ -278,20 +406,73 @@ func revisionRationale(events []core.Event) string {
 	return ""
 }
 
-func blockerRefs(ctx context.Context, st Store, taskID string) ([]nextaction.BlockerRef, error) {
-	ids, err := st.ListBlockingTaskIDs(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]nextaction.BlockerRef, 0, len(ids))
-	for _, id := range ids {
-		blocker, err := st.GetTask(ctx, id)
-		if err != nil {
-			return nil, err
+// recordedPullRequest is the number of the latest recorded
+// pull_request.opened event, or zero when none records one. The catalogue
+// names the pull request only from this record, never from an issue number
+// (feature-operator-next-action NA-4).
+func recordedPullRequest(events []core.Event) int {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pull_request.opened" {
+			continue
 		}
-		out = append(out, nextaction.BlockerRef{TaskID: blocker.ID, Title: blocker.Title, State: string(blocker.State)})
+		var payload struct {
+			Number int `json:"number"`
+		}
+		if json.Unmarshal(events[i].Payload, &payload) == nil && payload.Number > 0 {
+			return payload.Number
+		}
 	}
-	return out, nil
+	return 0
+}
+
+// recordedBounceCount is the bounce count recorded by the latest
+// pipeline.bounce_limit event, the window that produced the bounce gate, or
+// zero when none is recorded.
+func recordedBounceCount(events []core.Event) int {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "pipeline.bounce_limit" {
+			continue
+		}
+		var payload struct {
+			Window int `json:"window"`
+		}
+		if json.Unmarshal(events[i].Payload, &payload) == nil && payload.Window > 0 {
+			return payload.Window
+		}
+		return 0
+	}
+	return 0
+}
+
+// readDispositionInput reads the verification records of the verify order
+// row 10 selected and binds its sealed checkpoint. A store that cannot read
+// verification records yields a refusal, never a fabricated binding; a read
+// failure stays an error.
+func readDispositionInput(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, orderID string) (nextaction.DispositionInput, error) {
+	var order core.WorkOrder
+	for _, candidate := range orders {
+		if candidate.ID == orderID {
+			order = candidate
+		}
+	}
+	if order.Checkpoint == nil || order.Checkpoint.Verification == nil {
+		return nextaction.DispositionInput{Refusal: fmt.Sprintf("verify order %s has no sealed verification checkpoint to dispose", orderID)}, nil
+	}
+	reader, ok := st.(VerificationReviewReader)
+	if !ok {
+		return nextaction.DispositionInput{Refusal: "verification records are not readable from this store"}, nil
+	}
+	state, err := reader.ReadVerificationReview(ctx, task.ID, order.ID)
+	if err != nil {
+		return nextaction.DispositionInput{}, err
+	}
+	// The binding checks the order's served-requirement and governance pins,
+	// which list projections may omit, so it reads the full stored order
+	// returned with the verification records.
+	if state.Order.ID != order.ID {
+		return nextaction.DispositionInput{Refusal: fmt.Sprintf("verify order %s is not readable with its verification records", orderID)}, nil
+	}
+	return verificationDispositionBinding(task, state.Order, state.Rows), nil
 }
 
 // ApplyRecoveryRefusal is the one refusal fold shared by claim projection and next action.
