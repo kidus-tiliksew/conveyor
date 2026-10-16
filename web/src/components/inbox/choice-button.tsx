@@ -79,8 +79,8 @@ export function NextActionChoices({
   if (choices.length === 0) return null
   const contract = composing ? choiceBody(composing.id) : undefined
   return (
-    <div data-next-action-choices className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <div data-next-action-choices className="min-w-0 space-y-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         {choices.map((choice, index) => {
           const body = choiceBody(choice.id)
           const reason = !choice.allowed
@@ -89,9 +89,13 @@ export function NextActionChoices({
               ? 'Take this from the CLI or MCP; it needs input this page cannot send yet.'
               : (body.unavailable?.(details) ?? '')
           return (
-            <span key={choice.id} className="inline-flex flex-col gap-0.5">
+            // A long server label (a task-context choice names its target)
+            // wraps inside the button rather than overflowing a phone-width
+            // card; the label and endpoint stay whole.
+            <span key={choice.id} className="inline-flex max-w-full min-w-0 flex-col gap-0.5">
               <Button
                 size="sm"
+                className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
                 variant={choice.id === 'reject' ? 'ghost' : index === 0 && reason === '' ? 'default' : 'secondary'}
                 title={`${choice.effect} (${choice.method} ${choice.path})`}
                 data-choice={choice.id}
