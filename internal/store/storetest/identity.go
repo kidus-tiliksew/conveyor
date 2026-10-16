@@ -30,7 +30,7 @@ func bootstrapOwner(t *testing.T, x Fixture) (context.Context, core.IdentityUser
 	requireOK(t, err)
 	ctx := store.WithCredential(x.Context, core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	// Bootstrap never writes bindings (DEC-63(4)), and the fixture workspace
+	// Bootstrap never writes bindings (DEC-75(4)), and the fixture workspace
 	// exists before the deployment owner. The fixture therefore grants the
 	// owner's operator binding explicitly instead of relying on healing.
 	if caller, err := x.Backend.GetCallerIdentity(ctx, owner.ID, x.Workspace); err != nil || caller.Role != core.WorkspaceRoleOperator {
@@ -142,6 +142,7 @@ func runMembership(t *testing.T, x Fixture) {
 	}
 	t.Run("MembershipAuditEvents", func(t *testing.T) { runMembershipAuditEvents(t, x, ctx, owner) })
 	t.Run("InstanceAdministrationOwnerOnly", func(t *testing.T) { runInstanceAdministrationOwnerOnly(t, x) })
+	t.Run("WorkspaceCreatorAuthority", func(t *testing.T) { runWorkspaceCreatorAuthority(t, x) })
 }
 
 func runInvitationSessions(t *testing.T, x Fixture) {
@@ -835,7 +836,7 @@ func runMixedCaseConcurrentDedup(t *testing.T, x Fixture, ctx context.Context, o
 	}
 }
 
-// Instance administration and membership preservation (DEC-63;
+// Instance administration and membership preservation (DEC-75;
 // component-identity-membership, Verification). The shared fixture keeps one
 // deployment marker per backend binary, so these cases work against the
 // existing marker and restore the conformance token before they return.
@@ -852,7 +853,7 @@ func userContext(base context.Context, userID string) context.Context {
 }
 
 // systemContext carries the explicit system actor and no credential, so a
-// workspace it creates binds nobody (DEC-63(4)).
+// workspace it creates binds nobody (DEC-75(4)).
 func systemContext(base context.Context) context.Context {
 	return store.WithActor(base, store.Actor{ID: "system", Role: core.ActorSystem})
 }
@@ -878,7 +879,7 @@ func memberWith(t *testing.T, st store.Backend, ctx context.Context, email, work
 
 // runInstanceAdministrationOwnerOnly proves that only the marker owner is the
 // instance-administration principal and that no workspace role confers it
-// (DEC-63(1)).
+// (DEC-75(1)).
 func runInstanceAdministrationOwnerOnly(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
@@ -911,9 +912,66 @@ func runInstanceAdministrationOwnerOnly(t *testing.T, x Fixture) {
 	}
 }
 
+// runWorkspaceCreatorAuthority proves the workspace-creator half of the
+// workspace-creation predicate on every backend: AuthorizeDeployment with
+// manage_workspace admits an active account holding an operator binding in
+// any workspace and nobody else, while AuthorizeInstanceAdministration stays
+// owner-only, and demoting or revoking the last operator binding withdraws
+// the right (req-accounts-and-membership AC-1.4; DEC-75(2)).
+func runWorkspaceCreatorAuthority(t *testing.T, x Fixture) {
+	st := x.Backend
+	ctx, owner := bootstrapOwner(t, x)
+	creator := func(userID string) bool {
+		t.Helper()
+		allowed, err := st.AuthorizeDeployment(ctx, userID, core.CapabilityManageWorkspace)
+		requireOK(t, err)
+		return allowed
+	}
+	if !creator(owner.ID) {
+		t.Fatal("marker owner holding an operator binding is not a workspace creator")
+	}
+	foreign := newForeignWorkspace(t, x, "creator")
+	foreignOperator := memberWith(t, st, ctx, "creator-foreign-operator-"+x.Workspace+"@example.test", foreign, core.WorkspaceRoleOperator)
+	if !creator(foreignOperator.ID) {
+		t.Fatal("operator of only another workspace is not a workspace creator")
+	}
+	members := map[core.WorkspaceRole]core.IdentityUser{}
+	for _, role := range []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleExecutor, core.WorkspaceRoleContributor, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator} {
+		members[role] = memberWith(t, st, ctx, "creator-"+string(role)+"-"+x.Workspace+"@example.test", x.Workspace, role)
+		if got, want := creator(members[role].ID), role == core.WorkspaceRoleOperator; got != want {
+			t.Fatalf("%s workspace creator=%t want %t", role, got, want)
+		}
+	}
+	for _, user := range []core.IdentityUser{foreignOperator, members[core.WorkspaceRoleOperator], members[core.WorkspaceRoleContributor]} {
+		if allowed, err := st.AuthorizeInstanceAdministration(ctx, user.ID); err != nil || allowed {
+			t.Fatalf("%s admitted as instance administrator=%t err=%v", user.Email, allowed, err)
+		}
+	}
+	for _, unknown := range []string{"", "usr_unknown_creator_" + x.Workspace} {
+		if creator(unknown) {
+			t.Fatalf("unknown account %q is a workspace creator", unknown)
+		}
+	}
+	// Demoting the last operator binding to maintainer withdraws the right.
+	_, err := st.GrantWorkspaceRole(ctx, members[core.WorkspaceRoleOperator].Email, x.Workspace, core.WorkspaceRoleMaintainer)
+	requireOK(t, err)
+	if creator(members[core.WorkspaceRoleOperator].ID) {
+		t.Fatal("demoted former operator is still a workspace creator")
+	}
+	// Revoking the last operator binding withdraws it too.
+	revoked := memberWith(t, st, ctx, "creator-revoked-"+x.Workspace+"@example.test", x.Workspace, core.WorkspaceRoleOperator)
+	if !creator(revoked.ID) {
+		t.Fatal("operator is not a workspace creator before revocation")
+	}
+	requireOK(t, st.RevokeWorkspaceRole(ctx, revoked.ID, x.Workspace))
+	if creator(revoked.ID) {
+		t.Fatal("revoked former operator is still a workspace creator")
+	}
+}
+
 // runBootstrapPreservesMembershipDecisions proves that an unchanged restart
 // and a rotation keep a demotion, a missing binding, and an exclusion
-// (DEC-63(3), DEC-63(4)).
+// (DEC-75(3), DEC-75(4)).
 func runBootstrapPreservesMembershipDecisions(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
@@ -966,7 +1024,7 @@ func runBootstrapPreservesMembershipDecisions(t *testing.T, x Fixture) {
 }
 
 // runBootstrapWorkspaceUsesDeploymentOwner proves the populated-registry half
-// of DEC-63(4): a later configured workspace binds nobody, and repeated
+// of DEC-75(4): a later configured workspace binds nobody, and repeated
 // initialization never rewrites a binding. The empty-registry half runs in
 // RunFreshDeploymentBootstrap.
 func runBootstrapWorkspaceUsesDeploymentOwner(t *testing.T, x Fixture) {
@@ -989,7 +1047,7 @@ func runBootstrapWorkspaceUsesDeploymentOwner(t *testing.T, x Fixture) {
 
 // runBootstrapOwnershipStable proves that a changed configured identity and a
 // rotation keep the marker owner and that an unchanged start is a no-op
-// (DEC-63(3)).
+// (DEC-75(3)).
 func runBootstrapOwnershipStable(t *testing.T, x Fixture) {
 	st := x.Backend
 	_, owner := bootstrapOwner(t, x)
@@ -1020,7 +1078,7 @@ func runBootstrapOwnershipStable(t *testing.T, x Fixture) {
 // runBootstrapMembershipSerialization holds bootstrap at its locked and
 // before-commit stages with channels while a demotion and an exclusion are
 // issued, in both orders, and proves no binding is restored. An error
-// injected before commit rolls back a rotation (DEC-63(4)).
+// injected before commit rolls back a rotation (DEC-75(4)).
 func runBootstrapMembershipSerialization(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
@@ -1115,12 +1173,13 @@ type FreshDeployment struct {
 	DeploymentEvents func(*testing.T, store.Backend, string) int
 }
 
-// RunFreshDeploymentBootstrap proves the empty-deployment rules of DEC-63 on
+// RunFreshDeploymentBootstrap proves the empty-deployment rules of DEC-75 on
 // one backend: the configured identity becomes the owner without a marker,
 // neither account age nor an operator binding selects it, the first workspace
 // of an empty registry binds only the owner, an owner without bindings is
 // the principal, a revoked deployment token fails while a new one is reissued
-// to the same owner, and a deactivated owner fails closed.
+// to the same owner, a deactivated owner fails closed, and a deactivated
+// operator loses the workspace-creator right while its binding remains.
 func RunFreshDeploymentBootstrap(t *testing.T, fresh FreshDeployment) {
 	t.Run("NoMarkerUsesConfiguredIdentity", func(t *testing.T) {
 		st := fresh.Open(t)
@@ -1237,6 +1296,48 @@ func RunFreshDeploymentBootstrap(t *testing.T, fresh FreshDeployment) {
 		}
 		if _, err := st.VerifyPersonalAccessToken(ctx, "fresh-two"); err == nil {
 			t.Fatal("deactivated owner's deployment token authenticates")
+		}
+	})
+	t.Run("DeactivatedOperatorLosesCreationAuthority", func(t *testing.T) {
+		st := fresh.Open(t)
+		ctx := systemContext(t.Context())
+		identity := config.FirstOperatorIdentity{OrganizationName: "Fresh", Email: "owner@example.test", DisplayName: "Owner"}
+		_, err := st.BootstrapIdentity(ctx, identity, "fresh-creator")
+		requireOK(t, err)
+		owner, err := st.VerifyPersonalAccessToken(ctx, "fresh-creator")
+		requireOK(t, err)
+		first := "fresh-creator-first"
+		seeded, err := st.BootstrapWorkspaceConfig(store.WithWorkspace(ctx, first), &config.Config{Workspace: first})
+		requireOK(t, err)
+		if !seeded {
+			t.Fatal("first workspace not seeded")
+		}
+		operator := memberWith(t, st, userContext(ctx, owner.ID), "fresh-creator-operator@example.test", first, core.WorkspaceRoleOperator)
+		check := func(userID string) (isOwner, isCreator bool) {
+			t.Helper()
+			isOwner, err := st.AuthorizeInstanceAdministration(ctx, userID)
+			requireOK(t, err)
+			isCreator, err = st.AuthorizeDeployment(ctx, userID, core.CapabilityManageWorkspace)
+			requireOK(t, err)
+			return isOwner, isCreator
+		}
+		if isOwner, isCreator := check(operator.ID); isOwner || !isCreator {
+			t.Fatalf("active operator owner=%t creator=%t, want false and true", isOwner, isCreator)
+		}
+		// Deactivation keeps the binding row and withdraws both checks
+		// (DEC-75(2)).
+		fresh.Deactivate(t, st, operator.ID)
+		if isOwner, isCreator := check(operator.ID); isOwner || isCreator {
+			t.Fatalf("deactivated operator owner=%t creator=%t", isOwner, isCreator)
+		}
+		members, err := st.ListWorkspaceMembers(ctx, owner.ID, first)
+		requireOK(t, err)
+		bound := false
+		for _, member := range members {
+			bound = bound || member.UserID == operator.ID
+		}
+		if !bound {
+			t.Fatalf("deactivation removed the operator binding: %+v", members)
 		}
 	})
 }

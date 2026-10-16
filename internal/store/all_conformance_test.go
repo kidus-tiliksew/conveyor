@@ -102,7 +102,7 @@ func conformanceWorkerExercise(st store.Store, cfg *config.Config) storetest.Wor
 	}
 }
 
-// TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-63 cases
+// TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-75 cases
 // against a new volatile backend per case (component-identity-membership).
 func TestMemoryFreshDeploymentBootstrap(t *testing.T) {
 	storetest.RunFreshDeploymentBootstrap(t, storetest.FreshDeployment{

@@ -153,7 +153,7 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 	owner, err := b.VerifyPersonalAccessToken(f.ctx, f.token)
 	must(t, err)
 	f.ctx = store.WithActor(store.WithCredential(f.ctx, core.AuthenticatedCredential{ID: "fixture-pat", Kind: core.CredentialUser, Scope: core.CredentialScopeUser, OwnerUserID: owner.ID}), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
-	// Bootstrap never heals bindings (DEC-63(4)) and the fixture workspace
+	// Bootstrap never heals bindings (DEC-75(4)) and the fixture workspace
 	// may predate the deployment owner, so the owner is granted explicitly.
 	if caller, callerErr := b.GetCallerIdentity(f.ctx, owner.ID, f.ws); callerErr != nil || caller.Role != core.WorkspaceRoleOperator {
 		_, err = b.GrantWorkspaceRole(f.ctx, owner.Email, f.ws, core.WorkspaceRoleOperator)

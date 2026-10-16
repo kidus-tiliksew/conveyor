@@ -357,7 +357,7 @@ func taskIntakeRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
 
 // workspaceNameRule claims the SQL-folded workspace name and checks rows
 // written before claims existed. The workspace-registry lock is acquired by
-// both public callers before writeRow (DEC-63(4), DEC-70).
+// both public callers before writeRow (DEC-75(4), DEC-70).
 func workspaceNameRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
 	if w.operation != "INSERT" {
 		return nil

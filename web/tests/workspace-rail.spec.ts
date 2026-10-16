@@ -8,12 +8,13 @@ const workspaces = [
   { id: 'funnel', name: 'Funnel', config_version: 1, created_at: '2026-07-20T00:00:00Z' },
 ]
 
-const refusal = "Your account can't create workspaces. Ask the instance administrator."
+const refusal =
+  'Creating a workspace requires being an operator of an existing workspace or the instance administrator.'
 
 // What an unscoped GET /v1/me serves. `status` answers a failure, and the
 // field is passed through as given so missing and malformed values can be
 // served on purpose.
-type UnscopedIdentity = { status?: number; can_create_workspaces?: unknown }
+type UnscopedIdentity = { status?: number; id?: string; email?: string; can_create_workspaces?: unknown }
 
 type ShellOptions = {
   // The caller's creation right on every read, scoped or unscoped, in the
@@ -153,6 +154,30 @@ test('workspace rail uses Slack-like tiles and preserves switching and creation'
   const dialog = page.getByRole('dialog', { name: 'Create workspace' })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByLabel('Name')).toBeVisible()
+})
+
+// DEC-75(2): an operator of any workspace may create workspaces, not only
+// the deployment owner. The browser still trusts the served boolean alone.
+test('nonowner workspace operator with the creation right sees Add workspace', async ({ page }) => {
+  await installQueryClientProbe(page)
+  const unscopedRead = page.waitForResponse(isUnscopedIdentityResponse)
+  await mockShell(page, {
+    canCreate: true,
+    unscoped: () => ({ id: 'usr_nonowner_operator', email: 'nonowner@example.test', can_create_workspaces: true }),
+  })
+  await page.goto('/')
+  const served = await (await unscopedRead).json()
+  expect(served.id).toBe('usr_nonowner_operator')
+  expect(served.can_create_workspaces).toBe(true)
+  await expect.poll(() => creationQueryStatus(page)).toBe('success')
+
+  const add = page.getByRole('navigation', { name: 'Workspaces' }).getByRole('link', { name: 'Add workspace' })
+  await expect(add).toBeVisible()
+  await add.click()
+  await expect(page).toHaveURL(/\/workspaces\/new$/)
+  const dialog = page.getByRole('dialog', { name: 'Create workspace' })
+  await expect(dialog.getByLabel('Name')).toBeVisible()
+  await expect(dialog.getByText(refusal)).toHaveCount(0)
 })
 
 test('workspace operator without the creation right sees no Add workspace', async ({ page }) => {

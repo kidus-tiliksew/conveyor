@@ -192,7 +192,7 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, name string) (
 // deployment_credential marker. A live marker keeps its owner across restart,
 // configuration change, and rotation; without a marker the configured first
 // operator becomes the owner. It never writes a workspace binding, so
-// demotions and exclusions survive every restart (DEC-63(3), DEC-63(4)).
+// demotions and exclusions survive every restart (DEC-75(3), DEC-75(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	email, err := normalizeIdentityEmail(identity.Email)
 	if err != nil {
@@ -258,7 +258,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 		ownerID := userID
 		if marked {
 			// A revoked marker keeps its owner; the new deployment token is
-			// reissued to the same account (DEC-63(3)).
+			// reissued to the same account (DEC-75(3)).
 			if _, err = writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "UPDATE", values: map[string]any{"label": "retired legacy API token", "deployment_credential": false}, where: map[string]any{"id": id}}); err != nil {
 				return translateBackendConflict(err)
 			}

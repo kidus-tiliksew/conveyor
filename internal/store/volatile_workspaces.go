@@ -121,7 +121,7 @@ func (m *volatileMemory) BootstrapWorkspaceConfig(_ context.Context, cfg *config
 	m.workspaces[cfg.Workspace] = workspaceRecord{Workspace: core.Workspace{ID: cfg.Workspace, Name: cfg.Workspace, ConfigVersion: 1, CreatedAt: now}, ConfigYAML: string(configYAML)}
 	m.upsertReposLocked(cfg.Workspace, cfg.Repos)
 	// Only the first workspace of an empty registry binds the deployment
-	// marker's owner; an established registry binds nobody (DEC-63(4)).
+	// marker's owner; an established registry binds nobody (DEC-75(4)).
 	if owner, active := m.deploymentOwnerLocked(); emptyRegistry && active {
 		key := memoryScopedKey{workspace: cfg.Workspace, id: owner}
 		if _, bound := m.memberships[key]; !bound {

@@ -192,7 +192,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	// Seeding serializes with BootstrapIdentity so the empty-registry check,
-	// the marker-owner lookup, and the insertion are atomic (DEC-63(4)).
+	// the marker-owner lookup, and the insertion are atomic (DEC-75(4)).
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('conveyor:identity-bootstrap'))"); err != nil {
 		return false, err
 	}
@@ -247,7 +247,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		// Startup bootstraps identity before the configured workspace. Only
 		// the first workspace of an empty registry binds the active owner of
 		// the deployment marker; an established registry, or a deployment
-		// without a marker, binds nobody (DEC-63(4)). Historical migration
+		// without a marker, binds nobody (DEC-75(4)). Historical migration
 		// tests intentionally stop before the bindings table (084) or the
 		// marker column, so both are probed first.
 		var membershipSchema bool
@@ -326,8 +326,10 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 				return err
 			}
 		}
-		// Workspace creation is instance administration. Its authenticated
-		// creator receives the initial operator binding atomically.
+		// The HTTP route admits the instance-administration principal or a
+		// workspace creator (an active operator of any workspace). Either
+		// authenticated creator receives the initial operator binding of this
+		// workspace atomically, and no binding elsewhere (DEC-75(4)).
 		if credential, ok := store.CredentialFromContext(ctx); ok {
 			if _, err := tx.Exec(ctx, `INSERT INTO workspace_role_bindings(workspace_id,user_id,role) VALUES($1,$2,'operator')`, id, credential.OwnerUserID); err != nil {
 				return err

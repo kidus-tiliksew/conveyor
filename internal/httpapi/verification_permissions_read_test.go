@@ -49,7 +49,7 @@ func newPermissionRouteFixture(t *testing.T) *permissionRouteFixture {
 	}
 	f.ownerID = owner.ID
 	f.operator = f.user(owner.ID)
-	// Bootstrap never writes bindings (DEC-63(4)); the fixture grants the
+	// Bootstrap never writes bindings (DEC-75(4)); the fixture grants the
 	// deployment owner's workspace binding explicitly.
 	if _, err = b.GrantWorkspaceRole(f.operator, owner.Email, "demo", core.WorkspaceRoleOperator); err != nil {
 		t.Fatal(err)

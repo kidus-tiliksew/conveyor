@@ -30,7 +30,7 @@ type membershipFixture struct {
 	invitationList  []string
 	invitationsErr  error
 	// instanceAdmins names the deployment marker owners; instanceAdminErr
-	// fails the instance-administration authority (DEC-63).
+	// fails the instance-administration authority (DEC-75).
 	instanceAdmins   map[string]bool
 	instanceAdminErr error
 	instanceCalls    int
@@ -127,7 +127,7 @@ func (f *membershipFixture) RevokeWorkspaceRole(context.Context, string, string)
 	return f.revokeErr
 }
 
-// DEC-63(2), DEC-63(5), DEC-63(6): only the deployment owner's own user
+// DEC-75(2), DEC-75(5), DEC-75(6): only the deployment owner's own user
 // credential provisions; a nonowner human gets the uniform 404 and execution
 // credentials keep the 401 credential-class refusal.
 func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
@@ -224,7 +224,7 @@ func TestProvisionIdentityUserClassifiesValidationAndStoreFailures(t *testing.T)
 
 	fixture.provisionErr = errors.New(provisionedAccountDeactivatedError)
 	response := call(`{"email":"user@example.test","display_name":"User"}`)
-	// A deactivated account is an acknowledged no-op (DEC-63(6)).
+	// A deactivated account is an acknowledged no-op (DEC-75(6)).
 	if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
 		t.Fatalf("deactivated status=%d body=%q", response.Code, response.Body.String())
 	}

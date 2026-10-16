@@ -373,16 +373,21 @@ func creationRightRequest(server *Server, method, httpMethod, target, header, bo
 }
 
 // TestCallerIdentityCanCreateWorkspaces proves every successful /v1/me read
-// serves the caller's own creation right from the instance-administration
-// authority, identically for unscoped, query-scoped, and header-scoped reads
-// under a personal access token and a dashboard session, without changing the
-// role projection (component-identity-membership; req-accounts-and-membership
-// REQ-4, AC-1.3, AC-5.1).
+// serves the caller's own creation right: the deployment owner and an active
+// operator of any workspace read true and a contributor-only account reads
+// false, identically for unscoped, query-scoped, and header-scoped reads
+// under a personal access token and a dashboard session. An account that is
+// contributor in the selected workspace and operator in another reads true,
+// so the right never follows the selected workspace. The role projection is
+// unchanged (component-identity-membership; req-accounts-and-membership
+// REQ-4, AC-1.4, AC-5.1; DEC-75(2)).
 func TestCallerIdentityCanCreateWorkspaces(t *testing.T) {
 	t.Parallel()
 	bindings := map[string]map[string]core.WorkspaceRole{
 		"usr-owner":         {"demo": core.WorkspaceRoleViewer},
 		"usr-operator":      {"demo": core.WorkspaceRoleOperator},
+		"usr-contributor":   {"demo": core.WorkspaceRoleContributor},
+		"usr-mixed":         {"demo": core.WorkspaceRoleContributor, "other": core.WorkspaceRoleOperator},
 		"usr-unbound-owner": {},
 	}
 	admins := map[string]bool{"usr-owner": true, "usr-unbound-owner": true}
@@ -394,7 +399,7 @@ func TestCallerIdentityCanCreateWorkspaces(t *testing.T) {
 	for _, caller := range []struct {
 		id   string
 		want bool
-	}{{"usr-owner", true}, {"usr-operator", false}, {"usr-unbound-owner", true}} {
+	}{{"usr-owner", true}, {"usr-operator", true}, {"usr-contributor", false}, {"usr-mixed", true}, {"usr-unbound-owner", true}} {
 		for _, method := range []string{"pat", "session"} {
 			t.Run(caller.id+"/"+method, func(t *testing.T) {
 				t.Parallel()
@@ -435,8 +440,10 @@ func TestCallerIdentityCanCreateWorkspaces(t *testing.T) {
 }
 
 // TestCallerIdentityCanCreateWorkspacesFailsClosed proves the field is an
-// explicit false without a membership authority, an authority error answers
-// the generic 500 without its text, and a store value never grants the right.
+// explicit false without a membership authority, an owner-check error answers
+// the generic 500 without its text and never reaches the workspace-creator
+// check, a workspace-creator-check error answers the same 500, and a store
+// value never grants the right (DEC-75(2), DEC-75(5)).
 func TestCallerIdentityCanCreateWorkspacesFailsClosed(t *testing.T) {
 	t.Parallel()
 	bindings := map[string]map[string]core.WorkspaceRole{"usr-operator": {"demo": core.WorkspaceRoleOperator}}
@@ -447,19 +454,35 @@ func TestCallerIdentityCanCreateWorkspacesFailsClosed(t *testing.T) {
 	}
 
 	const detail = "instance authority unreachable: secret-dsn"
-	failing := &membershipFixture{roles: bindings, instanceAdminErr: errors.New(detail)}
-	for _, method := range []string{"pat", "session"} {
-		server := creationRightServer(&boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings}, failing, "usr-operator", method)
-		for _, target := range []string{"/v1/me", "/v1/me?workspace_id=demo"} {
-			response := creationRightRequest(server, method, http.MethodGet, target, "", "")
-			if response.Code != http.StatusInternalServerError || response.Body.String() != "internal server error\n" || strings.Contains(response.Body.String(), "secret") {
-				t.Fatalf("%s %s status=%d body=%q", method, target, response.Code, response.Body.String())
+	for _, failing := range []struct {
+		name      string
+		authority *membershipFixture
+	}{
+		{"owner check", &membershipFixture{roles: bindings, instanceAdminErr: errors.New(detail)}},
+		{"creator check", &membershipFixture{roles: bindings, instanceAdmins: map[string]bool{}, authorizeErrs: map[core.Capability]error{core.CapabilityManageWorkspace: errors.New(detail)}}},
+	} {
+		for _, method := range []string{"pat", "session"} {
+			server := creationRightServer(&boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings}, failing.authority, "usr-operator", method)
+			for _, target := range []string{"/v1/me", "/v1/me?workspace_id=demo"} {
+				response := creationRightRequest(server, method, http.MethodGet, target, "", "")
+				if response.Code != http.StatusInternalServerError || response.Body.String() != "internal server error\n" || strings.Contains(response.Body.String(), "secret") {
+					t.Fatalf("%s %s %s status=%d body=%q", failing.name, method, target, response.Code, response.Body.String())
+				}
 			}
 		}
 	}
+	// An owner-check error never falls through to the workspace-creator
+	// check, which would otherwise grant this operator the right.
+	ownerFailure := &membershipFixture{roles: bindings, instanceAdminErr: errors.New(detail)}
+	server := creationRightServer(&boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings}, ownerFailure, "usr-operator", "pat")
+	creationRightRequest(server, "pat", http.MethodGet, "/v1/me", "", "")
+	if ownerFailure.instanceCalls != 1 || slices.Contains(ownerFailure.capabilityCalls, core.CapabilityManageWorkspace) {
+		t.Fatalf("owner-check error consulted instance=%d capabilities=%v", ownerFailure.instanceCalls, ownerFailure.capabilityCalls)
+	}
 
-	stale := &boundCallerIdentityFixture{Store: store.NewMemory(), roles: bindings, storeCanCreate: true}
-	server := creationRightServer(stale, &membershipFixture{roles: bindings, instanceAdmins: map[string]bool{}}, "usr-operator", "session")
+	contributor := map[string]map[string]core.WorkspaceRole{"usr-contributor": {"demo": core.WorkspaceRoleContributor}}
+	stale := &boundCallerIdentityFixture{Store: store.NewMemory(), roles: contributor, storeCanCreate: true}
+	server = creationRightServer(stale, &membershipFixture{roles: contributor, instanceAdmins: map[string]bool{}}, "usr-contributor", "session")
 	for _, target := range []string{"/v1/me", "/v1/me?workspace_id=demo"} {
 		if got := decodeCallerIdentityProjection(t, creationRightRequest(server, "session", http.MethodGet, target, "", "")).creationRight(t); got {
 			t.Fatalf("%s served a store-returned creation right", target)
@@ -469,15 +492,21 @@ func TestCallerIdentityCanCreateWorkspacesFailsClosed(t *testing.T) {
 
 // TestOwnDisplayNameCanCreateWorkspaces proves PUT /v1/me, which returns the
 // same CallerIdentity shape, computes the creation right with the same
-// predicate before writing, and writes nothing on an authority error.
+// predicate before writing, and writes nothing on an authority error. The
+// owner and a nonowner operator read true and a contributor-only account
+// reads false (DEC-75(2)).
 func TestOwnDisplayNameCanCreateWorkspaces(t *testing.T) {
 	t.Parallel()
+	roles := map[string]map[string]core.WorkspaceRole{
+		"usr-operator":    {"demo": core.WorkspaceRoleOperator},
+		"usr-contributor": {"demo": core.WorkspaceRoleContributor},
+	}
 	for _, caller := range []struct {
 		id   string
 		want bool
-	}{{"usr-owner", true}, {"usr-operator", false}} {
+	}{{"usr-owner", true}, {"usr-operator", true}, {"usr-contributor", false}} {
 		identities := &boundCallerIdentityFixture{Store: store.NewMemory(), storeCanCreate: !caller.want}
-		server := creationRightServer(identities, &membershipFixture{instanceAdmins: map[string]bool{"usr-owner": true}}, caller.id, "session")
+		server := creationRightServer(identities, &membershipFixture{roles: roles, instanceAdmins: map[string]bool{"usr-owner": true}}, caller.id, "session")
 		response := creationRightRequest(server, "session", http.MethodPut, "/v1/me", "", `{"display_name":"Renamed"}`)
 		body := decodeCallerIdentityProjection(t, response)
 		if got := body.creationRight(t); got != caller.want || identities.displayName != "Renamed" {
