@@ -1,12 +1,12 @@
 import { Download, FileText, Image as ImageIcon, Paperclip, Video, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { downloadArtifact, fetchArtifactObjectURL } from '../../lib/api'
 import type { Artifact } from '../../lib/types'
 import { absoluteTime, cn, formatBytes } from '../../lib/utils'
-import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Card, CardContent, CardHeader } from '../ui/card'
 import { Dialog } from '../ui/dialog'
+import { SectionHeading } from './section-heading'
 
 function isImage(contentType: string) {
   return contentType.startsWith('image/')
@@ -56,31 +56,63 @@ function useMediaPreviews(attachments: Artifact[]) {
   return { urls, failed }
 }
 
-// The attachments section: operator-supplied task files previewed
-// as small tiles directly below the spec, each expandable in-place. Omitted
-// entirely when the task carries no attachments.
+// Tile track: a 7rem minimum column and the 0.75rem gap between tiles.
+const tileMinWidth = 112
+const tileGap = 12
+
+// How many tiles fit on one row of the list, measured from the list's own
+// width so the card fits the sheet and the full route alike.
+function useRowCapacity(signature: string) {
+  const listRef = useRef<HTMLUListElement>(null)
+  const [capacity, setCapacity] = useState(Number.POSITIVE_INFINITY)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    const measure = () => setCapacity(Math.max(1, Math.floor((list.clientWidth + tileGap) / (tileMinWidth + tileGap))))
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [signature])
+  return { listRef, capacity }
+}
+
+// The attachments section: operator-supplied task files previewed as small
+// tiles directly below the spec, each expandable in-place. The card opens on
+// one row; "+N more" reveals the rest in place (component-web-task-surfaces,
+// Task detail composition). Omitted entirely when the task carries no
+// attachments.
 export function AttachmentsCard({ attachments, title = 'Attachments' }: { attachments: Artifact[]; title?: string }) {
   const { urls, failed } = useMediaPreviews(attachments)
+  const signature = attachments.map((attachment) => attachment.id).join(',')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
+  const { listRef, capacity } = useRowCapacity(signature)
   const expanded = useMemo(
     () => attachments.find((attachment) => attachment.id === expandedId) ?? null,
     [attachments, expandedId],
   )
+  // A different set of attachments starts collapsed again.
+  const [shownFor, setShownFor] = useState(signature)
+  if (shownFor !== signature) {
+    setShownFor(signature)
+    setShowAll(false)
+  }
 
   if (attachments.length === 0) return null
+  const overflow = !showAll && attachments.length > capacity
+  const visible = overflow ? attachments.slice(0, capacity - 1) : attachments
+  const hidden = attachments.length - visible.length
 
   return (
-    <Card>
+    <Card className="rounded-lg">
       <CardHeader className="items-center">
-        <div className="flex items-center gap-2">
-          <CardTitle>{title}</CardTitle>
-          <Badge variant="mono">{attachments.length}</Badge>
-        </div>
+        <SectionHeading count={attachments.length}>{title}</SectionHeading>
       </CardHeader>
       <CardContent className="py-4">
-        <ul className="flex flex-wrap gap-3">
-          {attachments.map((attachment) => (
-            <li key={attachment.id}>
+        <ul ref={listRef} className="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-3">
+          {visible.map((attachment) => (
+            <li key={attachment.id} className="min-w-0">
               <AttachmentTile
                 attachment={attachment}
                 previewURL={urls[attachment.id]}
@@ -89,7 +121,29 @@ export function AttachmentsCard({ attachments, title = 'Attachments' }: { attach
               />
             </li>
           ))}
+          {overflow && (
+            <li className="min-w-0">
+              <button
+                type="button"
+                aria-expanded={false}
+                onClick={() => setShowAll(true)}
+                className="grid h-full min-h-[7.5rem] w-full place-items-center rounded-md border border-dashed border-edge text-sm font-medium text-muted transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                +{hidden} more
+              </button>
+            </li>
+          )}
         </ul>
+        {showAll && attachments.length > capacity && (
+          <button
+            type="button"
+            aria-expanded
+            onClick={() => setShowAll(false)}
+            className="mt-3 text-xs font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
+          >
+            Show fewer
+          </button>
+        )}
       </CardContent>
       {expanded && (
         <AttachmentDialog
@@ -122,7 +176,7 @@ function AttachmentTile({
       onClick={onExpand}
       title={attachment.name}
       aria-label={`Expand ${attachment.name}`}
-      className="group flex w-28 flex-col overflow-hidden rounded-md border border-border bg-surface text-left transition-colors hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      className="group flex w-full flex-col overflow-hidden rounded-md border border-border bg-surface text-left transition-colors hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
     >
       <div className="grid h-20 w-full place-items-center overflow-hidden border-b border-border bg-raised/40">
         {image && previewURL ? (

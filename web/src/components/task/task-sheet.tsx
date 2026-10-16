@@ -33,7 +33,9 @@ export function TaskSheet({ taskId }: { taskId: string }) {
       <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
         {/* The title takes whatever width the fixed-size controls leave and
             truncates; the controls never shrink under their own content. */}
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted">{item?.task.title}</span>
+        {/* A 10rem basis keeps the title readable: the controls wrap before
+            they squeeze it. */}
+        <span className="min-w-0 flex-1 basis-40 truncate text-sm font-medium text-muted">{item?.task.title}</span>
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}
         <LineageExplorer type="task" id={taskId} />

@@ -15,7 +15,7 @@ import { Disclosure } from '../ui/disclosure'
 export function ExecutionStatusLine({ state }: { state: CurrentExecutionState }) {
   const paused = state.status === 'paused'
   return (
-    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+    <p className="flex items-center gap-1.5 text-xs font-semibold text-muted">
       {paused ? (
         <AlertTriangle className="size-3.5 shrink-0 text-attention" aria-hidden />
       ) : (

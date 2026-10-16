@@ -719,9 +719,153 @@ const runningDetail = {
   verification_evidence: [],
 }
 
+// The merged shape task 261016-6ea120 measures: an approved plan, seven
+// context documents, nine attachments, and a review that sent the work back
+// once before approving (component-web-task-surfaces, Task detail
+// composition).
+const mergedID = 'task-260731-merged01'
+const retarget = <T extends { task_id?: string }>(record: T): T => ({ ...record, task_id: mergedID })
+const reviewSeat = (id: string, job: string, round: number, seat: number, model: string) => ({
+  ...gateDetail.work_orders[1],
+  id,
+  task_id: mergedID,
+  job_id: job,
+  review_round: round,
+  review_seat: seat,
+  model,
+})
+const reviewJob = (id: string, harness: string, model: string, start: number, end: number) => ({
+  ...gateDetail.jobs[3],
+  id,
+  task_id: mergedID,
+  harness,
+  model_tier: model,
+  started_at: ago(start),
+  ended_at: ago(end),
+})
+const reviewEvent = (
+  id: number,
+  order: string,
+  job: string,
+  round: number,
+  seat: number,
+  verdict: string,
+  at: number,
+) => ({
+  id,
+  task_id: mergedID,
+  job_id: job,
+  kind: 'review.completed',
+  actor_id: 'worker',
+  actor_role: 'runner',
+  payload: {
+    review_work_order_id: order,
+    review_round: round,
+    verdict,
+    summary: verdict === 'approve' ? 'Approved' : 'Changes requested',
+    feedback:
+      verdict === 'approve'
+        ? 'The round-one gaps are closed.'
+        : 'Add the shared conformance cases for masked gates before resubmitting.',
+    review_seat: seat,
+  },
+  at: ago(at),
+})
+const mergedDetail = {
+  ...gateDetail,
+  task: {
+    ...gateDetail.task,
+    id: mergedID,
+    state: 'merged',
+    title: 'Add Task Detail Flow Tab and Correct Task Flow Projection',
+    branch: `conveyor/${mergedID}`,
+    context: {
+      requirements: [{ id: 'req-operator-next-action', title: 'Operator next action and inbox', version: 7 }],
+      designs: [
+        ['component-http-api', 'HTTP API: router, credential middleware, and task surfaces', 47],
+        ['component-verification-strategy', 'Testing strategy', 31],
+        ['component-web-dashboard', 'Web dashboard: shell, contract layer, and settings', 31],
+        ['component-web-task-surfaces', 'Web task surfaces: board, tasks, and task detail', 13],
+        ['feature-bounded-automatic-recovery', 'Bounded automatic recovery', 3],
+        ['feature-operator-next-action', 'Operator next action, inbox, and task flow', 14],
+      ].map(([id, title, version]) => ({ id, title, version })),
+    },
+  },
+  needs_attention: false,
+  merge_readiness: undefined,
+  verification_evidence: [],
+  attachments: Array.from({ length: 9 }, (_, index) => ({
+    id: `merged-attachment-${index + 1}`,
+    workspace: 'conveyor',
+    name: `${index < 3 ? 'mockup' : 'prototype'}-${index + 1}.png`,
+    content_type: 'image/png',
+    size_bytes: 120_000 + index * 4096,
+    role: 'task_context',
+    task_id: mergedID,
+    created_at: ago(600),
+  })),
+  spec: { ...gateDetail.spec, task_id: mergedID },
+  interventions: gateDetail.interventions.map(retarget),
+  jobs: [
+    ...gateDetail.jobs.slice(0, 3).map(retarget),
+    reviewJob('j-r1-1', 'codex', 'gpt-5.6-sol', 170, 160),
+    { ...gateDetail.jobs[2], id: 'j-impl-2', task_id: mergedID, started_at: ago(150), ended_at: ago(125) },
+    reviewJob('j-r2-1', 'codex', 'gpt-5.6-sol', 120, 104),
+  ],
+  work_orders: [
+    { ...gateDetail.work_orders[0], task_id: mergedID },
+    reviewSeat('wo-r1-1', 'j-r1-1', 1, 1, 'gpt-5.6-sol'),
+    { ...gateDetail.work_orders[0], id: 'wo-impl-2', task_id: mergedID, job_id: 'j-impl-2' },
+    reviewSeat('wo-r2-1', 'j-r2-1', 2, 1, 'gpt-5.6-sol'),
+  ],
+  events: [
+    ...gateDetail.events.slice(0, 7).map(retarget),
+    reviewEvent(20, 'wo-r1-1', 'j-r1-1', 1, 1, 'changes_requested', 160),
+    {
+      id: 21,
+      task_id: mergedID,
+      kind: 'review.round_completed',
+      actor_id: 'system',
+      actor_role: 'system',
+      payload: { review_round: 1, verdict: 'changes_requested', reviews: [{ review_work_order_id: 'wo-r1-1' }] },
+      at: ago(159),
+    },
+    {
+      id: 22,
+      task_id: mergedID,
+      kind: 'pipeline.bounced',
+      actor_id: 'system',
+      actor_role: 'system',
+      payload: { from: 'review', to: 'implement', count: 1, review_round: 1, source: 'review' },
+      at: ago(158),
+    },
+    {
+      id: 23,
+      task_id: mergedID,
+      job_id: 'j-impl-2',
+      kind: 'job.summary',
+      actor_id: 'claude',
+      actor_role: 'agent',
+      payload: { summary: 'Round 2 adds the shared conformance cases for masked gates; exact-head CI is green.' },
+      at: ago(125),
+    },
+    reviewEvent(24, 'wo-r2-1', 'j-r2-1', 2, 1, 'approve', 104),
+    {
+      id: 25,
+      task_id: mergedID,
+      kind: 'review.round_completed',
+      actor_id: 'system',
+      actor_role: 'system',
+      payload: { review_round: 2, verdict: 'approve', reviews: [{ review_work_order_id: 'wo-r2-1' }] },
+      at: ago(103),
+    },
+  ],
+}
+
 const details: Record<string, unknown> = {
   'task-260731-gate01': gateDetail,
   'task-260731-b31f47': runningDetail,
+  [mergedID]: mergedDetail,
 }
 
 async function mockAPIs(page: Page) {
@@ -820,3 +964,35 @@ for (const theme of ['light', 'dark'] as const) {
     await page.screenshot({ path: `${shots}/full-head-${theme}.png` })
   })
 }
+
+// On the merged shape the sheet's sections stay compact enough that the
+// Timeline tab starts within two panel heights of the top at 1440x1000
+// (task 261016-6ea120 exit criterion).
+test('the merged task shape keeps the Timeline tab within two sheet heights at 1440x1000', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await mockAPIs(page)
+  await page.goto(`/tasks/${mergedID}`)
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(sheet.getByRole('heading', { name: mergedDetail.task.title })).toBeVisible()
+  await expect.poll(() => sheet.evaluate((node) => node.getAnimations().length)).toBe(0)
+
+  // The shape is what the measurement claims.
+  await expect(sheet.getByRole('region', { name: 'Attached context' }).getByRole('listitem')).toHaveCount(7)
+  await expect(sheet.getByRole('heading', { name: 'Attachments 9' })).toBeVisible()
+  await expect(sheet.getByRole('heading', { name: /^Execution plan/ })).toBeVisible()
+  await expect(sheet.locator('[data-review-verdict]')).toHaveText(['Changes requested', 'Approved'])
+
+  const placement = await sheet.locator('.task-sheet-body').evaluate((body) => {
+    const tab = Array.from(body.querySelectorAll('[role="tab"]')).find(
+      (node) => node.textContent?.trim() === 'Timeline',
+    )
+    if (!tab) return null
+    return {
+      offset: tab.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop,
+      panel: body.clientHeight,
+    }
+  })
+  expect(placement).not.toBeNull()
+  expect(placement!.offset).toBeLessThan(2 * placement!.panel)
+  await page.screenshot({ path: `${shots}/sheet-merged-shape-light.png` })
+})

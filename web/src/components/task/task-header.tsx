@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
-  Bot,
   Check,
   ChevronDown,
   ChevronUp,
+  CircleDot,
   ExternalLink,
   GitBranch,
   GitPullRequest,
@@ -41,6 +41,7 @@ import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
 import { Input, Textarea } from '../ui/input'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { AssigneeChip } from './assignee-chip'
+import { SectionHeading } from './section-heading'
 import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 
 // The task-header facts: state badges,
@@ -114,7 +115,8 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
         ) : (
           blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>
         )}
-        {item.task.class && <Badge>{item.task.class}</Badge>}
+        {item.task.class && <Badge>{sentenceCase(item.task.class)}</Badge>}
+        <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
         {/* Controls sit apart from the status chips: a destructive action
             never belongs in the row the eye reads for state. */}
         {canOperate && <TaskActions key={item.task.id} item={item} variant={variant} />}
@@ -135,46 +137,136 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
           <p className="mt-1 whitespace-pre-wrap">{item.task.intake_operator_direction}</p>
         </section>
       )}
-      <Heading className={cn('font-semibold leading-snug tracking-tight', variant === 'full' ? 'text-xl' : 'text-lg')}>
-        {item.task.title}
-      </Heading>
+      <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
       {item.task.body && <TaskBody body={item.task.body} />}
 
       <dl
         className={cn(
-          'mt-5 grid grid-cols-[minmax(5.5rem,max-content)_minmax(0,1fr)] items-baseline gap-x-6 gap-y-2 text-[13px] leading-5',
+          'mt-5 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-2 border-y border-border py-3.5 text-[13px] leading-5',
           variant === 'full' &&
-            'lg:grid-cols-[minmax(5.5rem,max-content)_minmax(0,1fr)_minmax(5.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
+            'lg:grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)_minmax(6.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
         )}
       >
-        <Fact label="Repo" value={item.task.repo} />
-        <Fact
-          label="Created By"
-          startRow
-          value={
-            <>
-              <span title={creator.detail}>{creator.label}</span>
-              <span className="sr-only left-0"> ({creator.detail})</span>
-            </>
-          }
-        />
+        <Fact label="Repository" value={item.task.repo} />
         <Fact
           label="Branch"
           value={
-            <span className="inline-flex max-w-full items-baseline gap-1 font-mono">
-              <GitBranch className="size-3 shrink-0 translate-y-0.5 text-faint" />
+            <span className="inline-flex max-w-full items-center gap-1.5 font-mono text-xs">
+              <GitBranch aria-hidden className="size-3 shrink-0 text-faint" />
               <span className="truncate">{item.task.branch}</span>
               <span className="shrink-0 text-faint">← {item.task.base_branch}</span>
             </span>
           }
         />
-        <Fact label="Created" value={absoluteTime(item.task.created_at)} />
+        {prURL && (
+          <Fact
+            label="Pull request"
+            value={
+              <a
+                href={prURL}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex max-w-full items-center gap-1.5 hover:text-primary hover:underline"
+              >
+                <GitPullRequest aria-hidden className="size-3 shrink-0 text-faint" />
+                <span className="truncate">{forgeReference(prURL)}</span>
+                <ExternalLink aria-hidden className="size-3 shrink-0 text-faint" />
+              </a>
+            }
+          />
+        )}
+        {item.task.github && (
+          <Fact
+            label="Issue"
+            value={
+              item.task.github.issue_url ? (
+                <a
+                  href={item.task.github.issue_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex max-w-full items-center gap-1.5 hover:text-primary hover:underline"
+                >
+                  <CircleDot aria-hidden className="size-3 shrink-0 text-faint" />
+                  <span className="truncate">
+                    {item.task.github.repository}#{item.task.github.issue_number}
+                  </span>
+                  <ExternalLink aria-hidden className="size-3 shrink-0 text-faint" />
+                </a>
+              ) : (
+                `${item.task.github.state} · plan v${item.task.github.spec_version}`
+              )
+            }
+          />
+        )}
+        {(item.task.dependencies?.length ?? 0) > 0 && (
+          <Fact
+            label="Depends on"
+            value={
+              <span className="flex min-w-0 flex-col gap-1">
+                {item.task.dependencies!.map((dependency) => {
+                  const relation = dependencyRelationLabel(
+                    dependency.state,
+                    blockingIDs.has(dependency.id),
+                    unsatisfiableIDs.has(dependency.id),
+                  )
+                  return (
+                    // The title truncates on its own line; the relation is a
+                    // separate chip so it is never clipped with the title.
+                    <span key={dependency.id} className="flex min-w-0 items-center gap-2">
+                      <Link
+                        to={relatedRoute}
+                        params={{ taskId: dependency.id }}
+                        aria-label={`${dependency.title || dependency.id} · ${relation}`}
+                        className="min-w-0 truncate hover:text-primary hover:underline"
+                      >
+                        {dependency.title || dependency.id}
+                      </Link>
+                      <Badge
+                        variant={
+                          unsatisfiableIDs.has(dependency.id)
+                            ? 'attention'
+                            : dependency.state === 'merged'
+                              ? 'positive'
+                              : 'default'
+                        }
+                        className="shrink-0"
+                      >
+                        {relation}
+                      </Badge>
+                    </span>
+                  )
+                })}
+              </span>
+            }
+          />
+        )}
         {/* A labelled fact answers "who holds this?", so it says Unassigned
             rather than going blank — unlike the list rows and board cards,
             where absence is the answer. */}
         <Fact
           label="Assignee"
-          value={item.task.assignee ? <AssigneeChip assignee={item.task.assignee} /> : 'Unassigned'}
+          value={
+            item.task.assignee ? (
+              <AssigneeChip assignee={item.task.assignee} />
+            ) : (
+              <span className="text-muted">Unassigned</span>
+            )
+          }
+        />
+        <Fact
+          label="Created"
+          startRow
+          value={
+            <span className="inline-flex min-w-0 max-w-full items-baseline gap-1.5">
+              <span className="shrink-0">{absoluteTime(item.task.created_at)}</span>
+              <span className="min-w-0 truncate text-muted" data-task-creator>
+                by <span title={creator.detail}>{creator.label}</span>
+                {/* left-0 pins the absolutely positioned text inside the row so a
+                    long identity never widens the page. */}
+                <span className="sr-only left-0"> ({creator.detail})</span>
+              </span>
+            </span>
+          }
         />
         {item.task.parent_task_id && (
           <Fact
@@ -182,7 +274,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             value={
               // The parent is an intent artifact, not work, so this reference
               // leaves the task routes for the blueprint's canonical home,
-              // unlike dependencies below, which are tasks.
+              // unlike dependencies above, which are tasks.
               <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <Link
                   to="/blueprints/$taskId"
@@ -202,69 +294,6 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
             }
           />
         )}
-        {(item.task.dependencies?.length ?? 0) > 0 && (
-          <Fact
-            label="Dependencies"
-            value={
-              <span className="flex flex-wrap gap-x-2 gap-y-1">
-                {item.task.dependencies!.map((dependency) => (
-                  <Link
-                    key={dependency.id}
-                    to={relatedRoute}
-                    params={{ taskId: dependency.id }}
-                    className="text-primary hover:underline"
-                  >
-                    {dependency.title || dependency.id} ·{' '}
-                    {dependencyRelationLabel(
-                      dependency.state,
-                      blockingIDs.has(dependency.id),
-                      unsatisfiableIDs.has(dependency.id),
-                    )}
-                  </Link>
-                ))}
-              </span>
-            }
-          />
-        )}
-        {item.task.github && (
-          <Fact
-            label="Issue"
-            value={
-              item.task.github.issue_url ? (
-                <a
-                  href={item.task.github.issue_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
-                >
-                  <span className="truncate">
-                    {item.task.github.repository}#{item.task.github.issue_number}
-                  </span>
-                  <ExternalLink className="size-3 shrink-0" />
-                </a>
-              ) : (
-                `${item.task.github.state} · plan v${item.task.github.spec_version}`
-              )
-            }
-          />
-        )}
-        {prURL && (
-          <Fact
-            label="Pull request"
-            value={
-              <a
-                href={prURL}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
-              >
-                <GitPullRequest className="size-3 shrink-0" />
-                <span className="truncate">{prURL.replace(/^https:\/\/github\.com\//, '')}</span>
-                <ExternalLink className="size-3 shrink-0" />
-              </a>
-            }
-          />
-        )}
       </dl>
 
       {canOperate && unsatisfiableIDs.size > 0 && (
@@ -274,7 +303,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
       {(item.task.children?.length ?? 0) > 0 && (
         <section className="mt-5 rounded-md border border-border">
           <div className="flex items-baseline justify-between gap-3 border-b border-border px-3 py-2">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Blueprint tasks</h3>
+            <SectionHeading count={item.task.children!.length}>Blueprint tasks</SectionHeading>
             <span className="text-[11px] text-faint">{childRollup}</span>
           </div>
           <ul className="space-y-1.5 px-3 py-2.5">
@@ -630,8 +659,8 @@ function TaskBody({ body }: { body: string }) {
   return (
     <div className="mt-2 max-w-3xl">
       <div className="relative">
-        <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-40 overflow-hidden')}>
-          <MarkdownProse className="markdown-demoted text-sm text-muted">{body}</MarkdownProse>
+        <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-32 overflow-hidden')}>
+          <MarkdownProse className="markdown-demoted text-sm">{body}</MarkdownProse>
         </div>
         {hasOverflow && !expanded && (
           <div
@@ -647,7 +676,7 @@ function TaskBody({ body }: { body: string }) {
           aria-controls={viewportID}
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
-          className="mt-1 inline-flex items-center gap-1 rounded text-xs font-medium text-primary hover:underline focus-visible:outline-2 focus-visible:outline-primary"
+          className="mt-1 inline-flex items-center gap-1 rounded text-xs font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
         >
           {expanded ? (
             <ChevronUp aria-hidden="true" className="size-3.5" />
@@ -768,10 +797,22 @@ function AssigneeControl({ item, onClose }: { item: ActivityItem; onClose: () =>
 function Fact({ label, value, startRow }: { label: React.ReactNode; value: React.ReactNode; startRow?: boolean }) {
   return (
     <>
-      <dt className={cn('text-xs leading-5 text-faint', startRow && 'col-start-1')}>{label}</dt>
-      <dd className="min-w-0 truncate text-foreground/90">{value}</dd>
+      <dt className={cn('text-muted', startRow && 'col-start-1')}>{label}</dt>
+      <dd className="min-w-0 truncate text-foreground">{value}</dd>
     </>
   )
+}
+
+// "feature" reads as "Feature": badges speak in sentence case.
+function sentenceCase(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1).replaceAll('_', ' ')
+}
+
+// A GitHub pull-request URL reads as owner/repo#number; anything else keeps
+// its path.
+function forgeReference(url: string) {
+  const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url)
+  return match ? `${match[1]}#${match[2]}` : url.replace(/^https:\/\/github\.com\//, '')
 }
 
 // The agent prompt for the conveyor-work skill (req-agent-skills REQ-3) is the
@@ -786,26 +827,52 @@ function agentPrompt(item: ActivityItem, workspace: string): string {
   ].join('\n\n')
 }
 
-// One group, as wide as its parent up to 32rem, shows the whole prompt the copy
-// button copies. The prompt wraps with its blank line kept, and a long unbroken
-// token breaks anywhere rather than widening the group. It renders nothing
-// until the workspace selection resolves.
+// One row: the label, a one-line preview of the prompt, a toggle, and the copy
+// button. The toggle reveals the complete prompt the button copies, wrapped
+// with its blank line kept, and a long unbroken token breaks anywhere rather
+// than widening the row (component-web-task-surfaces, Agent prompt). It
+// renders nothing until the workspace selection resolves.
 function Checkout({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
+  const [open, setOpen] = useState(false)
+  const promptID = useId()
   if (item.checkout_available) {
     if (!workspace) return null
     const prompt = agentPrompt(item, workspace)
+    // The instruction is the informative half: the title already heads the page.
+    const preview = prompt.slice(prompt.indexOf('\n\n') + 2)
     return (
-      <div className="flex w-full max-w-lg min-w-0 flex-col rounded-md border border-border bg-surface">
-        <p className="border-b border-border px-2.5 py-1 text-[11px] text-faint">Prompt for AI Agents</p>
-        <div className="flex min-w-0 items-start gap-2 py-0.5 pl-2.5 pr-0.5">
-          <Bot className="mt-2 size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <code className="min-w-0 flex-1 py-1.5 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted">
-            {prompt}
-          </code>
+      <section aria-label="Agent prompt" className="w-full min-w-0 rounded-lg border border-border bg-surface">
+        <div className="flex min-w-0 items-center gap-2 py-1 pr-1 pl-3">
+          <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+          <span className="shrink-0 text-[13px] font-medium">Agent prompt</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] text-muted" data-agent-prompt-preview>
+            {preview}
+          </span>
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={promptID}
+            aria-label={open ? 'Hide agent prompt' : 'Show agent prompt'}
+            onClick={() => setOpen((value) => !value)}
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-faint hover:bg-raised hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
+          >
+            {open ? (
+              <ChevronUp className="size-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="size-3.5" aria-hidden="true" />
+            )}
+          </button>
           <CopyButton value={prompt} label="Copy agent prompt" />
         </div>
-      </div>
+        <code
+          id={promptID}
+          hidden={!open}
+          className="block border-t border-border px-3 py-2 font-mono text-[11px] leading-4 whitespace-pre-wrap wrap-anywhere text-muted"
+        >
+          {prompt}
+        </code>
+      </section>
     )
   }
   if (!item.checkout_guidance) return null

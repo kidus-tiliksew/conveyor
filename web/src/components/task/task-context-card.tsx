@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, X } from 'lucide-react'
+import { FileText, Target, X } from 'lucide-react'
 import { useState } from 'react'
-import { resolveTaskContextProposal, updateTaskContext } from '../../lib/api'
+import { updateTaskContext } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { TaskContext, TaskContextProposal, TaskState } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
@@ -11,6 +11,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
 import { Disclosure } from '../ui/disclosure'
+import { KindLabel, SectionHeading } from './section-heading'
 
 // The task's pinned authority: the confirmed outcomes and technical guidance
 // the factory serves to this task's sessions. Rows, not prose — the link is
@@ -73,22 +74,23 @@ export function TaskContextCard({
   return (
     <div className="space-y-3">
       {(requirements.length > 0 || designs.length > 0) && (
-        <section aria-label="Attached context" className="rounded-md border border-border bg-card">
-          <h3 className="border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-            Attached context
-          </h3>
-          <ul className="px-4 py-2">
+        <section aria-label="Attached context" className="rounded-lg border border-border bg-card">
+          <SectionHeading className="border-b border-border px-4 py-3" count={requirements.length + designs.length}>
+            Context
+          </SectionHeading>
+          <ul className="px-2 py-1.5">
             {requirements.map((item) => (
               <ContextRow
                 key={item.id}
                 kind="Outcome"
-                meta={`${item.id} · v${item.version}`}
+                version={item.version}
                 action={removeControl(item, 'requirement_ids')}
               >
                 <Link
                   to="/requirements"
                   search={{ requirement: item.id }}
-                  className="truncate text-primary hover:underline"
+                  aria-label={`${item.title} (${item.id})`}
+                  className="truncate text-foreground hover:text-primary hover:underline focus-visible:text-primary"
                 >
                   {item.title}
                 </Link>
@@ -106,13 +108,14 @@ export function TaskContextCard({
               <ContextRow
                 key={item.id}
                 kind="Guidance"
-                meta={`${item.id} · v${item.version}`}
+                version={item.version}
                 action={removeControl(item, 'system_design_ids')}
               >
                 <Link
                   to="/system-design"
                   search={{ document: item.id }}
-                  className="truncate text-primary hover:underline"
+                  aria-label={`${item.title} (${item.id})`}
+                  className="truncate text-foreground hover:text-primary hover:underline focus-visible:text-primary"
                 >
                   {item.title}
                 </Link>
@@ -155,94 +158,41 @@ export function TaskContextCard({
           </div>
         </Dialog>
       )}
-      {proposals.length > 0 && <SuggestedContextCard taskId={taskId} proposals={proposals} />}
+      {proposals.length > 0 && <SuggestedContextCard proposals={proposals} />}
     </div>
   )
 }
 
-function SuggestedContextCard({ taskId, proposals }: { taskId: string; proposals: TaskContextProposal[] }) {
-  const canOperate = useWorkspaceCapability('operate_gates')
-  const { workspace } = useWorkspaceSelection()
-  const client = useQueryClient()
-  const resolve = useMutation({
-    mutationFn: ({ proposal, action }: { proposal: TaskContextProposal; action: 'confirm' | 'dismiss' }) =>
-      resolveTaskContextProposal(taskId, proposal.target_kind, proposal.target_id, action),
-    onSuccess: async () => {
-      await Promise.all([
-        client.invalidateQueries({ queryKey: ['task', workspace, taskId] }),
-        client.invalidateQueries({ queryKey: ['activity'] }),
-        client.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
-      ])
-    },
-  })
-
+// Triage's (or an operator's) suggestions, informational only: the
+// next-action card's server choices are the one place each suggestion is
+// attached or dismissed (component-web-task-surfaces, Next-action card).
+function SuggestedContextCard({ proposals }: { proposals: TaskContextProposal[] }) {
   return (
-    <section aria-label="Suggested context" className="rounded-md border border-border bg-card">
-      <div className="border-b border-border px-4 py-2.5">
-        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Suggested context</h3>
-        <p className="mt-1 text-xs text-faint">Review documents suggested for this task.</p>
+    <section aria-label="Suggested context" className="rounded-lg border border-border bg-card">
+      <div className="border-b border-border px-4 py-3">
+        <SectionHeading count={proposals.length}>Suggested context</SectionHeading>
+        <p className="mt-0.5 text-xs text-muted">Attach or dismiss each suggestion from the next-action card.</p>
       </div>
       <ul className="divide-y divide-border">
         {proposals.map((proposal) => {
-          const key = `${proposal.target_kind}:${proposal.target_id}`
-          const active =
-            resolve.variables != null &&
-            `${resolve.variables.proposal.target_kind}:${resolve.variables.proposal.target_id}` === key
+          const requirement = proposal.target_kind === 'requirement'
+          const Icon = requirement ? Target : FileText
           return (
-            <li key={key} className="px-4 py-3 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge>{proposal.target_kind === 'requirement' ? 'Outcome' : 'Guidance'}</Badge>
-                <Badge variant="mono">From {sourceLabel(proposal.source)}</Badge>
+            <li key={`${proposal.target_kind}:${proposal.target_id}`} className="px-4 py-3 text-sm">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <Icon aria-hidden className={requirement ? 'size-3.5 text-primary' : 'size-3.5 text-faint'} />
+                <Link
+                  to={requirement ? '/requirements' : '/system-design'}
+                  search={requirement ? { requirement: proposal.target_id } : { document: proposal.target_id }}
+                  aria-label={`${proposal.target_title} (${proposal.target_id})`}
+                  className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere] hover:text-primary hover:underline"
+                >
+                  {proposal.target_title}
+                </Link>
+                <KindLabel>{requirement ? 'Outcome' : 'Guidance'}</KindLabel>
+                <KindLabel>· From {sourceLabel(proposal.source)}</KindLabel>
               </div>
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                {proposal.target_kind === 'requirement' ? (
-                  <Link
-                    to="/requirements"
-                    search={{ requirement: proposal.target_id }}
-                    className="font-medium text-primary hover:underline"
-                  >
-                    {proposal.target_title}
-                  </Link>
-                ) : (
-                  <Link
-                    to="/system-design"
-                    search={{ document: proposal.target_id }}
-                    className="font-medium text-primary hover:underline"
-                  >
-                    {proposal.target_title}
-                  </Link>
-                )}
-                <span className="font-mono text-[11px] text-faint">{proposal.target_id}</span>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-muted">{proposal.justification}</p>
-              {resolve.error && active && (
-                <p className="mt-2 text-xs text-failure">
-                  {errorMessage(resolve.error, 'Could not resolve this suggestion.')}
-                </p>
-              )}
-              {canOperate && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    disabled={resolve.isPending}
-                    onClick={() => resolve.mutate({ proposal, action: 'confirm' })}
-                  >
-                    <Check />
-                    {active && resolve.isPending && resolve.variables?.action === 'confirm'
-                      ? 'Confirming…'
-                      : 'Attach context'}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    disabled={resolve.isPending}
-                    onClick={() => resolve.mutate({ proposal, action: 'dismiss' })}
-                  >
-                    <X />
-                    {active && resolve.isPending && resolve.variables?.action === 'dismiss' ? 'Dismissing…' : 'Dismiss'}
-                  </Button>
-                </div>
-              )}
+              <p className="mt-1 pl-5.5 text-[13px] leading-5 text-muted">{proposal.justification}</p>
             </li>
           )
         })}
@@ -259,30 +209,28 @@ function sourceLabel(source: TaskContextProposal['source']) {
 
 function ContextRow({
   kind,
-  meta,
+  version,
   action,
   children,
 }: {
-  kind: string
-  meta: string
+  kind: 'Outcome' | 'Guidance'
+  version: number
   action: React.ReactNode
   children: React.ReactNode
 }) {
+  const Icon = kind === 'Outcome' ? Target : FileText
   return (
-    // Below sm the kind label is its own column and the document's ID and
-    // version sit under its title rather than wrapping to a detached line.
-    // From sm up the groups dissolve back into the single inline row.
-    <li className="grid grid-cols-[4rem_minmax(0,1fr)] items-baseline gap-x-3 py-1.5 text-sm sm:flex sm:flex-wrap sm:gap-y-1.5">
-      <span className="w-16 shrink-0 text-[10px] font-medium uppercase tracking-wider text-faint">{kind}</span>
-      <div className="flex min-w-0 flex-col gap-1 sm:contents">
-        <div className="flex min-w-0 items-baseline gap-x-3 sm:contents">{children}</div>
-        <div className="flex items-center gap-x-3 sm:contents">
-          <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere] sm:ml-auto sm:shrink-0">
-            {meta}
-          </span>
-          {action}
-        </div>
-      </div>
+    // One row: kind icon and label, the title, then the pinned version at the
+    // end. Below sm the kind label drops and the row keeps one line.
+    <li className="flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-sm hover:bg-surface">
+      <Icon
+        aria-hidden
+        className={kind === 'Outcome' ? 'size-3.5 shrink-0 text-primary' : 'size-3.5 shrink-0 text-faint'}
+      />
+      <KindLabel className="w-14 max-sm:hidden">{kind}</KindLabel>
+      <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>
+      <span className="shrink-0 font-mono text-[11px] text-faint">v{version}</span>
+      {action}
     </li>
   )
 }
