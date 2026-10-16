@@ -177,6 +177,37 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
   })
 }
 
+// On the Flow tab the timeline's gate card is not mounted, so the card itself
+// carries the server's choices: still usable, and the summary still printed
+// once (component-web-task-surfaces, Activity tabs and the task flow view).
+for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
+  test(`on ${surface} the Flow tab keeps the gate choices usable from the card`, async ({ page }) => {
+    const posts = await mockAPI(
+      page,
+      () => activity('awaiting_human', gateAction),
+      () => gateAction,
+    )
+    await page.route(`**/v1/tasks/${taskId}/flow*`, (route) => route.fulfill({ status: 500, json: {} }))
+    await page.goto(surface)
+    const card = page.getByRole('region', { name: 'Next action' })
+    await expect(page.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(card.locator('[data-next-action-choices]')).toHaveCount(0)
+    await page.getByRole('tab', { name: 'Flow', exact: true }).click()
+    await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+    await expect(page.locator('[data-next-action-choices]')).toHaveCount(1)
+    const choices = card.locator('[data-next-action-choices]').getByRole('button')
+    await expect(choices).toHaveText(['Approve plan', 'Reject plan', 'Teleport'])
+    // The summary prints once on the detail surface.
+    const detail = surface.endsWith('/full')
+      ? page.getByRole('region', { name: 'Task content' })
+      : page.getByRole('dialog', { name: 'Task detail' })
+    await expect(detail.getByText('The plan for Card task waits for your approval.')).toHaveCount(1)
+    await choices.getByText('Approve plan').click()
+    await expect.poll(() => posts.length).toBe(1)
+    expect(posts[0].path).toBe(`/v1/tasks/${taskId}/review?via=next-action`)
+  })
+}
+
 test('the card carries the choices of an operator action outside the human gate', async ({ page }) => {
   const question: NextAction = {
     label: 'Agent question',

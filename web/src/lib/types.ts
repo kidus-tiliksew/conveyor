@@ -1739,9 +1739,10 @@ export interface VerificationKitRegistry {
   repositories: VerificationKitRepository[]
 }
 
-// GET /v1/tasks/{id}/flow (feature-operator-next-action NA-7): the task's
-// position on its stage path, folded on the server from its events. The client
-// draws it and derives nothing from events itself.
+// GET /v1/tasks/{id}/flow (feature-operator-next-action NA-7; component-http-api,
+// Next-action and task-flow reads): the task's position on its stage path,
+// folded on the server from its events. The client draws it and derives
+// nothing from events itself (req-operator-next-action AC-7.7).
 export type TaskFlowStatus = 'done' | 'in_progress' | 'waiting' | 'needs_operator' | 'off' | 'upcoming'
 
 export type TaskFlowStageId = 'triage' | 'spec' | 'implement' | 'verify' | 'review' | 'merge'
@@ -1773,8 +1774,19 @@ export interface TaskFlowAttempt {
 
 export interface TaskFlowStage {
   id: TaskFlowStageId
+  // The node's name on the chart: Triage, Plan, Implement, Verify, Review, Merged.
+  label: string
   // Null when the stage has no gate or the frozen policy turned it off.
   gate: 'plan_approval' | 'merge_approval' | null
+  // "Plan approval" on spec and "Merge approval" on merge, also when off;
+  // empty on every other row.
+  gate_label: string
+  // The gate's own mark, independent of the row status: non-null on exactly
+  // the spec and merge rows. needs_operator only when the next action is that
+  // gate's decision.
+  gate_status: TaskFlowStatus | null
+  gate_status_label: string
+  gate_status_text: string
   status: TaskFlowStatus
   // Server-stated copy, printed as sent. missed_check_in is empty unless the
   // current attempt's lease is past due.
@@ -1782,6 +1794,9 @@ export interface TaskFlowStage {
   status_label: string
   status_text: string
   missed_check_in: string
+  // Whether the recorded path has reached the stage node and the gate node.
+  traversed: boolean
+  gate_traversed: boolean
   attempts: TaskFlowAttempt[]
   current_attempt: TaskFlowAttemptView | null
 }
@@ -1790,6 +1805,8 @@ export interface TaskFlowLoop {
   from: TaskFlowStageId
   to: TaskFlowStageId
   count: number
+  // The server's "sent back ×N".
+  label: string
 }
 
 export interface TaskFlowBlocker {
@@ -1798,12 +1815,28 @@ export interface TaskFlowBlocker {
   state: string
 }
 
+export type TaskFlowSideName = 'blocked_by' | 'retrying' | 'parked' | 'closed' | 'agent_question'
+
 export interface TaskFlowSide {
   blocked_by: TaskFlowBlocker[]
-  retrying: { attempt: number; of: number } | null
+  // attempt and of count the same thing; of is null when no limit is
+  // recorded and is never defaulted on the client.
+  retrying: { attempt: number; of: number | null } | null
   parked: boolean
   closed: boolean
   agent_question: boolean
+  // One server label per present side state, none for an absent one.
+  labels: Partial<Record<TaskFlowSideName, string>>
+}
+
+// The chart's remaining server copy: the legend, a label for every side state
+// whether present or not, and the skipped, bypass and from-any-step labels.
+export interface TaskFlowDisplay {
+  legend: { status: TaskFlowStatus; label: string }[]
+  side_labels: Record<TaskFlowSideName, string>
+  skipped_label: string
+  plan_bypass_label: string
+  from_any_step_label: string
 }
 
 // The NA-3 statement, embedded unchanged. Only the fields the flow reads are
@@ -1827,6 +1860,11 @@ export interface TaskFlow {
   stages: TaskFlowStage[]
   loops: TaskFlowLoop[]
   side: TaskFlowSide
+  // The stage present side states connect to, or null.
+  current_stage: TaskFlowStageId | null
+  // The instant the server folded the flow at.
+  as_of: string
+  display: TaskFlowDisplay
   next_action: TaskFlowNextAction
   raw: TaskFlowRaw
 }

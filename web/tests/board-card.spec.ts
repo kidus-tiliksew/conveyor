@@ -145,15 +145,25 @@ const items = [
   }),
 ]
 
+// The fixture carries the whole wire contract; the stripe reads only id,
+// gate, status, and status_label, and ignores the detail chart's fields.
 function stage(id: TaskFlowStage['id'], status: TaskFlowStage['status'], gate: TaskFlowStage['gate'] = null) {
+  const gated = id === 'spec' || id === 'merge'
   return {
     id,
+    label: `Server ${id} node`,
     gate,
+    gate_label: gated ? `Server ${id} gate` : '',
+    gate_status: gated ? (gate ? 'upcoming' : 'off') : null,
+    gate_status_label: gated ? 'Server gate label' : '',
+    gate_status_text: gated ? 'Server gate sentence.' : '',
     status,
     description: `Server description of ${id}.`,
     status_label: `Server ${status} label`,
     status_text: `Server sentence: ${id} is ${status}.`,
     missed_check_in: '',
+    traversed: status !== 'upcoming' && status !== 'off',
+    gate_traversed: false,
     attempts: [],
     current_attempt: null,
   } satisfies TaskFlowStage
@@ -180,7 +190,16 @@ function flowFor(taskId: string): TaskFlow {
           stage('merge', 'upcoming'),
         ],
     loops: [],
-    side: { blocked_by: [], retrying: null, parked: false, closed: false, agent_question: false },
+    side: { blocked_by: [], retrying: null, parked: false, closed: false, agent_question: false, labels: {} },
+    current_stage: proposalWaiting ? 'spec' : 'implement',
+    as_of: '2026-10-16T08:00:00Z',
+    display: {
+      legend: [],
+      side_labels: { blocked_by: 'b', retrying: 'r', parked: 'p', closed: 'c', agent_question: 'q' },
+      skipped_label: 'skipped',
+      plan_bypass_label: 'bypass',
+      from_any_step_label: 'any',
+    },
     next_action: { label: 'x', actor: 'agent', kind: 'working', summary: 'x' },
     raw: { state: 'running', next_stage: 'implement', recovery_stage: '', gate_kind: '', order_ids: [] },
   }

@@ -2,6 +2,13 @@ import { expect, type Page } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 // UI coverage for the list-first Tasks view. The projection is mocked so each
 // assertion reads the rendering of durable authority rather than a live pipeline.
 const operations = [

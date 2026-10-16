@@ -5,6 +5,13 @@ import { expect, type Page, type Route } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 const now = Date.now()
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString()
 

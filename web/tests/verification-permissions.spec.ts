@@ -3,6 +3,13 @@ import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 // Stateful local fixture for the operator grant disclosure
 // (component-web-task-surfaces). The browser proves request composition and
 // presentation; HTTP and store suites own authorization.
