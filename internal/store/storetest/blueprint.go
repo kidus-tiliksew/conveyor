@@ -19,6 +19,9 @@ type BlueprintFixture struct {
 	Store     store.Store
 	Context   context.Context
 	Workspace string
+	// SeedStoredTaskHold seeds the parent's stored historical hold so the
+	// suite proves a child never inherits it (DEC-74(3)).
+	SeedStoredTaskHold func(*testing.T, context.Context, string)
 }
 
 type BlueprintFactory func(*testing.T, []config.Repo) BlueprintFixture
@@ -45,6 +48,9 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 		if err := st.CreateTask(ctx, parent); err != nil {
 			t.Fatal(err)
 		}
+		// A parent stored with hold before the retirement still materializes
+		// children without a reservation, and its own stored value stays.
+		requireStoredTaskHoldSeed(t, fixture.SeedStoredTaskHold)(t, ctx, parent.ID)
 
 		longSummary := strings.Repeat("界", 100)
 		v1Items := []blueprintItem{
@@ -61,6 +67,10 @@ func RunBlueprintConformance(t *testing.T, factory BlueprintFactory) {
 		assertMaterializedChild(t, bySub["SUB-1"], parent, v1.Version, "primary", "main")
 		assertMaterializedChild(t, bySub["SUB-2"], parent, v1.Version, "auxiliary", "release")
 		assertMaterializedChild(t, bySub["SUB-3"], parent, v1.Version, "primary", "main")
+		assertStoredHold(t, ctx, st, parent.ID, true)
+		for _, child := range children {
+			assertStoredHold(t, ctx, st, child.ID, false)
+		}
 		assertReturnedDependency(t, bySub["SUB-2"], bySub["SUB-1"].ID, true)
 		assertReturnedDependency(t, bySub["SUB-3"], bySub["SUB-2"].ID, true)
 		if len(bySub["SUB-3"].Title) > 200 || !utf8.ValidString(bySub["SUB-3"].Title) {
@@ -179,7 +189,7 @@ func blueprintParent(workspace string) core.Task {
 	id := core.NewTaskID()
 	return core.Task{
 		ID: id, Workspace: workspace, Source: "test:blueprint", Title: "Blueprint",
-		Body: "Parent body", Class: "feature", Level: "L2", Hold: true,
+		Body: "Parent body", Class: "feature", Level: "L2",
 		SpecApproval: true, MergeApproval: true, PolicyVersion: 7,
 		SetupName: "default", Repo: "primary", BaseBranch: "main",
 		Branch: "conveyor/task-" + id, State: core.TaskQueued,
@@ -220,7 +230,7 @@ func assertMaterializedChild(t *testing.T, child, parent core.Task, version int,
 	t.Helper()
 	if child.ID == "" || child.Workspace != parent.Workspace || child.Source == "" ||
 		child.Title == "" || child.Body == "" || child.Class != parent.Class ||
-		child.Level != parent.Level || child.Hold != parent.Hold ||
+		child.Level != parent.Level || child.Hold ||
 		child.SpecApproval != parent.SpecApproval || child.MergeApproval != parent.MergeApproval ||
 		child.PolicyVersion != parent.PolicyVersion || child.SetupName != "" ||
 		!samePolicyContract(child.SetupContract, parent.SetupContract) ||
@@ -229,6 +239,19 @@ func assertMaterializedChild(t *testing.T, child, parent core.Task, version int,
 		child.ParentTaskID != parent.ID || child.OriginSpecVersion != version ||
 		child.OriginSubID == "" || child.CreatedAt.IsZero() {
 		t.Fatalf("partially populated or invalid child: %+v", child)
+	}
+}
+
+// assertStoredHold reads one task and checks its stored historical hold
+// value, which only the conformance seed can set (DEC-74(3)).
+func assertStoredHold(t *testing.T, ctx context.Context, st store.Store, taskID string, want bool) {
+	t.Helper()
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Hold != want {
+		t.Fatalf("task %s stored hold=%v, want %v", taskID, task.Hold, want)
 	}
 }
 

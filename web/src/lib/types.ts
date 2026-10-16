@@ -217,9 +217,8 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
-  // Legacy historical record; behavior is governed by hold.
+  // Legacy historical record; no task carries a worker reservation (DEC-74(3)).
   mode?: string
-  hold?: boolean
   assignee?: TaskAssignee
   spec_approval: boolean
   merge_approval: boolean
@@ -548,7 +547,6 @@ export type ActivityTask = Pick<
   | 'repo'
   | 'state'
   | 'next_stage'
-  | 'hold'
   | 'assignee'
   | 'reviewed_head_sha'
   | 'dependencies'

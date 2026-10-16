@@ -262,6 +262,8 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	if in.MergeReadiness != nil && in.MergeReadiness.Summary != "" {
 		na.Details.MergeReadiness = in.MergeReadiness.Summary
 	}
+	na.Blocks = append([]BlockerRef{}, in.Blocks...)
+	na.Details.Disposition = dispositionFor(in, row)
 	if na.Choices == nil {
 		na.Choices = []Choice{}
 	}
@@ -300,13 +302,67 @@ func varsFor(in Input, row built) Vars {
 			}
 		}
 	}
+	if row.kind == KindReviewBounceLimit {
+		vars.Attempts = in.BounceCount
+	}
 	for i, blocker := range in.Blockers {
 		if i > 0 {
 			vars.Blockers += ", "
 		}
 		vars.Blockers += blocker.Title
 	}
+	vars.Dependents = dependentList(in.Blocks)
 	return vars
+}
+
+// dependentList joins the dependents' titles, in blocks order, as a readable
+// list; a dependent without a title is named by its task ID.
+func dependentList(blocks []BlockerRef) string {
+	names := make([]string, 0, len(blocks))
+	for _, ref := range blocks {
+		name := ref.Title
+		if name == "" {
+			name = ref.TaskID
+		}
+		names = append(names, name)
+	}
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return names[0]
+	case 2:
+		return names[0] + " and " + names[1]
+	}
+	out := ""
+	for i, name := range names {
+		switch {
+		case i == 0:
+			out = name
+		case i == len(names)-1:
+			out += ", and " + name
+		default:
+			out += ", " + name
+		}
+	}
+	return out
+}
+
+// dispositionFor copies the selected verify order's binding onto row 10 only;
+// every other row leaves details.disposition absent
+// (feature-operator-next-action NA-3, Disposition binding).
+func dispositionFor(in Input, row built) *Disposition {
+	if row.kind != KindVerificationDisposition || row.order == nil {
+		return nil
+	}
+	binding := in.Dispositions[row.order.ID].Binding
+	if binding == nil {
+		return nil
+	}
+	return &Disposition{
+		ContextID: binding.ContextID, RunID: binding.RunID,
+		OperationIDs: append([]string{}, binding.OperationIDs...), InputDigest: binding.InputDigest,
+	}
 }
 
 func orderView(order *core.WorkOrder) *OrderView {
@@ -373,6 +429,11 @@ func liveConflictFix(orders []core.WorkOrder) bool {
 	}
 	return false
 }
+
+// LatestQueued is the task's latest queued order, the order whose
+// blocking_task_ids describe the task's current dependency edges
+// (feature-operator-next-action NA-3, Dependents).
+func LatestQueued(orders []core.WorkOrder) *core.WorkOrder { return latestQueued(orders) }
 
 func latestQueued(orders []core.WorkOrder) *core.WorkOrder {
 	for i := len(orders) - 1; i >= 0; i-- {

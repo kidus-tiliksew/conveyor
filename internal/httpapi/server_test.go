@@ -185,7 +185,7 @@ func attachmentTaskRequest(t *testing.T, intakeKey string, files map[string][]by
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("task", `{"body":"Use every file","repo":"api","hold":true,"spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
+	if err := writer.WriteField("task", `{"body":"Use every file","repo":"api","spec_approval":true,"merge_approval":true,"source":"dashboard"}`); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.WriteField("idempotency_key", intakeKey); err != nil {
@@ -656,7 +656,10 @@ func TestTerminalTaskHTTPRetainsReviewWithoutInterruptedRecovery(t *testing.T) {
 	}
 }
 
-func TestSetTaskHoldTogglesReservationWithAudit(t *testing.T) {
+// TestRetiredTaskHoldRouteAnswersGone proves the per-task hold route is a
+// non-mutating tombstone (DEC-74(3); component-http-api): every admitted body
+// answers 410 task_hold_retired with no task lookup, write, or event.
+func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 	st := store.NewMemory()
 	server := NewServer(st)
 	server.BearerToken, server.Workspace = "token", "demo"
@@ -664,47 +667,43 @@ func TestSetTaskHoldTogglesReservationWithAudit(t *testing.T) {
 	if err := st.CreateTask(ctx, core.Task{ID: "hold-task", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	request := func(body string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPut, "/v1/tasks/hold-task/hold", strings.NewReader(body))
+	before, err := st.GetTask(ctx, "hold-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := st.ListEvents(ctx, "hold-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(taskID, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/v1/tasks/"+taskID+"/hold", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer token")
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, req)
 		return response
 	}
-	if response := request(`{}`); response.Code != http.StatusBadRequest {
-		t.Fatalf("missing hold status=%d", response.Code)
-	}
-	response := request(`{"hold":true}`)
-	var task core.Task
-	if err := json.Unmarshal(response.Body.Bytes(), &task); response.Code != http.StatusOK || err != nil || !task.Hold {
-		t.Fatalf("set status=%d task=%+v err=%v", response.Code, task, err)
-	}
-	// Setting the current value is idempotent: no duplicate audit event.
-	if response = request(`{"hold":true}`); response.Code != http.StatusOK {
-		t.Fatalf("idempotent set status=%d", response.Code)
-	}
-	if response = request(`{"hold":false}`); response.Code != http.StatusOK {
-		t.Fatalf("clear status=%d", response.Code)
-	}
-	events, err := st.ListEvents(ctx, "hold-task")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sets, clears := 0, 0
-	for _, event := range events {
-		if event.Kind == "task.hold.set" {
-			sets++
-		}
-		if event.Kind == "task.hold.cleared" {
-			clears++
+	for _, call := range []struct{ taskID, body string }{
+		{"hold-task", `{"hold":true}`}, {"hold-task", `{"hold":false}`}, {"hold-task", `{}`}, {"hold-task", `not json`}, {"absent-task", `{"hold":true}`},
+	} {
+		response := request(call.taskID, call.body)
+		var body map[string]string
+		if err := json.Unmarshal(response.Body.Bytes(), &body); response.Code != http.StatusGone || err != nil || body["error"] != "task_hold_retired" || !strings.Contains(body["message"], "DEC-74") {
+			t.Fatalf("%s %s status=%d body=%s", call.taskID, call.body, response.Code, response.Body.String())
 		}
 	}
-	if sets != 1 || clears != 1 {
-		t.Fatalf("sets=%d clears=%d events=%+v", sets, clears, events)
+	after, err := st.GetTask(ctx, "hold-task")
+	if err != nil || after.Hold || after.State != before.State {
+		t.Fatalf("retired route changed the task: %+v err=%v", after, err)
+	}
+	afterEvents, err := st.ListEvents(ctx, "hold-task")
+	if err != nil || len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("retired route appended events: before=%d after=%+v err=%v", len(beforeEvents), afterEvents, err)
 	}
 }
 
-func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
+// TestTaskIntakeIsNotHealthGatedAndRefusesHold keeps intake open without a
+// live worker and refuses the retired hold input (DEC-74(3)).
+func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	st := store.NewMemory()
 	now := time.Now().UTC()
 	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
@@ -734,14 +733,39 @@ func TestTaskIntakeIsNotHealthGatedAndPersistsHold(t *testing.T) {
 		}
 	}
 
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	countTasks := func() int {
+		tasks, err := st.ListTasks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(tasks)
+	}
+	before := countTasks()
 	response := request(`{"body":"held with gates off","repo":"api","hold":true,"spec_approval":false,"merge_approval":false}`)
-	if response.Code != http.StatusCreated {
+	var refusal map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &refusal); response.Code != http.StatusBadRequest || err != nil || refusal["error"] != "task_hold_retired" || !strings.Contains(refusal["message"], "hold is retired (DEC-74)") {
 		t.Fatalf("hold status=%d body=%s", response.Code, response.Body.String())
 	}
-	var explicit core.Task
-	_ = json.Unmarshal(response.Body.Bytes(), &explicit)
-	if !explicit.Hold || explicit.SpecApproval || explicit.MergeApproval {
-		t.Fatalf("hold task=%+v", explicit)
+	if response := request(`{"body":"mistyped hold","repo":"api","hold":"yes"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("mistyped hold status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := countTasks(); got != before {
+		t.Fatalf("refused hold intake created tasks: before=%d after=%d", before, got)
+	}
+	for _, body := range []string{
+		`{"body":"unheld with gates off","repo":"api","hold":false,"spec_approval":false,"merge_approval":false}`,
+		`{"body":"omitted hold with gates off","repo":"api","spec_approval":false,"merge_approval":false}`,
+	} {
+		response := request(body)
+		if response.Code != http.StatusCreated || bytes.Contains(response.Body.Bytes(), []byte(`"hold"`)) {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var explicit core.Task
+		_ = json.Unmarshal(response.Body.Bytes(), &explicit)
+		if explicit.SpecApproval || explicit.MergeApproval {
+			t.Fatalf("gates task=%+v", explicit)
+		}
 	}
 
 	if response := request(`{"body":"bad","repo":"api","mode":"turbo"}`); response.Code != http.StatusBadRequest {
@@ -962,7 +986,7 @@ func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *
 		}
 		return "Generated task title", nil
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Describe the requested change","repo":"api","source":"dashboard","hold":true,"spec_approval":false,"merge_approval":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks", strings.NewReader(`{"body":"Describe the requested change","repo":"api","source":"dashboard","spec_approval":false,"merge_approval":true}`))
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, request)
@@ -973,7 +997,7 @@ func TestCreateTaskAlwaysGeneratesTitleBeforePersistenceAndRejectsTitleInput(t *
 	if err := json.Unmarshal(response.Body.Bytes(), &task); err != nil {
 		t.Fatal(err)
 	}
-	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != "" || !task.Hold || task.SpecApproval || !task.MergeApproval {
+	if generated != 1 || task.Title != "Generated task title" || task.Body != "Describe the requested change" || task.Mode != "" || task.Hold || task.SpecApproval || !task.MergeApproval {
 		t.Fatalf("generated=%d task=%+v", generated, task)
 	}
 	persisted, err := st.GetTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), task.ID)

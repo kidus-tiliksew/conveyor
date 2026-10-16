@@ -335,7 +335,7 @@ func agentCreatesTask(t *testing.T, role core.WorkspaceRole) {
 	}
 	task := result.task
 	if task.Workspace != "alpha" || task.Title != "Generated title" || task.Body != "Agent filed **work**\n\n- keep verbatim" || task.Source != "mcp:issue-7" ||
-		!task.SpecApproval || !task.MergeApproval || task.Hold || task.State != core.TaskQueued || task.NextStage != core.StageTriage || task.Branch != "conveyor/task-"+task.ID {
+		!task.SpecApproval || !task.MergeApproval || task.State != core.TaskQueued || task.NextStage != core.StageTriage || task.Branch != "conveyor/task-"+task.ID {
 		t.Fatalf("task=%+v", task)
 	}
 	requireAgentProvenance(t, f, task.ID, intakeAgentID(role), intakeOwner(role))
@@ -459,17 +459,20 @@ func TestMCPAgentLegacyPolicyOverrides(t *testing.T) {
 	for _, level := range []string{"L2", "L3"} {
 		refuse(level+" with gate off", "level-off-"+level, map[string]any{"level": level, "merge_approval": false}, agentGateDisableForbidden, "merge_approval")
 		result := f.callMCP(t, token, "create_task", intakeArgs("level-ok-"+level, map[string]any{"level": level}))
-		if result.errText != "" || !result.task.SpecApproval || !result.task.MergeApproval || result.task.Hold != (level == "L3") {
+		// L3 maps both gates on exactly like L2 and implies no reservation
+		// (DEC-74(3)).
+		if result.errText != "" || !result.task.SpecApproval || !result.task.MergeApproval {
 			t.Fatalf("%s: err=%q task=%+v", level, result.errText, result.task)
 		}
 	}
-	for _, hold := range []bool{true, false} {
-		result := f.callMCP(t, token, "create_task", intakeArgs(fmt.Sprintf("hold-%t", hold), map[string]any{"hold": hold}))
-		if result.errText != "" || result.task.Hold != hold || result.task.SpecApproval || result.task.MergeApproval {
-			t.Fatalf("hold %t: err=%q task=%+v", hold, result.errText, result.task)
-		}
-		requireAgentProvenance(t, f, result.task.ID, intakeAgentID(core.WorkspaceRoleMaintainer), intakeOwner(core.WorkspaceRoleMaintainer))
+	// Hold is retired for every caller (DEC-74(3)): a new true is refused
+	// with no side effect, and false is accepted with the workspace defaults.
+	refuse("hold true", "hold-true", map[string]any{"hold": true}, taskHoldRetired, "hold is retired (DEC-74)")
+	result := f.callMCP(t, token, "create_task", intakeArgs("hold-false", map[string]any{"hold": false}))
+	if result.errText != "" || result.task.SpecApproval || result.task.MergeApproval {
+		t.Fatalf("hold false: err=%q task=%+v", result.errText, result.task)
 	}
+	requireAgentProvenance(t, f, result.task.ID, intakeAgentID(core.WorkspaceRoleMaintainer), intakeOwner(core.WorkspaceRoleMaintainer))
 	for _, field := range []string{"setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv"} {
 		tasks, titles, notified := f.taskCount(t), f.titles.Load(), f.notified.Load()
 		result := f.callMCP(t, token, "create_task", intakeArgs("retired-"+field, map[string]any{field: "x"}))
@@ -555,16 +558,16 @@ func TestMCPAgentCreationPreservesIntakeValidation(t *testing.T) {
 
 func TestMCPAgentCreateTaskRetryPreservesProvenance(t *testing.T) {
 	f := newAgentIntakeFixture(t)
-	first := f.callMCP(t, agentIntakeToken(core.WorkspaceRoleMaintainer), "create_task", intakeArgs("retry-key", map[string]any{"hold": true}))
+	first := f.callMCP(t, agentIntakeToken(core.WorkspaceRoleMaintainer), "create_task", intakeArgs("retry-key", map[string]any{"spec_approval": true}))
 	if first.errText != "" || !first.created {
 		t.Fatalf("first=%+v", first)
 	}
 	titles, notified := f.titles.Load(), f.notified.Load()
 	retry := func(label, token string) {
 		t.Helper()
-		result := f.callMCP(t, token, "create_task", intakeArgs("retry-key", map[string]any{"hold": true}))
+		result := f.callMCP(t, token, "create_task", intakeArgs("retry-key", map[string]any{"spec_approval": true}))
 		if result.errText != "" || result.created || result.task.ID != first.task.ID || result.task.Title != first.task.Title ||
-			result.task.SpecApproval != first.task.SpecApproval || result.task.MergeApproval != first.task.MergeApproval || !result.task.Hold {
+			result.task.SpecApproval != first.task.SpecApproval || result.task.MergeApproval != first.task.MergeApproval {
 			t.Fatalf("%s: result=%+v first=%+v", label, result, first.task)
 		}
 		if f.titles.Load() != titles || f.notified.Load() != notified || f.taskCount(t) != 1 {
@@ -703,6 +706,7 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 	}
 	for _, route := range []struct{ method, path, body string }{
 		{http.MethodPost, "/v1/tasks?workspace_id=alpha", `{"body":"rest intake","repo":"api"}`},
+		// The retired hold route keeps its reserved-route admission (DEC-74(3)).
 		{http.MethodPut, "/v1/tasks/" + taskID + "/hold?workspace_id=alpha", `{"hold":false}`},
 		{http.MethodPut, "/v1/tasks/" + taskID + "/assignee?workspace_id=alpha", `{"assignee_user_id":"usr_operator"}`},
 		{http.MethodPost, "/v1/tasks/" + taskID + "/review?workspace_id=alpha", `{"action":"approve"}`},
@@ -725,7 +729,7 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 		t.Fatalf("tasks=%d", f.taskCount(t))
 	}
 	persisted, err := f.store.GetTask(store.WithWorkspace(t.Context(), "alpha"), taskID)
-	if err != nil || persisted.Hold || persisted.Assignee != nil || !persisted.SpecApproval {
+	if err != nil || persisted.Assignee != nil || !persisted.SpecApproval {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
 	}
 	// A worker credential still cannot create tasks.
@@ -750,7 +754,7 @@ func TestCreateTaskRequestPolicyFieldsAreAgentChecked(t *testing.T) {
 		"BaseBranch":               "branch",
 		"Source":                   "intake label, never provenance",
 		"Level":                    "policy: agent-checked",
-		"Hold":                     "reservation, not a gate (DEC-55(3))",
+		"Hold":                     "retired (DEC-74(3)); shared intake refuses true after the idempotency lookup",
 		"SpecApproval":             "policy: agent-checked",
 		"MergeApproval":            "policy: agent-checked",
 		"Setup":                    "retired; refused by MCP and REST decoders",
@@ -786,11 +790,10 @@ func TestCreateTaskRequestPolicyFieldsAreAgentChecked(t *testing.T) {
 		}
 	}
 	for name, req := range map[string]createTaskReq{
-		"omitted":   {},
-		"both on":   {SpecApproval: &on, MergeApproval: &on},
-		"L2":        {Level: core.L2},
-		"L3":        {Level: core.L3},
-		"hold only": {Hold: true},
+		"omitted": {},
+		"both on": {SpecApproval: &on, MergeApproval: &on},
+		"L2":      {Level: core.L2},
+		"L3":      {Level: core.L3},
 	} {
 		if err := agentIntakePolicyError(req); err != nil {
 			t.Fatalf("%s: err=%v", name, err)
@@ -799,5 +802,14 @@ func TestCreateTaskRequestPolicyFieldsAreAgentChecked(t *testing.T) {
 	var typed *taskCreateError
 	if err := agentIntakePolicyError(createTaskReq{Level: "L4"}); !errors.As(err, &typed) || typed.Code != agentGateOverrideInvalid {
 		t.Fatalf("L4 err=%v", err)
+	}
+	// Hold passes the agent gate check but cannot bypass the shared intake's
+	// retirement rule, which every caller meets (DEC-74(3)).
+	server := NewServer(store.NewMemory())
+	server.Workspace, server.Repos = "demo", []string{"api"}
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "unused", nil }
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	if _, err := server.createTaskRecord(ctx, createTaskReq{Body: "hold only", Repo: "api", Hold: true}, "hold-only", "mcp"); !errors.As(err, &typed) || typed.Code != taskHoldRetired || typed.Status != http.StatusBadRequest {
+		t.Fatalf("hold only err=%v", err)
 	}
 }

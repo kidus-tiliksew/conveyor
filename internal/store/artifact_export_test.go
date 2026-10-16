@@ -76,6 +76,22 @@ func SeedLineageLinkForTest(t *testing.T, st Backend, link core.LineageLink) {
 	m.lineage[lineageLinkKey(link)] = link
 }
 
+// SeedStoredTaskHoldForTest sets one task's stored historical hold to true,
+// as a row written before the hold retirement would read; no public writer
+// can (DEC-74(3); component-persistence).
+func SeedStoredTaskHoldForTest(t *testing.T, st Backend, taskID string) {
+	t.Helper()
+	m := st.(*volatileMemory).memory
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task, ok := m.tasks[taskID]
+	if !ok {
+		t.Fatal("seed requires an existing task")
+	}
+	task.Hold = true
+	m.tasks[taskID] = task
+}
+
 // SeedSetupContractForTest replaces one task's setup contract with the
 // decoding of raw, as the durable backends read a row an earlier encoding
 // wrote; no public writer accepts a raw contract.

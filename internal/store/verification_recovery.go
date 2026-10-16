@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
@@ -84,7 +87,7 @@ func PrepareVerificationRecovery(ctx context.Context, task core.Task, order core
 		return nil, nil, ErrVerificationAccess
 	}
 	run := verificationDecode[VerificationAttempt](rr)
-	if run.WorkOrderAttemptID != vc.WorkOrderAttemptID || verificationHash(verificationJSON(run.SafeInputs)) != d.InputDigest {
+	if run.WorkOrderAttemptID != vc.WorkOrderAttemptID || verificationRunInputDigest(run) != d.InputDigest {
 		return nil, nil, ErrVerificationConflict
 	}
 	original := core.VerificationBinding{ReviewScope: vc.ReviewScope, BaselineSHA: vc.BaselineSHA, ContextID: vc.ID, WorkOrderID: vc.WorkOrderID, WorkOrderAttemptID: vc.WorkOrderAttemptID, RunID: run.ID, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins}
@@ -136,6 +139,93 @@ func PrepareVerificationRecovery(ctx context.Context, task core.Task, order core
 	changed = append(changed, rr)
 	event := core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "verification.recovery_authorized", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(map[string]any{"request_id": requestID, "authorization_id": id, "original": original, "disposition": d.Disposition, "reason": d.Reason, "operation_ids": d.OperationIDs})}
 	return changed, []core.Event{event}, nil
+}
+
+// verificationRunInputDigest is the safe-input digest a recovery request must
+// carry for one verification attempt. PrepareVerificationRecovery checks it,
+// and the next-action disposition binding states it.
+func verificationRunInputDigest(run VerificationAttempt) string {
+	return verificationHash(verificationJSON(run.SafeInputs))
+}
+
+// verificationDispositionBinding binds the sealed verification checkpoint of
+// one released verify order to the four fields a recovery request carries:
+// the checkpoint's context, the attempt that recorded its unresolved
+// operations, those operations, and that attempt's safe-input digest. It
+// applies the task, context, head, attempt, and operation checks of
+// PrepareVerificationRecovery, so a request built from the binding, a
+// disposition, and a reason passes them unchanged. A checkpoint the
+// validator would reject yields a refusal naming the limitation instead of
+// a partial binding (feature-operator-next-action NA-3, Disposition binding;
+// component-verification-service, Operator checkpoint and recovery).
+func verificationDispositionBinding(task core.Task, order core.WorkOrder, rows []VerificationRow) nextaction.DispositionInput {
+	refuse := func(format string, args ...any) nextaction.DispositionInput {
+		return nextaction.DispositionInput{Refusal: fmt.Sprintf(format, args...)}
+	}
+	if order.Checkpoint == nil || order.Checkpoint.Verification == nil {
+		return refuse("verify order %s has no sealed verification checkpoint to dispose", order.ID)
+	}
+	checkpoint := order.Checkpoint.Verification
+	cr, ok := verificationFind(rows, "verification_contexts", checkpoint.ContextID)
+	if !ok || cr.TaskID != task.ID {
+		return refuse("verification checkpoint %s is not readable for task %s", checkpoint.ContextID, task.ID)
+	}
+	vc := verificationDecode[VerificationContext](cr)
+	if order.Stage != core.StageVerify || vc.WorkOrderID != order.ID || vc.WorkOrderAttemptID == "" || vc.WorkOrderAttemptID != order.LastAttemptID {
+		return refuse("verification checkpoint %s was not sealed by the released attempt of verify order %s", vc.ID, order.ID)
+	}
+	if order.HeadSHA != core.VerifyStageHead(task) || VerifyVerificationAuthority(VerificationCommand{Kind: VerificationCreateContext, Context: &vc}, VerificationAuthoritySnapshot{Task: task}, order) != nil {
+		return refuse("verification checkpoint %s no longer matches the task head or authority of verify order %s", vc.ID, order.ID)
+	}
+	runID := ""
+	var operationIDs []string
+	seen := map[string]bool{}
+	for _, id := range checkpoint.OperationIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		r, ok := verificationFind(rows, "verification_operations", id)
+		if !ok || r.TaskID != task.ID {
+			return refuse("operation %s of verification checkpoint %s is not readable", id, vc.ID)
+		}
+		if verificationOperationResolved(r.State) {
+			continue
+		}
+		if r.ContextID != vc.ID {
+			return refuse("unresolved operation %s belongs to another verification context than checkpoint %s; one recovery names one context", id, vc.ID)
+		}
+		if runID != "" && r.RunID != runID {
+			return refuse("unresolved operations of verification checkpoint %s span more than one verification run; one recovery names one run", vc.ID)
+		}
+		runID = r.RunID
+		operationIDs = append(operationIDs, id)
+	}
+	if len(operationIDs) == 0 {
+		return refuse("verification checkpoint %s has no unresolved operations to dispose", vc.ID)
+	}
+	rr, ok := verificationFind(rows, "verification_attempts", runID)
+	if !ok || rr.ContextID != vc.ID || rr.TaskID != task.ID {
+		return refuse("verification run %s of checkpoint %s is not readable", runID, vc.ID)
+	}
+	run := verificationDecode[VerificationAttempt](rr)
+	if run.WorkOrderAttemptID != vc.WorkOrderAttemptID {
+		return refuse("verification run %s was not recorded by the attempt that sealed checkpoint %s", runID, vc.ID)
+	}
+	digest := verificationRunInputDigest(run)
+	for _, id := range operationIDs {
+		r, _ := verificationFind(rows, "verification_operations", id)
+		if verificationDecode[VerificationOperation](r).InputDigest != digest {
+			return refuse("operation %s was prepared over other inputs than verification run %s", id, runID)
+		}
+	}
+	for _, r := range rows {
+		if r.Table == "verification_operations" && r.RunID == runID && !verificationOperationResolved(r.State) && !seen[r.ID] {
+			return refuse("verification run %s has unresolved operation %s outside checkpoint %s", runID, r.ID, vc.ID)
+		}
+	}
+	sort.Strings(operationIDs)
+	return nextaction.DispositionInput{Binding: &nextaction.Disposition{ContextID: vc.ID, RunID: runID, OperationIDs: operationIDs, InputDigest: digest}}
 }
 
 type verificationRecoveryDigestKey struct{}

@@ -59,7 +59,7 @@ func TestTaskCallbackCleanupIntegration(t *testing.T) {
 		}
 		cancel()
 		waitCtx, stop := context.WithTimeout(ctx, 200*time.Millisecond)
-		_, err := s.SetTaskHold(waitCtx, "locked", true)
+		_, err := taskops.New(s).SetAssignee(waitCtx, "locked", "")
 		stop()
 		if err == nil {
 			close(release)
@@ -69,7 +69,7 @@ func TestTaskCallbackCleanupIntegration(t *testing.T) {
 		if err = <-done; err != sentinel {
 			t.Fatalf("callback error changed: %v", err)
 		}
-		_, err = s.SetTaskHold(ctx, "locked", true)
+		_, err = taskops.New(s).SetAssignee(ctx, "locked", "")
 		taskTestOK(t, err)
 	})
 	t.Run("panic releases and escaped context cannot bypass", func(t *testing.T) {
@@ -86,13 +86,13 @@ func TestTaskCallbackCleanupIntegration(t *testing.T) {
 		taskTestOK(t, s.WithTaskSideEffectLock(ctx, "locked", func(context.Context) error {
 			timeout, cancel := context.WithTimeout(escaped, 200*time.Millisecond)
 			defer cancel()
-			_, err := s.SetTaskHold(timeout, "locked", false)
+			_, err := taskops.New(s).SetAssignee(timeout, "locked", "")
 			if err == nil {
 				return errors.New("escaped context bypassed new owner")
 			}
 			return nil
 		}))
-		_, err := s.SetTaskHold(ctx, "locked", false)
+		_, err := taskops.New(s).SetAssignee(ctx, "locked", "")
 		taskTestOK(t, err)
 	})
 	t.Run("ownership does not transfer to another Store", func(t *testing.T) {
@@ -100,7 +100,7 @@ func TestTaskCallbackCleanupIntegration(t *testing.T) {
 		taskTestOK(t, s.WithTaskSideEffectLock(ctx, "locked", func(inner context.Context) error {
 			timeout, cancel := context.WithTimeout(inner, 200*time.Millisecond)
 			defer cancel()
-			_, err := other.SetTaskHold(timeout, "locked", true)
+			_, err := taskops.New(other).SetAssignee(timeout, "locked", "")
 			if err == nil {
 				return errors.New("another Store reused callback ownership")
 			}

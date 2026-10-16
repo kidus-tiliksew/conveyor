@@ -124,7 +124,7 @@ func StartOverSuccessor(old core.Task, r core.TaskStartOverRequest) core.Task {
 	}
 	return core.Task{ID: id, Workspace: old.Workspace, Source: old.Source, Title: old.Title, Body: old.Body,
 		Repo: old.Repo, BaseBranch: old.BaseBranch, Branch: gitx.BranchName(id),
-		Hold: old.Hold, SpecApproval: old.SpecApproval, MergeApproval: old.MergeApproval, PolicyVersion: old.PolicyVersion,
+		SpecApproval: old.SpecApproval, MergeApproval: old.MergeApproval, PolicyVersion: old.PolicyVersion,
 		SetupContract: old.SetupContract, State: core.TaskQueued, NextStage: core.StageTriage,
 		Supersedes: old.ID, IntakeOperatorDirection: direction, CreatedAt: time.Now().UTC()}
 }

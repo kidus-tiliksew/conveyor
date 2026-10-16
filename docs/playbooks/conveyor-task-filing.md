@@ -53,9 +53,10 @@ boundary; investigation never grants permission to mutate.
 
 - File via MCP `create_task`: `body`, `repo`, `idempotency_key`
   (required — kebab slug + date, e.g. `phase8-3-plan-stage-20260807`),
-  optional `depends_on: [task-ids]`, `hold`, `spec_approval`,
-  `merge_approval`. Defaults are correct for ordinary work (spec gate on,
-  merge gate off).
+  optional `depends_on: [task-ids]`, `spec_approval`, `merge_approval`.
+  Defaults are correct for ordinary work (spec gate on, merge gate off).
+  A task carries no hold or other worker reservation (DEC-74); never send
+  `hold`.
 - The title is generated from the body; don't write one.
 - When tasks are filed out of order, use the human-only MCP
   `add_task_dependency` tool with `task_id`, `depends_on_task_id`, an audit
@@ -136,8 +137,8 @@ For example, replace “verified on `<personal SSH alias>`” with “verified b
 ## Authority boundary in acceptance criteria
 
 Never write a criterion requiring an operator-only act (gate approval,
-drift resolution, confirming decisions/designs/requirements, cancel/
-hold). The implementing agent can neither perform nor verify those. If
+drift resolution, confirming decisions/designs/requirements,
+cancellation). The implementing agent can neither perform nor verify those. If
 the work genuinely needs one mid-flight, phrase it as an operator
 checkpoint — "pause and report until the operator has done X; the pause
 is the success condition" — or scope it out. (Lesson: task 260805-b8b13c

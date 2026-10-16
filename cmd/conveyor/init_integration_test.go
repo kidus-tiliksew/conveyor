@@ -187,7 +187,7 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if health.Code != http.StatusOK {
 		t.Fatalf("health status=%d", health.Code)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/tasks?workspace_id=fresh", strings.NewReader(`{"body":"First task from init","repo":"app","hold":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks?workspace_id=fresh", strings.NewReader(`{"body":"First task from init","repo":"app"}`))
 	request.Header.Set("Authorization", "Bearer fresh-init-operator-token")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()

@@ -421,7 +421,7 @@ type ReviewPanel struct {
 type ExecutionPolicy struct {
 	VerifyStage       bool `yaml:"verify_stage" json:"verify_stage"`
 	VerifyConcurrency int  `yaml:"verify_concurrency,omitempty" json:"verify_concurrency,omitempty"`
-	// DefaultMode is deprecated (DEC-55(2)): parsed from legacy documents
+	// DefaultMode is deprecated (DEC-74(2)): parsed from legacy documents
 	// and seeds for compatibility, never read for behavior, dropped on save.
 	DefaultMode          string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	SpecApproval         bool   `yaml:"spec_approval" json:"spec_approval"`
@@ -1739,7 +1739,7 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		return fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
 	// An absent execution block means the shipped default: both gates on
-	// (DEC-55(1); component-task-lifecycle). There is no mode axis (DEC-55(2)).
+	// (DEC-74(1); component-task-lifecycle). There is no mode axis (DEC-74(2)).
 	// A block that carried only the retired evidence key decodes empty and
 	// keeps these defaults (DEC-53).
 	if c.Execution == (ExecutionPolicy{}) {
@@ -1747,7 +1747,7 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		c.Execution.MergeApproval = true
 	}
 	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
-		return fmt.Errorf("execution.default_mode is deprecated (DEC-55) and must be auto or manual when present")
+		return fmt.Errorf("execution.default_mode is deprecated (DEC-74) and must be auto or manual when present")
 	}
 	// Legacy documents keep their stored value readable, but it is never
 	// re-emitted or consulted; normalization drops it.

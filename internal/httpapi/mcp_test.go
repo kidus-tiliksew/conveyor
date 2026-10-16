@@ -2257,8 +2257,8 @@ func TestMCPSubmitSpecNameIsRetiredWithPlanRedirect(t *testing.T) {
 // SDK's validation rejects — taking every tool down with it as a
 // "tools fetch failed" at connection time.
 // TestMCPCreateTaskToolDescribesAgentRules keeps the published description in
-// step with DEC-60's agent rules and the DEC-55(3) hold rule, and keeps the
-// schema title-less with the retired execution fields absent.
+// step with DEC-60's agent rules, and keeps the schema title-less with the
+// retired execution fields and the retired hold (DEC-74(3)) absent.
 func TestMCPCreateTaskToolDescribesAgentRules(t *testing.T) {
 	t.Parallel()
 	var tool map[string]any
@@ -2294,11 +2294,10 @@ func TestMCPCreateTaskToolDescribesAgentRules(t *testing.T) {
 	}
 	schema := tool["inputSchema"].(map[string]any)
 	properties := schema["properties"].(map[string]any)
-	hold, _ := properties["hold"].(map[string]any)
-	if holdText, _ := hold["description"].(string); !strings.Contains(holdText, "DEC-55(3)") {
-		t.Fatalf("hold description = %q", holdText)
+	if strings.Contains(strings.ToLower(description), "hold") {
+		t.Fatalf("create_task description still mentions hold: %s", description)
 	}
-	for _, field := range []string{"title", "mode", "setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv", "verify_stage"} {
+	for _, field := range []string{"hold", "title", "mode", "setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv", "verify_stage"} {
 		if _, present := properties[field]; present {
 			t.Fatalf("create_task publishes %s", field)
 		}
@@ -2431,7 +2430,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 
 	call := func(taskBody string) (core.Task, bool, bool) {
 		t.Helper()
-		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "create_task", "arguments": map[string]any{"body": taskBody, "repo": "api", "source": "mcp:test-issue", "hold": true, "spec_approval": true, "merge_approval": true, "idempotency_key": "issue-42"}}})
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "create_task", "arguments": map[string]any{"body": taskBody, "repo": "api", "source": "mcp:test-issue", "spec_approval": true, "merge_approval": true, "idempotency_key": "issue-42"}}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2488,6 +2487,81 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 	events, err := st.ListEvents(store.WithActor(t.Context(), store.SystemActor()), first.ID)
 	if err != nil || len(events) != 1 || events[0].ActorID != "user:local-operator" || events[0].ActorRole != core.ActorUser {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+// TestMCPCreateTaskRefusesRetiredHold covers the compatibility input for the
+// retired hold (DEC-74(3); component-mcp-protocol): a new true and a mistyped
+// value are refused in-band with no side effect, omitted, null, and false are
+// accepted, and a retry whose key names a task stored with hold before the
+// retirement returns that original task.
+func TestMCPCreateTaskRefusesRetiredHold(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.Repos = "demo", []string{"api"}
+	generated := 0
+	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) {
+		generated++
+		return "Retired hold", nil
+	}
+	enqueued := 0
+	server.OnCreate = func(context.Context, string) { enqueued++ }
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(store.WithActor(request.Context(), store.SystemActor()))
+	arguments := func(key string, extra map[string]any) map[string]any {
+		values := map[string]any{"workspace_id": "demo", "body": "Retire the hold", "repo": "api", "idempotency_key": key}
+		maps.Copy(values, extra)
+		return values
+	}
+	countTasks := func() int {
+		tasks, err := st.ListTasks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(tasks)
+	}
+	for name, value := range map[string]any{"true": true, "string": "yes", "number": 1} {
+		if _, err := server.callMCPTool(request, "create_task", arguments("refused-"+name, map[string]any{"hold": value})); err == nil || !strings.Contains(err.Error(), "task_hold_retired") || !strings.Contains(err.Error(), "DEC-74") {
+			t.Fatalf("%s hold error=%v", name, err)
+		}
+	}
+	if countTasks() != 0 || generated != 0 || enqueued != 0 {
+		t.Fatalf("refused hold created tasks=%d titles=%d enqueued=%d", countTasks(), generated, enqueued)
+	}
+	for name, extra := range map[string]map[string]any{"omitted": nil, "null": {"hold": nil}, "false": {"hold": false}} {
+		result, err := server.callMCPTool(request, "create_task", arguments("accepted-"+name, extra))
+		if err != nil {
+			t.Fatalf("%s hold: %v", name, err)
+		}
+		task := result.(map[string]any)["task"].(core.Task)
+		if wire, _ := json.Marshal(task); task.Hold || bytes.Contains(wire, []byte(`"hold"`)) {
+			t.Fatalf("%s hold task=%s", name, wire)
+		}
+	}
+
+	original, err := server.callMCPTool(request, "create_task", arguments("historical-held", map[string]any{"level": "L3"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := original.(map[string]any)["task"].(core.Task)
+	if !first.SpecApproval || !first.MergeApproval || first.Hold {
+		t.Fatalf("L3 task=%+v, want both gates on and no reservation", first)
+	}
+	titles, notified := generated, enqueued
+	// The keyed task now reads as stored with hold before the retirement. A
+	// retry repeating the original L3 and hold: true returns it unchanged.
+	server.Store = historicalHoldLookup{Store: st}
+	replayed, err := server.callMCPTool(request, "create_task", arguments("historical-held", map[string]any{"level": "L3", "hold": true}))
+	if err != nil {
+		t.Fatalf("historical held retry: %v", err)
+	}
+	replay := replayed.(map[string]any)
+	if task := replay["task"].(core.Task); task.ID != first.ID || replay["created"] != false {
+		t.Fatalf("replay=%+v first=%s", replay, first.ID)
+	}
+	if created, err := st.CountEvents(ctx, first.ID, "task.created"); err != nil || created != 1 || generated != titles || enqueued != notified {
+		t.Fatalf("task.created=%d titles=%d enqueued=%d err=%v", created, generated, enqueued, err)
 	}
 }
 
@@ -2573,8 +2647,8 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := firstResult.(map[string]any)["task"].(core.Task)
-	if first.Mode != "" || first.Hold || !first.SpecApproval || !first.MergeApproval {
-		t.Fatalf("first=%+v", first)
+	if wire, err := json.Marshal(first); err != nil || first.Mode != "" || bytes.Contains(wire, []byte(`"hold"`)) || !first.SpecApproval || !first.MergeApproval {
+		t.Fatalf("first=%s err=%v", wire, err)
 	}
 
 	// Both live availability and omitted workspace gate defaults change after
