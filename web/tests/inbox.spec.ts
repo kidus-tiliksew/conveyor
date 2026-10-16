@@ -69,8 +69,10 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       harness.inboxRequests.push(url.search)
       const band = url.searchParams.get('band')
       const items = band ? f.items.filter((item) => item.band === band) : f.items
+      const offset = Number(url.searchParams.get('offset') ?? 0)
+      const limit = Number(url.searchParams.get('limit') ?? items.length)
       return route.fulfill({
-        json: { items, acts: f.acts ?? [] },
+        json: { items: items.slice(offset, offset + limit), acts: f.acts ?? [] },
         headers: { 'X-Conveyor-Total': String(items.length) },
       })
     }
@@ -110,7 +112,12 @@ function decisionsFixture(): Fixture {
     items: [
       {
         band: 'decisions',
-        task: task('T-zeta', 'Zeta plan everyone waits on'),
+        task: {
+          ...task('T-zeta', 'Zeta plan everyone waits on'),
+          context: {
+            requirements: [{ id: 'REQ-2', title: 'Reproducible builds', version: 3, archived: false }],
+          },
+        },
         next_action: {
           kind: 'plan_approval',
           label: 'Approve the plan',
@@ -258,10 +265,19 @@ test('bands render in server order with the decision card the server states', as
     'href',
     'https://github.com/acme/conveyor/pull/77',
   )
-  await expect(card.getByText('Serves REQ-2, REQ-6')).toBeVisible()
+  // Served requirements are chips: the context title when the task carries
+  // one, the bare ID otherwise.
+  await expect(card.locator('[data-serves="REQ-2"]')).toHaveText('REQ-2Reproducible builds')
+  await expect(card.locator('[data-serves="REQ-6"]')).toHaveText('REQ-6')
   await expect(card.getByText('Does this plan meet the requirement?')).toBeVisible()
   await expect(card.getByText('Recommendation: Approve: the plan covers every criterion.')).toBeVisible()
-  await expect(card.getByText('If ignored: The task waits at the plan gate.')).toBeVisible()
+  await expect(card.locator('[data-decision-footer]')).toContainText(
+    'If you do nothing: The task waits at the plan gate.',
+  )
+  await expect(card.locator('[data-context-link]')).toHaveText('View plan →')
+  await expect(decisionCards(page).nth(1).getByText('No PR yet')).toBeVisible()
+  await expect(decisionCards(page).nth(1).locator('[data-context-link]')).toHaveText('View checkpoint →')
+  await expect(decisionCards(page).nth(2).locator('[data-context-link]')).toHaveText('View review →')
   await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', soon)
   await card.getByText('Show IDs').click()
   await expect(card.getByText('wo-zeta-1')).toBeVisible()
@@ -721,4 +737,318 @@ test('the inbox fits a 390px viewport without horizontal overflow', async ({ pag
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
   await expect(page.getByRole('link', { name: '3 decisions waiting in the Inbox' })).toBeVisible()
+})
+
+test('band chips count every band from one unfiltered read and filter in the browser', async ({ page }) => {
+  const harness = await serve(page, decisionsFixture())
+  await page.goto('/inbox')
+  const chips = page.getByRole('navigation', { name: 'Inbox bands' })
+  await expect(chips.locator('[data-band-chip]')).toHaveText(['All', 'Decisions3', 'Blocked by tasks1', 'Auto1'])
+  await expect(chips).toContainText('Blockers first, then nearest deadline')
+  await expect(chips.locator('[data-band-chip="all"]')).toHaveAttribute('aria-current', 'page')
+
+  await chips.locator('[data-band-chip="blocked"]').click()
+  await expect(page).toHaveURL(/[?&]band=blocked/)
+  await expect(page.getByRole('region', { name: 'Blocked' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Decisions' })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Automatic' })).toHaveCount(0)
+  await expect(chips.locator('[data-band-chip="blocked"]')).toHaveAttribute('aria-current', 'page')
+  // Counts stay whole while one band shows.
+  await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
+
+  await chips.locator('[data-band-chip="all"]').click()
+  await expect(decisionCards(page)).toHaveCount(3)
+  // Every read of the inbox omitted the band.
+  expect(harness.inboxRequests.length).toBeGreaterThan(0)
+  expect(harness.inboxRequests.every((search) => !new URLSearchParams(search).has('band'))).toBe(true)
+})
+
+test('a decision that blocks other tasks names them on hover and keyboard focus', async ({ page }) => {
+  const fixture = decisionsFixture()
+  const blocks = [
+    { task_id: 'T-wait', title: 'Waiting on zeta', state: 'queued' },
+    { task_id: 'T-later', title: 'Generate the typed client', state: 'queued' },
+  ]
+  Object.assign(fixture.items[0].next_action as Record<string, unknown>, { blocks })
+  Object.assign(fixture.actions['T-zeta'], { blocks })
+  await serve(page, fixture)
+  await page.goto('/inbox')
+
+  const card = decisionCards(page).first()
+  const chip = card.getByRole('button', { name: 'Blocks 2 tasks' })
+  await expect(chip).toBeVisible()
+  await chip.hover()
+  const list = card.locator('[data-blocks-list]')
+  await expect(list.locator('li')).toHaveText(['Waiting on zeta', 'Generate the typed client'])
+  await page.mouse.move(0, 0)
+  await expect(list).toHaveCount(0)
+  await chip.focus()
+  await expect(list.locator('li')).toHaveText(['Waiting on zeta', 'Generate the typed client'])
+
+  // A decision without dependents shows no chip.
+  await expect(
+    decisionCards(page)
+      .nth(1)
+      .getByRole('button', { name: /^Blocks / }),
+  ).toHaveCount(0)
+})
+
+test('the plan panel splits the plan at its headings and its footer decides the plan', async ({ page }) => {
+  const fixture = decisionsFixture()
+  fixture.activity = {
+    'T-zeta': {
+      task: {
+        ...task('T-zeta', 'Zeta plan everyone waits on'),
+        context: { requirements: [{ id: 'REQ-2', title: 'Reproducible builds', version: 3, archived: false }] },
+      },
+      events: [],
+      jobs: [],
+      interventions: [],
+      work_orders: [
+        {
+          id: 'T-zeta-spec-1',
+          task_id: 'T-zeta',
+          job_id: 'T-zeta-spec-1',
+          stage: 'spec',
+          state: 'completed',
+          agent: 'opencode',
+          model: 'claude-opus-5-5',
+          queue_entered_at: '2026-10-10T09:00:00Z',
+        },
+      ],
+      spec: {
+        task_id: 'T-zeta',
+        version: 2,
+        content: [
+          '## Approach',
+          'Pin protoc in one tools module.',
+          '',
+          '## Files touched',
+          '- `tools/tools.go` — new module pinning the generators',
+          '- scripts/gen-proto.sh rewrite',
+          '',
+          '## Ordering',
+          '1. Add the tools module.',
+          '',
+          '## Risks',
+          '- Other branches need a rebase.',
+          '',
+          '## Done criteria',
+          '- CI fails on drift.',
+        ].join('\n'),
+        acceptance_criteria: [],
+        created_at: proposedAt,
+      },
+    },
+  }
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path === '/v1/tasks/T-zeta/spec/review') {
+      fixture.items = fixture.items.filter((item) => item.task?.id !== 'T-zeta')
+    }
+    return undefined
+  })
+  await page.goto('/inbox')
+
+  await decisionCards(page).first().locator('[data-context-link]').click()
+  const sheet = page.getByRole('dialog', { name: 'Decision context' })
+  const plan = sheet.locator('[data-plan-context]')
+  await expect(plan.getByRole('heading', { name: 'Plan v2' })).toBeVisible()
+  await expect(plan).toContainText('Reproducible builds')
+  await expect(plan.locator('[data-plan-submitted]')).toContainText('by the plan agent (opencode · claude-opus-5-5)')
+  await expect(plan.locator('[data-plan-section]')).toHaveCount(5)
+  expect(
+    await plan
+      .locator('[data-plan-section]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label'))),
+  ).toEqual(['Approach', 'Files touched', 'Ordering', 'Risks', 'Done criteria'])
+  const files = plan.locator('[data-plan-section="Files touched"] code')
+  await expect(files).toHaveText(['tools/tools.go', 'scripts/gen-proto.sh'])
+  await expect(plan.locator('[data-plan-section="Files touched"]')).toContainText('new module pinning the generators')
+  await expect(plan.locator('[data-plan-section="Approach"]')).toContainText('Pin protoc in one tools module.')
+
+  // The footer repeats the card's choices; deciding there posts once and closes the sheet.
+  const footer = sheet.locator('[data-sheet-choices]')
+  await footer.getByRole('button', { name: 'Approve plan' }).click()
+  await expect(sheet).toHaveCount(0)
+  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(['/v1/tasks/T-zeta/spec/review'])
+  await expect(decisionCards(page)).toHaveCount(2)
+})
+
+function dispositionFixture(binding: boolean): Fixture {
+  const fixture = decisionsFixture()
+  fixture.items = [
+    {
+      band: 'decisions',
+      task: task('T-verify', 'Rotate staging credentials', 'verifying'),
+      next_action: {
+        kind: 'verification_disposition',
+        label: 'Confirm an outcome',
+        actor: 'operator',
+        judgment: true,
+        summary: 'Verification needs a disposition.',
+        deadline: null,
+      },
+    },
+  ]
+  const choices = [
+    { ...choice('applied', 'Yes, it applied…', '/v1/work-orders/wo-verify/recover'), capability: 'operate_gates' },
+    { ...choice('not_applied', 'No, it didn’t…', '/v1/work-orders/wo-verify/recover'), capability: 'operate_gates' },
+  ]
+  fixture.actions = {
+    'T-verify': {
+      kind: 'verification_disposition',
+      label: 'Confirm an outcome',
+      actor: 'operator',
+      judgment: true,
+      summary: 'Verification needs a disposition.',
+      question: 'Did the change apply?',
+      choices,
+      deadline: null,
+      details: binding
+        ? {
+            disposition: {
+              context_id: 'ctx-1',
+              run_id: 'run-1',
+              operation_ids: ['op-1', 'op-2'],
+              input_digest: 'sha256:abc',
+            },
+          }
+        : { refusals: [{ choice: 'applied', text: 'No unresolved operation to dispose of.' }] },
+    },
+  }
+  return fixture
+}
+
+test('a verification disposition posts the server binding with the operator reason', async ({ page }) => {
+  const harness = await serve(page, dispositionFixture(true))
+  await page.goto('/inbox')
+  const card = decisionCards(page).first()
+  await expect(card.locator('[data-context-link]')).toHaveText('View operation log →')
+  await card.getByRole('button', { name: 'Yes, it applied…' }).click()
+  const send = card.locator('[data-next-action-choices]').getByRole('button', { name: 'Yes, it applied…' }).last()
+  await expect(send).toBeDisabled()
+  await card.getByRole('textbox', { name: 'Reason' }).fill('New secret version printed; health check unreachable.')
+  await send.click()
+  await expect.poll(() => harness.posts.length).toBe(1)
+  const [post] = harness.posts
+  expect(new URL(post.url()).pathname).toBe('/v1/work-orders/wo-verify/recover')
+  const body = post.postDataJSON()
+  expect(body.verification).toEqual({
+    context_id: 'ctx-1',
+    run_id: 'run-1',
+    operation_ids: ['op-1', 'op-2'],
+    input_digest: 'sha256:abc',
+    disposition: 'applied',
+    reason: 'New secret version printed; health check unreachable.',
+  })
+  expect(post.headers()['x-idempotency-key']).toBe(body.request_id)
+})
+
+test('without a binding the disposition choices stay disabled with the server refusal', async ({ page }) => {
+  const harness = await serve(page, dispositionFixture(false))
+  await page.goto('/inbox')
+  const card = decisionCards(page).first()
+  await expect(card.getByRole('button', { name: 'Yes, it applied…' })).toBeDisabled()
+  // The reasons sit beside the choices; the IDs disclosure repeats the raw details.
+  const choices = card.locator('[data-next-action-choices]')
+  await expect(choices.getByText('No unresolved operation to dispose of.')).toBeVisible()
+  await expect(card.getByRole('button', { name: 'No, it didn’t…' })).toBeDisabled()
+  await expect(choices.getByText('Take this from the task page.')).toBeVisible()
+  expect(harness.posts).toHaveLength(0)
+})
+
+test('band counts cover every page of the inbox', async ({ page }) => {
+  const fixture = decisionsFixture()
+  for (let index = 0; index < 120; index++) {
+    fixture.items.push({
+      band: 'automatic',
+      task: task(`T-run-${index}`, `Running task ${index}`, 'running'),
+      next_action: { kind: 'working', label: 'Working', actor: 'agent', judgment: false, summary: 'Working.' },
+    })
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox')
+  const chips = page.getByRole('navigation', { name: 'Inbox bands' })
+  await expect(chips.locator('[data-band-chip="automatic"]')).toHaveText('Auto121')
+  await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
+  const offsets = harness.inboxRequests.map((search) => new URLSearchParams(search).get('offset'))
+  expect(offsets).toContain('0')
+  expect(offsets).toContain('100')
+})
+
+test('the plan panel keeps a preamble and the Files touched intro beside the five sections', async ({ page }) => {
+  const fixture = decisionsFixture()
+  fixture.activity = {
+    'T-zeta': {
+      task: task('T-zeta', 'Zeta plan everyone waits on'),
+      events: [],
+      jobs: [],
+      interventions: [],
+      work_orders: [],
+      spec: {
+        task_id: 'T-zeta',
+        version: 3,
+        content: [
+          'Constraint: keep the public API frozen until the migration lands.',
+          '',
+          '## Approach',
+          'Pin the generators.',
+          '',
+          '## Files touched',
+          'Only change the following files; preserve existing data.',
+          '- `tools/tools.go` — new module',
+          '  - nested detail stays with its file',
+          '',
+          '## Ordering',
+          '1. Pin, then regenerate.',
+          '',
+          '## Risks',
+          '- None beyond a rebase.',
+          '',
+          '## Done criteria',
+          '- CI fails on drift.',
+        ].join('\n'),
+        acceptance_criteria: [],
+        created_at: proposedAt,
+      },
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  await decisionCards(page).first().locator('[data-context-link]').click()
+  const sheet = page.getByRole('dialog', { name: 'Decision context' })
+  const plan = sheet.locator('[data-plan-context]')
+  await expect(plan.locator('[data-plan-section]')).toHaveCount(5)
+  await expect(plan.locator('[data-plan-preamble]')).toHaveText(
+    'Constraint: keep the public API frozen until the migration lands.',
+  )
+  const files = plan.locator('[data-plan-section="Files touched"]')
+  await expect(files.locator('[data-plan-files-intro]')).toHaveText(
+    'Only change the following files; preserve existing data.',
+  )
+  await expect(files.locator('code')).toHaveText(['tools/tools.go'])
+  await expect(files).toContainText('nested detail stays with its file')
+  await expect(sheet.locator('[data-sheet-choices]').getByRole('button', { name: 'Approve plan' })).toBeVisible()
+})
+
+test('the inbox reads past 2,000 items to the server total', async ({ page }) => {
+  const fixture = decisionsFixture()
+  for (let index = 0; index < 2001; index++) {
+    fixture.items.push({
+      band: 'blocked',
+      task: task(`T-held-${index}`, `Held task ${index}`, 'queued'),
+      next_action: { kind: 'blocked', label: 'Blocked', actor: 'dependency', judgment: false, summary: 'Blocked.' },
+      blockers: [{ task_id: 'T-zeta', title: 'Zeta plan everyone waits on', state: 'awaiting_spec_approval' }],
+    })
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox?band=blocked')
+  const chips = page.getByRole('navigation', { name: 'Inbox bands' })
+  await expect(chips.locator('[data-band-chip="blocked"]')).toHaveText('Blocked by tasks2002')
+  await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
+  await expect(
+    page.getByRole('region', { name: 'Blocked' }).getByText('Held task 2000', { exact: true }),
+  ).toBeAttached()
+  const offsets = harness.inboxRequests.map((search) => new URLSearchParams(search).get('offset'))
+  expect(offsets).toContain('2000')
 })
