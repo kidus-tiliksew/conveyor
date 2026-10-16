@@ -381,6 +381,24 @@ func TestResolveDriftDecodesGeneratedDesignDriftID(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("resolve status=%d body=%s", response.Code, response.Body.String())
 	}
+
+	// A resolved drift must still serialise resolved_at as RFC 3339 — omitzero
+	// only drops the key while the value is the Go zero time (review).
+	var resolved map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &resolved); err != nil {
+		t.Fatalf("unmarshal resolved drift: %v", err)
+	}
+	rawResolvedAt, ok := resolved["resolved_at"]
+	if !ok {
+		t.Fatal("resolved drift JSON missing resolved_at")
+	}
+	var resolvedAt string
+	if err := json.Unmarshal(rawResolvedAt, &resolvedAt); err != nil {
+		t.Fatalf("unmarshal resolved_at: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, resolvedAt); err != nil {
+		t.Errorf("resolved_at=%q is not RFC 3339: %v", resolvedAt, err)
+	}
 }
 
 // TestMonitorStatusOmitsUnsetTimestamps verifies that GET /v1/monitor omits the
@@ -465,5 +483,31 @@ func TestMonitorStatusOmitsUnsetTimestamps(t *testing.T) {
 		if err != nil || !parsed.Equal(backoff) {
 			t.Errorf("backoff_until=%q want %s", got, backoff.Format(time.RFC3339))
 		}
+	}
+
+	// An open drift carries a zero ResolvedAt; omitzero must keep the key out
+	// of its JSON so the resolve response never advertises a year-1 date
+	// (review: Drift.ResolvedAt had the same omitempty bug).
+	drift := monitor.Drift{
+		ID: "drift-open", WorkspaceID: "demo", Repository: "conveyor", Kind: monitor.DirectPush,
+		SourceURL: "https://github.com/acme/conveyor/commit/abc", CommitSHA: "abc",
+		TaskID: "task-open", DetectedAt: time.Now().UTC(),
+	}
+	if _, _, err := st.(monitor.Store).RecordDrift(ctx, drift); err != nil {
+		t.Fatal(err)
+	}
+	raw = getStatus()
+	var driftEntries []map[string]json.RawMessage
+	if err := json.Unmarshal(raw["drift"], &driftEntries); err != nil {
+		t.Fatalf("unmarshal drift: %v", err)
+	}
+	if len(driftEntries) != 1 {
+		t.Fatalf("drift entries=%d want 1", len(driftEntries))
+	}
+	if resolvedAt, ok := driftEntries[0]["resolved_at"]; ok {
+		t.Errorf("open drift serialises resolved_at; want key absent, got %s", resolvedAt)
+	}
+	if _, ok := driftEntries[0]["detected_at"]; !ok {
+		t.Error("open drift JSON missing detected_at")
 	}
 }

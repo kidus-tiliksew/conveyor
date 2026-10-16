@@ -53,10 +53,11 @@ export function MonitorPage() {
           />
           <Metric
             label="Last successful observation"
-            value={(() => {
-              const v = status?.last_successful_observation
-              return isSetTimestamp(v) ? new Date(v!).toLocaleString() : 'Never'
-            })()}
+            value={
+              isSetTimestamp(status?.last_successful_observation)
+                ? new Date(status.last_successful_observation).toLocaleString()
+                : 'Never'
+            }
           />
         </div>
         {status?.current_error && (
@@ -69,7 +70,7 @@ export function MonitorPage() {
               <p className="text-sm text-failure">{status.current_error}</p>
               {isSetTimestamp(status.backoff_until) && (
                 <p className="mt-2 text-xs text-muted">
-                  Backoff until {new Date(status.backoff_until!).toLocaleString()}
+                  Backoff until {new Date(status.backoff_until).toLocaleString()}
                 </p>
               )}
             </CardContent>
@@ -210,7 +211,7 @@ function duration(nanoseconds: number) {
 // "0001-01-01T00:00:00Z" that encoding/json emits when omitempty is used on a
 // time.Time field. The server now uses omitzero, but this guard keeps the UI
 // correct against stale data or older server versions.
-function isSetTimestamp(value?: string): boolean {
+function isSetTimestamp(value?: string): value is string {
   if (!value) return false
   return new Date(value).getUTCFullYear() > 1
 }

@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 
+// Pin the display locale and timezone so toLocaleString output in the
+// timestamp assertions below is deterministic across runners.
+test.use({ locale: 'en-US', timezoneId: 'UTC' })
+
 test('monitor page renders health, deduplication, task links, and drift age', async ({ page }) => {
   let resolution: Record<string, string> | undefined
   await page.addInitScript(() => {
@@ -127,7 +131,7 @@ test('monitor page renders Never for zero timestamps and omits backoff line', as
     route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),
   )
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: { user: { id: 'usr_operator', role: 'operator' }, memberships: [] } }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) }),
   )
   await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
@@ -153,6 +157,9 @@ test('monitor page renders Never for zero timestamps and omits backoff line', as
 
   await page.goto('/monitor')
   await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
+  // "Never" also renders while the status query is still pending, so wait for
+  // response-dependent content (the error card) before asserting the metric.
+  await expect(page.getByText('rate limited')).toBeVisible()
 
   // Zero last_successful_observation must render as "Never", not a year-1 date.
   await expect(page.getByText('Never', { exact: true })).toBeVisible()
@@ -169,7 +176,7 @@ test('monitor page renders a real timestamp for last_successful_observation', as
     route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),
   )
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: { user: { id: 'usr_operator', role: 'operator' }, memberships: [] } }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) }),
   )
   await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))
@@ -179,6 +186,7 @@ test('monitor page renders a real timestamp for last_successful_observation', as
         workspace_id: 'demo',
         enabled: true,
         last_successful_observation: '2026-10-13T09:00:00Z',
+        current_error: 'rate limited',
         observations: [],
         drift: [],
         drift_count: 0,
@@ -189,7 +197,10 @@ test('monitor page renders a real timestamp for last_successful_observation', as
 
   await page.goto('/monitor')
   await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
+  // Wait for the response to be applied before judging the timestamp metric.
+  await expect(page.getByText('rate limited')).toBeVisible()
 
-  // A real timestamp must NOT render as "Never".
+  // A real timestamp must render as its locale string (UTC), never "Never".
+  await expect(page.getByText('10/13/2026, 9:00:00 AM')).toBeVisible()
   await expect(page.getByText('Never', { exact: true })).toHaveCount(0)
 })

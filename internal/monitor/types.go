@@ -155,7 +155,7 @@ type Drift struct {
 	MatchingPaths       []string   `json:"matching_paths,omitempty"`
 	TaskID              string     `json:"task_id"`
 	DetectedAt          time.Time  `json:"detected_at"`
-	ResolvedAt          time.Time  `json:"resolved_at,omitempty"`
+	ResolvedAt          time.Time  `json:"resolved_at,omitzero"`
 	Outcome             string     `json:"outcome,omitempty"`
 }
 
