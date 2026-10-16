@@ -28,7 +28,6 @@ type inboxItem struct {
 	Blockers         []nextaction.BlockerRef `json:"blockers,omitempty"`
 	Deadline         *time.Time              `json:"deadline,omitempty"`
 	LastEventAt      time.Time               `json:"last_event_at,omitempty"`
-	DependentsFirst  bool                    `json:"-"`
 	SortID           string                  `json:"-"`
 }
 
@@ -103,10 +102,6 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	if err != nil {
 		return nil, err
 	}
-	blockers, err := s.Store.ListDependencyBlockers(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
 	markers, err := s.Store.ListActivityMarkersForTasks(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -115,19 +110,13 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	for _, marker := range markers {
 		lastEvent[marker.TaskID] = marker.LastEventAt
 	}
-	dependedOn := map[string]bool{}
-	for _, taskID := range ids {
-		for _, blocker := range blockers[taskID].BlockingTaskIDs {
-			dependedOn[blocker] = true
-		}
-	}
 	folded := map[string]bool{}
 	for _, task := range candidates {
 		if projected[task.ID].Kind == nextaction.KindDocumentProposal {
 			folded[task.ID] = true
 		}
 	}
-	items := inboxTaskItems(candidates, projected, lastEvent, dependedOn, folded)
+	items := inboxTaskItems(candidates, projected, lastEvent, folded)
 	items = append(items, documentProposalItems(proposals)...)
 	if band != "" {
 		filtered := make([]inboxItem, 0, len(items))
@@ -142,7 +131,7 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	return items, nil
 }
 
-func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.NextAction, lastEvent map[string]time.Time, dependedOn, folded map[string]bool) []inboxItem {
+func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.NextAction, lastEvent map[string]time.Time, folded map[string]bool) []inboxItem {
 	var items []inboxItem
 	for _, task := range candidates {
 		if folded[task.ID] {
@@ -152,7 +141,7 @@ func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.Next
 		item := inboxItem{
 			Task: &task, NextAction: compactPtr(action), PullRequest: task.GitHub,
 			Serves: serves(task), Deadline: action.Deadline, LastEventAt: lastEvent[task.ID],
-			DependentsFirst: dependedOn[task.ID], SortID: task.ID, Blockers: action.BlockedBy,
+			SortID: task.ID, Blockers: action.BlockedBy,
 		}
 		switch {
 		case action.Actor == nextaction.ActorOperator && action.Judgment:
@@ -224,8 +213,12 @@ func inboxBefore(a, b inboxItem) bool {
 	if a.Band != b.Band {
 		return bandRank(a.Band) < bandRank(b.Band)
 	}
-	if a.DependentsFirst != b.DependentsFirst {
-		return a.DependentsFirst
+	// Items with dependents come first: their compact next action's blocks
+	// is the projection's own dependency reading, and a document-proposal
+	// item without a task next action has none (feature-operator-next-action
+	// NA-5).
+	if aBlocks, bBlocks := hasDependents(a), hasDependents(b); aBlocks != bBlocks {
+		return aBlocks
 	}
 	if a.Deadline == nil != (b.Deadline == nil) {
 		return a.Deadline != nil
@@ -237,6 +230,10 @@ func inboxBefore(a, b inboxItem) bool {
 		return a.LastEventAt.Before(b.LastEventAt)
 	}
 	return a.SortID < b.SortID
+}
+
+func hasDependents(item inboxItem) bool {
+	return item.NextAction != nil && len(item.NextAction.Blocks) > 0
 }
 
 func bandRank(band string) int {

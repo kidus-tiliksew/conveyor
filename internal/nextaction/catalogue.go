@@ -20,6 +20,9 @@ type Vars struct {
 	Version  int
 	State    string
 	Next     string
+	// Dependents is the titles of blocks joined as a list, empty when nothing
+	// waits on the task (feature-operator-next-action NA-4).
+	Dependents string
 }
 
 type Entry struct {
@@ -73,20 +76,20 @@ func init() {
 		run                                     *RunGate
 	}{
 		{KindTerminal, "Finished", "This task is finished.", "", "", nil, nil},
-		{KindParked, "Parked", "This task is parked.", "Put it back, or close it?", "It stays parked.", parkedChoices(), nil},
+		{KindParked, "Decide on a parked task", "This task is parked.", "Put it back, or close it?", "It stays parked.", parkedChoices(), nil},
 		{KindDispatchExhausted, "Dispatch exhausted", "Dispatch stopped after repeated failures.", "", "It stays parked until someone recovers it.", stalledChoices(), nil},
-		{KindPlanApproval, "Plan approval", "The execution plan is waiting for approval.", "Approve this plan?", "The task stays at the plan gate.", reviewChoices(), &RunGate{Kind: "spec", Label: "spec approval gate"}},
-		{KindPlanRevision, "Plan revision", "Implementation asked to revise the plan.", "Accept the revised plan?", "The revision stays pending.", revisionChoices(), &RunGate{Kind: "plan_revision", Label: "plan revision gate"}},
-		{KindMergeApproval, "Merge approval", "The reviewed branch is waiting for merge approval.", "Approve the merge?", "The merge gate stays open.", mergeApprovalChoices(), &RunGate{Kind: "merge", Label: "merge approval gate"}},
-		{KindReviewBounceLimit, "Review bounce limit", "Review bounced until the limit.", "Recover this review?", "The task stays at the human gate.", reviewChoices(), &RunGate{Kind: "human", Label: "human recovery gate"}},
-		{KindJobFailure, "Job failure", "A job failed and needs a person.", "", "The failure stays at the human gate.", reviewChoices(), &RunGate{Kind: "human", Label: "human recovery gate"}},
+		{KindPlanApproval, "Approve plan", "The execution plan is waiting for approval.", "", "", reviewChoices("Approve plan"), &RunGate{Kind: "spec", Label: "Approve plan"}},
+		{KindPlanRevision, "Approve plan revision", "Implementation asked to revise the plan.", "", "", revisionChoices(), &RunGate{Kind: "plan_revision", Label: "Approve plan revision"}},
+		{KindMergeApproval, "Approve merge", "The reviewed branch is waiting for merge approval.", "", "", mergeApprovalChoices(), &RunGate{Kind: "merge", Label: "Approve merge"}},
+		{KindReviewBounceLimit, "Settle review", "Review bounced until the limit.", "", "The task stays at the human gate.", reviewChoices("Approve"), &RunGate{Kind: "human", Label: "Settle review"}},
+		{KindJobFailure, "Job failure", "A job failed and needs a person.", "", "The failure stays at the human gate.", reviewChoices("Approve"), &RunGate{Kind: "human", Label: "human recovery gate"}},
 		{KindMergeConflict, "Merge conflict", "Automatic conflict fixes are exhausted.", "", "The conflict stays until someone fixes it.", conflictChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
-		{KindMergeExecution, "Merge", "The merge gate is on and the branch is ready to merge.", "Merge this branch?", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
+		{KindMergeExecution, "Merge branch", "The merge gate is on and the branch is ready to merge.", "", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMerging, "Merging", "Conveyor is merging this branch.", "", "The merge continues.", nil, nil},
 		{KindDocumentProposal, "Document proposal", "A document proposal is withholding the next claim.", "Confirm or dismiss the proposal?", "The claim stays withheld.", nil, nil},
 		{KindContextProposal, "Context proposal", "A context proposal is waiting for a decision.", "Confirm or dismiss the proposed context?", "The proposal stays pending.", nil, nil},
 		{KindAgentQuestion, "Agent question", "The agent stopped for a decision.", "Answer the agent?", "The order stays released.", answerChoices(), nil},
-		{KindVerificationDisposition, "Verification disposition", "Verification needs a disposition.", "Was the change applied?", "The verify order stays at the checkpoint.", dispositionChoices(), nil},
+		{KindVerificationDisposition, "Confirm an outcome", "Verification needs a disposition.", "Did the change apply? The verify agent could not observe the result.", "The verify order stays at the checkpoint.", dispositionChoices(), nil},
 		{KindForgeFailure, "Forge failure", "A forge write failed.", "", "The forge failure stays until it is retried.", roundChoices(), nil},
 		{KindReviewRecovery, "Review recovery", "A review round needs recovery.", "", "The review stays interrupted.", roundChoices(), nil},
 		{KindDependencyUnsatisfiable, "Dependency unsatisfiable", "A dependency ended without merging.", "Remove the dependency, or close the task?", "The order stays unclaimable.", dependencyChoices(), nil},
@@ -108,6 +111,7 @@ func init() {
 		}
 		put(item.kind, "", "", "", entry)
 	}
+	decisionWording(text)
 	for _, item := range []struct{ variant, label, summary, question string }{
 		{AgentQuestionCitedRevisions, "Cited revisions need a decision",
 			"The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",
@@ -221,4 +225,58 @@ func summaryWithRetry(base string, vars Vars) string {
 		return base
 	}
 	return fmt.Sprintf("%s Next retry at %s (attempt %d).", base, vars.RetryAt, vars.Attempts)
+}
+
+// decisionWording states the judgment kinds' questions and if-ignored
+// sentences that read the plan version, pull-request number, bounce count,
+// and dependents (feature-operator-next-action NA-4, Decision wording). A
+// value the factory never recorded is described rather than invented.
+func decisionWording(text func(string) func(Vars) string) {
+	blockedOr := func(otherwise string) func(Vars) string {
+		return func(v Vars) string {
+			if v.Dependents != "" {
+				return v.Dependents + " stay blocked."
+			}
+			return otherwise
+		}
+	}
+	plan := func(v Vars) string {
+		if v.Version > 0 {
+			return fmt.Sprintf("plan v%d", v.Version)
+		}
+		return "the latest plan"
+	}
+	set := func(kind string, question, ignored func(Vars) string) {
+		key := catalogueKey{kind, "", "", "", ""}
+		entry := catalogueTable[key]
+		entry.Question = question
+		if ignored != nil {
+			entry.IfIgnored = ignored
+		}
+		catalogueTable[key] = entry
+	}
+	set(KindPlanApproval, func(v Vars) string {
+		return fmt.Sprintf("Is %s the right way to do this? Approving starts implementation.", plan(v))
+	}, blockedOr("The task stays at the plan gate."))
+	set(KindPlanRevision, func(v Vars) string {
+		return fmt.Sprintf("Accept %s, the revision implementation asked for?", plan(v))
+	}, blockedOr("The revision stays pending."))
+	set(KindMergeApproval, func(v Vars) string {
+		if v.PR > 0 {
+			return fmt.Sprintf("Review approved pull request #%d. Merge it?", v.PR)
+		}
+		return "Review approved the pull request. Merge it?"
+	}, blockedOr("The merge gate stays open."))
+	set(KindMergeExecution, func(v Vars) string {
+		if v.PR > 0 {
+			return fmt.Sprintf("Merge pull request #%d?", v.PR)
+		}
+		return "Merge the pull request?"
+	}, nil)
+	set(KindReviewBounceLimit, func(v Vars) string {
+		if v.Attempts > 0 {
+			return fmt.Sprintf("Review bounced %d times. Approve, ask for changes, or reject?", v.Attempts)
+		}
+		return "Review reached the bounce limit. Approve, ask for changes, or reject?"
+	}, text("The task stays at the human gate."))
 }

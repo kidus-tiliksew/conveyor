@@ -36,6 +36,19 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 		if action := read(id, tc.kind); action.Details.GateKind == "" {
 			t.Fatalf("%s missing gate kind", tc.kind)
 		}
+		if tc.kind != nextaction.KindPlanApproval {
+			continue
+		}
+		// The plan gate names the recorded latest plan version
+		// (feature-operator-next-action NA-4).
+		for i := 0; i < 2; i++ {
+			if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: id, Content: "plan", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{})}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := read(id, tc.kind).Question; got != "Is plan v2 the right way to do this? Approving starts implementation." {
+			t.Fatalf("plan question = %q", got)
+		}
 	}
 	revision := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
 	if _, err := requestPlanRevision(ctx, st, revision.order.TaskID, revision.order.ID, revision.workerID, revision.sessionID, "the API moved"); err != nil {
@@ -46,12 +59,23 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 	acceptReviewRound(t, st, ctx, mergeID, func(order core.WorkOrder, seat int) core.ReviewDecision {
 		return core.ReviewDecision{TaskID: mergeID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat, Verdict: "approve", ReasonCode: "verified", Summary: "merge gate", ReviewedCommitSHA: "head", PolicyVersion: 1, MergeApproval: true, MaxBounces: 3}
 	})
-	read(mergeID, nextaction.KindMergeApproval)
+	if got := read(mergeID, nextaction.KindMergeApproval).Question; got != "Review approved the pull request. Merge it?" {
+		t.Fatalf("merge question without a recorded pull request = %q", got)
+	}
+	// The question names the recorded pull request, never an issue number.
+	if err := st.AppendEvent(ctx, core.Event{TaskID: mergeID, Kind: "pull_request.opened", ActorRole: core.ActorSystem, At: now, Payload: core.JSONPayload(map[string]any{"number": 4242, "head_sha": "head"})}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(mergeID, nextaction.KindMergeApproval).Question; got != "Review approved pull request #4242. Merge it?" {
+		t.Fatalf("merge question = %q", got)
+	}
 	bounceID := createRunningTask(t, st, ctx, workspace)
 	acceptReviewRound(t, st, ctx, bounceID, func(order core.WorkOrder, seat int) core.ReviewDecision {
 		return core.ReviewDecision{TaskID: bounceID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat, Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: 1}
 	})
-	read(bounceID, nextaction.KindReviewBounceLimit)
+	if got := read(bounceID, nextaction.KindReviewBounceLimit).Question; got != "Review bounced 1 times. Approve, ask for changes, or reject?" {
+		t.Fatalf("bounce question = %q, want the recorded bounce count", got)
+	}
 
 	claimedID := orderTask(t, st, ctx, workspace, core.WorkOrder{})
 	if _, err := For(st).ClaimWorkOrder(ctx, "order-"+claimedID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
