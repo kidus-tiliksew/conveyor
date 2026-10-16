@@ -35,8 +35,8 @@ func TestTaskFlowRetryingAttemptFollowsTheWindow(t *testing.T) {
 		at := tc.at
 		action := nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, Deadline: &at, CurrentOrder: &nextaction.OrderView{ID: "o"}, Details: nextaction.Details{ReasonCode: "automatic_recovery"}}
 		flow := store.FoldTaskFlow(tc.events, action, policy, at)
-		if want := (store.FlowRetrying{Attempt: tc.want, Of: policy.AutomaticRecoveries}); flow.Side.Retrying == nil || *flow.Side.Retrying != want {
-			t.Fatalf("%s: side.retrying = %+v, want %+v", name, flow.Side.Retrying, want)
+		if got := flow.Side.Retrying; got == nil || got.Attempt != tc.want || got.Of == nil || *got.Of != policy.AutomaticRecoveries {
+			t.Fatalf("%s: side.retrying = %+v, want %d of %d", name, got, tc.want, policy.AutomaticRecoveries)
 		}
 	}
 }

@@ -2,7 +2,9 @@ package store
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,16 +57,59 @@ var flowStatusCopy = map[string]flowStatusText{
 	FlowUpcoming:      {"Upcoming", func(name string) string { return name + " has not started yet." }},
 }
 
+// flowNodeLabels names each stage's node on the chart and flowGateLabels each
+// gate's (component-http-api, Next-action and task-flow reads).
+var flowNodeLabels = map[core.Stage]string{
+	core.StageTriage:    "Triage",
+	core.StageSpec:      "Plan",
+	core.StageImplement: "Implement",
+	core.StageVerify:    "Verify",
+	core.StageReview:    "Review",
+	core.StageMerge:     "Merged",
+}
+
+var flowGateLabels = map[core.Stage]string{
+	core.StageSpec:  "Plan approval",
+	core.StageMerge: "Merge approval",
+}
+
+// flowGateCopy is each gate mark's label and sentence. The sentence follows
+// the mark, never the raw gate kind, so a stop that masks a gate never reads
+// as an approval request (req-operator-next-action AC-7.5, AC-7.7).
+var flowGateCopy = map[string]flowStatusText{
+	FlowDone:          {"Done", func(name string) string { return name + " was passed." }},
+	FlowNeedsOperator: {"Your approval", func(name string) string { return name + " is waiting for your decision." }},
+	FlowWaiting:       {"Waiting", func(name string) string { return name + " waits until the current stop is resolved." }},
+	FlowUpcoming:      {"Upcoming", func(name string) string { return name + " has not been reached yet." }},
+	FlowOff:           {"Off for this task", func(name string) string { return "This task's policy turned " + name + " off." }},
+}
+
 // flowSideLabels is the server-stated label of each side state; the state
 // names stay machine identifiers (feature-operator-next-action NA-7;
-// req-operator-next-action AC-1.8, AC-4.1).
+// req-operator-next-action AC-1.8, AC-7.5). The retrying label of a present
+// retry carries its attempt and limit (flowRetryLabel).
 var flowSideLabels = map[string]string{
 	FlowSideBlockedBy:     "Waiting on another task",
-	FlowSideRetrying:      "Retrying automatically",
+	FlowSideRetrying:      "Auto-retrying",
 	FlowSideParked:        "Parked",
 	FlowSideClosed:        "Closed",
-	FlowSideAgentQuestion: "Needs your answer",
+	FlowSideAgentQuestion: "Agent asks you",
 }
+
+// flowLegend is the chart legend, in display order.
+var flowLegend = []FlowLegendEntry{
+	{Status: FlowDone, Label: "Done"},
+	{Status: FlowInProgress, Label: "In progress"},
+	{Status: FlowWaiting, Label: "Waiting"},
+	{Status: FlowNeedsOperator, Label: "Your approval"},
+	{Status: FlowOff, Label: "Skipped"},
+}
+
+const (
+	flowSkippedLabel     = "skipped"
+	flowPlanBypassLabel  = "skipped for this task"
+	flowFromAnyStepLabel = "from any step"
+)
 
 // Side-state names: the keys of FlowSide.Labels and its JSON field names.
 const (
@@ -87,29 +132,44 @@ var flowGateWaitText = map[core.GateKind]string{
 const flowMissedCheckInLayout = "2006-01-02 15:04 UTC"
 
 // TaskFlow is the task's position on its stage path, folded from its events.
-// NextAction is the NA-3 statement embedded unchanged.
+// NextAction is the NA-3 statement embedded unchanged. CurrentStage is the
+// stage present side states connect to, and AsOf the instant the fold ran at.
 type TaskFlow struct {
-	Stages     []FlowStage           `json:"stages"`
-	Loops      []FlowLoop            `json:"loops"`
-	Side       FlowSide              `json:"side"`
-	NextAction nextaction.NextAction `json:"next_action"`
-	Raw        FlowRaw               `json:"raw"`
+	Stages       []FlowStage           `json:"stages"`
+	Loops        []FlowLoop            `json:"loops"`
+	Side         FlowSide              `json:"side"`
+	CurrentStage *core.Stage           `json:"current_stage"`
+	AsOf         time.Time             `json:"as_of"`
+	Display      FlowDisplay           `json:"display"`
+	NextAction   nextaction.NextAction `json:"next_action"`
+	Raw          FlowRaw               `json:"raw"`
 }
 
 // FlowStage is one main stage. Gate is null when the stage has no gate or the
-// frozen policy turned that gate off for this task. Description, StatusLabel,
-// StatusText and MissedCheckIn are server-stated copy; MissedCheckIn is empty
-// unless the current attempt's lease is past due.
+// frozen policy turned that gate off for this task. GateStatus is the gate's
+// own mark, non-null on exactly the spec and merge rows and independent of
+// the aggregate Status. Label, GateLabel, Description, StatusLabel,
+// StatusText, GateStatusLabel, GateStatusText and MissedCheckIn are
+// server-stated copy; MissedCheckIn is empty unless the current attempt's
+// lease is past due. Traversed and GateTraversed state whether the recorded
+// path has reached the node.
 type FlowStage struct {
-	ID             core.Stage              `json:"id"`
-	Gate           *string                 `json:"gate"`
-	Status         string                  `json:"status"`
-	Description    string                  `json:"description"`
-	StatusLabel    string                  `json:"status_label"`
-	StatusText     string                  `json:"status_text"`
-	MissedCheckIn  string                  `json:"missed_check_in"`
-	Attempts       []FlowAttempt           `json:"attempts"`
-	CurrentAttempt *nextaction.AttemptView `json:"current_attempt"`
+	ID              core.Stage              `json:"id"`
+	Label           string                  `json:"label"`
+	Gate            *string                 `json:"gate"`
+	GateLabel       string                  `json:"gate_label"`
+	GateStatus      *string                 `json:"gate_status"`
+	GateStatusLabel string                  `json:"gate_status_label"`
+	GateStatusText  string                  `json:"gate_status_text"`
+	Status          string                  `json:"status"`
+	Description     string                  `json:"description"`
+	StatusLabel     string                  `json:"status_label"`
+	StatusText      string                  `json:"status_text"`
+	MissedCheckIn   string                  `json:"missed_check_in"`
+	Traversed       bool                    `json:"traversed"`
+	GateTraversed   bool                    `json:"gate_traversed"`
+	Attempts        []FlowAttempt           `json:"attempts"`
+	CurrentAttempt  *nextaction.AttemptView `json:"current_attempt"`
 }
 
 // FlowAttempt is one queue episode of one work order.
@@ -127,6 +187,7 @@ type FlowLoop struct {
 	From  core.Stage `json:"from"`
 	To    core.Stage `json:"to"`
 	Count int        `json:"count"`
+	Label string     `json:"label"`
 }
 
 // FlowSide keeps each side state's own field and adds Labels, which holds a
@@ -140,9 +201,27 @@ type FlowSide struct {
 	Labels        map[string]string       `json:"labels"`
 }
 
+// FlowRetrying pairs an attempt with the limit it counts against. Of is null
+// when no limit is recorded for that counter, never a guessed default.
 type FlowRetrying struct {
-	Attempt int `json:"attempt"`
-	Of      int `json:"of"`
+	Attempt int  `json:"attempt"`
+	Of      *int `json:"of"`
+}
+
+// FlowDisplay is the chart's remaining server copy: the legend, a label for
+// every side state whether present or not, and the skipped, plan-bypass and
+// from-any-step labels.
+type FlowDisplay struct {
+	Legend           []FlowLegendEntry `json:"legend"`
+	SideLabels       map[string]string `json:"side_labels"`
+	SkippedLabel     string            `json:"skipped_label"`
+	PlanBypassLabel  string            `json:"plan_bypass_label"`
+	FromAnyStepLabel string            `json:"from_any_step_label"`
+}
+
+type FlowLegendEntry struct {
+	Status string `json:"status"`
+	Label  string `json:"label"`
 }
 
 type FlowRaw struct {
@@ -222,12 +301,13 @@ type taskFlowOrderPayload struct {
 
 // FoldTaskFlow folds one task's events into its stage flow. It reads no store,
 // task row, work-order row, job, intervention or clock, so replaying the same
-// history with the same now reproduces it (req-operator-next-action AC-4.3).
-// action is the task's NA-3 next action: needs_operator and the side states
-// NA-3 owns come from it, so the flow never derives a second actor or kind
-// (DEC-61). recovery supplies the automatic-recovery bound shown as
-// retrying.of. now is the instant the next action was projected at; it alone
-// decides whether a current attempt's lease is past due.
+// history with the same next action and now reproduces it byte for byte
+// (req-operator-next-action AC-3.5, AC-7.7). action is the task's NA-3 next
+// action: needs_operator, the gate marks and the side states NA-3 owns come
+// from it, so the flow never derives a second actor or kind (DEC-61).
+// recovery supplies the automatic-recovery bound shown as retrying.of. now is
+// the instant the next action was projected at; it decides whether a current
+// attempt's lease is past due and how long it has run, and is served as as_of.
 func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery config.RecoveryPolicy, now time.Time) TaskFlow {
 	ordered := append([]core.Event(nil), events...)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -338,11 +418,20 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			delete(closedInPass, payload.NextStage)
 		case event.Kind == "pipeline.bounced":
 			var payload struct {
-				From core.Stage `json:"from"`
-				To   core.Stage `json:"to"`
+				From   core.Stage `json:"from"`
+				To     core.Stage `json:"to"`
+				Source string     `json:"source"`
 			}
 			if json.Unmarshal(event.Payload, &payload) == nil && payload.From != "" && payload.To != "" {
-				bounces = append(bounces, taskFlowBounce{from: payload.From, to: payload.To, at: event.At})
+				// A verification failure is recorded with from=review beside
+				// source=verification; the recorded payload stays as written
+				// and the fold attributes the loop to the stage that sent the
+				// task back (AC-7.5).
+				from := payload.From
+				if payload.Source == "verification" {
+					from = core.StageVerify
+				}
+				bounces = append(bounces, taskFlowBounce{from: from, to: payload.To, at: event.At})
 			}
 		case strings.HasPrefix(event.Kind, "intervention."):
 			if event.ActorRole == core.ActorHuman && event.At.After(windowStart) {
@@ -491,6 +580,8 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		Stages:     make([]FlowStage, 0, len(taskFlowStages)),
 		Loops:      []FlowLoop{},
 		Side:       FlowSide{BlockedBy: []nextaction.BlockerRef{}, Labels: map[string]string{}},
+		AsOf:       now.UTC(),
+		Display:    flowDisplay(),
 		NextAction: action,
 		Raw: FlowRaw{
 			State: state, NextStage: nextStage, RecoveryStage: recoveryStage, GateKind: string(gateKind),
@@ -513,6 +604,9 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		if !counted {
 			flow.Loops = append(flow.Loops, FlowLoop{From: bounce.from, To: bounce.to, Count: 1})
 		}
+	}
+	for i := range flow.Loops {
+		flow.Loops[i].Label = "sent back ×" + strconv.Itoa(flow.Loops[i].Count)
 	}
 
 	current := core.Stage(nextStage)
@@ -551,6 +645,7 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		if claimed && latest.claim != nil {
 			view := *latest.claim
 			view.User = assignee
+			view.ElapsedSeconds = flowElapsed(view.ClaimedAt, now)
 			row.CurrentAttempt = &view
 		}
 		jobRunning := false
@@ -575,6 +670,8 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		}
 		name := flowStageNames[stage]
 		statusCopy := flowStatusCopy[row.Status]
+		row.Label = flowNodeLabels[stage]
+		row.GateLabel = flowGateLabels[stage]
 		row.Description = flowStageDescriptions[stage]
 		row.StatusLabel = statusCopy.label
 		row.StatusText = statusCopy.sentence(name)
@@ -586,19 +683,28 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		}
 		flow.Stages = append(flow.Stages, row)
 	}
+	markFlowGates(flow.Stages, action, gateKind, state, specApproval, mergeApproval)
+	markFlowTraversal(flow.Stages, state)
+	flow.CurrentStage = flowCurrentStage(action, current, state)
 
 	flow.Side.Parked = state == string(core.TaskParked)
 	flow.Side.Closed = state == string(core.TaskClosed)
 	flow.Side.AgentQuestion = action.Kind == nextaction.KindAgentQuestion
 	if action.Kind == nextaction.KindRetrying {
-		retrying := &FlowRetrying{Of: recovery.AutomaticRecoveries}
+		// attempt and of always count the same thing (AC-7.5): a scheduled
+		// recovery and a recorded recovery number pair with the recovery
+		// bound; a worker retry count has no recorded limit, so of is null.
+		bound := recovery.AutomaticRecoveries
+		retrying := &FlowRetrying{}
 		if action.CurrentOrder != nil {
 			if order := orders[action.CurrentOrder.ID]; order != nil {
-				retrying.Attempt = order.recoveryNumber
-				if action.Details.ReasonCode == "automatic_recovery" {
-					retrying.Attempt = scheduledRecoveryAttempt(order, action.Deadline, recovery.Window)
-				} else if retrying.Attempt == 0 {
+				switch {
+				case action.Details.ReasonCode == "automatic_recovery":
+					retrying.Attempt, retrying.Of = scheduledRecoveryAttempt(order, action.Deadline, recovery.Window), &bound
+				case order.retryCount > 0:
 					retrying.Attempt = order.retryCount
+				case order.recoveryNumber > 0:
+					retrying.Attempt, retrying.Of = order.recoveryNumber, &bound
 				}
 			}
 		}
@@ -623,7 +729,165 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			flow.Side.Labels[name] = flowSideLabels[name]
 		}
 	}
+	if flow.Side.Retrying != nil {
+		flow.Side.Labels[FlowSideRetrying] = flowRetryLabel(*flow.Side.Retrying)
+	}
 	return flow
+}
+
+// flowDisplay is the chart's fixed server copy.
+func flowDisplay() FlowDisplay {
+	sideLabels := make(map[string]string, len(flowSideLabels))
+	for name, label := range flowSideLabels {
+		sideLabels[name] = label
+	}
+	return FlowDisplay{
+		Legend: append([]FlowLegendEntry(nil), flowLegend...), SideLabels: sideLabels,
+		SkippedLabel: flowSkippedLabel, PlanBypassLabel: flowPlanBypassLabel, FromAnyStepLabel: flowFromAnyStepLabel,
+	}
+}
+
+// flowRetryLabel states a present retry: its attempt and limit when both are
+// recorded, its attempt alone without a limit, and neither when no count is
+// recorded.
+func flowRetryLabel(retrying FlowRetrying) string {
+	label := flowSideLabels[FlowSideRetrying]
+	switch {
+	case retrying.Attempt > 0 && retrying.Of != nil:
+		return label + " · " + strconv.Itoa(retrying.Attempt) + " of " + strconv.Itoa(*retrying.Of)
+	case retrying.Attempt > 0:
+		return label + " · " + strconv.Itoa(retrying.Attempt)
+	}
+	return label
+}
+
+// flowElapsed is the whole seconds from the claim to now, truncated and never
+// negative, and zero without a claim time.
+func flowElapsed(claimedAt *time.Time, now time.Time) int64 {
+	if claimedAt == nil || claimedAt.IsZero() {
+		return 0
+	}
+	return max(0, int64(now.Sub(*claimedAt).Seconds()))
+}
+
+// markFlowGates sets each gate's own mark, independent of its row's aggregate
+// status: off by frozen policy; needs_operator only when the next action is
+// that gate's decision; waiting when the task entered the gate but another
+// stop leads; done once the path has passed it; upcoming otherwise
+// (req-operator-next-action AC-7.5, AC-7.7).
+func markFlowGates(stages []FlowStage, action nextaction.NextAction, gateKind core.GateKind, state string, specApproval, mergeApproval bool) {
+	reachedAfter := func(stage core.Stage) bool {
+		after := false
+		for _, row := range stages {
+			if after && flowReached(row.Status) {
+				return true
+			}
+			after = after || row.ID == stage
+		}
+		return state == string(core.TaskMerged)
+	}
+	operator := action.Actor == nextaction.ActorOperator
+	for i := range stages {
+		row := &stages[i]
+		var status string
+		switch row.ID {
+		case core.StageSpec:
+			switch {
+			case !specApproval:
+				status = FlowOff
+			case operator && (action.Kind == nextaction.KindPlanApproval || action.Kind == nextaction.KindPlanRevision):
+				status = FlowNeedsOperator
+			case gateKind == core.GateKindPlanApproval || gateKind == core.GateKindPlanRevision:
+				status = FlowWaiting
+			case reachedAfter(core.StageSpec):
+				status = FlowDone
+			default:
+				status = FlowUpcoming
+			}
+		case core.StageMerge:
+			switch {
+			case !mergeApproval:
+				status = FlowOff
+			case operator && action.Kind == nextaction.KindMergeApproval:
+				status = FlowNeedsOperator
+			case gateKind == core.GateKindMergeApproval:
+				status = FlowWaiting
+			case state == string(core.TaskApproved) || state == string(core.TaskMerged):
+				status = FlowDone
+			default:
+				status = FlowUpcoming
+			}
+		default:
+			continue
+		}
+		row.GateStatus = &status
+		gateCopy := flowGateCopy[status]
+		row.GateStatusLabel = gateCopy.label
+		row.GateStatusText = gateCopy.sentence(row.GateLabel)
+	}
+}
+
+// flowReached reports whether a node with this mark has been reached.
+func flowReached(status string) bool {
+	return status == FlowDone || status == FlowInProgress || status == FlowWaiting || status == FlowNeedsOperator
+}
+
+// markFlowTraversal states whether the recorded path has reached each node on
+// the path Triage, Plan, Plan approval, Implement, Verify, Review, Merge
+// approval, Merged. A reached node is traversed; an off node is traversed only
+// once a later node is reached.
+func markFlowTraversal(stages []FlowStage, state string) {
+	type node struct {
+		reached, off bool
+		set          *bool
+	}
+	var path []node
+	for i := range stages {
+		row := &stages[i]
+		stageNode := node{reached: flowReached(row.Status), off: row.Status == FlowOff, set: &row.Traversed}
+		gateNode := func() {
+			if row.GateStatus != nil {
+				path = append(path, node{reached: flowReached(*row.GateStatus), off: *row.GateStatus == FlowOff, set: &row.GateTraversed})
+			}
+		}
+		// The merge approval gate precedes the merge it allows; the plan
+		// approval gate follows the plan it approves.
+		if row.ID == core.StageMerge {
+			gateNode()
+			stageNode.reached = stageNode.reached || state == string(core.TaskMerged)
+			path = append(path, stageNode)
+			continue
+		}
+		path = append(path, stageNode)
+		gateNode()
+	}
+	furthest := -1
+	for i, n := range path {
+		if n.reached {
+			furthest = i
+		}
+	}
+	for i, n := range path {
+		*n.set = n.reached || (n.off && i < furthest)
+	}
+}
+
+// flowCurrentStage is the stage present side states connect to: the next
+// action's current order's stage, else the fold's current stage, and none once
+// the task merged.
+func flowCurrentStage(action nextaction.NextAction, current core.Stage, state string) *core.Stage {
+	if state == string(core.TaskMerged) {
+		return nil
+	}
+	if action.CurrentOrder != nil {
+		if stage := core.Stage(action.CurrentOrder.Stage); slices.Contains(taskFlowStages, stage) {
+			return &stage
+		}
+	}
+	if slices.Contains(taskFlowStages, current) {
+		return &current
+	}
+	return nil
 }
 
 func flowGate(kind core.GateKind) *string {

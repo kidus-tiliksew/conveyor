@@ -7,12 +7,11 @@ import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
 import { AttachmentsCard } from './attachments-card'
-import { NextActionCard } from './next-action-card'
 import { isReviewable } from './review-panel'
 import { SpecCard } from './spec-card'
+import { TaskActivityTabs } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
 import { TaskHeader } from './task-header'
-import { Timeline } from './timeline'
 import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
@@ -118,8 +117,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
       <AttachmentsCard attachments={item.attachments ?? []} />
       {/* Relationships are read in the explorer panel, not inline: the panel
           is the one rendering of this task's lineage. */}
-      <NextActionCard taskId={item.task.id} gateOpen={isReviewable(item)} />
-      <Timeline item={item} routeVariant="sheet" />
+      <TaskActivityTabs item={item} routeVariant="sheet" />
     </div>
   )
 }

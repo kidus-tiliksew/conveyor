@@ -5,10 +5,11 @@ import { callerIdentity } from './helpers/caller-identity'
 
 // Task detail tells the task's story through its timeline
 // (req-operator-next-action REQ-7; feature-operator-next-action NA-6;
-// component-web-task-surfaces). There is no stage-flow chart: the next-action
-// card sits directly above the timeline, no entry renders a Current attempt
-// facts region, each stage entry keeps its own content, and parked, closed,
-// dependency waits, automatic retries, and bounces read as entries.
+// component-web-task-surfaces). The Timeline tab is the default below the
+// next-action card and reads no flow (AC-7.4; the Flow tab is covered by
+// task-flow.spec.ts), no entry renders a Current attempt facts region, each
+// stage entry keeps its own content, and parked, closed, dependency waits,
+// automatic retries, and bounces read as entries.
 
 const t0 = '2026-10-15T08:00:00Z'
 const taskId = 'timeline-task'
@@ -157,23 +158,28 @@ const surfaces = [
 ] as const
 
 for (const surface of surfaces) {
-  test(`the ${surface.name} has no stage-flow chart and puts the next action directly above the timeline`, async ({
+  test(`the ${surface.name} shows the Timeline tab by default below the next action and reads no flow`, async ({
     page,
   }) => {
     const counts = await mockAPI(page, jobItem, nextAction(`${taskId}-implement-1`))
     await page.goto(surface.url)
     const timeline = page.getByRole('region', { name: 'Execution event timeline' })
     await expect(timeline).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: 'Flow', exact: true })).toHaveAttribute('aria-selected', 'false')
     await expect(page.getByRole('region', { name: 'Task flow' })).toHaveCount(0)
-    await expect(page.locator('[data-flow-stage]')).toHaveCount(0)
+    await expect(page.locator('[data-flow-node]')).toHaveCount(0)
     const card = page.getByRole('region', { name: 'Next action' })
     await expect(card).toBeVisible()
-    // The next-action card is the timeline's immediate predecessor.
-    const adjacent = await card.evaluate(
-      (element, other) => element.nextElementSibling === other,
-      await timeline.elementHandle(),
+    // The timeline sits in the selected tab panel, which follows the
+    // next-action card.
+    const panel = page.getByRole('tabpanel')
+    await expect(panel.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+    const follows = await card.evaluate(
+      (element, other) => Boolean(other && element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING),
+      await panel.elementHandle(),
     )
-    expect(adjacent).toBe(true)
+    expect(follows).toBe(true)
     expect(counts.flow).toBe(0)
   })
 }
