@@ -150,8 +150,8 @@ func TestAppendEventRequiresActor(t *testing.T) {
 		if err := st.CreateTask(ctx, core.Task{ID: "task-refused-" + name, Workspace: "one", Title: "refused", State: core.TaskQueued, CreatedAt: time.Now().UTC()}); !errors.Is(err, ErrMissingActor) {
 			t.Fatalf("%s CreateTask: %v", name, err)
 		}
-		if _, err := st.SetTaskHold(ctx, task.ID, true); !errors.Is(err, ErrMissingActor) {
-			t.Fatalf("%s SetTaskHold: %v", name, err)
+		if _, err := taskops.New(st).Cancel(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "operator_cancel"}); !errors.Is(err, ErrMissingActor) {
+			t.Fatalf("%s CancelTaskCommand: %v", name, err)
 		}
 		if err := st.RevokeWorker(ctx, "worker-actor"); !errors.Is(err, ErrMissingActor) {
 			t.Fatalf("%s RevokeWorker: %v", name, err)
@@ -160,8 +160,8 @@ func TestAppendEventRequiresActor(t *testing.T) {
 	if events, lineage, tasks := snapshot(); events != beforeEvents || lineage != beforeLineage || tasks != beforeTasks {
 		t.Fatalf("refused writes changed state: events %d->%d lineage %d->%d tasks %d->%d", beforeEvents, events, beforeLineage, lineage, beforeTasks, tasks)
 	}
-	if got, err := st.GetTask(systemCtx, task.ID); err != nil || got.Hold {
-		t.Fatalf("refused hold changed task: %+v %v", got, err)
+	if got, err := st.GetTask(systemCtx, task.ID); err != nil || got.State != task.State {
+		t.Fatalf("refused cancellation changed task: %+v %v", got, err)
 	}
 	workers, err := st.ListWorkers(systemCtx)
 	if err != nil || len(workers) != 1 || !workers[0].RevokedAt.IsZero() {

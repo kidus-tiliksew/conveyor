@@ -16,7 +16,6 @@ import { Button } from '../ui/button'
 import { Input, Select } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
 import { Sheet } from '../ui/sheet'
-import { Switch } from '../ui/switch'
 import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { type ContextGroup, TaskContextPicker } from './task-context-picker'
 
@@ -61,7 +60,6 @@ export function TaskCreateSheet() {
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
-  const [hold, setHold] = useState(false)
   const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [dependsOn, setDependsOn] = useState<string[]>([])
@@ -84,7 +82,6 @@ export function TaskCreateSheet() {
         {
           body: body.trim(),
           repo: repoName,
-          ...(hold ? { hold } : {}),
           ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
           ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
           ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
@@ -283,25 +280,14 @@ export function TaskCreateSheet() {
           </div>
         </details>
 
-        {/* Per-task hold: reservation from the worker, not a mode. */}
-        <Field label="Hold">
-          <div className="flex items-center gap-3 rounded-md border border-border p-3">
-            <Switch aria-label="Hold for hands-on work" checked={hold} onChange={setHold} />
-            <div>
-              <p className="text-sm font-medium">Hold for hands-on work</p>
-              <p className="text-xs leading-5 text-muted">
-                Your worker won't claim this task; you attach an agent and claim it yourself. You can release the hold
-                at any time.
-              </p>
-            </div>
-          </div>
-          {workerExpected && !workerAvailable && !hold && (
-            <p className="mt-2 text-xs text-attention">
-              Worker unavailable — {workerHealth.data?.worker_unavailable_reason ?? 'waiting for a live worker'}. The
-              task will queue until a worker is available or an agent claims it over a pull surface.
-            </p>
-          )}
-        </Field>
+        {/* A task carries no hold or other worker reservation (DEC-74(3)); the
+            advisory warning depends on worker liveness only. */}
+        {workerExpected && !workerAvailable && (
+          <p className="text-xs text-attention">
+            Worker unavailable — {workerHealth.data?.worker_unavailable_reason ?? 'waiting for a live worker'}. The task
+            will queue until a worker is available or an agent claims it over a pull surface.
+          </p>
+        )}
 
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Plan approval gate">

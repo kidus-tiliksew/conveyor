@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // RunNextActionConformance pins the factory log and the shared attention count.
@@ -92,6 +93,113 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	runAgentQuestionCheckpoint(t, st, ctx, workspace)
 	runClaimWaitRow8(t, st, ctx, workspace)
 	runContextProposalRow(t, st, ctx, workspace)
+	runDependencyEdges(t, st, ctx, workspace)
+}
+
+// runDependencyEdges proves that blocks on a blocker and blocked_by on its
+// dependent describe the same current edge: the dependents whose latest
+// queued order names the blocker, ordered by task ID, whether the blocker is
+// read alone, in a batch, or in a page that excludes the dependents. A
+// dependent without a queued order, a closed dependent, and a removed edge
+// contribute nothing, and blocks never changes actor, kind, or judgment
+// (feature-operator-next-action NA-3, Dependents; req-operator-next-action
+// AC-2.1).
+func runDependencyEdges(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	ctx = store.WithActor(ctx, store.Actor{ID: "operator-next-action-dependents", Role: core.ActorHuman})
+	now := time.Now().UTC().Truncate(time.Second)
+	suffix := core.NewTaskID()
+	newTask := func(name string) string {
+		t.Helper()
+		id := "dependents-" + name + "-" + suffix
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Title: "Dependents " + name, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskRunning, CreatedAt: now}))
+		return id
+	}
+	queue := func(id string) string {
+		t.Helper()
+		orderID := id + "-implement-1"
+		requireOK(t, st.CreateJob(ctx, core.Job{ID: orderID, TaskID: id, Stage: core.StageImplement, State: core.JobPending}))
+		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: id, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
+		return orderID
+	}
+	depend := func(dependent, blocker string) {
+		t.Helper()
+		_, err := st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent, DependsOnTaskID: blocker, Reason: "blocker first", RequestID: "dependents-add-" + dependent})
+		requireOK(t, err)
+	}
+	ref := func(id string) nextaction.BlockerRef {
+		t.Helper()
+		task, err := st.GetTask(ctx, id)
+		requireOK(t, err)
+		return nextaction.BlockerRef{TaskID: task.ID, Title: task.Title, State: string(task.State)}
+	}
+	read := func(id string) nextaction.NextAction {
+		t.Helper()
+		action, err := store.ReadNextAction(ctx, st, id, store.NextActionOptions{Now: now})
+		requireOK(t, err)
+		return action
+	}
+
+	blocker := newTask("blocker")
+	first, second := newTask("a-dependent"), newTask("b-dependent")
+	idle, claimed, closed := newTask("idle"), newTask("claimed"), newTask("closed")
+	// The claim precedes its edge: a queued order behind an unmerged
+	// dependency is unclaimable.
+	claimedOrder := queue(claimed)
+	_, err := ClaimWorkOrder(ctx, st, claimedOrder, core.WorkOrderClaim{SessionID: "dependents-session", ClientToken: "dependents-token", ClaimantID: "agent", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	for _, id := range []string{second, first, idle, claimed, closed} {
+		depend(id, blocker)
+	}
+	for _, id := range []string{second, first, closed} {
+		queue(id)
+	}
+	_, err = taskops.New(st).Perform(ctx, closed, taskops.Command{Kind: core.TaskCancel})
+	requireOK(t, err)
+
+	want := []nextaction.BlockerRef{ref(first), ref(second)}
+	alone := read(blocker)
+	if !reflect.DeepEqual(alone.Blocks, want) {
+		t.Fatalf("blocker blocks = %+v, want %+v", alone.Blocks, want)
+	}
+	if alone.Actor != nextaction.ActorFactory || alone.Kind != nextaction.KindWorking || alone.Judgment {
+		t.Fatalf("blocks changed the statement: %s/%s judgment=%t", alone.Actor, alone.Kind, alone.Judgment)
+	}
+	blockerTask, err := st.GetTask(ctx, blocker)
+	requireOK(t, err)
+	unrelated, err := st.GetTask(ctx, newTask("unrelated"))
+	requireOK(t, err)
+	page, err := store.ReadNextActions(ctx, st, []core.Task{unrelated, blockerTask}, store.NextActionOptions{Now: now})
+	requireOK(t, err)
+	if !reflect.DeepEqual(page[blocker].Blocks, want) || page[unrelated.ID].Blocks == nil || len(page[unrelated.ID].Blocks) != 0 {
+		t.Fatalf("filtered page blocks = %+v unrelated = %+v, want %+v and an empty array", page[blocker].Blocks, page[unrelated.ID].Blocks, want)
+	}
+	for _, id := range []string{first, second} {
+		dependent := read(id)
+		if dependent.Kind != nextaction.KindBlocked || !reflect.DeepEqual(dependent.BlockedBy, []nextaction.BlockerRef{ref(blocker)}) || len(dependent.Blocks) != 0 {
+			t.Fatalf("dependent %s = %s blocked_by %+v blocks %+v", id, dependent.Kind, dependent.BlockedBy, dependent.Blocks)
+		}
+	}
+	for _, id := range []string{idle, claimed} {
+		if dependent := read(id); dependent.Kind == nextaction.KindBlocked || len(dependent.BlockedBy) != 0 {
+			t.Fatalf("dependent %s without a queued order = %s blocked_by %+v", id, dependent.Kind, dependent.BlockedBy)
+		}
+	}
+
+	queue(idle)
+	want = []nextaction.BlockerRef{ref(first), ref(second), ref(idle)}
+	if got := read(blocker).Blocks; !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocks after a newer queued order = %+v, want %+v", got, want)
+	}
+	_, err = st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: second, DependsOnTaskID: blocker, Reason: "no longer needed", RequestID: "dependents-remove-" + second})
+	requireOK(t, err)
+	want = []nextaction.BlockerRef{ref(first), ref(idle)}
+	if got := read(blocker).Blocks; !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocks after removing an edge = %+v, want %+v", got, want)
+	}
+	if removed := read(second); removed.Kind == nextaction.KindBlocked || len(removed.BlockedBy) != 0 {
+		t.Fatalf("removed edge still blocks %s: %s %+v", second, removed.Kind, removed.BlockedBy)
+	}
 }
 
 // runAgentQuestionCheckpoint assembles an authority_conflict agent question

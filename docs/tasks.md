@@ -28,7 +28,7 @@ gates are resolved, the title is generated, and triage is enqueued.
 The routes:
 
 - The dashboard's New task sheet: description, repository, base branch,
-  attached requirements and designs, dependencies, hold, and the two gates.
+  attached requirements and designs, dependencies, and the two gates.
 - `conveyor task new` from the CLI.
 - The `create_task` MCP tool, which requires `body`, `repo`, and a
   caller-stable `idempotency_key`. Reusing the key with an identical request
@@ -61,9 +61,13 @@ request is idempotent, and an already-present dependency returns success
 without another audit event. A late dependency pauses queued implementation
 orders in place and affects future claims, but never interrupts claimed work.
 
-`hold` reserves a task from everyone's workers. A held task sits in the queue
-until a person attaches an agent and claims it themselves, typically with
-`conveyor run`. Hold changes nothing else about the task.
+A task carries no hold or other worker reservation (DEC-74): dependencies and
+assignment are the only narrowing of who may claim its work. Intake refuses a
+new `hold: true` with `task_hold_retired`, and `PUT /v1/tasks/{id}/hold`
+answers 410. Hold values and `task.hold.*` events recorded before the
+retirement stay readable as history and affect nothing. A request-changes
+bounce re-queues the implementation order like any other: the person who ran
+it can resume it with `conveyor run`, or an eligible worker can claim it.
 
 An assignee narrows claim eligibility to one person: assigned tasks are
 claimable only by the assignee, unassigned tasks are first-come. Assignment

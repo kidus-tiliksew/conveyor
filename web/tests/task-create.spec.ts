@@ -218,7 +218,7 @@ async function mockTaskCreateAPIs(
 }
 
 // DEC-60: intake follows create_tasks, which only maintainers and operators
-// hold. Every opener and the sheet itself follow the caller's role bundle;
+// are granted. Every opener and the sheet itself follow the caller's role bundle;
 // the server authorizes the request again.
 for (const [role, allowed] of [
   ['viewer', false],
@@ -266,7 +266,7 @@ test('new task removes title input and submits description for AI title generati
   expect(submitted()).not.toContain('setup')
   await expect(page).toHaveURL(/\/tasks\/generated\?view=list$/)
   expect(submitted()).not.toContain('"title"')
-  // DEC-55(2): no execution-mode selector; hold defaults off and is omitted.
+  // DEC-74(2), DEC-74(3): no execution-mode selector, and no hold is sent.
   expect(submitted()).not.toContain('"mode"')
   expect(submitted()).not.toContain('"hold"')
 })
@@ -350,18 +350,22 @@ test('context dropdown never offers unconfirmed documents', async ({ page }) => 
   await expect(list.getByRole('option')).toHaveCount(3)
 })
 
-test('intake offers a hold toggle and advisory worker warning instead of modes', async ({ page }) => {
+test('intake offers no hold control and keeps the advisory worker warning', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
 
+  // A task carries no hold or other worker reservation (DEC-74(3)): no
+  // control, and the worker warning depends on worker liveness only.
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
+  await expect(page.getByRole('switch', { name: /hold/i })).toHaveCount(0)
+  await expect(page.getByText(/Hold for hands-on work/)).toHaveCount(0)
   await expect(page.getByText(/Worker unavailable/)).toBeVisible()
-  await page.locator('textarea').fill('Hold this one for me')
-  await page.getByRole('switch', { name: 'Hold for hands-on work' }).click()
-  await expect(page.getByText(/Worker unavailable/)).toHaveCount(0)
+  await page.locator('textarea').fill('Queue this one openly')
+  await expect(page.getByText(/Worker unavailable/)).toBeVisible()
   await page.getByRole('button', { name: 'Create task' }).click()
 
-  await expect.poll(submitted).toContain('"hold":true')
+  await expect.poll(submitted).toContain('Queue this one openly')
+  expect(submitted()).not.toContain('"hold"')
 })
 
 test('pull-only intake stays quiet when no enrolled worker is expected', async ({ page }) => {

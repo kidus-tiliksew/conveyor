@@ -34,23 +34,24 @@ func RunFeatureRetirementConformance(t *testing.T, x Fixture) {
 	if read.ID != task.ID || read.Title != task.Title || read.Workspace != x.Workspace {
 		t.Fatalf("task read=%+v", read)
 	}
-	held, err := st.SetTaskHold(ctx, task.ID, true)
+	requireOK(t, st.UpdateTaskClassification(ctx, task.ID, "chore"))
+	updated, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if !held.Hold {
-		t.Fatalf("task update did not persist: %+v", held)
+	if updated.Class != "chore" {
+		t.Fatalf("task update did not persist: %+v", updated)
 	}
 	tasks, err := st.ListTasks(ctx)
 	requireOK(t, err)
 	listed := false
 	for _, candidate := range tasks {
 		if candidate.ID == task.ID {
-			listed = candidate.Hold
+			listed = candidate.Class == "chore"
 		}
 	}
 	if !listed {
 		t.Fatalf("updated task missing from list: %+v", tasks)
 	}
-	encoded, err := json.Marshal(held)
+	encoded, err := json.Marshal(updated)
 	requireOK(t, err)
 	if bytes.Contains(encoded, []byte(`"feature_id"`)) {
 		t.Fatalf("task wire shape still carries a feature field: %s", encoded)

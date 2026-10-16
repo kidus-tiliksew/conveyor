@@ -244,7 +244,7 @@ export function BoardList() {
 // One click onto the work that is actually mine and still moving. It is a
 // preset over the existing filter row, not a view of its own: the row shows
 // exactly what it selected, and pressing it again hands the surface back
-// (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-55 — routing, never
+// (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-74(4) — routing, never
 // ordering).
 function MyTasksPreset({
   me,
@@ -330,7 +330,7 @@ function TaskRow({
             {/* Assignment is claim-eligibility routing, never ordering, so it
                 rides the row's identity line rather than claiming a column of
                 its own beside State and Stage (req-task-lifecycle-and-queue
-                AC-2.3, AC-2.7; DEC-55). */}
+                AC-2.3, AC-2.7; DEC-74(4)). */}
             <AssigneeChip assignee={task.assignee} />
           </div>
         </div>
@@ -340,7 +340,6 @@ function TaskRow({
           {failedTriageSummary(item) ? 'Triage failed' : (taskStateLabels[task.state] ?? task.state)}
         </Badge>
         {taskWasRestarted(task) && <Badge variant="mono">restarted</Badge>}
-        {task.hold && <Badge variant="attention">On hold</Badge>}
         {item.needs_attention && <CircleAlert className="size-4 text-attention" aria-label="Needs operator" />}
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-1.5 pr-3">

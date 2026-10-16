@@ -215,7 +215,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"class":                t.Class,
 		"escalation_level":     t.Level,
 		"mode":                 t.Mode,
-		"hold":                 t.Hold,
+		"hold":                 false, // a task carries no worker reservation (DEC-74(3))
 		"spec_approval":        t.SpecApproval,
 		"merge_approval":       t.MergeApproval,
 		"policy_version":       t.PolicyVersion,
@@ -328,30 +328,6 @@ func (s *Store) hydrateTaskRelations(ctx context.Context, t *core.Task) error {
 	}
 	return nil
 }
-func (s *Store) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
-	var result core.Task
-	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
-		var err error
-		result, err = getTaskRow(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		if result.Hold == hold {
-			return nil
-		}
-		if err = taskWrite(ctx, tx, id, map[string]any{"hold": hold}); err != nil {
-			return err
-		}
-		result.Hold = hold
-		kind := "task.hold.set"
-		if !hold {
-			kind = "task.hold.cleared"
-		}
-		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
-	})
-	return result, err
-}
-
 func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
 	branch = strings.TrimSpace(branch)
 	if !gitx.LegalBranchName(branch) {
@@ -753,7 +729,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
 				Title:  title,
 				Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
-				Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
+				Class:  parent.Class, Level: parent.Level,
 				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
 				PolicyVersion: parent.PolicyVersion,
 				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
@@ -1296,15 +1272,6 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 		result.NextStage = plan.NextStage
 		result.RecoveryStage = plan.Recovery
 
-		if request.Hold && !before.Hold {
-			if err = taskWrite(ctx, tx, request.TaskID, map[string]any{"hold": true}); err != nil {
-				return err
-			}
-			result.Hold = true
-			if err = taskEvent(ctx, tx, core.Event{TaskID: request.TaskID, Kind: "task.hold_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": store.UserRequestChangesReason})}); err != nil {
-				return err
-			}
-		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": plan.Command})}); err != nil {
 			return err
 		}

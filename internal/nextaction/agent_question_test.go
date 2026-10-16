@@ -57,7 +57,7 @@ func TestAgentQuestionAuthorityConflictPresentation(t *testing.T) {
 		{ID: "dismiss:system_design:component-http-api:44", Label: "Dismiss component-http-api v44", Effect: citedDismissEffect, Method: "POST", Path: "/v1/system-designs/component-http-api/versions/44/dismiss", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
 		{ID: "confirm:system_design:component-http-api:45", Label: "Confirm component-http-api v45", Effect: citedConfirmEffect, Method: "POST", Path: "/v1/system-designs/component-http-api/versions/45/confirm", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
 		{ID: "dismiss:system_design:component-http-api:45", Label: "Dismiss component-http-api v45", Effect: citedDismissEffect, Method: "POST", Path: "/v1/system-designs/component-http-api/versions/45/dismiss", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
-		{ID: "answer", Label: "Answer", Effect: "Recovers the order with direction.", Method: "POST", Path: "/v1/work-orders/question/recover", Capability: string(core.CapabilityRecoverWork), Allowed: false},
+		{ID: "answer", Label: "Answer…", Effect: "Recovers the order with direction.", Method: "POST", Path: "/v1/work-orders/question/recover", Capability: string(core.CapabilityRecoverWork), Allowed: false},
 	}
 	if !reflect.DeepEqual(got.Choices, wantChoices) {
 		t.Fatalf("choices = %+v\nwant %+v", got.Choices, wantChoices)

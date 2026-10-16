@@ -11,7 +11,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
+// A user-run bounce re-queues an ordinary eligible implement order: it is
+// listed and claimable at once, with no hold written (DEC-74(3)).
+func TestUserRequestChangesCreatesClaimableImplementOrderIntegration(t *testing.T) {
 	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
@@ -44,18 +46,23 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	feedback := "Line one.\n\n  exact indentation"
-	events, err := st.ListEvents(ctx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	updated, err := taskops.New(st).RequestChanges(ctx, taskops.RequestChanges{
-		TaskID: task.ID, JobID: reviewJob.ID, Feedback: feedback, MaxBounces: cfg.MaxBounces, Hold: store.UserRequestChangesHold(events),
+		TaskID: task.ID, JobID: reviewJob.ID, Feedback: feedback, MaxBounces: cfg.MaxBounces,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.State != core.TaskQueued || updated.NextStage != core.StageImplement || !updated.Hold {
+	if updated.State != core.TaskQueued || updated.NextStage != core.StageImplement || updated.Hold {
 		t.Fatalf("updated task=%+v", updated)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == "task.hold_changed" {
+			t.Fatalf("user bounce appended a hold event: %+v", event)
+		}
 	}
 	if err = dispatch.New(st, cfg, nil).DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
@@ -73,11 +80,8 @@ func TestUserRequestChangesCreatesHeldImplementOrderIntegration(t *testing.T) {
 		t.Fatalf("markers=%+v err=%v", markers, err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 {
+	if err != nil || len(orders) != 1 || !orders[0].Claimable {
 		t.Fatalf("orders=%+v err=%v", orders, err)
-	}
-	if _, err = st.SetTaskHold(ctx, task.ID, false); err != nil {
-		t.Fatal(err)
 	}
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("requester"), OwnerUserID: "requester", SessionID: "resume-session", ClientToken: "resume-secret", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
@@ -115,11 +119,7 @@ func TestWorkerRequestChangesBounceIsClaimableAndClearsAttentionIntegration(t *t
 	if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}); err != nil {
 		t.Fatal(err)
 	}
-	events, err := st.ListEvents(ctx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := taskops.New(st).RequestChanges(ctx, taskops.RequestChanges{TaskID: task.ID, JobID: reviewJob.ID, Feedback: "worker feedback", MaxBounces: cfg.MaxBounces, Hold: store.UserRequestChangesHold(events)})
+	updated, err := taskops.New(st).RequestChanges(ctx, taskops.RequestChanges{TaskID: task.ID, JobID: reviewJob.ID, Feedback: "worker feedback", MaxBounces: cfg.MaxBounces})
 	if err != nil || updated.Hold {
 		t.Fatalf("updated=%+v err=%v", updated, err)
 	}

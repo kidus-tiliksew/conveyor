@@ -8,10 +8,14 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-func reviewChoices() []ChoiceSpec {
+// reviewChoices are the review-route choices of plan_approval,
+// review_bounce_limit, and job_failure. Only the approve label differs by
+// kind; a label ends with an ellipsis exactly when its route requires typed
+// input (feature-operator-next-action NA-4).
+func reviewChoices(approveLabel string) []ChoiceSpec {
 	return []ChoiceSpec{
-		{ID: "approve", Label: "Approve", Effect: "Accepts the gate.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
-		{ID: "redirect", Label: "Redirect", Effect: "Sends the task back with guidance.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
+		{ID: "approve", Label: approveLabel, Effect: "Accepts the gate.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
+		{ID: "redirect", Label: "Ask for changes…", Effect: "Sends the task back with guidance.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
 		{ID: "reject", Label: "Reject", Effect: "Closes the task.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
 	}
 }
@@ -19,7 +23,7 @@ func reviewChoices() []ChoiceSpec {
 func revisionChoices() []ChoiceSpec {
 	return []ChoiceSpec{
 		{ID: "approve_revision", Label: "Approve revision", Effect: "Accepts the revised plan.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
-		{ID: "decline", Label: "Decline", Effect: "Sends the revision back with direction.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
+		{ID: "decline", Label: "Decline…", Effect: "Sends the revision back with direction.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
 		{ID: "reject", Label: "Reject", Effect: "Closes the task.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
 	}
 }
@@ -30,15 +34,15 @@ func mergeApprovalChoices() []ChoiceSpec {
 		// feature-operator-next-action v6).
 		{ID: "merge", Label: "Merge", Effect: "Approves and merges the reviewed head.", Method: "POST", Path: "/v1/tasks/{id}/merge", Capability: core.CapabilityOperateGates},
 		{ID: "approve", Label: "Approve only", Effect: "Approves the merge.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
-		{ID: "request_changes", Label: "Request changes", Effect: "Sends the branch back.", Method: "POST", Path: "/v1/tasks/{id}/request-changes", Capability: core.CapabilityRequestChanges},
+		{ID: "request_changes", Label: "Request changes…", Effect: "Sends the branch back.", Method: "POST", Path: "/v1/tasks/{id}/request-changes", Capability: core.CapabilityRequestChanges},
 	}
 }
 
 func mergeExecutionChoices() []ChoiceSpec {
 	return []ChoiceSpec{
 		{ID: "merge", Label: "Merge", Effect: "Merges the approved head.", Method: "POST", Path: "/v1/tasks/{id}/merge", Capability: core.CapabilityOperateGates},
-		{ID: "request_changes", Label: "Request changes", Effect: "Sends the branch back.", Method: "POST", Path: "/v1/tasks/{id}/request-changes", Capability: core.CapabilityRequestChanges},
-		{ID: "close", Label: "Close", Effect: "Closes the task.", Method: "POST", Path: "/v1/tasks/{id}/close", Capability: core.CapabilityOperateGates},
+		{ID: "request_changes", Label: "Request changes…", Effect: "Sends the branch back.", Method: "POST", Path: "/v1/tasks/{id}/request-changes", Capability: core.CapabilityRequestChanges},
+		{ID: "close", Label: "Close…", Effect: "Closes the task.", Method: "POST", Path: "/v1/tasks/{id}/close", Capability: core.CapabilityOperateGates},
 	}
 }
 
@@ -50,14 +54,17 @@ func conflictChoices() []ChoiceSpec {
 
 func answerChoices() []ChoiceSpec {
 	return []ChoiceSpec{
-		{ID: "answer", Label: "Answer", Effect: "Recovers the order with direction.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityRecoverWork},
+		{ID: "answer", Label: "Answer…", Effect: "Recovers the order with direction.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityRecoverWork},
 	}
 }
 
+// dispositionChoices require operate_gates, the capability
+// AuthorizeVerificationRecovery checks; each asks for the reason the
+// recovery route requires (feature-operator-next-action NA-3, NA-4).
 func dispositionChoices() []ChoiceSpec {
 	return []ChoiceSpec{
-		{ID: "applied", Label: "Applied", Effect: "Records the change as applied.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityRecoverWork},
-		{ID: "not_applied", Label: "Not applied", Effect: "Records the change as not applied.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityRecoverWork},
+		{ID: "applied", Label: "Yes, it applied…", Effect: "Records the change as applied.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityOperateGates},
+		{ID: "not_applied", Label: "No, it didn't…", Effect: "Records the change as not applied.", Method: "POST", Path: "/v1/work-orders/{order_id}/recover", Capability: core.CapabilityOperateGates},
 	}
 }
 
@@ -234,11 +241,19 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 
 func refuseChoice(in Input, id string, order *core.WorkOrder) string {
 	switch id {
-	case "recover", "answer", "applied", "not_applied":
+	case "recover", "answer":
 		if order == nil {
 			return "no order to recover"
 		}
 		return core.NextActionRecoverRefusal(*order)
+	case "applied", "not_applied":
+		if order == nil {
+			return "no order to recover"
+		}
+		if text := core.NextActionRecoverRefusal(*order); text != "" {
+			return text
+		}
+		return dispositionRefusal(in, *order)
 	case "approve":
 		if in.Task.GateKind == core.GateKindPlanRevision {
 			return core.NextActionPlainApproveRefusal(in.Task.GateKind)
@@ -280,6 +295,21 @@ func refuseChoice(in Input, id string, order *core.WorkOrder) string {
 		return ""
 	default:
 		return ""
+	}
+}
+
+// dispositionRefusal withholds the applied and not-applied choices unless the
+// selected verify order has a binding the recovery validator accepts
+// (feature-operator-next-action NA-3, Disposition binding).
+func dispositionRefusal(in Input, order core.WorkOrder) string {
+	input, ok := in.Dispositions[order.ID]
+	switch {
+	case ok && input.Binding != nil:
+		return ""
+	case ok && input.Refusal != "":
+		return input.Refusal
+	default:
+		return fmt.Sprintf("verify order %s has no sealed verification checkpoint to dispose", order.ID)
 	}
 }
 

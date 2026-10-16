@@ -1429,7 +1429,6 @@ export interface CreateTaskInput {
   body: string
   repo: string
   base_branch?: string
-  hold?: boolean
   spec_approval?: boolean
   merge_approval?: boolean
   depends_on?: string[]
@@ -1525,18 +1524,6 @@ export async function cancelTask(taskId: string, reason: string) {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ reason }),
-  })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<Task>
-}
-
-// Toggle the per-task hold: while held, workers never claim
-// the task's work orders; operator-attached agents may claim explicitly.
-export async function setTaskHold(taskId: string, hold: boolean) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/hold`), {
-    method: 'PUT',
-    headers: mutationHeaders(),
-    body: JSON.stringify({ hold }),
   })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Task>

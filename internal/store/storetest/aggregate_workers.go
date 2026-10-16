@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -308,6 +309,22 @@ func runWorkers(t *testing.T, x Fixture) {
 	if !st.IsDurable() {
 		t.Run("ClaimDeactivationSerialization", func(t *testing.T) { runVolatileClaimDeactivationSerialization(t, x, operatorCtx) })
 	}
+	// Hold retirement (DEC-74(3)): a stored historical hold never narrows
+	// worker eligibility, and every request-changes bounce re-queues an
+	// ordinary eligible implement order (component-work-orders,
+	// component-task-lifecycle).
+	t.Run("StoredTaskHoldIsWorkerClaimable", func(t *testing.T) { runStoredTaskHoldIsWorkerClaimable(t, x, operatorCtx) })
+	t.Run("UserRunRequestChangesRemainsWorkerClaimable", func(t *testing.T) {
+		for _, seedHold := range []bool{false, true} {
+			t.Run(map[bool]string{false: "unheld", true: "historical_hold"}[seedHold], func(t *testing.T) {
+				runRequestChangesRemainsWorkerClaimable(t, x, operatorCtx, true, seedHold)
+			})
+		}
+	})
+	t.Run("WorkerRunRequestChangesRemainsWorkerClaimable", func(t *testing.T) {
+		runRequestChangesRemainsWorkerClaimable(t, x, operatorCtx, false, false)
+	})
+	t.Run("HistoricalHoldEventsRemainReadable", func(t *testing.T) { runHistoricalHoldEventsRemainReadable(t, x) })
 	workers, err := st.ListWorkers(ctx)
 	requireOK(t, err)
 	if len(workers) == 0 {
@@ -362,4 +379,272 @@ func runVolatileClaimDeactivationSerialization(t *testing.T, x Fixture, operator
 	if _, err := For(st).ClaimWorkOrder(ctx, secondOrder.ID, workerClaim(second.worker, "serial-late", second.owner.ID)); !errors.Is(err, store.ErrWorkerUnauthorized) {
 		t.Fatalf("deactivation-first claim error=%v", err)
 	}
+}
+
+// requireWorkerService returns the fixture's real worker-service exercise or
+// fails the case; the hold-retirement cases never skip (DEC-74(3)).
+func requireWorkerService(t *testing.T, x Fixture) WorkerExercise {
+	t.Helper()
+	if x.WorkerService == nil {
+		t.Fatal("conformance fixture must provide WorkerService for the hold-retirement cases (DEC-74(3))")
+	}
+	service := x.WorkerService(t)
+	if service.ListClaimable == nil || service.ListVisibleOrders == nil || service.ClaimForWorker == nil {
+		t.Fatal("WorkerService must provide ListClaimable, ListVisibleOrders, and ClaimForWorker")
+	}
+	return service
+}
+
+// liveOwnedWorker enrolls an active owner's worker and heartbeats it, so the
+// worker service treats it as live for the next minute.
+func liveOwnedWorker(t *testing.T, x Fixture, operatorCtx context.Context, name string) (workerOwnerFixture, context.Context) {
+	t.Helper()
+	owned := enrollOwnedWorker(t, x, operatorCtx, name)
+	now := time.Now().UTC()
+	_, err := x.Backend.HeartbeatWorker(x.Context, owned.worker.ID, now.Add(time.Minute), []core.HarnessProbe{{Harness: "codex", Healthy: true, CheckedAt: now}})
+	requireOK(t, err)
+	// The worker routes pass the freshly authenticated enrollment, whose
+	// liveness lease the heartbeat just renewed.
+	authenticated, err := x.Backend.AuthenticateWorker(x.Context, owned.worker.CredentialHash)
+	requireOK(t, err)
+	if authenticated.CredentialHash == "" {
+		authenticated.CredentialHash = owned.worker.CredentialHash
+	}
+	owned.worker = authenticated
+	// The worker routes bind the enrolled worker's actor before listing or
+	// claiming.
+	return owned, store.WithActor(x.Context, store.Actor{ID: store.WorkerActorID(owned.worker.ID), Role: core.ActorWorker})
+}
+
+func ordersContain(orders []core.WorkOrder, id string) bool {
+	for _, order := range orders {
+		if order.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// requireWorkerListing checks whether the real worker service lists one order
+// as claimable and as visible.
+func requireWorkerListing(t *testing.T, service WorkerExercise, ctx context.Context, worker core.Worker, orderID string, claimable, visible bool) {
+	t.Helper()
+	listed, err := service.ListClaimable(ctx, worker)
+	requireOK(t, err)
+	if got := ordersContain(listed, orderID); got != claimable {
+		t.Fatalf("ListClaimable includes %s=%v, want %v", orderID, got, claimable)
+	}
+	shown, err := service.ListVisibleOrders(ctx, worker)
+	requireOK(t, err)
+	if got := ordersContain(shown, orderID); got != visible {
+		t.Fatalf("ListVisibleOrders includes %s=%v, want %v", orderID, got, visible)
+	}
+}
+
+// requireNoHoldEvents proves no hold event was appended for the task: the
+// retired reservation has no writer (DEC-74(3)).
+func requireNoHoldEvents(t *testing.T, x Fixture, taskID string) {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	for _, event := range events {
+		if strings.HasPrefix(event.Kind, "task.hold") {
+			t.Fatalf("hold event appended after the retirement: %+v", event)
+		}
+	}
+}
+
+// requireTaskJSONOmitsHold proves the task projection carries no hold key.
+func requireTaskJSONOmitsHold(t *testing.T, x Fixture, taskID string) {
+	t.Helper()
+	task, err := x.Backend.GetTask(x.Context, taskID)
+	requireOK(t, err)
+	encoded, err := json.Marshal(task)
+	requireOK(t, err)
+	var fields map[string]json.RawMessage
+	requireOK(t, json.Unmarshal(encoded, &fields))
+	if _, present := fields["hold"]; present {
+		t.Fatalf("task JSON still carries hold: %s", encoded)
+	}
+}
+
+func runStoredTaskHoldIsWorkerClaimable(t *testing.T, x Fixture, operatorCtx context.Context) {
+	service := requireWorkerService(t, x)
+	seed := requireStoredTaskHoldSeed(t, x.SeedStoredTaskHold)
+	st, ctx := x.Backend, x.Context
+	owned, workerCtx := liveOwnedWorker(t, x, operatorCtx, "hold-retired")
+
+	held := queuedWorkerOrder(t, x, ctx, "hold-retired")
+	seed(t, ctx, held.TaskID)
+	assertStoredHold(t, ctx, st, held.TaskID, true)
+	requireWorkerListing(t, service, workerCtx, owned.worker, held.ID, true, true)
+	claimed, err := service.ClaimForWorker(workerCtx, owned.worker, held.ID, workerClaim(owned.worker, "hold-retired-session", ""))
+	requireOK(t, err)
+	if claimed.WorkerID != owned.worker.ID || claimed.ClaimantID != owned.worker.ID || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("claim=%+v", claimed)
+	}
+	events, err := st.ListEvents(ctx, held.TaskID)
+	requireOK(t, err)
+	attributed := false
+	for _, event := range events {
+		attributed = attributed || event.Kind == "work_order.claimed" && event.ActorID == store.WorkerActorID(owned.worker.ID) && event.ActorRole == core.ActorWorker
+	}
+	if !attributed {
+		t.Fatalf("claim event lacks worker attribution: %+v", events)
+	}
+	assertStoredHold(t, ctx, st, held.TaskID, true)
+	requireTaskJSONOmitsHold(t, x, held.TaskID)
+	requireNoHoldEvents(t, x, held.TaskID)
+
+	// Assignment to the worker's owner still admits the claim.
+	mine := queuedWorkerOrder(t, x, ctx, "hold-retired-mine")
+	seed(t, ctx, mine.TaskID)
+	_, err = taskops.New(st).SetAssignee(ctx, mine.TaskID, owned.owner.ID)
+	requireOK(t, err)
+	requireWorkerListing(t, service, workerCtx, owned.worker, mine.ID, true, true)
+	if _, err := service.ClaimForWorker(workerCtx, owned.worker, mine.ID, workerClaim(owned.worker, "hold-retired-mine-session", "")); err != nil {
+		t.Fatalf("assigned-to-owner claim: %v", err)
+	}
+
+	// Assignment to another user still refuses, so the retirement broadens
+	// no other eligibility (DEC-74(4)).
+	otherEmail := "hold-retired-other-" + strings.ToLower(core.NewTaskID()) + "@workers.test"
+	other, err := st.ProvisionIdentityUser(operatorCtx, otherEmail, "Other assignee")
+	requireOK(t, err)
+	_, err = st.GrantWorkspaceRole(operatorCtx, otherEmail, x.Workspace, core.WorkspaceRoleContributor)
+	requireOK(t, err)
+	theirs := queuedWorkerOrder(t, x, ctx, "hold-retired-theirs")
+	seed(t, ctx, theirs.TaskID)
+	_, err = taskops.New(st).SetAssignee(ctx, theirs.TaskID, other.ID)
+	requireOK(t, err)
+	requireWorkerListing(t, service, workerCtx, owned.worker, theirs.ID, false, false)
+	if _, err := service.ClaimForWorker(workerCtx, owned.worker, theirs.ID, workerClaim(owned.worker, "hold-retired-theirs-session", "")); err == nil {
+		t.Fatal("worker claimed a task assigned to another user")
+	}
+	if persisted, err := st.GetWorkOrder(ctx, theirs.ID); err != nil || persisted.State != core.WorkOrderQueued {
+		t.Fatalf("refused claim changed order: %+v %v", persisted, err)
+	}
+
+	// Dependencies still block the claim; the blocked order stays visible.
+	dependency := core.Task{ID: "workers-hold-dependency-" + core.NewTaskID(), Workspace: x.Workspace, Title: "hold dependency", State: core.TaskQueued, NextStage: core.StageImplement, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-workers-hold-dependency", CreatedAt: time.Now().UTC()}
+	requireOK(t, st.CreateTask(ctx, dependency))
+	blockedTask := core.Task{ID: "workers-hold-blocked-" + core.NewTaskID(), Workspace: x.Workspace, Title: "hold blocked", State: core.TaskQueued, NextStage: core.StageImplement, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-workers-hold-blocked", CreatedAt: time.Now().UTC()}
+	requireOK(t, st.CreateTaskWithDependencies(ctx, blockedTask, []string{dependency.ID}))
+	job := core.Job{ID: blockedTask.ID + "-implement", TaskID: blockedTask.ID, Stage: core.StageImplement, State: core.JobPending, StartedAt: time.Now().UTC()}
+	blocked := core.WorkOrder{ID: job.ID, TaskID: blockedTask.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}
+	_, err = For(st).CreateStageWorkOrder(ctx, job, blocked)
+	requireOK(t, err)
+	seed(t, ctx, blockedTask.ID)
+	requireWorkerListing(t, service, workerCtx, owned.worker, blocked.ID, false, true)
+	if _, err := service.ClaimForWorker(workerCtx, owned.worker, blocked.ID, workerClaim(owned.worker, "hold-retired-blocked-session", "")); err == nil {
+		t.Fatal("worker claimed a dependency-blocked order")
+	}
+}
+
+// runRequestChangesRemainsWorkerClaimable reaches the merge gate after a
+// user-run or worker-run implement claim, requests changes, and proves the
+// fresh implement order is an ordinary eligible order: listed by the worker
+// service, claimed by an eligible worker, and clearing the returned-for-
+// changes attention, with no hold written (DEC-74(3)).
+func runRequestChangesRemainsWorkerClaimable(t *testing.T, x Fixture, operatorCtx context.Context, userRun, seedHold bool) {
+	service := requireWorkerService(t, x)
+	name := map[bool]string{false: "worker-bounce", true: "user-bounce"}[userRun]
+	if seedHold {
+		name += "-held"
+	}
+	st := x.Backend
+	owned, workerCtx := liveOwnedWorker(t, x, operatorCtx, name)
+	requester := "requester-" + core.NewTaskID()
+	ctx := store.WithActor(x.Context, store.Actor{ID: store.UserActorID(requester), Role: core.ActorUser})
+	now := time.Now().UTC()
+	task := core.Task{ID: "workers-" + name + "-" + core.NewTaskID(), Workspace: x.Workspace, Title: "bounce " + name, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-workers-" + name, State: core.TaskRunning, NextStage: core.StageReview, RecoveryStage: core.StageImplement, CreatedAt: now}
+	requireOK(t, st.CreateTask(ctx, task))
+	reviewJob := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: now}
+	requireOK(t, st.CreateJob(ctx, reviewJob))
+	claimant := "worker-previous-" + core.NewTaskID()
+	if userRun {
+		claimant = core.TaskRunClaimantID(requester)
+	}
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.claimed", Payload: core.JSONPayload(core.WorkOrder{ID: task.ID + "-implement-1", Stage: core.StageImplement, ClaimantID: claimant})}))
+	if seedHold {
+		requireStoredTaskHoldSeed(t, x.SeedStoredTaskHold)(t, ctx, task.ID)
+	}
+	_, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+	requireOK(t, err)
+
+	feedback := "Line one.\n\n  exact indentation for " + name
+	updated, err := taskops.New(st).RequestChanges(ctx, taskops.RequestChanges{TaskID: task.ID, JobID: reviewJob.ID, Feedback: feedback, MaxBounces: 3})
+	requireOK(t, err)
+	if updated.State != core.TaskQueued || updated.NextStage != core.StageImplement {
+		t.Fatalf("bounced task=%+v", updated)
+	}
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	requireOK(t, err)
+	if len(interventions) != 1 || interventions[0].Comment != feedback {
+		t.Fatalf("interventions=%+v, want the feedback verbatim", interventions)
+	}
+	markers, err := st.ListActivityMarkersForTasks(ctx, []string{task.ID})
+	requireOK(t, err)
+	if len(markers) != 1 || !markers[0].UserChangesRequested {
+		t.Fatalf("markers after bounce=%+v", markers)
+	}
+	requireNoHoldEvents(t, x, task.ID)
+	assertStoredHold(t, ctx, st, task.ID, seedHold)
+
+	// The dispatcher mints the fresh implement order; storetest cannot import
+	// dispatch, so the case mints it through the same store command.
+	job := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, StartedAt: time.Now().UTC()}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}
+	created, err := For(st).CreateStageWorkOrder(ctx, job, order)
+	requireOK(t, err)
+	if !created {
+		t.Fatal("fresh implement order was not created")
+	}
+	requireWorkerListing(t, service, workerCtx, owned.worker, order.ID, true, true)
+	claimed, err := service.ClaimForWorker(workerCtx, owned.worker, order.ID, workerClaim(owned.worker, name+"-session", ""))
+	requireOK(t, err)
+	if claimed.WorkerID != owned.worker.ID || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("claim=%+v", claimed)
+	}
+	markers, err = st.ListActivityMarkersForTasks(ctx, []string{task.ID})
+	requireOK(t, err)
+	if len(markers) != 1 || markers[0].UserChangesRequested {
+		t.Fatalf("markers after the worker claim=%+v", markers)
+	}
+	requireNoHoldEvents(t, x, task.ID)
+	assertStoredHold(t, ctx, st, task.ID, seedHold)
+	requireTaskJSONOmitsHold(t, x, task.ID)
+}
+
+// runHistoricalHoldEventsRemainReadable proves events recorded before the
+// retirement stay in the ledger exactly as stored (DEC-10, DEC-74(3)).
+func runHistoricalHoldEventsRemainReadable(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	task := newAggregateTask(t, x)
+	historical := []core.Event{
+		{TaskID: task.ID, Kind: "task.hold.set", Payload: core.JSONPayload(map[string]any{"hold": true})},
+		{TaskID: task.ID, Kind: "task.hold.cleared", Payload: core.JSONPayload(map[string]any{"hold": false})},
+		{TaskID: task.ID, Kind: "task.hold_changed", Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": store.UserRequestChangesReason})},
+	}
+	for _, event := range historical {
+		requireOK(t, st.AppendEvent(ctx, event))
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	requireOK(t, err)
+	for _, want := range historical {
+		found := false
+		for _, event := range events {
+			if event.Kind != want.Kind {
+				continue
+			}
+			var got, expected map[string]any
+			requireOK(t, json.Unmarshal(event.Payload, &got))
+			requireOK(t, json.Unmarshal(want.Payload, &expected))
+			found = found || fmt.Sprint(got) == fmt.Sprint(expected)
+		}
+		if !found {
+			t.Fatalf("historical %s event is not readable as stored: %+v", want.Kind, events)
+		}
+	}
+	requireTaskJSONOmitsHold(t, x, task.ID)
 }

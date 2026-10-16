@@ -76,8 +76,8 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 		t.Fatalf("worker unavailable: %s", status.Reason)
 	}
 
-	createOrder := func(taskID string, hold bool) {
-		task := core.Task{ID: taskID, Workspace: "demo", Hold: hold, SpecApproval: true, MergeApproval: true, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	createOrder := func(taskID string) {
+		task := core.Task{ID: taskID, Workspace: "demo", SpecApproval: true, MergeApproval: true, PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 		if err := st.CreateTask(workerCtx, task); err != nil {
 			t.Fatal(err)
 		}
@@ -89,8 +89,7 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	createOrder("auto-task", false)
-	createOrder("manual-task", true)
+	createOrder("auto-task")
 	if err := store.SetMemoryWorkspaceMember(st, "demo", "usr-assigned", true); err != nil {
 		t.Fatal(err)
 	}
@@ -100,20 +99,6 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 	listed, err := service.ListClaimable(workerCtx, worker)
 	if err != nil || len(listed) != 1 || listed[0].Task.ID != "auto-task" || listed[0].HarnessSelection != "local" || listed[0].Confinement != "none" || listed[0].Auth != "byoa" || listed[0].GitAuthor.Name != "Assigned User" || listed[0].GitAuthor.Email != "assigned@example.test" {
 		t.Fatalf("listed=%+v err=%v", listed, err)
-	}
-	// Held tasks are rejected at claim time (DEC-5), and a
-	// cleared hold releases the order back to worker claimability.
-	if _, claimErr := service.ClaimForWorker(workerCtx, worker, "manual-task-implement-1", core.WorkOrderClaim{SessionID: "session-held", ClientToken: "held-token"}); claimErr == nil || !strings.Contains(claimErr.Error(), "held") {
-		t.Fatalf("held claim err=%v", claimErr)
-	}
-	if _, holdErr := st.SetTaskHold(workerCtx, "manual-task", false); holdErr != nil {
-		t.Fatal(holdErr)
-	}
-	if relisted, relistErr := service.ListClaimable(workerCtx, worker); relistErr != nil || len(relisted) != 2 {
-		t.Fatalf("relisted=%+v err=%v", relisted, relistErr)
-	}
-	if _, holdErr := st.SetTaskHold(workerCtx, "manual-task", true); holdErr != nil {
-		t.Fatal(holdErr)
 	}
 	claimed, err := service.ClaimForWorker(workerCtx, worker, listed[0].Order.ID, core.WorkOrderClaim{SessionID: "session-a", ClientToken: "child-token"})
 	if err != nil || claimed.WorkerID != worker.ID {
@@ -188,7 +173,7 @@ func TestPairingHeartbeatHealthAndWorkerClaimLifecycle(t *testing.T) {
 		t.Fatalf("invalid release cause err=%v", err)
 	}
 
-	createOrder("submitted-task", false)
+	createOrder("submitted-task")
 	submittedClaim, err := service.ClaimForWorker(workerCtx, worker, "submitted-task-implement-1", core.WorkOrderClaim{SessionID: "session-b", ClientToken: "submitted-token"})
 	if err != nil {
 		t.Fatal(err)

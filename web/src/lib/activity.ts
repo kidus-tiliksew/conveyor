@@ -199,14 +199,6 @@ export function pendingUserRequestChanges(summaries: TaskSummaries | undefined):
   return { feedback: typeof returned.feedback === 'string' ? returned.feedback.trim() : '', at: returned.at }
 }
 
-// Match store.UserRequestChangesHold: the latest implement claim records
-// whether the bounced work originated in an explicit `conveyor run`
-// (`summaries.run_implementation`). Hold is deliberately not consulted because
-// operators may hold worker-pipeline work.
-export function userRunImplementation(summaries: TaskSummaries | undefined): boolean {
-  return summaries?.run_implementation === true
-}
-
 // req-intake-and-triage REQ-3; req-task-centric-operations-view REQ-2:
 // summary projections carry stages, not execution evidence. Only detail
 // evidence below may suppress a human gate.

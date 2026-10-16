@@ -68,7 +68,7 @@ risk in the plan; implementation reports it through progress/check-in and does
 not create child tasks.
 
 Gate approval, repository-drift resolution, requirement/decision/System Design
-confirmation, and task cancel/hold are operator-only actions, but plans must
+confirmation, and task cancellation are operator-only actions, but plans must
 distinguish conflicts for which an implementation order can author a proposal.
 When confirmation of a requirement-clause revision, System Design revision, or
 decision is needed and the task-authored governance proposal tools apply,
@@ -77,7 +77,7 @@ the resulting pending proposal identifiers in the checkpoint report, and then
 pause for operator confirmation. Reaching the checkpoint with those proposals
 already pending is the implementer's success condition.
 
-For gate approval, repository-drift resolution, and task cancel/hold, no
+For gate approval, repository-drift resolution, and task cancellation, no
 applicable task-authored proposal surface is available. Express the checkpoint
 exactly as "pause and report until the operator has done X," and require the
 plan to state why proposing is unavailable. In every case, reaching and

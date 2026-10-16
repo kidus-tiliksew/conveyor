@@ -29,10 +29,15 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 	// PostgreSQL timestamps have microsecond precision, so normalize the
 	// fixture before asserting that preemption preserves its queue clocks.
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", Hold: true, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	// A row stored with hold before the retirement: preemption neither reads
+	// nor clears the historical column (DEC-74(3)).
+	if _, err = st.pool.Exec(ctx, `UPDATE tasks SET hold=true WHERE workspace_id=$1 AND id=$2`, workspace, task.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err = st.CreateJob(ctx, job); err != nil {

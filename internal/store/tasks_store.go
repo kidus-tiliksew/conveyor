@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
@@ -314,7 +313,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
 			Title:  title,
 			Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
-			Class:  parent.Class, Level: parent.Level, Hold: parent.Hold,
+			Class:  parent.Class, Level: parent.Level,
 			SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
 			PolicyVersion: parent.PolicyVersion,
 			SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
@@ -695,6 +694,9 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		}
 		m.repositoryInstalls[key] = append(m.repositoryInstalls[key], core.RepositoryInstallTask{TaskID: t.ID, Attempt: t.RepositoryInstallAttempt})
 	}
+	// A task carries no worker reservation: every insert stores hold false,
+	// like the durable column default (DEC-74(3); component-persistence).
+	t.Hold = false
 	m.tasks[t.ID] = t
 	if len(seen) > 0 {
 		m.dependencies[t.ID] = map[string]struct{}{}
@@ -1095,36 +1097,6 @@ func taskOperationsEventKind(kind string) bool {
 	}
 }
 
-func (m *memory) SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error) {
-	if _, err := RequireActor(ctx); err != nil {
-		return core.Task{}, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	t, ok := m.tasks[id]
-	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", id)
-	}
-	if t.Hold == hold {
-		return t, nil
-	}
-	// PostgreSQL rolls back the projection when its audit text cannot be
-	// stored. Validate before changing the memory projection (DEC-38;
-	// component-persistence; component-verification-strategy).
-	actor := ActorFromContext(ctx)
-	if !utf8.ValidString(actor.ID) || !utf8.ValidString(string(actor.Role)) || strings.ContainsRune(actor.ID, '\x00') || strings.ContainsRune(string(actor.Role), '\x00') {
-		return core.Task{}, fmt.Errorf("audit actor must be valid UTF-8 without NUL characters")
-	}
-	t.Hold = hold
-	m.tasks[id] = t
-	kind := "task.hold.set"
-	if !hold {
-		kind = "task.hold.cleared"
-	}
-	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: kind, Payload: core.JSONPayload(map[string]any{"hold": hold})})
-	return t, nil
-}
-
 func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Task{}, err
@@ -1370,15 +1342,9 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 	fromState, fromStage := task.State, task.NextStage
 	task.State, task.NextStage, task.RecoveryStage = state, plan.NextStage, plan.Recovery
 	task.GateKind = core.GateKindFor(state, plan.Command)
-	if request.Hold {
-		task.Hold = true
-	}
 	m.tasks[task.ID] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.state_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": plan.Command})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "pipeline.transition_decided", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from_stage": fromStage, "next_stage": plan.NextStage, "recovery_stage": plan.Recovery, "state": state})})
-	if request.Hold {
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.hold_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": UserRequestChangesReason})})
-	}
 	return task, nil
 }
 
@@ -1468,6 +1434,12 @@ func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Interve
 	}
 	if intervention.At.IsZero() {
 		intervention.At = time.Now().UTC()
+	}
+	// The durable stores reject a NUL audit actor at the event insert and roll
+	// back; the reference refuses the same input before its first write
+	// (DEC-39; component-task-lifecycle).
+	if strings.ContainsRune(actor.ID, 0) || strings.ContainsRune(intervention.ActorID, 0) {
+		return core.Task{}, fmt.Errorf("audit actor contains NUL")
 	}
 	m.nextReviewID++
 	intervention.ID = m.nextReviewID
