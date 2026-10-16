@@ -1,8 +1,8 @@
 // Package worker implements the enrolled Phase 5.1 dispatch supervisor
-// control surface. It selects orders the worker can serve — skipping held
-// tasks, whose hold changes nothing else (DEC-55(3)) — and reuses the existing
-// MCP work-order lifecycle
-// rather than creating a parallel task protocol.
+// control surface. It selects orders the worker can serve — narrowed only by
+// dependencies and assignment, since a task carries no hold or other worker
+// reservation (DEC-74(3), DEC-74(4)) — and reuses the existing MCP work-order
+// lifecycle rather than creating a parallel task protocol.
 package worker
 
 import (
@@ -696,8 +696,10 @@ func (s *Service) ListClaimable(ctx context.Context, worker core.Worker) ([]Disp
 		if !order.Claimable || order.State != core.WorkOrderQueued {
 			continue
 		}
+		// Dependencies and assignment are the only task-level narrowing; a
+		// stored historical hold is never read (DEC-74(3), DEC-74(4)).
 		task, getErr := s.Store.GetTask(ctx, order.TaskID)
-		if getErr != nil || task.Hold {
+		if getErr != nil {
 			continue
 		}
 		if task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
@@ -749,7 +751,7 @@ func (s *Service) ListVisibleOrders(ctx context.Context, worker core.Worker) ([]
 		if order.State == core.WorkOrderQueued && (order.Stage == core.StageImplement || order.Stage == core.StageVerify) &&
 			!order.Claimable && len(order.BlockingTaskIDs) > 0 {
 			task, getErr := s.Store.GetTask(ctx, order.TaskID)
-			if getErr != nil || task.Hold || task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
+			if getErr != nil || task.Assignee != nil && task.Assignee.UserID != worker.OwnerUserID {
 				continue
 			}
 			if worker.Live(s.now()) {
@@ -788,9 +790,6 @@ func (s *Service) ClaimForWorker(ctx context.Context, worker core.Worker, id str
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
 		return core.WorkOrder{}, err
-	}
-	if task.Hold {
-		return core.WorkOrder{}, fmt.Errorf("task is held for operator claiming")
 	}
 	if (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && len(task.BlockingTaskIDs) > 0 {
 		return core.WorkOrder{}, fmt.Errorf("task %s is blocked by unmerged dependencies: %s", task.ID, strings.Join(task.BlockingTaskIDs, ", "))

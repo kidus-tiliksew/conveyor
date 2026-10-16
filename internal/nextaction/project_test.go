@@ -1,6 +1,9 @@
 package nextaction
 
 import (
+	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,11 +100,22 @@ func TestRefusedChoices(t *testing.T) {
 	}
 }
 
-func TestCatalogueCoverage(t *testing.T) {
+// TestCatalogueCoversEveryKind fails when a kind, stall reason, release
+// outcome, gate kind, or agent-question variant lacks an entry, when a
+// judgment kind lacks its question, or when a gate-specific copy or run-gate
+// label drifts from its kind's decision wording (feature-operator-next-action
+// NA-4).
+func TestCatalogueCoversEveryKind(t *testing.T) {
 	for _, kind := range Kinds() {
 		entry, ok := Lookup(kind, "", "", "")
 		if !ok || entry.Label == "" || entry.Summary == nil {
 			t.Fatalf("kind %s missing catalogue", kind)
+		}
+	}
+	for _, kind := range []string{KindParked, KindPlanApproval, KindPlanRevision, KindMergeApproval, KindReviewBounceLimit, KindMergeExecution, KindDocumentProposal, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindDependencyUnsatisfiable} {
+		entry, _ := Lookup(kind, "", "", "")
+		if entry.Question == nil || entry.Question(Vars{}) == "" || entry.IfIgnored == nil {
+			t.Fatalf("judgment kind %s missing question or if_ignored", kind)
 		}
 	}
 	for _, reason := range StallReasons() {
@@ -131,6 +145,180 @@ func TestCatalogueCoverage(t *testing.T) {
 		entry, ok := Lookup(string(gate), "", "", string(gate))
 		if !ok || entry.Label == "" || entry.RunGate == nil || entry.RunGate.Label == "" {
 			t.Fatalf("gate %s missing run gate", gate)
+		}
+		base, _ := Lookup(string(gate), "", "", "")
+		vars := Vars{Version: 2, PR: 7, Attempts: 3, Dependents: "Dependent"}
+		if entry.Label != base.Label || render(entry.Question, vars) != render(base.Question, vars) || render(entry.IfIgnored, vars) != render(base.IfIgnored, vars) {
+			t.Fatalf("gate %s copy drifted from kind entry", gate)
+		}
+		if gate != core.GateKindJobFailure && entry.RunGate.Label != entry.Label {
+			t.Fatalf("gate %s run gate label %q, want the decision label %q", gate, entry.RunGate.Label, entry.Label)
+		}
+	}
+}
+
+// TestDecisionWording pins the NA-4 decision wording table and the per-kind
+// choice labels: action-first labels, questions naming the plan version or
+// pull request, if_ignored naming the dependents when blocks is non-empty,
+// and an ellipsis exactly on the choices whose route takes typed input. Choice
+// IDs, routes, and effects are unchanged (feature-operator-next-action NA-4).
+func TestDecisionWording(t *testing.T) {
+	now := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	dependents := []BlockerRef{{TaskID: "b-task", Title: "Billing export", State: "queued"}, {TaskID: "a-task", Title: "Audit log", State: "queued"}}
+	gate := func(kind core.GateKind, blocks []BlockerRef) Input {
+		return Input{Task: core.Task{ID: "t", State: core.TaskAwaiting, GateKind: kind}, LatestSpec: &SpecRef{Version: 3}, GateSpecVersion: 3, PullRequest: 1312, BounceCount: 4, Blocks: blocks, MergeReadiness: &MergeReadiness{State: "MERGEABLE"}, Now: now}
+	}
+	cases := []struct {
+		name, label, question, ignored string
+		in                             Input
+		choices                        []string
+	}{
+		{"plan approval with dependents", "Approve plan", "Is plan v3 the right way to do this? Approving starts implementation.", "Billing export and Audit log stay blocked.", gate(core.GateKindPlanApproval, dependents), []string{"Approve plan", "Ask for changes…", "Reject"}},
+		{"plan approval alone", "Approve plan", "Is plan v3 the right way to do this? Approving starts implementation.", "The task stays at the plan gate.", gate(core.GateKindPlanApproval, nil), []string{"Approve plan", "Ask for changes…", "Reject"}},
+		{"plan revision with dependents", "Approve plan revision", "Accept plan v3, the revision implementation asked for?", "Billing export and Audit log stay blocked.", gate(core.GateKindPlanRevision, dependents), []string{"Approve revision", "Decline…", "Reject"}},
+		{"plan revision alone", "Approve plan revision", "Accept plan v3, the revision implementation asked for?", "The revision stays pending.", gate(core.GateKindPlanRevision, nil), []string{"Approve revision", "Decline…", "Reject"}},
+		{"merge approval with dependents", "Approve merge", "Review approved pull request #1312. Merge it?", "Billing export and Audit log stay blocked.", gate(core.GateKindMergeApproval, dependents), []string{"Merge", "Approve only", "Request changes…"}},
+		{"merge approval alone", "Approve merge", "Review approved pull request #1312. Merge it?", "The merge gate stays open.", gate(core.GateKindMergeApproval, nil), []string{"Merge", "Approve only", "Request changes…"}},
+		{"bounce limit", "Settle review", "Review bounced 4 times. Approve, ask for changes, or reject?", "The task stays at the human gate.", gate(core.GateKindReviewBounceLimit, dependents), []string{"Approve", "Ask for changes…", "Reject"}},
+		{"job failure", "Job failure", "", "The failure stays at the human gate.", gate(core.GateKindJobFailure, nil), []string{"Approve", "Ask for changes…", "Reject"}},
+		{"merge execution", "Merge branch", "Merge pull request #1312?", "Conveyor does not merge it.", Input{Task: core.Task{ID: "t", State: core.TaskApproved, MergeApproval: true}, PullRequest: 1312, Blocks: dependents, Now: now}, []string{"Merge", "Request changes…", "Close…"}},
+		{"parked", "Decide on a parked task", "Put it back, or close it?", "It stays parked.", Input{Task: core.Task{ID: "t", State: core.TaskParked}, Markers: Markers{ParkCommand: "triage.park"}, Now: now}, []string{"Close", "Start over"}},
+		{"verification disposition", "Confirm an outcome", "Did the change apply? The verify agent could not observe the result.", "The verify order stays at the checkpoint.", dispositionInput(now, &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"}), []string{"Yes, it applied…", "No, it didn't…"}},
+		{"agent question", "Agent question", "Answer the agent?", "The order stays released.", Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Markers: Markers{CheckpointDecision: true}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, LastAttemptID: "a", LastAttemptOutcome: "released"}}, Now: now}, []string{"Answer…"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Project(tc.in)
+			if got.Label != tc.label || got.Question != tc.question || got.IfIgnored != tc.ignored {
+				t.Fatalf("label/question/if_ignored = %q / %q / %q, want %q / %q / %q", got.Label, got.Question, got.IfIgnored, tc.label, tc.question, tc.ignored)
+			}
+			labels := make([]string, 0, len(got.Choices))
+			for _, choice := range got.Choices {
+				labels = append(labels, choice.Label)
+			}
+			if !reflect.DeepEqual(labels, tc.choices) {
+				t.Fatalf("choice labels = %q, want %q (refusals %+v)", labels, tc.choices, got.Details.Refusals)
+			}
+		})
+	}
+	unrecorded := []struct {
+		name, want string
+		in         Input
+	}{
+		{"plan without a version", "Is the latest plan the right way to do this? Approving starts implementation.", Input{Task: core.Task{State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval}, Now: now}},
+		{"merge without a pull request", "Review approved the pull request. Merge it?", Input{Task: core.Task{State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval}, Now: now}},
+		{"execution without a pull request", "Merge the pull request?", Input{Task: core.Task{State: core.TaskApproved, MergeApproval: true}, Now: now}},
+		{"bounce without a recorded count", "Review reached the bounce limit. Approve, ask for changes, or reject?", Input{Task: core.Task{State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, Orders: []core.WorkOrder{{ID: "o", State: core.WorkOrderQueued, AutomaticRetryCount: 5}}, Now: now}},
+	}
+	for _, tc := range unrecorded {
+		if got := Project(tc.in).Question; got != tc.want {
+			t.Fatalf("%s question = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	for _, kind := range Kinds() {
+		entry, _ := Lookup(kind, "", "", "")
+		for _, choice := range entry.Choices {
+			typed := choice.ID == "redirect" || choice.ID == "decline" || choice.ID == "request_changes" || choice.ID == "answer" || choice.ID == "applied" || choice.ID == "not_applied" || (kind == KindMergeExecution && choice.ID == "close")
+			if typed != strings.HasSuffix(choice.Label, "…") {
+				t.Fatalf("%s choice %s label %q: ellipsis must mark typed input", kind, choice.ID, choice.Label)
+			}
+		}
+	}
+}
+
+// TestBlocksNeverChangeTheStatement proves that blocks is present on every
+// kind, an empty array when nothing waits on the task, copied in task-ID
+// order onto the compact shape without aliasing, and never changes actor,
+// kind, or judgment (feature-operator-next-action NA-3, Dependents).
+func TestBlocksNeverChangeTheStatement(t *testing.T) {
+	now := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	blocks := []BlockerRef{{TaskID: "a-task", Title: "Audit log", State: "queued"}, {TaskID: "b-task", Title: "Billing export", State: "running"}}
+	inputs := map[string]Input{
+		"terminal": {Task: core.Task{State: core.TaskMerged}, Now: now},
+		"gate":     gateInput(core.GateKindPlanApproval, now),
+		"blocked":  blockedClaimable(now),
+		"working":  claimedAndQueued(now),
+		"stalled":  timedOut(now),
+		"merging":  {Task: core.Task{State: core.TaskApproved}, Now: now},
+	}
+	for name, in := range inputs {
+		plain := Project(in)
+		if plain.Blocks == nil || len(plain.Blocks) != 0 {
+			t.Fatalf("%s blocks = %#v, want an empty array", name, plain.Blocks)
+		}
+		raw, err := json.Marshal(CompactFrom(plain))
+		if err != nil || !strings.Contains(string(raw), `"blocks":[]`) {
+			t.Fatalf("%s compact = %s err=%v, want an empty blocks array", name, raw, err)
+		}
+		in.Blocks = blocks
+		with := Project(in)
+		if with.Actor != plain.Actor || with.Kind != plain.Kind || with.Judgment != plain.Judgment {
+			t.Fatalf("%s blocks changed %s/%s/%t to %s/%s/%t", name, plain.Actor, plain.Kind, plain.Judgment, with.Actor, with.Kind, with.Judgment)
+		}
+		compact := CompactFrom(with)
+		if !reflect.DeepEqual(with.Blocks, blocks) || !reflect.DeepEqual(compact.Blocks, blocks) {
+			t.Fatalf("%s blocks = %+v compact %+v", name, with.Blocks, compact.Blocks)
+		}
+		compact.Blocks[0].Title = "changed"
+		if with.Blocks[0].Title != "Audit log" || blocks[0].Title != "Audit log" {
+			t.Fatalf("%s compact blocks alias the projection", name)
+		}
+	}
+}
+
+// TestDispositionBinding proves details.disposition appears only on row 10,
+// copied from the selected verify order's binding, with applied and
+// not_applied allowed by operate_gates alone. Without a binding both choices
+// are omitted and refused with the assembler's reason. A higher row never
+// carries the binding (feature-operator-next-action NA-3, Disposition
+// binding; req-operator-next-action AC-1.4, AC-2.2).
+func TestDispositionBinding(t *testing.T) {
+	now := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	binding := &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op-a", "op-b"}, InputDigest: "digest"}
+	in := dispositionInput(now, binding)
+	got := Project(in)
+	if got.Kind != KindVerificationDisposition || !reflect.DeepEqual(got.Details.Disposition, binding) || got.Details.Disposition == binding {
+		t.Fatalf("row 10 = %s disposition %+v", got.Kind, got.Details.Disposition)
+	}
+	for _, id := range []string{"applied", "not_applied"} {
+		choice, ok := choiceByID(got, id)
+		if !ok || choice.Capability != string(core.CapabilityOperateGates) || choice.Allowed || choice.Path != "/v1/work-orders/v/recover" {
+			t.Fatalf("choice %s = %+v ok=%t", id, choice, ok)
+		}
+	}
+	in.Capabilities = map[core.Capability]bool{core.CapabilityRecoverWork: true}
+	if choice, _ := choiceByID(Project(in), "applied"); choice.Allowed {
+		t.Fatal("recover_work allowed a disposition")
+	}
+	in.Capabilities = map[core.Capability]bool{core.CapabilityOperateGates: true}
+	if choice, _ := choiceByID(Project(in), "not_applied"); !choice.Allowed {
+		t.Fatal("operate_gates did not allow a disposition")
+	}
+
+	refused := dispositionInput(now, nil)
+	refused.Dispositions = map[string]DispositionInput{"v": {Refusal: "verification checkpoint ctx has no unresolved operations to dispose"}}
+	missing := Project(refused)
+	if missing.Details.Disposition != nil || hasChoice(missing, "applied") || hasChoice(missing, "not_applied") {
+		t.Fatalf("unbound row 10 offered %+v disposition %+v", missing.Choices, missing.Details.Disposition)
+	}
+	for _, id := range []string{"applied", "not_applied"} {
+		if !hasRefusalText(missing, id, "no unresolved operations") {
+			t.Fatalf("refusals = %+v, want %s refused for missing operations", missing.Details.Refusals, id)
+		}
+	}
+	if absent := Project(dispositionInput(now, nil)); hasChoice(absent, "applied") || !hasRefusal(absent, "not_applied") {
+		t.Fatalf("row 10 without an assembled binding offered %+v", absent.Choices)
+	}
+
+	question := dispositionInput(now, binding)
+	question.Markers.CheckpointDecision = true
+	if got := Project(question); got.Kind != KindAgentQuestion || got.Details.Disposition != nil || !hasSecondary(got, KindVerificationDisposition) {
+		t.Fatalf("row 9 = %s disposition %+v", got.Kind, got.Details.Disposition)
+	}
+	for name, other := range map[string]Input{"gate": gateInput(core.GateKindPlanApproval, now), "stalled": timedOut(now), "working": claimedAndQueued(now)} {
+		other.Dispositions = map[string]DispositionInput{"v": {Binding: binding}, "o": {Binding: binding}, "c": {Binding: binding}}
+		if got := Project(other); got.Details.Disposition != nil {
+			t.Fatalf("%s row carried the binding", name)
 		}
 	}
 }
@@ -182,6 +370,23 @@ func recoveryExhausted(now time.Time) Input {
 
 func verifyRefused(now time.Time) Input {
 	return Input{Task: core.Task{ID: "t", State: core.TaskRunning, NextStage: core.StageImplement, SetupContract: core.Task{}.SetupContract}, Orders: []core.WorkOrder{{ID: "v", State: core.WorkOrderQueued, Stage: core.StageVerify, HeadSHA: "abc"}}, Now: now}
+}
+
+func dispositionInput(now time.Time, binding *Disposition) Input {
+	in := Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Markers: Markers{VerificationDisposition: true}, Orders: []core.WorkOrder{{ID: "v", State: core.WorkOrderQueued, Stage: core.StageVerify, LastAttemptID: "a", LastAttemptOutcome: "released"}}, Now: now}
+	if binding != nil {
+		in.Dispositions = map[string]DispositionInput{"v": {Binding: binding}}
+	}
+	return in
+}
+
+func hasRefusalText(na NextAction, id, text string) bool {
+	for _, item := range na.Details.Refusals {
+		if item.Choice == id && strings.Contains(item.Text, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func allCaps() map[core.Capability]bool {

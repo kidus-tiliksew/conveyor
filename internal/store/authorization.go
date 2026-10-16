@@ -12,7 +12,7 @@ import (
 // IdentityProvisioner is the deployment-administration account boundary.
 // It must only be mounted behind the instance-administration principal's own
 // user credential; workspace capabilities do not authorize account creation
-// (REQ-1/AC-1.2-AC-1.3; DEC-63(2)).
+// (REQ-1/AC-1.2-AC-1.3; DEC-75(2)).
 type IdentityProvisioner interface {
 	ProvisionIdentityUser(context.Context, string, string) (core.IdentityUser, error)
 }
@@ -37,8 +37,15 @@ type OwnProfileStore interface {
 // AuthorizeInstanceAdministration answers whether the active user owns the
 // sole deployment_credential marker. It is independent of every role,
 // binding, workspace selection, and credential scope, and it is the only
-// authority for provisioning accounts and creating workspaces
-// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-63(1), DEC-63(2)).
+// authority for provisioning accounts and resolving the account directory
+// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-75(1), DEC-75(2)).
+//
+// Workspace creation admits that owner or a workspace creator, an active
+// account with an operator binding in at least one workspace. The HTTP
+// policy composes the two existing checks: AuthorizeInstanceAdministration
+// first, then AuthorizeDeployment with manage_workspace only after the owner
+// check refuses (AC-1.4; DEC-75(2)). No persisted right, role, or capability
+// represents creation.
 type MembershipStore interface {
 	AuthorizeDeployment(context.Context, string, core.Capability) (bool, error)
 	AuthorizeInstanceAdministration(context.Context, string) (bool, error)

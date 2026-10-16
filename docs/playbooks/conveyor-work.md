@@ -668,7 +668,7 @@ parks. Handle a reply the operator types between waits before the next wait.
 An executor's claim confers only the stage-scoped capabilities registered for
 that order. Implementation sessions may create allowed governance proposals,
 but proposals confer no authority and do not pause delivery. Gate approval,
-requirement or design confirmation, decision confirmation, hold or assignment
+requirement or design confirmation, decision confirmation, assignment
 changes, drift resolution, review judgment by the implementer, and merge are
 operator or independent-review acts. A claim never confers them. A
 self-claimed session records an operator's gate or proposal decision only as

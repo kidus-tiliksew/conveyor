@@ -75,7 +75,19 @@ func (s *Server) getCallerIdentity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, callerIdentityProjection(identity, workspaceID))
+	// The creation right comes from the same predicate that admits
+	// POST /v1/workspaces, computed for the credential owner alone, so it is
+	// identical for scoped and unscoped reads and overwrites any store value
+	// (component-identity-membership; req-accounts-and-membership REQ-4).
+	canCreate, err := s.canCreateWorkspaces(r.Context(), credential.OwnerUserID)
+	if err != nil {
+		log.Printf("authorize workspace creation: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	projection := callerIdentityProjection(identity, workspaceID)
+	projection.CanCreateWorkspaces = canCreate
+	writeJSON(w, http.StatusOK, projection)
 }
 
 // callerIdentityProjection adds the dashboard's presentation lists to an
@@ -136,6 +148,15 @@ func (s *Server) putOwnDisplayName(w http.ResponseWriter, r *http.Request) {
 		writeValidationError(w, "display_name", errors.New("display name must contain at most 128 bytes"))
 		return
 	}
+	// The response shares GET's CallerIdentity shape, so its creation right
+	// is computed by the same predicate before anything is written; an
+	// authority error leaves the display name unchanged.
+	canCreate, err := s.canCreateWorkspaces(r.Context(), credential.OwnerUserID)
+	if err != nil {
+		log.Printf("authorize workspace creation: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	identity, err := s.OwnProfiles.SetOwnDisplayName(r.Context(), credential.OwnerUserID, credential.ID, request.DisplayName)
 	if errors.Is(err, store.ErrNotFound) || errors.Is(err, core.ErrInvalidCredential) {
 		http.Error(w, "session unavailable", http.StatusUnauthorized)
@@ -146,5 +167,6 @@ func (s *Server) putOwnDisplayName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update profile", http.StatusInternalServerError)
 		return
 	}
+	identity.CanCreateWorkspaces = canCreate
 	writeJSON(w, http.StatusOK, identity)
 }

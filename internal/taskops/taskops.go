@@ -85,7 +85,8 @@ const SetAssigneeCommand = "task.assignee.set"
 
 // RequestChangesCommand is the serialized user-sourced changes-requested
 // bounce. It deliberately reuses the persisted redirect action and canonical
-// awaiting -> queued lifecycle edge (component-task-lifecycle).
+// awaiting -> queued lifecycle edge, and re-queues the implement order like
+// any other order: it writes no hold (DEC-74(3); component-task-lifecycle).
 const RequestChangesCommand = "task.request_changes"
 
 type RequestChanges struct {
@@ -93,7 +94,6 @@ type RequestChanges struct {
 	JobID      string
 	Feedback   string
 	MaxBounces int
-	Hold       bool
 }
 
 func (p *Plane) RequestChanges(ctx context.Context, request RequestChanges) (core.Task, error) {

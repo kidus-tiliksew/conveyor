@@ -3,6 +3,13 @@ import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 // The Board half of the shared Tasks/Board filter family (AC-2.4). What each
 // member means is asserted against the server in Go; what this covers is that
 // the Board sends that family through one workspace activity cache, opens on
@@ -132,7 +139,10 @@ async function routeBoard(page: Page, seen: string[]) {
   // signs in a maintainer, the lowest role that may file tasks.
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: callerIdentity({ id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' }),
+      json: callerIdentity(
+        { id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' },
+        route.request(),
+      ),
     }),
   )
   await page.route('**/v1/pending-proposals**', (route) =>
@@ -480,7 +490,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   await expect(page.getByRole('tab', { name: 'System design' })).toBeVisible()
 
   // Assignee travels the same way, as one single-valued member: a task has one
-  // holder, so there is no union to express. DEC-55 bars priority and phase and
+  // holder, so there is no union to express. DEC-74(2) bars priority and phase and
   // permits assignee as a claim-eligibility constraint, so it belongs here while
   // the barred fields still do not.
   await page.getByRole('tab', { name: 'Assignee' }).click()

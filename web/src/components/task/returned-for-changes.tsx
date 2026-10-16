@@ -1,6 +1,6 @@
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { pendingUserRequestChanges, userRunImplementation } from '../../lib/activity'
+import { pendingUserRequestChanges } from '../../lib/activity'
 import { fetchCallerIdentity, fetchTaskActivity } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { taskDetailQueryKey } from '../../lib/query-keys'
@@ -14,7 +14,7 @@ import { withQuerySignal } from './use-task-detail'
 // Work that came back to the signed-in person, rendered in the attention
 // surface every other outstanding signal already uses rather than in a tray of
 // its own (REQ-6; the sole-rendering discipline). This changes nothing about
-// attention, staleness, bounce, hold, or assignment derivation — it is the
+// attention, staleness, bounce, or assignment derivation — it is the
 // presentation of a marker the server already keeps.
 //
 // The shared workspace activity cache supplies the candidates. Caller identity
@@ -30,13 +30,11 @@ function excerpt(feedback: string): string {
   return feedback.length > EXCERPT_LIMIT ? `${feedback.slice(0, EXCERPT_LIMIT).trimEnd()}…` : feedback
 }
 
-// The latest implement claimant is the durable discriminator the server uses
-// when bouncing work. A task-run claim needs the person to resume it; a worker
-// claim returns to the factory even when an operator separately holds the task.
+// Every bounce re-queues an ordinary eligible implementation order, whoever
+// ran the implementation: the person can resume it, or an eligible worker can
+// claim it. A task carries no hold (DEC-74(3)).
 function nextStep(item: ActivityItem): string {
-  return userRunImplementation(item.summaries)
-    ? `Nothing is running this — pick the feedback up by running the task again from your machine (conveyor run ${item.task.id}).`
-    : 'The factory is already on it — a fresh implementation run is carrying this feedback.'
+  return `This implementation order is queued. Pick it up with conveyor run ${item.task.id}, or an eligible worker can claim it.`
 }
 
 export function ReturnedForChangesAttention() {

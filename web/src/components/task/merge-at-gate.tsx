@@ -42,7 +42,7 @@ export function GateChoices({ taskId, action, onActed }: { taskId: string; actio
           onMerged={() => onActed?.()}
         />
       )}
-      <NextActionChoices taskId={taskId} choices={otherChoices} onActed={() => onActed?.()} />
+      <NextActionChoices taskId={taskId} choices={otherChoices} details={action.details} onActed={() => onActed?.()} />
     </>
   )
 }

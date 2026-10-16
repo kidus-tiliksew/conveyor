@@ -3,6 +3,13 @@ import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 // component-verification-service and component-web-task-surfaces: a verify
 // order released at its operator checkpoint is labelled
 // Verification, names its reason, required act, head and grounds, and offers
@@ -258,7 +265,9 @@ async function fixture(
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.role ?? 'maintainer' }) })
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', role: options.role ?? 'maintainer' }, route.request()),
+      })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: true }] })
     if (path.endsWith('/activity')) return route.fulfill({ json: item })
@@ -488,7 +497,13 @@ test('viewer sees the verification checkpoint but no recovery', async ({ page })
 test('a running verify order is labelled Verification', async ({ page }) => {
   await fixture(page, { claimed: true })
   await page.goto(`/tasks/${taskId}/full`)
-  await expect(page.locator('#current-execution-title')).toHaveText('Verification is in progress')
+  // The running state's title repeats the summary, so the stage reads on the
+  // next-action box's status line instead (component-web-task-surfaces,
+  // Next-action card).
+  const box = page.getByRole('region', { name: 'Next action' })
+  await expect(box.getByText('Verification · Progressing', { exact: true })).toBeVisible()
+  await expect(box.getByText('Review · Progressing')).toHaveCount(0)
+  await expect(page.locator('#current-execution-title')).toHaveCount(0)
 })
 
 // The verification-checkpoint recovery mutation refreshes task detail under its

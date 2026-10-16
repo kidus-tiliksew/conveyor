@@ -50,7 +50,7 @@ heartbeat, work listing, or claiming; a missing or invalid file exits with the
 exact path and the `config init-execution` remediation command. Harness probes
 and child launches come from this local file. Execution fields still returned
 by an older server are logged and ignored during the transition, while
-assignment, hold, claim, lease, heartbeat, and recovery remain server-owned.
+assignment, claim, lease, heartbeat, and recovery remain server-owned.
 
 New implicit task checkouts use `~/.conveyor/worktrees` on the worker host.
 Set the top-level client-local field `worktree_root` to an absolute path (or a

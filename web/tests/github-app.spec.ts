@@ -47,7 +47,10 @@ async function mockApp(page: Page, role = 'operator') {
       })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({ id: 'usr_owner', display_name: 'Ada', email: 'ada@example.test', role }),
+        json: callerIdentity(
+          { id: 'usr_owner', display_name: 'Ada', email: 'ada@example.test', role },
+          route.request(),
+        ),
       })
     if (path.endsWith('/github-app/manifest')) {
       state.posts++

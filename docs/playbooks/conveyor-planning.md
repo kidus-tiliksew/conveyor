@@ -296,7 +296,7 @@ corpus" section of ref-260823-f4729f, current version (informative).
 ## What this surface cannot do (and must not fake)
 
 - Confirm anything without the operator.
-- Record drift resolutions, approve gates, cancel/hold tasks — operator
+- Record drift resolutions, approve gates, cancel tasks — operator
   acts; surface them to the operator instead.
 - Create lineage that didn't happen: no fabricated origins, no session
   edges for work that had no session. Local planning deliberation that is

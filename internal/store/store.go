@@ -152,9 +152,6 @@ type TaskStore interface {
 	ListCallerAttentionTaskPage(ctx context.Context, query CallerAttentionQuery) (TaskPage, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
-	// SetTaskHold toggles the per-task worker reservation with an audit
-	// event; setting the current value is an idempotent no-op.
-	SetTaskHold(ctx context.Context, id string, hold bool) (core.Task, error)
 	// AttachTaskBranch remaps Task.Branch under WithTaskSideEffectLock.
 	// Same-name is a no-op. A collision names the other open task id.
 	AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error)

@@ -43,8 +43,8 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 	}
 }
 
-// DEC-56(2): task creation sends gates, hold, and dependencies, and never a
-// setup selection or execution detail.
+// DEC-56(2), DEC-74(3): task creation sends gates and dependencies, and never
+// a hold, a setup selection, or execution detail.
 func TestTaskCreatePayloadIsPolicyOnly(t *testing.T) {
 	var input map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,10 +59,10 @@ func TestTaskCreatePayloadIsPolicyOnly(t *testing.T) {
 	defer srv.Close()
 	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
 	specApproval, mergeApproval := false, true
-	if _, err := c.createTaskWithDependencies("fix it", "api", "trunk", true, &specApproval, &mergeApproval, []string{"task-0"}); err != nil {
+	if _, err := c.createTaskWithDependencies("fix it", "api", "trunk", &specApproval, &mergeApproval, []string{"task-0"}); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"body": "fix it", "repo": "api", "base_branch": "trunk", "source": "cli", "hold": true, "spec_approval": false, "merge_approval": true, "depends_on": []any{"task-0"}}
+	want := map[string]any{"body": "fix it", "repo": "api", "base_branch": "trunk", "source": "cli", "spec_approval": false, "merge_approval": true, "depends_on": []any{"task-0"}}
 	if len(input) != len(want) {
 		t.Fatalf("payload = %#v, want exactly %#v", input, want)
 	}
@@ -73,7 +73,7 @@ func TestTaskCreatePayloadIsPolicyOnly(t *testing.T) {
 			t.Fatalf("payload[%s] = %s, want %s", key, got, expected)
 		}
 	}
-	for _, retired := range []string{"setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv"} {
+	for _, retired := range []string{"hold", "setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv"} {
 		if _, ok := input[retired]; ok {
 			t.Fatalf("payload carries retired %s: %#v", retired, input)
 		}

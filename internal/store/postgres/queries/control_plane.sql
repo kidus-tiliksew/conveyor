@@ -310,13 +310,6 @@ WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
 RETURNING *;
 
--- name: UpdateTaskHold :one
-UPDATE tasks
-SET hold = sqlc.arg(hold), updated_at = now()
-WHERE id = sqlc.arg(id)
-  AND workspace_id = sqlc.arg(workspace_id)
-RETURNING *;
-
 -- name: UpdateTaskAssignee :one
 UPDATE tasks
 SET assignee_user_id = sqlc.narg(assignee_user_id), updated_at = now()

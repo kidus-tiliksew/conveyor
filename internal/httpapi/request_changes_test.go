@@ -90,8 +90,19 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		t.Fatalf("task=%+v err=%v", updated, err)
 	}
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
-	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement || orders[0].State != core.WorkOrderQueued {
+	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement || orders[0].State != core.WorkOrderQueued || !orders[0].Claimable {
 		t.Fatalf("orders=%+v err=%v", orders, err)
+	}
+	// The bounce re-queues an ordinary eligible order and writes no hold
+	// (DEC-74(3)).
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if strings.HasPrefix(event.Kind, "task.hold") {
+			t.Fatalf("bounce appended a hold event: %+v", event)
+		}
 	}
 	interventions, err := st.ListInterventions(ctx, task.ID)
 	if err != nil || len(interventions) != 1 || interventions[0].ActorID != "user:local-operator" || interventions[0].Comment != feedback {

@@ -22,7 +22,7 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			x := factory.fresh(t, nil)
 			st, ctx := x.Backend, store.WithActor(x.Context, store.Actor{ID: "restart-operator", Role: core.ActorHuman})
 			newTask := func() core.Task {
-				return core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Source: "test", Title: "Restart fixture", Body: "Preserve this task body", Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SpecApproval: true, Hold: true, PolicyVersion: 7, SetupContract: x.Config.FreezePolicy(), CreatedAt: time.Now().UTC()}
+				return core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Source: "test", Title: "Restart fixture", Body: "Preserve this task body", Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SpecApproval: true, PolicyVersion: 7, SetupContract: x.Config.FreezePolicy(), CreatedAt: time.Now().UTC()}
 			}
 			old := newTask()
 			old.Branch = "conveyor/task-" + old.ID
@@ -51,6 +51,9 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			if err = st.CreateTaskWithDependenciesAndContext(ctx, old, []string{open.ID, merged.ID}, store.TaskContextInput{RequirementIDs: []string{req.ID}, DesignIDs: []string{design.ID}}); err != nil {
 				t.Fatal(err)
 			}
+			// The retired task was stored with hold before the retirement; its
+			// successor carries none and the stored value stays (DEC-74(3)).
+			requireStoredTaskHoldSeed(t, x.SeedStoredTaskHold)(t, ctx, old.ID)
 			if _, err = taskops.New(st).Perform(ctx, merged.ID, taskops.Command{Kind: core.TaskMergeRecover}); err != nil {
 				t.Fatal(err)
 			}
@@ -117,12 +120,15 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 				t.Fatal("intake contract was not preserved")
 			}
 			retired, err := st.GetTask(ctx, old.ID)
-			if err != nil || retired.SupersededBy != got.Successor.ID || retired.Branch != old.Branch {
+			if err != nil || retired.SupersededBy != got.Successor.ID || retired.Branch != old.Branch || !retired.Hold {
 				t.Fatalf("retired=%+v err=%v", retired, err)
 			}
 			successor, err := st.GetTask(ctx, got.Successor.ID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if got.Successor.Hold || successor.Hold {
+				t.Fatalf("successor inherited the retired task's stored hold: %+v", successor)
 			}
 			if len(successor.Dependencies) != 1 || successor.Dependencies[0].ID != open.ID {
 				t.Fatalf("dependencies=%+v", successor.Dependencies)

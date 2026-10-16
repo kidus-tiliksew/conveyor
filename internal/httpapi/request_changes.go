@@ -63,12 +63,6 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task is not at the merge gate", http.StatusConflict)
 		return
 	}
-	events, err := s.Store.ListEvents(r.Context(), taskID)
-	if err != nil {
-		log.Printf("handle task change request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
 	maxBounces := 1
 	if task.SetupContract.MaxBounces > 0 {
 		maxBounces = task.SetupContract.MaxBounces
@@ -84,7 +78,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := taskops.New(s.Store).RequestChanges(r.Context(), taskops.RequestChanges{
 		TaskID: taskID, JobID: latest.ID, Feedback: request.Feedback,
-		MaxBounces: maxBounces, Hold: store.UserRequestChangesHold(events),
+		MaxBounces: maxBounces,
 	})
 	if err != nil {
 		status := http.StatusInternalServerError

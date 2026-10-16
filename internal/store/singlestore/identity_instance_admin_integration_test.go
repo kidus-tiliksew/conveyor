@@ -19,7 +19,7 @@ import (
 )
 
 // Instance administration and membership preservation on SingleStore
-// (req-accounts-and-membership AC-1.3, AC-4.3; DEC-63;
+// (req-accounts-and-membership AC-1.3, AC-1.4, AC-1.5, AC-4.3; DEC-75;
 // component-identity-membership, Verification). integrationStore empties the
 // shared database for every case.
 
@@ -97,6 +97,19 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A contributor-only account holds no operator binding anywhere, so it is
+	// neither the principal nor a workspace creator (DEC-75(2)).
+	contributor, err := st.ProvisionIdentityUser(ctx, "instance-contributor@example.test", "Instance Contributor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GrantWorkspaceRole(instanceUserContext(ctx, owner.ID), contributor.Email, workspace, core.WorkspaceRoleContributor); err != nil {
+		t.Fatal(err)
+	}
+	contributorPAT, err := st.IssueOwnPersonalAccessToken(ctx, contributor.ID, "contributor")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ownerPAT, err := st.IssueOwnPersonalAccessToken(ctx, owner.ID, "owner")
 	if err != nil {
 		t.Fatal(err)
@@ -113,14 +126,18 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 		return response
 	}
 	notFound := "{\"error\":\"workspace_not_found\",\"message\":\"workspace not found\"}\n"
-	for _, request := range []struct{ path, body string }{
-		{"/v1/users", `{"email":"refused@example.test","display_name":"Refused"}`},
-		{"/v1/users", `{"email":"instance-owner@example.test","display_name":"Existing"}`},
-		{"/v1/workspaces", `{"id":"refused-workspace","name":"Refused"}`},
-		{"/v1/workspaces", `{"id":"` + workspace + `","name":"Collision"}`},
-	} {
-		if response := call(nonownerPAT.Value, request.path, request.body); response.Code != http.StatusNotFound || response.Body.String() != notFound {
-			t.Fatalf("nonowner operator %s %s status=%d body=%q", request.path, request.body, response.Code, response.Body.String())
+	// Provisioning stays owner-only: the nonowner operator is refused there.
+	// The contributor-only account is refused on both routes.
+	refusals := []struct{ token, path, body string }{
+		{nonownerPAT.Value, "/v1/users", `{"email":"refused@example.test","display_name":"Refused"}`},
+		{nonownerPAT.Value, "/v1/users", `{"email":"instance-owner@example.test","display_name":"Existing"}`},
+		{contributorPAT.Value, "/v1/users", `{"email":"refused@example.test","display_name":"Refused"}`},
+		{contributorPAT.Value, "/v1/workspaces", `{"id":"refused-workspace","name":"Refused"}`},
+		{contributorPAT.Value, "/v1/workspaces", `{"id":"` + workspace + `","name":"Collision"}`},
+	}
+	for _, request := range refusals {
+		if response := call(request.token, request.path, request.body); response.Code != http.StatusNotFound || response.Body.String() != notFound {
+			t.Fatalf("refused %s %s status=%d body=%q", request.path, request.body, response.Code, response.Body.String())
 		}
 	}
 	if countRows(t, st, `SELECT COUNT(*) FROM users WHERE email='refused@example.test'`) != 0 || countRows(t, st, `SELECT COUNT(*) FROM workspaces WHERE id='refused-workspace'`) != 0 {
@@ -163,11 +180,47 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 	if err := st.db.QueryRowContext(ctx, `SELECT actor_id FROM events WHERE workspace_id=? AND kind='workspace.created'`, created).Scan(&actorID); err != nil || actorID != store.UserActorID(owner.ID) {
 		t.Fatalf("creation actor=%q err=%v", actorID, err)
 	}
+	// A nonowner operator is a workspace creator: it becomes operator of
+	// the workspace it creates, and the event names it as the actor.
+	operatorCreated := "operator-created-ws"
+	if response := call(nonownerPAT.Value, "/v1/workspaces", `{"id":"`+operatorCreated+`","name":"Operator Created"}`); response.Code != http.StatusCreated {
+		t.Fatalf("nonowner operator creation status=%d body=%s", response.Code, response.Body.String())
+	}
+	if role := instanceRole(t, st, nonowner.ID, operatorCreated); role != "operator" {
+		t.Fatalf("nonowner creator binding=%q", role)
+	}
+	if role := instanceRole(t, st, owner.ID, operatorCreated); role != "" {
+		t.Fatalf("nonowner creation bound the owner as %q", role)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT actor_id FROM events WHERE workspace_id=? AND kind='workspace.created'`, operatorCreated).Scan(&actorID); err != nil || actorID != store.UserActorID(nonowner.ID) {
+		t.Fatalf("nonowner creation actor=%q err=%v", actorID, err)
+	}
+
+	// The owner and the nonowner creator receive the same opaque conflict for
+	// an ID collision, a normalized-name collision, and a collision with a
+	// workspace hidden from them, and a collision leaves no partial rows
+	// (AC-1.5; DEC-75(7)).
 	conflict := "{\"error\":\"workspace_conflict\",\"message\":\"workspace could not be created\"}\n"
-	for _, body := range []string{`{"id":"` + created + `","name":"Other"}`, `{"id":"other-ws","name":"  CREATED WORKSPACE "}`, `{"id":"` + workspace + `","name":"Hidden"}`} {
-		if response := call(ownerPAT.Value, "/v1/workspaces", body); response.Code != http.StatusConflict || response.Body.String() != conflict {
-			t.Fatalf("collision %s status=%d body=%q", body, response.Code, response.Body.String())
+	workspaces := countRows(t, st, `SELECT COUNT(*) FROM workspaces`)
+	bindings := countRows(t, st, `SELECT COUNT(*) FROM workspace_role_bindings`)
+	createdEvents := countRows(t, st, `SELECT COUNT(*) FROM events WHERE kind='workspace.created'`)
+	for caller, token := range map[string]string{"owner": ownerPAT.Value, "nonowner operator": nonownerPAT.Value} {
+		for _, body := range []string{
+			`{"id":"` + created + `","name":"Other"}`,
+			`{"id":"name-collision-ws","name":"  CREATED WORKSPACE "}`,
+			`{"id":"` + workspace + `","name":"Hidden"}`,
+			`{"id":"` + operatorCreated + `","name":"Hidden From Owner"}`,
+		} {
+			if response := call(token, "/v1/workspaces", body); response.Code != http.StatusConflict || response.Body.String() != conflict {
+				t.Fatalf("%s collision %s status=%d body=%q", caller, body, response.Code, response.Body.String())
+			}
 		}
+	}
+	if countRows(t, st, `SELECT COUNT(*) FROM workspaces`) != workspaces || countRows(t, st, `SELECT COUNT(*) FROM workspace_role_bindings`) != bindings || countRows(t, st, `SELECT COUNT(*) FROM events WHERE kind='workspace.created'`) != createdEvents {
+		t.Fatal("a collision wrote a workspace, binding, or creation event")
+	}
+	if countRows(t, st, `SELECT COUNT(*) FROM workspaces WHERE id='name-collision-ws'`) != 0 {
+		t.Fatal("a normalized-name collision persisted its workspace")
 	}
 }
 

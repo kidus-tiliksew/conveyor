@@ -75,7 +75,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
     (id) => item.task.dependencies?.find((dependency) => dependency.id === id)?.title ?? id,
   )
   const restarted = taskWasRestarted(item.task)
-  const chips = Boolean(restarted || reviewDiagnostic || item.task.hold)
+  const chips = Boolean(restarted || reviewDiagnostic)
   return (
     <Link
       to="/tasks/$taskId"
@@ -118,7 +118,6 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {restarted && <Badge variant="mono">restarted</Badge>}
           {reviewDiagnostic && <Badge variant={reviewDiagnostic.variant}>{reviewDiagnostic.label}</Badge>}
-          {item.task.hold && <Badge variant="mono">Held</Badge>}
         </div>
       )}
       {item.stalled?.last_failure && !isAgentQuestion(item) && (

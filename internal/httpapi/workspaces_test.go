@@ -354,7 +354,7 @@ func createWorkspaceAcceptsPolicyOnlyDocuments(t *testing.T) {
 
 // localOperatorInstanceAdmin admits the configured-token fallback user as the
 // instance-administration principal; without an authority the creation route
-// fails closed (DEC-63(5)).
+// fails closed (DEC-75(5)).
 func localOperatorInstanceAdmin() *membershipFixture {
 	return &membershipFixture{instanceAdmins: map[string]bool{"local-operator": true}}
 }

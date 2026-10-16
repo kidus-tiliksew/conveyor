@@ -77,15 +77,48 @@ type Input struct {
 	// AC-1.3).
 	ContextProposals []ContextProposalRef
 	Blockers         []BlockerRef
-	MergeConflict    MergeConflict
-	MergeReadiness   *MergeReadiness
-	Recommendation   string
-	Assignee         *core.TaskAssignee
-	Capabilities     map[core.Capability]bool
-	LiveClaimants    *ClaimantView
-	Recovery         map[string]AutomaticRecovery
-	Now              time.Time
-	PullRequest      int
+	// Blocks is the task's open dependents: the tasks whose latest queued
+	// order names this task in blocking_task_ids, ordered by task ID. The
+	// assembler reads them from the same dependency read that fills
+	// Blockers on the dependent side (feature-operator-next-action NA-3,
+	// Dependents).
+	Blocks []BlockerRef
+	// Dispositions is the row-10 recovery binding read from the sealed
+	// verification checkpoint of a verify order, keyed by that order's ID
+	// (feature-operator-next-action NA-3, Disposition binding).
+	Dispositions   map[string]DispositionInput
+	MergeConflict  MergeConflict
+	MergeReadiness *MergeReadiness
+	Recommendation string
+	Assignee       *core.TaskAssignee
+	Capabilities   map[core.Capability]bool
+	LiveClaimants  *ClaimantView
+	Recovery       map[string]AutomaticRecovery
+	Now            time.Time
+	// PullRequest is the recorded pull-request number, zero when none is
+	// recorded.
+	PullRequest int
+	// BounceCount is the recorded bounce count that produced a
+	// review_bounce_limit gate, zero when none is recorded.
+	BounceCount int
+}
+
+// Disposition is the verification body binding a client sends to
+// POST /v1/work-orders/{id}/recover with a disposition and a reason
+// (feature-operator-next-action NA-3; component-verification-service).
+type Disposition struct {
+	ContextID    string   `json:"context_id"`
+	RunID        string   `json:"run_id"`
+	OperationIDs []string `json:"operation_ids"`
+	InputDigest  string   `json:"input_digest"`
+}
+
+// DispositionInput is the assembler's reading of one verify order's sealed
+// checkpoint: a binding the recovery validator accepts, or the refusal that
+// explains why none can be offered.
+type DispositionInput struct {
+	Binding *Disposition
+	Refusal string
 }
 
 // Markers are the activity facts the assembler already folded.
@@ -167,6 +200,7 @@ type NextAction struct {
 	IfIgnored    string       `json:"if_ignored,omitempty"`
 	Deadline     *time.Time   `json:"deadline"`
 	BlockedBy    []BlockerRef `json:"blocked_by,omitempty"`
+	Blocks       []BlockerRef `json:"blocks"`
 	CurrentOrder *OrderView   `json:"current_order,omitempty"`
 	Attempt      *AttemptView `json:"attempt,omitempty"`
 	Details      Details      `json:"details"`
@@ -231,6 +265,8 @@ type Details struct {
 	Secondary        []Secondary                               `json:"secondary,omitempty"`
 	Refusals         []Refusal                                 `json:"refusals,omitempty"`
 	MergeReadiness   string                                    `json:"merge_readiness,omitempty"`
+	// Disposition is present only on verification_disposition.
+	Disposition *Disposition `json:"disposition,omitempty"`
 }
 
 // Compact is the list-item shape. Label is the same catalogue entry as the full shape.
@@ -242,6 +278,7 @@ type Compact struct {
 	Summary   string       `json:"summary"`
 	Deadline  *time.Time   `json:"deadline"`
 	BlockedBy []BlockerRef `json:"blocked_by,omitempty"`
+	Blocks    []BlockerRef `json:"blocks"`
 }
 
 // Act is one factory recovery the inbox log shows. Automatic is always true.

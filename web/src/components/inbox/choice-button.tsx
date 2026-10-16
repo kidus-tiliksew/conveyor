@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { GateMutationError, postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
-import type { NextActionChoice } from '../../lib/types'
+import type { NextActionChoice, NextActionDetails } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
@@ -18,10 +18,12 @@ import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 export function NextActionChoices({
   taskId,
   choices,
+  details,
   onActed,
 }: {
   taskId: string
   choices: NextActionChoice[]
+  details?: NextActionDetails
   onActed?: (choice: NextActionChoice) => void
 }) {
   const { workspace } = useWorkspaceSelection()
@@ -40,7 +42,7 @@ export function NextActionChoices({
       await postNextActionChoice(
         workspace,
         choice,
-        contract.body(text, requestId),
+        contract.body(text, requestId, details),
         contract.idempotent ? requestId : undefined,
       )
     },
@@ -83,12 +85,12 @@ export function NextActionChoices({
             ? `Needs the ${choice.capability.replaceAll('_', ' ')} capability.`
             : !choiceBodies[choice.id]
               ? 'Take this from the CLI or MCP; it needs input this page cannot send yet.'
-              : ''
+              : (choiceBodies[choice.id].unavailable?.(details) ?? '')
           return (
             <span key={choice.id} className="inline-flex flex-col gap-0.5">
               <Button
                 size="sm"
-                variant={index === 0 && reason === '' ? 'default' : 'secondary'}
+                variant={choice.id === 'reject' ? 'ghost' : index === 0 && reason === '' ? 'default' : 'secondary'}
                 title={`${choice.effect} (${choice.method} ${choice.path})`}
                 data-choice={choice.id}
                 data-endpoint={`${choice.method} ${choice.path}`}

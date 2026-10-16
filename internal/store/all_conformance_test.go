@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -72,12 +73,36 @@ func TestMemoryConformance(t *testing.T) {
 				return store.SeedEventsForTest(t, st, ctx, base, events)
 			}, SeedSetupContract: func(t *testing.T, _ context.Context, taskID, raw string) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
+			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {
+				store.SeedStoredTaskHoldForTest(t, st, taskID)
+			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
+				return conformanceWorkerExercise(st, cfg)
 			}}
 		},
 	})
 }
 
-// TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-63 cases
+// conformanceWorkerExercise builds the real worker service over one
+// conformance fixture; storetest cannot import internal/worker
+// (component-verification-strategy).
+func conformanceWorkerExercise(st store.Store, cfg *config.Config) storetest.WorkerExercise {
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	service := &worker.Service{Store: st, WorkOrders: &workorder.Service{Store: st, ConfigProvider: provider}, ConfigProvider: provider}
+	return storetest.WorkerExercise{
+		ListClaimable: func(ctx context.Context, enrolled core.Worker) ([]core.WorkOrder, error) {
+			items, err := service.ListClaimable(ctx, enrolled)
+			orders := make([]core.WorkOrder, 0, len(items))
+			for _, item := range items {
+				orders = append(orders, item.Order)
+			}
+			return orders, err
+		},
+		ListVisibleOrders: service.ListVisibleOrders,
+		ClaimForWorker:    service.ClaimForWorker,
+	}
+}
+
+// TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-75 cases
 // against a new volatile backend per case (component-identity-membership).
 func TestMemoryFreshDeploymentBootstrap(t *testing.T) {
 	storetest.RunFreshDeploymentBootstrap(t, storetest.FreshDeployment{

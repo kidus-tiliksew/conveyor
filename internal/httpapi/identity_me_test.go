@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -103,7 +104,10 @@ func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {
 	if got["id"] != "usr-owner" || got["role"] != string(core.WorkspaceRoleContributor) || identities.workspaceID != "visible" {
 		t.Fatalf("scoped identity=%v requested=%q/%q", got, identities.userID, identities.workspaceID)
 	}
-	if len(memberships.capabilityCalls) != 1 || memberships.capabilityCalls[0] != core.CapabilityViewWorkspace {
+	// The scoped read authorizes view_workspace once. Each read also
+	// computes can_create_workspaces, whose workspace-creator check asks for
+	// manage_workspace without any workspace (DEC-75(2)).
+	if !slices.Equal(memberships.capabilityCalls, []core.Capability{core.CapabilityManageWorkspace, core.CapabilityViewWorkspace, core.CapabilityManageWorkspace}) {
 		t.Fatalf("capability calls=%v", memberships.capabilityCalls)
 	}
 

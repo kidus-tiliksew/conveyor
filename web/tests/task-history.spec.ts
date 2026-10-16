@@ -143,7 +143,7 @@ async function serveLedgers(page: Page, served: GeneratedLedger[]) {
     }),
   )
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) }),
   )
   await page.route('**/v1/activity?**', (route) => {
     const workspace = new URL(route.request().url()).searchParams.get('workspace_id') ?? 'demo'
@@ -255,6 +255,11 @@ function detailScope(page: Page, surface: Surface): Locator {
 async function openDetail(page: Page, surface: Surface, generated: GeneratedLedger) {
   await page.goto(surfaceURL(surface, generated.taskId))
   const scope = detailScope(page, surface)
+  // History lives on the Timeline tab; select it so a persisted Flow choice
+  // can never hide what these cases check.
+  const timelineTab = scope.getByRole('tab', { name: 'Timeline', exact: true })
+  if ((await timelineTab.getAttribute('aria-selected')) !== 'true') await timelineTab.click()
+  await expect(timelineTab).toHaveAttribute('aria-selected', 'true')
   await expect(scope.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
   await expect(scope.getByText(generated.item.task.title).first()).toBeVisible()
   return scope
@@ -336,6 +341,37 @@ test('Older, Newer, and Newest replace the page and keep at most 50 rows', async
   await expect(newest).toBeFocused()
   await expect(newest).toHaveAttribute('aria-disabled', 'true')
   expect(server.calls.at(-1)?.cursor).toBeNull()
+})
+
+// Hold events recorded before the retirement stay readable exactly as stored,
+// while the task projection carries no hold (DEC-74(3); component-http-api).
+test('historical hold events stay readable in technical activity without a task hold', async ({ page }) => {
+  const small = ledger('small')
+  const events = small.item.events.map((event) => ({ ...event }))
+  const newest = events.length - 1
+  events[newest] = { ...events[newest], kind: 'task.hold.set', job_id: undefined, payload: { hold: true } }
+  events[newest - 1] = {
+    ...events[newest - 1],
+    kind: 'task.hold_changed',
+    job_id: undefined,
+    payload: { hold: true, reason_code: 'user-request-changes' },
+  }
+  const historical: GeneratedLedger = {
+    ...small,
+    taskId: 'ledger-hold-history',
+    item: {
+      ...small.item,
+      task: { ...small.item.task, id: 'ledger-hold-history', title: 'Historical hold events' },
+      events,
+    },
+  }
+  await serveLedgers(page, [historical])
+  const scope = await openDetail(page, 'full route', historical)
+  await expect(scope.getByText('Held', { exact: true })).toHaveCount(0)
+  await technicalToggle(scope).click()
+  await expect(technicalRows(scope).last()).toContainText('task.hold.set')
+  await expect(technicalRows(scope).last()).toContainText(`Event ${events[newest].id}`)
+  await expect(technicalRows(scope).filter({ hasText: 'task.hold_changed' })).toHaveCount(1)
 })
 
 test('history states: loading, empty, error with Retry, end of history, and restart', async ({ page }) => {
@@ -441,6 +477,25 @@ test('closing, a task change, and a workspace change abort the read and drop the
   await page.waitForTimeout(300)
   await expect(mountedEventRows(page)).toHaveCount(0)
   expect(server.calls.every((call) => call.workspace === 'demo')).toBe(true)
+})
+
+// Leaving the Timeline tab unmounts the timeline, so an open history read is
+// aborted and its late response is dropped, with the bound unchanged.
+test('leaving the Timeline tab aborts the history read and drops the late response', async ({ page }) => {
+  const generated = ledger('100k')
+  const server = await serveLedgers(page, [generated])
+  const scope = await openDetail(page, 'full route', generated)
+  server.hold()
+  await technicalToggle(scope).click()
+  await expect.poll(() => server.calls.length).toBe(1)
+  await scope.getByRole('tab', { name: 'Flow', exact: true }).click()
+  await expect.poll(() => server.aborts()).toHaveLength(1)
+  server.release()
+  await scope.getByRole('tab', { name: 'Timeline', exact: true }).click()
+  await expect(scope.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+  await expect(technicalToggle(scope)).toHaveAttribute('aria-expanded', 'false')
+  await expect(mountedEventRows(page)).toHaveCount(0)
+  expect(server.calls).toHaveLength(1)
 })
 
 test('Earlier history pages the human selection and renders omitted payloads as notes', async ({ page }) => {

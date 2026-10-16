@@ -236,7 +236,7 @@ func (m *volatileMemory) sessionLive(sessionID, userID string, now time.Time) bo
 // deployment_credential marker. A live marker keeps its owner across restart,
 // configuration change, and rotation; a deployment without a marker takes the
 // configured first operator. It never writes a workspace binding, so
-// membership decisions survive every restart (DEC-63(3), DEC-63(4)).
+// membership decisions survive every restart (DEC-75(3), DEC-75(4)).
 func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -295,7 +295,7 @@ func (m *volatileMemory) BootstrapIdentity(ctx context.Context, identity config.
 		ownerID := ""
 		if legacy != nil {
 			// A revoked marker keeps its owner: a new deployment token is
-			// reissued to the same account (DEC-63(3)).
+			// reissued to the same account (DEC-75(3)).
 			ownerID = legacy.UserID
 			retired := *legacy
 			retired.Label, retired.DeploymentCredential = "retired legacy API token", false
@@ -945,7 +945,7 @@ func personalAccessToken(credential identityCredential) core.PersonalAccessToken
 
 // AuthorizeInstanceAdministration implements MembershipStore: only the active
 // owner of the deployment marker is the instance-administration principal
-// (DEC-63(1)).
+// (DEC-75(1)).
 func (m *volatileMemory) AuthorizeInstanceAdministration(_ context.Context, userID string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

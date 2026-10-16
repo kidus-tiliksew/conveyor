@@ -10,23 +10,10 @@ import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?raw'
 import windsurfIcon from '@lobehub/icons-static-svg/icons/windsurf.svg?raw'
 import zhipuIcon from '@lobehub/icons-static-svg/icons/zhipu-color.svg?raw'
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import {
-  AlertTriangle,
-  Check,
-  ChevronDown,
-  ChevronUp,
-  CircleDashed,
-  Cpu,
-  ExternalLink,
-  Undo2,
-  UserRound,
-} from 'lucide-react'
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Cpu, ExternalLink, Undo2, UserRound } from 'lucide-react'
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import {
   buildTimeline,
-  type CurrentExecutionState,
-  dependencyRelationLabel,
   deriveCurrentExecutionState,
   failedTriage,
   historyNoteEntries,
@@ -42,7 +29,6 @@ import {
 } from '../../lib/contracts'
 import { type HarnessLogo, type ProviderLogo, selectModelLogo } from '../../lib/model-logo'
 import { taskDetailQueryKey } from '../../lib/query-keys'
-import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type {
   ActivityItem,
   InterventionAction,
@@ -52,7 +38,6 @@ import type {
   TaskEventView,
   TaskHistorySelection,
   WorkOrder,
-  WorkOrderActivitySnapshot,
   WorkOrderTranscriptCapture,
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
@@ -61,7 +46,6 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { CurrentAttempt, CurrentAttemptProvider } from './current-attempt'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
 import {
@@ -84,7 +68,6 @@ import {
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
 import { VerificationEntry } from './verification-entry'
-import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 import {
   CheckpointProposalRecoveryCard,
   hasWorkerRecovery,
@@ -112,15 +95,7 @@ const gateDots: Record<GateTone, string> = {
 // no work orders, so redispatch, worker serviceability, and review recovery
 // are affordances for execution that will never happen. The story it does
 // have — materialization, child progress, close — still renders in full.
-export function Timeline({
-  item,
-  executionActions = true,
-  routeVariant = 'full',
-}: {
-  item: ActivityItem
-  executionActions?: boolean
-  routeVariant?: TaskRouteVariant
-}) {
+export function Timeline({ item, executionActions = true }: { item: ActivityItem; executionActions?: boolean }) {
   const canOperate = useWorkspaceCapability('operate_gates')
   const canRecover = useWorkspaceCapability('recover_work')
   const canRequestChanges = useCanRequestTaskChanges(item.task)
@@ -135,9 +110,6 @@ export function Timeline({
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
-  // Preemption is an execution affordance: a blueprint anchor takes no work
-  // orders, so it never offers one.
-  const preemptOrder = executionActions && canRecover ? claimedWorkOrder(item) : undefined
   // A System Design revision this task proposed is a decision waiting on the
   // operator, so it belongs in the live tail beside the other ones
   // (component-web-task-surfaces). A blueprint anchor runs no session and proposes nothing, which is
@@ -288,190 +260,48 @@ export function Timeline({
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {executionAnnouncement}
         </p>
-        {currentExecution ? (
-          <CurrentExecutionSummary state={currentExecution} routeVariant={routeVariant} preemptOrder={preemptOrder} />
-        ) : (
-          // A claimed refresh-review round is deliberately left out of the
-          // current-state summary (see deriveCurrentExecutionState), so the
-          // stop affordance carries its own region there rather than
-          // disappearing while an attempt is running.
-          preemptOrder && (
-            <div className="mb-4">
-              <WorkOrderPreemptControl order={preemptOrder} />
-            </div>
-          )
-        )}
+        {/* The current execution state and the stop affordance belong to the
+            next-action card above, which prints them once (DEC-61). */}
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
-        <CurrentAttemptProvider action={nextAction}>
-          <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
-            {entries.map((entry) => (
-              <TimelineRow
-                key={keyFor(entry)}
-                entry={entry}
-                item={item}
-                usageReportedOrderIDs={usageReportedOrderIDs}
-                operatorNotes={item.operator_notes}
-              />
-            ))}
-            {item.event_page?.has_older && item.event_page.older_cursor && (
-              // Remounted closed for another task or workspace, which aborts its read.
-              <EarlierHistory
-                key={`${workspace}:${item.task.id}`}
-                item={item}
-                workspace={workspace}
-                usageReportedOrderIDs={usageReportedOrderIDs}
-              />
-            )}
-            {entries.length === 0 && tail.length === 0 && !showGate && (
-              <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
-            )}
-            {tail.map(({ key, dot, card }) => (
-              <li key={key} className="relative pl-7">
-                <TimelineDot className={dot} />
-                {card}
-              </li>
-            ))}
-            {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
-              <li ref={gateRef} className="relative pl-7">
-                <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
-                <ReviewPanel
-                  item={item}
-                  onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)}
-                />
-              </li>
-            )}
-          </ol>
-        </CurrentAttemptProvider>
+        <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
+          {entries.map((entry) => (
+            <TimelineRow
+              key={keyFor(entry)}
+              entry={entry}
+              item={item}
+              usageReportedOrderIDs={usageReportedOrderIDs}
+              operatorNotes={item.operator_notes}
+            />
+          ))}
+          {item.event_page?.has_older && item.event_page.older_cursor && (
+            // Remounted closed for another task or workspace, which aborts its read.
+            <EarlierHistory
+              key={`${workspace}:${item.task.id}`}
+              item={item}
+              workspace={workspace}
+              usageReportedOrderIDs={usageReportedOrderIDs}
+            />
+          )}
+          {entries.length === 0 && tail.length === 0 && !showGate && (
+            <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
+          )}
+          {tail.map(({ key, dot, card }) => (
+            <li key={key} className="relative pl-7">
+              <TimelineDot className={dot} />
+              {card}
+            </li>
+          ))}
+          {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
+            <li ref={gateRef} className="relative pl-7">
+              <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
+              <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
+            </li>
+          )}
+        </ol>
       </section>
       {/* Remounted closed for another task or workspace, which aborts its read. */}
       <TechnicalActivity key={`${workspace}:${item.task.id}`} item={item} workspace={workspace} />
     </>
-  )
-}
-
-function CurrentExecutionSummary({
-  state,
-  routeVariant,
-  preemptOrder,
-}: {
-  state: CurrentExecutionState
-  routeVariant: TaskRouteVariant
-  preemptOrder?: WorkOrder
-}) {
-  const paused = state.status === 'paused'
-  const relatedRoute = relatedTaskRoute(routeVariant)
-  const blockerDecision = state.blocker.match(/\bDEC-[1-9][0-9]*\b/)?.[0]
-  return (
-    <section
-      aria-labelledby="current-execution-title"
-      className={cn(
-        'mb-4 rounded-lg border px-4 py-3',
-        paused ? 'border-attention/55 bg-attention-soft' : 'border-primary/25 bg-primary-soft/35',
-      )}
-    >
-      <div className="flex items-start gap-2">
-        {paused ? (
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-        ) : (
-          <CircleDashed className="mt-0.5 size-4 shrink-0 animate-pulse text-primary" aria-hidden />
-        )}
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
-            Current state · {paused ? 'Paused — needs attention' : 'Progressing'}
-          </p>
-          <h2
-            id="current-execution-title"
-            className={cn('mt-0.5 text-sm font-semibold', paused ? 'text-attention' : 'text-foreground')}
-          >
-            {state.title}
-          </h2>
-        </div>
-      </div>
-      <dl className="mt-3 grid gap-2 text-xs leading-5 sm:grid-cols-3">
-        <div>
-          <dt className="font-medium text-foreground">Current blocker</dt>
-          <dd className="text-muted">
-            {state.blockingDependencies?.length ? (
-              <span className="flex flex-col items-start">
-                {state.blockingDependencies.map((dependency) => (
-                  <Link
-                    key={dependency.id}
-                    to={relatedRoute}
-                    params={{ taskId: dependency.id }}
-                    className="text-primary hover:underline"
-                  >
-                    {dependency.title || dependency.id} ·{' '}
-                    {dependencyRelationLabel(
-                      dependency.state,
-                      true,
-                      state.unsatisfiableDependencyIDs?.includes(dependency.id) === true,
-                    )}
-                  </Link>
-                ))}
-              </span>
-            ) : (
-              <DecisionBlockerText blocker={state.blocker} decisionID={blockerDecision} />
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt className="font-medium text-foreground">Retry</dt>
-          <dd className="text-muted">{state.retry}</dd>
-        </div>
-        {state.nextAction && (
-          <div>
-            <dt className="font-medium text-foreground">What to do next</dt>
-            <dd className="text-muted">{state.nextAction}</dd>
-          </div>
-        )}
-      </dl>
-      {state.order.state === 'claimed' && state.order.activity_snapshot && (
-        <RecentActivity snapshot={state.order.activity_snapshot} />
-      )}
-      {preemptOrder && (
-        <div className="mt-3 border-t border-border/60 pt-2.5">
-          <WorkOrderPreemptControl order={preemptOrder} />
-        </div>
-      )}
-    </section>
-  )
-}
-
-function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapshot }) {
-  const outputRef = useRef<HTMLPreElement>(null)
-
-  useLayoutEffect(() => {
-    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
-  }, [snapshot.content])
-
-  return (
-    <section
-      aria-label="Client machine activity"
-      className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-t border-border/60 pt-2.5"
-    >
-      <details className="contents [&::details-content]:col-span-2">
-        <summary
-          aria-label="Client machine activity"
-          className="flex cursor-pointer flex-wrap items-baseline gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-        >
-          <h3 className="text-xs font-medium text-foreground">Client machine activity</h3>
-        </summary>
-        <pre
-          ref={outputRef}
-          className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono text-[11px] leading-5 text-foreground"
-        >
-          {snapshot.content}
-        </pre>
-      </details>
-      {/* Inspecting the capture time must not toggle the output summary. */}
-      <Disclosure
-        className="col-start-2 row-start-1 justify-self-start"
-        triggerClassName="text-[11px] text-faint"
-        content={absoluteTime(snapshot.captured_at)}
-      >
-        <time dateTime={snapshot.captured_at}>Captured {absoluteTime(snapshot.captured_at)}</time>
-      </Disclosure>
-    </section>
   )
 }
 
@@ -508,25 +338,6 @@ function TranscriptDisclosure({ capture }: { capture: WorkOrderTranscriptCapture
         </div>
       )}
     </details>
-  )
-}
-
-function DecisionBlockerText({ blocker, decisionID }: { blocker: string; decisionID?: string }) {
-  if (!decisionID) return blocker
-  const [before, ...after] = blocker.split(decisionID)
-  return (
-    <>
-      {before}
-      <Link
-        to="/system-design"
-        hash={`decision-${decisionID.toLowerCase()}`}
-        className="text-primary hover:underline"
-        aria-label={`Open ${decisionID} in System Design`}
-      >
-        {decisionID}
-      </Link>
-      {after.join(decisionID)}
-    </>
   )
 }
 
@@ -1000,15 +811,12 @@ function TimelineRow({
         order={entry.order}
         dotSlot={(className) => <TimelineDot className={className} />}
         footer={
-          <>
-            <CurrentAttempt order={entry.order} className="border-t border-border px-4 py-2.5" />
-            <JobFooter
-              job={entry.job}
-              model={entry.model}
-              order={entry.order}
-              usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
-            />
-          </>
+          <JobFooter
+            job={entry.job}
+            model={entry.model}
+            order={entry.order}
+            usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
+          />
         }
       />
     )
@@ -1048,7 +856,6 @@ function TimelineRow({
             {usageText(entry.order, usageReportedOrderIDs.has(entry.order.id))}
           </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
-          <CurrentAttempt order={entry.order} className="mt-1 basis-full" />
         </div>
       </li>
     )
@@ -1323,7 +1130,6 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       {seat.status === 'deliberating' && progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
-      <CurrentAttempt order={seat.order} className="w-full" />
       <TranscriptCaptures captures={seat.order.transcript_captures} />
     </div>
   )
@@ -1584,7 +1390,6 @@ function JobEntry({
             <TranscriptCaptures captures={order.transcript_captures} />
           </div>
         ) : null}
-        <CurrentAttempt order={order} className="border-t border-border px-4 py-2.5" />
         <JobFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>

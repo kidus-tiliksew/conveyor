@@ -58,7 +58,7 @@ func TestProvisionIdentityRedeemsInvitationsAndGrantResponseIsOpaqueIntegration(
 	provision := func(email, displayName string) core.IdentityUser {
 		t.Helper()
 		response := call(http.MethodPost, "/v1/users", `{"email":"`+email+`","display_name":"`+displayName+`"}`)
-		// The acknowledgement carries no account fields (DEC-63(6)); the
+		// The acknowledgement carries no account fields (DEC-75(6)); the
 		// stored row is read directly.
 		if response.Code != http.StatusOK || response.Body.String() != "{\"accepted\":true}\n" {
 			t.Fatalf("provision user status=%d body=%s", response.Code, response.Body.String())
@@ -371,7 +371,7 @@ func redeemedMemberID(t *testing.T, st *Store, email string) string {
 }
 
 // provisionedIdentityRow reads the stored account for a normalized email. The
-// provisioning route returns only an acknowledgement (DEC-63(6)).
+// provisioning route returns only an acknowledgement (DEC-75(6)).
 func provisionedIdentityRow(t *testing.T, st *Store, email string) core.IdentityUser {
 	t.Helper()
 	var user core.IdentityUser

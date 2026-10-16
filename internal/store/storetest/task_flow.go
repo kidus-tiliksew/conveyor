@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -51,6 +52,63 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		if len(stage.Attempts) != 1 || stage.Attempts[0].AttemptID == "" || stage.Attempts[0].StartedAt == nil || stage.Attempts[0].Auto {
 			t.Fatalf("spec attempts = %+v", stage.Attempts)
 		}
+		// The next action is the plan gate's own decision, so the gate needs
+		// the operator; the merge gate ahead is not reached yet.
+		requireFlowGates(t, flow, store.FlowNeedsOperator, store.FlowUpcoming)
+		if stage.Label != "Plan" || stage.GateLabel != "Plan approval" || stage.GateStatusLabel != "Your approval" || stage.GateStatusText != "Plan approval is waiting for your decision." || !stage.Traversed || !stage.GateTraversed {
+			t.Fatalf("spec node = %+v", stage)
+		}
+		if flow.CurrentStage == nil || *flow.CurrentStage != core.StageSpec {
+			t.Fatalf("current_stage = %v, want spec", flow.CurrentStage)
+		}
+	})
+
+	// A plan revision holds the plan gate from a later stage: the gate needs
+	// the operator, and the stages already passed stay done.
+	revisionID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageImplement})
+	_, err = plane.Perform(ctx, revisionID, taskops.Command{Kind: core.TaskGatePlanRevision})
+	requireOK(t, err)
+	add("plan revision", revisionID, func(t *testing.T, flow store.TaskFlow) {
+		if flow.NextAction.Actor != nextaction.ActorOperator || flow.NextAction.Kind != nextaction.KindPlanRevision {
+			t.Fatalf("next action = %s/%s, want operator plan_revision", flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+		requireFlowGates(t, flow, store.FlowNeedsOperator, store.FlowUpcoming)
+	})
+
+	// The merge gate: only the merge gate needs the operator, and the plan
+	// gate the task passed reads done.
+	mergeGateID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageReview})
+	_, err = plane.Perform(ctx, mergeGateID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+	requireOK(t, err)
+	add("merge approval", mergeGateID, func(t *testing.T, flow store.TaskFlow) {
+		if flow.NextAction.Actor != nextaction.ActorOperator || flow.NextAction.Kind != nextaction.KindMergeApproval {
+			t.Fatalf("next action = %s/%s, want operator merge_approval", flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+		requireFlowGates(t, flow, store.FlowDone, store.FlowNeedsOperator)
+		merge := taskFlowStage(t, flow, core.StageMerge)
+		if merge.GateLabel != "Merge approval" || merge.GateStatusLabel != "Your approval" || !merge.GateTraversed {
+			t.Fatalf("merge node = %+v", merge)
+		}
+	})
+
+	// A context proposal at Plan stops the task at the stage, not at the plan
+	// gate: the Plan row needs the operator and the gate stays upcoming
+	// (req-operator-next-action AC-7.5).
+	design, designInitial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "flow-context-" + core.NewTaskID(), Title: "Flow context", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("flow"), Origin: core.SystemDesignOriginOperator})
+	requireOK(t, err)
+	_, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designInitial.Version)
+	requireOK(t, err)
+	contextID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageSpec})
+	_, _, err = st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextID, TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."})
+	requireOK(t, err)
+	add("context proposal at plan", contextID, func(t *testing.T, flow store.TaskFlow) {
+		if flow.NextAction.Actor != nextaction.ActorOperator || flow.NextAction.Kind != nextaction.KindContextProposal {
+			t.Fatalf("next action = %s/%s, want operator context_proposal", flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+		if got := taskFlowStage(t, flow, core.StageSpec).Status; got != store.FlowNeedsOperator {
+			t.Fatalf("spec status = %s, want needs_operator for the stop at Plan", got)
+		}
+		requireFlowGates(t, flow, store.FlowUpcoming, store.FlowUpcoming)
 	})
 
 	// Claimed implement order: in progress with its attempt folded from the ledger.
@@ -65,6 +123,13 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		view := stage.CurrentAttempt
 		if view.AttemptID != claimed.AttemptID || view.SessionID != claimed.SessionID || view.ClaimedBy != claimed.ClaimantID || view.ClaimedAt == nil {
 			t.Fatalf("current_attempt = %+v, order = %+v", view, claimed)
+		}
+		// Elapsed time is the fold's own arithmetic over the served instant.
+		if want := max(0, int64(flow.AsOf.Sub(*view.ClaimedAt).Seconds())); view.ElapsedSeconds != want {
+			t.Fatalf("elapsed_seconds = %d, want %d from claimed_at %s to as_of %s", view.ElapsedSeconds, want, view.ClaimedAt, flow.AsOf)
+		}
+		if flow.CurrentStage == nil || *flow.CurrentStage != core.StageImplement {
+			t.Fatalf("current_stage = %v, want implement", flow.CurrentStage)
 		}
 		if got := flow.NextAction.Attempt; flow.NextAction.CurrentOrder != nil && flow.NextAction.CurrentOrder.ID == implement && got != nil {
 			if got.AttemptID != view.AttemptID || got.SessionID != view.SessionID || got.ClaimedBy != view.ClaimedBy || !sameFlowTime(got.ClaimedAt, view.ClaimedAt) {
@@ -104,6 +169,10 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		spec, verify, merge := taskFlowStage(t, flow, core.StageSpec), taskFlowStage(t, flow, core.StageVerify), taskFlowStage(t, flow, core.StageMerge)
 		if spec.Status != store.FlowOff || spec.Gate != nil || verify.Status != store.FlowOff || merge.Gate != nil || merge.Status == store.FlowOff {
 			t.Fatalf("spec=%+v verify=%+v merge=%+v", spec, verify, merge)
+		}
+		requireFlowGates(t, flow, store.FlowOff, store.FlowOff)
+		if spec.GateLabel != "Plan approval" || spec.GateStatusLabel != "Off for this task" || spec.Traversed || spec.GateTraversed {
+			t.Fatalf("spec off node = %+v", spec)
 		}
 	})
 	verifyID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true})
@@ -199,12 +268,12 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		if action.Actor != nextaction.ActorFactory || action.Kind != nextaction.KindRetrying || action.CurrentOrder == nil || action.CurrentOrder.ID != pendingOrder {
 			t.Fatalf("next action = %s/%s order %+v", action.Actor, action.Kind, action.CurrentOrder)
 		}
-		want := store.FlowRetrying{Attempt: 1, Of: config.DefaultRecoveryPolicy().AutomaticRecoveries}
-		if flow.Side.Retrying == nil || *flow.Side.Retrying != want {
-			t.Fatalf("side.retrying = %+v, want %+v", flow.Side.Retrying, want)
+		bound := config.DefaultRecoveryPolicy().AutomaticRecoveries
+		if got := flow.Side.Retrying; got == nil || got.Attempt != 1 || got.Of == nil || *got.Of != bound {
+			t.Fatalf("side.retrying = %+v, want 1 of %d", got, bound)
 		}
-		if got := flow.Side.Labels[store.FlowSideRetrying]; got != "Retrying automatically" {
-			t.Fatalf("side.labels = %v, want the retrying label", flow.Side.Labels)
+		if got, want := flow.Side.Labels[store.FlowSideRetrying], "Auto-retrying · 1 of "+strconv.Itoa(bound); got != want {
+			t.Fatalf("side.labels = %v, want retrying %q", flow.Side.Labels, want)
 		}
 	})
 
@@ -289,8 +358,14 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		if flow.NextAction.Kind != nextaction.KindAgentQuestion || !flow.Side.AgentQuestion {
 			t.Fatalf("next action = %s, side = %+v", flow.NextAction.Kind, flow.Side)
 		}
-		if want := map[string]string{store.FlowSideAgentQuestion: "Needs your answer"}; !reflect.DeepEqual(flow.Side.Labels, want) {
+		if want := map[string]string{store.FlowSideAgentQuestion: "Agent asks you"}; !reflect.DeepEqual(flow.Side.Labels, want) {
 			t.Fatalf("side.labels = %v, want %v", flow.Side.Labels, want)
+		}
+		// An agent question is never a gate decision.
+		for _, stage := range flow.Stages {
+			if stage.GateStatus != nil && *stage.GateStatus == store.FlowNeedsOperator {
+				t.Fatalf("%s gate needs the operator for an agent question", stage.ID)
+			}
 		}
 	})
 	return scenarios
@@ -366,13 +441,16 @@ func runTaskFlow(t *testing.T, factory Factory) {
 			}
 			switch scenario.Name {
 			case "two bounces":
-				if len(flow.Loops) != 1 || flow.Loops[0] != (store.FlowLoop{From: core.StageReview, To: core.StageImplement, Count: 2}) {
+				if len(flow.Loops) != 1 || flow.Loops[0] != (store.FlowLoop{From: core.StageReview, To: core.StageImplement, Count: 2, Label: "sent back ×2"}) {
 					t.Fatalf("loops = %+v", flow.Loops)
 				}
 			case "redirect window":
 				if len(flow.Loops) != 1 || flow.Loops[0].Count != 1 {
 					t.Fatalf("loops after redirect = %+v", flow.Loops)
 				}
+			}
+			if !flow.AsOf.Equal(now) {
+				t.Fatalf("as_of = %s, want the read's now %s", flow.AsOf, now)
 			}
 			if scenario.Check != nil {
 				scenario.Check(t, flow)
@@ -420,6 +498,184 @@ func runTaskFlow(t *testing.T, factory Factory) {
 			t.Fatalf("store count %d, loops %+v; want 1", count, flow.Loops)
 		}
 	})
+
+	// A recorded gate whose decision another operator stop masks: the stored
+	// ledger enters the plan or merge gate, and the next action supplied to the
+	// fold is a different operator stop. The gate reads waiting while the
+	// aggregate stage still needs the operator, and only a gate decision marks
+	// the gate needs_operator (req-operator-next-action AC-7.5, AC-7.7).
+	t.Run("masked gates wait", func(t *testing.T) {
+		ids := map[string]string{}
+		for _, scenario := range scenarios {
+			ids[scenario.Name] = scenario.TaskID
+		}
+		now := time.Now().UTC()
+		for _, tc := range []struct {
+			scenario    string
+			stage       core.Stage
+			kinds       []string
+			plan, merge string
+		}{
+			{"plan approval", core.StageSpec, []string{nextaction.KindDocumentProposal, nextaction.KindAgentQuestion, nextaction.KindContextProposal}, store.FlowWaiting, store.FlowUpcoming},
+			{"plan revision", core.StageSpec, []string{nextaction.KindDocumentProposal, nextaction.KindAgentQuestion}, store.FlowWaiting, store.FlowUpcoming},
+			{"merge approval", core.StageMerge, []string{nextaction.KindDocumentProposal, nextaction.KindAgentQuestion}, store.FlowDone, store.FlowWaiting},
+		} {
+			id := ids[tc.scenario]
+			if id == "" {
+				t.Fatalf("scenario %q missing", tc.scenario)
+			}
+			for _, kind := range tc.kinds {
+				action := nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: kind, Judgment: true}
+				flow := ReadTaskFlowWith(t, st, ctx, id, action, now)
+				if got := taskFlowStage(t, flow, tc.stage).Status; got != store.FlowNeedsOperator {
+					t.Fatalf("%s masked by %s: %s status = %s, want needs_operator", tc.scenario, kind, tc.stage, got)
+				}
+				requireFlowGates(t, flow, tc.plan, tc.merge)
+				masked := taskFlowStage(t, flow, tc.stage)
+				if masked.GateStatusLabel != "Waiting" || masked.GateStatusText != masked.GateLabel+" waits until the current stop is resolved." || !masked.GateTraversed {
+					t.Fatalf("%s masked by %s: gate copy = %+v", tc.scenario, kind, masked)
+				}
+				want, err := json.Marshal(flow)
+				requireOK(t, err)
+				rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, id, action, now))
+				requireOK(t, err)
+				if string(rebuilt) != string(want) {
+					t.Fatalf("%s masked by %s: replay differs:\n%s\nwant\n%s", tc.scenario, kind, rebuilt, want)
+				}
+			}
+		}
+	})
+
+	// Skipped nodes on a path the task has passed: with every switch off by
+	// frozen policy, Plan, Plan approval, Verify, and Merge approval stay off
+	// but read traversed once the recorded transitions place the task beyond
+	// them, and not before (req-operator-next-action AC-7.5).
+	t.Run("skipped nodes traversed once passed", func(t *testing.T) {
+		id := flowTask(t, st, ctx, x.Workspace, core.Task{SpecApproval: false, MergeApproval: false})
+		events, err := st.ListEvents(ctx, id)
+		requireOK(t, err)
+		if len(events) == 0 {
+			t.Fatal("task.created missing")
+		}
+		at := events[len(events)-1].At.Truncate(time.Microsecond)
+		event := func(n int64, kind string, payload map[string]any) core.Event {
+			return core.Event{ID: n, TaskID: id, Kind: kind, ActorRole: core.ActorSystem, Payload: core.JSONPayload(payload), At: at.Add(time.Duration(n) * time.Second)}
+		}
+		type marks struct {
+			status, gate             string
+			traversed, gateTraversed bool
+		}
+		read := func(flow store.TaskFlow, stage core.Stage) marks {
+			row := taskFlowStage(t, flow, stage)
+			gate := ""
+			if row.GateStatus != nil {
+				gate = *row.GateStatus
+			}
+			return marks{row.Status, gate, row.Traversed, row.GateTraversed}
+		}
+		check := func(name string, want map[core.Stage]marks) {
+			t.Helper()
+			now := time.Now().UTC()
+			flow := ReadTaskFlow(t, st, ctx, id, now)
+			for stage, mark := range want {
+				if got := read(flow, stage); got != mark {
+					t.Fatalf("%s: %s = %+v, want %+v", name, stage, got, mark)
+				}
+			}
+			served, err := json.Marshal(flow)
+			requireOK(t, err)
+			rebuilt, err := json.Marshal(ReplayTaskFlow(t, st, ctx, x, id, flow.NextAction, now))
+			requireOK(t, err)
+			if string(rebuilt) != string(served) {
+				t.Fatalf("%s: replay differs:\n%s\nwant\n%s", name, rebuilt, served)
+			}
+		}
+		check("before any transition", map[core.Stage]marks{
+			core.StageSpec:   {store.FlowOff, store.FlowOff, false, false},
+			core.StageVerify: {store.FlowOff, "", false, false},
+			core.StageMerge:  {store.FlowUpcoming, store.FlowOff, false, false},
+		})
+		x.SeedEvents(t, ctx, 0, []core.Event{
+			event(1, "pipeline.transition_decided", map[string]any{"from_stage": "triage", "next_stage": "implement"}),
+			event(2, "work_order.created", map[string]any{"id": id + "-implement-1", "stage": "implement", "state": "queued"}),
+		})
+		check("at implement", map[core.Stage]marks{
+			core.StageSpec:   {store.FlowOff, store.FlowOff, true, true},
+			core.StageVerify: {store.FlowOff, "", false, false},
+			core.StageMerge:  {store.FlowUpcoming, store.FlowOff, false, false},
+		})
+		x.SeedEvents(t, ctx, 0, []core.Event{
+			event(3, "pipeline.transition_decided", map[string]any{"from_stage": "implement", "next_stage": "review"}),
+			event(4, "pipeline.transition_decided", map[string]any{"from_stage": "review", "next_stage": "merge"}),
+			event(5, "task.state_changed", map[string]any{"to": core.TaskApproved, "command": core.TaskReviewAccept}),
+		})
+		check("approved and merging", map[core.Stage]marks{
+			core.StageSpec:   {store.FlowOff, store.FlowOff, true, true},
+			core.StageVerify: {store.FlowOff, "", true, false},
+			core.StageMerge:  {store.FlowInProgress, store.FlowOff, true, true},
+		})
+	})
+
+	// A verification failure records from=review beside source=verification;
+	// the fold attributes it to verify while every other source keeps its
+	// recorded from, and the stored payload is not rewritten
+	// (req-operator-next-action AC-7.5).
+	t.Run("verification bounce loop", func(t *testing.T) {
+		id := flowTask(t, st, ctx, x.Workspace, core.Task{NextStage: core.StageImplement})
+		at := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+		bounce := func(n int64, payload map[string]any) core.Event {
+			return core.Event{ID: n, TaskID: id, Kind: "pipeline.bounced", ActorRole: core.ActorSystem, Payload: core.JSONPayload(payload), At: at.Add(time.Duration(n) * time.Minute)}
+		}
+		x.SeedEvents(t, ctx, 0, []core.Event{
+			bounce(1, map[string]any{"from": "review", "to": "implement", "source": "verification", "reason_code": "verification-failed"}),
+			bounce(2, map[string]any{"from": "review", "to": "implement"}),
+			bounce(3, map[string]any{"from": "review", "to": "implement", "source": "mystery"}),
+			bounce(4, map[string]any{"from": "review", "to": "implement", "source": "verification", "reason_code": "verification-failed"}),
+		})
+		flow := ReadTaskFlow(t, st, ctx, id, time.Now().UTC())
+		want := []store.FlowLoop{
+			{From: core.StageVerify, To: core.StageImplement, Count: 2, Label: "sent back ×2"},
+			{From: core.StageReview, To: core.StageImplement, Count: 2, Label: "sent back ×2"},
+		}
+		if !reflect.DeepEqual(flow.Loops, want) {
+			t.Fatalf("loops = %+v, want %+v", flow.Loops, want)
+		}
+		if count := flowBounceCount(t, st, ctx, id); count != 4 {
+			t.Fatalf("store bounce window = %d, want 4", count)
+		}
+		events, err := st.ListEvents(ctx, id)
+		requireOK(t, err)
+		for _, event := range events {
+			var payload struct {
+				From string `json:"from"`
+			}
+			if event.Kind == "pipeline.bounced" && (json.Unmarshal(event.Payload, &payload) != nil || payload.From != "review") {
+				t.Fatalf("recorded bounce payload changed: %s", event.Payload)
+			}
+		}
+	})
+}
+
+// requireFlowGates asserts the plan and merge gate marks and that only those
+// two rows carry one.
+func requireFlowGates(t *testing.T, flow store.TaskFlow, plan, merge string) {
+	t.Helper()
+	for _, stage := range flow.Stages {
+		var want string
+		switch stage.ID {
+		case core.StageSpec:
+			want = plan
+		case core.StageMerge:
+			want = merge
+		}
+		got := ""
+		if stage.GateStatus != nil {
+			got = *stage.GateStatus
+		}
+		if got != want {
+			t.Fatalf("%s gate_status = %q, want %q (next action %s/%s)", stage.ID, got, want, flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+	}
 }
 
 // ReadTaskFlowWith folds the task's current ledger against a fixed next action

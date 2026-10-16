@@ -1,14 +1,15 @@
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 import { buildTimeline, type TimelineEntry } from '../src/lib/activity'
 import type { ActivityItem, NextAction, WorkOrder } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 
 // Task detail tells the task's story through its timeline
 // (req-operator-next-action REQ-7; feature-operator-next-action NA-6;
-// component-web-task-surfaces). There is no stage-flow chart: the next-action
-// card sits directly above the timeline, the current attempt's facts render on
-// the entry whose order and attempt the server names, and parked, closed,
-// dependency waits, automatic retries, and bounces read as entries.
+// component-web-task-surfaces). The Timeline tab is the default below the
+// next-action card and reads no flow (AC-7.4; the Flow tab is covered by
+// task-flow.spec.ts), no entry renders a Current attempt facts region, each
+// stage entry keeps its own content, and parked, closed, dependency waits,
+// automatic retries, and bounces read as entries.
 
 const t0 = '2026-10-15T08:00:00Z'
 const taskId = 'timeline-task'
@@ -123,7 +124,7 @@ async function mockAPI(page: Page, item: object, action: NextAction) {
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }),
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }, route.request()),
       })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
     if (path === '/v1/pending-proposals')
@@ -133,6 +134,10 @@ async function mockAPI(page: Page, item: object, action: NextAction) {
       return route.fulfill({ status: 500, json: {} })
     }
     if (path === `/v1/tasks/${taskId}/next-action`) return route.fulfill({ json: action })
+    if (path === `/v1/tasks/${taskId}/verification`)
+      return route.fulfill({
+        json: { head_sha: '', current_context_id: '', contexts: { items: [], next_cursor: '' }, overview: {} },
+      })
     if (path === `/v1/tasks/${taskId}/activity`) return route.fulfill({ json: item })
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
     if (path === '/v1/activity' || path === '/v1/task-operations')
@@ -153,105 +158,171 @@ const surfaces = [
 ] as const
 
 for (const surface of surfaces) {
-  test(`the ${surface.name} has no stage-flow chart and puts the next action directly above the timeline`, async ({
+  test(`the ${surface.name} shows the Timeline tab by default below the next action and reads no flow`, async ({
     page,
   }) => {
     const counts = await mockAPI(page, jobItem, nextAction(`${taskId}-implement-1`))
     await page.goto(surface.url)
     const timeline = page.getByRole('region', { name: 'Execution event timeline' })
     await expect(timeline).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: 'Flow', exact: true })).toHaveAttribute('aria-selected', 'false')
     await expect(page.getByRole('region', { name: 'Task flow' })).toHaveCount(0)
-    await expect(page.locator('[data-flow-stage]')).toHaveCount(0)
+    await expect(page.locator('[data-flow-node]')).toHaveCount(0)
     const card = page.getByRole('region', { name: 'Next action' })
     await expect(card).toBeVisible()
-    // The next-action card is the timeline's immediate predecessor.
-    const adjacent = await card.evaluate(
-      (element, other) => element.nextElementSibling === other,
-      await timeline.elementHandle(),
+    // The timeline sits in the selected tab panel, which follows the
+    // next-action card.
+    const panel = page.getByRole('tabpanel')
+    await expect(panel.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+    const follows = await card.evaluate(
+      (element, other) => Boolean(other && element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING),
+      await panel.elementHandle(),
     )
-    expect(adjacent).toBe(true)
+    expect(follows).toBe(true)
     expect(counts.flow).toBe(0)
-  })
-
-  test(`the ${surface.name} shows the current attempt on its running job entry`, async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await mockAPI(page, jobItem, nextAction(`${taskId}-implement-1`))
-    await page.goto(surface.url)
-    const current = page.getByRole('region', { name: 'Current attempt' })
-    await expect(current).toHaveCount(1)
-    await expect(current).toHaveAttribute('data-current-attempt', `${taskId}-implement-1`)
-    const field = (term: string) =>
-      current.locator('dt', { hasText: new RegExp(`^${term}$`) }).locator('xpath=following-sibling::dd[1]')
-    await expect(field('Harness')).toHaveText('claude-code')
-    await expect(field('Model')).toHaveText('claude-opus-5-5')
-    await expect(field('User')).toHaveText('operator@example.test')
-    await expect(field('Claimed')).not.toHaveText('')
-    await expect(field('Last check-in')).toContainText('ago')
-    await expect(field('Progress')).toHaveText('Wiring the attempt into the timeline')
-    await expect(field('Elapsed')).toHaveText('1h 02m')
-    // The lease is the server's to judge; the entry prints no lease field.
-    await expect(current.locator('dt', { hasText: /^Lease$/ })).toHaveCount(0)
-    // Identifiers sit behind Show IDs.
-    await expect(current.getByText('sess-current')).toBeHidden()
-    await current.getByText('Show IDs').click()
-    await expect(current.getByText('sess-current')).toBeVisible()
-    await expect(current.getByText('attempt-current')).toBeVisible()
-    await current.getByRole('button', { name: 'Copy attempt ID' }).click()
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('attempt-current')
   })
 }
 
-test('a claimed order without a job carries the current attempt on its own entry', async ({ page }) => {
-  const item = activity({
-    work_orders: [order(`${taskId}-implement-2`, { attempt_id: 'attempt-current', agent: 'claude-code' })],
-  })
-  await mockAPI(page, item, nextAction(`${taskId}-implement-2`))
-  await page.goto(`/tasks/${taskId}/full`)
-  const current = page.getByRole('region', { name: 'Current attempt' })
-  await expect(current).toHaveAttribute('data-current-attempt', `${taskId}-implement-2`)
-  await expect(current).toContainText('Wiring the attempt into the timeline')
-})
+// Timeline entries carry no attempt facts panel (req-operator-next-action
+// REQ-7, AC-7.1, AC-7.3). With a next action whose attempt matches the
+// entry's own order and attempt, no entry renders a Current attempt region,
+// and each entry keeps the stage content it already carried. Each case first
+// waits for its entry, so the absence check never runs against an unloaded
+// timeline.
+const detailSurfaces = [
+  { name: 'Board sheet', url: `/tasks/${taskId}` },
+  { name: 'Tasks panel', url: `/tasks?task=${taskId}` },
+  { name: 'full route', url: `/tasks/${taskId}/full` },
+] as const
 
-test('a review seat carries the current attempt, and its sibling seat does not', async ({ page }) => {
-  const seat = (n: number, attemptId: string) =>
-    order(`${taskId}-review-1-seat-${n}`, {
-      stage: 'review',
-      job_id: `${taskId}-review-1-seat-${n}`,
-      review_round: 1,
-      review_seat: n,
-      attempt_id: attemptId,
-      model: 'gpt-6',
-      agent: 'codex',
+const elapsed = /^\d+(h \d{2}m|m \d{2}s|s)$/
+
+interface AbsenceCase {
+  entryKind: string
+  item: object
+  action: NextAction
+  fullRouteOnly?: boolean
+  retained: (timeline: Locator) => Promise<void>
+}
+
+const absenceCases: AbsenceCase[] = [
+  {
+    entryKind: 'claimed running job',
+    item: activity({
+      jobs: [job(`${taskId}-implement-1`, 'implement', 'running')],
+      work_orders: [
+        order(`${taskId}-implement-1`, {
+          attempt_id: 'attempt-current',
+          session_id: 'sess-current',
+          agent: 'claude-code',
+          model: 'claude-opus-5-5',
+          progress: 'Removing the facts panel from the stage card',
+        }),
+      ],
+    }),
+    action: nextAction(`${taskId}-implement-1`),
+    retained: async (timeline) => {
+      const entry = timeline.locator('li article').filter({ hasText: 'Removing the facts panel from the stage card' })
+      await expect(entry).toHaveCount(1)
+      await expect(entry.getByText('Running', { exact: true })).toBeVisible()
+      const footer = entry.locator('footer')
+      await expect(footer.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expect(footer.locator('span').first()).toHaveText(elapsed)
+    },
+  },
+  {
+    entryKind: 'claimed order without a job',
+    item: activity({
+      work_orders: [
+        order(`${taskId}-implement-2`, {
+          attempt_id: 'attempt-current',
+          claimed_by: 'run:usr_operator',
+          agent: 'claude-code',
+          model: 'claude-opus-5-5',
+          last_agent_activity_at: minutes(7),
+          last_agent_activity_label: 'Progress: removing the facts panel',
+          progress: 'Removing the facts panel in full detail.',
+        }),
+      ],
+    }),
+    action: nextAction(`${taskId}-implement-2`),
+    retained: async (timeline) => {
+      const title = timeline.getByText('Implementation — in progress', { exact: true })
+      await expect(title).toBeVisible()
+      await expect(
+        title.locator('..').getByText('run:usr_operator · claude-code · claude-opus-5-5', { exact: true }),
+      ).toBeVisible()
+      await expect(timeline.getByText('Agent activity — Progress: removing the facts panel')).toBeVisible()
+    },
+  },
+  {
+    entryKind: 'review seat',
+    item: activity({
+      latest_stage: 'review',
+      work_orders: [1, 2].map((n) =>
+        order(`${taskId}-review-1-seat-${n}`, {
+          stage: 'review',
+          job_id: `${taskId}-review-1-seat-${n}`,
+          review_round: 1,
+          review_seat: n,
+          attempt_id: n === 1 ? 'attempt-current' : 'attempt-other',
+          model: n === 1 ? 'gpt-6' : 'gpt-6-mini',
+          agent: 'codex',
+          progress: n === 1 ? 'Reading the timeline diff' : undefined,
+        }),
+      ),
+    }),
+    action: nextAction(`${taskId}-review-1-seat-1`, 'review'),
+    retained: async (timeline) => {
+      const seat = timeline.getByText('Seat 1', { exact: true }).locator('..')
+      await expect(seat.getByText('gpt-6', { exact: true })).toBeVisible()
+      await expect(seat.getByText('Deliberating')).toBeVisible()
+      await expect(seat.getByText('Reading the timeline diff')).toBeVisible()
+    },
+  },
+  {
+    entryKind: 'claimed verification job',
+    fullRouteOnly: true,
+    item: activity({
+      latest_stage: 'verify',
+      jobs: [job(`${taskId}-verify-1`, 'verify', 'running')],
+      work_orders: [
+        order(`${taskId}-verify-1`, {
+          stage: 'verify',
+          attempt_id: 'attempt-current',
+          agent: 'claude-code',
+          model: 'claude-opus-5-5',
+        }),
+      ],
+    }),
+    action: nextAction(`${taskId}-verify-1`, 'verify'),
+    retained: async (timeline) => {
+      const entry = timeline.getByRole('article', { name: 'Verification' })
+      await expect(entry).toBeVisible()
+      const footer = entry.locator('footer')
+      await expect(footer.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expect(footer.locator('span').first()).toHaveText(elapsed)
+    },
+  },
+]
+
+for (const surface of detailSurfaces) {
+  for (const { entryKind, item, action, fullRouteOnly, retained } of absenceCases) {
+    if (fullRouteOnly && surface.name !== 'full route') continue
+    test(`the ${surface.name} omits attempt facts for a ${entryKind} and retains its stage content`, async ({
+      page,
+    }) => {
+      expect(action.attempt?.attempt_id).toBe('attempt-current')
+      await mockAPI(page, item, action)
+      await page.goto(surface.url)
+      const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+      await expect(timeline).toBeVisible()
+      await retained(timeline)
+      await expect(page.getByRole('region', { name: 'Current attempt', exact: true })).toHaveCount(0)
     })
-  const item = activity({
-    latest_stage: 'review',
-    work_orders: [seat(1, 'attempt-current'), seat(2, 'attempt-other')],
-  })
-  await mockAPI(page, item, nextAction(`${taskId}-review-1-seat-1`, 'review'))
-  await page.goto(`/tasks/${taskId}/full`)
-  const current = page.getByRole('region', { name: 'Current attempt' })
-  await expect(current).toHaveCount(1)
-  await expect(current).toHaveAttribute('data-current-attempt', `${taskId}-review-1-seat-1`)
-})
-
-test('an entry whose attempt is not the current one shows no attempt facts', async ({ page }) => {
-  const item = activity({
-    jobs: [job(`${taskId}-implement-1`, 'implement', 'running')],
-    work_orders: [order(`${taskId}-implement-1`, { attempt_id: 'attempt-previous' })],
-  })
-  await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
-  await page.goto(`/tasks/${taskId}/full`)
-  await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
-  await expect(page.getByText('Tell the story on the timeline').first()).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Current attempt' })).toHaveCount(0)
-})
-
-test('a next action without an attempt shows no attempt facts', async ({ page }) => {
-  await mockAPI(page, jobItem, nextAction(`${taskId}-implement-1`, 'implement', { attempt: undefined }))
-  await page.goto(`/tasks/${taskId}/full`)
-  await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Current attempt' })).toHaveCount(0)
-})
+  }
+}
 
 function event(id: number, kind: string, at: string, payload: Record<string, unknown>) {
   return { id, task_id: taskId, kind, actor_id: 'system', actor_role: 'system', payload, at }
@@ -459,24 +530,21 @@ for (const surface of surfaces) {
   })
 }
 
-for (const theme of ['light', 'dark'] as const) {
-  test(`the current attempt renders in the ${theme} theme`, async ({ page }) => {
-    await page.addInitScript((value) => localStorage.setItem('conveyor-theme', value), theme)
-    await mockAPI(page, jobItem, nextAction(`${taskId}-implement-1`))
-    await page.goto(`/tasks/${taskId}/full`)
-    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
-    await expect(page.getByRole('region', { name: 'Current attempt' })).toBeVisible()
-  })
-}
-
 test.describe('at 390 px', () => {
   test.use({ viewport: { width: 390, height: 844 } })
 
   for (const surface of surfaces) {
-    test(`the ${surface.name} timeline with an attempt has no horizontal scroll`, async ({ page }) => {
+    test(`the ${surface.name} running job entry has no horizontal scroll`, async ({ page }) => {
+      // The next action still carries an attempt; the entry renders without it.
       await mockAPI(page, jobItem, nextAction(`${taskId}-implement-1`))
       await page.goto(surface.url)
-      await expect(page.getByRole('region', { name: 'Current attempt' })).toBeVisible()
+      const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+      await expect(timeline).toBeVisible()
+      const running = timeline.locator('li article').filter({ hasText: 'Running' })
+      await expect(running).toHaveCount(1)
+      await expect(running).toBeVisible()
+      const card = await running.evaluate((element) => [element.scrollWidth, element.clientWidth])
+      expect(card[0]).toBeLessThanOrEqual(card[1])
       const viewport = await page.evaluate(() => [
         document.documentElement.scrollWidth,
         document.documentElement.clientWidth,

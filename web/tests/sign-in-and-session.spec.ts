@@ -58,7 +58,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
         authorization === ''
       displayName = body.display_name.trim()
       return route.fulfill({
-        json: { id: 'usr_invited', email: 'new@example.test', display_name: displayName },
+        json: { id: 'usr_invited', email: 'new@example.test', display_name: displayName, can_create_workspaces: false },
       })
     }
     if (path === '/v1/password' && request.method() === 'POST') {
@@ -165,6 +165,7 @@ test('an invitation opens a scoped session, guides first token setup, and signs 
           isOperator
             ? { id: 'usr_owner', email: 'owner@example.test', display_name: 'Ada Owner', role: 'operator' }
             : { id: 'usr_invited', email: 'new@example.test', display_name: displayName, role: 'contributor' },
+          route.request(),
         ),
       })
     }
@@ -266,7 +267,12 @@ test('a returning user signs in with a password and resets it through an operato
     if (path === '/v1/me' && request.method() === 'PUT') {
       displayName = body?.display_name?.trim() ?? displayName
       return route.fulfill({
-        json: { id: 'usr_returning', email: 'returning@example.test', display_name: displayName },
+        json: {
+          id: 'usr_returning',
+          email: 'returning@example.test',
+          display_name: displayName,
+          can_create_workspaces: false,
+        },
       })
     }
     if (path === '/v1/password' && request.method() === 'POST') {
@@ -298,12 +304,15 @@ test('a returning user signs in with a password and resets it through an operato
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({
-          id: 'usr_returning',
-          email: 'returning@example.test',
-          display_name: displayName,
-          role: 'contributor',
-        }),
+        json: callerIdentity(
+          {
+            id: 'usr_returning',
+            email: 'returning@example.test',
+            display_name: displayName,
+            role: 'contributor',
+          },
+          route.request(),
+        ),
       })
     if (path === '/v1/tokens') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals')

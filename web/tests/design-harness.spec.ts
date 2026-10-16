@@ -5,6 +5,13 @@ import { expect, type Page, type Route } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 const now = Date.now()
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString()
 
@@ -107,7 +114,6 @@ const activity = [
       state: 'queued',
       next_stage: 'spec',
       class: 'feature',
-      hold: true,
       title: 'Planning session transcripts archive as artifacts on finalize',
       source: 'github:kidus-tiliksew/conveyor#401',
       branch: 'conveyor/task-260731-91aa02',
@@ -762,6 +768,8 @@ for (const theme of ['light', 'dark'] as const) {
 
     await page.goto('/')
     await page.getByText('Activities surfaces read as one story').first().waitFor()
+    // No Board card renders a hold badge: a task carries no hold (DEC-74(3)).
+    await expect(page.getByText('Held', { exact: true })).toHaveCount(0)
     await page.screenshot({ path: `${shots}/board-${theme}.png` })
 
     // Filtering the feed must not change lane widths when most stages empty.

@@ -222,13 +222,25 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if strings.TrimSpace(stringArg("idempotency_key")) == "" {
 			return nil, fmt.Errorf("idempotency_key is required")
 		}
+		// hold is retired and absent from the schema (DEC-74(3)). An older
+		// client's omitted, null, or false value is ignored; a mistyped value is
+		// refused rather than read as false; true reaches the shared intake,
+		// which refuses it only after the idempotency lookup.
+		hold := false
+		if value, supplied := args["hold"]; supplied && value != nil {
+			typed, ok := value.(bool)
+			if !ok {
+				return nil, fmt.Errorf("%s: hold must be omitted or false; hold is retired (DEC-74)", taskHoldRetired)
+			}
+			hold = typed
+		}
 		result, err := s.createTaskRecord(ctx, createTaskReq{
 			Body:            stringArg("body"),
 			Repo:            stringArg("repo"),
 			BaseBranch:      stringArg("base_branch"),
 			Source:          stringArg("source"),
 			Level:           core.EscalationLevel(stringArg("level")),
-			Hold:            boolArg(args, "hold") != nil && *boolArg(args, "hold"),
+			Hold:            hold,
 			SpecApproval:    boolArg(args, "spec_approval"),
 			MergeApproval:   boolArg(args, "merge_approval"),
 			DependsOn:       stringSliceArg("depends_on"),
@@ -962,7 +974,7 @@ func mcpTools() []map[string]any {
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return append(append(mcpReadTools(), verificationMCPTools()...), []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. A user credential needs create_tasks in the workspace. An agent credential may call this tool only when its owning user's role in the workspace grants create_tasks; the task records the agent and its owning user as provenance, enters triage like any other task, and grants the agent no further capability. For an agent, omitted spec_approval and merge_approval take the workspace defaults, true turns a gate on, and false is refused with agent_gate_disable_forbidden; a legacy level L0 or L1 is refused the same way, and a null or non-boolean gate fails with invalid_agent_gate_override (DEC-60).", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "hold": map[string]any{"type": "boolean", "description": "Hold the task so workers cannot claim its orders; claim them yourself. A hold neither assigns the task nor changes queue order (DEC-55(3))."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. A user credential needs create_tasks in the workspace. An agent credential may call this tool only when its owning user's role in the workspace grants create_tasks; the task records the agent and its owning user as provenance, enters triage like any other task, and grants the agent no further capability. For an agent, omitted spec_approval and merge_approval take the workspace defaults, true turns a gate on, and false is refused with agent_gate_disable_forbidden; a legacy level L0 or L1 is refused the same way, and a null or non-boolean gate fails with invalid_agent_gate_override (DEC-60).", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},
