@@ -410,9 +410,27 @@ export function fetchWorkspace() {
   return getJSON<WorkspaceInfo>(workspaceURL('/v1/workspace'))
 }
 
+/**
+ * A refused workspace-list read. It keeps the HTTP status so the shell signs
+ * out only on 401 (component-web-dashboard). A network rejection is never a
+ * `WorkspacesError`: it carries no HTTP status.
+ */
+export class WorkspacesError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
 export async function fetchWorkspaces() {
   const response = await fetch('/v1/workspaces')
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    // A body that fails to read still leaves the received status decisive.
+    const body = await response.text().catch(() => '')
+    throw new WorkspacesError(apiErrorMessage(body, response.statusText), response.status)
+  }
   return response.json() as Promise<WorkspaceRecord[]>
 }
 
