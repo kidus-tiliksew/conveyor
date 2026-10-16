@@ -226,9 +226,11 @@ const absenceCases: AbsenceCase[] = [
       const entry = timeline.locator('li article').filter({ hasText: 'Removing the facts panel from the stage card' })
       await expect(entry).toHaveCount(1)
       await expect(entry.getByText('Running', { exact: true })).toBeVisible()
-      const footer = entry.locator('footer')
-      await expect(footer.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(footer.locator('span').first()).toHaveText(elapsed)
+      // Model and duration print in the entry's header line, with no footer.
+      const header = entry.locator('[data-job-header]')
+      await expect(entry.locator('footer')).toHaveCount(0)
+      await expect(header.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expect(header.locator('[data-job-duration]')).toHaveText(elapsed)
     },
   },
   {
@@ -302,7 +304,7 @@ const absenceCases: AbsenceCase[] = [
       await expect(entry).toBeVisible()
       const footer = entry.locator('footer')
       await expect(footer.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(footer.locator('span').first()).toHaveText(elapsed)
+      await expect(footer.locator('[data-job-duration]')).toHaveText(elapsed)
     },
   },
 ]

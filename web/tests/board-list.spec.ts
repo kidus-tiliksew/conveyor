@@ -1078,7 +1078,7 @@ test('Tasks panel renders lightweight detail before requesting selected audit', 
 })
 
 for (const hasCreator of [true, false]) {
-  test(`Created By in the Tasks panel shows ${hasCreator ? 'the workspace member' : 'Unknown'}`, async ({ page }) => {
+  test(`Created by in the Tasks panel shows ${hasCreator ? 'the workspace member' : 'Unknown'}`, async ({ page }) => {
     await routeTasksSurface(page)
     await page.route('**/v1/tasks/task-shipped/activity**', (route) =>
       route.fulfill({
@@ -1104,17 +1104,12 @@ for (const hasCreator of [true, false]) {
     )
     await page.goto('/tasks?task=task-shipped')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
-    const label = panel.locator('dt').filter({ hasText: /^Created By$/ })
+    const label = panel.locator('dt').filter({ hasText: /^Created$/ })
     await expect(label).toHaveCount(1)
-    await expect(label.locator('xpath=following-sibling::dd[1]').locator('span').first()).toHaveText(
-      hasCreator ? 'Other Member' : 'Unknown',
-    )
     await expect(
-      panel
-        .locator('dt')
-        .filter({ hasText: /^Repo$/ })
-        .locator('xpath=following-sibling::dt[1]'),
-    ).toHaveText('Created By')
+      label.locator('xpath=following-sibling::dd[1]').locator('[data-task-creator] > span').first(),
+    ).toHaveText(hasCreator ? 'Other Member' : 'Unknown')
+    await expect(label.locator('xpath=preceding-sibling::dt[1]')).toHaveText('Assignee')
   })
 }
 

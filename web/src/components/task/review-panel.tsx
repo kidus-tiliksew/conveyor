@@ -104,7 +104,7 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
       aria-label="What you are approving"
       className="mb-3 rounded-md border border-border bg-surface/40 px-3 py-2.5"
     >
-      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">What you are approving</h4>
+      <h4 className="text-[13px] font-semibold text-foreground">What you are approving</h4>
       <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr]">
         {branch && (
           <>

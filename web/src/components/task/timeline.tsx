@@ -989,7 +989,12 @@ function PanelEntry({
       )}
       <article className="rounded-lg border border-border bg-card">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">{stageLabels.review}</span>
+          <span className="text-[13px] font-semibold text-foreground">{stageLabels.review}</span>
+          {resolution && (
+            <Badge variant={resolution.verdict === 'approve' ? 'positive' : 'attention'} data-review-verdict>
+              {resolution.verdict === 'approve' ? 'Approved' : 'Changes requested'}
+            </Badge>
+          )}
           <span className="text-xs text-muted">
             {seats.length > 1 ? `Panel of ${seats.length} · unanimous to pass` : 'Panel of 1'}
           </span>
@@ -1040,7 +1045,7 @@ function PanelEntry({
         {notes.length > 0 && (
           <div className="border-t border-border px-4 py-3">
             <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-              <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-faint">
+              <span className="text-xs font-medium text-muted">
                 {entry.round > 0 ? `Round ${entry.round} — ` : ''}the panel’s notes
               </span>
               {resolution?.verdict === 'changes_requested' && seats.length > 1 && (
@@ -1052,9 +1057,7 @@ function PanelEntry({
                 key={seat.seat}
                 className="grid grid-cols-[auto_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0"
               >
-                <span className="pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
-                  Seat {seat.seat}
-                </span>
+                <span className="pt-0.5 text-xs text-faint">Seat {seat.seat}</span>
                 <SeatNote seat={seat} taskId={taskId} />
               </div>
             ))}
@@ -1105,9 +1108,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
   const progress = reviewSeatProgress(seat.order.progress)
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
-      <span className="w-11 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
-        Seat {seat.seat}
-      </span>
+      <span className="w-11 shrink-0 text-xs text-faint">Seat {seat.seat}</span>
       <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
@@ -1361,15 +1362,19 @@ function JobEntry({
       <article
         className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
       >
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">{stage}</span>
+        {/* One header line: the stage, then model and duration, then the time.
+            The entry has no separate footer (component-web-task-surfaces,
+            Work-order timeline entries). */}
+        <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
+          <span className="text-[13px] font-semibold text-foreground">{stage}</span>
           {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
+          <JobMeta job={job} model={model} order={order} usageAvailable={usageAvailable} />
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
-        </div>
+        </header>
         <MarkdownProse
-          className="px-4 py-3 text-sm leading-6 text-foreground/85"
+          className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85"
           components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
         >
           {summary}
@@ -1390,17 +1395,25 @@ function JobEntry({
             <TranscriptCaptures captures={order.transcript_captures} />
           </div>
         ) : null}
-        <JobFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>
   )
 }
 
-// The job footer keeps the operator-facing duration and model, while the model
-// chip retains usage and dispatch detail on hover. The claim's harness shows
-// only as the chip's logo fallback; auth mode, confinement, and actor plumbing
-// stay in the API.
-function JobFooter({
+// A verification entry keeps the duration and model in its own footer.
+function JobFooter(props: { job: Job; model: string; order?: WorkOrder; usageAvailable?: boolean }) {
+  if (!props.job.started_at) return null
+  return (
+    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+      <JobMeta {...props} />
+    </footer>
+  )
+}
+
+// The operator-facing model and duration, while the model chip retains usage
+// and dispatch detail on hover. The claim's harness shows only as the chip's
+// logo fallback; auth mode, confinement, and actor plumbing stay in the API.
+function JobMeta({
   job,
   model,
   order,
@@ -1424,9 +1437,8 @@ function JobFooter({
     .filter(Boolean)
     .join(' · ')
   return (
-    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
-      <span>{duration(job.started_at, job.ended_at)}</span>
-      <span className="ml-auto min-w-0">
+    <span className="inline-flex min-w-0 items-center gap-x-2.5 font-mono text-[11px] tabular-nums text-muted">
+      <span className="min-w-0">
         <ModelChip
           model={model}
           agent={order?.agent}
@@ -1443,7 +1455,10 @@ function JobFooter({
           usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
         />
       </span>
-    </footer>
+      <span className="shrink-0 text-faint" data-job-duration>
+        {duration(job.started_at, job.ended_at)}
+      </span>
+    </span>
   )
 }
 
@@ -1515,7 +1530,7 @@ function ModelChip({
       {usage && (
         <span
           role="tooltip"
-          className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 whitespace-nowrap rounded-md bg-foreground px-2 py-1 font-mono text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:right-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/model:opacity-100"
+          className="pointer-events-none absolute bottom-full left-0 z-10 mb-1.5 whitespace-nowrap rounded-md bg-foreground px-2 py-1 font-mono text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity duration-150 after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground group-hover/model:opacity-100"
         >
           {usage}
         </span>

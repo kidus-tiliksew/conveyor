@@ -6,8 +6,9 @@ import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { Card, CardContent, CardHeader } from '../ui/card'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { SectionCount, SectionHeading } from './section-heading'
 
 // Machine-owned fenced blocks of the legacy spec format are stripped from the prose and
 // rendered structurally by the acceptance checklist below.
@@ -73,7 +74,7 @@ export function SpecCard({
   }
 
   return (
-    <Card>
+    <Card className="rounded-lg">
       {/* At phone width the status group moves to its own line whole; neither
           group breaks inside itself (component-web-dashboard). */}
       <CardHeader className="flex-wrap items-center gap-y-2">
@@ -85,17 +86,17 @@ export function SpecCard({
             className="flex shrink-0 items-center gap-2 whitespace-nowrap text-left"
           >
             <ChevronRight className={cn('size-3.5 text-faint transition-transform', expanded && 'rotate-90')} />
-            <CardTitle>Execution plan</CardTitle>
-            <Badge variant="mono">v{spec.version}</Badge>
+            <SectionHeading>Execution plan</SectionHeading>
+            <SectionCount>v{spec.version}</SectionCount>
           </button>
         ) : (
           <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-            <CardTitle>Execution plan</CardTitle>
-            <Badge variant="mono">v{spec.version}</Badge>
+            <SectionHeading>Execution plan</SectionHeading>
+            <SectionCount>v{spec.version}</SectionCount>
           </div>
         )}
         <div className="flex shrink-0 items-center gap-2">
-          <span className="whitespace-nowrap text-[11px] text-faint">
+          <span className="whitespace-nowrap text-xs text-faint">
             {spec.approved && spec.approved_at
               ? `approved ${absoluteTime(spec.approved_at)}`
               : `drafted ${absoluteTime(spec.created_at)}`}
@@ -111,16 +112,15 @@ export function SpecCard({
             <div
               id={viewportID}
               ref={viewportRef}
-              className={cn(overflowExpandable && !contentExpanded && 'max-h-96 overflow-hidden')}
+              className={cn(overflowExpandable && !contentExpanded && 'max-h-44 overflow-hidden')}
             >
               <div>
                 <MarkdownProse>{prose}</MarkdownProse>
                 {criteria.length > 0 && (
                   <div className="mt-5 border-t border-border pt-4">
-                    <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                    <SectionHeading as="h4" count={criteria.length} className="mb-3">
                       Acceptance criteria
-                      <span className="ml-2 font-mono text-faint">{criteria.length}</span>
-                    </h4>
+                    </SectionHeading>
                     <ul className="space-y-2">
                       {criteria.map((criterion) => (
                         <CriterionRow key={criterion.id} criterion={criterion} />
@@ -130,7 +130,9 @@ export function SpecCard({
                 )}
                 {(spec.decomposition?.length ?? 0) > 0 && (
                   <div className="mt-5 border-t border-border pt-4">
-                    <h4 className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-muted">Decomposition</h4>
+                    <SectionHeading as="h4" count={spec.decomposition!.length} className="mb-3">
+                      Decomposition
+                    </SectionHeading>
                     <ul className="space-y-2">
                       {spec.decomposition!.map((item) => (
                         <li key={item.id} className="flex items-baseline gap-2 text-sm">
@@ -165,7 +167,7 @@ export function SpecCard({
             {hasOverflow && !overflowExpanded && (
               <div
                 aria-hidden="true"
-                className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-24"
+                className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16"
                 data-spec-overflow-shadow
               />
             )}
@@ -176,7 +178,7 @@ export function SpecCard({
                 type="button"
                 aria-controls={viewportID}
                 aria-expanded={overflowExpanded}
-                className="flex w-full items-center justify-center gap-1.5 rounded-b-md py-2 text-xs font-medium text-primary hover:bg-primary-soft focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                className="flex w-full items-center justify-center gap-1.5 rounded-b-md py-2 text-xs font-medium text-muted hover:bg-surface hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
                 onClick={() => setContentExpanded((value) => !value)}
               >
                 {overflowExpanded ? (
@@ -184,7 +186,7 @@ export function SpecCard({
                 ) : (
                   <ChevronDown aria-hidden="true" className="size-3.5" />
                 )}
-                {overflowExpanded ? 'Show less' : 'Show more'}
+                {overflowExpanded ? 'Show less' : 'Show full plan'}
               </button>
             </div>
           )}

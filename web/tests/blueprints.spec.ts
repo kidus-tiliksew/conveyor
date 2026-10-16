@@ -433,7 +433,7 @@ test('the canonical blueprint detail suppresses execution affordances and demote
   // All mutation and execution affordances are suppressed.
   // These are the strings the task header actually renders, so their absence
   // means the affordance is gone rather than merely renamed.
-  await expect(page.getByText('Prompt for AI Agents')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Agent prompt' })).toHaveCount(0)
   await expect(page.getByText('Work on this locally')).toHaveCount(0)
   await expect(page.getByText('conveyor/task-blueprint-anchor')).toHaveCount(0)
   await expect(page.getByText('Branch', { exact: true })).toHaveCount(0)
@@ -471,7 +471,7 @@ test('task routes for a blueprint anchor redirect to the canonical blueprint rou
   await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
   // The task costume never renders on the way through.
   await expect(page.getByText('Branch', { exact: true })).toHaveCount(0)
-  await expect(page.getByText('Prompt for AI Agents')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Agent prompt' })).toHaveCount(0)
   await expect(page.getByText('Work on this locally')).toHaveCount(0)
 
   await page.goto(`/tasks/${anchorId}`)
@@ -493,7 +493,7 @@ test('child task routes stay usable and link back to the canonical blueprint', a
   // The affordances suppressed on the blueprint are exactly the ones a child
   // still gets — it is work, and the task view is right for it.
   await expect(page.getByText('Branch', { exact: true })).toBeVisible()
-  await expect(page.getByText('Prompt for AI Agents')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Agent prompt' })).toBeVisible()
   const parentLinkFull = page.getByRole('link', { name: /Deliver the planning flow/ })
   await expect(parentLinkFull).toHaveAttribute('href', `/blueprints/${anchorId}`)
   await parentLinkFull.click()
