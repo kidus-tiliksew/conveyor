@@ -27,7 +27,8 @@ async function mockAPIs(page: Page, reject = false, workers: Record<string, unkn
   await page.route('**/v1/**', async (route: Route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-    if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
+    if (path === '/v1/me')
+      return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) })
     if (path === '/v1/workspace/config') {
       if (route.request().method() === 'PUT') {
         submitted = route.request().postDataJSON()

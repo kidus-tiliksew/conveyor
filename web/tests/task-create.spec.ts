@@ -33,7 +33,7 @@ async function mockTaskCreateAPIs(
     }
     if (url.pathname === '/v1/me') {
       const role = options.role ?? 'operator'
-      await route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }) })
+      await route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }, route.request()) })
       return
     }
     if (url.pathname === '/v1/workspace') {

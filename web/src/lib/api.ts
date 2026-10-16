@@ -481,13 +481,28 @@ export interface CreateWorkspaceInput {
   document?: Partial<WorkspaceConfigDocument>
 }
 
+// The one explanation shown wherever the caller lacks the right to create
+// workspaces: the guarded dialog and a refused creation request.
+export const workspaceCreationRefusal = "Your account can't create workspaces. Ask the instance administrator."
+
+// The server answers a caller without the creation right with the uniform
+// 404 workspace_not_found (component-http-api). Only that exact status and
+// code becomes this type; every other failure keeps its own message.
+export class WorkspaceCreationDeniedError extends Error {}
+
 export async function createWorkspace(input: CreateWorkspaceInput) {
   const response = await fetch('/v1/workspaces', {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify(input),
   })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  if (!response.ok) {
+    const body = await response.text()
+    if (response.status === 404 && membershipErrorCode(body) === 'workspace_not_found') {
+      throw new WorkspaceCreationDeniedError(workspaceCreationRefusal)
+    }
+    throw new Error(apiErrorMessage(body, response.statusText))
+  }
   return response.json() as Promise<WorkspaceRecord>
 }
 

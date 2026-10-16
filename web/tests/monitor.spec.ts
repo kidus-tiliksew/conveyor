@@ -10,7 +10,7 @@ test('monitor page renders health, deduplication, task links, and drift age', as
     route.fulfill({ json: [{ id: 'demo', name: 'Demo', config_version: 1 }] }),
   )
   await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) }),
+    route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) }),
   )
   await page.route('**/v1/workspace?**', (route) => route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } }))
   await page.route('**/v1/activity?**', (route) => route.fulfill({ json: [] }))

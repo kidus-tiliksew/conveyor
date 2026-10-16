@@ -58,8 +58,11 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
     const f = harness.fixture
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me') {
-      const identity = callerIdentity({ id: 'usr_operator', role: f.role ?? 'operator' })
-      return route.fulfill({ json: f.capabilities ? { ...identity, capabilities: f.capabilities } : identity })
+      const identity = callerIdentity(
+        { id: 'usr_operator', role: f.role ?? 'operator', capabilities: f.capabilities },
+        route.request(),
+      )
+      return route.fulfill({ json: identity })
     }
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
     if (path === '/v1/next-actions') {
