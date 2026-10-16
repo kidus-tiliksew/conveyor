@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, type Route, test } from '@playwright/t
 import type { NextAction, TaskFlow, TaskFlowAttempt, TaskFlowSideName, TaskFlowStage } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 import { waitForSheetSettled } from './helpers/sheet'
+import { activityFrame, controlTaskStreams } from './helpers/task-streams'
 
 // Task detail's Timeline and Flow tabs and the task flowchart
 // (req-operator-next-action AC-7.4 to AC-7.7; feature-operator-next-action
@@ -169,6 +170,9 @@ function baseFlow(prefix = 'Server'): TaskFlow {
 
 type Api = {
   flowCalls: string[]
+  detailCalls: string[]
+  // The served task title, so a test can observe a refreshed detail land.
+  titles: Record<string, string>
   hold: (id: string) => void
   release: (id: string) => Promise<void>
 }
@@ -180,7 +184,9 @@ async function mockAPI(
   const flowCalls: string[] = []
   const held = new Map<string, Route[]>()
   const holding = new Set<string>()
-  const items = [activity(taskId, 'Draw the task flow'), activity(otherId, 'Another task')]
+  const titles: Record<string, string> = { [taskId]: 'Draw the task flow', [otherId]: 'Another task' }
+  const detailCalls: string[] = []
+  const items = [activity(taskId, titles[taskId]), activity(otherId, titles[otherId])]
   await page.addInitScript(() => {
     if (!localStorage.getItem('conveyor-workspace')) localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -212,7 +218,11 @@ async function mockAPI(
     }
     if (/^\/v1\/tasks\/[^/]+\/next-action$/.test(path)) return route.fulfill({ json: action })
     const detail = path.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
-    if (detail) return route.fulfill({ json: items.find((item) => item.task.id === detail[1]) ?? items[0] })
+    if (detail) {
+      detailCalls.push(detail[1])
+      const item = items.find((candidate) => candidate.task.id === detail[1]) ?? items[0]
+      return route.fulfill({ json: { ...item, task: { ...item.task, title: titles[item.task.id] } } })
+    }
     if (path.endsWith('/verification'))
       return route.fulfill({
         json: { head_sha: '', current_context_id: '', contexts: { items: [], next_cursor: '' }, overview: {} },
@@ -229,6 +239,8 @@ async function mockAPI(
   })
   return {
     flowCalls,
+    detailCalls,
+    titles,
     hold: (id) => {
       holding.add(id)
     },
@@ -694,3 +706,98 @@ test('a workspace switch leaves no flow read for the previous workspace', async 
   // Every later flow read names the newly selected workspace.
   expect(api.flowCalls.slice(demoReads).every((call) => call.endsWith('@other'))).toBe(true)
 })
+
+// The flow refreshes with task detail while the Flow tab is shown, and a
+// detail refresh on the Timeline tab reads no flow (AC-7.4, AC-7.6, AC-7.7).
+// The Board stripe preference stays off, so every /flow read here is the
+// detail chart's. A controlled task stream frame drives a real detail-cache
+// refresh, and Playwright's clock holds the stream's 250 ms refresh delay.
+async function pauseClock(page: Page) {
+  const now = await page.evaluate(() => Date.now())
+  await page.clock.pauseAt(now + 1_000)
+}
+
+function refreshedFlow(): TaskFlow {
+  const flow = baseFlow()
+  const implement = flow.stages[2]
+  flow.stages[2] = {
+    ...implement,
+    current_attempt: implement.current_attempt && {
+      ...implement.current_attempt,
+      progress: 'Server progress: refreshed after the stream frame',
+      elapsed_seconds: 4200,
+    },
+  }
+  flow.stages[4] = stage('review', 'waiting')
+  return flow
+}
+
+for (const surface of surfaces) {
+  test(`an active Flow tab refreshes with task detail on the ${surface.name}, and Timeline reads no flow`, async ({
+    page,
+  }) => {
+    const streams = await controlTaskStreams(page)
+    await page.addInitScript(() => localStorage.setItem('conveyor-show-stage-progress', 'false'))
+    const flows = { [taskId]: baseFlow() }
+    const api = await mockAPI(page, { flows })
+    await page.clock.install({ time: new Date(at(95)) })
+    await page.goto(surface.url(taskId))
+    await tab(page, 'Flow').click()
+    await expect(node(page, 'review')).toHaveAttribute('data-status', 'done')
+    await node(page, 'implement').click()
+    const panel = page.getByRole('dialog', { name: 'Server implement stage' })
+    await expect(panel.locator('[data-flow-attempt-progress]')).toHaveText('Server progress: wiring the stage panel')
+    await expect(panel.locator('[data-flow-attempt-elapsed]')).toHaveText('1h 05m')
+    await expect.poll(() => streams.countFor(taskId)).toBeGreaterThan(0)
+    await streams.open()
+    await pauseClock(page)
+    expect(api.flowCalls.every((call) => call === `${taskId}@demo`)).toBe(true)
+
+    // The server's next fold, announced by an activity frame.
+    const flowReads = api.flowCalls.length
+    const detailReads = api.detailCalls.length
+    flows[taskId] = refreshedFlow()
+    api.titles[taskId] = 'Draw the task flow, refreshed'
+    await streams.send(activityFrame)
+    await page.clock.runFor(250)
+    await expect.poll(() => api.detailCalls.length).toBeGreaterThan(detailReads)
+    await expect.poll(() => api.flowCalls.length).toBeGreaterThan(flowReads)
+    // Query delivers results through zero-delay timers, which the paused
+    // clock holds until it moves.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(50)
+        return panel.locator('[data-flow-attempt-progress]').textContent()
+      })
+      .toBe('Server progress: refreshed after the stream frame')
+    await expect(panel.locator('[data-flow-attempt-progress]')).toHaveText(
+      'Server progress: refreshed after the stream frame',
+    )
+    await expect(panel.locator('[data-flow-attempt-elapsed]')).toHaveText('1h 10m')
+    await page.keyboard.press('Escape')
+    await expect(panel).toHaveCount(0)
+    await expect(node(page, 'review')).toHaveAttribute('data-status', 'waiting')
+
+    // On the Timeline tab a refreshed detail reaches no flow reader.
+    await tab(page, 'Timeline').click()
+    await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+    await expect(chart(page)).toHaveCount(0)
+    const shown = api.flowCalls.length
+    const timelineDetailReads = api.detailCalls.length
+    api.titles[taskId] = 'Draw the task flow, refreshed twice'
+    await streams.send(activityFrame)
+    await page.clock.runFor(250)
+    await expect.poll(() => api.detailCalls.length).toBeGreaterThan(timelineDetailReads)
+    // The refreshed detail has rendered, so a mounted flow reader would have
+    // been told to refetch by now.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(50)
+        return page.getByText('Draw the task flow, refreshed twice').count()
+      })
+      .toBeGreaterThan(0)
+    await page.clock.runFor(1_000)
+    await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+    expect(api.flowCalls).toHaveLength(shown)
+  })
+}
