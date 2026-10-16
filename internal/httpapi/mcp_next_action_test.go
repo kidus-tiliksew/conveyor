@@ -444,6 +444,21 @@ func TestMCPListOperatorInbox(t *testing.T) {
 			if first["id"] != "z-gate" {
 				t.Fatalf("decisions lead with %v, want z-gate: %v", first["id"], got)
 			}
+			// The compact next action names the dependent the gate holds
+			// back, read by MCP from the same projection as REST
+			// (feature-operator-next-action NA-3, NA-8).
+			action, _ := got[0].(map[string]any)["next_action"].(map[string]any)
+			blocks, _ := action["blocks"].([]any)
+			dependent, _ := func() (map[string]any, bool) {
+				if len(blocks) != 1 {
+					return nil, false
+				}
+				ref, ok := blocks[0].(map[string]any)
+				return ref, ok
+			}()
+			if dependent["task_id"] != "gov-task-inbox-dependent-b" || action["label"] != "Approve plan" {
+				t.Fatalf("z-gate next action = %v, want blocks naming gov-task-inbox-dependent-b and the Approve plan label", action)
+			}
 		}
 	}
 	if text, isErr := f.call(agentToken, "list_operator_inbox", map[string]any{"workspace_id": governanceWorkspace}); !isErr || !strings.Contains(text, "requires an operator-scoped user credential") {
