@@ -89,8 +89,10 @@ whoever claims first. Two levers shape who works on what:
 
 - An assignee restricts claim eligibility to one person. It never reorders
   the queue; it only narrows who may take the task.
-- `hold` reserves a task from everyone's workers so a person can attach an
-  agent and claim it by hand.
+- Dependencies keep a task's implementation waiting until the tasks it
+  depends on merge.
+
+A task carries no hold or other worker reservation (DEC-74).
 
 Workers enroll per user via `conveyor worker pair` and inherit the enrolling
 user's GitHub identity for the work they run. See
