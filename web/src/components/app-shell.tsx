@@ -69,6 +69,30 @@ export function useWorkspaceCapability(capability: WorkspaceCapability) {
   return identity.data.capabilities?.includes(capability) ?? false
 }
 
+// The caller's own workspace-creation right. It is read unscoped:
+// fetchCallerIdentity('') sends neither workspace_id nor X-Workspace-ID,
+// whatever the stored selection, and the query runs with no selection and no
+// memberships. Only a successful read whose can_create_workspaces is exactly
+// true allows; pending, failed, missing, or malformed reads deny, including a
+// failed refetch over an earlier successful read. The entry follows the
+// shell's cache rules, so a workspace switch or sign-out drops it
+// (component-web-dashboard). Presentation only: the server authorizes
+// POST /v1/workspaces again.
+export function useWorkspaceCreationStatus(): 'pending' | 'allowed' | 'denied' {
+  const identity = useQuery({
+    queryKey: ['caller-identity', ''],
+    queryFn: () => fetchCallerIdentity(''),
+    retry: false,
+  })
+  if (identity.status === 'pending') return 'pending'
+  if (identity.status === 'success' && identity.data.can_create_workspaces === true) return 'allowed'
+  return 'denied'
+}
+
+export function useCanCreateWorkspaces() {
+  return useWorkspaceCreationStatus() === 'allowed'
+}
+
 // The server's ascending role chain for the selected workspace, used for the
 // membership picker's options and highest-role emphasis. Empty until a
 // successful read serves it.
@@ -394,10 +418,11 @@ function MobileNav() {
 }
 
 // The rail is the workspace switcher (component-web-dashboard: workspace context is explicit
-// everywhere): one initials tile per workspace, "+" creates a new one.
+// everywhere): one initials tile per workspace, "+" creates a new one when the
+// caller's own creation right allows it.
 function IconRail() {
   const { closeDrawer } = useContext(ShellNavContext)
-  const canManageWorkspace = useWorkspaceCapability('manage_workspace')
+  const canCreateWorkspaces = useCanCreateWorkspaces()
   const navigate = useNavigate()
   const { workspace: selected, setWorkspace } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
@@ -435,7 +460,7 @@ function IconRail() {
             {initials(item.name || item.id)}
           </button>
         ))}
-        {canManageWorkspace && (
+        {canCreateWorkspaces && (
           <Link
             to="/workspaces/new"
             title="Add workspace"

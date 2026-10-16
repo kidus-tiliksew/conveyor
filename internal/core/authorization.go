@@ -171,13 +171,19 @@ type IdentityUser struct {
 // authorized workspace context. Capabilities and Roles are presentation for
 // the dashboard, derived from roleCapabilities; they never authorize a later
 // request (req-accounts-and-membership AC-5.1; component-identity-membership).
+//
+// CanCreateWorkspaces is the caller's own workspace-creation right. The HTTP
+// handler always computes it from the same predicate that admits
+// POST /v1/workspaces and always serializes it, also when false; it is not a
+// role or capability and depends on no workspace context (REQ-4, AC-1.3).
 type CallerIdentity struct {
-	ID           string          `json:"id"`
-	Email        string          `json:"email"`
-	DisplayName  string          `json:"display_name"`
-	Role         WorkspaceRole   `json:"role,omitempty"`
-	Capabilities []Capability    `json:"capabilities,omitempty"`
-	Roles        []WorkspaceRole `json:"roles,omitempty"`
+	ID                  string          `json:"id"`
+	Email               string          `json:"email"`
+	DisplayName         string          `json:"display_name"`
+	Role                WorkspaceRole   `json:"role,omitempty"`
+	Capabilities        []Capability    `json:"capabilities,omitempty"`
+	Roles               []WorkspaceRole `json:"roles,omitempty"`
+	CanCreateWorkspaces bool            `json:"can_create_workspaces"`
 }
 
 type MembershipGrant struct {

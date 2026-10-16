@@ -216,12 +216,15 @@ async function routeTasksSurface(page: Page) {
   // The signed-in user, which is what "My tasks" resolves "my" against.
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: callerIdentity({
-        id: 'usr-assigned',
-        email: 'assigned@example.test',
-        display_name: 'Assigned User',
-        role: 'operator',
-      }),
+      json: callerIdentity(
+        {
+          id: 'usr-assigned',
+          email: 'assigned@example.test',
+          display_name: 'Assigned User',
+          role: 'operator',
+        },
+        route.request(),
+      ),
     }),
   )
   await page.route('**/v1/workspaces/*/members**', (route) =>

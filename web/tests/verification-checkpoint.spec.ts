@@ -265,7 +265,9 @@ async function fixture(
     const path = url.pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'operator', role: options.role ?? 'maintainer' }) })
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', role: options.role ?? 'maintainer' }, route.request()),
+      })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: true }] })
     if (path.endsWith('/activity')) return route.fulfill({ json: item })

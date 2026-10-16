@@ -139,7 +139,10 @@ async function routeBoard(page: Page, seen: string[]) {
   // signs in a maintainer, the lowest role that may file tasks.
   await page.route('**/v1/me**', (route) =>
     route.fulfill({
-      json: callerIdentity({ id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' }),
+      json: callerIdentity(
+        { id: 'usr-maintainer', email: 'maintainer@example.test', role: 'maintainer' },
+        route.request(),
+      ),
     }),
   )
   await page.route('**/v1/pending-proposals**', (route) =>

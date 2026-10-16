@@ -84,7 +84,9 @@ async function mockAPI(page: Page) {
     const path = new URL(route.request().url()).pathname
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'viewer', email: 'viewer@example.test', role: 'viewer' }) })
+      return route.fulfill({
+        json: callerIdentity({ id: 'viewer', email: 'viewer@example.test', role: 'viewer' }, route.request()),
+      })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
     if (path === '/v1/pending-proposals')
       return route.fulfill({ json: { items: [], attention: { total: 1, task_count: 1, pending_proposal_count: 0 } } })

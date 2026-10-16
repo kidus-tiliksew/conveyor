@@ -224,7 +224,7 @@ async function mockBoard(
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }),
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }, route.request()),
       })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
     if (path === '/v1/pending-proposals')

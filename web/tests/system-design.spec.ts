@@ -105,7 +105,8 @@ async function initialize(page: Page) {
 function shell(route: Route) {
   const path = new URL(route.request().url()).pathname
   if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
-  if (path === '/v1/me') return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }) })
+  if (path === '/v1/me')
+    return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) })
   if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: ['conveyor'] } })
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
@@ -880,7 +881,7 @@ test('System Design archive controls are absent without document confirmation ca
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/me')
-      return route.fulfill({ json: callerIdentity({ id: 'usr_contributor', role: 'contributor' }) })
+      return route.fulfill({ json: callerIdentity({ id: 'usr_contributor', role: 'contributor' }, route.request()) })
     const handled = shell(route)
     if (handled) return await handled
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view())] })
@@ -1012,11 +1013,14 @@ for (const access of ['confirm-only', 'propose-only'] as const) {
       const path = new URL(route.request().url()).pathname
       if (path === '/v1/me')
         return route.fulfill({
-          json: callerIdentity({
-            id: 'caller',
-            role: access === 'confirm-only' ? 'operator' : 'contributor',
-            capabilities: access === 'confirm-only' ? confirmOnlyCapabilities : undefined,
-          }),
+          json: callerIdentity(
+            {
+              id: 'caller',
+              role: access === 'confirm-only' ? 'operator' : 'contributor',
+              capabilities: access === 'confirm-only' ? confirmOnlyCapabilities : undefined,
+            },
+            route.request(),
+          ),
         })
       const handled = shell(route)
       if (handled) return await handled

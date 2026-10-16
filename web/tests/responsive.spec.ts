@@ -119,12 +119,15 @@ async function mockShell(page: Page) {
       })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({
-          id: 'usr_operator',
-          email: 'operator@example.test',
-          display_name: 'Operator',
-          role: 'operator',
-        }),
+        json: callerIdentity(
+          {
+            id: 'usr_operator',
+            email: 'operator@example.test',
+            display_name: 'Operator',
+            role: 'operator',
+          },
+          route.request(),
+        ),
       })
     if (path === '/v1/workspace')
       return route.fulfill({

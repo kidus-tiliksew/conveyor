@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { createWorkspace } from '../../lib/api'
+import { createWorkspace, WorkspaceCreationDeniedError } from '../../lib/api'
 import type { WorkspaceRecord } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
@@ -62,7 +62,11 @@ export function CreateWorkspaceForm({
           )}
         </span>
       </label>
-      {create.error != null && <p className="text-sm text-failure">{String(create.error)}</p>}
+      {create.error != null && (
+        <p className="text-sm text-failure">
+          {create.error instanceof WorkspaceCreationDeniedError ? create.error.message : String(create.error)}
+        </p>
+      )}
       <div className="flex items-center justify-end gap-2 border-t border-border pt-4">
         {onCancel && (
           <Button variant="secondary" onClick={onCancel}>

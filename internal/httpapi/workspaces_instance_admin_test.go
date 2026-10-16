@@ -444,3 +444,69 @@ func TestInstanceAdministrationWorkspaceValidation(t *testing.T) {
 		t.Fatalf("validation refusals persisted or registered queues: creates=%d queued=%d", h.control.creates-creates, h.queued-queued)
 	}
 }
+
+// TestWorkspaceCreationProjectionMatchesAdmission proves that GET /v1/me
+// can_create_workspaces and POST /v1/workspaces admission come from the same
+// predicate: flipping one fixture authority between requests changes both
+// together. While refused, malformed and colliding bodies get the uniform 404
+// with no store or queue call; once admitted, a valid unique request creates
+// the workspace. Account provisioning stays on AuthorizeInstanceAdministration
+// (component-http-api, component-identity-membership).
+func TestWorkspaceCreationProjectionMatchesAdmission(t *testing.T) {
+	h := newInstanceAdminHarness(t)
+	token := h.nonowners["alpha-operator"]
+	caller, err := h.st.VerifyPersonalAccessToken(t.Context(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &membershipFixture{instanceAdmins: map[string]bool{}}
+	h.server.Memberships = authority
+	creationRight := func() bool {
+		t.Helper()
+		return decodeCallerIdentityProjection(t, h.do(instanceRequest{method: http.MethodGet, path: "/v1/me", bearer: token})).creationRight(t)
+	}
+	post := func(path, body string) *httptest.ResponseRecorder {
+		return h.do(instanceRequest{method: http.MethodPost, path: path, body: body, bearer: token})
+	}
+
+	if creationRight() {
+		t.Fatal("refused caller read can_create_workspaces=true")
+	}
+	for _, body := range []string{"{", `{"id":"alpha","name":"Delta"}`, `{"id":"delta","name":"Alpha"}`, `{"id":"delta","name":"Delta"}`} {
+		if response := post("/v1/workspaces", body); response.Code != http.StatusNotFound || response.Body.String() != uniformNotFound {
+			t.Fatalf("refused create body=%q status=%d response=%q", body, response.Code, response.Body.String())
+		}
+	}
+	if response := post("/v1/users", `{"email":"new-person@example.test","display_name":"New Person"}`); response.Code != http.StatusNotFound || response.Body.String() != uniformNotFound {
+		t.Fatalf("refused provisioning status=%d response=%q", response.Code, response.Body.String())
+	}
+	if effects := h.sideEffects(); effects != 0 {
+		t.Fatalf("refused caller caused %d store or queue calls", effects)
+	}
+
+	authority.instanceAdmins[caller.ID] = true
+	if !creationRight() {
+		t.Fatal("admitted caller read can_create_workspaces=false")
+	}
+	if response := post("/v1/workspaces", `{"id":"delta","name":"Delta"}`); response.Code != http.StatusCreated || h.control.creates != 1 {
+		t.Fatalf("admitted create status=%d response=%s creates=%d", response.Code, response.Body.String(), h.control.creates)
+	}
+	if response := post("/v1/users", `{"email":"new-person@example.test","display_name":"New Person"}`); response.Code != http.StatusOK || h.provisioner.calls != 1 {
+		t.Fatalf("provisioning status=%d response=%s calls=%d", response.Code, response.Body.String(), h.provisioner.calls)
+	}
+
+	authority.instanceAdmins[caller.ID] = false
+	before := h.sideEffects()
+	if creationRight() {
+		t.Fatal("revoked caller read can_create_workspaces=true")
+	}
+	if response := post("/v1/workspaces", `{"id":"epsilon","name":"Epsilon"}`); response.Code != http.StatusNotFound || response.Body.String() != uniformNotFound || h.sideEffects() != before {
+		t.Fatalf("revoked create status=%d response=%q effects=%d", response.Code, response.Body.String(), h.sideEffects()-before)
+	}
+	// Each request consulted the one authority exactly once: three projection
+	// reads, four refused and one admitted creation, one refused and one
+	// admitted provisioning, and the final refused creation.
+	if authority.instanceCalls != 11 {
+		t.Fatalf("instance authority calls=%d, want 11", authority.instanceCalls)
+	}
+}
