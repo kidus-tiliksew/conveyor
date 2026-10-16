@@ -14,9 +14,6 @@ import (
 func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator-7", Role: core.ActorHuman})
-	if _, err := st.SetTaskHold(ctx, order.TaskID, true); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := storetest.EnsureWorkerEnrollment(ctx, st, "worker-7"); err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +48,8 @@ func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 		!got.UsageReported || !got.SelfReported {
 		t.Fatalf("preemption changed queue or telemetry: before=%+v after=%+v", claimed, got)
 	}
-	task, err := st.GetTask(ctx, order.TaskID)
-	if err != nil || !task.Hold {
-		t.Fatalf("held task=%+v err=%v", task, err)
+	if task, err := st.GetTask(ctx, order.TaskID); err != nil || task.State == core.TaskClosed {
+		t.Fatalf("preempted task=%+v err=%v", task, err)
 	}
 	if result.RevokedAttemptID != claimed.AttemptID || result.RevokedSessionID != "preempt-session" ||
 		result.RevokedWorkerID != "worker-7" || result.GraceBound != "one renewal interval" {

@@ -333,7 +333,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/observations", s.observeMonitorSignal)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/monitor/drift/{id}/resolve", s.resolveMonitorDrift)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/redispatch", s.redispatchTask)
-			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Put("/tasks/{id}/hold", s.setTaskHold)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Put("/tasks/{id}/hold", s.retiredTaskHold)
 			r.With(s.requireMutationCapability(core.CapabilitySetAssignee)).Put("/tasks/{id}/assignee", s.setTaskAssignee)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/context", s.updateTaskContext)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/context/proposals/{kind}/{target_id}/confirm", s.confirmTaskContextProposal)
@@ -460,29 +460,12 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, t)
 }
 
-// setTaskHold toggles the per-task hold: while held, workers never claim the
-// task's work orders, and the hold changes nothing else (DEC-55(3)). Hold is
-// deliberately mutable after intake and every toggle is audited by the store
-// (component-task-lifecycle).
-func (s *Server) setTaskHold(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var req struct {
-		Hold *bool `json:"hold"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if req.Hold == nil {
-		http.Error(w, "hold is required", http.StatusBadRequest)
-		return
-	}
-	task, err := s.Store.SetTaskHold(r.Context(), id, *req.Hold)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	writeJSON(w, http.StatusOK, task)
+// retiredTaskHold answers the retired per-task hold route. A task carries no
+// hold or other worker reservation (DEC-74(3)); the route keeps its
+// authentication and capability middleware, reads no body, looks up no task,
+// writes nothing, and appends no event (component-http-api).
+func (s *Server) retiredTaskHold(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusGone, map[string]string{"error": taskHoldRetired, "message": taskHoldRetiredRouteMessage})
 }
 
 func (s *Server) setTaskAssignee(w http.ResponseWriter, r *http.Request) {
@@ -1148,7 +1131,7 @@ type createTaskReq struct {
 	BaseBranch      string               `json:"base_branch"`
 	Source          string               `json:"source"`
 	Level           core.EscalationLevel `json:"level"`
-	Hold            bool                 `json:"hold"`
+	Hold            bool                 `json:"hold"` // deprecated input; intake refuses true after the idempotency lookup (DEC-74(3))
 	SpecApproval    *bool                `json:"spec_approval,omitempty"`
 	MergeApproval   *bool                `json:"merge_approval,omitempty"`
 	Setup           string               `json:"setup,omitempty"`
@@ -1167,7 +1150,7 @@ func (req *createTaskReq) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("title is generated and must not be supplied")
 		}
 		if strings.EqualFold(name, "mode") {
-			return fmt.Errorf("mode is retired; use hold when reserving a task")
+			return fmt.Errorf("mode is retired and must not be supplied")
 		}
 		switch strings.ToLower(name) {
 		case "setup", "setup_contract", "policy_contract", "execution_settings", "routing", "harness", "model", "effort", "argv":
@@ -1461,7 +1444,6 @@ type activityTask struct {
 	Repo            string              `json:"repo"`
 	State           core.TaskState      `json:"state"`
 	NextStage       core.Stage          `json:"next_stage,omitempty"`
-	Hold            bool                `json:"hold,omitempty"`
 	Assignee        *core.TaskAssignee  `json:"assignee,omitempty"`
 	ReviewedHeadSHA string              `json:"reviewed_head_sha,omitempty"`
 	Dependencies    []core.TaskRelation `json:"dependencies,omitempty"`
@@ -1475,7 +1457,7 @@ func summarizeActivityTask(task core.Task) activityTask {
 	return activityTask{
 		Supersedes: task.Supersedes, SupersededBy: task.SupersededBy,
 		ID: task.ID, Title: task.Title, Repo: task.Repo, State: task.State,
-		NextStage: task.NextStage, Hold: task.Hold, Assignee: task.Assignee,
+		NextStage: task.NextStage, Assignee: task.Assignee,
 		ReviewedHeadSHA: task.ReviewedHeadSHA, Dependencies: task.Dependencies,
 		BlockingTaskIDs: task.BlockingTaskIDs, Children: task.Children,
 		Context: task.Context, CreatedAt: task.CreatedAt,
@@ -2300,10 +2282,10 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 			task = refreshed
 		}
 	}
-	// Worker status is advisory serviceability (component-work-orders); held
-	// tasks are the operator's to claim, so no worker availability is reported
-	// for them (DEC-55(3)).
-	if s.Workers != nil && s.ConfigProvider != nil && !task.Hold && !core.TaskTerminal(task.State) {
+	// Worker status is advisory serviceability for every non-terminal task; a
+	// stored historical hold never suppresses it (component-work-orders;
+	// DEC-74(3)).
+	if s.Workers != nil && s.ConfigProvider != nil && !core.TaskTerminal(task.State) {
 		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
 			workerStatus = s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
 		}

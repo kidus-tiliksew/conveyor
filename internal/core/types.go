@@ -115,7 +115,7 @@ func InitialStage(level EscalationLevel) Stage {
 
 // TaskMode is the retired auto/manual execution mode. It
 // survives only to parse deprecated intake input and render historical
-// records; behavior is governed by Task.Hold.
+// records; no task carries a worker reservation (DEC-74(3)).
 type TaskMode string
 
 const (
@@ -125,18 +125,18 @@ const (
 
 func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual }
 
-// LegacyPolicy preserves the accepted L0-L3 meaning for historical callers:
-// hold (the successor of Manual), spec approval, merge approval.
-func LegacyPolicy(level EscalationLevel) (bool, bool, bool) {
+// LegacyPolicy preserves the accepted L0-L3 gate meaning for historical
+// callers: spec approval, merge approval. No level implies a reservation; L3
+// maps both gates on exactly like L2 (DEC-74(1), DEC-74(3);
+// component-task-lifecycle).
+func LegacyPolicy(level EscalationLevel) (bool, bool) {
 	switch level {
 	case L0:
-		return false, false, false
+		return false, false
 	case L1:
-		return false, false, true
-	case L2:
-		return false, true, true
+		return false, true
 	default:
-		return true, true, true
+		return true, true
 	}
 }
 
@@ -190,7 +190,7 @@ type Task struct {
 	Class                 string                `json:"class"` // bug | feature | chore
 	Level                 EscalationLevel       `json:"level"`
 	Mode                  TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
-	Hold                  bool                  `json:"hold,omitempty"`     // reservation from the worker daemon
+	Hold                  bool                  `json:"-"`                  // historical stored value only; read by no decision (DEC-74(3))
 	Assignee              *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
 	SpecApproval          bool                  `json:"spec_approval"`
 	MergeApproval         bool                  `json:"merge_approval"`

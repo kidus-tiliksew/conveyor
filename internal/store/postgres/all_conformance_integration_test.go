@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -248,6 +249,15 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
 					t.Fatal(err)
 				}
+			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {
+				// A row written before the hold retirement; no public writer
+				// sets the column (DEC-74(3); component-persistence).
+				tag, err := st.pool.Exec(ctx, `UPDATE tasks SET hold=true WHERE workspace_id=$1 AND id=$2`, workspace, taskID)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed stored hold rows=%d err=%v", tag.RowsAffected(), err)
+				}
+			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
+				return conformanceWorkerExercise(st, cfg)
 			}}
 		},
 	})
@@ -256,4 +266,24 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 func workspaceFromArtifactContext(ctx context.Context) string {
 	ws, _ := store.WorkspaceFromContext(ctx)
 	return ws
+}
+
+// conformanceWorkerExercise builds the real worker service over one
+// conformance fixture; storetest cannot import internal/worker
+// (component-verification-strategy).
+func conformanceWorkerExercise(st store.Store, cfg *config.Config) storetest.WorkerExercise {
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	service := &worker.Service{Store: st, WorkOrders: &workorder.Service{Store: st, ConfigProvider: provider}, ConfigProvider: provider}
+	return storetest.WorkerExercise{
+		ListClaimable: func(ctx context.Context, enrolled core.Worker) ([]core.WorkOrder, error) {
+			items, err := service.ListClaimable(ctx, enrolled)
+			orders := make([]core.WorkOrder, 0, len(items))
+			for _, item := range items {
+				orders = append(orders, item.Order)
+			}
+			return orders, err
+		},
+		ListVisibleOrders: service.ListVisibleOrders,
+		ClaimForWorker:    service.ClaimForWorker,
+	}
 }

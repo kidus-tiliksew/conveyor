@@ -45,22 +45,6 @@ func UserRequestChangesPending(events []core.Event) bool {
 	return pending
 }
 
-// UserRequestChangesHold preserves an explicitly user-run implementation for
-// operator resumption. Worker-pipeline implementations remain dispatchable so
-// a request-changes bounce cannot strand them behind an unconditional hold.
-func UserRequestChangesHold(events []core.Event) bool {
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].Kind != "work_order.claimed" {
-			continue
-		}
-		var order core.WorkOrder
-		if json.Unmarshal(events[index].Payload, &order) == nil && order.Stage == core.StageImplement {
-			return core.IsTaskRunClaimantID(order.ClaimantID)
-		}
-	}
-	return false
-}
-
 const (
 	UserRequestChangesReason = "user-request-changes"
 	UserRequestChangesSource = "user-request-changes"

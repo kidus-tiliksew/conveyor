@@ -39,7 +39,7 @@ func newClient() *client {
 }
 
 func (c *client) createTask(body, repo, base string) (core.Task, error) {
-	return c.createTaskWithDependencies(body, repo, base, false, nil, nil, nil)
+	return c.createTaskWithDependencies(body, repo, base, nil, nil, nil)
 }
 
 func (c *client) createTaskWithLevel(body, repo, base string, level core.EscalationLevel) (core.Task, error) {
@@ -58,18 +58,16 @@ func (c *client) createTaskWithLevel(body, repo, base string, level core.Escalat
 	return t, err
 }
 
-// createTaskWithDependencies sends pipeline-policy intake only: gates, hold,
-// and dependencies. Setup selection is client-local (DEC-56(2)).
-func (c *client) createTaskWithDependencies(body, repo, base string, hold bool, specApproval, mergeApproval *bool, dependsOn []string) (core.Task, error) {
+// createTaskWithDependencies sends pipeline-policy intake only: gates and
+// dependencies. A task carries no hold (DEC-74(3)), and setup selection is
+// client-local (DEC-56(2)).
+func (c *client) createTaskWithDependencies(body, repo, base string, specApproval, mergeApproval *bool, dependsOn []string) (core.Task, error) {
 	if c.token == "" {
 		return core.Task{}, fmt.Errorf("a credential is required for task creation; run `conveyor auth login`")
 	}
 	payload := map[string]any{"body": body, "repo": repo, "base_branch": base, "source": "cli"}
 	if len(dependsOn) > 0 {
 		payload["depends_on"] = dependsOn
-	}
-	if hold {
-		payload["hold"] = true
 	}
 	if specApproval != nil {
 		payload["spec_approval"] = *specApproval
