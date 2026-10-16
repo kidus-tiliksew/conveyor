@@ -7,6 +7,13 @@ import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 const phone = { width: 390, height: 844 }
 const tabletPortrait = { width: 820, height: 1180 }
 const tabletLandscape = { width: 1180, height: 820 }
@@ -354,6 +361,20 @@ async function expectPlanHeaderUnbroken(page: Page) {
   expect(stampBox.height).toBeLessThan(stampLine * 1.5)
 }
 
+// The task-detail activity tabs sit inside the surface at phone width, with
+// the Timeline tab selected.
+async function expectActivityTabsFit(page: Page, scope: Locator) {
+  const tablist = scope.getByRole('tablist', { name: 'Task activity view' })
+  await expect(tablist.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute('aria-selected', 'true')
+  const width = await page.evaluate(() => document.documentElement.clientWidth)
+  for (const name of ['Timeline', 'Flow']) {
+    const box = await tablist.getByRole('tab', { name, exact: true }).boundingBox()
+    if (!box) throw new Error(`the ${name} tab is not rendered`)
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(width)
+  }
+}
+
 // The page body must never scroll sideways: a lane row or a wide table may
 // scroll inside its own container, but the viewport stays put.
 async function expectNoHorizontalOverflow(page: Page) {
@@ -470,6 +491,7 @@ test.describe('phone', () => {
     const noteBox = await note.boundingBox()
     if (!titleBox || !noteBox) throw new Error('the board sheet header is not rendered')
     expect(noteBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height)
+    await expectActivityTabsFit(page, sheet)
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: 'test-results/shots/responsive-phone-task-sheet.png', animations: 'disabled' })
   })
@@ -487,6 +509,7 @@ test.describe('phone', () => {
     await expect(page.getByText('Awaiting approval', { exact: true })).toBeVisible()
     await expectContextRows(page, true)
     await expectPlanHeaderUnbroken(page)
+    await expectActivityTabsFit(page, page.locator('main'))
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: 'test-results/shots/responsive-phone-task-full.png', animations: 'disabled' })
   })

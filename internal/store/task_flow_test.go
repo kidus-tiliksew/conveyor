@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 
@@ -366,7 +367,7 @@ func TestFoldTaskFlowLoopsWindow(t *testing.T) {
 	bounce()
 	ledger.add("pipeline.bounce_limit", core.ActorSystem, "", map[string]any{"from": "review", "to": "implement"})
 	action := nextaction.NextAction{Actor: nextaction.ActorFactory}
-	if got := ledger.fold(action).Loops; !reflect.DeepEqual(got, []FlowLoop{{From: "review", To: "implement", Count: 2}}) {
+	if got := ledger.fold(action).Loops; !reflect.DeepEqual(got, []FlowLoop{{From: "review", To: "implement", Count: 2, Label: "sent back ×2"}}) {
 		t.Fatalf("loops = %+v, want review->implement x2", got)
 	}
 	ledger.add("intervention.redirect", core.ActorSystem, "", map[string]any{})
@@ -378,7 +379,7 @@ func TestFoldTaskFlowLoopsWindow(t *testing.T) {
 	bounce()
 	ledger.events[len(ledger.events)-1].At = redirect.At // same instant: excluded
 	bounce()
-	if got := ledger.fold(action).Loops; !reflect.DeepEqual(got, []FlowLoop{{From: "review", To: "implement", Count: 1}}) {
+	if got := ledger.fold(action).Loops; !reflect.DeepEqual(got, []FlowLoop{{From: "review", To: "implement", Count: 1, Label: "sent back ×1"}}) {
 		t.Fatalf("loops after human redirect = %+v, want count 1", got)
 	}
 }
@@ -423,8 +424,8 @@ func TestFoldTaskFlowSide(t *testing.T) {
 		t.Fatal(err)
 	}
 	retrying := FoldTaskFlow(retry.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}, policy, flowT0)
-	if retrying.Side.Retrying == nil || *retrying.Side.Retrying != (FlowRetrying{Attempt: 2, Of: 3}) {
-		t.Fatalf("retrying = %+v, want 2 of 3", retrying.Side.Retrying)
+	if got := retrying.Side.Retrying; got == nil || got.Attempt != 2 || got.Of == nil || *got.Of != 3 {
+		t.Fatalf("retrying = %+v, want 2 of 3", got)
 	}
 	if got := FoldTaskFlow(retry.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindQueued}, policy, flowT0).Side.Retrying; got != nil {
 		t.Fatalf("retrying without a retrying next action: %+v", got)
@@ -452,11 +453,11 @@ func TestFoldTaskFlowSideLabels(t *testing.T) {
 	}{
 		{"none", new(flowLedger).created(approvalTask()).events, nextaction.NextAction{Actor: nextaction.ActorAgent, Kind: nextaction.KindQueued}, map[string]string{}},
 		{"blocked_by", blockedLedger.events, nextaction.NextAction{Actor: nextaction.ActorDependency, Kind: nextaction.KindBlocked, BlockedBy: blockedBy}, map[string]string{FlowSideBlockedBy: "Waiting on another task"}},
-		{"retrying", new(flowLedger).created(approvalTask()).order("impl-1", core.StageImplement, core.ActorSystem).events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}, map[string]string{FlowSideRetrying: "Retrying automatically"}},
+		{"retrying", new(flowLedger).created(approvalTask()).order("impl-1", core.StageImplement, core.ActorSystem).events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}, map[string]string{FlowSideRetrying: "Auto-retrying"}},
 		{"parked", new(flowLedger).created(approvalTask()).state(core.TaskParked, core.TaskTriagePark).events, nextaction.NextAction{Kind: nextaction.KindParked}, map[string]string{FlowSideParked: "Parked"}},
 		{"closed", new(flowLedger).created(approvalTask()).state(core.TaskClosed, core.TaskCancel).events, nextaction.NextAction{Kind: nextaction.KindTerminal}, map[string]string{FlowSideClosed: "Closed"}},
-		{"agent_question", new(flowLedger).created(approvalTask()).events, nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindAgentQuestion}, map[string]string{FlowSideAgentQuestion: "Needs your answer"}},
-		{"retrying and blocked_by", retryLedger.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}, BlockedBy: blockedBy}, map[string]string{FlowSideRetrying: "Retrying automatically", FlowSideBlockedBy: "Waiting on another task"}},
+		{"agent_question", new(flowLedger).created(approvalTask()).events, nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindAgentQuestion}, map[string]string{FlowSideAgentQuestion: "Agent asks you"}},
+		{"retrying and blocked_by", retryLedger.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}, BlockedBy: blockedBy}, map[string]string{FlowSideRetrying: "Auto-retrying", FlowSideBlockedBy: "Waiting on another task"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -551,7 +552,7 @@ func TestFoldTaskFlowDeterministic(t *testing.T) {
 	if got := []string{flow.Side.BlockedBy[0].TaskID, flow.Side.BlockedBy[1].TaskID}; !reflect.DeepEqual(got, []string{"dep-a", "dep-b"}) {
 		t.Fatalf("blocked_by order = %v, want event order", got)
 	}
-	if want := []FlowLoop{{From: "review", To: "implement", Count: 2}, {From: "verify", To: "implement", Count: 1}}; !reflect.DeepEqual(flow.Loops, want) {
+	if want := []FlowLoop{{From: "review", To: "implement", Count: 2, Label: "sent back ×2"}, {From: "verify", To: "implement", Count: 1, Label: "sent back ×1"}}; !reflect.DeepEqual(flow.Loops, want) {
 		t.Fatalf("loops = %+v, want first-occurrence order %+v", flow.Loops, want)
 	}
 	// Events sharing an instant fold in ID order, whatever order they arrive in.
@@ -560,5 +561,325 @@ func TestFoldTaskFlowDeterministic(t *testing.T) {
 	tied.events[1], tied.events[2] = tied.events[2], tied.events[1]
 	if got := tied.fold(action).Raw.State; got != string(core.TaskParked) {
 		t.Fatalf("same-instant state changes fold to %s, want the higher-ID parked", got)
+	}
+}
+
+func flowGateMarks(flow TaskFlow) map[core.Stage]string {
+	out := map[core.Stage]string{}
+	for _, stage := range flow.Stages {
+		if stage.GateStatus != nil {
+			out[stage.ID] = *stage.GateStatus
+		}
+	}
+	return out
+}
+
+// A gate needs the operator only when the next action is that gate's own
+// decision; any other operator stop stays on the row status of the stage
+// that holds it (req-operator-next-action AC-7.5, AC-7.7).
+func TestFoldTaskFlowGateMarks(t *testing.T) {
+	planGate := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageSpec).
+		order("spec-1", core.StageSpec, core.ActorSystem).claim("spec-1", core.StageSpec, "a1").
+		add("work_order.updated", core.ActorAgent, "job-spec-1", map[string]any{"work_order_id": "spec-1", "new_state": core.WorkOrderSubmitted}).
+		state(core.TaskAwaiting, core.TaskGateSpec)
+	atPlan := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageSpec)
+	revision := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageSpec).
+		transition(core.StageSpec, core.StageImplement).state(core.TaskAwaiting, core.TaskGatePlanRevision)
+	mergeGate := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageSpec).
+		transition(core.StageSpec, core.StageImplement).transition(core.StageImplement, core.StageReview).
+		transition(core.StageReview, core.StageMerge).state(core.TaskAwaiting, core.TaskGateMerge)
+	operator := func(kind string) nextaction.NextAction {
+		return nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: kind}
+	}
+	for name, tc := range map[string]struct {
+		ledger      *flowLedger
+		action      nextaction.NextAction
+		rowStage    core.Stage
+		plan, merge string
+	}{
+		"plan approval":                 {planGate, operator(nextaction.KindPlanApproval), core.StageSpec, FlowNeedsOperator, FlowUpcoming},
+		"plan revision":                 {revision, operator(nextaction.KindPlanRevision), core.StageSpec, FlowNeedsOperator, FlowUpcoming},
+		"merge approval":                {mergeGate, operator(nextaction.KindMergeApproval), core.StageMerge, FlowDone, FlowNeedsOperator},
+		"document proposal at the gate": {planGate, operator(nextaction.KindDocumentProposal), core.StageSpec, FlowWaiting, FlowUpcoming},
+		"agent question at the gate":    {mergeGate, operator(nextaction.KindAgentQuestion), core.StageMerge, FlowDone, FlowWaiting},
+		"context proposal at Plan":      {atPlan, operator(nextaction.KindContextProposal), core.StageSpec, FlowUpcoming, FlowUpcoming},
+		"agent question at Plan":        {atPlan, operator(nextaction.KindAgentQuestion), core.StageSpec, FlowUpcoming, FlowUpcoming},
+	} {
+		t.Run(name, func(t *testing.T) {
+			flow := tc.ledger.fold(tc.action)
+			// The aggregate row status is the same for every operator stop.
+			if got := flowStage(t, flow, tc.rowStage).Status; got != FlowNeedsOperator {
+				t.Fatalf("%s status = %s, want needs_operator", tc.rowStage, got)
+			}
+			want := map[core.Stage]string{core.StageSpec: tc.plan, core.StageMerge: tc.merge}
+			if got := flowGateMarks(flow); !reflect.DeepEqual(got, want) {
+				t.Fatalf("gate marks = %v, want %v", got, want)
+			}
+			for _, stage := range flow.Stages {
+				if stage.GateStatus == nil {
+					if stage.GateStatusLabel != "" || stage.GateStatusText != "" || stage.GateLabel != "" {
+						t.Fatalf("%s has gate copy without a gate mark: %+v", stage.ID, stage)
+					}
+					continue
+				}
+				copy := flowGateCopy[*stage.GateStatus]
+				if stage.GateStatusLabel != copy.label || stage.GateStatusText != copy.sentence(stage.GateLabel) {
+					t.Fatalf("%s gate copy = (%q, %q)", stage.ID, stage.GateStatusLabel, stage.GateStatusText)
+				}
+			}
+		})
+	}
+
+	// Disabled gates are off whatever the next action says, and keep their
+	// node names.
+	off := approvalTask()
+	off.SpecApproval, off.MergeApproval = false, false
+	flow := new(flowLedger).created(off).fold(operator(nextaction.KindPlanApproval))
+	if got := flowGateMarks(flow); !reflect.DeepEqual(got, map[core.Stage]string{core.StageSpec: FlowOff, core.StageMerge: FlowOff}) {
+		t.Fatalf("gate marks with both gates off = %v", got)
+	}
+	if spec := flowStage(t, flow, core.StageSpec); spec.Gate != nil || spec.GateLabel != "Plan approval" || spec.GateStatusText != "This task's policy turned Plan approval off." {
+		t.Fatalf("spec with the plan gate off = %+v", spec)
+	}
+	// A gate the approved task passed reads done.
+	approved := new(flowLedger).created(approvalTask()).transition(core.StageReview, core.StageMerge).
+		state(core.TaskAwaiting, core.TaskGateMerge).state(core.TaskApproved, core.TaskInterventionApproveReview)
+	if got := flowGateMarks(approved.fold(nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindMergeExecution}))[core.StageMerge]; got != FlowDone {
+		t.Fatalf("merge gate on an approved task = %s, want done", got)
+	}
+}
+
+// traversed and gate_traversed state the recorded path: a reached node is
+// traversed, an off node only once a later node is reached.
+func TestFoldTaskFlowTraversal(t *testing.T) {
+	type marks struct{ stage, gate bool }
+	read := func(flow TaskFlow) map[core.Stage]marks {
+		out := map[core.Stage]marks{}
+		for _, stage := range flow.Stages {
+			out[stage.ID] = marks{stage.Traversed, stage.GateTraversed}
+		}
+		return out
+	}
+	skipped := core.Task{SpecApproval: false, MergeApproval: false, SetupContract: config.ExecutionSetup{VerifyStage: false}}
+	fresh := new(flowLedger).created(skipped)
+	if got := read(fresh.fold(nextaction.NextAction{Actor: nextaction.ActorFactory})); got[core.StageSpec] != (marks{}) || got[core.StageVerify] != (marks{}) {
+		t.Fatalf("off nodes before the task moved = %v, want untraversed", got)
+	}
+	passed := new(flowLedger).created(skipped).transition(core.StageTriage, core.StageImplement).
+		transition(core.StageImplement, core.StageReview).order("review-1", core.StageReview, core.ActorSystem)
+	got := read(passed.fold(nextaction.NextAction{Actor: nextaction.ActorAgent, Kind: nextaction.KindQueued}))
+	want := map[core.Stage]marks{
+		core.StageTriage: {true, false}, core.StageSpec: {true, true}, core.StageImplement: {true, false},
+		core.StageVerify: {true, false}, core.StageReview: {true, false}, core.StageMerge: {false, false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("traversal at review = %v, want %v", got, want)
+	}
+	merging := new(flowLedger).created(skipped).transition(core.StageTriage, core.StageImplement).
+		transition(core.StageImplement, core.StageReview).transition(core.StageReview, core.StageMerge).state(core.TaskApproved, core.TaskReviewAccept)
+	if got := read(merging.fold(nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindMerging}))[core.StageMerge]; got != (marks{true, true}) {
+		t.Fatalf("merge with its gate off while merging = %+v, want stage and skipped gate traversed", got)
+	}
+	// A bounce keeps the stages already passed done and traversed.
+	bounced := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageSpec).
+		transition(core.StageSpec, core.StageImplement).transition(core.StageImplement, core.StageReview).
+		add("pipeline.bounced", core.ActorSystem, "", map[string]any{"from": "review", "to": "implement"}).
+		transition(core.StageReview, core.StageImplement).order("impl-2", core.StageImplement, core.ActorSystem)
+	flow := bounced.fold(nextaction.NextAction{Actor: nextaction.ActorAgent, Kind: nextaction.KindQueued})
+	if review := flowStage(t, flow, core.StageReview); review.Status != FlowDone || !review.Traversed {
+		t.Fatalf("review after a bounce = %+v", review)
+	}
+	if spec := flowStage(t, flow, core.StageSpec); *spec.GateStatus != FlowDone || !spec.GateTraversed {
+		t.Fatalf("plan gate after a bounce = %+v", spec)
+	}
+}
+
+// side.retrying pairs an attempt with the limit of the same counter, and the
+// label states only what is recorded (req-operator-next-action AC-7.5).
+func TestFoldTaskFlowRetryPairing(t *testing.T) {
+	policy := config.RecoveryPolicy{AutomaticRecoveries: 3, WindowText: "24h"}
+	if err := policy.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	retrying := nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying, CurrentOrder: &nextaction.OrderView{ID: "impl-1"}}
+	order := func() *flowLedger {
+		return new(flowLedger).created(approvalTask()).order("impl-1", core.StageImplement, core.ActorSystem)
+	}
+	workerRetry := order().add("work_order.requeued", core.ActorSystem, "job-impl-1", map[string]any{"work_order_id": "impl-1", "automatic_retry_count": 2})
+	recovered := order().add("work_order.redispatched", core.ActorSystem, "job-impl-1", map[string]any{"work_order_id": "impl-1", "automatic": true, "recovery_number": 1})
+	both := order().add("work_order.redispatched", core.ActorSystem, "job-impl-1", map[string]any{"work_order_id": "impl-1", "automatic": true, "recovery_number": 1}).
+		add("work_order.requeued", core.ActorSystem, "job-impl-1", map[string]any{"work_order_id": "impl-1", "automatic_retry_count": 5})
+	scheduled := retrying
+	scheduled.Details.ReasonCode = "automatic_recovery"
+	for name, tc := range map[string]struct {
+		ledger  *flowLedger
+		action  nextaction.NextAction
+		attempt int
+		of      string
+		label   string
+	}{
+		"scheduled recovery":           {recovered, scheduled, 2, "3", "Auto-retrying · 2 of 3"},
+		"recorded recovery":            {recovered, retrying, 1, "3", "Auto-retrying · 1 of 3"},
+		"worker retry has no limit":    {workerRetry, retrying, 2, "null", "Auto-retrying · 2"},
+		"worker count beside recovery": {both, retrying, 5, "null", "Auto-retrying · 5"},
+		"unknown count":                {order(), retrying, 0, "null", "Auto-retrying"},
+		"no order":                     {order(), nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindRetrying}, 0, "null", "Auto-retrying"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			flow := FoldTaskFlow(tc.ledger.events, tc.action, policy, flowT0)
+			got := flow.Side.Retrying
+			if got == nil || got.Attempt != tc.attempt {
+				t.Fatalf("retrying = %+v, want attempt %d", got, tc.attempt)
+			}
+			raw, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := `{"attempt":` + strconv.Itoa(tc.attempt) + `,"of":` + tc.of + `}`; string(raw) != want {
+				t.Fatalf("retrying JSON = %s, want %s", raw, want)
+			}
+			if label := flow.Side.Labels[FlowSideRetrying]; label != tc.label {
+				t.Fatalf("retrying label = %q, want %q", label, tc.label)
+			}
+		})
+	}
+	if got := FoldTaskFlow(recovered.events, nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindQueued}, policy, flowT0).Side.Retrying; got != nil {
+		t.Fatalf("retrying without a retrying next action = %+v", got)
+	}
+}
+
+// elapsed_seconds is the fold's arithmetic over its own now and the claim
+// time: truncated, never negative, zero without a claim time, and never reset
+// by a renewal or a progress report (req-operator-next-action AC-7.6).
+func TestFoldTaskFlowElapsedSeconds(t *testing.T) {
+	agent := nextaction.NextAction{Actor: nextaction.ActorAgent, Kind: nextaction.KindWorking}
+	claimed := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageImplement).
+		order("impl-1", core.StageImplement, core.ActorSystem).claim("impl-1", core.StageImplement, "a1")
+	claimedAt := claimed.events[len(claimed.events)-1].At
+	elapsed := func(ledger *flowLedger, now time.Time) int64 {
+		t.Helper()
+		view := flowStage(t, ledger.foldAt(agent, now), core.StageImplement).CurrentAttempt
+		if view == nil {
+			t.Fatal("claimed stage has no current_attempt")
+		}
+		return view.ElapsedSeconds
+	}
+	for name, tc := range map[string]struct {
+		now  time.Time
+		want int64
+	}{
+		"ninety seconds":   {claimedAt.Add(90 * time.Second), 90},
+		"truncated":        {claimedAt.Add(90*time.Second + 999*time.Millisecond), 90},
+		"at the claim":     {claimedAt, 0},
+		"future claim":     {claimedAt.Add(-time.Minute), 0},
+		"one hour and one": {claimedAt.Add(time.Hour + time.Second), 3601},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := elapsed(claimed, tc.now); got != tc.want {
+				t.Fatalf("elapsed_seconds = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	renewed := &flowLedger{events: append([]core.Event(nil), claimed.events...)}
+	renewed.add("work_order.lease_renewed", core.ActorAgent, "job-impl-1", core.WorkOrder{ID: "impl-1", Stage: core.StageImplement, State: core.WorkOrderClaimed, AttemptID: "a1", LeaseExpiresAt: claimedAt.Add(3 * time.Hour)})
+	renewed.add("work_order.progress_reported", core.ActorAgent, "job-impl-1", map[string]any{"work_order_id": "impl-1", "message": "halfway"})
+	if got := elapsed(renewed, claimedAt.Add(10*time.Minute)); got != 600 {
+		t.Fatalf("elapsed after renewal and progress = %d, want 600 from the claim", got)
+	}
+	// Without execution_started_at the claim event's own time is the start.
+	bare := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageImplement).
+		order("impl-1", core.StageImplement, core.ActorSystem)
+	bare.add("work_order.claimed", core.ActorAgent, "job-impl-1", map[string]any{"work_order_id": "impl-1", "stage": "implement", "attempt_id": "a1", "state": "claimed"})
+	eventAt := bare.events[len(bare.events)-1].At
+	if got := elapsed(bare, eventAt.Add(42*time.Second)); got != 42 {
+		t.Fatalf("elapsed from the claim event = %d, want 42", got)
+	}
+	// Execution start, when recorded, wins over the claim event's time.
+	started := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageImplement).
+		order("impl-1", core.StageImplement, core.ActorSystem)
+	start := flowT0.Add(-time.Hour)
+	started.add("work_order.claimed", core.ActorAgent, "job-impl-1", core.WorkOrder{ID: "impl-1", Stage: core.StageImplement, State: core.WorkOrderClaimed, AttemptID: "a1", ExecutionStartedAt: start})
+	if got := elapsed(started, start.Add(2*time.Minute)); got != 120 {
+		t.Fatalf("elapsed from execution_started_at = %d, want 120", got)
+	}
+	if !new(flowLedger).created(approvalTask()).foldAt(agent, claimedAt).AsOf.Equal(claimedAt) {
+		t.Fatal("as_of is not the fold's now")
+	}
+}
+
+// The display, node and loop copy is complete and server-stated, and the
+// served shape carries every added field (req-operator-next-action AC-1.8,
+// AC-7.7).
+func TestFoldTaskFlowDisplayCopy(t *testing.T) {
+	ledger := new(flowLedger).created(approvalTask())
+	ledger.add("pipeline.bounced", core.ActorSystem, "", map[string]any{"from": "review", "to": "implement", "source": "verification"})
+	flow := ledger.fold(nextaction.NextAction{Actor: nextaction.ActorFactory})
+	if want := []FlowLoop{{From: core.StageVerify, To: core.StageImplement, Count: 1, Label: "sent back ×1"}}; !reflect.DeepEqual(flow.Loops, want) {
+		t.Fatalf("verification loop = %+v, want %+v", flow.Loops, want)
+	}
+	labels := map[core.Stage][2]string{}
+	for _, stage := range flow.Stages {
+		labels[stage.ID] = [2]string{stage.Label, stage.GateLabel}
+	}
+	wantLabels := map[core.Stage][2]string{
+		core.StageTriage: {"Triage", ""}, core.StageSpec: {"Plan", "Plan approval"}, core.StageImplement: {"Implement", ""},
+		core.StageVerify: {"Verify", ""}, core.StageReview: {"Review", ""}, core.StageMerge: {"Merged", "Merge approval"},
+	}
+	if !reflect.DeepEqual(labels, wantLabels) {
+		t.Fatalf("node labels = %v", labels)
+	}
+	want := FlowDisplay{
+		Legend: []FlowLegendEntry{
+			{FlowDone, "Done"}, {FlowInProgress, "In progress"}, {FlowWaiting, "Waiting"}, {FlowNeedsOperator, "Your approval"}, {FlowOff, "Skipped"},
+		},
+		SideLabels: map[string]string{
+			FlowSideBlockedBy: "Waiting on another task", FlowSideRetrying: "Auto-retrying", FlowSideParked: "Parked",
+			FlowSideClosed: "Closed", FlowSideAgentQuestion: "Agent asks you",
+		},
+		SkippedLabel: "skipped", PlanBypassLabel: "skipped for this task", FromAnyStepLabel: "from any step",
+	}
+	if !reflect.DeepEqual(flow.Display, want) {
+		t.Fatalf("display = %+v, want %+v", flow.Display, want)
+	}
+	if flow.CurrentStage != nil {
+		t.Fatalf("current_stage before any transition = %v, want null", *flow.CurrentStage)
+	}
+	body, err := json.Marshal(flow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Stages []map[string]json.RawMessage `json:"stages"`
+		Rest   map[string]json.RawMessage
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &wire.Rest); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"current_stage", "as_of", "display"} {
+		if _, ok := wire.Rest[key]; !ok {
+			t.Fatalf("flow JSON lacks %q", key)
+		}
+	}
+	for _, stage := range wire.Stages {
+		for _, key := range []string{"label", "gate_label", "gate_status", "gate_status_label", "gate_status_text", "traversed", "gate_traversed"} {
+			if _, ok := stage[key]; !ok {
+				t.Fatalf("stage %s lacks %q", stage["id"], key)
+			}
+		}
+	}
+	// A merged task has no current stage; a claimed order's stage is it.
+	merged := new(flowLedger).created(approvalTask()).transition(core.StageReview, core.StageMerge).state(core.TaskMerged, core.TaskMergeConfirm)
+	if got := merged.fold(nextaction.NextAction{Actor: nextaction.ActorNone, Kind: nextaction.KindTerminal, CurrentOrder: &nextaction.OrderView{ID: "x", Stage: "merge"}}).CurrentStage; got != nil {
+		t.Fatalf("merged current_stage = %v, want null", *got)
+	}
+	ordered := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageImplement)
+	if got := ordered.fold(nextaction.NextAction{Actor: nextaction.ActorAgent, CurrentOrder: &nextaction.OrderView{ID: "v", Stage: "verify"}}).CurrentStage; got == nil || *got != core.StageVerify {
+		t.Fatalf("current_stage = %v, want the current order's verify", got)
+	}
+	if got := ordered.fold(nextaction.NextAction{Actor: nextaction.ActorAgent}).CurrentStage; got == nil || *got != core.StageImplement {
+		t.Fatalf("current_stage = %v, want the recorded next stage implement", got)
 	}
 }

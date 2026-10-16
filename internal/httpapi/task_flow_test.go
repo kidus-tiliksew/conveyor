@@ -62,7 +62,8 @@ func TestTaskFlowRouteIsTheGroupBoundary(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if noisy := flowGet(t, server, "/v1/tasks/boundary/flow?workspace_id=demo", true); noisy.Code != http.StatusOK || noisy.Body.String() != response.Body.String() {
+	// Two reads run at their own instants, so only as_of may differ.
+	if noisy := flowGet(t, server, "/v1/tasks/boundary/flow?workspace_id=demo", true); noisy.Code != http.StatusOK || withoutAsOf(t, noisy.Body.Bytes()) != withoutAsOf(t, response.Body.Bytes()) {
 		t.Fatalf("malformed events: status=%d body=%s\nwant %s", noisy.Code, noisy.Body.String(), response.Body.String())
 	}
 	for _, id := range []string{"missing", "foreign-task"} {
@@ -81,6 +82,25 @@ func TestTaskFlowRouteIsTheGroupBoundary(t *testing.T) {
 	if code := flowGet(t, failing, "/v1/tasks/boundary/flow?workspace_id=demo", true).Code; code != http.StatusInternalServerError {
 		t.Fatalf("store failure status=%d, want 500", code)
 	}
+}
+
+// withoutAsOf is a flow envelope with only as_of removed, the one field two
+// independently timed reads of an unclaimed task may differ in.
+func withoutAsOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var envelope map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := envelope["flow"]["as_of"]; !ok {
+		t.Fatalf("flow lacks as_of: %s", body)
+	}
+	delete(envelope["flow"], "as_of")
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 // seededFlowServer serves the shared command-built flow scenarios.
@@ -171,7 +191,9 @@ func TestTaskFlowRebuild(t *testing.T) {
 			if err := json.Unmarshal(body, &served); err != nil {
 				t.Fatal(err)
 			}
-			replayed, err := json.Marshal(storetest.ReplayTaskFlow(t, server.Store, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), replayFixture(t), scenario.TaskID, served.NextAction, time.Now().UTC()))
+			// The replay folds at the served instant, so the complete body,
+			// elapsed seconds included, must match byte for byte.
+			replayed, err := json.Marshal(storetest.ReplayTaskFlow(t, server.Store, store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), replayFixture(t), scenario.TaskID, served.NextAction, served.AsOf))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -349,6 +371,65 @@ func TestTaskFlowRouteStatesStageCopy(t *testing.T) {
 	}
 	if got := read("live")["implement"]["missed_check_in"]; got != "" {
 		t.Fatalf("live lease: missed_check_in = %v, want empty", got)
+	}
+
+	// The added wire fields reach the client through the route: node and gate
+	// labels and marks, traversal, the current stage, the fold's instant, the
+	// display copy, and the claimed stage's elapsed time against that instant.
+	var served struct {
+		Stages []struct {
+			ID              string  `json:"id"`
+			Label           string  `json:"label"`
+			GateLabel       string  `json:"gate_label"`
+			GateStatus      *string `json:"gate_status"`
+			GateStatusLabel string  `json:"gate_status_label"`
+			Traversed       bool    `json:"traversed"`
+			GateTraversed   bool    `json:"gate_traversed"`
+			CurrentAttempt  *struct {
+				ClaimedAt      time.Time `json:"claimed_at"`
+				ElapsedSeconds int64     `json:"elapsed_seconds"`
+			} `json:"current_attempt"`
+		} `json:"stages"`
+		CurrentStage *string   `json:"current_stage"`
+		AsOf         time.Time `json:"as_of"`
+		Display      struct {
+			Legend []struct {
+				Status, Label string
+			} `json:"legend"`
+			SideLabels      map[string]string `json:"side_labels"`
+			PlanBypassLabel string            `json:"plan_bypass_label"`
+		} `json:"display"`
+	}
+	before := time.Now().UTC()
+	if err := json.Unmarshal(flowBody(t, server, "live"), &served); err != nil {
+		t.Fatal(err)
+	}
+	if served.AsOf.Before(before.Add(-time.Second)) || served.CurrentStage == nil || *served.CurrentStage != "implement" {
+		t.Fatalf("as_of = %s, current_stage = %v", served.AsOf, served.CurrentStage)
+	}
+	if len(served.Display.Legend) != 5 || served.Display.Legend[3].Label != "Your approval" || len(served.Display.SideLabels) != 5 || served.Display.PlanBypassLabel != "skipped for this task" {
+		t.Fatalf("display = %+v", served.Display)
+	}
+	for _, stage := range served.Stages {
+		switch stage.ID {
+		case "spec":
+			if stage.Label != "Plan" || stage.GateLabel != "Plan approval" || stage.GateStatus == nil || *stage.GateStatus != "off" || !stage.Traversed || !stage.GateTraversed {
+				t.Fatalf("spec with its gate off, passed = %+v", stage)
+			}
+		case "merge":
+			if stage.Label != "Merged" || stage.GateStatus == nil || *stage.GateStatus != "upcoming" || stage.GateStatusLabel != "Upcoming" || stage.Traversed {
+				t.Fatalf("merge = %+v", stage)
+			}
+		case "implement":
+			attempt := stage.CurrentAttempt
+			if attempt == nil || attempt.ElapsedSeconds <= 0 || attempt.ElapsedSeconds != int64(served.AsOf.Sub(attempt.ClaimedAt).Seconds()) {
+				t.Fatalf("implement current_attempt = %+v at as_of %s, want a positive elapsed_seconds", attempt, served.AsOf)
+			}
+		default:
+			if stage.GateStatus != nil || stage.GateLabel != "" {
+				t.Fatalf("%s carries a gate mark: %+v", stage.ID, stage)
+			}
+		}
 	}
 }
 
