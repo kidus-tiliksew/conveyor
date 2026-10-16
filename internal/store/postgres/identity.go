@@ -89,7 +89,7 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displa
 // across restart, configuration change, and rotation; without a marker the
 // configured first operator becomes the owner. Bootstrap never writes a
 // workspace binding, so demotions and exclusions survive every restart
-// (DEC-63(3), DEC-63(4)).
+// (DEC-75(3), DEC-75(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
@@ -178,7 +178,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 	ownerID := legacy.userID
 	if marked {
 		// A revoked marker keeps its owner; the new deployment token is
-		// reissued to the same account (DEC-63(3)).
+		// reissued to the same account (DEC-75(3)).
 		if _, err := tx.Exec(ctx, `UPDATE user_tokens
 			SET label='retired legacy API token',deployment_credential=false
 			WHERE id=$1`, legacy.id); err != nil {

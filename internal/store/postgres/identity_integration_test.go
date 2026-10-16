@@ -294,7 +294,7 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	if _, err := st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `DELETE FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Bootstrap never heals a missing binding (DEC-63(4)).
+	// Bootstrap never heals a missing binding (DEC-75(4)).
 	if changed, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "legacy-two"); err != nil || changed {
 		t.Fatalf("unchanged restart changed=%t err=%v, want no-op", changed, err)
 	}
@@ -325,7 +325,7 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 		t.Fatalf("revoked legacy mapping resurrected=%t err=%v", !revoked, err)
 	}
 	// A new deployment token after revocation is reissued to the same owner
-	// and still restores no binding (DEC-63(3), DEC-63(4)).
+	// and still restores no binding (DEC-75(3), DEC-75(4)).
 	if changed, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), config.FirstOperatorIdentity{OrganizationName: "Other Org", Email: "someone-else@example.test", DisplayName: "Someone"}, "legacy-three"); err != nil || !changed {
 		t.Fatalf("reissue after revocation changed=%t err=%v", changed, err)
 	}
@@ -344,8 +344,11 @@ func TestIdentityBootstrapRevocationAndDeploymentAuditIntegration(t *testing.T) 
 	}
 }
 
-// DEC-63(1), DEC-63(2), DEC-63(5): instance administration follows the
-// deployment marker owner, never operator bindings or credential scope.
+// DEC-75(1), DEC-75(2), DEC-75(5): instance administration follows the
+// deployment marker owner, never operator bindings or credential scope. A
+// second operator is refused account provisioning but, as a workspace
+// creator, creates a workspace and becomes its operator
+// (req-accounts-and-membership AC-1.3, AC-1.4).
 func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) {
 	st := newIdentityIntegrationStore(t, 0)
 	legacy := "live-binding-http-token"
@@ -394,13 +397,16 @@ func TestInstanceAdministrationIgnoresOperatorBindingsIntegration(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, request := range []struct{ method, path, body string }{
-		{http.MethodPost, "/v1/users", `{"email":"denied@example.test","display_name":"Denied"}`},
-		{http.MethodPost, "/v1/workspaces", `{"id":"denied-` + core.NewTaskID()[:8] + `","name":"Denied"}`},
-	} {
-		if response := callWithToken(secondPAT.Value, request.method, request.path, request.body); response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"workspace_not_found"`) {
-			t.Fatalf("nonowner operator %s status=%d body=%s", request.path, response.Code, response.Body.String())
-		}
+	if response := callWithToken(secondPAT.Value, http.MethodPost, "/v1/users", `{"email":"denied@example.test","display_name":"Denied"}`); response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"workspace_not_found"`) {
+		t.Fatalf("nonowner operator provisioning status=%d body=%s", response.Code, response.Body.String())
+	}
+	secondCreated := "second-created-" + core.NewTaskID()[:8]
+	if response := callWithToken(secondPAT.Value, http.MethodPost, "/v1/workspaces", `{"id":"`+secondCreated+`","name":"Second Created"}`); response.Code != http.StatusCreated {
+		t.Fatalf("nonowner operator creation status=%d body=%s", response.Code, response.Body.String())
+	}
+	var secondRole string
+	if err := st.pool.QueryRow(t.Context(), `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, secondCreated, second.ID).Scan(&secondRole); err != nil || secondRole != "operator" {
+		t.Fatalf("nonowner creator binding=%q err=%v", secondRole, err)
 	}
 	var deniedUsers int
 	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM users WHERE email='denied@example.test'`).Scan(&deniedUsers); err != nil || deniedUsers != 0 {
@@ -912,7 +918,7 @@ func TestIdentityMigrationsUpgradeExistingWorkspaceIntegration(t *testing.T) {
 	if seeded, err := st.BootstrapIdentity(store.WithActor(t.Context(), store.SystemActor()), identity, "upgrade-legacy-token"); err != nil || seeded {
 		t.Fatalf("upgrade healthy restart seeded=%t err=%v", seeded, err)
 	}
-	// Upgrade adds no membership to the established workspace (DEC-63(4)).
+	// Upgrade adds no membership to the established workspace (DEC-75(4)).
 	var ownerBindings int
 	if err := st.pool.QueryRow(t.Context(), `SELECT count(*) FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspace, principal.ID).Scan(&ownerBindings); err != nil || ownerBindings != 0 {
 		t.Fatalf("upgrade bootstrap bound the owner count=%d err=%v", ownerBindings, err)

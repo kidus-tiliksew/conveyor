@@ -6,6 +6,13 @@ import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
 
+// Task detail opens on its Timeline tab; pin it so a persisted Flow choice
+// can never hide the activity these cases check (component-web-task-surfaces,
+// Activity tabs and the task flow view).
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
+})
+
 const createdAt = '2026-07-15T12:00:00Z'
 
 // The one next-action box on task detail; it carries the current execution
@@ -2279,10 +2286,12 @@ test('Prompt for AI Agents shows the title and instruction and copies the same t
   expect(bounds.whiteSpace).toBe('pre-wrap')
   expect(bounds.lines).toBeGreaterThanOrEqual(3)
 
-  // The Terminal tab and the tab structure are gone.
-  await expect(page.getByRole('tablist')).toHaveCount(0)
-  await expect(page.getByRole('tab')).toHaveCount(0)
-  await expect(page.getByRole('tabpanel')).toHaveCount(0)
+  // The Terminal tab and the tab structure are gone from the prompt group;
+  // the only tabs on the page are the activity's Timeline and Flow.
+  await expect(group.getByRole('tablist')).toHaveCount(0)
+  await expect(group.getByRole('tab')).toHaveCount(0)
+  await expect(group.getByRole('tabpanel')).toHaveCount(0)
+  await expect(page.getByRole('tab')).toHaveText(['Timeline', 'Flow'])
   await expect(page.getByText(`conveyor run ${taskID}`, { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy task run command' })).toHaveCount(0)
 
@@ -2421,7 +2430,9 @@ test('Work on this guidance shows the guidance without an agent prompt', async (
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
   await expect(page.getByText('Work on this locally', { exact: true })).toBeVisible()
   await expect(page.getByText('Prompt for AI Agents')).toHaveCount(0)
-  await expect(page.getByRole('tablist')).toHaveCount(0)
+  // The only tablist is the activity's Timeline and Flow; the guidance has none.
+  await expect(page.getByRole('tablist')).toHaveCount(1)
+  await expect(page.getByRole('tablist')).toHaveAccessibleName('Task activity view')
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
   await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
 })
