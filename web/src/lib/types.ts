@@ -1103,6 +1103,15 @@ export interface NextActionDetails {
   secondary?: { kind: string; reason_code?: string }[]
   refusals?: { choice: string; text: string }[]
   merge_readiness?: string
+  // Row 10's binding for the verification recover body (NA-3).
+  disposition?: NextActionDisposition
+}
+
+export interface NextActionDisposition {
+  context_id: string
+  run_id: string
+  operation_ids: string[]
+  input_digest: string
 }
 
 export interface NextActionCompact {
@@ -1113,6 +1122,8 @@ export interface NextActionCompact {
   summary: string
   deadline: string | null
   blocked_by?: NextActionBlocker[]
+  // Open tasks waiting on this one (NA-3).
+  blocks?: NextActionBlocker[]
 }
 
 export interface NextAction extends NextActionCompact {

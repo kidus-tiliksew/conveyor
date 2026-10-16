@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { AutomaticBand } from '../components/inbox/automatic-band'
 import { BlockedRow } from '../components/inbox/blocked-row'
 import { DecisionCard } from '../components/inbox/decision-card'
+import { InboxBandChips } from '../components/inbox/inbox-band-chips'
 import { InboxContextSheet } from '../components/inbox/inbox-context-sheet'
 import type { InboxSearch } from '../components/inbox/inbox-search'
 import { ProposalCard } from '../components/inbox/proposal-card'
@@ -29,10 +30,11 @@ function matchesSearch(item: InboxItem, search: InboxSearch) {
 }
 
 // The operator inbox (feature-operator-next-action NA-6; REQ-2): decisions,
-// blocked work and automatic work, each in the server's order.
+// blocked work and automatic work, each in the server's order. One read feeds
+// every band; the band chips filter it in the browser.
 export function InboxPage() {
   const search = useSearch({ from: '/inbox' })
-  const inbox = useNextActions(search.band)
+  const inbox = useNextActions()
   const [viewing, setViewing] = useState<{ taskId: string; kind: string } | null>(null)
   const items = inbox.data?.items ?? []
   const allDecisions = items.filter((item) => item.band === 'decisions')
@@ -41,6 +43,7 @@ export function InboxPage() {
   const automatic = items.filter((item) => item.band === 'automatic')
   const decisionTaskIds = new Set(allDecisions.flatMap((item) => (item.task ? [item.task.id] : [])))
   const show = (band: InboxSearch['band']) => !search.band || search.band === band
+  const counts = { decisions: allDecisions.length, blocked: blocked.length, automatic: automatic.length }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -49,12 +52,16 @@ export function InboxPage() {
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-5">
           <div className="min-w-0">
             <h1 className="text-xl font-semibold tracking-tight">Inbox</h1>
-            <p className="mt-1 text-sm text-muted">What is waiting on you, what is stuck, and what runs on its own.</p>
+            <p className="mt-1 text-sm text-muted">
+              Only the calls that need your judgment. Below them: tasks held up by other tasks, and what Conveyor
+              already handled.
+            </p>
           </div>
           <Badge variant={allDecisions.length > 0 ? 'attention' : 'positive'}>
             {allDecisions.length} {allDecisions.length === 1 ? 'decision' : 'decisions'}
           </Badge>
         </header>
+        {inbox.data && <InboxBandChips search={search} counts={counts} />}
 
         {(search.task || search.document) && (
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">

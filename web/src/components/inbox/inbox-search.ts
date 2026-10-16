@@ -1,6 +1,6 @@
 import type { InboxBand } from '../../lib/types'
 
-// The Inbox's address: the band the server filters by, plus the task,
+// The Inbox's address: the band the page shows, plus the task,
 // document and tier the decisions band narrows to on arrival (the retired
 // pending-proposals page's parameters, so its links keep working).
 export interface InboxSearch {

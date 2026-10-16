@@ -2,7 +2,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { fetchNextAction, fetchNextActions } from '../../lib/api'
 import { taskDetailQueryKey } from '../../lib/query-keys'
-import type { InboxBand } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
 
 export const INBOX_PAGE_SIZE = 100
@@ -16,12 +15,14 @@ export function nextActionQueryKey(workspace: string, taskId: string) {
 }
 
 // The operator inbox (NA-6). The server orders it; the page renders that order.
-// No workspace event stream exists, so it refreshes on a poll and on its own acts.
-export function useNextActions(band?: InboxBand) {
+// It is read once without a band so every band's count comes from one
+// response; the page filters by band in the browser. No workspace event
+// stream exists, so it refreshes on a poll and on its own acts.
+export function useNextActions() {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
-    queryKey: [...nextActionsQueryKey(workspace), { band: band ?? null }],
-    queryFn: ({ signal }) => fetchNextActions(workspace, { band, limit: INBOX_PAGE_SIZE, offset: 0 }, signal),
+    queryKey: nextActionsQueryKey(workspace),
+    queryFn: ({ signal }) => fetchNextActions(workspace, { limit: INBOX_PAGE_SIZE, offset: 0 }, signal),
     enabled: Boolean(workspace),
     refetchInterval: 15_000,
   })
