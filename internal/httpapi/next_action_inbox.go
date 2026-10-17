@@ -23,12 +23,24 @@ type inboxItem struct {
 	Serves           []string                `json:"serves,omitempty"`
 	Recommendation   string                  `json:"recommendation,omitempty"`
 	NoJudgmentNeeded bool                    `json:"no_judgment_needed,omitempty"`
-	Proposal         *core.PendingProposal   `json:"proposal,omitempty"`
+	Proposal         *inboxProposal          `json:"proposal,omitempty"`
+	Label            string                  `json:"label,omitempty"`
+	Question         string                  `json:"question,omitempty"`
+	IfIgnored        string                  `json:"if_ignored,omitempty"`
 	Sentence         string                  `json:"sentence,omitempty"`
 	Blockers         []nextaction.BlockerRef `json:"blockers,omitempty"`
 	Deadline         *time.Time              `json:"deadline,omitempty"`
 	LastEventAt      time.Time               `json:"last_event_at,omitempty"`
 	SortID           string                  `json:"-"`
+}
+
+// inboxProposal is a pending document proposal as the inbox states it: the
+// stored fields plus its age at the read's clock, omitted when the proposal
+// has no proposed time (feature-operator-next-action NA-5;
+// req-operator-next-action AC-2.6).
+type inboxProposal struct {
+	core.PendingProposal
+	AgeSeconds *int64 `json:"age_seconds,omitempty"`
 }
 
 func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +93,9 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 // and the MCP list_operator_inbox read share it, so the inbox has one
 // derivation (DEC-61; feature-operator-next-action NA-8).
 func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, band string, filter store.TaskFilter) ([]inboxItem, error) {
+	if opts.Now.IsZero() {
+		opts.Now = time.Now().UTC()
+	}
 	tasks, err := s.Store.ListTasksFiltered(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -111,13 +126,17 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 		lastEvent[marker.TaskID] = marker.LastEventAt
 	}
 	folded := map[string]bool{}
+	withholding := map[string]bool{}
 	for _, task := range candidates {
-		if projected[task.ID].Kind == nextaction.KindDocumentProposal {
+		if action := projected[task.ID]; action.Kind == nextaction.KindDocumentProposal {
 			folded[task.ID] = true
+			for _, ref := range action.Details.PendingProposals {
+				withholding[proposalKey(ref.Tier, ref.ID, ref.Version)] = true
+			}
 		}
 	}
 	items := inboxTaskItems(candidates, projected, lastEvent, folded)
-	items = append(items, documentProposalItems(proposals)...)
+	items = append(items, documentProposalItems(proposals, withholding, opts.Now)...)
 	if band != "" {
 		filtered := make([]inboxItem, 0, len(items))
 		for _, item := range items {
@@ -172,7 +191,11 @@ func serves(task core.Task) []string {
 	return ids
 }
 
-func documentProposalItems(proposals []core.PendingProposal) []inboxItem {
+// documentProposalItems lists each pending document proposal as a decision.
+// withholding holds the versions a folded row-8 task waits on, keyed by
+// proposalKey; now is the read's clock (feature-operator-next-action NA-4,
+// NA-5).
+func documentProposalItems(proposals []core.PendingProposal, withholding map[string]bool, now time.Time) []inboxItem {
 	counts := map[string]int{}
 	for _, proposal := range proposals {
 		if proposal.Tier == "task_context" {
@@ -185,8 +208,11 @@ func documentProposalItems(proposals []core.PendingProposal) []inboxItem {
 		if proposal.Tier == "task_context" {
 			continue
 		}
+		label, question, ifIgnored := nextaction.DocumentProposalCopy(proposal.Tier, withholding[proposalKey(proposal.Tier, proposal.ID, proposal.Version)])
 		item := inboxItem{
-			Kind: "document_proposal", Band: "decisions", Proposal: &proposal,
+			Kind: "document_proposal", Band: "decisions",
+			Proposal: &inboxProposal{PendingProposal: proposal, AgeSeconds: proposalAge(proposal.ProposedAt, now)},
+			Label:    label, Question: question, IfIgnored: ifIgnored,
 			LastEventAt: proposal.ProposedAt, SortID: proposal.ID,
 		}
 		if counts[proposal.Tier+"/"+proposal.ID] > 1 {
@@ -195,6 +221,20 @@ func documentProposalItems(proposals []core.PendingProposal) []inboxItem {
 		items = append(items, item)
 	}
 	return items
+}
+
+func proposalKey(tier, id string, version int) string {
+	return tier + "/" + id + "/" + strconv.Itoa(version)
+}
+
+// proposalAge is the whole seconds from proposedAt to now, clamped at zero
+// for a future timestamp, and nil when the proposal has no proposed time.
+func proposalAge(proposedAt, now time.Time) *int64 {
+	if proposedAt.IsZero() {
+		return nil
+	}
+	age := int64(max(now.Sub(proposedAt), 0) / time.Second)
+	return &age
 }
 
 func sortInbox(items []inboxItem) {

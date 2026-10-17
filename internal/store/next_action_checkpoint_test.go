@@ -14,7 +14,9 @@ import (
 
 // The agent question reads the checkpoint of the latest queued order only,
 // so an older order's request never attaches to the order the next action
-// selects (component-work-orders, Next action).
+// selects, and only while that order is still released at the checkpoint
+// (component-work-orders, Next action; feature-operator-next-action NA-3
+// row 9).
 func TestMarkersReadTheLatestQueuedOrdersCheckpoint(t *testing.T) {
 	citations := []core.WorkOrderAuthorityConflictCitation{{DocumentID: "design-a", CitedVersion: 3, StatementOrSectionID: "Section"}}
 	checkpoint := &core.WorkOrderCheckpoint{DecisionRequest: "Confirm design-a v4.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: citations}
@@ -29,9 +31,19 @@ func TestMarkersReadTheLatestQueuedOrdersCheckpoint(t *testing.T) {
 			t.Fatalf("%s: markers = %+v, want no checkpoint on the latest queued order", name, got)
 		}
 	}
-	got := markersFrom(ActivityMarker{}, nil, []core.WorkOrder{latest, {ID: "released", State: core.WorkOrderQueued, Checkpoint: checkpoint}})
+	released := core.WorkOrder{ID: "released", State: core.WorkOrderQueued, LastAttemptID: "attempt-1", LastAttemptOutcome: core.WorkOrderOutcomeReleased, Checkpoint: checkpoint}
+	got := markersFrom(ActivityMarker{}, nil, []core.WorkOrder{latest, released})
 	if !got.CheckpointDecision || got.Checkpoint != checkpoint.DecisionRequest || got.CheckpointClass != checkpoint.Class || !reflect.DeepEqual(got.Citations, citations) {
 		t.Fatalf("markers = %+v, want the latest queued order's checkpoint", got)
+	}
+	// An operator recovery clears the released outcome and keeps the
+	// checkpoint for history; the resumed order no longer asks the question.
+	resumed := released
+	resumed.LastAttemptOutcome = ""
+	resumed.OperatorDirection = "Continue under the confirmed authority."
+	resumed.RedispatchCount = 1
+	if got := markersFrom(ActivityMarker{}, nil, []core.WorkOrder{latest, resumed}); got.CheckpointDecision || got.Checkpoint != "" || got.CheckpointClass != "" || got.Citations != nil {
+		t.Fatalf("resumed: markers = %+v, want no checkpoint marker", got)
 	}
 }
 

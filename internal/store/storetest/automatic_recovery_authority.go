@@ -321,12 +321,16 @@ func (f authorityFixture) answersAfterLastConfirmation(t *testing.T) {
 	}
 	f.requireAuthorityCount(t, task.ID, 1)
 
-	// The next action is ordinary queued work and the acts log lists the act.
+	// The next action is ordinary queued work with no recover-route choice,
+	// the route refuses a further recovery with the text the projection
+	// records, and the acts log lists the act.
 	action, err := store.ReadNextAction(ctx, st, task.ID, store.NextActionOptions{Now: time.Now().UTC()})
 	requireOK(t, err)
 	if action.Kind == nextaction.KindAgentQuestion || action.Details.Checkpoint != "" {
 		t.Fatalf("next action still states the checkpoint: %+v", action)
 	}
+	requireResumedQueuedAction(t, st, ctx, task.ID, orderID)
+	f.requireAuthorityCount(t, task.ID, 1)
 	// GET /v1/inbox/acts lists system recoveries through FilterFactoryActs,
 	// as it lists mechanical ones (AR-6).
 	history, err := st.ListEvents(ctx, task.ID)
@@ -377,6 +381,15 @@ func (f authorityFixture) operatorRace(t *testing.T) {
 			if authority, operator, _ := f.recoveries(t, task.ID); len(authority) != 0 || len(operator) != 1 {
 				t.Fatalf("operator first: authority=%d operator=%d", len(authority), len(operator))
 			}
+			// The 261016-cdb507 shape: cited revisions confirmed, then an
+			// operator recovery that keeps the checkpoint. The answered
+			// question is not asked again and no recovery is offered.
+			resumed, err := st.GetWorkOrder(ctx, orderID)
+			requireOK(t, err)
+			if resumed.Checkpoint == nil || resumed.Checkpoint.Class != core.WorkOrderCheckpointClassAuthorityConflict || resumed.LastAttemptOutcome != "" {
+				t.Fatalf("operator first: resumed order=%+v, want the checkpoint kept and the outcome cleared", resumed)
+			}
+			requireResumedQueuedAction(t, st, ctx, task.ID, orderID)
 			continue
 		}
 		start := make(chan struct{})

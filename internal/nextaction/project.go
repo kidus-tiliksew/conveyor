@@ -164,8 +164,13 @@ func gateOffApproved(in Input) bool {
 
 func claimWaiting(in Input) bool { return len(in.ClaimWaiting) > 0 }
 
+// agentQuestion matches row 9 only while the latest queued order is still
+// released at its checkpoint, so a resumed order never asks its answered
+// question again (feature-operator-next-action NA-3 row 9;
+// req-operator-next-action AC-1.6).
 func agentQuestion(in Input) bool {
-	return in.Markers.CheckpointDecision && latestQueued(in.Orders) != nil
+	order := latestQueued(in.Orders)
+	return in.Markers.CheckpointDecision && order != nil && order.LastAttemptOutcome == core.WorkOrderOutcomeReleased
 }
 
 // agentQuestionBuild presents the latest queued order's checkpoint. An

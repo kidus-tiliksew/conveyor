@@ -1233,10 +1233,31 @@ test('blocked rows link blockers, the automatic band offers its one choice and a
   await expect(log.getByText('Redispatched')).toBeVisible()
 })
 
+const longDecision =
+  'All FunnelFlux repositories are registered in the demo workspace, each with its own verification kit, its own review seats, and a merge gate that the operator decides for every pull request.'
+
+// Document proposals as the server states them (feature-operator-next-action
+// NA-4, NA-5): the stored fields, a read-time age, and the label, question and
+// if-ignored copy. `age` overrides the age: null omits it.
 function proposalFixture(): Fixture {
-  const proposal = (id: string, title: string, tier: string, version: number | undefined, originTask?: string) => ({
+  const copy: Record<string, { label: string; question: string }> = {
+    requirement: { label: 'Requirement proposal', question: 'Confirm or dismiss this proposed version?' },
+    system_design: { label: 'System Design proposal', question: 'Confirm or dismiss this proposed version?' },
+    decision: { label: 'Decision proposal', question: 'Confirm or dismiss this proposed decision?' },
+  }
+  const proposal = (
+    id: string,
+    title: string,
+    tier: string,
+    version: number | undefined,
+    originTask?: string,
+    age: number | null = 3600,
+  ) => ({
     band: 'decisions',
     kind: 'document_proposal',
+    label: copy[tier]?.label ?? 'Document proposal',
+    question: copy[tier]?.question ?? 'Confirm or dismiss the proposal?',
+    if_ignored: 'The proposal stays pending.',
     proposal: {
       id,
       title,
@@ -1245,20 +1266,23 @@ function proposalFixture(): Fixture {
       origin_type: originTask ? 'task' : 'operator',
       ...(originTask ? { origin_id: originTask } : {}),
       proposed_at: proposedAt,
-      age_seconds: 3600,
+      ...(age == null ? {} : { age_seconds: age }),
     },
   })
   return {
-    operatorDecisions: 4,
+    operatorDecisions: 5,
     items: [
       {
         ...proposal('req-attention', 'Operator attention', 'requirement', 3, 'review-task'),
+        if_ignored: 'The claim stays withheld.',
         sentence: 'Confirming a later one dismisses the earlier ones.',
       },
-      proposal('design-dashboard', 'Dashboard architecture', 'system_design', 4, 'other-task'),
-      proposal('DEC-16', 'Generate dashboard output from web sources.', 'decision', undefined),
+      // An older server sends no age: the card reads proposed_at instead.
+      proposal('design-dashboard', 'Dashboard architecture', 'system_design', 4, 'other-task', null),
+      // An unusable age falls back to proposed_at too.
+      proposal('DEC-16', longDecision, 'decision', undefined, undefined, -5),
       proposal('req-other', 'Other requirement', 'requirement', 1, 'review-task'),
-      // A tier this client does not know is never offered for confirmation.
+      // A tier this client does not know is listed read-only.
       proposal('charter-x', 'Unknown tier proposal', 'charter', 1, 'review-task'),
     ],
     actions: {},
@@ -1286,13 +1310,15 @@ test('proposal cards keep the retired queue rules for every tier', async ({ page
   })
   await page.goto('/inbox')
   const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(4)
+  await expect(cards).toHaveCount(5)
   await expect(cards.first().getByText('Confirming a later one dismisses the earlier ones.')).toBeVisible()
-  await expect(page.getByText('Unknown tier proposal')).toHaveCount(0)
+  const unknown = cards.filter({ hasText: 'Unknown tier proposal' })
+  await expect(unknown).toBeVisible()
+  await expect(unknown.getByRole('button')).toHaveCount(0)
 
   // Confirm reads the current version first and confirms against it.
   await cards.filter({ hasText: 'Operator attention' }).getByRole('button', { name: 'Confirm' }).click()
-  await expect(cards).toHaveCount(3)
+  await expect(cards).toHaveCount(4)
   expect(seen.indexOf('GET /v1/requirements/req-attention')).toBeLessThan(
     seen.indexOf('POST /v1/requirements/req-attention/versions/3/confirm'),
   )
@@ -1305,8 +1331,8 @@ test('proposal cards keep the retired queue rules for every tier', async ({ page
   await page.getByRole('button', { name: 'Cancel' }).click()
   expect(harness.posts.length).toBe(sentBeforeCancel)
 
-  await cards.filter({ hasText: 'Generate dashboard output' }).getByRole('button', { name: 'Dismiss' }).click()
-  await expect(cards).toHaveCount(2)
+  await cards.filter({ hasText: 'All FunnelFlux repositories' }).getByRole('button', { name: 'Dismiss' }).click()
+  await expect(cards).toHaveCount(3)
   await expect(page.getByRole('dialog')).toHaveCount(0)
 })
 
@@ -1314,8 +1340,8 @@ test('task, document and tier narrow the decisions band', async ({ page }) => {
   await serve(page, proposalFixture())
   await page.goto('/inbox?task=review-task')
   const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(2)
-  await expect(cards.locator('h3')).toHaveText(['Operator attention', 'Other requirement'])
+  await expect(cards).toHaveCount(3)
+  await expect(cards.locator('h3')).toHaveText(['Operator attention', 'Other requirement', 'Unknown tier proposal'])
 
   await page.goto('/inbox?document=req-attention&tier=requirement')
   await expect(cards).toHaveCount(1)
@@ -1334,9 +1360,90 @@ test('a maintainer without confirm_documents reads proposals without acting', as
   await serve(page, fixture)
   await page.goto('/inbox')
   const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(4)
-  await expect(cards.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
-  await expect(cards.getByRole('button', { name: 'Dismiss' })).toHaveCount(0)
+  await expect(cards).toHaveCount(5)
+  await expect(cards.getByRole('button')).toHaveCount(0)
+})
+
+// The document-proposal card reads like a task decision card: the server's
+// label, question and if-ignored text, a footer band of choices, and raw IDs
+// only in the IDs disclosure (feature-operator-next-action NA-6;
+// req-operator-next-action AC-1.8, AC-2.6).
+test('proposal cards use the decision-card layout with server copy and a safe age', async ({ page }) => {
+  await serve(page, proposalFixture())
+  await page.goto('/inbox')
+  const cards = page.locator('[data-inbox-item="document_proposal"]')
+  await expect(cards).toHaveCount(5)
+  await expect(page.locator('body')).not.toContainText('NaN')
+
+  const requirement = cards.filter({ hasText: 'Operator attention' })
+  await expect(requirement.locator('[data-decision-label]')).toHaveText('Requirement proposal')
+  await expect(requirement.locator('[data-proposal-version]')).toHaveText('v3')
+  await expect(requirement.locator('[data-proposal-age]')).toHaveText(/ago$/)
+  await expect(requirement.locator('[data-proposal-age]')).toHaveAttribute('title', /\d/)
+  await expect(requirement.getByText('Confirm or dismiss this proposed version?')).toBeVisible()
+  await expect(requirement.getByRole('link', { name: 'Task' })).toHaveAttribute('href', '/tasks/review-task/full')
+  await expect(requirement.getByRole('link', { name: 'View changes →' })).toBeVisible()
+
+  // Footer band: primary Confirm, Revise, quiet Dismiss, then the consequence,
+  // the multi-version sentence and the IDs disclosure.
+  const footer = requirement.locator('[data-decision-footer]')
+  await expect(footer.getByRole('button')).toHaveText(['Confirm', 'Revise', 'Dismiss'])
+  await expect(footer.getByRole('button', { name: 'Confirm' })).toHaveClass(/bg-primary/)
+  await expect(footer.getByRole('button', { name: 'Dismiss' })).not.toHaveClass(/bg-failure/)
+  await expect(footer).toContainText('If you do nothing: The claim stays withheld.')
+  await expect(footer).toContainText('Confirming a later one dismisses the earlier ones.')
+
+  // Raw document and origin IDs appear only inside the IDs disclosure.
+  const visibleText = await requirement.evaluate((card) => {
+    const clone = card.cloneNode(true) as HTMLElement
+    for (const details of clone.querySelectorAll('details')) details.remove()
+    return clone.textContent ?? ''
+  })
+  expect(visibleText).not.toContain('req-attention')
+  expect(visibleText).not.toContain('review-task')
+  await requirement.getByText('Show IDs').click()
+  await expect(requirement.locator('details pre')).toContainText('"document": "req-attention"')
+  await expect(requirement.locator('details pre')).toContainText('"origin_id": "review-task"')
+
+  // A missing or unusable age falls back to proposed_at.
+  for (const title of ['Dashboard architecture', 'All FunnelFlux repositories']) {
+    const age = cards.filter({ hasText: title }).locator('[data-proposal-age]')
+    await expect(age).toHaveText(/ago$/)
+    await expect(age).toHaveAttribute('datetime', '2026-10-10T10:00:00.000Z')
+  }
+
+  // A decision reads its own question and context link, with a long title
+  // clamped to two lines and the full text kept in its tooltip.
+  const decision = cards.filter({ hasText: 'All FunnelFlux repositories' })
+  await expect(decision.locator('[data-decision-label]')).toHaveText('Decision proposal')
+  await expect(decision.locator('[data-proposal-version]')).toHaveCount(0)
+  await expect(decision.getByText('Confirm or dismiss this proposed decision?')).toBeVisible()
+  await expect(decision.getByRole('link', { name: 'View decision →' })).toBeVisible()
+  await expect(decision.getByRole('button', { name: 'Revise' })).toHaveCount(0)
+  const title = decision.locator('h3')
+  await expect(title).toHaveAttribute('title', longDecision)
+  await expect(title).toHaveClass(/line-clamp-2/)
+  await page.setViewportSize({ width: 390, height: 900 })
+  const lines = await title.evaluate((node) => {
+    const style = getComputedStyle(node)
+    return Math.round(node.getBoundingClientRect().height / Number.parseFloat(style.lineHeight))
+  })
+  expect(lines).toBe(2)
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
+})
+
+test('proposal cards omit the age when neither age nor proposed time is usable', async ({ page }) => {
+  const fixture = proposalFixture()
+  const first = fixture.items[0] as { proposal: Record<string, unknown> }
+  first.proposal = { ...first.proposal, proposed_at: 'not-a-time' }
+  delete first.proposal.age_seconds
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  const card = page.locator('[data-inbox-item="document_proposal"]').filter({ hasText: 'Operator attention' })
+  await expect(card.locator('[data-decision-label]')).toHaveText('Requirement proposal')
+  await expect(card.locator('[data-proposal-age]')).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('NaN')
 })
 
 test('/pending-proposals lands on the inbox decisions band with its narrowing', async ({ page }) => {

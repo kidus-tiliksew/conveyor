@@ -276,11 +276,61 @@ func runAgentQuestionCheckpoint(t *testing.T, st store.Store, ctx context.Contex
 	if _, err := RecoverWorkOrderWithDirection(ctx, st, orderID, "recover-question-"+taskID, "Proceed without deciding the proposals.", time.Hour); err != nil {
 		t.Fatalf("free-text recovery without a proposal decision: %v", err)
 	}
+	// The operator recovery keeps the checkpoint and records the direction;
+	// the answered question is no longer asked, no recover-route choice is
+	// offered, and the route refuses a second recovery (feature-operator-next-action
+	// NA-3 row 9; req-operator-next-action AC-1.4, AC-1.6).
+	resumed, err := st.GetWorkOrder(ctx, orderID)
+	requireOK(t, err)
+	if resumed.State != core.WorkOrderQueued || resumed.LastAttemptOutcome != "" || resumed.Checkpoint == nil || resumed.Checkpoint.DecisionRequest != "Confirm the cited revisions." ||
+		len(resumed.Checkpoint.Citations) != 2 || resumed.OperatorDirection != "Proceed without deciding the proposals." {
+		t.Fatalf("resumed order = %+v, want queued with the checkpoint and direction kept", resumed)
+	}
+	requireResumedQueuedAction(t, st, ctx, taskID, orderID)
 
 	bare, _ := release(core.WorkOrderAuthorityConflictCitation{DocumentID: design("aq-bare-" + suffix[:8]), CitedVersion: 1})
 	authorship := read(bare, map[core.Capability]bool{core.CapabilityRecoverWork: true})
 	if authorship.Label != "Cited documents need a revision" || len(authorship.Details.PendingProposals) != 0 || len(authorship.Choices) != 1 || authorship.Choices[0].ID != "answer" || !authorship.Choices[0].Allowed {
 		t.Fatalf("authorship agent question = label %q proposals %+v choices %+v", authorship.Label, authorship.Details.PendingProposals, authorship.Choices)
+	}
+}
+
+// requireResumedQueuedAction asserts the state after an operator or
+// authority-confirmed recovery of a checkpoint release: the assembled next
+// action is queued work for the agent with no recover-route choice and no
+// row-9 secondary, and the recover route refuses a second recovery under a new
+// request ID with the text the projection records (component-work-orders, Next
+// action and Recovery; req-operator-next-action AC-1.4, AC-1.6).
+func requireResumedQueuedAction(t *testing.T, st store.Store, ctx context.Context, taskID, orderID string) {
+	t.Helper()
+	caps := map[core.Capability]bool{core.CapabilityRecoverWork: true, core.CapabilityOperateGates: true, core.CapabilityConfirmDocuments: true}
+	action, err := store.ReadNextAction(ctx, st, taskID, store.NextActionOptions{Now: time.Now().UTC(), Capabilities: caps})
+	requireOK(t, err)
+	if action.Kind != nextaction.KindQueued || action.Actor != nextaction.ActorAgent || action.Judgment {
+		t.Fatalf("resumed next action = %s/%s judgment=%v, want agent queued", action.Actor, action.Kind, action.Judgment)
+	}
+	if action.Details.Checkpoint != "" || action.Details.CheckpointClass != "" || len(action.Details.Citations) != 0 {
+		t.Fatalf("resumed next action states the answered checkpoint: %+v", action.Details)
+	}
+	for _, choice := range action.Choices {
+		switch choice.ID {
+		case "answer", "recover", "applied", "not_applied":
+			t.Fatalf("resumed next action offers recover-route choice %s: %+v", choice.ID, action.Choices)
+		}
+	}
+	for _, secondary := range action.Details.Secondary {
+		if secondary.Kind == nextaction.KindAgentQuestion {
+			t.Fatalf("resumed next action keeps row 9 in secondary: %+v", action.Details.Secondary)
+		}
+	}
+	want := "work order " + orderID + " is not released, expired, or retry-suppressed"
+	stored, err := st.GetWorkOrder(ctx, orderID)
+	requireOK(t, err)
+	if got := core.NextActionRecoverRefusal(store.ProjectWorkOrderAt(stored, time.Now().UTC())); got != want {
+		t.Fatalf("projection refusal = %q, want %q", got, want)
+	}
+	if _, err := RecoverWorkOrderWithDirection(ctx, st, orderID, "recover-again-"+orderID+"-"+core.NewTaskID(), "Recover again.", time.Hour); err == nil || err.Error() != want {
+		t.Fatalf("second recovery err = %v, want %q", err, want)
 	}
 }
 

@@ -211,6 +211,9 @@ function gateKind(item: ActivityItem): string {
 }
 
 export function projectNextAction(item: ActivityItem): NextAction {
+  // A fixture that carries the server's full statement, choices included, is
+  // served as given; this stand-in projects only the shapes older fixtures need.
+  if (item.next_action && 'choices' in item.next_action) return item.next_action as NextAction
   const task = item.task
   let kind: string
   let order: WorkOrder | undefined

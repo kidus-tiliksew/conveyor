@@ -344,9 +344,13 @@ readiness, and attention state.
 
 `GET /v1/tasks/{id}/next-action` returns the full next action, including `label`.
 `GET /v1/next-actions` returns the inbox: `decisions`, `blocked`, and `automatic`
-bands, paging headers, `document_proposal` items, and an `acts` log. Pending
-proposals expose `attention.task_count` and `attention.operator_decisions` from
-that same projection.
+bands, paging headers, `document_proposal` items, and an `acts` log. Each
+`document_proposal` item carries `proposal.age_seconds`, the whole seconds since
+`proposed_at` at read time (zero for a future time, omitted without one), and
+the server's `label`, `question`, and `if_ignored` text. `if_ignored` reads
+"The claim stays withheld." only for a version a task's claim waits on.
+Pending proposals expose `attention.task_count` and
+`attention.operator_decisions` from that same projection.
 
 ### Operator reasons in work-order context
 
