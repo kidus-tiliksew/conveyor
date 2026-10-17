@@ -5,8 +5,8 @@ import type { NextActionDetails } from '../../lib/types'
 // server's catalogue states (internal/nextaction/choices.go). The server owns
 // the label, the effect, the method, the path and whether the caller may act;
 // this registry only builds the body and says whether the act needs typed input.
-// A choice whose id is absent here is not rendered, so a server-added act is
-// never posted with a guessed body (DEC-61; feature-operator-next-action NA-4).
+// A choice whose id resolves to no body renders disabled, so a server-added act
+// is never posted with a guessed body (DEC-61; feature-operator-next-action NA-4).
 export interface ChoiceBody {
   // Typed input the act carries. `required` input blocks sending while empty.
   input?: { label: string; required: boolean }
@@ -83,4 +83,18 @@ export const choiceBodies: Record<string, ChoiceBody> = {
   },
   applied: disposition('applied'),
   not_applied: disposition('not_applied'),
+}
+
+// A task-context proposal choice names its target in the id
+// (feature-operator-next-action NA-4): confirm:task_context:<kind>:<target-id>.
+// Its route takes no body, so only the documented kinds resolve; a document
+// proposal id or any other unregistered form stays without a body.
+const taskContextChoice = /^(confirm|dismiss):task_context:(requirement|system_design):.+$/
+const taskContextBody: ChoiceBody = { body: () => undefined }
+
+// The body contract for one server choice id, or undefined when this client
+// cannot build it (component-web-task-surfaces, Next-action card).
+export function choiceBody(id: string): ChoiceBody | undefined {
+  if (Object.hasOwn(choiceBodies, id)) return choiceBodies[id]
+  return taskContextChoice.test(id) ? taskContextBody : undefined
 }

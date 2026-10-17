@@ -61,6 +61,10 @@ var humanTimelineEventKinds = []string{
 	"pipeline.bounced",
 	"task.state_changed",
 	"task.dependency_added",
+	// Task-context decisions are audited operator acts (req-operator-next-action
+	// AC-2.2; task 261016-37e290).
+	"task.context_proposal_confirmed",
+	"task.context_proposal_dismissed",
 	"work_order.child_failed",
 	"work_order.stalled",
 }

@@ -226,9 +226,11 @@ const absenceCases: AbsenceCase[] = [
       const entry = timeline.locator('li article').filter({ hasText: 'Removing the facts panel from the stage card' })
       await expect(entry).toHaveCount(1)
       await expect(entry.getByText('Running', { exact: true })).toBeVisible()
-      const footer = entry.locator('footer')
-      await expect(footer.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(footer.locator('span').first()).toHaveText(elapsed)
+      // Model and duration print in the entry's header line, with no footer.
+      const header = entry.locator('[data-job-header]')
+      await expect(entry.locator('footer')).toHaveCount(0)
+      await expect(header.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expect(header.locator('[data-job-duration]')).toHaveText(elapsed)
     },
   },
   {
@@ -302,7 +304,7 @@ const absenceCases: AbsenceCase[] = [
       await expect(entry).toBeVisible()
       const footer = entry.locator('footer')
       await expect(footer.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(footer.locator('span').first()).toHaveText(elapsed)
+      await expect(footer.locator('[data-job-duration]')).toHaveText(elapsed)
     },
   },
 ]
@@ -367,6 +369,43 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
   await expect(timeline.getByText('Triage parked the task for an operator decision')).toBeVisible()
   await expect(timeline.getByText('Closed — started over as a new task')).toBeVisible()
   await expect(timeline.getByText('Closed', { exact: true })).toHaveCount(0)
+})
+
+// A task-context decision is the operator's audited act, so it reads as a note
+// naming the document; a payload without target fields, or an omitted payload,
+// keeps a readable title and the audit disclosure (req-operator-next-action
+// AC-2.2; component-web-task-surfaces, Work-order timeline entries).
+test('task-context decisions read as Context confirmed and Context dismissed notes', async ({ page }) => {
+  const item = activity({
+    events: [
+      event(1, 'task.context_proposal_confirmed', minutes(1), {
+        target_kind: 'requirement',
+        target_id: 'req-review-gates-evidence',
+        requirement_id: 'req-review-gates-evidence',
+      }),
+      event(2, 'task.context_proposal_dismissed', minutes(2), {
+        target_kind: 'system_design',
+        target_id: 'component-web-dashboard',
+      }),
+      event(3, 'task.context_proposal_confirmed', minutes(3), {}),
+      {
+        ...event(4, 'task.context_proposal_dismissed', minutes(4), {}),
+        payload: null,
+        payload_omitted: true,
+        payload_bytes: 9000,
+        audit_available: true,
+      },
+    ],
+  })
+  await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
+  await page.goto(`/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Context confirmed: requirement req-review-gates-evidence')).toBeVisible()
+  await expect(timeline.getByText('Context dismissed: System Design component-web-dashboard')).toBeVisible()
+  await expect(timeline.getByText('Context confirmed', { exact: true })).toHaveCount(1)
+  await expect(timeline.getByText('Context dismissed', { exact: true })).toHaveCount(1)
+  await expect(timeline.getByText('Details omitted from this page')).toHaveCount(1)
+  await expect(timeline).not.toContainText('undefined')
 })
 
 // A plan stage shaped like task 261015-3721c6's: claimed at 06:31:37Z, lease

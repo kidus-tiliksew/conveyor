@@ -24,6 +24,7 @@ import {
   fetchWorkspaceMembers,
   fetchWorkspaces,
   signOutDashboardSession,
+  WorkspacesError,
 } from '../lib/api'
 import type { WorkspaceCapability, WorkspaceRole } from '../lib/types'
 import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
@@ -223,6 +224,31 @@ export function usePendingProposals() {
   })
 }
 
+// Only a 401 means the dashboard session is gone (req-invitations-and-sign-in
+// AC-4.3). A network rejection, a 5xx, or another 4xx is a failed read of a
+// session that may still be valid.
+function isSignedOut(error: unknown) {
+  return error instanceof WorkspacesError && error.status === 401
+}
+
+const workspacesRetryDelaysMs = [1_000, 2_000] as const
+
+// The retry policy of the workspace list, registered as the `['workspaces']`
+// query defaults so every reader of the list fetches with it, whichever one
+// triggers a focus or reconnect refetch (component-web-dashboard). A non-401
+// failure is retried twice, after 1 s and then 2 s; a 401 is never retried.
+// A reader that mounts does not refetch: the shell's own reader stays mounted
+// for the session, and a page the router renders briefly while leaving for
+// `/sign-in` must send no read after a 401. A failed read is not repeated on
+// mount either. Focus, reconnect, and Retry still refetch.
+export const workspacesQueryDefaults = {
+  refetchOnMount: false,
+  retryOnMount: false,
+  retry: (failureCount: number, error: unknown) => !isSignedOut(error) && failureCount < workspacesRetryDelaysMs.length,
+  retryDelay: (failureCount: number) =>
+    workspacesRetryDelaysMs[Math.min(failureCount, workspacesRetryDelaysMs.length - 1)],
+}
+
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   if (pathname === '/sign-in' || pathname === '/onboarding') {
@@ -241,16 +267,30 @@ function AuthenticatedAppShell() {
   const workspaces = useQuery({
     queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
-    retry: false,
   })
+  // A 401 leaves for sign-in even over a cached list. Any other failure keeps
+  // the cached list mounted, or offers Retry when no list has arrived yet.
+  const signedOut = isSignedOut(workspaces.error)
   useEffect(() => {
-    if (workspaces.isError) void navigate({ to: '/sign-in', replace: true })
-  }, [navigate, workspaces.isError])
+    if (signedOut) void navigate({ to: '/sign-in', replace: true })
+  }, [navigate, signedOut])
 
   return (
     <ThemeProvider>
-      {workspaces.isPending || workspaces.isError ? (
+      {signedOut || (workspaces.data === undefined && !workspaces.isError) ? (
         <div className="grid h-dvh place-items-center bg-background text-sm text-muted">Opening Conveyor…</div>
+      ) : workspaces.data === undefined ? (
+        <div className="grid h-dvh place-items-center bg-background px-6">
+          <div role="alert" className="max-w-sm text-center">
+            <h1 className="text-base font-semibold">Could not reach Conveyor</h1>
+            <p className="mt-2 text-sm text-muted">Your session is still signed in. Check your connection and retry.</p>
+            {/* A refetch without a cached list returns the shell to "Opening
+                Conveyor…" until it settles, so one click starts one read. */}
+            <Button className="mt-4" disabled={workspaces.isFetching} onClick={() => void workspaces.refetch()}>
+              Retry
+            </Button>
+          </div>
+        </div>
       ) : (
         <WorkspaceProvider workspaces={workspaces.data}>
           {/* Desktop keeps the two fixed navigation columns beside the

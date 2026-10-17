@@ -429,7 +429,7 @@ test('a server choice this page cannot send renders disabled with its reason', a
   const button = card.getByRole('button', { name: 'Remove dependency' })
   await expect(button).toBeDisabled()
   await expect(button).toHaveAttribute('data-endpoint', `DELETE /v1/tasks/${taskId}/dependencies/{dependency_id}`)
-  await expect(card.getByText(/needs input this page cannot send yet/)).toBeVisible()
+  await expect(card.getByText('This page cannot send this choice.')).toBeVisible()
 })
 
 test('a terminal next action renders no card', async ({ page }) => {
@@ -718,3 +718,195 @@ test('the recovery card follows the order the server names as current', async ({
   // An operator act that is not a gate decision opens no human gate.
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
 })
+
+// Three pending task-context proposals: the next-action card's server choices
+// are the one place each is decided (component-web-task-surfaces, Next-action
+// card; feature-operator-next-action, Choices row context_proposal).
+const contextTargets = [
+  { kind: 'requirement', id: 'req-task-centric-operations-view', title: 'Task-centric operations view' },
+  { kind: 'system_design', id: 'component-verification-strategy', title: 'Testing strategy' },
+  {
+    kind: 'system_design',
+    id: 'component-web-task-surfaces',
+    title: 'Web task surfaces: board, tasks, and task detail',
+  },
+] as const
+
+function contextProposalAction(allowed = true, extra: NextAction['choices'] = []): NextAction {
+  return {
+    label: 'Context proposal',
+    actor: 'operator',
+    kind: 'context_proposal',
+    judgment: true,
+    summary: 'A context proposal is waiting for a decision.',
+    question: 'Confirm or dismiss the proposed context?',
+    if_ignored: 'The proposal stays pending.',
+    deadline: null,
+    choices: [
+      ...contextTargets.flatMap((target) =>
+        (['confirm', 'dismiss'] as const).map((action) => ({
+          id: `${action}:task_context:${target.kind}:${target.id}`,
+          label: `${action === 'confirm' ? 'Confirm' : 'Dismiss'} context ${target.kind} ${target.id}`,
+          effect:
+            action === 'confirm' ? 'Attaches the proposed context to this task.' : 'Dismisses the proposed context.',
+          method: 'POST',
+          path: `/v1/tasks/${taskId}/context/proposals/${target.kind}/${target.id}/${action}`,
+          capability: 'operate_gates',
+          allowed,
+        })),
+      ),
+      ...extra,
+    ],
+    details: {},
+  }
+}
+
+function contextProposalDetail(action: NextAction) {
+  const detail = activity('queued', action)
+  return {
+    ...detail,
+    task: {
+      ...detail.task,
+      context: {
+        requirements: [],
+        designs: [],
+        proposals: contextTargets.map((target) => ({
+          task_id: taskId,
+          target_kind: target.kind,
+          target_id: target.id,
+          target_title: target.title,
+          state: 'proposed',
+          source: 'triage',
+          justification: `Triage suggests ${target.title}.`,
+          created_by_event_id: 1,
+          proposed_by: 'queue',
+          workspace: 'demo',
+          created_at: timestamp,
+          updated_at: timestamp,
+        })),
+      },
+    },
+  }
+}
+
+const decisionLabels = contextTargets.flatMap((target) => [
+  `Confirm context ${target.kind} ${target.id}`,
+  `Dismiss context ${target.kind} ${target.id}`,
+])
+
+test('three task-context proposals are decided once each from the next-action card on the sheet', async ({ page }) => {
+  const malformed = {
+    id: 'confirm:task_context:widget:',
+    label: 'Confirm context widget',
+    effect: 'A malformed task-context choice.',
+    method: 'POST',
+    path: `/v1/tasks/${taskId}/context/proposals/widget/x/confirm`,
+    capability: 'operate_gates',
+    allowed: true,
+  }
+  const action = contextProposalAction(true, [malformed])
+  const posts = await mockAPI(
+    page,
+    () => contextProposalDetail(action),
+    () => action,
+  )
+  await page.goto(`/tasks/${taskId}`)
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  const card = sheet.getByRole('region', { name: 'Next action' })
+  await expect(card.getByText('A context proposal is waiting for a decision.')).toBeVisible()
+
+  // Suggested context only informs: no Attach or Dismiss of its own.
+  const suggestions = sheet.getByRole('region', { name: 'Suggested context' })
+  await expect(suggestions.getByRole('listitem')).toHaveCount(3)
+  await expect(suggestions.getByRole('button')).toHaveCount(0)
+
+  // Exactly six usable decisions, each rendered once on the page.
+  const choices = card.locator('[data-next-action-choices]').getByRole('button')
+  await expect(choices).toHaveCount(7)
+  for (const label of decisionLabels) {
+    await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(1)
+    await expect(card.getByRole('button', { name: label, exact: true })).toBeEnabled()
+  }
+  // A malformed task-context id resolves to no body and stays disabled.
+  await expect(card.getByRole('button', { name: 'Confirm context widget', exact: true })).toBeDisabled()
+  await expect(card).toContainText('This page cannot send this choice.')
+
+  // Both acts post an empty body to the server-stated path.
+  await card.getByRole('button', { name: decisionLabels[0], exact: true }).click()
+  await expect.poll(() => posts.length).toBe(1)
+  expect(posts[0]).toEqual({
+    method: 'POST',
+    path: `/v1/tasks/${taskId}/context/proposals/requirement/req-task-centric-operations-view/confirm`,
+    body: null,
+  })
+  await card.getByRole('button', { name: decisionLabels[3], exact: true }).click()
+  await expect.poll(() => posts.length).toBe(2)
+  expect(posts[1]).toEqual({
+    method: 'POST',
+    path: `/v1/tasks/${taskId}/context/proposals/system_design/component-verification-strategy/dismiss`,
+    body: null,
+  })
+
+  // On the Flow tab the same choices stay usable from the card.
+  await sheet.getByRole('tab', { name: 'Flow' }).click()
+  await expect(sheet.getByRole('tab', { name: 'Flow' })).toHaveAttribute('aria-selected', 'true')
+  for (const label of decisionLabels) await expect(card.getByRole('button', { name: label, exact: true })).toBeEnabled()
+  await card.getByRole('button', { name: decisionLabels[5], exact: true }).click()
+  await expect.poll(() => posts.length).toBe(3)
+  expect(posts[2]).toMatchObject({
+    path: `/v1/tasks/${taskId}/context/proposals/system_design/component-web-task-surfaces/dismiss`,
+    body: null,
+  })
+})
+
+test('task-context choices a caller may not take stay disabled with the capability reason', async ({ page }) => {
+  const action = contextProposalAction(false)
+  const posts = await mockAPI(
+    page,
+    () => contextProposalDetail(action),
+    () => action,
+  )
+  await page.goto(`/tasks/${taskId}`)
+  const card = page.getByRole('dialog', { name: 'Task detail' }).getByRole('region', { name: 'Next action' })
+  for (const label of decisionLabels)
+    await expect(card.getByRole('button', { name: label, exact: true })).toBeDisabled()
+  await expect(card.getByText('Needs the operate gates capability.').first()).toBeVisible()
+  expect(posts).toEqual([])
+})
+
+// The longest server labels wrap inside their buttons at phone width: every
+// button stays inside the card and the viewport on both detail surfaces. The
+// sheet clips overflow, so the document width alone would not catch this.
+for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
+  test(`task-context choices wrap inside the next-action card at 390 px on ${surface}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    const action = contextProposalAction()
+    await mockAPI(
+      page,
+      () => contextProposalDetail(action),
+      () => action,
+    )
+    await page.goto(surface)
+    const card = page.getByRole('region', { name: 'Next action' })
+    await expect(card.getByRole('button', { name: decisionLabels[0], exact: true })).toBeVisible()
+    if (surface === `/tasks/${taskId}`) {
+      const sheet = page.getByRole('dialog', { name: 'Task detail' })
+      await expect.poll(() => sheet.evaluate((node) => node.getAnimations().length)).toBe(0)
+    }
+    const cardBox = (await card.boundingBox())!
+    for (const label of decisionLabels) {
+      const box = (await card.getByRole('button', { name: label, exact: true }).boundingBox())!
+      expect(box.x).toBeGreaterThanOrEqual(cardBox.x - 0.5)
+      expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5)
+      expect(box.x + box.width).toBeLessThanOrEqual(390)
+    }
+    expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(390)
+    // Wrapping keeps the whole label: the longest one takes more than a line.
+    const longest = card.getByRole('button', { name: decisionLabels[5], exact: true })
+    await expect(longest).toHaveText(decisionLabels[5])
+    const lines = await longest.evaluate(
+      (node) => node.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(node).lineHeight),
+    )
+    expect(lines).toBeGreaterThan(1.5)
+  })
+}

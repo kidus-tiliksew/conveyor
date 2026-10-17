@@ -114,6 +114,13 @@ const catalogue: Record<string, { label: string; summary: string; question?: str
   },
   stalled: { label: 'Stalled', summary: 'This order cannot be claimed.', choices: stalledChoices },
   blocked: { label: 'Blocked', summary: 'This task is waiting on another task.', choices: [] },
+  // Row 15: the choices are built per pending proposal below (choices.go).
+  context_proposal: {
+    label: 'Context proposal',
+    summary: 'A context proposal is waiting for a decision.',
+    question: 'Confirm or dismiss the proposed context?',
+    choices: [],
+  },
   working: { label: 'Working', summary: 'An agent is working on this task.', choices: [] },
   retrying: { label: 'Retrying', summary: 'Conveyor will retry this automatically.', choices: [] },
 }
@@ -131,6 +138,7 @@ const operatorKinds: Record<string, true> = {
   verification_disposition: true,
   dependency_unsatisfiable: true,
   stalled: true,
+  context_proposal: true,
 }
 
 function activityTime(order: WorkOrder) {
@@ -239,8 +247,31 @@ export function projectNextAction(item: ActivityItem): NextAction {
       variant = proposals.size > 0 ? 'agent_question:cited_revisions' : 'agent_question:revision_needed'
     }
   }
+  // A pending task-context proposal outranks blocked, queued, and factory work
+  // but no operator stop (feature-operator-next-action, row 15).
+  const proposals = [...(task.context?.proposals ?? [])].sort((a, b) =>
+    `${a.target_kind}:${a.target_id}`.localeCompare(`${b.target_kind}:${b.target_id}`),
+  )
+  if (proposals.length > 0 && !operatorKinds[kind] && kind !== 'terminal') {
+    kind = 'context_proposal'
+    variant = kind
+    order = undefined
+  }
   const entry = catalogue[variant]
-  const choices: NextActionChoice[] = entry.choices.map(([id, label, method, path]) => ({
+  const contextChoices: ChoiceSpec[] =
+    kind === 'context_proposal'
+      ? proposals.flatMap((proposal) =>
+          (['confirm', 'dismiss'] as const).map(
+            (action): ChoiceSpec => [
+              `${action}:task_context:${proposal.target_kind}:${proposal.target_id}`,
+              `${action === 'confirm' ? 'Confirm' : 'Dismiss'} context ${proposal.target_kind} ${proposal.target_id}`,
+              'POST',
+              `/v1/tasks/{id}/context/proposals/${proposal.target_kind}/${proposal.target_id}/${action}`,
+            ],
+          ),
+        )
+      : []
+  const choices: NextActionChoice[] = [...entry.choices, ...contextChoices].map(([id, label, method, path]) => ({
     id,
     label,
     effect: label,

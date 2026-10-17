@@ -116,7 +116,12 @@ body {
   font-family: var(--font-sans);
 }
 
-button, input, textarea, select { font: inherit; }
+/* Form controls inherit the page font family. The rule sits in the base layer
+   so a control's own text-size and font-weight utilities, which Tailwind emits
+   in the later utilities layer, still apply; unlayered, it overrode them. */
+@layer base {
+  button, input, textarea, select { font: inherit; }
+}
 ::selection { background: var(--color-selection); }
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }

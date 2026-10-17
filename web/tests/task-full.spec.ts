@@ -2208,9 +2208,19 @@ async function routeCheckoutTask(
   )
 }
 
-// The checkout group is the bordered box around its "Prompt for AI Agents" label.
+// The agent prompt row is the region named "Agent prompt".
 function checkoutGroup(scope: Page | Locator) {
-  return scope.getByText('Prompt for AI Agents', { exact: true }).locator('..')
+  return scope.getByRole('region', { name: 'Agent prompt' })
+}
+
+// The row's toggle reveals the complete prompt below it.
+async function expandPrompt(group: Locator) {
+  const toggle = group.getByRole('button', { name: 'Show agent prompt' })
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(group.locator('code')).toBeHidden()
+  await toggle.click()
+  await expect(group.getByRole('button', { name: 'Hide agent prompt' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(group.locator('code')).toBeVisible()
 }
 
 // The visible prompt is the group's code element; its raw text keeps the
@@ -2219,13 +2229,14 @@ function promptText(group: Locator) {
   return group.locator('code').evaluate((node) => node.textContent)
 }
 
-// Measures the checkout group, its prompt row, and the prompt against the
-// group's parent, the 32rem cap, and the viewport.
+// Measures the agent prompt row, its one-line preview, and the expanded prompt
+// against the row's parent and the viewport.
 async function checkoutBounds(group: Locator) {
   return group.evaluate((node) => {
     const element = node as HTMLElement
     const code = element.querySelector('code')!
-    const row = code.parentElement!
+    const row = element.firstElementChild as HTMLElement
+    const preview = element.querySelector('[data-agent-prompt-preview]') as HTMLElement
     const parent = element.parentElement!.getBoundingClientRect()
     const box = element.getBoundingClientRect()
     const style = getComputedStyle(code)
@@ -2236,7 +2247,9 @@ async function checkoutBounds(group: Locator) {
       parentLeft: parent.left,
       parentRight: parent.right,
       parentWidth: parent.width,
-      cap: 32 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+      previewLines: Math.round(
+        preview.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(preview).lineHeight),
+      ),
       viewportWidth: document.documentElement.clientWidth,
       overflows: [element, row, code].some((part) => part.scrollWidth > part.clientWidth),
       pageOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -2267,7 +2280,7 @@ async function expectCheckoutFits(group: Locator) {
   return bounds
 }
 
-test('Prompt for AI Agents shows the title and instruction and copies the same text', async ({ page, context }) => {
+test('Agent prompt shows the title and instruction and copies the same text', async ({ page, context }) => {
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
@@ -2279,9 +2292,13 @@ test('Prompt for AI Agents shows the title and instruction and copies the same t
   expect(await promptText(group)).toBe(expectedPrompt)
   expect(await promptText(group)).not.toContain('A short description.')
   await expect(group.locator('code')).not.toHaveAttribute('title')
+  // Collapsed, the row previews the prompt on one line.
+  await expect(group.locator('[data-agent-prompt-preview]')).toContainText('Use the conveyor-work skill')
+  expect((await checkoutBounds(group)).previewLines).toBe(1)
 
-  // The prompt keeps its blank line: two paragraphs and one blank line render
-  // as at least three lines.
+  // Expanded, the prompt keeps its blank line: two paragraphs and one blank
+  // line render as at least three lines.
+  await expandPrompt(group)
   const bounds = await checkoutBounds(group)
   expect(bounds.whiteSpace).toBe('pre-wrap')
   expect(bounds.lines).toBeGreaterThanOrEqual(3)
@@ -2295,15 +2312,12 @@ test('Prompt for AI Agents shows the title and instruction and copies the same t
   await expect(page.getByText(`conveyor run ${taskID}`, { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy task run command' })).toHaveCount(0)
 
-  // On desktop the group takes the 32rem cap, and a wider parent does not
-  // widen it.
+  // The row spans its parent and never widens it.
   const roomy = await expectCheckoutFits(group)
-  expect(roomy.parentWidth).toBeGreaterThan(roomy.cap)
-  expect(roomy.width).toBeCloseTo(roomy.cap, 0)
+  expect(roomy.width).toBeCloseTo(roomy.parentWidth, 0)
   await page.setViewportSize({ width: 1920, height: 720 })
   const wider = await expectCheckoutFits(group)
-  expect(wider.parentWidth).toBeGreaterThan(roomy.parentWidth)
-  expect(wider.width).toBeCloseTo(roomy.cap, 0)
+  expect(wider.width).toBeCloseTo(wider.parentWidth, 0)
   await page.setViewportSize({ width: 1280, height: 720 })
 
   await group.getByRole('button', { name: 'Copy agent prompt' }).click()
@@ -2336,7 +2350,7 @@ const longBody = [
 ].join('\n')
 
 for (const route of ['full', 'sheet'] as const) {
-  test(`Prompt for AI Agents leaves out the body and wraps without overflow on the ${route} task view`, async ({
+  test(`Agent prompt leaves out the body and wraps without overflow on the ${route} task view`, async ({
     page,
     context,
   }) => {
@@ -2358,9 +2372,19 @@ for (const route of ['full', 'sheet'] as const) {
     // The sheet's slide moves the group and its copy button between reads.
     if (route === 'sheet') await waitForSheetSettled(sheet)
 
-    // The prompt grows with its text and has no inner scroll.
+    // Collapsed, the row fits on one line at every width.
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 720 })
+      if (route === 'sheet') await waitForSheetSettled(sheet)
+      expect((await expectCheckoutFits(group)).previewLines).toBe(1)
+    }
+    await page.setViewportSize({ width: 1280, height: 720 })
+    if (route === 'sheet') await waitForSheetSettled(sheet)
+
+    // Expanded, the prompt grows with its text and has no inner scroll.
+    await expandPrompt(group)
     const desktop = await expectCheckoutFits(group)
-    expect(desktop.width).toBeLessThanOrEqual(desktop.cap + 0.5)
+    expect(desktop.width).toBeLessThanOrEqual(desktop.parentWidth + 0.5)
     expect(desktop.scrollable).toBe(false)
 
     for (const width of [390, 320]) {
@@ -2378,7 +2402,7 @@ for (const route of ['full', 'sheet'] as const) {
 }
 
 for (const theme of ['light', 'dark'] as const) {
-  test(`Prompt for AI Agents keeps the prompt readable in the ${theme} theme`, async ({ page }) => {
+  test(`Agent prompt keeps the prompt readable in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript((choice) => localStorage.setItem('conveyor-theme', choice), theme)
     await page.goto('/tasks/work-on-this-theme/full')
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
@@ -2392,7 +2416,7 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
-test('Prompt for AI Agents shows the agent prompt for an available checkout without a command', async ({ page }) => {
+test('Agent prompt shows the agent prompt for an available checkout without a command', async ({ page }) => {
   const taskID = 'work-on-this-no-command'
   await routeCheckoutTask(page, taskID, { checkout_command: undefined })
   await page.goto(`/tasks/${taskID}/full`)
@@ -2403,7 +2427,7 @@ test('Prompt for AI Agents shows the agent prompt for an available checkout with
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toBeVisible()
 })
 
-test('Prompt for AI Agents renders nothing until the workspace resolves', async ({ page }) => {
+test('Agent prompt renders nothing until the workspace resolves', async ({ page }) => {
   const taskID = 'work-on-this-x'
   // Two workspaces and no stored selection leave the shell's workspace unresolved.
   await page.addInitScript(() => localStorage.removeItem('conveyor-workspace'))
@@ -2418,7 +2442,7 @@ test('Prompt for AI Agents renders nothing until the workspace resolves', async 
 
   await page.goto(`/tasks/${taskID}/full`)
   await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
-  await expect(page.getByText('Prompt for AI Agents', { exact: false })).toHaveCount(0)
+  await expect(checkoutGroup(page)).toHaveCount(0)
   await expect(page.getByText('Work on this locally', { exact: false })).toHaveCount(0)
   await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
   await expect(page.getByText(`conveyor run ${taskID}`, { exact: false })).toHaveCount(0)
@@ -2429,7 +2453,7 @@ test('Work on this guidance shows the guidance without an agent prompt', async (
   await page.goto('/tasks/guidance-only/full')
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
   await expect(page.getByText('Work on this locally', { exact: true })).toBeVisible()
-  await expect(page.getByText('Prompt for AI Agents')).toHaveCount(0)
+  await expect(checkoutGroup(page)).toHaveCount(0)
   // The only tablist is the activity's Timeline and Flow; the guidance has none.
   await expect(page.getByRole('tablist')).toHaveCount(1)
   await expect(page.getByRole('tablist')).toHaveAccessibleName('Task activity view')
@@ -2456,7 +2480,7 @@ test('task detail omits the frozen policy projection and retired controls', asyn
   for (const path of ['/tasks/policy-projection', '/tasks/policy-projection/full']) {
     await page.goto(path)
 
-    await expect(page.getByText('Repo', { exact: true })).toBeVisible()
+    await expect(page.getByText('Repository', { exact: true })).toBeVisible()
     await expect(page.getByText('Branch', { exact: true })).toBeVisible()
     await expect(page.getByText('Created', { exact: true })).toBeVisible()
     await expect(page.getByText('Assignee', { exact: true })).toBeVisible()
@@ -3678,7 +3702,7 @@ for (const [modelName, iconFile] of [
   ['unknown/notglm-5', undefined],
   ['unknown/glmodel', undefined],
 ] as const) {
-  test(`implementation job cards preserve provider logo and narrow footer for ${modelName}`, async ({ page }) => {
+  test(`implementation job cards preserve provider logo and narrow header meta for ${modelName}`, async ({ page }) => {
     await page.setViewportSize({ width: 480, height: 720 })
     await page.route('**/v1/tasks/implementation-card/activity*', async (route) => {
       const item = activity('stage-aware', false)
@@ -3726,13 +3750,15 @@ for (const [modelName, iconFile] of [
     })
 
     await page.goto('/tasks/implementation-card/full')
+    // Model and duration sit in the entry's header line; the entry has no
+    // footer (component-web-task-surfaces, Work-order timeline entries).
     const card = page.locator('article').filter({ hasText: 'Implementation completed without reported usage.' })
-    const footer = card.locator('footer')
-    const directItems = footer.locator(':scope > span')
-    const duration = directItems.first()
-    const model = directItems.last()
+    const header = card.locator('[data-job-header]')
+    const duration = header.locator('[data-job-duration]')
+    const model = duration.locator('xpath=preceding-sibling::span[1]')
 
-    await expect(directItems).toHaveCount(2)
+    await expect(card.locator('footer')).toHaveCount(0)
+    await expect(header.getByText('Implement', { exact: true })).toBeVisible()
     await expect(duration).toHaveText('1m 00s')
     await expect(model.getByText(modelName, { exact: true })).toBeVisible()
     await expect(model.getByText(modelName, { exact: true })).toHaveAttribute('title', modelName)
@@ -3754,25 +3780,26 @@ for (const [modelName, iconFile] of [
       await expect(model.locator('.lucide-cpu')).toHaveAttribute('aria-hidden', 'true')
       await expect(model.locator('span[aria-hidden="true"]')).toHaveCount(0)
     }
-    const unavailableUsage = footer.getByText('Usage unavailable', { exact: true })
+    const unavailableUsage = header.getByText('Usage unavailable', { exact: true })
     await expect(unavailableUsage).toHaveCount(1)
     await expect(unavailableUsage).toHaveAttribute('role', 'tooltip')
     await expect(unavailableUsage).toHaveCSS('opacity', '0')
 
-    const layout = await footer.evaluate((element) => {
-      const [durationItem, modelItem] = Array.from(element.children) as HTMLElement[]
-      const footerBox = element.getBoundingClientRect()
-      const durationBox = durationItem.getBoundingClientRect()
-      const modelBox = modelItem.getBoundingClientRect()
-      const style = getComputedStyle(element)
+    // Model, then duration, inside the header line with nothing overflowing.
+    const layout = await header.evaluate((element) => {
+      const headerBox = element.getBoundingClientRect()
+      const durationBox = element.querySelector('[data-job-duration]')!.getBoundingClientRect()
+      const modelBox = (
+        element.querySelector('[data-job-duration]')!.previousElementSibling as HTMLElement
+      ).getBoundingClientRect()
       return {
-        durationInset: durationBox.left - footerBox.left - Number.parseFloat(style.paddingLeft),
-        modelInset: footerBox.right - Number.parseFloat(style.paddingRight) - modelBox.right,
+        ordered: modelBox.right <= durationBox.left + 1,
+        inside: modelBox.left >= headerBox.left - 0.5 && durationBox.right <= headerBox.right + 0.5,
         overflows: element.scrollWidth > element.clientWidth,
       }
     })
-    expect(layout.durationInset).toBeLessThanOrEqual(1)
-    expect(layout.modelInset).toBeLessThanOrEqual(1)
+    expect(layout.ordered).toBe(true)
+    expect(layout.inside).toBe(true)
     expect(layout.overflows).toBe(false)
   })
 }
@@ -4303,25 +4330,29 @@ test('task context suggestions show justification and become attachments or disa
   await expect(suggestions).toContainText('The task explicitly changes operator intake behavior.')
   await expect(suggestions).toContainText('The dashboard interaction inventory governs this surface.')
 
-  await suggestions
-    .getByRole('listitem')
-    .filter({ hasText: 'Task intake and triage' })
-    .getByRole('button', {
-      name: 'Attach context',
-    })
-    .click()
+  // Suggested context only informs; the next-action card's server choices
+  // decide each proposal, once (component-web-task-surfaces, Next-action card).
+  await expect(suggestions.getByRole('button')).toHaveCount(0)
+  const nextAction = page.getByRole('region', { name: 'Next action' })
+  const choices = nextAction.locator('[data-next-action-choices]')
+  await expect(choices.getByRole('button')).toHaveCount(4)
+  for (const button of await choices.getByRole('button').all()) await expect(button).toBeEnabled()
+  await expect(nextAction).not.toContainText('cannot send this choice')
+
+  const confirm = page.waitForRequest(
+    (request) =>
+      request.method() === 'POST' &&
+      new URL(request.url()).pathname === `/v1/tasks/${taskId}/context/proposals/requirement/req-intake/confirm`,
+  )
+  await choices.getByRole('button', { name: 'Confirm context requirement req-intake' }).click()
+  expect((await confirm).postData()).toBeNull()
   const attached = page.getByRole('region', { name: 'Attached context' })
   await expect(attached.getByRole('link', { name: 'Task intake and triage' })).toBeVisible()
   await expect(suggestions).not.toContainText('The task explicitly changes operator intake behavior.')
 
-  await suggestions
-    .getByRole('listitem')
-    .filter({ hasText: 'Web dashboard' })
-    .getByRole('button', {
-      name: 'Dismiss',
-    })
-    .click()
+  await choices.getByRole('button', { name: 'Dismiss context system_design design-web-dashboard' }).click()
   await expect(suggestions).toHaveCount(0)
+  await expect(nextAction).not.toContainText('Context proposal')
 })
 
 test('task context suggestions remain visible without decision controls for non-operators', async ({ page }) => {
@@ -4361,7 +4392,7 @@ test('task context suggestions remain visible without decision controls for non-
 test('task sheet bounds an overflowing spec and expands and collapses it accessibly', async ({ page }) => {
   await page.goto('/tasks/long-spec')
 
-  const toggle = page.getByRole('button', { name: 'Show more' })
+  const toggle = page.getByRole('button', { name: 'Show full plan' })
   await expect(toggle).toBeVisible()
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   const viewportID = await toggle.getAttribute('aria-controls')
@@ -4378,7 +4409,7 @@ test('task sheet bounds an overflowing spec and expands and collapses it accessi
   await expect.poll(() => viewport.evaluate((element) => element.scrollHeight === element.clientHeight)).toBe(true)
 
   await collapse.click()
-  await expect(page.getByRole('button', { name: 'Show more' })).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.getByRole('button', { name: 'Show full plan' })).toHaveAttribute('aria-expanded', 'false')
   await expect(page.locator('[data-spec-overflow-shadow]')).toBeVisible()
   await expect.poll(() => viewport.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
 })
@@ -4644,7 +4675,7 @@ test('review panel hides generated metadata while preserving reported zero usage
   await expect(panel.getByRole('tooltip').filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
 })
 
-test('external Cursor Auto claims show the Cursor logo in the job footer and review seat without rewriting auto', async ({
+test('external Cursor Auto claims show the Cursor logo in the job header and review seat without rewriting auto', async ({
   page,
 }) => {
   const iconPaths = (iconFile: string) =>
@@ -4709,8 +4740,11 @@ test('external Cursor Auto claims show the Cursor logo in the job footer and rev
   })
 
   await page.goto('/tasks/cursor-auto-implement/full')
-  const footer = page.locator('article').filter({ hasText: 'Cursor implemented the change.' }).locator('footer')
-  const footerChip = footer.locator(':scope > span').last()
+  const footerChip = page
+    .locator('article')
+    .filter({ hasText: 'Cursor implemented the change.' })
+    .locator('[data-job-duration]')
+    .locator('xpath=preceding-sibling::span[1]')
   await expect(footerChip.getByText('auto', { exact: true })).toBeVisible()
   await expect(footerChip.getByText('auto', { exact: true })).toHaveAttribute('title', 'auto')
   expect(await logoPaths(footerChip)).toEqual(iconPaths('cursor'))
@@ -5643,7 +5677,7 @@ test('task header links an open dependency with one stable audited request', asy
   await expect.poll(() => requestCount).toBe(1)
   expect(linkBody).toMatchObject({ depends_on_task_id: 'candidate-open', reason: 'Ship the API first' })
   expect(linkBody?.request_id).toBeTruthy()
-  await expect(page.getByText('Candidate API · Waiting')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Candidate API · Waiting' })).toBeVisible()
 })
 
 // The origin-task System Design proposal card. The decision a
@@ -7010,7 +7044,7 @@ const creatorCases = [
 
 for (const surface of ['full', 'board sheet']) {
   for (const creator of creatorCases) {
-    test(`Created By shows ${creator.name} on the ${surface}`, async ({ page }) => {
+    test(`Created by shows ${creator.name} on the ${surface}`, async ({ page }) => {
       await page.route('**/v1/workspaces/demo/members**', (route) =>
         route.fulfill({
           json: [
@@ -7044,16 +7078,19 @@ for (const surface of ['full', 'board sheet']) {
       )
       await page.goto(`/tasks/creator${surface === 'full' ? '/full' : ''}`)
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
-      const label = page.locator('dt').filter({ hasText: /^Created By$/ })
+      // The creator reads "by <creator>" after the Created time
+      // (component-web-task-surfaces, Task detail composition).
+      const label = page.locator('dt').filter({ hasText: /^Created$/ })
       const value = label.locator('xpath=following-sibling::dd[1]')
+      const creatorName = value.locator('[data-task-creator] > span').first()
       await expect(label).toHaveCount(1)
-      await expect(value.locator('span').first()).toHaveText(creator.label)
+      await expect(value.locator('[data-task-creator]')).toContainText('by ')
+      await expect(creatorName).toHaveText(creator.label)
       if (creator.label !== 'Unknown') {
-        await expect(value.locator('span').first()).toHaveAttribute('title', new RegExp(creator.id))
+        await expect(creatorName).toHaveAttribute('title', new RegExp(creator.id))
         await expect(value.locator('.sr-only')).toContainText(creator.id)
       }
-      const repo = page.locator('dt').filter({ hasText: /^Repo$/ })
-      await expect(repo.locator('xpath=following-sibling::dt[1]')).toHaveText('Created By')
+      await expect(label.locator('xpath=preceding-sibling::dt[1]')).toHaveText('Assignee')
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 850 })
         if (surface === 'board sheet') await waitForSheetSettled(sheet)
@@ -7074,7 +7111,7 @@ for (const surface of ['full', 'board sheet']) {
   }
 }
 
-test('Created By preserves a long historical identity when the workspace member read fails', async ({ page }) => {
+test('Created by preserves a long historical identity when the workspace member read fails', async ({ page }) => {
   const identifier = `user:usr_${'historical'.repeat(30)}`
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ status: 500, json: {} }))
   const item = activity('creator-long', false)
@@ -7090,10 +7127,11 @@ test('Created By preserves a long historical identity when the workspace member 
   await page.goto('/tasks/creator-long/full')
   const value = page
     .locator('dt')
-    .filter({ hasText: /^Created By$/ })
+    .filter({ hasText: /^Created$/ })
     .locator('xpath=following-sibling::dd[1]')
-  await expect(value.locator('span').first()).toHaveText(`User · ${identifier.slice(5)}`)
-  await expect(value.locator('span').first()).toHaveAttribute('title', `User · ${identifier}`)
+  const creatorName = value.locator('[data-task-creator] > span').first()
+  await expect(creatorName).toHaveText(`User · ${identifier.slice(5)}`)
+  await expect(creatorName).toHaveAttribute('title', `User · ${identifier}`)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
 

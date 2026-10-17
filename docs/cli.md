@@ -75,6 +75,7 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
 | `conveyor task unlink <task> <dependency>` | Remove one blocking dependency edge. `--reason` and `--request-id` required. |
+| `conveyor task context confirm\|dismiss <task> <kind> <target>` | Decide one pending task-context proposal: a body-less `POST /v1/tasks/{id}/context/proposals/{kind}/{target}/confirm` or `/dismiss`, the route the dashboard uses (`operate_gates`). `<kind>` is `requirement` or `system_design`. Prints the decided proposal's kind, target, and state; a refusal prints the server's status, error code, and message and exits non-zero. |
 | `conveyor task approve <id>` | Approve at a human gate. `--reason` defaults to `approved`; `-m` adds a comment. |
 | `conveyor task merge <id>` | Merge an approved task's pull request: the separate merge act at the merge gate (`POST /v1/tasks/{id}/merge`). `approve` never merges. Prints the task ID and `merged` only when the server reports `merged`; a refusal prints the server's message and exits non-zero. |
 | `conveyor task request-changes <id>` | Bounce work at the merge gate. `-f/--feedback` is required and goes verbatim to the next implementation order. |
@@ -127,6 +128,7 @@ derives one. `--json` writes the server body verbatim.
 | `start_over` | `conveyor task restart <task-id>` |
 | `close` | `conveyor task close <task-id>` |
 | `remove_dependency` | `conveyor task unlink <task-id> <dependency-id>` |
+| `confirm:task_context:<kind>:<target>` or `dismiss:task_context:<kind>:<target>` | `conveyor task context confirm\|dismiss <task-id> <kind> <target>`, with kind and target read from the choice's route and shell-quoted when needed |
 | `recover` on `/v1/work-orders/{order_id}/recover` | `conveyor order recover <order-id>` |
 | `answer` | `conveyor order recover <order-id> --direction "<answer>"` |
 | `recover` or `redispatch` on `/v1/tasks/{id}/redispatch` | `conveyor order redispatch <current-order-id>` when a current order exists |

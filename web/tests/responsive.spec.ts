@@ -314,25 +314,26 @@ async function expectHeaderControlsClear(header: Locator, title: Locator) {
   expect(spills).toEqual([])
 }
 
-// Below sm each row's ID and version sit under its title and start at the same
-// column; from sm up they share the title's line.
-async function expectContextRows(page: Page, stacked: boolean) {
+// Each context row keeps one line at every width: the title, then its pinned
+// version at the end of the line. The document ID travels in the link's
+// accessible name (component-web-task-surfaces, Task detail composition).
+async function expectContextRows(page: Page, _stacked: boolean) {
   const card = page.getByRole('region', { name: 'Attached context' })
-  for (const [title, meta] of [
-    ['Review, gates, and evidence', 'req-review-gates-evidence · v4'],
-    ['Retired review outcome', 'req-retired-review · v2'],
-    ['Verification strategy', 'component-verification-strategy · v22'],
+  for (const [title, id, version] of [
+    ['Review, gates, and evidence', 'req-review-gates-evidence', 'v4'],
+    ['Retired review outcome', 'req-retired-review', 'v2'],
+    ['Verification strategy', 'component-verification-strategy', 'v22'],
   ]) {
-    const titleBox = await card.getByRole('link', { name: title }).boundingBox()
-    const metaBox = await card.getByText(meta, { exact: true }).boundingBox()
-    if (!titleBox || !metaBox) throw new Error(`context row ${title} is not rendered`)
-    if (stacked) {
-      expect(metaBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height - 1)
-      expect(Math.abs(metaBox.x - titleBox.x)).toBeLessThanOrEqual(1)
-    } else {
-      expect(Math.abs(metaBox.y + metaBox.height / 2 - (titleBox.y + titleBox.height / 2))).toBeLessThanOrEqual(4)
-      expect(metaBox.x).toBeGreaterThan(titleBox.x + titleBox.width)
-    }
+    const name = `${title} (${id})`
+    const link = card.getByRole('link', { name })
+    const row = card.getByRole('listitem').filter({ has: page.getByRole('link', { name }) })
+    const titleBox = await link.boundingBox()
+    const versionBox = await row.getByText(version, { exact: true }).boundingBox()
+    if (!titleBox || !versionBox) throw new Error(`context row ${title} is not rendered`)
+    expect(Math.abs(versionBox.y + versionBox.height / 2 - (titleBox.y + titleBox.height / 2))).toBeLessThanOrEqual(4)
+    expect(versionBox.x).toBeGreaterThan(titleBox.x + titleBox.width - 1)
+    const rowBox = (await row.boundingBox())!
+    expect(versionBox.x + versionBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width + 0.5)
   }
   await expect(card.getByRole('button', { name: 'Remove context Review, gates, and evidence' })).toBeVisible()
   await expect(card.getByText('Archived', { exact: true })).toBeVisible()

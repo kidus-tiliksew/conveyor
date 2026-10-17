@@ -1,4 +1,4 @@
-import { expect, type Route, test } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 
 const invitationToken = 'cv_signin_invite-once'
@@ -354,4 +354,192 @@ test('a returning user signs in with a password and resets it through an operato
   await resetForm.getByRole('button', { name: 'Complete setup' }).click()
   await expect(page).toHaveURL('/')
   expect(password).toBe('reset-password-value')
+})
+
+// The shell signs out only when `/v1/workspaces` answers 401; any other failed
+// read keeps a signed-in session where it is (component-web-dashboard;
+// req-invitations-and-sign-in AC-4.3). Each answer in `failures` serves one
+// workspace-list request in order; an empty queue serves the list.
+type WorkspacesAnswer = 'abort' | number
+
+async function routeSessionShell(page: Page, workspaces: Array<{ id: string; name: string }> = [demoWorkspace]) {
+  const failures: WorkspacesAnswer[] = []
+  const state = { workspaceReads: 0, failures }
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+    // Query refetches on focus through `visibilitychange` and on reconnect
+    // through `online`; the spec fires both without leaving the page.
+    const target = window as unknown as Record<string, unknown>
+    target.conveyorFocus = () => document.dispatchEvent(new Event('visibilitychange', { bubbles: true }))
+    target.conveyorReconnect = () => {
+      window.dispatchEvent(new Event('offline'))
+      window.dispatchEvent(new Event('online'))
+    }
+  })
+  await page.route('**/v1/**', async (route: Route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/workspaces') {
+      state.workspaceReads++
+      const answer = failures.shift()
+      if (answer === 'abort') return route.abort('failed')
+      if (answer !== undefined) return route.fulfill({ status: answer, body: `workspace list ${answer}` })
+      return route.fulfill({ json: workspaces })
+    }
+    if (path === '/v1/workspace')
+      return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
+    if (path === '/v1/me')
+      return route.fulfill({
+        json: callerIdentity(
+          { id: 'usr_session', email: 'session@example.test', display_name: 'Session User', role: 'contributor' },
+          request,
+        ),
+      })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({ json: { items: [], attention: { total: 0, pending_proposal_count: 0 } } })
+    return route.fulfill({ json: [] })
+  })
+  return state
+}
+
+const demoWorkspace = { id: 'demo', name: 'Demo' }
+
+const focus = (page: Page) => page.evaluate(() => (window as unknown as { conveyorFocus: () => void }).conveyorFocus())
+const reconnect = (page: Page) =>
+  page.evaluate(() => (window as unknown as { conveyorReconnect: () => void }).conveyorReconnect())
+
+// Ages the cached list past the five-second stale time so focus refetches it.
+const ageWorkspaceList = (page: Page) => page.clock.runFor(5_001)
+
+test('a failed workspace refetch keeps the signed-in page through its retries and recovers', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-10-16T10:45:00Z') })
+  const shell = await routeSessionShell(page)
+  await page.goto('/settings')
+  const heading = page.getByRole('heading', { name: 'Settings', level: 1 })
+  const primaryNav = page.getByRole('navigation', { name: 'Primary' })
+  await expect(heading).toBeVisible()
+  await expect(primaryNav).toBeVisible()
+  await expect.poll(() => shell.workspaceReads).toBe(1)
+
+  // An aborted request, a 502, and a non-401 4xx: the first read and both
+  // retries fail, one and then two seconds apart.
+  shell.failures.push('abort', 502, 404)
+  await ageWorkspaceList(page)
+  await focus(page)
+  await expect.poll(() => shell.workspaceReads).toBe(2)
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(heading).toBeVisible()
+  await page.clock.runFor(1_000)
+  await expect.poll(() => shell.workspaceReads).toBe(3)
+  await expect(heading).toBeVisible()
+  await page.clock.runFor(2_000)
+  await expect.poll(() => shell.workspaceReads).toBe(4)
+
+  // Retries are exhausted: the page and navigation stay, and no fourth retry runs.
+  await page.clock.runFor(10_000)
+  expect(shell.workspaceReads).toBe(4)
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(heading).toBeVisible()
+  await expect(primaryNav).toBeVisible()
+  await expect(page.getByText('Could not reach Conveyor')).toHaveCount(0)
+
+  await focus(page)
+  await expect.poll(() => shell.workspaceReads).toBe(5)
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(heading).toBeVisible()
+})
+
+test('an empty workspace list stays valid data through a failed refetch', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-10-16T10:45:00Z') })
+  const shell = await routeSessionShell(page, [])
+  await page.goto('/')
+  const welcome = page.getByRole('heading', { name: 'Welcome to Conveyor' })
+  await expect(welcome).toBeVisible()
+
+  shell.failures.push(503, 503, 503)
+  await ageWorkspaceList(page)
+  await focus(page)
+  await page.clock.runFor(3_000)
+  await expect.poll(() => shell.workspaceReads).toBe(4)
+  await expect(page).toHaveURL(/\/$/)
+  await expect(welcome).toBeVisible()
+  await expect(page.getByText('Could not reach Conveyor')).toHaveCount(0)
+})
+
+test('a first workspace read that keeps failing offers Retry in place instead of sign-in', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-10-16T10:45:00Z') })
+  const shell = await routeSessionShell(page)
+  shell.failures.push(503, 503, 503)
+  await page.goto('/settings')
+  await expect(page.getByText('Opening Conveyor…')).toBeVisible()
+  await expect.poll(() => shell.workspaceReads).toBe(1)
+  await page.clock.runFor(1_000)
+  await expect.poll(() => shell.workspaceReads).toBe(2)
+  await expect(page.getByText('Opening Conveyor…')).toBeVisible()
+  await page.clock.runFor(2_000)
+  await expect.poll(() => shell.workspaceReads).toBe(3)
+
+  const unreachable = page.getByRole('alert').filter({ hasText: 'Could not reach Conveyor' })
+  await expect(unreachable).toBeVisible()
+  await expect(page).toHaveURL(/\/settings$/)
+  await page.clock.runFor(10_000)
+  expect(shell.workspaceReads).toBe(3)
+
+  const retry = unreachable.getByRole('button', { name: 'Retry' })
+  await retry.focus()
+  await page.keyboard.press('Enter')
+  await expect.poll(() => shell.workspaceReads).toBe(4)
+  await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+  await expect(page).toHaveURL(/\/settings$/)
+})
+
+test('the Retry state fits a phone and recovers on focus and on reconnect', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.clock.install({ time: new Date('2026-10-16T10:45:00Z') })
+  const shell = await routeSessionShell(page)
+  const unreachable = page.getByRole('alert').filter({ hasText: 'Could not reach Conveyor' })
+  const heading = page.getByRole('heading', { name: 'Settings', level: 1 })
+
+  shell.failures.push(502, 502, 502)
+  await page.goto('/settings')
+  await page.clock.runFor(3_000)
+  await expect(unreachable).toBeVisible()
+  await expect(unreachable.getByRole('button', { name: 'Retry' })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await focus(page)
+  await expect(heading).toBeVisible()
+  expect(shell.workspaceReads).toBe(4)
+
+  shell.failures.push('abort', 'abort', 'abort')
+  await page.reload()
+  await page.clock.runFor(3_000)
+  await expect(unreachable).toBeVisible()
+  const reads = shell.workspaceReads
+  await reconnect(page)
+  await expect(heading).toBeVisible()
+  expect(shell.workspaceReads).toBe(reads + 1)
+})
+
+test('a workspace-list 401 signs out on first load and on refetch, without a retry', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-10-16T10:45:00Z') })
+  const shell = await routeSessionShell(page)
+  shell.failures.push(401)
+  await page.goto('/settings')
+  await expect(page).toHaveURL(/\/sign-in$/)
+  await expect(page.getByRole('form', { name: 'Password sign-in' })).toBeVisible()
+  await page.clock.runFor(10_000)
+  expect(shell.workspaceReads).toBe(1)
+
+  await page.goto('/settings')
+  await expect(page.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+  await expect.poll(() => shell.workspaceReads).toBe(2)
+
+  // A cached list does not keep a refused session in the shell.
+  shell.failures.push(401)
+  await ageWorkspaceList(page)
+  await focus(page)
+  await expect(page).toHaveURL(/\/sign-in$/)
+  await expect(page.getByRole('form', { name: 'Password sign-in' })).toBeVisible()
+  await page.clock.runFor(10_000)
+  expect(shell.workspaceReads).toBe(3)
 })

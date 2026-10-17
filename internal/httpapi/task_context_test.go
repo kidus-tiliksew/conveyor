@@ -160,6 +160,49 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 	if detail.Code != http.StatusOK || strings.Contains(detail.Body.String(), `"proposals"`) || !strings.Contains(detail.Body.String(), `"requirements"`) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
+
+	// Both decisions are human-timeline events: the bounded view and the human
+	// history page carry them with the target the dashboard note prints
+	// (req-operator-next-action AC-2.2; component-http-api, Bounded detail view).
+	type decisionEvent struct {
+		Kind    string `json:"kind"`
+		Payload struct {
+			TargetKind string `json:"target_kind"`
+			TargetID   string `json:"target_id"`
+		} `json:"payload"`
+	}
+	decisions := func(name string, events []decisionEvent) {
+		t.Helper()
+		want := map[string]string{
+			"task.context_proposal_confirmed": "requirement/" + requirement.ID,
+			"task.context_proposal_dismissed": "system_design/" + design.ID,
+		}
+		for _, event := range events {
+			if target, ok := want[event.Kind]; ok && target == event.Payload.TargetKind+"/"+event.Payload.TargetID {
+				delete(want, event.Kind)
+			}
+		}
+		if len(want) != 0 {
+			t.Fatalf("%s lacks decision events %v in %+v", name, want, events)
+		}
+	}
+	bounded := request(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?view=bounded")
+	var boundedView struct {
+		Events []decisionEvent `json:"events"`
+	}
+	if bounded.Code != http.StatusOK || json.Unmarshal(bounded.Body.Bytes(), &boundedView) != nil {
+		t.Fatalf("bounded status=%d body=%s", bounded.Code, bounded.Body.String())
+	}
+	decisions("bounded view", boundedView.Events)
+	history := request(http.MethodGet, "/v1/tasks/"+task.ID+"/history?selection=human")
+	var historyPage struct {
+		Selection string          `json:"selection"`
+		Events    []decisionEvent `json:"events"`
+	}
+	if history.Code != http.StatusOK || json.Unmarshal(history.Body.Bytes(), &historyPage) != nil || historyPage.Selection != "human" {
+		t.Fatalf("history status=%d body=%s", history.Code, history.Body.String())
+	}
+	decisions("human history", historyPage.Events)
 }
 
 func TestArchivedContextErrorsAcrossRESTAndMCP(t *testing.T) {

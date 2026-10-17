@@ -242,6 +242,9 @@ func writeTaskStatus(w io.Writer, taskID string, action nextActionView) error {
 func choiceCommand(taskID string, action nextActionView, choice nextActionChoice) (string, bool) {
 	onTask := strings.HasPrefix(choice.Path, "/v1/tasks/")
 	onOrder := strings.HasPrefix(choice.Path, "/v1/work-orders/")
+	if command, ok := taskContextChoiceCommand(taskID, choice); ok {
+		return command, true
+	}
 	switch {
 	case onTask && strings.HasSuffix(choice.Path, "/review") &&
 		(choice.ID == "approve" || choice.ID == "redirect" || choice.ID == "approve_revision" || choice.ID == "decline"):
