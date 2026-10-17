@@ -1029,7 +1029,9 @@ export interface PendingProposal {
   origin_type: 'task' | 'session' | 'drift' | 'operator'
   origin_id?: string
   proposed_at: string
-  age_seconds: number
+  /** Whole seconds since proposed_at at the read's clock; absent when the
+   * proposal has no proposed time or the response predates the field. */
+  age_seconds?: number
 }
 
 /** A task-authored proposal that withholds its task's verify and review claims. */
@@ -1152,6 +1154,10 @@ export interface InboxItem {
   recommendation?: string
   no_judgment_needed?: boolean
   proposal?: PendingProposal
+  /** Server copy for a document proposal (feature-operator-next-action NA-4). */
+  label?: string
+  question?: string
+  if_ignored?: string
   sentence?: string
   blockers?: NextActionBlocker[]
   deadline?: string | null

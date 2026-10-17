@@ -294,3 +294,68 @@ func indexOf(ids []string, want string) int {
 	}
 	return -1
 }
+
+// GET /v1/next-actions states each pending requirement, System Design, and
+// decision proposal with its read-time age and the NA-4 inbox copy
+// (feature-operator-next-action NA-5; req-operator-next-action AC-2.6).
+func TestNextActionInboxDocumentProposalsCarryAgeAndCopy(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-age", Title: "Age requirement"}, core.RequirementVersion{
+		Content: "# Age", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "State the age."}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-age", Title: "Age design", Category: "Architecture"}, core.SystemDesignVersion{
+		Content: "# Age design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ProposeDecision(ctx, core.Decision{Statement: "Age decision", Context: "Inbox", AlternativesRejected: "None", Origin: core.DecisionOriginOperator}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	before := time.Now().UTC()
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/next-actions?workspace_id=demo", nil)))
+	elapsed := int64(time.Since(before)/time.Second) + 1
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Kind      string `json:"kind"`
+			Label     string `json:"label"`
+			Question  string `json:"question"`
+			IfIgnored string `json:"if_ignored"`
+			Proposal  *struct {
+				Tier       string    `json:"tier"`
+				ProposedAt time.Time `json:"proposed_at"`
+				AgeSeconds *int64    `json:"age_seconds"`
+			} `json:"proposal"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{"requirement": "Requirement proposal", "system_design": "System Design proposal", "decision": "Decision proposal"}
+	seen := map[string]bool{}
+	for _, item := range payload.Items {
+		if item.Kind != "document_proposal" || item.Proposal == nil {
+			continue
+		}
+		tier := item.Proposal.Tier
+		seen[tier] = true
+		if item.Proposal.ProposedAt.IsZero() || item.Proposal.AgeSeconds == nil || *item.Proposal.AgeSeconds < 0 || *item.Proposal.AgeSeconds > elapsed+int64(time.Since(item.Proposal.ProposedAt)/time.Second) {
+			t.Fatalf("%s age=%v proposed_at=%v", tier, item.Proposal.AgeSeconds, item.Proposal.ProposedAt)
+		}
+		if item.Label != labels[tier] || item.Question == "" || item.IfIgnored != "The proposal stays pending." {
+			t.Fatalf("%s copy=%q %q %q", tier, item.Label, item.Question, item.IfIgnored)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("tiers=%v body=%s", seen, response.Body.String())
+	}
+}
