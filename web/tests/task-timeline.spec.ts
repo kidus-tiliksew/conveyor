@@ -520,6 +520,109 @@ test('a live order keeps its progress note and the full report', () => {
   }
 })
 
+// A live order whose progress report is printed as its running job entry's
+// summary: the report reads once, in the job entry.
+const runningJobId = `${taskId}-implement-1`
+const runningReport = 'Round 1 fixes are pushed; waiting for exact-head CI.'
+const runningProgress = {
+  last_agent_activity_at: minutes(7),
+  last_agent_activity_label: 'Progress: Round 1 fixes are pushed',
+  progress: runningReport,
+}
+const progressShownItem = activity({
+  jobs: [job(runningJobId, 'implement', 'running')],
+  work_orders: [
+    order(runningJobId, {
+      attempt_id: 'attempt-current',
+      session_id: 'sess-current',
+      agent: 'claude-code',
+      model: 'claude-opus-5-5',
+      ...runningProgress,
+    }),
+  ],
+})
+
+test('a running job entry that prints its order progress adds no progress note for that order', () => {
+  const entries = timelineOf(progressShownItem)
+  const jobEntry = entries.find((entry) => entry.type === 'job')
+  expect(jobEntry).toMatchObject({ summary: runningReport })
+  expect(agentActivity(entries)).toEqual([])
+})
+
+test('a progress note stays wherever no job entry prints that order progress', () => {
+  const note = (entries: TimelineEntry[]) => agentActivity(entries).map((entry) => [entry.at, titleOf(entry)])
+  const expected = [[minutes(7), 'Agent activity — Progress: Round 1 fixes are pushed']]
+  // A claimed order without a job, and a queued order.
+  for (const state of ['claimed', 'queued'] as const) {
+    const jobless = activity({ work_orders: [order(runningJobId, { state, ...runningProgress })] })
+    expect(note(timelineOf(jobless)), state).toEqual(expected)
+    expect(agentActivity(timelineOf(jobless))[0]).toMatchObject({ fullProgress: runningReport })
+  }
+  // A job that has not started renders no job entry.
+  const pending = activity({
+    jobs: [job(runningJobId, 'implement', 'pending', { started_at: undefined })],
+    work_orders: [order(runningJobId, runningProgress)],
+  })
+  expect(note(timelineOf(pending))).toEqual(expected)
+  // A job entry keeping its own narration does not print the progress.
+  const narrated = activity({
+    jobs: [job(runningJobId, 'implement', 'running')],
+    work_orders: [order(runningJobId, runningProgress)],
+    summaries: { job_results: { [runningJobId]: { summary: { text: 'Harness narration of the attempt.' } } } },
+  })
+  const narratedEntries = timelineOf(narrated)
+  expect(narratedEntries.find((entry) => entry.type === 'job')).toMatchObject({
+    summary: 'Harness narration of the attempt.',
+  })
+  expect(note(narratedEntries)).toEqual(expected)
+  expect(agentActivity(narratedEntries)[0]).toMatchObject({ fullProgress: runningReport })
+})
+
+test('suppression covers only Progress labels of the order whose job entry prints the progress', () => {
+  // A non-bookkeeping label that is not a progress report keeps its note.
+  const pushed = activity({
+    jobs: [job(runningJobId, 'implement', 'running')],
+    work_orders: [order(runningJobId, { ...runningProgress, last_agent_activity_label: 'Branch pushed' })],
+  })
+  expect(agentActivity(timelineOf(pushed)).map(titleOf)).toEqual(['Agent activity — Branch pushed'])
+  // Another live order without a job entry keeps its own progress note.
+  const planOrderId = `${taskId}-spec-1`
+  const twoOrders = activity({
+    jobs: [job(runningJobId, 'implement', 'running')],
+    work_orders: [
+      order(runningJobId, runningProgress),
+      order(planOrderId, {
+        stage: 'spec',
+        last_agent_activity_at: minutes(8),
+        last_agent_activity_label: 'Progress: drafting the plan',
+        progress: 'Drafting the plan in full detail.',
+      }),
+    ],
+  })
+  const notes = agentActivity(timelineOf(twoOrders))
+  expect(notes.map(titleOf)).toEqual(['Agent activity — Progress: drafting the plan'])
+  expect(notes[0]).toMatchObject({
+    key: `agent-activity-${planOrderId}`,
+    fullProgress: 'Drafting the plan in full detail.',
+  })
+})
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} prints a running job's progress report once, with no agent-activity row`, async ({
+    page,
+  }) => {
+    await mockAPI(page, progressShownItem, nextAction(runningJobId))
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const entry = timeline.locator('li article').filter({ hasText: runningReport })
+    await expect(entry).toHaveCount(1)
+    await expect(entry.getByText('Running', { exact: true })).toBeVisible()
+    await expect(timeline.getByText(runningReport)).toHaveCount(1)
+    await expect(timeline.getByText(/Agent activity/)).toHaveCount(0)
+    await expect(timeline.getByText('Show full progress report')).toHaveCount(0)
+  })
+}
+
 for (const surface of surfaces) {
   test(`the ${surface.name} lists the completed plan after its draft and keeps lease renewals technical`, async ({
     page,
