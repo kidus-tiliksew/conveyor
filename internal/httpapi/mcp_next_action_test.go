@@ -297,6 +297,11 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 	if isErr || !strings.Contains(inbox, `"gov-task-context-only"`) || !strings.Contains(inbox, `"context_proposal"`) {
 		t.Fatalf("inbox decisions omit the context-only task: err=%t %s", isErr, inbox)
 	}
+	// The folded row-8 task's withholding version is the one inbox proposal
+	// that says the claim stays withheld (feature-operator-next-action NA-4).
+	if strings.Count(inbox, `"if_ignored":"The claim stays withheld."`) != 1 || !strings.Contains(inbox, `"label":"System Design proposal"`) {
+		t.Fatalf("inbox withholding copy: %s", inbox)
+	}
 
 	first, second := design("component-cited-a"), design("component-cited-b")
 	order := f.order("context-question", core.StageImplement)

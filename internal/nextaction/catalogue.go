@@ -280,3 +280,26 @@ func decisionWording(text func(string) func(Vars) string) {
 		return "Review reached the bounce limit. Approve, ask for changes, or reject?"
 	}, text("The task stays at the human gate."))
 }
+
+// DocumentProposalCopy is the copy of one inbox document-proposal item,
+// keyed by tier and by whether the version withholds a task's claim
+// (feature-operator-next-action NA-4, NA-5; req-operator-next-action AC-1.8,
+// AC-2.6). Only a withholding version says the claim stays withheld, so an
+// operator-origin or planning proposal never claims to withhold one.
+func DocumentProposalCopy(tier string, withholding bool) (label, question, ifIgnored string) {
+	row8, _ := Lookup(KindDocumentProposal, "", "", "")
+	switch tier {
+	case "requirement":
+		label, question = "Requirement proposal", "Confirm or dismiss this proposed version?"
+	case "system_design":
+		label, question = "System Design proposal", "Confirm or dismiss this proposed version?"
+	case "decision":
+		label, question = "Decision proposal", "Confirm or dismiss this proposed decision?"
+	default:
+		label, question = row8.Label, render(row8.Question, Vars{})
+	}
+	if withholding {
+		return label, question, render(row8.IfIgnored, Vars{})
+	}
+	return label, question, "The proposal stays pending."
+}
