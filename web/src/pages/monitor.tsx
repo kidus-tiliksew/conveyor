@@ -54,7 +54,7 @@ export function MonitorPage() {
           <Metric
             label="Last successful observation"
             value={
-              status?.last_successful_observation
+              isSetTimestamp(status?.last_successful_observation)
                 ? new Date(status.last_successful_observation).toLocaleString()
                 : 'Never'
             }
@@ -68,7 +68,7 @@ export function MonitorPage() {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-failure">{status.current_error}</p>
-              {status.backoff_until && (
+              {isSetTimestamp(status.backoff_until) && (
                 <p className="mt-2 text-xs text-muted">
                   Backoff until {new Date(status.backoff_until).toLocaleString()}
                 </p>
@@ -205,4 +205,13 @@ function duration(nanoseconds: number) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
   return `${Math.floor(seconds / 86400)}d`
+}
+
+// isSetTimestamp returns false for absent values and for the Go zero time
+// "0001-01-01T00:00:00Z" that encoding/json emits when omitempty is used on a
+// time.Time field. The server now uses omitzero, but this guard keeps the UI
+// correct against stale data or older server versions.
+function isSetTimestamp(value?: string): value is string {
+  if (!value) return false
+  return new Date(value).getUTCFullYear() > 1
 }
