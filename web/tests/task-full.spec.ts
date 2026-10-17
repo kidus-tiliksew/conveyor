@@ -3073,6 +3073,79 @@ test('an authority conflict without proposals asks for authorship', async ({ pag
   ).toBeVisible()
 })
 
+// After an operator recovery the order is queued again, keeps its checkpoint
+// and failure message for history, and the server states ordinary queued
+// work. The page follows that statement: no decision or recovery is offered
+// for the answered question (req-operator-next-action AC-1.4, AC-1.6, AC-1.7;
+// component-work-orders, Next action).
+test('a resumed checkpoint order follows the queued server statement', async ({ page }) => {
+  let resumed = false
+  const checkpoint = {
+    decision_request: 'Author a revision of the cited design, then recover this order.',
+    class: 'authority_conflict',
+    citations: [
+      {
+        document_id: 'component-web-dashboard',
+        document_kind: 'system_design',
+        document_title: 'Web dashboard',
+        cited_version: 25,
+        statement_or_section_id: 'Route tree',
+        current_confirmed_version: 26,
+        newer_confirmed: true,
+        pending_proposals: [],
+      },
+    ],
+  }
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = checkpoint
+    if (resumed) {
+      Object.assign(order, {
+        last_attempt_outcome: undefined,
+        retry_suppressed: false,
+        claimable: true,
+        redispatch_count: 1,
+        operator_direction: 'Continue under the newly confirmed authority: component-web-dashboard v26.',
+      })
+      item.next_action = {
+        kind: 'queued',
+        label: 'Queued',
+        actor: 'agent',
+        judgment: false,
+        summary: 'An order is waiting to be claimed.',
+        deadline: null,
+        choices: [],
+        current_order: {
+          id: order.id,
+          stage: order.stage,
+          state: 'queued',
+          queue_deadline: null,
+          execution_deadline: null,
+          lease_expires_at: null,
+        },
+        details: {},
+      }
+    }
+    await route.fulfill({ json: item })
+  })
+
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
+  await expect(page.getByText('Decision needed', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+
+  resumed = true
+  await page.goto('/tasks/operator-checkpoint/full')
+  await expect(nextActionBox(page).getByRole('heading', { name: 'An order is waiting to be claimed.' })).toBeVisible()
+  await expect(nextActionBox(page).getByText('Queued', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Checkpoint decision and recovery' })).toHaveCount(0)
+  await expect(page.getByText('Decision needed', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
+  await expect(nextActionBox(page).getByText('Answer the agent?')).toHaveCount(0)
+})
+
 test('a generic decision request keeps the generic direction guidance', async ({ page }) => {
   let recoveryBody: Record<string, unknown> | undefined
   await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {

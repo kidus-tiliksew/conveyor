@@ -253,7 +253,7 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 	if err := st.CreateJob(ctx, core.Job{ID: "question-job", TaskID: "question", Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "question-order", TaskID: "question", JobID: "question-job", Stage: core.StageImplement, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "which API?"}}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "question-order", TaskID: "question", JobID: "question-job", Stage: core.StageImplement, LastAttemptID: "question-attempt", LastAttemptOutcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "which API?"}}); err != nil {
 		t.Fatal(err)
 	}
 	questionDetails := objectField(t, nextActionObject(t, server, "question"), "details")

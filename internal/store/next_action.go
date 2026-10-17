@@ -325,13 +325,16 @@ func markersFrom(marker ActivityMarker, events []core.Event, orders []core.WorkO
 		}
 	}
 	// The agent question reads the checkpoint of the order it selects, the
-	// latest queued order, never an older order's (component-work-orders,
-	// Next action).
+	// latest queued order, never an older order's, and only while that order
+	// is still released at the checkpoint. An operator recovery keeps the
+	// checkpoint for history but clears the released outcome
+	// (component-work-orders, Next action; feature-operator-next-action NA-3
+	// row 9).
 	for i := len(orders) - 1; i >= 0; i-- {
 		if orders[i].State != core.WorkOrderQueued {
 			continue
 		}
-		if checkpoint := orders[i].Checkpoint; checkpoint != nil && checkpoint.DecisionRequest != "" {
+		if checkpoint := orders[i].Checkpoint; checkpoint != nil && checkpoint.DecisionRequest != "" && orders[i].LastAttemptOutcome == core.WorkOrderOutcomeReleased {
 			out.CheckpointDecision = true
 			out.Checkpoint = checkpoint.DecisionRequest
 			out.CheckpointClass = checkpoint.Class
