@@ -20,10 +20,15 @@ export function TaskContextCard({
   taskId,
   taskState,
   context,
+  compact = false,
 }: {
   taskId: string
   taskState: TaskState
   context?: TaskContext
+  // The full route's inspector: rows drop their kind label and the Remove
+  // control shows only its icon (component-web-task-surfaces, Task detail
+  // composition).
+  compact?: boolean
 }) {
   const canOperate = useWorkspaceCapability('operate_gates')
   const canRemove = canOperate && taskState !== 'merged' && taskState !== 'closed'
@@ -64,7 +69,7 @@ export function TaskContextCard({
       >
         {/* Its aria-label names the document; below sm the icon alone leaves
             the row's ID room on the line beside it. */}
-        <X /> <span className="max-sm:sr-only">Remove</span>
+        <X /> <span className={compact ? 'sr-only' : 'max-sm:sr-only'}>Remove</span>
       </Button>
     )
   const requirements = context?.requirements ?? []
@@ -83,6 +88,7 @@ export function TaskContextCard({
               <ContextRow
                 key={item.id}
                 kind="Outcome"
+                compact={compact}
                 version={item.version}
                 action={removeControl(item, 'requirement_ids')}
               >
@@ -108,6 +114,7 @@ export function TaskContextCard({
               <ContextRow
                 key={item.id}
                 kind="Guidance"
+                compact={compact}
                 version={item.version}
                 action={removeControl(item, 'system_design_ids')}
               >
@@ -178,21 +185,31 @@ function SuggestedContextCard({ proposals }: { proposals: TaskContextProposal[] 
           const requirement = proposal.target_kind === 'requirement'
           const Icon = requirement ? Target : FileText
           return (
-            <li key={`${proposal.target_kind}:${proposal.target_id}`} className="px-4 py-3 text-sm">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                <Icon aria-hidden className={requirement ? 'size-3.5 text-primary' : 'size-3.5 text-faint'} />
+            // Icon in its own column so a long title wraps beside it, never
+            // stranding the icon on a line of its own in a narrow inspector.
+            <li
+              key={`${proposal.target_kind}:${proposal.target_id}`}
+              className="grid grid-cols-[0.875rem_minmax(0,1fr)] gap-x-2.5 px-4 py-3 text-sm"
+            >
+              <Icon
+                aria-hidden
+                className={requirement ? 'mt-0.5 size-3.5 text-primary' : 'mt-0.5 size-3.5 text-faint'}
+              />
+              <div className="min-w-0">
                 <Link
                   to={requirement ? '/requirements' : '/system-design'}
                   search={requirement ? { requirement: proposal.target_id } : { document: proposal.target_id }}
                   aria-label={`${proposal.target_title} (${proposal.target_id})`}
-                  className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere] hover:text-primary hover:underline"
+                  className="font-medium text-foreground [overflow-wrap:anywhere] hover:text-primary hover:underline"
                 >
                   {proposal.target_title}
                 </Link>
-                <KindLabel>{requirement ? 'Outcome' : 'Guidance'}</KindLabel>
-                <KindLabel>· From {sourceLabel(proposal.source)}</KindLabel>
+                <p className="mt-0.5 flex flex-wrap gap-x-1.5">
+                  <KindLabel>{requirement ? 'Outcome' : 'Guidance'}</KindLabel>
+                  <KindLabel>· From {sourceLabel(proposal.source)}</KindLabel>
+                </p>
+                <p className="mt-1 text-[13px] leading-5 text-muted">{proposal.justification}</p>
               </div>
-              <p className="mt-1 pl-5.5 text-[13px] leading-5 text-muted">{proposal.justification}</p>
             </li>
           )
         })}
@@ -209,11 +226,13 @@ function sourceLabel(source: TaskContextProposal['source']) {
 
 function ContextRow({
   kind,
+  compact,
   version,
   action,
   children,
 }: {
   kind: 'Outcome' | 'Guidance'
+  compact: boolean
   version: number
   action: React.ReactNode
   children: React.ReactNode
@@ -227,7 +246,7 @@ function ContextRow({
         aria-hidden
         className={kind === 'Outcome' ? 'size-3.5 shrink-0 text-primary' : 'size-3.5 shrink-0 text-faint'}
       />
-      <KindLabel className="w-14 max-sm:hidden">{kind}</KindLabel>
+      {!compact && <KindLabel className="w-14 max-sm:hidden">{kind}</KindLabel>}
       <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>
       <span className="shrink-0 font-mono text-[11px] text-faint">v{version}</span>
       {action}
