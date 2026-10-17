@@ -1481,15 +1481,19 @@ function supersededOrder(order: WorkOrder, orders: WorkOrder[]): boolean {
 }
 
 // Only a live order's own reports read as agent activity. A finished or
-// superseded order's job or order entry already tells its story.
+// superseded order's job or order entry already tells its story, and a
+// progress report already printed as the order's job entry summary is not
+// repeated (component-web-task-surfaces).
 function agentActivityNote(
   order: WorkOrder,
   orders: WorkOrder[],
+  progressShown: Set<string>,
 ): Extract<TimelineEntry, { type: 'note' }> | undefined {
   const label = order.last_agent_activity_label
   if (!order.last_agent_activity_at || !label) return undefined
   if (bookkeepingActivityLabels.has(label) || finishedOrderStates.has(order.state)) return undefined
   if (supersededOrder(order, orders)) return undefined
+  if (label.startsWith('Progress:') && progressShown.has(order.id)) return undefined
   return {
     type: 'note',
     at: order.last_agent_activity_at,
@@ -1509,13 +1513,18 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   entries.push(...panels.panels)
   const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
+  // Orders whose progress report is printed as a job entry's summary.
+  const progressShown = new Set<string>()
   for (const job of item.jobs) {
     if (!job.started_at || panels.jobIds.has(job.id)) continue
     const order = orderByJob.get(job.id)
     const results = item.summaries?.job_results?.[job.id]
     const text = jobSummary(job, results)
     let summary = text.text
-    if (order?.progress && genericSummaries.has(summary)) summary = order.progress
+    if (order?.progress && genericSummaries.has(summary)) {
+      summary = order.progress
+      progressShown.add(order.id)
+    }
     // BYOA jobs carry a placeholder tier; the work order knows the model
     // the operator's agent actually ran.
     const model = job.model_tier === 'operator-owned' && order?.model ? order.model : job.model_tier
@@ -1533,7 +1542,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   }
   const orders = item.work_orders ?? []
   for (const order of orders) {
-    const activity = agentActivityNote(order, orders)
+    const activity = agentActivityNote(order, orders, progressShown)
     if (activity) entries.push(activity)
     if (panels.orderIds.has(order.id)) continue
     const entry = order.id === dependencyBlockedOrder?.id ? undefined : orderEntry(order, startedJobs.has(order.job_id))
