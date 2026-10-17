@@ -119,32 +119,64 @@ const (
 	contextDismissEffect = "Dismisses the proposed context."
 )
 
-// contextProposalChoices offers confirm and dismiss for each pending
-// task-context proposal on the task-context routes, which require
-// operate_gates, deduplicated and ordered by target kind and target ID
-// (req-intake-and-triage AC-7.3; component-task-lifecycle).
-func contextProposalChoices(taskID string, refs []ContextProposalRef) []ChoiceSpec {
+// contextProposalEntries is the one canonical sequence of a task's pending
+// task-context proposals: deduplicated on target kind and target ID alone,
+// never on the metadata, and ordered by target kind and target ID. Choices
+// and details both read it, so each detail entry matches its choice pair
+// (feature-operator-next-action NA-3).
+func contextProposalEntries(refs []ContextProposalRef) []ContextProposalRef {
 	sorted := append([]ContextProposalRef(nil), refs...)
-	sort.Slice(sorted, func(i, j int) bool {
+	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].Kind != sorted[j].Kind {
 			return sorted[i].Kind < sorted[j].Kind
 		}
 		return sorted[i].TargetID < sorted[j].TargetID
 	})
-	out := make([]ChoiceSpec, 0, 2*len(sorted))
-	seen := map[ContextProposalRef]bool{}
+	type identity struct{ kind, target string }
+	out := make([]ContextProposalRef, 0, len(sorted))
+	seen := map[identity]bool{}
 	for _, ref := range sorted {
-		if seen[ref] {
+		key := identity{ref.Kind, ref.TargetID}
+		if seen[key] {
 			continue
 		}
-		seen[ref] = true
+		seen[key] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
+// contextProposalChoices offers confirm and dismiss for each pending
+// task-context proposal on the task-context routes, which require
+// operate_gates, in the canonical entry order (req-intake-and-triage AC-7.3;
+// component-task-lifecycle). Labels name the target by title and tier word,
+// never by ID (feature-operator-next-action NA-4).
+func contextProposalChoices(taskID string, refs []ContextProposalRef) []ChoiceSpec {
+	entries := contextProposalEntries(refs)
+	out := make([]ChoiceSpec, 0, 2*len(entries))
+	for _, ref := range entries {
 		route := fmt.Sprintf("/v1/tasks/%s/context/proposals/%s/%s", url.PathEscape(taskID), url.PathEscape(ref.Kind), url.PathEscape(ref.TargetID))
 		key := fmt.Sprintf("task_context:%s:%s", ref.Kind, ref.TargetID)
-		name := fmt.Sprintf("context %s %s", ref.Kind, ref.TargetID)
+		name := ContextProposalName(ref.Kind, ref.TargetTitle)
 		out = append(out,
 			ChoiceSpec{ID: "confirm:" + key, Label: "Confirm " + name, Effect: contextConfirmEffect, Method: "POST", Path: route + "/confirm", Capability: core.CapabilityOperateGates},
 			ChoiceSpec{ID: "dismiss:" + key, Label: "Dismiss " + name, Effect: contextDismissEffect, Method: "POST", Path: route + "/dismiss", Capability: core.CapabilityOperateGates},
 		)
+	}
+	return out
+}
+
+// contextProposalDetails states the canonical entries for
+// details.context_proposals (feature-operator-next-action NA-3,
+// Context-proposal presentation).
+func contextProposalDetails(refs []ContextProposalRef) []ContextProposalDetail {
+	entries := contextProposalEntries(refs)
+	out := make([]ContextProposalDetail, 0, len(entries))
+	for _, ref := range entries {
+		out = append(out, ContextProposalDetail{
+			Kind: ref.Kind, TargetID: ref.TargetID, TargetTitle: ref.TargetTitle, TierLabel: ContextTierWord(ref.Kind),
+			Justification: ref.Justification, Source: ref.Source, ProposedBy: ref.ProposedBy, CreatedAt: ref.CreatedAt.UTC(),
+		})
 	}
 	return out
 }

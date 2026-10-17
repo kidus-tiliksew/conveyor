@@ -118,6 +118,11 @@ func TestCatalogueCoversEveryKind(t *testing.T) {
 			t.Fatalf("judgment kind %s missing question or if_ignored", kind)
 		}
 	}
+	for _, kind := range MonitorOriginKinds() {
+		if summary := MonitorOriginSummary(kind); summary == "Filed by the monitor" || summary == "" {
+			t.Fatalf("monitor origin %s missing its sentence", kind)
+		}
+	}
 	for _, reason := range StallReasons() {
 		entry, ok := Lookup(KindStalled, reason, "", "")
 		if !ok || entry.Label == "" || entry.Summary == nil {

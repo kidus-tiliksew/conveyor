@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 )
 
@@ -82,6 +84,14 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	contexts, err := readContextProposals(ctx, st, tasks)
+	if err != nil {
+		return nil, err
+	}
+	origins, err := readMonitorOrigins(ctx, st, tasks, contexts)
+	if err != nil {
+		return nil, err
+	}
 	ordersByTask := map[string][]core.WorkOrder{}
 	for _, order := range orders {
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, dependencies.blockers[order.TaskID]))
@@ -98,6 +108,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		}
 		input.Blockers = dependencies.forward[task.ID]
 		input.Blocks = dependencies.blocks[task.ID]
+		input.ContextProposals = contexts[task.ID]
+		if origin, ok := origins[task.ID]; ok {
+			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
+		}
 		action := nextaction.Project(input)
 		// Row 10 reads its selected order's sealed checkpoint only when it
 		// wins, so no other row ever carries the binding
@@ -271,7 +285,7 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 	conflict := mergeConflictFromEvents(events, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFrom(marker, events, orders), Assignee: task.Assignee,
-		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals), ContextProposals: contextProposalRefs(proposals, task.ID),
+		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals),
 		MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
 		PullRequest: recordedPullRequest(events), BounceCount: recordedBounceCount(events),
@@ -368,16 +382,56 @@ func claimWaitingRefs(waiting []ClaimBlockingProposal) []nextaction.ProposalRef 
 	return out
 }
 
-// contextProposalRefs is the task's pending task-context proposals for the
-// context_proposal row (req-intake-and-triage AC-7.3).
-func contextProposalRefs(proposals []core.PendingProposal, taskID string) []nextaction.ContextProposalRef {
-	var out []nextaction.ContextProposalRef
-	for _, item := range proposals {
-		if item.Tier == "task_context" && item.OriginType == "task" && item.OriginID == taskID {
-			out = append(out, nextaction.ContextProposalRef{Kind: item.TargetKind, TargetID: item.ID})
+// readContextProposals reads the batch's pending task-context proposals with
+// their stored metadata in one ListTaskContextProposals call: scoped to the one
+// task for a single read, otherwise to the bound workspace. A terminal task's
+// records are skipped (feature-operator-next-action NA-3, Context-proposal
+// attention; req-intake-and-triage AC-7.3).
+func readContextProposals(ctx context.Context, st Store, tasks []core.Task) (map[string][]nextaction.ContextProposalRef, error) {
+	open := map[string]bool{}
+	for _, task := range tasks {
+		if !core.TaskTerminal(task.State) {
+			open[task.ID] = true
 		}
 	}
-	return out
+	out := map[string][]nextaction.ContextProposalRef{}
+	if len(open) == 0 {
+		return out, nil
+	}
+	scope := ""
+	if len(tasks) == 1 {
+		scope = tasks[0].ID
+	}
+	records, err := st.ListTaskContextProposals(ctx, scope, core.TaskContextProposalProposed)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		if !open[record.TaskID] || record.State != core.TaskContextProposalProposed {
+			continue
+		}
+		out[record.TaskID] = append(out[record.TaskID], nextaction.ContextProposalRef{
+			Kind: string(record.TargetKind), TargetID: record.TargetID, TargetTitle: record.TargetTitle,
+			Source: string(record.Source), Justification: record.Justification, ProposedBy: record.ProposedBy, CreatedAt: record.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+// readMonitorOrigins reads, in one call, the originating observations of the
+// batch's monitor-filed tasks that carry a pending context proposal; no other
+// task needs one (feature-operator-next-action NA-3, Monitor origin).
+func readMonitorOrigins(ctx context.Context, st Store, tasks []core.Task, contexts map[string][]nextaction.ContextProposalRef) (map[string]monitor.ObservationRecord, error) {
+	var ids []string
+	for _, task := range tasks {
+		if strings.HasPrefix(task.Source, "monitor:") && len(contexts[task.ID]) > 0 {
+			ids = append(ids, task.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return map[string]monitor.ObservationRecord{}, nil
+	}
+	return st.MonitorOriginsForTasks(ctx, ids)
 }
 
 // pendingProposalRefs is the workspace's pending set for agent-question

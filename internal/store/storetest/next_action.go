@@ -9,6 +9,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -594,6 +595,36 @@ func runContextProposalRow(t *testing.T, st store.Store, ctx context.Context, wo
 			t.Fatalf("choice %s allowed by confirm_documents", choice.ID)
 		}
 	}
+	// details.context_proposals carries each stored record's metadata in
+	// choice order, and labels name the target by title, never by ID
+	// (feature-operator-next-action NA-3, Context-proposal presentation; NA-4).
+	records, err := st.ListTaskContextProposals(ctx, taskID, core.TaskContextProposalProposed)
+	requireOK(t, err)
+	stored := map[string]core.TaskContextProposal{}
+	for _, record := range records {
+		stored[string(record.TargetKind)+":"+record.TargetID] = record
+	}
+	if len(action.Details.ContextProposals) != 2 {
+		t.Fatalf("details.context_proposals = %+v, want two entries", action.Details.ContextProposals)
+	}
+	for i, entry := range action.Details.ContextProposals {
+		record, ok := stored[entry.Kind+":"+entry.TargetID]
+		wantTier := map[string]string{"requirement": "requirement", "system_design": "System Design"}[entry.Kind]
+		if !ok || entry.TargetTitle != record.TargetTitle || entry.TargetTitle == "" || entry.TierLabel != wantTier ||
+			entry.Justification != record.Justification || entry.Source != string(record.Source) || entry.ProposedBy != record.ProposedBy || entry.ProposedBy == "" ||
+			!entry.CreatedAt.Equal(record.CreatedAt) || entry.CreatedAt.IsZero() {
+			t.Fatalf("details entry %d = %+v, stored %+v", i, entry, record)
+		}
+		confirm, dismiss := action.Choices[2*i], action.Choices[2*i+1]
+		key := "task_context:" + entry.Kind + ":" + entry.TargetID
+		wantName := record.TargetTitle + " (" + wantTier + ")"
+		if confirm.ID != "confirm:"+key || dismiss.ID != "dismiss:"+key || confirm.Label != "Confirm "+wantName || dismiss.Label != "Dismiss "+wantName {
+			t.Fatalf("entry %d choices = %+v / %+v, want the pair for %s labeled by title", i, confirm, dismiss, key)
+		}
+	}
+	if action.Details.MonitorOrigin != nil {
+		t.Fatalf("non-monitor task carries an origin: %+v", action.Details.MonitorOrigin)
+	}
 
 	// Deciding one leaves the row; deciding the last removes it.
 	_, err = st.ConfirmTaskContextProposal(ctx, taskID, core.TaskContextProposalSystemDesign, design.ID)
@@ -608,5 +639,55 @@ func runContextProposalRow(t *testing.T, st store.Store, ctx context.Context, wo
 	}
 	if after := count(); after != before {
 		t.Fatalf("attention count after decisions=%d want %d", after, before)
+	}
+	runContextProposalMonitorOrigin(t, st, ctx, workspace, requirement.ID, now)
+}
+
+// runContextProposalMonitorOrigin pins details.monitor_origin through
+// ReadNextActions on every backend: a monitor-filed task with a context
+// proposal states its originating observation's source URL, and one without a
+// linked observation keeps the origin sentence alone
+// (feature-operator-next-action NA-3, Monitor origin).
+func runContextProposalMonitorOrigin(t *testing.T, st store.Store, ctx context.Context, workspace, requirementID string, now time.Time) {
+	t.Helper()
+	suffix := core.NewTaskID()[:8]
+	monitored := func() string {
+		t.Helper()
+		id := core.NewTaskID()
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Repo: "conveyor", Title: id, Source: "monitor:post_merge_failure", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, CreatedAt: now}))
+		_, _, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: id, TargetKind: core.TaskContextProposalRequirement, TargetID: requirementID, Source: core.TaskContextProposalTriage, Justification: "The failing check covers this requirement."})
+		requireOK(t, err)
+		return id
+	}
+	observer, ok := st.(interface {
+		Observe(context.Context, monitor.Observation) (monitor.ObservationRecord, bool, error)
+		LinkTask(context.Context, string, string, string) (monitor.ObservationRecord, error)
+	})
+	if !ok {
+		t.Fatal("store cannot record monitor observations")
+	}
+	linked, bare := monitored(), monitored()
+	observedAt := now.Add(-time.Hour)
+	observation := monitor.Observation{WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "origin-" + suffix, SourceURL: "https://example.test/actions/runs/" + suffix, CommitSHA: "origin-sha", ObservedAt: observedAt}
+	_, _, err := observer.Observe(ctx, observation)
+	requireOK(t, err)
+	_, err = observer.LinkTask(ctx, observation.Identity(), linked, "created")
+	requireOK(t, err)
+	tasks := make([]core.Task, 0, 2)
+	for _, id := range []string{linked, bare} {
+		task, err := st.GetTask(ctx, id)
+		requireOK(t, err)
+		tasks = append(tasks, task)
+	}
+	actions, err := store.ReadNextActions(ctx, st, tasks, store.NextActionOptions{Now: now, Capabilities: map[core.Capability]bool{core.CapabilityOperateGates: true}})
+	requireOK(t, err)
+	origin := actions[linked].Details.MonitorOrigin
+	if actions[linked].Kind != nextaction.KindContextProposal || origin == nil || origin.Kind != "post_merge_failure" || origin.Summary != "Filed by the monitor: post-merge failure" ||
+		origin.SourceURL != observation.SourceURL || origin.ObservedAt == nil || !origin.ObservedAt.Equal(observedAt) {
+		t.Fatalf("linked monitor origin = %s %+v, want the observation's source URL", actions[linked].Kind, origin)
+	}
+	origin = actions[bare].Details.MonitorOrigin
+	if origin == nil || origin.Summary != "Filed by the monitor: post-merge failure" || origin.SourceURL != "" || origin.ObservedAt != nil {
+		t.Fatalf("unlinked monitor origin = %+v, want the sentence without a link", origin)
 	}
 }

@@ -2,6 +2,7 @@ package nextaction
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -279,4 +280,51 @@ func decisionWording(text func(string) func(Vars) string) {
 		}
 		return "Review reached the bounce limit. Approve, ask for changes, or reject?"
 	}, text("The task stays at the human gate."))
+}
+
+// ContextTierWord is the tier word a context_proposal label and detail entry
+// carry for a target kind (feature-operator-next-action NA-4).
+func ContextTierWord(kind string) string {
+	switch kind {
+	case string(core.TaskContextProposalSystemDesign):
+		return "System Design"
+	case string(core.TaskContextProposalRequirement):
+		return "requirement"
+	default:
+		return kind
+	}
+}
+
+// ContextProposalName is the target as a context_proposal choice label names
+// it: the title and the tier word, or "proposed <tier word>" when the stored
+// record has no title. It never carries the target ID
+// (feature-operator-next-action NA-4).
+func ContextProposalName(kind, title string) string {
+	tier := ContextTierWord(kind)
+	if title = strings.TrimSpace(title); title == "" {
+		return "proposed " + tier
+	}
+	return fmt.Sprintf("%s (%s)", title, tier)
+}
+
+// monitorOriginWords names each monitor signal kind that files a task in the
+// origin sentence (feature-operator-next-action NA-4).
+var monitorOriginWords = map[string]string{
+	"post_merge_failure": "post-merge failure",
+	"direct_push":        "direct push",
+	"external_pr_merge":  "external pull request merge",
+	"revert":             "revert",
+}
+
+// MonitorOriginKinds lists the signal kinds with their own origin sentence.
+func MonitorOriginKinds() []string {
+	return []string{"post_merge_failure", "direct_push", "external_pr_merge", "revert"}
+}
+
+// MonitorOriginSummary is the origin sentence for a monitor signal kind.
+func MonitorOriginSummary(kind string) string {
+	if words, ok := monitorOriginWords[kind]; ok {
+		return "Filed by the monitor: " + words
+	}
+	return "Filed by the monitor"
 }

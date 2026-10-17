@@ -1107,6 +1107,28 @@ export interface NextActionDetails {
   merge_readiness?: string
   // Row 10's binding for the verification recover body (NA-3).
   disposition?: NextActionDisposition
+  // Row 15's pending task-context proposals in choice order, and the origin of
+  // a monitor-filed task (NA-3, Context-proposal presentation and Monitor origin).
+  context_proposals?: NextActionContextProposal[]
+  monitor_origin?: NextActionMonitorOrigin
+}
+
+export interface NextActionContextProposal {
+  kind: string
+  target_id: string
+  target_title: string
+  tier_label: string
+  justification: string
+  source: string
+  proposed_by: string
+  created_at: string
+}
+
+export interface NextActionMonitorOrigin {
+  kind: string
+  summary: string
+  source_url?: string
+  observed_at?: string
 }
 
 export interface NextActionDisposition {
