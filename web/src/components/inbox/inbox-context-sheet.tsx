@@ -1,9 +1,18 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
-import type { ActivityItem, SpecVersion } from '../../lib/types'
+import { fetchRequirement, fetchSystemDesign } from '../../lib/api'
+import { errorMessage } from '../../lib/errors'
+import type {
+  ActivityItem,
+  NextActionContextProposal,
+  RequirementView,
+  SpecVersion,
+  SystemDesignView,
+} from '../../lib/types'
 import { absoluteTime } from '../../lib/utils'
-import { usePendingProposals } from '../app-shell'
+import { usePendingProposals, useWorkspaceSelection } from '../app-shell'
 import { GateChoices } from '../task/merge-at-gate'
 import { SpecCard } from '../task/spec-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
@@ -56,6 +65,7 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
       <p className="text-sm text-muted">No plan has been submitted.</p>
     )
   if (kind === 'agent_question') return <CheckpointContext item={item} />
+  if (kind === 'context_proposal') return <ProposedContext item={item} />
   // Newest first, so `find` reads the latest run of a stage.
   const jobs = buildTimeline(item)
     .filter((entry): entry is JobEntry => entry.type === 'job')
@@ -121,6 +131,85 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
       <SystemDesignProposalCard task={item.task} proposals={proposals} pending={pending} />
     </div>
   )
+}
+
+// The task body and, for each proposed document, the version confirmed today.
+// A context proposal attaches an existing document to the task, so nothing
+// here is a proposed revision. The section is read-only (NA-6; AC-2.3).
+function ProposedContext({ item }: { item: ActivityItem }) {
+  const { data: action } = useNextAction(item.task.id)
+  const proposals = action?.details?.context_proposals ?? []
+  return (
+    <div className="space-y-3" data-proposed-context>
+      <section aria-label="Task" className="rounded-lg border border-border px-3 py-3">
+        <h3 className="text-xs font-medium text-muted">The task</h3>
+        {item.task.body ? (
+          <MarkdownProse className="mt-1 text-sm">{item.task.body}</MarkdownProse>
+        ) : (
+          <p className="mt-1 text-sm text-muted">The task has no description.</p>
+        )}
+      </section>
+      {proposals.map((proposal) => (
+        <ProposedDocument key={`${proposal.kind}:${proposal.target_id}`} proposal={proposal} />
+      ))}
+    </div>
+  )
+}
+
+function ProposedDocument({ proposal }: { proposal: NextActionContextProposal }) {
+  const { workspace } = useWorkspaceSelection()
+  const requirement = proposal.kind === 'requirement'
+  // The document pages' own query keys and reads, so the sheet shares their
+  // cache; the key carries the workspace and the query's signal aborts on close.
+  // Every opening reads again, and content shows only from a read that
+  // succeeded since this sheet opened: cached content is never substituted for
+  // a pending or failed read (NA-6; AC-2.3).
+  const { data, error, refetch, isFetching, isFetchedAfterMount } = useQuery<RequirementView | SystemDesignView>({
+    queryKey: [requirement ? 'requirement' : 'system-design', workspace, proposal.target_id],
+    queryFn: ({ signal }) =>
+      requirement
+        ? fetchRequirement(proposal.target_id, workspace, signal)
+        : fetchSystemDesign(proposal.target_id, workspace, signal),
+    enabled: Boolean(workspace),
+    refetchOnMount: 'always',
+  })
+  const current = data && error == null && isFetchedAfterMount ? data : undefined
+  const loading = error == null && !current
+  const document = current ? confirmedDocument(current) : undefined
+  const title = document?.title || proposal.target_title || proposal.tier_label
+  return (
+    <section
+      aria-label={title}
+      aria-busy={loading || isFetching}
+      data-proposed-document={proposal.kind}
+      className="min-w-0 rounded-lg border border-border px-3 py-3"
+    >
+      <h3 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm font-medium">
+        <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted">{proposal.tier_label}</span>
+        <span className="min-w-0 break-words">{title}</span>
+        {document?.current && <span className="text-xs text-muted">v{document.current.version}</span>}
+      </h3>
+      {loading && <Skeleton className="mt-2 h-16" />}
+      {error != null && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-failure">{errorMessage(error, 'Could not load this document.')}</span>
+          <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {document && !document.current && (
+        <p className="mt-2 text-sm text-muted">This document has no confirmed version yet.</p>
+      )}
+      {document?.current && <MarkdownProse className="mt-2 text-sm">{document.current.content}</MarkdownProse>}
+    </section>
+  )
+}
+
+// The title and the current confirmed version of either document read.
+function confirmedDocument(view: RequirementView | SystemDesignView) {
+  if ('requirement' in view) return { title: view.requirement.title, current: view.current_version }
+  return { title: view.document.title, current: view.current_version }
 }
 
 // The card's choices repeated under the plan, so the decision can be taken

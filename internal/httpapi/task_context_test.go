@@ -142,6 +142,45 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 		!strings.Contains(pending.Body.String(), `"pending_proposal_count":0`) || !strings.Contains(pending.Body.String(), `"task_count":1`) {
 		t.Fatalf("pending status=%d body=%s", pending.Code, pending.Body.String())
 	}
+	// The served next action states each proposal in choice order with its
+	// title, tier, justification, and source, and labels the choices by title
+	// (feature-operator-next-action NA-3, NA-4; AC-1.8, AC-2.1).
+	served := request(http.MethodGet, "/v1/tasks/"+task.ID+"/next-action")
+	var action struct {
+		Kind    string `json:"kind"`
+		Choices []struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+		} `json:"choices"`
+		Details struct {
+			ContextProposals []struct {
+				Kind          string `json:"kind"`
+				TargetID      string `json:"target_id"`
+				TargetTitle   string `json:"target_title"`
+				TierLabel     string `json:"tier_label"`
+				Justification string `json:"justification"`
+				Source        string `json:"source"`
+				ProposedBy    string `json:"proposed_by"`
+				CreatedAt     string `json:"created_at"`
+			} `json:"context_proposals"`
+			MonitorOrigin *struct{} `json:"monitor_origin"`
+		} `json:"details"`
+	}
+	if served.Code != http.StatusOK || json.Unmarshal(served.Body.Bytes(), &action) != nil || action.Kind != "context_proposal" {
+		t.Fatalf("next action status=%d body=%s", served.Code, served.Body.String())
+	}
+	entries := action.Details.ContextProposals
+	if len(entries) != 2 || entries[0].TargetID != requirement.ID || entries[0].TierLabel != "requirement" || entries[0].Source != "triage" ||
+		entries[0].Justification != "REQ-1 directly governs the requested endpoint." || entries[0].TargetTitle == "" || entries[0].CreatedAt == "" ||
+		entries[1].TargetID != design.ID || entries[1].TierLabel != "System Design" || entries[1].Source != "planning" || entries[1].TargetTitle == "" ||
+		action.Details.MonitorOrigin != nil {
+		t.Fatalf("served context_proposals = %+v origin=%v", entries, action.Details.MonitorOrigin)
+	}
+	if len(action.Choices) != 4 || action.Choices[0].ID != "confirm:task_context:requirement:"+requirement.ID ||
+		action.Choices[0].Label != "Confirm "+entries[0].TargetTitle+" (requirement)" ||
+		action.Choices[3].Label != "Dismiss "+entries[1].TargetTitle+" (System Design)" {
+		t.Fatalf("served choices = %+v", action.Choices)
+	}
 	unauthorizedRequest := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/context/proposals/requirement/"+requirement.ID+"/confirm", nil)
 	unauthorized := httptest.NewRecorder()
 	server.Handler().ServeHTTP(unauthorized, unauthorizedRequest)
