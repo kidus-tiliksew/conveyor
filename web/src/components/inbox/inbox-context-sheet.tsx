@@ -161,19 +161,26 @@ function ProposedDocument({ proposal }: { proposal: NextActionContextProposal })
   const requirement = proposal.kind === 'requirement'
   // The document pages' own query keys and reads, so the sheet shares their
   // cache; the key carries the workspace and the query's signal aborts on close.
-  const { data, error, isLoading, refetch, isFetching } = useQuery<RequirementView | SystemDesignView>({
+  // Every opening reads again, and content shows only from a read that
+  // succeeded since this sheet opened: cached content is never substituted for
+  // a pending or failed read (NA-6; AC-2.3).
+  const { data, error, refetch, isFetching, isFetchedAfterMount } = useQuery<RequirementView | SystemDesignView>({
     queryKey: [requirement ? 'requirement' : 'system-design', workspace, proposal.target_id],
     queryFn: ({ signal }) =>
       requirement
         ? fetchRequirement(proposal.target_id, workspace, signal)
         : fetchSystemDesign(proposal.target_id, workspace, signal),
     enabled: Boolean(workspace),
+    refetchOnMount: 'always',
   })
-  const document = data ? confirmedDocument(data) : undefined
+  const current = data && error == null && isFetchedAfterMount ? data : undefined
+  const loading = error == null && !current
+  const document = current ? confirmedDocument(current) : undefined
   const title = document?.title || proposal.target_title || proposal.tier_label
   return (
     <section
       aria-label={title}
+      aria-busy={loading || isFetching}
       data-proposed-document={proposal.kind}
       className="min-w-0 rounded-lg border border-border px-3 py-3"
     >
@@ -182,7 +189,7 @@ function ProposedDocument({ proposal }: { proposal: NextActionContextProposal })
         <span className="min-w-0 break-words">{title}</span>
         {document?.current && <span className="text-xs text-muted">v{document.current.version}</span>}
       </h3>
-      {isLoading && <Skeleton className="mt-2 h-16" />}
+      {loading && <Skeleton className="mt-2 h-16" />}
       {error != null && (
         <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <span className="text-failure">{errorMessage(error, 'Could not load this document.')}</span>

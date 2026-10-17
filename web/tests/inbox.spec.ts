@@ -41,24 +41,38 @@ interface Fixture {
   capabilities?: string[]
   // Document reads by path; a number answers with that status.
   documents?: Record<string, Record<string, unknown> | number>
+  workspaces?: { id: string; name: string }[]
 }
 
 interface Harness {
   fixture: Fixture
   posts: Request[]
   inboxRequests: string[]
+  documentRequests: Request[]
   onPost?: (request: Request, path: string) => Record<string, unknown> | undefined
+  // While set, acts and document reads wait for it before they answer.
+  holdPosts?: Promise<void>
+  holdDocuments?: Promise<void>
+}
+
+// A promise the test resolves to let held responses through.
+function gate() {
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  return { held, release }
 }
 
 async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): Promise<Harness> {
-  const harness: Harness = { fixture, posts: [], inboxRequests: [], onPost }
+  const harness: Harness = { fixture, posts: [], inboxRequests: [], documentRequests: [], onPost }
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
     const f = harness.fixture
-    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/workspaces') return route.fulfill({ json: f.workspaces ?? [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me') {
       const identity = callerIdentity(
         { id: 'usr_operator', role: f.role ?? 'operator', capabilities: f.capabilities },
@@ -96,15 +110,22 @@ async function serve(page: Page, fixture: Fixture, onPost?: Harness['onPost']): 
       return detail ? route.fulfill({ json: detail }) : route.fulfill({ status: 404, json: { error: 'not found' } })
     }
     if (path.endsWith('/events/stream')) return route.fulfill({ status: 204, body: '' })
-    const document = request.method() === 'GET' ? f.documents?.[path] : undefined
-    if (typeof document === 'number') return route.fulfill({ status: document, json: { error: 'unavailable' } })
-    if (document) return route.fulfill({ json: document })
+    if (request.method() === 'GET' && f.documents && path in f.documents) {
+      harness.documentRequests.push(request)
+      if (harness.holdDocuments) await harness.holdDocuments
+      // Read at answer time, so a held read answers with the current fixture.
+      const document = f.documents[path]
+      if (typeof document === 'number')
+        return route.fulfill({ status: document, json: { error: 'unavailable' } }).catch(() => {})
+      return route.fulfill({ json: document }).catch(() => {})
+    }
     if (request.method() !== 'GET') {
       harness.posts.push(request)
+      if (harness.holdPosts) await harness.holdPosts
       const body = harness.onPost?.(request, path)
       // A numeric `status` refuses the act with the body's error.
       const status = typeof body?.status === 'number' ? body.status : 200
-      return route.fulfill({ status, json: body ?? {} })
+      return route.fulfill({ status, json: body ?? {} }).catch(() => {})
     }
     return route.fulfill({ json: [] })
   })
@@ -605,25 +626,77 @@ test('the context card lists each proposed document and decides one at a time un
   await expect(timeline.getByText(`Context dismissed: System Design ${design.id}`)).toBeVisible()
 })
 
-test('Confirm all posts each proposal once in the server order and the card leaves', async ({ page }) => {
-  const fixture = contextFixture({ targets: contextTargets })
-  const harness = await serve(page, fixture, (_request, path) => {
-    if (path.endsWith(`/${contextTargets[2].id}/confirm`)) decide(fixture, [])
-    return { state: 'confirmed' }
+for (const act of ['confirm', 'dismiss'] as const) {
+  const name = act === 'confirm' ? 'Confirm all' : 'Dismiss all'
+  test(`${name} posts each proposal once in the server order and the card leaves`, async ({ page }) => {
+    const fixture = contextFixture({ targets: contextTargets })
+    const harness = await serve(page, fixture, (_request, path) => {
+      if (path.endsWith(`/${contextTargets[2].id}/${act}`)) decide(fixture, [])
+      return { state: act === 'confirm' ? 'confirmed' : 'dismissed' }
+    })
+    await page.goto('/inbox')
+    const card = decisionCards(page).first()
+    await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
+    await card.getByRole('button', { name, exact: true }).dblclick()
+    await expect.poll(() => harness.posts.length).toBe(3)
+    expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(
+      contextTargets.map((target) => `/v1/tasks/T-ctx/context/proposals/${target.kind}/${target.id}/${act}`),
+    )
+    for (const post of harness.posts) expect(post.postData()).toBeNull()
+    await expect(decisionCards(page)).toHaveCount(0)
+    expect(harness.posts).toHaveLength(3)
   })
+}
+
+test('leaving the inbox mid-batch sends nothing after the request in flight', async ({ page }) => {
+  const fixture = contextFixture({ targets: contextTargets })
+  fixture.activity = {
+    'T-ctx': {
+      task: task('T-ctx', 'Repair post-merge test failures', 'queued'),
+      events: [],
+      jobs: [],
+      work_orders: [],
+      interventions: [],
+    },
+  }
+  const harness = await serve(page, fixture, () => ({ state: 'confirmed' }))
+  const held = gate()
+  harness.holdPosts = held.held
   await page.goto('/inbox')
   const card = decisionCards(page).first()
-  await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
-  const batch = card.getByRole('button', { name: 'Confirm all', exact: true })
-  await expect(card.getByRole('button', { name: 'Dismiss all', exact: true })).toBeEnabled()
-  await batch.dblclick()
-  await expect.poll(() => harness.posts.length).toBe(3)
-  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(
-    contextTargets.map((target) => `/v1/tasks/T-ctx/context/proposals/${target.kind}/${target.id}/confirm`),
-  )
-  for (const post of harness.posts) expect(post.postData()).toBeNull()
-  await expect(decisionCards(page)).toHaveCount(0)
-  expect(harness.posts).toHaveLength(3)
+  await card.getByRole('button', { name: 'Confirm all', exact: true }).click()
+  await expect.poll(() => harness.posts.length).toBe(1)
+  // Opening the task leaves the inbox while the first act is in flight.
+  await card.getByRole('link', { name: 'Repair post-merge test failures' }).click()
+  await expect(page).toHaveURL(/\/tasks\/T-ctx/)
+  held.release()
+  await page.waitForTimeout(500)
+  expect(harness.posts).toHaveLength(1)
+})
+
+test('switching workspace mid-batch sends nothing after the request in flight, and nothing to the new workspace', async ({
+  page,
+}) => {
+  const fixture = contextFixture({ targets: contextTargets })
+  fixture.workspaces = [
+    { id: 'demo', name: 'Demo' },
+    { id: 'other', name: 'Other' },
+  ]
+  const harness = await serve(page, fixture, () => ({ state: 'confirmed' }))
+  const held = gate()
+  harness.holdPosts = held.held
+  await page.goto('/inbox')
+  const card = decisionCards(page).first()
+  await card.getByRole('button', { name: 'Confirm all', exact: true }).click()
+  await expect.poll(() => harness.posts.length).toBe(1)
+  await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
+  await expect(
+    page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }),
+  ).toHaveAttribute('aria-current', 'true')
+  held.release()
+  await page.waitForTimeout(500)
+  expect(harness.posts).toHaveLength(1)
+  expect(new URL(harness.posts[0].url()).searchParams.get('workspace_id')).toBe('demo')
 })
 
 test('a refused send stops Dismiss all, shows the refusal, and keeps the acts already recorded', async ({ page }) => {
@@ -691,53 +764,200 @@ test('a monitor-filed task states its origin with the run link, and without one 
   await expect(bare.getByRole('link')).toHaveCount(0)
 })
 
-test('View proposed context opens each document as confirmed today beside the task body', async ({ page }) => {
-  const [requirement, design] = contextTargets
-  const fixture = contextFixture({ body: 'The post-merge run failed on **main**.' })
+// The sheet fixture: the task body, one requirement and one System Design
+// target, each document read answering from `documents` by path.
+function sheetFixture(
+  documents: Record<string, Record<string, unknown> | number>,
+  body = 'The post-merge run failed on **main**.',
+) {
+  const fixture = contextFixture({ body })
   fixture.activity = {
     'T-ctx': {
-      task: {
-        ...task('T-ctx', 'Repair post-merge test failures', 'queued'),
-        body: 'The post-merge run failed on **main**.',
-      },
+      task: { ...task('T-ctx', 'Repair post-merge test failures', 'queued'), body },
       events: [],
       jobs: [],
       work_orders: [],
       interventions: [],
     },
   }
-  const documents: Record<string, Record<string, unknown> | number> = {
-    [`/v1/requirements/${requirement.id}`]: {
-      requirement: { id: requirement.id, title: requirement.title },
-      current_version: { version: 4, content: '# Review gates\n\nEvery gate keeps its evidence.' },
-      pending_versions: [],
-    },
-    [`/v1/system-designs/${design.id}`]: 503,
-  }
   fixture.documents = documents
-  const harness = await serve(page, fixture)
-  await page.goto('/inbox')
-  await decisionCards(page).first().getByRole('button', { name: 'View proposed context →' }).click()
-  const sheet = page.getByRole('dialog', { name: 'Decision context' })
-  await expect(sheet.getByRole('region', { name: 'Task' })).toContainText('The post-merge run failed on main.')
-  const confirmed = sheet.getByRole('region', { name: requirement.title })
-  await expect(confirmed).toContainText('v4')
-  await expect(confirmed).toContainText('Every gate keeps its evidence.')
-  const failed = sheet.getByRole('region', { name: design.title })
-  await expect(failed.getByRole('button', { name: 'Retry' })).toBeVisible()
+  return fixture
+}
 
-  // Retry reads the document again and shows it once it answers.
-  documents[`/v1/system-designs/${design.id}`] = {
-    document: { id: design.id, title: design.title },
-    current_version: { version: 32, content: 'Suites run in CI.' },
+const requirementPath = `/v1/requirements/${contextTargets[0].id}`
+const designPath = `/v1/system-designs/${contextTargets[1].id}`
+
+function requirementView(version: number, content: string, current = true) {
+  return {
+    requirement: { id: contextTargets[0].id, title: contextTargets[0].title },
+    ...(current ? { current_version: { version, content } } : {}),
+    pending_versions: [],
+  }
+}
+
+function designView(version: number, content: string) {
+  return {
+    document: { id: contextTargets[1].id, title: contextTargets[1].title },
+    current_version: { version, content },
     pending_versions: [],
     versions: [],
   }
+}
+
+async function openProposedContext(page: Page) {
+  await decisionCards(page).first().getByRole('button', { name: 'View proposed context →' }).click()
+  return page.getByRole('dialog', { name: 'Decision context' })
+}
+
+test('View proposed context opens each document as confirmed today beside the task body', async ({ page }) => {
+  const documents: Record<string, Record<string, unknown> | number> = {
+    [requirementPath]: requirementView(4, '# Review gates\n\nEvery gate keeps its evidence.'),
+    [designPath]: 503,
+  }
+  const harness = await serve(page, sheetFixture(documents))
+  const held = gate()
+  harness.holdDocuments = held.held
+  await page.goto('/inbox')
+  const sheet = await openProposedContext(page)
+  await expect(sheet.getByRole('region', { name: 'Task' })).toContainText('The post-merge run failed on main.')
+  // Held reads show their loading state and no content.
+  const confirmed = sheet.getByRole('region', { name: contextTargets[0].title })
+  await expect(confirmed).toHaveAttribute('aria-busy', 'true')
+  await expect(confirmed).not.toContainText('Every gate keeps its evidence.')
+  held.release()
+  harness.holdDocuments = undefined
+  await expect(confirmed).toContainText('v4')
+  await expect(confirmed).toContainText('Every gate keeps its evidence.')
+  await expect(confirmed).toHaveAttribute('aria-busy', 'false')
+  const failed = sheet.getByRole('region', { name: contextTargets[1].title })
+  await expect(failed.getByRole('button', { name: 'Retry' })).toBeVisible()
+
+  // Retry reads the document again and shows it once it answers.
+  documents[designPath] = designView(32, 'Suites run in CI.')
   await failed.getByRole('button', { name: 'Retry' }).click()
   await expect(failed).toContainText('v32')
   await expect(failed).toContainText('Suites run in CI.')
+  for (const request of harness.documentRequests)
+    expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
   // Reading context records no act.
   expect(harness.posts).toHaveLength(0)
+})
+
+test('a document without a confirmed version says so in the sheet', async ({ page }) => {
+  await serve(
+    page,
+    sheetFixture({
+      [requirementPath]: requirementView(0, '', false),
+      [designPath]: designView(32, 'Suites run in CI.'),
+    }),
+  )
+  await page.goto('/inbox')
+  const sheet = await openProposedContext(page)
+  await expect(sheet.getByRole('region', { name: contextTargets[0].title })).toContainText(
+    'This document has no confirmed version yet.',
+  )
+})
+
+test('a reopened sheet never shows cached content while its fresh read fails, until Retry succeeds', async ({
+  page,
+}) => {
+  const documents: Record<string, Record<string, unknown> | number> = {
+    [requirementPath]: requirementView(4, 'Version four content.'),
+    [designPath]: designView(32, 'Suites run in CI.'),
+  }
+  await serve(page, sheetFixture(documents))
+  await page.goto('/inbox')
+  let sheet = await openProposedContext(page)
+  const requirementRegion = () => sheet.getByRole('region', { name: contextTargets[0].title })
+  await expect(requirementRegion()).toContainText('Version four content.')
+  await sheet.getByRole('button', { name: 'Close' }).click()
+  await expect(sheet).toHaveCount(0)
+
+  // The document became unavailable: the cached v4 must not stand in for it.
+  documents[requirementPath] = 503
+  sheet = await openProposedContext(page)
+  await expect(requirementRegion().getByRole('button', { name: 'Retry' })).toBeVisible()
+  await expect(requirementRegion()).not.toContainText('Version four content.')
+  await expect(requirementRegion()).not.toContainText('v4')
+
+  documents[requirementPath] = requirementView(5, 'Version five content.')
+  await requirementRegion().getByRole('button', { name: 'Retry' }).click()
+  await expect(requirementRegion()).toContainText('v5')
+  await expect(requirementRegion()).toContainText('Version five content.')
+})
+
+test('a read left in flight by a closed sheet never shows when the sheet reopens', async ({ page }) => {
+  const documents: Record<string, Record<string, unknown> | number> = {
+    [requirementPath]: requirementView(4, 'Late content from the closed sheet.'),
+    [designPath]: designView(32, 'Suites run in CI.'),
+  }
+  const harness = await serve(page, sheetFixture(documents))
+  const held = gate()
+  harness.holdDocuments = held.held
+  await page.goto('/inbox')
+  let sheet = await openProposedContext(page)
+  await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(2)
+  await sheet.getByRole('button', { name: 'Close' }).click()
+  await expect(sheet).toHaveCount(0)
+  // The read answers after the sheet closed; the document then fails.
+  held.release()
+  harness.holdDocuments = undefined
+  await page.waitForTimeout(300)
+  documents[requirementPath] = 503
+  sheet = await openProposedContext(page)
+  const region = sheet.getByRole('region', { name: contextTargets[0].title })
+  await expect(region.getByRole('button', { name: 'Retry' })).toBeVisible()
+  await expect(region).not.toContainText('Late content from the closed sheet.')
+})
+
+test('switching workspace with a document read in flight shows no document content', async ({ page }) => {
+  const fixture = sheetFixture({
+    [requirementPath]: requirementView(4, 'Content of the first workspace.'),
+    [designPath]: designView(32, 'Suites run in CI.'),
+  })
+  fixture.workspaces = [
+    { id: 'demo', name: 'Demo' },
+    { id: 'other', name: 'Other' },
+  ]
+  const harness = await serve(page, fixture)
+  const held = gate()
+  harness.holdDocuments = held.held
+  await page.goto('/inbox')
+  await openProposedContext(page)
+  await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(2)
+  // The modal sheet covers the rail, so the switch is dispatched to it directly,
+  // as a workspace change from outside the sheet would arrive.
+  await page
+    .getByRole('navigation', { name: 'Workspaces' })
+    .getByRole('button', { name: 'Switch to Other' })
+    .dispatchEvent('click')
+  held.release()
+  await page.waitForTimeout(500)
+  await expect(page.getByText('Content of the first workspace.')).toHaveCount(0)
+  for (const request of harness.documentRequests)
+    expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
+})
+
+test('the opened sheet fits a 390px viewport with long documents', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  const long = `${'Long-unbroken-document-text-'.repeat(12)}\n\n| a | b |\n|---|---|\n| ${'x'.repeat(80)} | y |`
+  await serve(
+    page,
+    sheetFixture(
+      {
+        [requirementPath]: requirementView(4, long),
+        [designPath]: designView(32, long),
+      },
+      `Task body ${'with-a-very-long-unbroken-token-'.repeat(6)}`,
+    ),
+  )
+  await page.goto('/inbox')
+  const sheet = await openProposedContext(page)
+  await expect(sheet.getByRole('region', { name: contextTargets[1].title })).toContainText('v32')
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
+  const sheetOverflow = await sheet.evaluate((element) => element.scrollWidth - element.clientWidth)
+  expect(sheetOverflow).toBeLessThanOrEqual(0)
 })
 
 test('the context card fits a 390px viewport with long titles and justifications', async ({ page }) => {

@@ -43,6 +43,10 @@ export function useContextProposalSends(taskId: string) {
   const client = useQueryClient()
   const inFlight = useRef(false)
   const mounted = useRef(true)
+  // The workspace on screen now; a run stops when it differs from the one the
+  // click acted in.
+  const current = useRef(workspace)
+  current.current = workspace
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   useEffect(() => {
@@ -61,7 +65,7 @@ export function useContextProposalSends(taskId: string) {
       setError(null)
       try {
         for (const choice of choices) {
-          if (!mounted.current) return
+          if (!mounted.current || current.current !== acted) return
           await postNextActionChoice(acted, choice, undefined)
         }
       } catch (failure) {
