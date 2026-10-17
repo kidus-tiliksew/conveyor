@@ -2,6 +2,25 @@ package core
 
 import "fmt"
 
+// RecoverableQueuedWorkOrder is the recover route's queued-order eligibility:
+// a queued order is recoverable only after an attempt ended, retry was
+// suppressed, or a retry was scheduled. An order an operator already
+// recovered has none of these (component-work-orders, Recovery).
+func RecoverableQueuedWorkOrder(order WorkOrder) bool {
+	return order.State == WorkOrderQueued && (order.LastAttemptOutcome != "" || order.RetrySuppressed || !order.NextRetryAt.IsZero())
+}
+
+// WorkOrderRecoverStateRefusal is the recover route's state refusal on a
+// clock-projected order. The memory, PostgreSQL, and SingleStore recover
+// paths and NextActionRecoverRefusal all call it, so an offered recover-route
+// choice is one the route accepts (req-operator-next-action AC-1.4).
+func WorkOrderRecoverStateRefusal(order WorkOrder) string {
+	if RecoverableQueuedWorkOrder(order) || order.State == WorkOrderStale || order.State == WorkOrderTimedOut {
+		return ""
+	}
+	return fmt.Sprintf("work order %s is not released, expired, or retry-suppressed", order.ID)
+}
+
 // NextActionRecoverRefusal is the recover route's state check. A claimed
 // order is refused. Empty means the route would accept the order's state;
 // a stamped RecoveryRefusal is returned as the refusal text.
@@ -14,7 +33,7 @@ func NextActionRecoverRefusal(order WorkOrder) string {
 	}
 	switch order.State {
 	case WorkOrderQueued, WorkOrderStale, WorkOrderTimedOut:
-		return ""
+		return WorkOrderRecoverStateRefusal(order)
 	default:
 		return fmt.Sprintf("work order %s cannot be recovered from %s", order.ID, order.State)
 	}

@@ -141,10 +141,70 @@ func TestCitedProposalsDeduplicateAndOrder(t *testing.T) {
 	}
 }
 
+// An operator recovery clears the released outcome and suppression, records
+// the direction, and keeps the checkpoint for history. The resumed order then
+// projects as ordinary queued work with no recover-route choice and no row-9
+// secondary, for every checkpoint class, even when a caller supplies a stale
+// checkpoint marker (feature-operator-next-action NA-3 row 9;
+// req-operator-next-action AC-1.4, AC-1.6).
+func TestAgentQuestionResumedOrderProjectsAsQueuedWork(t *testing.T) {
+	now := time.Date(2026, 10, 17, 10, 25, 46, 0, time.UTC)
+	citations := []core.WorkOrderAuthorityConflictCitation{
+		{DocumentID: "feature-operator-next-action", CitedVersion: 20},
+		{DocumentID: "component-work-orders", CitedVersion: 52, StatementOrSectionID: "Next action"},
+	}
+	for _, class := range []string{core.WorkOrderCheckpointClassAuthorityConflict, ""} {
+		released := checkpointInput(now, class, citations, nil)
+		released.Capabilities = allCaps()
+		if got := Project(released); got.Kind != KindAgentQuestion || !hasChoice(got, "answer") {
+			t.Fatalf("class %q released: %s choices %+v, want agent_question with answer", class, got.Kind, got.Choices)
+		}
+
+		resumed := resumedInput(released)
+		got := Project(resumed)
+		if got.Kind != KindQueued || got.Actor != ActorAgent || got.Judgment {
+			t.Fatalf("class %q resumed: %s/%s judgment=%v, want agent queued", class, got.Actor, got.Kind, got.Judgment)
+		}
+		if got.CurrentOrder == nil || got.CurrentOrder.ID != "question" {
+			t.Fatalf("class %q resumed: current order %+v, want question", class, got.CurrentOrder)
+		}
+		if hasSecondary(got, KindAgentQuestion) {
+			t.Fatalf("class %q resumed: secondary %+v includes agent_question", class, got.Details.Secondary)
+		}
+		for _, id := range []string{"answer", "recover", "applied", "not_applied"} {
+			if hasChoice(got, id) {
+				t.Fatalf("class %q resumed: offered %s in %+v", class, id, got.Choices)
+			}
+		}
+		if got.Details.Checkpoint != "" || got.Details.CheckpointClass != "" || len(got.Details.Citations) != 0 {
+			t.Fatalf("class %q resumed: details carry the answered checkpoint %+v", class, got.Details)
+		}
+	}
+}
+
+// resumedInput is the 261016-cdb507 shape after an operator recovery: the
+// order is queued and claimable, its outcome and suppression are cleared, the
+// direction and redispatch count are set, and the checkpoint stays. The stale
+// marker from the released input stays too, so the projection's own guard is
+// what keeps row 9 from matching.
+func resumedInput(released Input) Input {
+	resumed := released
+	order := released.Orders[0]
+	order.LastAttemptOutcome = ""
+	order.RetrySuppressed = false
+	order.Claimable = true
+	order.OperatorDirection = "Continue under the newly confirmed authority."
+	order.RedispatchCount = 1
+	order.LastFailureMessage = core.WorkOrderReleaseReasonOperatorCheckpointReached
+	order.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: released.Markers.Checkpoint, Class: released.Markers.CheckpointClass, Citations: released.Markers.Citations}
+	resumed.Orders = []core.WorkOrder{order}
+	return resumed
+}
+
 func checkpointInput(now time.Time, class string, citations []core.WorkOrderAuthorityConflictCitation, pending []ProposalRef) Input {
 	return Input{
 		Task:             core.Task{ID: "task", State: core.TaskRunning},
-		Orders:           []core.WorkOrder{{ID: "question", State: core.WorkOrderQueued, Stage: core.StageImplement}},
+		Orders:           []core.WorkOrder{{ID: "question", State: core.WorkOrderQueued, Stage: core.StageImplement, LastAttemptID: "attempt", LastAttemptOutcome: core.WorkOrderOutcomeReleased}},
 		Markers:          Markers{CheckpointDecision: true, Checkpoint: "Confirm component-http-api v44.", CheckpointClass: class, Citations: citations},
 		PendingProposals: pending,
 		Now:              now,
