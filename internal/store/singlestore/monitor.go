@@ -699,3 +699,61 @@ func proposeDriftRequirement(ctx context.Context, tx *sql.Tx, ws string, d monit
 	_, err = appendWorkspaceEvent(ctx, tx, ws, "requirement.version_proposed", map[string]any{"workspace_id": ws, "requirement_id": d.RequirementID, "version": proposal.Version, "origin": proposal.Origin, "origin_drift_id": d.ID, "statement_count": len(proposal.Statements)})
 	return translateBackendConflict(err)
 }
+
+func (s *Store) MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (map[string]monitor.ObservationRecord, error) {
+	result := make(map[string]monitor.ObservationRecord, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return result, nil
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(taskIDs)), ",")
+	args := []any{ws}
+	for _, id := range taskIDs {
+		args = append(args, id)
+	}
+	// The task sources are read first and matched in Go, so the observation
+	// read needs no correlated subquery.
+	kinds := map[string]string{}
+	taskRows, err := s.db.QueryContext(ctx, "SELECT id,source FROM tasks WHERE workspace_id=? AND id IN ("+placeholders+")", args...)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	for taskRows.Next() {
+		var id, source string
+		if err := taskRows.Scan(&id, &source); err != nil {
+			taskRows.Close()
+			return nil, translateBackendConflict(err)
+		}
+		if kind, monitored := strings.CutPrefix(source, "monitor:"); monitored && kind != "" {
+			kinds[id] = kind
+		}
+	}
+	if err := taskRows.Close(); err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	if err := taskRows.Err(); err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	if len(kinds) == 0 {
+		return result, nil
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=? AND task_id IN ("+placeholders+") ORDER BY task_id,created_at,identity", args...)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		record, err := scanObservation(rows, ws)
+		if err != nil {
+			return nil, translateBackendConflict(err)
+		}
+		if _, seen := result[record.TaskID]; seen || kinds[record.TaskID] != string(record.Kind) {
+			continue
+		}
+		result[record.TaskID] = record
+	}
+	return result, translateBackendConflict(rows.Err())
+}

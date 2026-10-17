@@ -76,7 +76,10 @@ type Input struct {
 	// PendingProposals (req-intake-and-triage AC-7.3; req-260810-70ce2f
 	// AC-1.3).
 	ContextProposals []ContextProposalRef
-	Blockers         []BlockerRef
+	// MonitorObservation is the originating observation of a monitor-filed
+	// task with a pending context proposal, or nil when none is linked.
+	MonitorObservation *MonitorObservationRef
+	Blockers           []BlockerRef
 	// Blocks is the task's open dependents: the tasks whose latest queued
 	// order names this task in blocking_task_ids, ordered by task ID. The
 	// assembler reads them from the same dependency read that fills
@@ -163,11 +166,50 @@ type ProposalRef struct {
 	Version int    `json:"version"`
 }
 
-// ContextProposalRef identifies one pending task-context proposal by its
-// target kind and target ID.
+// ContextProposalRef is one pending task-context proposal: its identity, the
+// target kind and target ID, plus the stored record's presentation metadata.
+// Deduplication and ordering read the identity alone
+// (feature-operator-next-action NA-3, Context-proposal attention).
 type ContextProposalRef struct {
-	Kind     string `json:"kind"`
-	TargetID string `json:"target_id"`
+	Kind          string    `json:"kind"`
+	TargetID      string    `json:"target_id"`
+	TargetTitle   string    `json:"target_title,omitempty"`
+	Source        string    `json:"source,omitempty"`
+	Justification string    `json:"justification,omitempty"`
+	ProposedBy    string    `json:"proposed_by,omitempty"`
+	CreatedAt     time.Time `json:"created_at,omitzero"`
+}
+
+// ContextProposalDetail states one pending task-context proposal on a
+// context_proposal next action, in choice order (feature-operator-next-action
+// NA-3, Context-proposal presentation).
+type ContextProposalDetail struct {
+	Kind          string    `json:"kind"`
+	TargetID      string    `json:"target_id"`
+	TargetTitle   string    `json:"target_title"`
+	TierLabel     string    `json:"tier_label"`
+	Justification string    `json:"justification"`
+	Source        string    `json:"source"`
+	ProposedBy    string    `json:"proposed_by"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// MonitorObservationRef is the originating monitor observation the assembler
+// read for a monitor-filed task (component-monitor-drift).
+type MonitorObservationRef struct {
+	Kind       string
+	SourceURL  string
+	ObservedAt time.Time
+}
+
+// MonitorOrigin states where a monitor-filed task came from. SourceURL and
+// ObservedAt are absent when no linked observation of the task's kind exists
+// (feature-operator-next-action NA-3, Monitor origin).
+type MonitorOrigin struct {
+	Kind       string     `json:"kind"`
+	Summary    string     `json:"summary"`
+	SourceURL  string     `json:"source_url,omitempty"`
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
 }
 
 type BlockerRef struct {
@@ -267,6 +309,9 @@ type Details struct {
 	MergeReadiness   string                                    `json:"merge_readiness,omitempty"`
 	// Disposition is present only on verification_disposition.
 	Disposition *Disposition `json:"disposition,omitempty"`
+	// ContextProposals and MonitorOrigin are present only on context_proposal.
+	ContextProposals []ContextProposalDetail `json:"context_proposals,omitempty"`
+	MonitorOrigin    *MonitorOrigin          `json:"monitor_origin,omitempty"`
 }
 
 // Compact is the list-item shape. Label is the same catalogue entry as the full shape.
