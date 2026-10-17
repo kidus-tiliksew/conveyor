@@ -4347,7 +4347,7 @@ test('task context suggestions show justification and become attachments or disa
   const choices = nextAction.locator('[data-next-action-choices]')
   await expect(choices.getByRole('button')).toHaveCount(4)
   for (const button of await choices.getByRole('button').all()) await expect(button).toBeEnabled()
-  await expect(nextAction).not.toContainText('cannot send yet')
+  await expect(nextAction).not.toContainText('cannot send this choice')
 
   const confirm = page.waitForRequest(
     (request) =>

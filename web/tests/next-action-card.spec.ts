@@ -429,7 +429,7 @@ test('a server choice this page cannot send renders disabled with its reason', a
   const button = card.getByRole('button', { name: 'Remove dependency' })
   await expect(button).toBeDisabled()
   await expect(button).toHaveAttribute('data-endpoint', `DELETE /v1/tasks/${taskId}/dependencies/{dependency_id}`)
-  await expect(card.getByText(/needs input this page cannot send yet/)).toBeVisible()
+  await expect(card.getByText('This page cannot send this choice.')).toBeVisible()
 })
 
 test('a terminal next action renders no card', async ({ page }) => {
@@ -829,7 +829,7 @@ test('three task-context proposals are decided once each from the next-action ca
   }
   // A malformed task-context id resolves to no body and stays disabled.
   await expect(card.getByRole('button', { name: 'Confirm context widget', exact: true })).toBeDisabled()
-  await expect(card).toContainText('it needs input this page cannot send yet')
+  await expect(card).toContainText('This page cannot send this choice.')
 
   // Both acts post an empty body to the server-stated path.
   await card.getByRole('button', { name: decisionLabels[0], exact: true }).click()

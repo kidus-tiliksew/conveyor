@@ -288,7 +288,7 @@ test('bands render in server order with the decision card the server states', as
   await expect(card.getByRole('button', { name: 'Reject plan' })).toBeDisabled()
   await expect(card.getByText('Needs the operate tasks capability.')).toBeVisible()
   await expect(card.getByRole('button', { name: 'Summon dragon' })).toBeDisabled()
-  await expect(card.getByText('Take this from the CLI or MCP; it needs input this page cannot send yet.')).toBeVisible()
+  await expect(card.getByText('This page cannot send this choice.')).toBeVisible()
   // The null-deadline item states none.
   await expect(decisionCards(page).nth(2).locator('[data-next-action-deadline]')).toHaveCount(0)
 })
@@ -343,6 +343,193 @@ test('a choice sends one request as stated, refetches the inbox and the badge, a
   await expect(page.getByRole('region', { name: 'Next action' })).toContainText(
     'An agent is implementing the approved plan.',
   )
+})
+
+// Task-context proposal choices carry their target in the id
+// (confirm:task_context:<kind>:<target-id>) and post no body to the
+// task-context route (feature-operator-next-action NA-4, NA-6; AC-2.2).
+function contextChoices(taskId: string, targets: { kind: string; id: string }[], allowed = true) {
+  return targets.flatMap((target) =>
+    (['confirm', 'dismiss'] as const).map((action) => ({
+      ...choice(
+        `${action}:task_context:${target.kind}:${target.id}`,
+        `${action === 'confirm' ? 'Confirm' : 'Dismiss'} context ${target.kind} ${target.id}`,
+        `/v1/tasks/${taskId}/context/proposals/${target.kind}/${target.id}/${action}`,
+        allowed,
+      ),
+      capability: 'operate_gates',
+    })),
+  )
+}
+
+function contextFixture(allowed = true): Fixture {
+  const targets = [
+    { kind: 'requirement', id: 'req-review-gates-evidence' },
+    { kind: 'system_design', id: 'component-web-dashboard' },
+  ]
+  const action = {
+    kind: 'context_proposal',
+    label: 'Context proposal',
+    actor: 'operator',
+    judgment: true,
+    summary: 'A context proposal is waiting for a decision.',
+    question: 'Confirm or dismiss the proposed context?',
+    if_ignored: 'The proposal stays pending.',
+    choices: contextChoices('T-ctx', targets, allowed),
+    deadline: null,
+    details: {},
+  }
+  return {
+    operatorDecisions: 1,
+    items: [
+      {
+        band: 'decisions',
+        task: task('T-ctx', 'Repair post-merge test failures', 'queued'),
+        next_action: {
+          kind: 'context_proposal',
+          label: 'Context proposal',
+          actor: 'operator',
+          judgment: true,
+          summary: 'A context proposal is waiting for a decision.',
+          deadline: null,
+        },
+      },
+    ],
+    actions: { 'T-ctx': action },
+  }
+}
+
+test('task-context proposals are decided from the inbox one at a time and the item leaves after the last', async ({
+  page,
+}) => {
+  const fixture = contextFixture()
+  const remaining = (id: string) => {
+    const action = fixture.actions['T-ctx'] as { choices: { id: string }[] }
+    action.choices = action.choices.filter((c) => !c.id.endsWith(`:${id}`))
+  }
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path.endsWith('/requirement/req-review-gates-evidence/confirm')) remaining('req-review-gates-evidence')
+    if (path.endsWith('/system_design/component-web-dashboard/dismiss')) {
+      fixture.items = []
+      fixture.operatorDecisions = 0
+      fixture.actions['T-ctx'] = {
+        kind: 'queued',
+        label: 'Queued',
+        actor: 'agent',
+        judgment: false,
+        summary: 'An order is waiting to be claimed.',
+        choices: [],
+        deadline: null,
+        details: {},
+      }
+    }
+    return { state: 'confirmed' }
+  })
+  await page.goto('/inbox')
+  const card = decisionCards(page).first()
+  const confirmRequirement = card.getByRole('button', {
+    name: 'Confirm context requirement req-review-gates-evidence',
+    exact: true,
+  })
+  for (const label of [
+    'Confirm context requirement req-review-gates-evidence',
+    'Dismiss context requirement req-review-gates-evidence',
+    'Confirm context system_design component-web-dashboard',
+    'Dismiss context system_design component-web-dashboard',
+  ])
+    await expect(card.getByRole('button', { name: label, exact: true })).toBeEnabled()
+  await expect(card).not.toContainText('cannot send')
+
+  // A double click still sends one body-less POST to the stated route.
+  await confirmRequirement.dblclick()
+  await expect.poll(() => harness.posts.length).toBe(1)
+  const [first] = harness.posts
+  expect(first.method()).toBe('POST')
+  expect(new URL(first.url()).pathname).toBe(
+    '/v1/tasks/T-ctx/context/proposals/requirement/req-review-gates-evidence/confirm',
+  )
+  expect(first.postData()).toBeNull()
+  expect(first.headers()['x-conveyor-csrf']).toBe('1')
+  expect(new URL(first.url()).searchParams.get('workspace_id')).toBe('demo')
+
+  // The other proposal stays pending and its card stays in the inbox.
+  await expect(confirmRequirement).toHaveCount(0)
+  await expect(decisionCards(page)).toHaveCount(1)
+  await card.getByRole('button', { name: 'Dismiss context system_design component-web-dashboard', exact: true }).click()
+  await expect.poll(() => harness.posts.length).toBe(2)
+  expect(new URL(harness.posts[1].url()).pathname).toBe(
+    '/v1/tasks/T-ctx/context/proposals/system_design/component-web-dashboard/dismiss',
+  )
+  await expect(decisionCards(page)).toHaveCount(0)
+
+  // The task detail reads the confirmed attachment.
+  fixture.activity = {
+    'T-ctx': {
+      task: {
+        ...task('T-ctx', 'Repair post-merge test failures', 'queued'),
+        context: {
+          requirements: [
+            { id: 'req-review-gates-evidence', title: 'Review gates and evidence', version: 4, archived: false },
+          ],
+          designs: [],
+          proposals: [],
+        },
+      },
+      // The decisions as the audited routes record them: kind, target, and
+      // the requirement ID the confirm route adds for a requirement.
+      events: [
+        {
+          id: '901',
+          task_id: 'T-ctx',
+          kind: 'task.context_proposal_confirmed',
+          actor_id: 'user:usr_operator',
+          actor_role: 'operator',
+          at: '2026-10-16T18:10:00.000000Z',
+          payload: {
+            target_kind: 'requirement',
+            target_id: 'req-review-gates-evidence',
+            requirement_id: 'req-review-gates-evidence',
+          },
+        },
+        {
+          id: '902',
+          task_id: 'T-ctx',
+          kind: 'task.context_proposal_dismissed',
+          actor_id: 'user:usr_operator',
+          actor_role: 'operator',
+          at: '2026-10-16T18:11:00.000000Z',
+          payload: { target_kind: 'system_design', target_id: 'component-web-dashboard' },
+        },
+      ],
+      jobs: [],
+      work_orders: [],
+      interventions: [],
+    },
+  }
+  await page.goto('/tasks/T-ctx')
+  await expect(
+    page
+      .getByRole('region', { name: 'Attached context' })
+      .getByLabel('Review gates and evidence (req-review-gates-evidence)'),
+  ).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Suggested context' })).toHaveCount(0)
+  // Both inbox decisions read as the audited acts in the task timeline.
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Context confirmed: requirement req-review-gates-evidence')).toBeVisible()
+  await expect(timeline.getByText('Context dismissed: System Design component-web-dashboard')).toBeVisible()
+})
+
+test('task-context choices a caller may not take stay disabled in the inbox with the capability reason', async ({
+  page,
+}) => {
+  const harness = await serve(page, contextFixture(false))
+  await page.goto('/inbox')
+  const card = decisionCards(page).first()
+  const decisions = card.locator('[data-next-action-choices]').getByRole('button')
+  await expect(decisions).toHaveCount(4)
+  for (const button of await decisions.all()) await expect(button).toBeDisabled()
+  await expect(card.getByText('Needs the operate gates capability.').first()).toBeVisible()
+  expect(harness.posts).toHaveLength(0)
 })
 
 test('agent_question opens the direction input and posts the direction', async ({ page }) => {
