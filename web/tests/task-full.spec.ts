@@ -8236,3 +8236,296 @@ test('the board sheet keeps its stacked composition without an inspector', async
   // The sheet chrome keeps the task title.
   await expect(sheet.locator('header').first()).toContainText('Short task')
 })
+
+// The two task shapes 261016-6fa423 names, on the full route: a merged task
+// with an approved plan, seven context documents, nine attachments, a review
+// bounce, and long branch, dependency, and context values; and a queued task
+// with three pending task-context proposals.
+const at = (minutes: number) => new Date(Date.parse(createdAt) + minutes * 60_000).toISOString()
+const longBranch = 'conveyor/task-merged-shape-with-a-deliberately-long-branch-name-that-must-truncate'
+
+function reviewJob(taskId: string, id: string, start: number, end: number) {
+  return {
+    id,
+    task_id: taskId,
+    stage: 'review' as const,
+    harness: 'codex',
+    model_tier: 'gpt-6.1-sol',
+    runner: 'worker' as const,
+    confinement: 'none' as const,
+    cost_usd: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    state: 'done' as const,
+    started_at: at(start),
+    ended_at: at(end),
+  }
+}
+
+function reviewOrder(taskId: string, id: string, round: number) {
+  return {
+    id,
+    task_id: taskId,
+    job_id: id,
+    stage: 'review' as const,
+    state: 'completed' as const,
+    claimable: false,
+    review_round: round,
+    review_seat: 1,
+    model: 'gpt-6.1-sol',
+    queue_entered_at: at(0),
+    queue_deadline: at(1440),
+    redispatch_count: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    usage_reported: false,
+    self_reported: true,
+  }
+}
+
+function mergedShape(taskId: string) {
+  const item = activity(taskId, true)
+  const review = (id: number, order: string, round: number, verdict: string, minute: number) => ({
+    id,
+    task_id: taskId,
+    job_id: order,
+    kind: 'review.completed',
+    actor_id: 'worker',
+    actor_role: 'runner' as const,
+    payload: {
+      review_work_order_id: order,
+      review_round: round,
+      review_seat: 1,
+      verdict,
+      summary: verdict === 'approve' ? 'Approved' : 'Changes requested',
+      feedback: verdict === 'approve' ? 'Round-one gaps are closed.' : 'Add the masked-gate conformance cases.',
+    },
+    at: at(minute),
+  })
+  return {
+    ...item,
+    task: {
+      ...item.task,
+      state: 'merged' as const,
+      branch: longBranch,
+      dependencies: [
+        {
+          id: 'merged-dependency',
+          title: `Remove the current attempt panel from the task timeline and its tests ${'and more '.repeat(6)}`,
+          state: 'merged' as const,
+        },
+      ],
+      blocking_task_ids: undefined,
+      context: {
+        requirements: [{ id: 'req-operator-next-action', title: 'Operator next action and inbox', version: 7 }],
+        designs: [
+          ['component-http-api', 'HTTP API: router, credential middleware, and task surfaces', 47],
+          ['component-verification-strategy', 'Testing strategy', 31],
+          ['component-web-dashboard', 'Web dashboard: shell, contract layer, and settings', 31],
+          ['component-web-task-surfaces', 'Web task surfaces: board, tasks, and task detail', 13],
+          ['feature-bounded-automatic-recovery', 'Bounded automatic recovery', 3],
+          [
+            'feature-operator-next-action',
+            `Operator next action, inbox, and task flow ${'with a deliberately long title '.repeat(3)}`,
+            14,
+          ],
+        ].map(([id, title, version]) => ({ id: String(id), title: String(title), version: Number(version) })),
+      },
+    },
+    spec: {
+      ...item.spec,
+      approved: true,
+      content: ['## Approach', '', ...Array.from({ length: 30 }, (_, index) => `Plan paragraph ${index + 1}.`)].join(
+        '\n\n',
+      ),
+    },
+    attachments: Array.from({ length: 9 }, (_, index) => ({
+      id: `merged-attachment-${index + 1}`,
+      workspace: 'demo',
+      name: `${index < 3 ? 'mockup' : 'prototype'}-${index + 1}.txt`,
+      content_type: 'text/plain',
+      size_bytes: 1024 + index,
+      role: 'task_context' as const,
+      task_id: taskId,
+      created_at: createdAt,
+    })),
+    jobs: [reviewJob(taskId, `${taskId}-review-1`, 30, 35), reviewJob(taskId, `${taskId}-review-2`, 60, 64)],
+    work_orders: [reviewOrder(taskId, `${taskId}-review-1`, 1), reviewOrder(taskId, `${taskId}-review-2`, 2)],
+    events: [
+      review(101, `${taskId}-review-1`, 1, 'changes_requested', 35),
+      {
+        id: 102,
+        task_id: taskId,
+        kind: 'review.round_completed',
+        actor_id: 'system',
+        actor_role: 'system' as const,
+        payload: {
+          review_round: 1,
+          verdict: 'changes_requested',
+          reviews: [{ review_work_order_id: `${taskId}-review-1` }],
+        },
+        at: at(36),
+      },
+      {
+        id: 103,
+        task_id: taskId,
+        kind: 'pipeline.bounced',
+        actor_id: 'system',
+        actor_role: 'system' as const,
+        payload: { from: 'review', to: 'implement', count: 1, review_round: 1, source: 'review' },
+        at: at(37),
+      },
+      review(104, `${taskId}-review-2`, 2, 'approve', 64),
+      {
+        id: 105,
+        task_id: taskId,
+        kind: 'review.round_completed',
+        actor_id: 'system',
+        actor_role: 'system' as const,
+        payload: { review_round: 2, verdict: 'approve', reviews: [{ review_work_order_id: `${taskId}-review-2` }] },
+        at: at(65),
+      },
+    ],
+  }
+}
+
+const queuedTargets = [
+  ['requirement', 'req-task-centric-operations-view', 'Task-centric operations view'],
+  ['system_design', 'component-verification-strategy', 'Testing strategy'],
+  ['system_design', 'component-web-task-surfaces', 'Web task surfaces: board, tasks, and task detail'],
+] as const
+
+function queuedShape(taskId: string) {
+  const item = activity(taskId, false)
+  return {
+    ...item,
+    task: {
+      ...item.task,
+      state: 'queued' as const,
+      context: {
+        requirements: [],
+        designs: [],
+        proposals: queuedTargets.map(([kind, id, title]) => ({
+          task_id: taskId,
+          target_kind: kind,
+          target_id: id,
+          target_title: title,
+          state: 'proposed' as const,
+          source: 'triage' as const,
+          justification: `Triage suggests ${title} for this change.`,
+          created_by_event_id: 1,
+          proposed_by: 'queue',
+          workspace: 'demo',
+          created_at: createdAt,
+          updated_at: createdAt,
+        })),
+      },
+    },
+    spec: undefined,
+  }
+}
+
+async function expectInsideColumns(page: Page) {
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  const content = page.getByRole('region', { name: 'Task content' })
+  await expect.poll(() => content.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+}
+
+test('the merged shape fills the full-route inspector without widening it', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const taskId = 'work-on-this-merged-shape'
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: mergedShape(taskId) }))
+  await page.goto(`/tasks/${taskId}/full`)
+  const content = page.getByRole('region', { name: 'Task content' })
+  const inspector = content.getByRole('region', { name: 'Task inspector' })
+  await expect(content.getByRole('heading', { level: 1 })).toBeVisible()
+
+  // Seven compact context rows in the inspector, the long title truncated.
+  const contextRows = inspector.getByRole('region', { name: 'Attached context' }).getByRole('listitem')
+  await expect(contextRows).toHaveCount(7)
+  await expect(inspector.getByText('Guidance', { exact: true })).toHaveCount(0)
+  for (const row of await contextRows.all()) {
+    const fits = await row.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)
+    expect(fits).toBe(true)
+  }
+
+  // Nine attachments open on one row; "+N more" reveals every tile in place.
+  await expect(inspector.getByRole('heading', { name: 'Attachments 9' })).toBeVisible()
+  const more = inspector.getByRole('button', { name: /^\+\d+ more$/ })
+  await expect(more).toBeVisible()
+  await more.click()
+  await expect(inspector.getByRole('button', { name: /^Expand (mockup|prototype)-\d\.txt$/ })).toHaveCount(9)
+
+  // Long branch and dependency values truncate inside Properties.
+  const properties = content.getByRole('region', { name: 'Properties' })
+  await expect(properties.getByText(longBranch)).toBeVisible()
+  await expect(properties.getByRole('link', { name: /Remove the current attempt panel.*· Satisfied$/ })).toBeVisible()
+  expect(await properties.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
+  expect(Math.round((await inspector.boundingBox())!.width)).toBe(320)
+
+  // The review bounce reads in the reading column's timeline.
+  await expect(content.locator('[data-review-verdict]')).toHaveText(['Changes requested', 'Approved'])
+  await expect(content.getByRole('button', { name: 'Show full plan' })).toBeVisible()
+  await expectInsideColumns(page)
+})
+
+for (const width of [1440, 390]) {
+  test(`the queued shape decides task-context proposals from the full route at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const taskId = 'work-on-this-queued-shape'
+    let posted: { path: string; body: string | null } | undefined
+    await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: queuedShape(taskId) }))
+    await page.route(`**/v1/tasks/${taskId}/context/proposals/**`, (route) => {
+      posted = { path: new URL(route.request().url()).pathname, body: route.request().postData() }
+      return route.fulfill({ json: {} })
+    })
+    await page.goto(`/tasks/${taskId}/full`)
+    const content = page.getByRole('region', { name: 'Task content' })
+    const card = content.getByRole('region', { name: 'Next action' })
+    await expect(card.getByText('A context proposal is waiting for a decision.')).toBeVisible()
+
+    // The compact suggestions inform; the next-action card decides.
+    const suggestions = content.getByRole('region', { name: 'Suggested context' })
+    await expect(suggestions.getByRole('listitem')).toHaveCount(3)
+    await expect(suggestions.getByRole('button')).toHaveCount(0)
+    const choices = card.locator('[data-next-action-choices]').getByRole('button')
+    await expect(choices).toHaveCount(6)
+    const cardBox = (await card.boundingBox())!
+    for (const button of await choices.all()) {
+      await expect(button).toBeEnabled()
+      const box = (await button.boundingBox())!
+      expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5)
+    }
+    if (width === 1440) {
+      // Suggestions sit in the inspector, the decision in the reading column.
+      await expect(
+        content.getByRole('region', { name: 'Task inspector' }).getByRole('region', { name: 'Suggested context' }),
+      ).toBeVisible()
+      expect(cardBox.x + cardBox.width).toBeLessThan((await suggestions.boundingBox())!.x)
+    }
+    await choices.first().click()
+    await expect
+      .poll(() => posted?.path)
+      .toBe(`/v1/tasks/${taskId}/context/proposals/requirement/req-task-centric-operations-view/confirm`)
+    expect(posted?.body).toBeNull()
+    await expectInsideColumns(page)
+  })
+}
+
+test('with a gate open the full route keeps verification evidence in the gate card, not the inspector', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/tasks/evidence/full')
+  const content = page.getByRole('region', { name: 'Task content' })
+  const gate = content.getByRole('region', { name: 'Human gate' })
+  await expect(gate).toBeVisible()
+  await expect(gate.getByText('proof screenshot.png')).toBeVisible()
+  const inspector = content.getByRole('region', { name: 'Task inspector' })
+  await expect(inspector.getByRole('heading', { name: /^Verification evidence/ })).toHaveCount(0)
+  // The gate card renders in the reading column, left of the inspector.
+  expect((await gate.boundingBox())!.x + (await gate.boundingBox())!.width).toBeLessThan(
+    (await inspector.boundingBox())!.x,
+  )
+  await expectInsideColumns(page)
+})
