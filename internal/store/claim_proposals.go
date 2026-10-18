@@ -97,6 +97,10 @@ type ClaimBlockingProposalReader interface {
 	ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]ClaimBlockingProposal, error)
 }
 
+type claimBlockingProposalBatchReader interface {
+	ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]ClaimBlockingProposal, error)
+}
+
 // ClaimWaitingProposals is the one claim-wait selection: for each task inside
 // its claim window, the versions that withhold its verify and review claims,
 // read through ListClaimBlockingProposalsForTask, the read listing and the
@@ -114,6 +118,23 @@ func ClaimWaitingProposals(ctx context.Context, st ClaimBlockingProposalReader, 
 	}
 	sort.Strings(ids)
 	result := make(map[string][]ClaimBlockingProposal)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	// A store that batches the predicate answers every windowed task in one
+	// read with the same per-task selection and order.
+	if batch, ok := st.(claimBlockingProposalBatchReader); ok {
+		selected, err := batch.ListClaimBlockingProposalsForTasks(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			if items := selected[id]; len(items) > 0 {
+				result[id] = items
+			}
+		}
+		return result, nil
+	}
 	for _, id := range ids {
 		items, err := st.ListClaimBlockingProposalsForTask(ctx, id)
 		if err != nil {

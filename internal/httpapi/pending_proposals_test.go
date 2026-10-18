@@ -420,8 +420,19 @@ func (s *blockingReadStore) ListClaimBlockingProposalsForTask(ctx context.Contex
 	return s.Store.ListClaimBlockingProposalsForTask(ctx, taskID)
 }
 
-// The claim-wait read is store.ClaimWaitingProposals: one claim-blocking read
-// per task inside its claim window, none for a task outside it, the decided
+// ListClaimBlockingProposalsForTasks records the batched read's tasks, so the
+// bound below covers the batch the selection issues for stores that offer it.
+func (s *blockingReadStore) ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]store.ClaimBlockingProposal, error) {
+	s.tasks = append(s.tasks, taskIDs...)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.Store.ListClaimBlockingProposalsForTasks(ctx, taskIDs)
+}
+
+// The claim-wait read is store.ClaimWaitingProposals: one batched
+// claim-blocking read naming only the tasks inside their claim window, none
+// for a task outside it, the decided
 // state of each version as the claim sees it, and a storage failure as a read
 // error, never "not waiting" (component-document-corpus).
 func TestProposalClaimWaitingReadsAreBoundedAndTruthful(t *testing.T) {
