@@ -456,6 +456,34 @@ test('a dependency diamond counts each open dependent once', async ({ page }) =>
   )
 })
 
+test('a stated-label chip highlights its tasks and dims the rest, in both arrangements', async ({ page }) => {
+  await mockMap(page)
+  const dimmed = (id: string) => node(page, id).locator(':scope > div')
+  const dim = /\bopacity-(15|20)\b/
+  const cases = [
+    { address: '/?view=map&scope=req-alpha', chip: '1 Agent working', match: ['a2'], other: ['a1', 'a3', 'm1'] },
+    {
+      address: '/?view=map&arrangement=dependencies',
+      chip: '3 Blocked by a dependency',
+      match: ['a1', 'a3', 'b1'],
+      other: ['a2', 'n1', 'g1'],
+    },
+  ]
+  for (const { address, chip, match, other } of cases) {
+    await page.goto(address)
+    await expect(node(page, match[0])).toBeVisible()
+    const button = page.getByRole('button', { name: chip, exact: true })
+    await button.click()
+    await expect(button).toHaveAttribute('aria-pressed', 'true')
+    for (const id of match) await expect(dimmed(id)).not.toHaveClass(dim)
+    for (const id of other) await expect(dimmed(id)).toHaveClass(dim)
+    // Turning the chip off restores every task.
+    await button.click()
+    await expect(button).toHaveAttribute('aria-pressed', 'false')
+    for (const id of [...match, ...other]) await expect(dimmed(id)).not.toHaveClass(dim)
+  }
+})
+
 test('selecting a task traces both directions, dims the rest, draws its cross-cluster edges, and opens the panel', async ({
   page,
 }) => {

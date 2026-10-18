@@ -230,7 +230,7 @@ function BoardMapView() {
       const task = model.tasks.get(id)
       const position = positions.get(id)
       if (!task || !position) continue
-      const highlighted = highlight.size === 0 || highlight.has(task.status)
+      const highlighted = highlight.size === 0 || highlight.has(labelOf(task))
       const inChain = !chain || chain.has(id)
       list.push({
         id,
