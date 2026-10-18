@@ -2,9 +2,16 @@ import { emptyTaskFilter, type TaskFilterState } from '../task/task-filters'
 
 // The Board's address (req-operator-next-action REQ-6): the view, task intake,
 // and the filter parameters the list view accepts on arrival. Kanban is the
-// default and is never written to the address (AC-6.1).
+// default and is never written to the address (AC-6.1). The map view adds its
+// arrangement, requirement, and task (req-board-map AC-1.1).
 export interface BoardSearch {
-  view?: 'list'
+  view?: 'list' | 'map'
+  // The map's arrangement; requirements when absent.
+  arrangement?: 'requirements' | 'dependencies'
+  // The map's selected task.
+  focus?: string
+  // The requirement the map is drilled into.
+  scope?: string
   create?: true
   q?: string
   state?: string[]
@@ -28,7 +35,11 @@ function list(value: unknown) {
 // Accepts exactly the Board's parameters; anything else is dropped (AC-6.3).
 export function validateBoardSearch(search: Record<string, unknown>): BoardSearch {
   return {
-    view: search.view === 'list' ? 'list' : undefined,
+    view: search.view === 'list' || search.view === 'map' ? search.view : undefined,
+    arrangement:
+      search.arrangement === 'requirements' || search.arrangement === 'dependencies' ? search.arrangement : undefined,
+    focus: text(search.focus),
+    scope: text(search.scope),
     create: search.create === true || search.create === 'true' ? true : undefined,
     q: text(search.q),
     state: list(search.state),

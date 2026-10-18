@@ -1202,6 +1202,21 @@ export async function fetchTaskOperations(input: {
     offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
   } satisfies TaskOperationsPage
 }
+// The Board map's one read (req-board-map AC-3.1, AC-3.4): every open task
+// with its relations, stated next action, and served requirements, plus the
+// workspace's requirement progress. The repository filter and the finished
+// toggle travel to the server; the response is never paginated.
+export function fetchTaskMap(
+  workspace: string,
+  options: { repositories?: string[]; includeFinished?: boolean } = {},
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams()
+  for (const repository of options.repositories ?? []) query.append('repository', repository)
+  if (options.includeFinished) query.set('include_finished', 'true')
+  const suffix = query.toString() ? `?${query}` : ''
+  return getJSON<import('./types').TaskMapResponse>(workspaceURL(`/v1/task-map${suffix}`, workspace), signal)
+}
 export async function fetchArtifacts() {
   const response = await fetch(workspaceURL('/v1/artifacts'))
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))

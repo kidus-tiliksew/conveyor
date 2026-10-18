@@ -624,6 +624,36 @@ export interface TaskOperationsPage {
   offset: number
 }
 
+// GET /v1/task-map: the Board map's one workspace-wide read (req-board-map
+// AC-3.1; component-http-api, Task map read). It carries no task body.
+export interface TaskMapResponse {
+  tasks: TaskMapItem[]
+  requirements: TaskMapRequirement[]
+}
+
+export interface TaskMapItem {
+  id: string
+  title: string
+  repo: string
+  state: TaskState
+  last_event_at: string
+  next_action: NextActionCompact
+  depends_on: string[]
+  blocking_task_ids: string[]
+  unsatisfiable_task_ids: string[]
+  requirements: Array<{ id: string; title: string }>
+}
+
+// Workspace-wide counts for one served requirement: total is open plus
+// merged, and closed tasks count in neither (AC-1.3).
+export interface TaskMapRequirement {
+  id: string
+  title: string
+  open_task_count: number
+  merged_task_count: number
+  total_task_count: number
+}
+
 // The list-scoped stalled projection: the reason a row cannot move, without
 // the work order the detail surfaces render.
 export interface TaskStalledSummary {
