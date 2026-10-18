@@ -244,6 +244,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/pending-proposals", s.listPendingProposals)
 			r.Get("/tasks", s.listTasks)
 			r.Get("/task-operations", s.listTaskOperations)
+			r.Get("/task-map", s.getTaskMap)
 			r.Get("/tasks/{id}", s.getTask)
 			r.Get("/tasks/{id}/next-action", s.getNextAction)
 			r.Get("/tasks/{id}/flow", s.getTaskFlow)

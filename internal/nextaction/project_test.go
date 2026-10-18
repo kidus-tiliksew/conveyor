@@ -429,3 +429,24 @@ func choiceByID(na NextAction, id string) (Choice, bool) {
 	}
 	return Choice{}, false
 }
+
+// TestCompactIgnoresDispositionBinding proves the row-10 binding and its
+// refusal feed only details and choices, never a compact field, so a
+// compact-only list read may skip the per-order verification read
+// (store.NextActionOptions.CompactOnly; feature-operator-next-action NA-3).
+func TestCompactIgnoresDispositionBinding(t *testing.T) {
+	now := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	bound := dispositionInput(now, &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"})
+	unread := dispositionInput(now, nil)
+	unread.Dispositions = nil
+	refused := dispositionInput(now, nil)
+	refused.Dispositions = map[string]DispositionInput{"v": {Refusal: "verify order v has no sealed verification checkpoint to dispose"}}
+	for name, in := range map[string]Input{"unread": unread, "refused": refused} {
+		if got, want := CompactFrom(Project(in)), CompactFrom(Project(bound)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s compact=%+v want %+v", name, got, want)
+		}
+	}
+	if Project(bound).Kind != KindVerificationDisposition {
+		t.Fatalf("fixture kind=%s", Project(bound).Kind)
+	}
+}

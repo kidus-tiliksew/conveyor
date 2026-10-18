@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -156,6 +157,14 @@ func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []strin
 	return s.listActivityMarkers(ctx, taskIDs)
 }
 
+// The event kinds each activity-marker fold reads. listActivityMarkers
+// selects only these kinds.
+var (
+	activityMarkerReviewKinds  = []string{"work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed"}
+	activityMarkerRequestKinds = []string{"pipeline.bounced", "work_order.claimed"}
+	activityMarkerForgeKinds   = []string{"github_issue.publication_failed", "github_issue.publication_published", "review.publication_failed", "review.publication_published", "merge.failed", "merge.confirmed", "merge.reconciled"}
+)
+
 func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
 	type markerRow struct {
 		taskID      string
@@ -243,13 +252,22 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	eventsByTask := make(map[string][]core.Event)
 	requestEventsByTask := make(map[string][]core.Event)
 	forgeEventsByTask := make(map[string][]core.Event)
-	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at FROM events e WHERE e.workspace_id=? AND e.task_id IS NOT NULL`
-	var markerRows *documentResultSet
-	if len(taskIDs) == 0 {
-		markerRows, err = documentRows(ctx, s.db, markerQuery+` ORDER BY e.at,e.id`, documentWorkspace(ctx))
-	} else {
-		markerRows, err = documentBatchRows(ctx, s.db, markerQuery+` AND e.task_id IN (%s) ORDER BY e.at,e.id`, documentWorkspace(ctx), taskIDs)
+	// Select only the kinds the marker folds below read, so a marker read
+	// never transfers task.created bodies or other unrelated history. The
+	// review kinds are read only when a review order can consume them
+	// (component-persistence).
+	kinds := append([]string(nil), activityMarkerRequestKinds...)
+	kinds = append(kinds, activityMarkerForgeKinds...)
+	if hasReviewOrders {
+		kinds = append(kinds, activityMarkerReviewKinds...)
 	}
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at FROM events e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)`
+	markerArgs := append([]any{documentWorkspace(ctx)}, taskMapArgs(kinds)...)
+	if len(taskIDs) > 0 {
+		markerQuery += ` AND e.task_id IN (` + taskMapMarks(len(taskIDs)) + `)`
+		markerArgs = append(markerArgs, taskMapArgs(taskIDs)...)
+	}
+	markerRows, err := documentRows(ctx, s.db, markerQuery+` ORDER BY e.at,e.id`, markerArgs...)
 
 	if err != nil {
 		return nil, err
@@ -260,16 +278,13 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 			markerRows.Close()
 			return nil, scanErr
 		}
-		switch event.Kind {
-		case "work_order.claimed", "work_order.lease_renewed", "work_order.released", "review.completed", "review.accepted", "task.setup.changed":
-			if hasReviewOrders {
-				eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
-			}
+		if hasReviewOrders && slices.Contains(activityMarkerReviewKinds, event.Kind) {
+			eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
 		}
-		switch event.Kind {
-		case "pipeline.bounced", "work_order.claimed":
+		switch {
+		case slices.Contains(activityMarkerRequestKinds, event.Kind):
 			requestEventsByTask[event.TaskID] = append(requestEventsByTask[event.TaskID], event)
-		case "github_issue.publication_failed", "github_issue.publication_published", "review.publication_failed", "review.publication_published", "merge.failed", "merge.confirmed", "merge.reconciled":
+		case slices.Contains(activityMarkerForgeKinds, event.Kind):
 			forgeEventsByTask[event.TaskID] = append(forgeEventsByTask[event.TaskID], event)
 		}
 	}

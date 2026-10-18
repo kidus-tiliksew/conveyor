@@ -272,8 +272,18 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 	}
 	return orders[0], nil
 }
+
+// activityWorkOrderColumns preserves scanWorkOrder's shape while omitting the
+// served-requirement and governance snapshots, which list projections never
+// read; the PostgreSQL batch read omits them the same way.
+var activityWorkOrderColumns = strings.Replace(workOrderColumns, "served_requirement_snapshot, governance_snapshot", "NULL, NULL", 1)
+
 func (s *Store) listOrders(ctx context.Context, db s2log.Executor, ids []string) ([]core.WorkOrder, error) {
-	query := `SELECT ` + workOrderColumns + ` FROM work_orders WHERE workspace_id=?`
+	return s.listOrderColumns(ctx, db, workOrderColumns, ids)
+}
+
+func (s *Store) listOrderColumns(ctx context.Context, db s2log.Executor, columns string, ids []string) ([]core.WorkOrder, error) {
+	query := `SELECT ` + columns + ` FROM work_orders WHERE workspace_id=?`
 	args := []any{documentWorkspace(ctx)}
 	if ids != nil {
 		if len(ids) == 0 {
@@ -307,11 +317,14 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	}
 	return orders, err
 }
+
+// ListWorkOrdersForTasks is the batch projection read of activity, markers,
+// and next actions. Like PostgreSQL's, it omits the authority snapshots.
 func (s *Store) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
 	if len(ids) == 0 {
 		return []core.WorkOrder{}, nil
 	}
-	orders, err := s.listOrders(ctx, s.db, ids)
+	orders, err := s.listOrderColumns(ctx, s.db, activityWorkOrderColumns, ids)
 	projectOrders(orders)
 	return orders, err
 }

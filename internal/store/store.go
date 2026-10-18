@@ -117,6 +117,7 @@ type Store interface {
 	LineageStore
 	ActivityStore
 	StoreMetadata
+	NextActionInputStore
 }
 
 // TaskStore owns the task, dependency, job and intervention contract.
@@ -151,6 +152,12 @@ type TaskStore interface {
 	// Implementations must apply caller and attention predicates before paging.
 	ListCallerAttentionTaskPage(ctx context.Context, query CallerAttentionQuery) (TaskPage, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
+	// ListTaskMap reads the workspace task map in a fixed number of
+	// set-based queries: the selected task nodes without their bodies, their
+	// dependency edges and served requirements, every open workspace task,
+	// and the workspace's served-requirement aggregates (req-board-map
+	// AC-3.1; component-persistence).
+	ListTaskMap(ctx context.Context, query TaskMapQuery) (TaskMap, error)
 	ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error)
 	// AttachTaskBranch remaps Task.Branch under WithTaskSideEffectLock.
 	// Same-name is a no-op. A collision names the other open task id.

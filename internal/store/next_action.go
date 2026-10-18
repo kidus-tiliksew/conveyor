@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +30,15 @@ type NextActionOptions struct {
 	// merge_approval gate without a forge call, or nil when none is known
 	// (DEC-64(3); DEC-61).
 	MergeReadiness func(context.Context, core.Task) *nextaction.MergeReadiness
+	// OpenTasksLoaded skips the dependency view's open-task read when the
+	// caller already holds every open task in the workspace.
+	OpenTasksLoaded bool
+	OpenTasks       []core.Task
+	// CompactOnly marks a caller that consumes only nextaction.CompactFrom.
+	// The row-10 disposition binding feeds only details and choices, so its
+	// per-order verification read is skipped; every compact field is
+	// projected from the same input (feature-operator-next-action NA-3).
+	CompactOnly bool
 }
 
 // ReadNextAction projects one task. Missing tasks return the store's not-found error.
@@ -76,7 +86,11 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	dependencies, err := readDependencyView(ctx, st, tasks, orders)
+	dependencies, err := readDependencyView(ctx, st, tasks, orders, opts)
+	if err != nil {
+		return nil, err
+	}
+	events, specs, err := readAssemblerHistory(ctx, st, tasks)
 	if err != nil {
 		return nil, err
 	}
@@ -102,10 +116,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	}
 	out := make(map[string]nextaction.NextAction, len(tasks))
 	for _, task := range tasks {
-		input, err := assembleInput(ctx, st, task, ordersByTask[task.ID], markerByTask[task.ID], proposals, waiting[task.ID], opts)
-		if err != nil {
-			return nil, err
-		}
+		input := assembleInput(ctx, task, ordersByTask[task.ID], markerByTask[task.ID], proposals, waiting[task.ID], events[task.ID], specs, opts)
 		input.Blockers = dependencies.forward[task.ID]
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
@@ -116,7 +127,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		// Row 10 reads its selected order's sealed checkpoint only when it
 		// wins, so no other row ever carries the binding
 		// (feature-operator-next-action NA-3, Disposition binding).
-		if action.Kind == nextaction.KindVerificationDisposition && action.CurrentOrder != nil {
+		if action.Kind == nextaction.KindVerificationDisposition && action.CurrentOrder != nil && !opts.CompactOnly {
 			disposition, err := readDispositionInput(ctx, st, task, input.Orders, action.CurrentOrder.ID)
 			if err != nil {
 				return nil, err
@@ -148,14 +159,18 @@ var openTaskStates = []core.TaskState{core.TaskClaiming, core.TaskQueued, core.T
 // requested subset, so a blocker projected alone, or inside a filtered page,
 // still names dependents outside the request. Orders are read only for
 // dependents the request did not already load.
-func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders []core.WorkOrder) (dependencyView, error) {
+func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders []core.WorkOrder, opts NextActionOptions) (dependencyView, error) {
 	view := dependencyView{blockers: map[string]DependencyBlockers{}, forward: map[string][]nextaction.BlockerRef{}, blocks: map[string][]nextaction.BlockerRef{}}
 	if len(tasks) == 0 {
 		return view, nil
 	}
-	open, err := st.ListTasksFiltered(ctx, TaskFilter{States: openTaskStates})
-	if err != nil {
-		return view, err
+	open := opts.OpenTasks
+	var err error
+	if !opts.OpenTasksLoaded {
+		open, err = st.ListTasksFiltered(ctx, TaskFilter{States: openTaskStates})
+		if err != nil {
+			return view, err
+		}
 	}
 	workspace, _ := WorkspaceFromContext(ctx)
 	known := map[string]core.Task{}
@@ -226,23 +241,71 @@ func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders
 		refs := view.blocks[id]
 		sort.Slice(refs, func(i, j int) bool { return refs[i].TaskID < refs[j].TaskID })
 	}
+	// Blockers outside the open set, merged or closed, are read in one batch
+	// rather than one task read each.
+	heads := map[string]TaskHead{}
+	var missing []string
+	for id := range requested {
+		for _, blockerID := range view.blockers[id].BlockingTaskIDs {
+			if _, ok := known[blockerID]; !ok && !slices.Contains(missing, blockerID) {
+				missing = append(missing, blockerID)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		heads, err = st.ListTaskHeads(ctx, missing)
+		if err != nil {
+			return view, err
+		}
+	}
 	for id := range requested {
 		blockerIDs := view.blockers[id].BlockingTaskIDs
 		refs := make([]nextaction.BlockerRef, 0, len(blockerIDs))
 		for _, blockerID := range blockerIDs {
-			blocker, ok := known[blockerID]
-			if !ok {
-				blocker, err = st.GetTask(ctx, blockerID)
-				if err != nil {
-					return view, err
-				}
-				known[blockerID] = blocker
+			if blocker, ok := known[blockerID]; ok {
+				refs = append(refs, nextaction.BlockerRef{TaskID: blocker.ID, Title: blocker.Title, State: string(blocker.State)})
+				continue
 			}
-			refs = append(refs, nextaction.BlockerRef{TaskID: blocker.ID, Title: blocker.Title, State: string(blocker.State)})
+			head, ok := heads[blockerID]
+			if !ok {
+				return view, fmt.Errorf("%w: task %s", ErrNotFound, blockerID)
+			}
+			refs = append(refs, nextaction.BlockerRef{TaskID: head.ID, Title: head.Title, State: string(head.State)})
 		}
 		view.forward[id] = refs
 	}
 	return view, nil
+}
+
+// readAssemblerHistory batches the history the assembler folds: the
+// NextActionEventKinds events of parked, approved, and awaiting tasks, and
+// the latest plan version of awaiting tasks. Other tasks read neither, as
+// before batching (feature-operator-next-action, Input loading).
+func readAssemblerHistory(ctx context.Context, st Store, tasks []core.Task) (map[string][]core.Event, map[string]int, error) {
+	var eventIDs, specIDs []string
+	for _, task := range tasks {
+		if task.State == core.TaskParked || task.State == core.TaskApproved || task.State == core.TaskAwaiting {
+			eventIDs = append(eventIDs, task.ID)
+		}
+		if task.State == core.TaskAwaiting {
+			specIDs = append(specIDs, task.ID)
+		}
+	}
+	events := map[string][]core.Event{}
+	specs := map[string]int{}
+	var err error
+	if len(eventIDs) > 0 {
+		if events, err = st.ListNextActionEvents(ctx, eventIDs); err != nil {
+			return nil, nil, err
+		}
+	}
+	if len(specIDs) > 0 {
+		if specs, err = st.ListLatestSpecVersionNumbers(ctx, specIDs); err != nil {
+			return nil, nil, err
+		}
+	}
+	return events, specs, nil
 }
 
 // withDependencyBlockers returns an implement or verify order carrying the
@@ -260,23 +323,13 @@ func withDependencyBlockers(order core.WorkOrder, blockers DependencyBlockers) c
 	return order
 }
 
-func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, waiting []ClaimBlockingProposal, opts NextActionOptions) (nextaction.Input, error) {
-	var events []core.Event
-	if task.State == core.TaskParked || task.State == core.TaskApproved || task.State == core.TaskAwaiting {
-		var err error
-		events, err = st.ListEvents(ctx, task.ID)
-		if err != nil {
-			return nextaction.Input{}, err
-		}
-	}
-	var spec core.SpecVersion
-	var found bool
+// assembleInput builds one task's projection input from batched reads.
+// events holds only NextActionEventKinds, which are every kind the folds
+// below inspect, and specs the latest plan version of awaiting tasks.
+func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, waiting []ClaimBlockingProposal, events []core.Event, specs map[string]int, opts NextActionOptions) nextaction.Input {
+	specVersion, found := 0, false
 	if task.State == core.TaskAwaiting {
-		var err error
-		spec, found, err = st.GetLatestSpecVersion(ctx, task.ID)
-		if err != nil {
-			return nextaction.Input{}, err
-		}
+		specVersion, found = specs[task.ID]
 	}
 	for i := range orders {
 		pendingRevision := task.State == core.TaskAwaiting && task.GateKind == core.GateKindPlanRevision
@@ -294,10 +347,10 @@ func assembleInput(ctx context.Context, st Store, task core.Task, orders []core.
 		input.MergeReadiness = opts.MergeReadiness(ctx, task)
 	}
 	if found {
-		input.LatestSpec = &nextaction.SpecRef{Version: spec.Version}
-		input.GateSpecVersion = spec.Version
+		input.LatestSpec = &nextaction.SpecRef{Version: specVersion}
+		input.GateSpecVersion = specVersion
 	}
-	return input, nil
+	return input
 }
 
 // AutomaticRecoveryFor projects the durable AR-3 ledger on each order: a
