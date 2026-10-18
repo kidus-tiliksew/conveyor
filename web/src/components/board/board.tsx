@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
@@ -25,7 +25,11 @@ import { BoardList } from './board-list'
 import type { BoardSearch } from './board-search'
 import { BoardViewSwitch } from './board-view-switch'
 
-// The Board: kanban columns or the list view of the same workspace (REQ-6),
+// The map's graph libraries load with the view, never with the Board (DEC-76).
+const BoardMap = lazy(() => import('./map/board-map').then((module) => ({ default: module.BoardMap })))
+
+// The Board: kanban columns, the list view, or the map of the same workspace
+// (REQ-6; req-board-map),
 // with task intake over either. The view, intake and any arriving list filter
 // live in the address so a reload or a shared link lands on the same view.
 export function Board() {
@@ -35,11 +39,12 @@ export function Board() {
   const canCreateTasks = useWorkspaceCapability('create_tasks')
   if (!workspace) return <Onboarding />
   const list = search.view === 'list'
+  const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <BoardViewSwitch view={list ? 'list' : 'kanban'} />
+        <BoardViewSwitch view={map ? 'map' : list ? 'list' : 'kanban'} />
         <div className="ml-auto flex items-center gap-2">
           <MCPSetup />
           {canCreateTasks && (
@@ -55,7 +60,15 @@ export function Board() {
       <div className="mx-4 lg:mx-6">
         <EmptyRepositoryNotice />
       </div>
-      {list ? <BoardList /> : <Kanban />}
+      {map ? (
+        <Suspense fallback={<Skeleton className="m-6 h-96" />}>
+          <BoardMap />
+        </Suspense>
+      ) : list ? (
+        <BoardList />
+      ) : (
+        <Kanban />
+      )}
       {search.create && canCreateTasks && <TaskCreateSheet />}
     </div>
   )
