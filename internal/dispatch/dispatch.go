@@ -917,12 +917,20 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			continue
 		}
 		seen[artifact.ID] = true
+		optional := stage == core.StageTriage && artifact.TaskID != task.ID
 		kind, kindErr := modelAttachmentKind(artifact)
 		if kindErr != nil {
-			return input, kindErr
+			if !optional {
+				return input, kindErr
+			}
+			// An adjacent task's unsupported artifact cannot block triage: its body
+			// is never read, and the note counts toward the text/history budget
+			// like every other omission note (component-triage).
+			fmt.Fprintf(&prompt, "\nContext artifact body omitted as unsupported model input: %s (%s, %d bytes, id %s) from %s; this attachment kind is not supported model input; the body is unread.\n", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID, contextArtifactSource(artifact))
+			markContextDeliveryOmitted(&input.ContextFreshness, artifact.ID)
+			continue
 		}
 		attachment := inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind}
-		optional := stage == core.StageTriage && artifact.TaskID != task.ID
 		omit := func(err *triageBudgetError, size int) {
 			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s); %s\n", artifact.Name, artifact.ContentType, size, artifact.ID, err)
 		}
@@ -981,6 +989,17 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	return input, nil
 }
 
+// markContextDeliveryOmitted keeps the prepared envelope from claiming delivery
+// of a body that input preparation never read (component-context-freshness).
+func markContextDeliveryOmitted(f *core.ContextFreshness, artifactID string) {
+	for i := range f.Deliveries {
+		if f.Deliveries[i].ArtifactID == artifactID {
+			f.Deliveries[i].Omitted = true
+		}
+	}
+	f.ObservationRevision = core.ContextDigest(f.Deliveries)
+}
+
 func contextArtifactSource(artifact core.Artifact) string {
 	switch {
 	case artifact.TaskID != "":
@@ -996,8 +1015,10 @@ func contextArtifactSource(artifact core.Artifact) string {
 
 // modelAttachmentKind is the provider boundary for in-process pipeline context:
 // text/documents use Responses input_file, images use input_image, and audio is
-// transcribed before the stage request. Anything outside that documented set
-// fails before model execution instead of degrading to metadata (component-runtime).
+// transcribed before the stage request. Anything outside that documented set is
+// an error; the caller fails input preparation before model execution, except
+// that triage omits an adjacent task's optional artifact (component-runtime;
+// component-triage).
 func modelAttachmentKind(artifact core.Artifact) (inprocess.AttachmentKind, error) {
 	contentType := strings.ToLower(strings.TrimSpace(strings.Split(artifact.ContentType, ";")[0]))
 	ext := strings.ToLower(filepath.Ext(artifact.Name))
