@@ -224,13 +224,23 @@ async function zoom(page: Page) {
     .evaluate((element) => new DOMMatrixReadOnly(getComputedStyle(element).transform).a)
 }
 
-// Cards print their status text from the zoom where full cards draw.
+// Cards print their status text from the zoom where full cards draw. A new
+// layout first frames itself with a 400 ms fit, which would undo an earlier
+// zoom, so zooming starts once the camera has settled and repeats until the
+// zoom holds.
 async function zoomToCards(page: Page) {
   await expect(taskNodes(page).first()).toBeVisible()
-  while ((await zoom(page)) < 0.62) {
-    await page.locator('.react-flow__controls-zoomin').click()
-    await page.waitForTimeout(50)
-  }
+  await waitForCamera(taskNodes(page).first())
+  await expect
+    .poll(
+      async () => {
+        const current = await zoom(page)
+        if (current < 0.62) await page.locator('.react-flow__controls-zoomin').click()
+        return current
+      },
+      { intervals: [250], timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(0.62)
 }
 
 async function viewport(page: Page) {
