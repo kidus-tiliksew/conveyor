@@ -433,6 +433,29 @@ test('task nodes print the stated label with a mark from the stated actor, and w
   await expect(page.getByRole('button', { name: '1 Job failed' })).toBeVisible()
 })
 
+test('a dependency diamond counts each open dependent once', async ({ page }) => {
+  // d4 waits on d2 and d3, which both wait on d1: d1 unblocks three tasks,
+  // not four (req-board-map AC-2.2).
+  await mockMap(page, () => ({
+    tasks: [
+      task('d1', 'Diamond root', working),
+      task('d2', 'Diamond left', blocked, { depends: ['d1'], blocking: ['d1'] }),
+      task('d3', 'Diamond right', blocked, { depends: ['d1'], blocking: ['d1'] }),
+      task('d4', 'Diamond join', blocked, { depends: ['d2', 'd3'], blocking: ['d2', 'd3'] }),
+    ],
+    requirements: [],
+  }))
+  await page.goto('/?view=map&arrangement=dependencies')
+  await zoomToCards(page)
+  await expect(node(page, 'd1')).toContainText('→3')
+  await expect(node(page, 'd2')).toContainText('→1')
+  await expect(node(page, 'd4')).toContainText('→0')
+  await expect(node(page, 'd4').locator('[data-dependency-mark]')).toHaveAttribute(
+    'aria-label',
+    'Waiting for Diamond left, Diamond right',
+  )
+})
+
 test('selecting a task traces both directions, dims the rest, draws its cross-cluster edges, and opens the panel', async ({
   page,
 }) => {
