@@ -5,6 +5,13 @@ import { GateChoices } from '../task/merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from '../task/next-action-parts'
 import { Disclosure } from '../ui/disclosure'
 import { Skeleton } from '../ui/skeleton'
+import {
+  ContextProposalBatch,
+  ContextProposalError,
+  ContextProposalRows,
+  MonitorOriginLine,
+  useContextProposalSends,
+} from './context-proposal-rows'
 import { useNextAction } from './use-next-actions'
 
 // What the card's context link opens, by next-action kind (AC-2.3). A kind
@@ -15,6 +22,7 @@ const contextLinks: Record<string, string> = {
   agent_question: 'View checkpoint',
   review_bounce_limit: 'View review',
   verification_disposition: 'View operation log',
+  context_proposal: 'View proposed context',
 }
 
 // One task decision in the Inbox (AC-2.1; feature-operator-next-action NA-6).
@@ -29,6 +37,10 @@ export function DecisionCard({ item, task, onView }: { item: InboxItem; task: Ta
   const blocks = action?.blocks ?? compact?.blocks ?? []
   const pullRequest = item.pull_request
   const titles = new Map((task.context?.requirements ?? []).map((requirement) => [requirement.id, requirement.title]))
+  const sends = useContextProposalSends(task.id)
+  // A context decision lists one row per proposed document in place of the
+  // flat choice row (NA-6).
+  const contextRows = kind === 'context_proposal' && action?.details?.context_proposals ? action : undefined
   return (
     <li data-inbox-item={task.id} className="min-w-0 overflow-hidden rounded-lg border border-attention/40 bg-card">
       <div className="min-w-0 space-y-2.5 px-4 pb-3 pt-4">
@@ -75,6 +87,12 @@ export function DecisionCard({ item, task, onView }: { item: InboxItem; task: Ta
         </div>
         {isLoading && <Skeleton className="h-12" />}
         {action?.question && <p className="text-sm leading-6">{action.question}</p>}
+        {contextRows && (
+          <div className="space-y-2">
+            <MonitorOriginLine action={contextRows} />
+            <ContextProposalRows action={contextRows} sends={sends} />
+          </div>
+        )}
         {item.recommendation && <p className="text-sm text-muted">Recommendation: {item.recommendation}</p>}
         <div className="text-xs">
           <button
@@ -89,10 +107,17 @@ export function DecisionCard({ item, task, onView }: { item: InboxItem; task: Ta
       </div>
       <div data-decision-footer className="space-y-2 border-t border-border bg-surface/60 px-4 py-3">
         {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
-        {action && (
-          <div className="text-[13px]">
-            <GateChoices taskId={task.id} action={action} />
-          </div>
+        {contextRows ? (
+          <>
+            <ContextProposalBatch action={contextRows} sends={sends} />
+            <ContextProposalError sends={sends} />
+          </>
+        ) : (
+          action && (
+            <div className="text-[13px]">
+              <GateChoices taskId={task.id} action={action} />
+            </div>
+          )
         )}
         <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted">
           {action?.if_ignored && (

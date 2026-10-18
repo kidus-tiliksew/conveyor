@@ -1422,9 +1422,8 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		if err = s.orderSupersessionGuardTx(ctx, tx, projected); err != nil {
 			return err
 		}
-		eligible := projected.State == core.WorkOrderQueued && (projected.LastAttemptOutcome != "" || projected.RetrySuppressed || !projected.NextRetryAt.IsZero())
-		if !eligible && projected.State != core.WorkOrderStale && projected.State != core.WorkOrderTimedOut {
-			return fmt.Errorf("work order %s is not released, expired, or retry-suppressed", id)
+		if refusal := core.WorkOrderRecoverStateRefusal(projected); refusal != "" {
+			return errors.New(refusal)
 		}
 		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
 			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)

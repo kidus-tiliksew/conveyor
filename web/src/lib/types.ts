@@ -1029,7 +1029,9 @@ export interface PendingProposal {
   origin_type: 'task' | 'session' | 'drift' | 'operator'
   origin_id?: string
   proposed_at: string
-  age_seconds: number
+  /** Whole seconds since proposed_at at the read's clock; absent when the
+   * proposal has no proposed time or the response predates the field. */
+  age_seconds?: number
 }
 
 /** A task-authored proposal that withholds its task's verify and review claims. */
@@ -1107,6 +1109,28 @@ export interface NextActionDetails {
   merge_readiness?: string
   // Row 10's binding for the verification recover body (NA-3).
   disposition?: NextActionDisposition
+  // Row 15's pending task-context proposals in choice order, and the origin of
+  // a monitor-filed task (NA-3, Context-proposal presentation and Monitor origin).
+  context_proposals?: NextActionContextProposal[]
+  monitor_origin?: NextActionMonitorOrigin
+}
+
+export interface NextActionContextProposal {
+  kind: string
+  target_id: string
+  target_title: string
+  tier_label: string
+  justification: string
+  source: string
+  proposed_by: string
+  created_at: string
+}
+
+export interface NextActionMonitorOrigin {
+  kind: string
+  summary: string
+  source_url?: string
+  observed_at?: string
 }
 
 export interface NextActionDisposition {
@@ -1152,6 +1176,10 @@ export interface InboxItem {
   recommendation?: string
   no_judgment_needed?: boolean
   proposal?: PendingProposal
+  /** Server copy for a document proposal (feature-operator-next-action NA-4). */
+  label?: string
+  question?: string
+  if_ignored?: string
   sentence?: string
   blockers?: NextActionBlocker[]
   deadline?: string | null

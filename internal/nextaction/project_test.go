@@ -118,6 +118,11 @@ func TestCatalogueCoversEveryKind(t *testing.T) {
 			t.Fatalf("judgment kind %s missing question or if_ignored", kind)
 		}
 	}
+	for _, kind := range MonitorOriginKinds() {
+		if summary := MonitorOriginSummary(kind); summary == "Filed by the monitor" || summary == "" {
+			t.Fatalf("monitor origin %s missing its sentence", kind)
+		}
+	}
 	for _, reason := range StallReasons() {
 		entry, ok := Lookup(KindStalled, reason, "", "")
 		if !ok || entry.Label == "" || entry.Summary == nil {
@@ -332,12 +337,12 @@ func conflictInput(exhausted bool, now time.Time) Input {
 }
 
 func waitingAndQuestion(now time.Time) Input {
-	return Input{Task: core.Task{State: core.TaskRunning}, ClaimWaiting: []ProposalRef{{Tier: "requirement", ID: "req", Version: 1}}, Markers: Markers{CheckpointDecision: true}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued}}, Now: now}
+	return Input{Task: core.Task{State: core.TaskRunning}, ClaimWaiting: []ProposalRef{{Tier: "requirement", ID: "req", Version: 1}}, Markers: Markers{CheckpointDecision: true}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, LastAttemptID: "a", LastAttemptOutcome: core.WorkOrderOutcomeReleased}}, Now: now}
 }
 
 func questionAndVerify(now time.Time) Input {
 	hold := now.Add(time.Hour)
-	return Input{Task: core.Task{State: core.TaskRunning}, Markers: Markers{CheckpointDecision: true, VerificationDisposition: true, VerificationHoldDeadline: &hold}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, Stage: core.StageVerify}}, Now: now}
+	return Input{Task: core.Task{State: core.TaskRunning}, Markers: Markers{CheckpointDecision: true, VerificationDisposition: true, VerificationHoldDeadline: &hold}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, Stage: core.StageVerify, LastAttemptID: "a", LastAttemptOutcome: core.WorkOrderOutcomeReleased}}, Now: now}
 }
 
 func unsatisfiableAndSuppressed(now time.Time) Input {

@@ -316,6 +316,12 @@ type DocumentStore interface {
 	// in the current workspace, ordered by time and ID per task. Empty IDs
 	// return an empty map without a database read.
 	ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	// MonitorOriginsForTasks returns, for each requested task whose source is
+	// monitor:<kind>, the earliest observation linked to it whose kind equals
+	// that source kind, by created_at and then identity, in the current
+	// workspace. A task without one has no entry; empty IDs return an empty
+	// map without a database read (component-monitor-drift).
+	MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (map[string]monitor.ObservationRecord, error)
 	ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, query DocumentEventQuery) (DocumentEventPage, error)
 	ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error)
 	ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error)

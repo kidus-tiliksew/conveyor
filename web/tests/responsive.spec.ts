@@ -503,8 +503,10 @@ test.describe('phone', () => {
 
     await page.goto('/tasks/task-layout-draft/full')
     const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
-    const title = header.getByText(layoutTitle, { exact: true })
+    // The full route's header is a breadcrumb; the title reads in the page.
+    const title = header.getByRole('navigation', { name: 'Breadcrumb' })
     await expect(title).toBeVisible()
+    await expect(page.getByRole('heading', { name: layoutTitle, level: 1 })).toBeVisible()
     await expectIconOnlyExplorer(header.getByRole('button', { name: 'Knowledge explorer' }))
     await expectHeaderControlsClear(header, title)
     await expect(page.getByText('Awaiting approval', { exact: true })).toBeVisible()
@@ -708,7 +710,8 @@ test.describe('desktop', () => {
     await expect(
       fullHeader.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
     ).toBeVisible()
-    await expectHeaderControlsClear(fullHeader, fullHeader.getByText(layoutTitle, { exact: true }))
+    await expectHeaderControlsClear(fullHeader, fullHeader.getByRole('navigation', { name: 'Breadcrumb' }))
+    await expect(page.getByRole('heading', { name: layoutTitle, level: 1 })).toBeVisible()
     await expectContextRows(page, false)
     await expectPlanHeaderUnbroken(page)
     await page.screenshot({ path: 'test-results/shots/responsive-desktop-task-full.png', animations: 'disabled' })

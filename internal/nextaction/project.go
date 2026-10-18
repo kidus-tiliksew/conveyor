@@ -1,6 +1,8 @@
 package nextaction
 
 import (
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -162,8 +164,13 @@ func gateOffApproved(in Input) bool {
 
 func claimWaiting(in Input) bool { return len(in.ClaimWaiting) > 0 }
 
+// agentQuestion matches row 9 only while the latest queued order is still
+// released at its checkpoint, so a resumed order never asks its answered
+// question again (feature-operator-next-action NA-3 row 9;
+// req-operator-next-action AC-1.6).
 func agentQuestion(in Input) bool {
-	return in.Markers.CheckpointDecision && latestQueued(in.Orders) != nil
+	order := latestQueued(in.Orders)
+	return in.Markers.CheckpointDecision && order != nil && order.LastAttemptOutcome == core.WorkOrderOutcomeReleased
 }
 
 // agentQuestionBuild presents the latest queued order's checkpoint. An
@@ -264,6 +271,10 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	}
 	na.Blocks = append([]BlockerRef{}, in.Blocks...)
 	na.Details.Disposition = dispositionFor(in, row)
+	if row.kind == KindContextProposal {
+		na.Details.ContextProposals = contextProposalDetails(in.ContextProposals)
+		na.Details.MonitorOrigin = monitorOrigin(in)
+	}
 	if na.Choices == nil {
 		na.Choices = []Choice{}
 	}
@@ -526,4 +537,33 @@ func blockersFor(in Input, order core.WorkOrder) []BlockerRef {
 		out = append(out, BlockerRef{TaskID: id, State: "closed"})
 	}
 	return out
+}
+
+// monitorOrigin states where a monitor-filed task came from: its source's
+// signal kind and catalogue sentence, plus the originating observation's
+// source URL and time when one of that kind is linked. A source URL that is
+// not absolute HTTP(S), or that carries credentials, is omitted. A task whose
+// source is not monitor:<kind> has no origin (feature-operator-next-action
+// NA-3, Monitor origin).
+func monitorOrigin(in Input) *MonitorOrigin {
+	kind, ok := strings.CutPrefix(in.Task.Source, "monitor:")
+	if !ok || kind == "" {
+		return nil
+	}
+	origin := &MonitorOrigin{Kind: kind, Summary: MonitorOriginSummary(kind)}
+	if observation := in.MonitorObservation; observation != nil && observation.Kind == kind {
+		if safeSourceURL(observation.SourceURL) {
+			origin.SourceURL = observation.SourceURL
+		}
+		if !observation.ObservedAt.IsZero() {
+			at := observation.ObservedAt.UTC()
+			origin.ObservedAt = &at
+		}
+	}
+	return origin
+}
+
+func safeSourceURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != "" && parsed.User == nil
 }

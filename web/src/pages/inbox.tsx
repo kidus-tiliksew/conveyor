@@ -12,14 +12,13 @@ import { Badge } from '../components/ui/badge'
 import { errorMessage } from '../lib/errors'
 import type { InboxItem } from '../lib/types'
 
-// The retired pending-proposals queue's narrowing, moved verbatim and applied
-// to the decisions band: `task` keeps that task's proposals (and its own
-// decision card), `document` with `tier` keeps that document's proposals.
+// The retired pending-proposals queue's narrowing, applied to the decisions
+// band: `task` keeps that task's proposals (and its own decision card),
+// `document` with `tier` keeps that document's proposals. A proposal of a tier
+// this client does not know stays listed read-only (NA-6).
 function matchesSearch(item: InboxItem, search: InboxSearch) {
   const proposal = item.proposal
   if (item.kind === 'document_proposal' && proposal) {
-    if (proposal.tier !== 'requirement' && proposal.tier !== 'system_design' && proposal.tier !== 'decision')
-      return false
     if (search.task && (proposal.origin_type !== 'task' || proposal.origin_id !== search.task)) return false
     if (search.document && (proposal.id !== search.document || proposal.tier !== search.tier)) return false
     return true
@@ -95,8 +94,8 @@ export function InboxPage() {
                   item.kind === 'document_proposal' && item.proposal ? (
                     <ProposalCard
                       key={`${item.proposal.tier}:${item.proposal.id}:${item.proposal.version ?? 0}`}
+                      item={item}
                       proposal={item.proposal}
-                      sentence={item.sentence}
                     />
                   ) : item.task ? (
                     <DecisionCard

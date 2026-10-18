@@ -123,6 +123,74 @@ func runMonitor(t *testing.T, x Fixture) {
 	t.Run("record workspace scoping", func(t *testing.T) { runMonitorWorkspaceScoping(t, x) })
 	t.Run("merge commit state", func(t *testing.T) { runMonitorMergeCommitState(t, x) })
 	t.Run("merge deferral poll", func(t *testing.T) { runMonitorMergeDeferral(t, x) })
+	t.Run("task origins", func(t *testing.T) { runMonitorOrigins(t, x) })
+}
+
+// runMonitorOrigins pins MonitorOriginsForTasks on every backend: per
+// monitor-filed task, the earliest linked observation of the task's source
+// kind by created_at and then identity; unlinked observations, observations
+// of another kind, non-monitor tasks, and another workspace's records never
+// answer (component-monitor-drift; feature-operator-next-action NA-3).
+func runMonitorOrigins(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	empty, err := st.MonitorOriginsForTasks(ctx, nil)
+	requireOK(t, err)
+	if len(empty) != 0 {
+		t.Fatalf("empty request = %+v", empty)
+	}
+	suffix := core.NewTaskID()[:8]
+	at := time.Now().UTC().Truncate(time.Second)
+	sourced := func(fixture Fixture, source string) core.Task {
+		t.Helper()
+		id := core.NewTaskID()
+		task := core.Task{ID: id, Workspace: fixture.Workspace, Repo: "conveyor", Title: id, Source: source, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: at}
+		requireOK(t, fixture.Backend.CreateTask(fixture.Context, task))
+		return task
+	}
+	observe := func(fixture Fixture, kind monitor.SignalKind, occurrence string, observedAt time.Time, taskID string) monitor.Observation {
+		t.Helper()
+		observation := monitor.Observation{WorkspaceID: fixture.Workspace, Repository: "conveyor", Kind: kind, OccurrenceID: occurrence + "-" + suffix, SourceURL: "https://example.test/runs/" + occurrence, CommitSHA: "origin-sha", ObservedAt: observedAt}
+		_, _, err := st.Observe(fixture.Context, observation)
+		requireOK(t, err)
+		if taskID != "" {
+			_, err = st.LinkTask(fixture.Context, observation.Identity(), taskID, "created")
+			requireOK(t, err)
+		}
+		return observation
+	}
+
+	filed := sourced(x, "monitor:post_merge_failure")
+	ordinary := sourced(x, "mcp")
+	observe(x, monitor.PostMergeFailure, "unlinked-earliest", at.Add(-3*time.Hour), "")
+	observe(x, monitor.DirectPush, "other-kind", at.Add(-2*time.Hour), filed.ID)
+	observe(x, monitor.PostMergeFailure, "tie-b", at, filed.ID)
+	tieA := observe(x, monitor.PostMergeFailure, "tie-a", at, filed.ID)
+	observe(x, monitor.PostMergeFailure, "later", at.Add(time.Hour), filed.ID)
+	observe(x, monitor.PostMergeFailure, "ordinary", at.Add(-time.Hour), ordinary.ID)
+
+	foreign := x.Workspace + "-origin-" + core.NewTaskID()[:6]
+	away := store.WithWorkspace(x.Context, foreign)
+	_, err = st.BootstrapWorkspaceConfig(away, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
+	requireOK(t, err)
+	awayFixture := x
+	awayFixture.Context, awayFixture.Workspace = away, foreign
+	awayTask := sourced(awayFixture, "monitor:post_merge_failure")
+	awayObservation := observe(awayFixture, monitor.PostMergeFailure, "away", at.Add(-4*time.Hour), awayTask.ID)
+
+	origins, err := st.MonitorOriginsForTasks(ctx, []string{filed.ID, ordinary.ID, awayTask.ID, "missing-" + suffix})
+	requireOK(t, err)
+	if len(origins) != 1 {
+		t.Fatalf("origins = %+v, want only the monitor-filed task", origins)
+	}
+	got, ok := origins[filed.ID]
+	if !ok || got.Identity() != tieA.Identity() || got.TaskID != filed.ID || got.SourceURL != tieA.SourceURL || !got.ObservedAt.Equal(at) || got.WorkspaceID != x.Workspace {
+		t.Fatalf("origin = %+v, want the earliest matching observation %s with the created_at tie broken by identity", got, tieA.Identity())
+	}
+	awayOrigins, err := st.MonitorOriginsForTasks(away, []string{awayTask.ID, filed.ID})
+	requireOK(t, err)
+	if len(awayOrigins) != 1 || awayOrigins[awayTask.ID].Identity() != awayObservation.Identity() {
+		t.Fatalf("away origins = %+v, want only the away task's observation", awayOrigins)
+	}
 }
 
 // runMonitorWorkspaceScoping pins the one monitor record workspace rule on

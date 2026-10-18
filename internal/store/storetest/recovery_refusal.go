@@ -24,6 +24,104 @@ func runRecoveryRefusal(t *testing.T, x Fixture) {
 	t.Run("AdvancedStageQueuedClaimRefusal", func(t *testing.T) { runAdvancedStageQueuedClaimRefusal(t, x) })
 	t.Run("ClaimPlanRevisionAfterListing", func(t *testing.T) { runClaimPlanRevisionAfterListing(t, x) })
 	t.Run("DispositionRecoverRefusal", func(t *testing.T) { runDispositionRecoverRefusal(t, x) })
+	t.Run("RecoverEligibility", func(t *testing.T) { runRecoverEligibility(t, x) })
+}
+
+// runRecoverEligibility drives one table of order shapes through the recover
+// route and requires every result to match the shared core eligibility that
+// the next action asks, so an offered recover-route choice is one the route
+// accepts on every backend (component-work-orders, Recovery and Next action;
+// req-operator-next-action AC-1.4).
+func runRecoverEligibility(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	type shape struct {
+		name    string
+		prepare func(t *testing.T, order core.WorkOrder)
+		accept  bool
+	}
+	claim := func(t *testing.T, order core.WorkOrder) core.WorkOrder {
+		t.Helper()
+		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
+			SessionID: "eligibility-" + order.ID, ClientToken: "eligibility-" + order.ID,
+			ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour,
+		})
+		requireOK(t, err)
+		return claimed
+	}
+	checkpointRelease := func(t *testing.T, order core.WorkOrder) {
+		t.Helper()
+		claimed := claim(t, order)
+		_, err := ReleaseWorkerClaim(ctx, st, order.ID, claimed.WorkerID, core.WorkOrderRelease{
+			SessionID: claimed.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+			Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Which route?"},
+		})
+		requireOK(t, err)
+	}
+	shapes := []shape{
+		{name: "never claimed", prepare: func(*testing.T, core.WorkOrder) {}},
+		{name: "released at a checkpoint", prepare: checkpointRelease, accept: true},
+		{name: "released for automatic retry", prepare: func(t *testing.T, order core.WorkOrder) {
+			t.Helper()
+			claimed := claim(t, order)
+			_, err := ReleaseWorkerClaim(ctx, st, order.ID, claimed.WorkerID, core.WorkOrderRelease{SessionID: claimed.SessionID})
+			requireOK(t, err)
+		}, accept: true},
+		{name: "stale", prepare: func(t *testing.T, order core.WorkOrder) {
+			t.Helper()
+			_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+				return st.ApplyWorkOrderClock(ctx, lease, order.TaskID, order.QueueDeadline.Add(time.Second))
+			})
+			requireOK(t, err)
+		}, accept: true},
+		{name: "timed out", prepare: func(t *testing.T, order core.WorkOrder) {
+			t.Helper()
+			timeoutQueuedOrder(t, x, order)
+		}, accept: true},
+		{name: "claimed", prepare: func(t *testing.T, order core.WorkOrder) {
+			t.Helper()
+			claim(t, order)
+		}},
+		{name: "recovered by an operator", prepare: func(t *testing.T, order core.WorkOrder) {
+			t.Helper()
+			checkpointRelease(t, order)
+			_, err := RecoverWorkOrderWithDirection(ctx, st, order.ID, "eligibility-first-"+order.ID, "Use the documented route.", time.Hour)
+			requireOK(t, err)
+		}},
+	}
+	for _, item := range shapes {
+		t.Run(item.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+			task.Branch = "conveyor/task-" + task.ID
+			requireOK(t, st.CreateTask(ctx, task))
+			order := core.WorkOrder{
+				ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement,
+				State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour),
+			}
+			requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+			requireOK(t, CreateWorkOrder(ctx, st, order))
+			item.prepare(t, order)
+
+			stored, err := st.GetWorkOrder(ctx, order.ID)
+			requireOK(t, err)
+			projected := store.ProjectWorkOrderAt(stored, time.Now().UTC())
+			state := core.WorkOrderRecoverStateRefusal(projected)
+			nextAction := core.NextActionRecoverRefusal(projected)
+			if item.accept != (state == "") || item.accept != (nextAction == "") {
+				t.Fatalf("%s order (outcome %q, suppressed %v, retry %s): state refusal %q, next-action refusal %q, want accept=%v",
+					projected.State, projected.LastAttemptOutcome, projected.RetrySuppressed, projected.NextRetryAt, state, nextAction, item.accept)
+			}
+			_, recoverErr := RecoverWorkOrderWithDirection(ctx, st, order.ID, "eligibility-"+core.NewTaskID(), "Recover.", time.Hour)
+			switch {
+			case item.accept && recoverErr != nil:
+				t.Fatalf("recover err = %v, want accepted like the shared eligibility", recoverErr)
+			case !item.accept && recoverErr == nil:
+				t.Fatalf("recover accepted an order the shared eligibility refuses (%q)", state)
+			case !item.accept && projected.State == core.WorkOrderQueued && recoverErr.Error() != state:
+				t.Fatalf("recover err = %q, want the shared refusal %q", recoverErr, state)
+			}
+		})
+	}
 }
 
 func policyChange(t *testing.T, x Fixture, taskID string, r store.SetupChangeRequest) (store.SetupChangeResult, error) {
