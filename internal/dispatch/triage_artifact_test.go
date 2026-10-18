@@ -261,7 +261,11 @@ func TestTriageUnsupportedOmissionNoteCountsTowardTextBudget(t *testing.T) {
 		}
 	}
 	base := measureTriageInput(short).TextBytes
-	perByte := (measureTriageInput(long).TextBytes - base) / 1000
+	// Lineage timestamps in the prompt render with RFC 3339 nanoseconds, whose
+	// trailing zeros are trimmed, so two fresh fixtures can differ by a few
+	// bytes besides the body. Rounding keeps that jitter out of the per-byte
+	// cost; the straddle below has half a note of margin.
+	perByte := (measureTriageInput(long).TextBytes - base + 500) / 1000
 	if perByte < 1 {
 		t.Fatalf("text bytes per body byte = %d", perByte)
 	}
