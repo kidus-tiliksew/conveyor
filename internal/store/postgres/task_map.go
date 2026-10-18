@@ -21,7 +21,7 @@ const taskMapColumns = `t.supersedes, t.superseded_by, t.intake_operator_directi
 	t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha,
 	t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, t.assignee_user_id, t.gate_kind`
 
-// ListTaskMap reads the workspace task map in five set-based queries: task
+// ListTaskMap reads the workspace task map in four set-based queries: task
 // rows, assignees, dependency edges, and active requirement attachments with
 // their titles (component-persistence). Every open workspace task is loaded,
 // because the next-action dependency view needs dependents outside the
