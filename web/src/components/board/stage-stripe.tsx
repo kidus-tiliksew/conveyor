@@ -1,17 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { stageLabels } from '../../lib/contracts'
-import type { TaskFlowStage, TaskFlowStatus } from '../../lib/types'
+import type { TaskFlowStage } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useTaskFlow } from '../task/use-task-flow'
-
-const segmentTone: Record<TaskFlowStatus, string> = {
-  done: 'bg-primary',
-  in_progress: '',
-  waiting: 'bg-primary/35',
-  needs_operator: 'bg-attention-dot',
-  upcoming: 'bg-raised',
-  off: 'h-0 rounded-none border-t-[1.5px] border-dashed border-edge bg-transparent',
-}
+import { stageSegmentClass, stageSegmentName } from './stage-segments'
 
 type GateState = 'upcoming' | 'passed' | 'needs_operator'
 
@@ -66,10 +58,13 @@ function Segments({ taskId }: { taskId: string }) {
             {stage.gate === 'merge_approval' && gate}
             <span
               role="img"
-              aria-label={`${label} — ${stage.status_label || stage.status.replaceAll('_', ' ')}`}
+              aria-label={stageSegmentName(stage, label)}
               data-stage={stage.id}
               data-status={stage.status}
-              className={cn('relative block h-1.5 min-w-0 flex-1 rounded-full', segmentTone[stage.status])}
+              className={cn(
+                'relative block h-1.5 min-w-0 flex-1 rounded-full',
+                stageSegmentClass(stage.status, 'card'),
+              )}
             >
               {stage.status === 'in_progress' && <InProgress />}
             </span>

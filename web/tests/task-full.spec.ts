@@ -7410,16 +7410,31 @@ test('failed triage retry waits for response and every projection refresh and pr
       refreshed.add('list')
       await refreshGate
     }
+    // The Board list reads one next-action group per request and requires all
+    // four group counts (component-http-api, Grouped task-operations read): the
+    // failed task waits on the operator until the retry is accepted.
+    const member = accepted ? 'waiting' : 'operator'
+    const group = new URL(route.request().url()).searchParams.get('group')
+    const rows =
+      group === null || group === member
+        ? [
+            {
+              task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
+              latest_stage: 'triage',
+              needs_attention: !accepted,
+              last_event_at: createdAt,
+              plan: { state: 'none' },
+            },
+          ]
+        : []
     await route.fulfill({
-      json: [
-        {
-          task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
-          latest_stage: 'triage',
-          needs_attention: !accepted,
-          last_event_at: createdAt,
-          plan: { state: 'none' },
-        },
-      ],
+      json: rows,
+      headers: {
+        'X-Conveyor-Group-Operator-Total': member === 'operator' ? '1' : '0',
+        'X-Conveyor-Group-Agent-Total': '0',
+        'X-Conveyor-Group-Waiting-Total': member === 'waiting' ? '1' : '0',
+        'X-Conveyor-Group-Terminal-Total': '0',
+      },
     })
   })
   await page.route('**/v1/tasks/failed-triage/review*', async (route) => {

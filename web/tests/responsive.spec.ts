@@ -141,7 +141,26 @@ async function mockShell(page: Page) {
         },
       })
     if (path === '/v1/activity') return paged(activity)
-    if (path === '/v1/task-operations') return paged(operations)
+    if (path === '/v1/task-operations') {
+      // The Board list reads one next-action group per request and requires all
+      // four group counts (component-http-api, Grouped task-operations read).
+      // These open fixtures sit in Waiting.
+      const member = url.searchParams.get('group')
+      if (member === null) return paged(operations)
+      const rows = member === 'waiting' ? operations : []
+      return route.fulfill({
+        headers: {
+          'X-Conveyor-Total': String(rows.length),
+          'X-Conveyor-Limit': '25',
+          'X-Conveyor-Offset': '0',
+          'X-Conveyor-Group-Operator-Total': '0',
+          'X-Conveyor-Group-Agent-Total': '0',
+          'X-Conveyor-Group-Waiting-Total': String(operations.length),
+          'X-Conveyor-Group-Terminal-Total': '0',
+        },
+        json: rows,
+      })
+    }
     if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary] })
     if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
     if (path === '/v1/workers')

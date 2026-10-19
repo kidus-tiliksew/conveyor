@@ -92,11 +92,28 @@ async function mockAPI(page: Page) {
       return route.fulfill({ json: { items: [], attention: { total: 1, task_count: 1, pending_proposal_count: 0 } } })
     if (path === '/v1/tasks/touch-task/activity') return route.fulfill({ json: activity })
     if (path.endsWith('/stream')) return route.fulfill({ contentType: 'text/event-stream', body: '' })
-    if (path === '/v1/activity' || path === '/v1/task-operations')
+    if (path === '/v1/activity')
       return route.fulfill({
         json: [activity],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '50', 'X-Conveyor-Offset': '0' },
       })
+    if (path === '/v1/task-operations') {
+      // The Board list reads one next-action group per request with all four
+      // group counts; the stalled fixture waits on the operator.
+      const member = new URL(route.request().url()).searchParams.get('group') === 'operator'
+      return route.fulfill({
+        json: member ? [activity] : [],
+        headers: {
+          'X-Conveyor-Total': member ? '1' : '0',
+          'X-Conveyor-Limit': '50',
+          'X-Conveyor-Offset': '0',
+          'X-Conveyor-Group-Operator-Total': '1',
+          'X-Conveyor-Group-Agent-Total': '0',
+          'X-Conveyor-Group-Waiting-Total': '0',
+          'X-Conveyor-Group-Terminal-Total': '0',
+        },
+      })
+    }
     if (path === '/v1/system-designs') return route.fulfill({ json: [design] })
     if (path === '/v1/system-designs/design-old') return route.fulfill({ json: design })
     if (path === '/v1/workers')
