@@ -393,6 +393,7 @@ function FilterMenu({
   changed,
   activeCount,
   rangeError,
+  iconOnly,
 }: {
   value: TaskFilterState
   set: (patch: Partial<TaskFilterState>) => void
@@ -405,6 +406,7 @@ function FilterMenu({
   changed: boolean
   activeCount: number
   rangeError: string
+  iconOnly: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [category, setCategory] = useState<FilterCategory>('state')
@@ -484,9 +486,11 @@ function FilterMenu({
       <Button
         type="button"
         variant={changed ? 'secondary' : 'outline'}
-        size="sm"
-        aria-label="Open filters"
+        size={iconOnly ? 'icon' : 'sm'}
+        aria-label={iconOnly ? 'Filters' : 'Open filters'}
+        title={iconOnly ? 'Filters' : undefined}
         aria-expanded={open}
+        className={iconOnly ? 'relative' : undefined}
         onClick={() => {
           const anchor = ref.current?.getBoundingClientRect()
           if (anchor) setAlign(anchor.left + anchor.width / 2 < window.innerWidth / 2 ? 'left' : 'right')
@@ -494,10 +498,22 @@ function FilterMenu({
         }}
       >
         <SlidersHorizontal />
-        Filters
-        {activeCount > 0 && (
-          <span className="rounded-full bg-primary/15 px-1.5 text-[10px] text-primary">{activeCount}</span>
-        )}
+        {!iconOnly && 'Filters'}
+        {activeCount > 0 &&
+          (iconOnly ? (
+            // The icon trigger carries its count as a corner badge; the
+            // accessible name stays "Filters" and the panel's category dots
+            // say which categories narrow the list.
+            <span
+              data-testid="filter-count"
+              aria-hidden="true"
+              className="absolute -right-1.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground"
+            >
+              {activeCount}
+            </span>
+          ) : (
+            <span className="rounded-full bg-primary/15 px-1.5 text-[10px] text-primary">{activeCount}</span>
+          ))}
       </Button>
       {open && (
         <div
@@ -626,11 +642,15 @@ export function TaskFilters({
   onChange,
   fallback = emptyTaskFilter,
   className = '',
+  iconOnly = false,
 }: {
   value: TaskFilterState
   onChange: (next: TaskFilterState) => void
   fallback?: TaskFilterState
   className?: string
+  // The Board's toolbar shows the Filters trigger as an icon with a count
+  // badge; every other surface keeps the labelled trigger.
+  iconOnly?: boolean
 }) {
   const { workspace } = useWorkspaceSelection()
   const { data: workspaceInfo } = useWorkspace()
@@ -704,6 +724,7 @@ export function TaskFilters({
         changed={changed}
         activeCount={activeCount}
         rangeError={rangeError}
+        iconOnly={iconOnly}
       />
       {changed && (
         <Button variant="ghost" size="sm" aria-label="Reset filters" onClick={() => onChange(fallback)}>

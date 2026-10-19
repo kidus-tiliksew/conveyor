@@ -29,8 +29,8 @@ import { useWorkspace, useWorkspaceSelection } from '../../app-shell'
 import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/skeleton'
 import type { BoardSearch } from '../board-search'
+import { BoardToolbar } from '../board-toolbar'
 import { docCards } from './doc-map'
-import { MapView } from './map-view'
 import { buildDocIndex, type DocIndex, type Grouping } from './docs'
 import {
   buildModel,
@@ -45,6 +45,7 @@ import {
 } from './graph-model'
 import { type HubFlowNode, HubNode } from './hub-node'
 import { CARD_HEIGHT, CARD_WIDTH, HUB_HEIGHT, HUB_WIDTH, type LayoutEdge, layoutGraph } from './layout'
+import { MapView } from './map-view'
 import { DependencyMark, DOT_ZOOM, statusIcon, type TaskFlowNode, TaskNode } from './task-node'
 
 const nodeTypes = { task: TaskNode, hub: HubNode }
@@ -344,8 +345,22 @@ function BoardMapView() {
     )
   }, [counted, model])
 
-  if (isLoading) return <Skeleton className="m-6 h-96" />
-  if (error) return <p className="m-6 text-sm text-failure">{String(error)}</p>
+  // The shared toolbar renders in every state, so the view switch stays
+  // reachable while the map's read is loading or has failed.
+  if (isLoading)
+    return (
+      <>
+        <BoardToolbar />
+        <Skeleton className="m-6 h-96" />
+      </>
+    )
+  if (error)
+    return (
+      <>
+        <BoardToolbar />
+        <p className="m-6 text-sm text-failure">{String(error)}</p>
+      </>
+    )
 
   const card = cards.find((entry) => entry.id === scope)
   const stats = scope && docIndex ? docIndex.stats.get(scope) : undefined
@@ -356,7 +371,7 @@ function BoardMapView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2 lg:px-6">
+      <BoardToolbar>
         <fieldset aria-label="Arrange by" className="m-0 flex rounded-md border border-border p-0.5">
           {(
             [
@@ -424,7 +439,7 @@ function BoardMapView() {
             Finished
           </Button>
         </div>
-      </div>
+      </BoardToolbar>
       <div className="flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-2.5">

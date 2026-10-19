@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams, useSearch } from '@tanstack/react-router'
-import { Plus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { fetchWorkspaces } from '../../lib/api'
@@ -23,7 +23,7 @@ import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
 import { BoardList } from './board-list'
 import type { BoardSearch } from './board-search'
-import { BoardViewSwitch } from './board-view-switch'
+import { BoardToolbar } from './board-toolbar'
 
 // The map's graph libraries load with the view, never with the Board (DEC-76).
 const BoardMap = lazy(() => import('./map/board-map').then((module) => ({ default: module.BoardMap })))
@@ -44,9 +44,8 @@ export function Board() {
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
         <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <BoardViewSwitch view={map ? 'map' : list ? 'list' : 'kanban'} />
         <div className="ml-auto flex items-center gap-2">
-          <MCPSetup />
+          <MCPSetup iconOnly />
           {canCreateTasks && (
             <Link to="." search={(prev: BoardSearch) => ({ ...prev, create: true as const })}>
               <Button size="sm" tabIndex={-1}>
@@ -61,7 +60,14 @@ export function Board() {
         <EmptyRepositoryNotice />
       </div>
       {map ? (
-        <Suspense fallback={<Skeleton className="m-6 h-96" />}>
+        <Suspense
+          fallback={
+            <>
+              <BoardToolbar />
+              <Skeleton className="m-6 h-96" />
+            </>
+          }
+        >
           <BoardMap />
         </Suspense>
       ) : list ? (
@@ -120,7 +126,43 @@ function Kanban() {
 
   return (
     <>
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 border-b border-border px-4 py-2 text-xs text-muted lg:px-6">
+      <BoardToolbar
+        pager={
+          data &&
+          !isLoading && (
+            <nav aria-label="Board pages" className="flex h-8 items-center rounded-md border border-border bg-surface">
+              <span className="whitespace-nowrap px-2.5">
+                <span className="font-medium text-foreground">
+                  {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)}
+                </span>{' '}
+                of {data.total}
+              </span>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Previous"
+                title="Previous"
+                className="h-full rounded-none border-l border-border"
+                disabled={data.offset === 0 || isFetching}
+                onClick={() => setOffset(Math.max(0, data.offset - data.limit))}
+              >
+                <ChevronLeft />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Next"
+                title="Next"
+                className="h-full rounded-r-md rounded-l-none border-l border-border"
+                disabled={data.offset + data.items.length >= data.total || isFetching}
+                onClick={() => setOffset(data.offset + data.limit)}
+              >
+                <ChevronRight />
+              </Button>
+            </nav>
+          )
+        }
+      >
         <TaskFilters
           value={filter}
           onChange={(next) => {
@@ -128,33 +170,10 @@ function Kanban() {
             setFilter(next)
           }}
           fallback={boardDefaultTaskFilter}
-          className="mr-auto"
+          className="min-w-0 flex-1"
+          iconOnly
         />
-        {data && !isLoading && (
-          <>
-            <span>
-              Showing {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)}{' '}
-              of {data.total}
-            </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={data.offset === 0 || isFetching}
-              onClick={() => setOffset(Math.max(0, data.offset - data.limit))}
-            >
-              Previous
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={data.offset + data.items.length >= data.total || isFetching}
-              onClick={() => setOffset(data.offset + data.limit)}
-            >
-              Next
-            </Button>
-          </>
-        )}
-      </div>
+      </BoardToolbar>
       {error != null && (
         <p className="mx-4 mt-4 rounded-lg lg:mx-6 bg-failure-soft p-3 text-sm text-failure">
           Activity feed unavailable: {String(error)}
