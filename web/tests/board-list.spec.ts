@@ -736,6 +736,43 @@ test('the context cell links the first document, counts the rest, and lists ever
   await expect(row(page, 'Shipped web change').getByText('No context', { exact: true })).toHaveClass(/text-faint/)
 })
 
+// AC-1.3: a mouse travels from the chip to a document link and clicks it.
+// Stepped moves cross every pixel between the cell and its popover, so the
+// popover has to stay open across the edge where the two meet, below the cell
+// and when it flips above the cell near the viewport's bottom. A direct
+// locator.hover() would jump that edge and prove nothing.
+for (const placement of ['below', 'above'] as const) {
+  test(`the context popover stays open while the pointer crosses into it ${placement} the cell`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: placement === 'below' ? 1100 : 620 })
+    await openTasks(page)
+    const blocked = row(page, 'Wire the Tasks view')
+    if (placement === 'above') await blocked.evaluate((element) => element.scrollIntoView({ block: 'end' }))
+    const chip = blocked.getByRole('link', { name: 'Task-centric operations view v1', exact: true })
+    const chipBox = await chip.boundingBox()
+    if (!chipBox) throw new Error('Expected the context chip on screen.')
+    const x = chipBox.x + 12
+    await page.mouse.move(x, chipBox.y + chipBox.height / 2)
+    const popover = page.getByRole('group', { name: 'Attached context' })
+    await expect(popover).toBeVisible()
+    await expect(popover).toHaveAttribute('data-placement', placement)
+
+    // The point the review reproduced: 2 px past the chip's edge, inside the
+    // former gap.
+    const edge = placement === 'below' ? chipBox.y + chipBox.height + 2 : chipBox.y - 2
+    await page.mouse.move(x, edge, { steps: 8 })
+    await expect(popover).toHaveCount(1)
+
+    const target = popover.getByRole('link', { name: /Work-order lifecycle and MCP surface v16/ })
+    const targetBox = await target.boundingBox()
+    if (!targetBox) throw new Error('Expected the design link inside the popover.')
+    await page.mouse.move(x, targetBox.y + targetBox.height / 2, { steps: 24 })
+    await expect(popover).toHaveCount(1)
+    await page.mouse.down()
+    await page.mouse.up()
+    await expect(page).toHaveURL(/\/system-design\?document=design-lifecycle$/)
+  })
+}
+
 // AC-1.3: the popover is reachable and dismissable by keyboard alone.
 test('the context popover opens on keyboard focus, takes Tab into its links, and closes on Escape', async ({
   page,

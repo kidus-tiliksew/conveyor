@@ -20,6 +20,7 @@ type AttachedDocument = {
 }
 
 const popoverWidth = 288
+const popoverGap = 4
 
 // A Board list row's Context cell (req-task-centric-operations-view AC-1.3;
 // component-web-task-surfaces, Board and Tasks list). The first served
@@ -51,10 +52,13 @@ export function BoardListContext({ task }: { task: Task }) {
   // so returning focus to the chip does not reopen what was just closed.
   const dismissed = useRef(false)
   const [open, setOpen] = useState(false)
-  const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
+  const [position, setPosition] = useState<{ left: number; top: number; above: boolean } | null>(null)
 
   // Place the popover under the cell, flipped above it near the viewport's
-  // bottom and shifted to stay inside its width.
+  // bottom and shifted to stay inside its width. Its box starts exactly at
+  // the cell's edge: the visible panel sits behind a transparent bridge of
+  // popoverGap pixels on the side facing the cell, so a pointer moving from
+  // the chip to a document link never leaves the cell and its popover.
   useLayoutEffect(() => {
     if (!open) return
     const place = () => {
@@ -63,9 +67,8 @@ export function BoardListContext({ task }: { task: Task }) {
       const width = Math.min(popoverWidth, window.innerWidth - 16)
       const height = popover.current?.offsetHeight ?? 0
       const left = Math.max(8, Math.min(cell.left, window.innerWidth - 8 - width))
-      const below = cell.bottom + 4
-      const top = below + height > window.innerHeight - 8 && cell.top - 4 - height >= 8 ? cell.top - 4 - height : below
-      setPosition({ left, top })
+      const above = cell.bottom + height > window.innerHeight - 8 && cell.top - height >= 8
+      setPosition({ left, top: above ? cell.top - height : cell.bottom, above })
     }
     place()
     window.addEventListener('resize', place)
@@ -146,29 +149,34 @@ export function BoardListContext({ task }: { task: Task }) {
           id={`${id}-popover`}
           role="group"
           aria-label="Attached context"
-          className="fixed z-40 rounded-lg border border-border bg-card p-1.5 shadow-lg"
+          data-placement={position?.above ? 'above' : 'below'}
+          className="fixed z-40"
           style={{
             width: `min(${popoverWidth}px, calc(100vw - 16px))`,
             left: position?.left ?? 0,
             top: position?.top ?? 0,
+            paddingTop: position?.above ? 0 : popoverGap,
+            paddingBottom: position?.above ? popoverGap : 0,
             visibility: position ? 'visible' : 'hidden',
           }}
         >
-          {documents.map((document) => (
-            <DocumentLink
-              key={`${document.kind}:${document.id}`}
-              document={document}
-              className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted hover:bg-raised hover:text-foreground focus-visible:bg-raised"
-            >
-              {document.kind === 'requirement' ? (
-                <Workflow className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-              ) : (
-                <FileCode2 className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-              )}
-              <span className="sr-only">{document.kind === 'requirement' ? 'Requirement: ' : 'System Design: '}</span>
-              <span className="min-w-0 truncate">{document.label}</span>
-            </DocumentLink>
-          ))}
+          <div data-popover-panel className="rounded-lg border border-border bg-card p-1.5 shadow-lg">
+            {documents.map((document) => (
+              <DocumentLink
+                key={`${document.kind}:${document.id}`}
+                document={document}
+                className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted hover:bg-raised hover:text-foreground focus-visible:bg-raised"
+              >
+                {document.kind === 'requirement' ? (
+                  <Workflow className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+                ) : (
+                  <FileCode2 className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+                )}
+                <span className="sr-only">{document.kind === 'requirement' ? 'Requirement: ' : 'System Design: '}</span>
+                <span className="min-w-0 truncate">{document.label}</span>
+              </DocumentLink>
+            ))}
+          </div>
         </div>
       )}
     </div>
