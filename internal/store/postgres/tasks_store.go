@@ -315,32 +315,43 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 	if err = s.hydrateGitHubLifecyclesBatch(ctx, page.Tasks); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
-	events, err := s.queries.ListTaskOperationsEvents(ctx, db.ListTaskOperationsEventsParams{WorkspaceID: filter.WorkspaceID, TaskIds: taskIDs})
-	if err != nil {
+	if err = s.taskOperationsDetails(ctx, &page, filter.WorkspaceID, taskIDs); err != nil {
 		return store.TaskOperationsPage{}, err
+	}
+	return page, nil
+}
+
+// taskOperationsDetails reads the operations events, latest plans, and legacy
+// plan-gate marks of the given tasks into page. ListTaskOperations and
+// ListTaskOperationsForIDs share it, so their rows' events and plans cannot
+// drift (component-persistence, Task-operations candidate and detail reads).
+func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage, workspaceID string, taskIDs []string) error {
+	events, err := s.queries.ListTaskOperationsEvents(ctx, db.ListTaskOperationsEventsParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
+	if err != nil {
+		return err
 	}
 	for _, event := range events {
 		converted := eventFromDB(event)
 		page.Events[converted.TaskID] = append(page.Events[converted.TaskID], converted)
 	}
-	plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: filter.WorkspaceID, TaskIds: taskIDs})
+	plans, err := s.queries.ListTaskOperationsLatestPlans(ctx, db.ListTaskOperationsLatestPlansParams{WorkspaceID: workspaceID, TaskIds: taskIDs})
 	if err != nil {
-		return store.TaskOperationsPage{}, err
+		return err
 	}
 	for _, plan := range plans {
 		page.Plans[plan.TaskID] = specFromDB(plan)
 	}
 	legacyRows, err := s.boundary.Query(ctx, `SELECT task_id,spec_version FROM legacy_spec_gate_versions
-		WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, filter.WorkspaceID, taskIDs)
+		WHERE workspace_id=$1 AND task_id=ANY($2::text[])`, workspaceID, taskIDs)
 	if err != nil {
-		return store.TaskOperationsPage{}, err
+		return err
 	}
 	defer legacyRows.Close()
 	for legacyRows.Next() {
 		var taskID string
 		var version int
 		if err = legacyRows.Scan(&taskID, &version); err != nil {
-			return store.TaskOperationsPage{}, err
+			return err
 		}
 		plan, ok := page.Plans[taskID]
 		if ok && plan.Version == version {
@@ -348,9 +359,77 @@ func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperatio
 			page.Plans[taskID] = plan
 		}
 	}
-	if err = legacyRows.Err(); err != nil {
+	return legacyRows.Err()
+}
+
+// ListTaskOperationsCandidates runs the shared ListTaskOperationsTasks
+// predicate unpaged and resolves assignees in one query; relations, pull
+// request closes, and forge lifecycles are not read. The binding selects
+// whole rows, so the body is discarded here (component-persistence).
+func (s *Store) ListTaskOperationsCandidates(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]core.Task, len(rows))
+	for i := range rows {
+		tasks[i] = taskFromDB(rows[i].Task)
+	}
+	if len(tasks) > 0 {
+		if err = s.hydrateTaskAssignees(ctx, tasks); err != nil {
+			return nil, err
+		}
+	}
+	for i := range tasks {
+		tasks[i] = store.TaskOperationsCandidate(tasks[i])
+	}
+	return tasks, nil
+}
+
+// ListTaskOperationsForIDs hydrates the named workspace tasks in a fixed
+// number of queries, whatever the page size (component-persistence).
+func (s *Store) ListTaskOperationsForIDs(ctx context.Context, taskIDs []string) (store.TaskOperationsPage, error) {
+	ids, err := store.NormalizeTaskOperationsIDs(taskIDs)
+	if err != nil {
 		return store.TaskOperationsPage{}, err
 	}
+	page := store.TaskOperationsPage{Tasks: []core.Task{}, Events: map[string][]core.Event{}, Plans: map[string]core.SpecVersion{}}
+	if len(ids) == 0 {
+		return page, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT t.* FROM tasks t
+		WHERE t.workspace_id=$1 AND t.id=ANY($2::text[])
+		ORDER BY t.created_at DESC, t.id`, workspace(ctx), ids)
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	persisted, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.Task])
+	if err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	if len(persisted) == 0 {
+		return page, nil
+	}
+	tasks := make([]core.Task, len(persisted))
+	returned := make([]string, len(persisted))
+	for i := range persisted {
+		tasks[i] = taskFromDB(persisted[i])
+		returned[i] = tasks[i].ID
+	}
+	if err = s.hydrateTaskRelationsBatch(ctx, tasks, returned, returned); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	if err = s.hydrateGitHubLifecyclesBatch(ctx, tasks); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	page.Tasks = tasks
+	if err = s.taskOperationsDetails(ctx, &page, workspace(ctx), returned); err != nil {
+		return store.TaskOperationsPage{}, err
+	}
+	page.Total = len(page.Tasks)
 	return page, nil
 }
 

@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -271,5 +274,81 @@ func TestReviewAcceptanceTransactionIntegration(t *testing.T) {
 				t.Fatalf("accepted task=%s want %s", currentTask.State, want)
 			}
 		})
+	}
+}
+
+const taskOperationsCandidateBodySentinel = "SINGLESTORE-TASK-OPERATIONS-CANDIDATE-BODY-SENTINEL"
+
+// TestTaskOperationsCandidatesSelectNoBodiesIntegration proves that the
+// grouped task-operations candidate read selects no body bytes and issues the
+// same number of queries for 3 and 30 candidates: no candidate is hydrated per
+// row (component-persistence, Task-operations candidate and detail reads).
+func TestTaskOperationsCandidatesSelectNoBodiesIntegration(t *testing.T) {
+	st := integrationStore(t)
+	workspace := "task-ops-candidates-" + core.NewTaskID()[:6]
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Operations", Email: "owner@example.test", DisplayName: "Owner"}, "task-ops-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat(taskOperationsCandidateBodySentinel+" ", 32)
+	created := time.Now().UTC().Add(-time.Hour)
+	seed := func(prefix string, count int) {
+		t.Helper()
+		for i := 0; i < count; i++ {
+			id := fmt.Sprintf("%s-%03d", prefix, i)
+			created = created.Add(time.Second)
+			task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, Title: "Operations " + id, Body: body, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("small", 3)
+	seed("large", 30)
+
+	recorder := &selectedBytesRecorder{needles: [][]byte{[]byte(taskOperationsCandidateBodySentinel)}}
+	connector, err := mysql.NewConnector(sharedDatabase.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(recordingConnector{Connector: connector, recorder: recorder})
+	t.Cleanup(func() { _ = db.Close() })
+	recorded := &Store{db: db, log: s2log.New(db)}
+
+	// The recorder observes selected bytes: a full task read reports the body.
+	recorder.start()
+	if _, err = recorded.GetTask(ctx, "small-000"); err != nil {
+		t.Fatal(err)
+	}
+	if _, hits := recorder.stop(); len(hits) != 1 {
+		t.Fatalf("recorder control hits=%v, want the body sentinel", hits)
+	}
+	queries := map[string]int{}
+	for prefix, want := range map[string]int{"small-": 3, "large-": 30} {
+		recorder.start()
+		candidates, err := recorded.ListTaskOperationsCandidates(ctx, store.TaskFilter{Query: prefix})
+		selected, hits := recorder.stop()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hits) != 0 {
+			t.Fatalf("%s candidate read selected body bytes: %v", prefix, hits)
+		}
+		if len(candidates) != want {
+			t.Fatalf("%s candidates=%d want %d", prefix, len(candidates), want)
+		}
+		for _, candidate := range candidates {
+			if candidate.Body != "" || candidate.Title == "" || candidate.State != core.TaskQueued {
+				t.Fatalf("%s candidate %+v", prefix, candidate)
+			}
+		}
+		queries[prefix] = len(selected)
+	}
+	t.Logf("SingleStore candidate read queries: 3 candidates %d, 30 candidates %d", queries["small-"], queries["large-"])
+	if queries["small-"] != queries["large-"] || queries["small-"] == 0 {
+		t.Fatalf("candidate read queries grew with candidate count: %v", queries)
 	}
 }
