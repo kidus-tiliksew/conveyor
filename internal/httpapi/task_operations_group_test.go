@@ -832,3 +832,162 @@ func TestTaskOperationsGroupScaleBoundedReads(t *testing.T) {
 		}
 	}
 }
+
+// TestTaskOperationsGroupContextAndAssigneeFilters seeds served requirements,
+// governing designs, a detached attachment of each kind, and an assigned user
+// across every actor group. It asserts each group's exact membership, all
+// four pre-pagination counts, X-Conveyor-Total, and every limit/offset page
+// against the whole filtered set derived from the seeded attributes, with each
+// filter member alone and combined (req-operator-next-action AC-6.2, AC-6.5;
+// req-task-centric-operations-view AC-2.3, AC-2.4).
+func TestTaskOperationsGroupContextAndAssigneeFilters(t *testing.T) {
+	base := store.NewMemory()
+	g := newGroupServer(t, base)
+	f := seedGroupFixture(t, base, 3, 4)
+	at := f.created.Add(30 * time.Minute)
+	attach := func(taskID, kind, documentID string) {
+		t.Helper()
+		at = at.Add(time.Second)
+		if err := base.AppendEvent(f.ctx, core.Event{TaskID: taskID, Kind: kind, At: at, Payload: core.JSONPayload(map[string]any{"id": documentID, "version": 1})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetMemoryWorkspaceMember(base, "demo", "usr-group", true); err != nil {
+		t.Fatal(err)
+	}
+	assign := func(taskID string) {
+		t.Helper()
+		if _, err := taskops.New(base).SetAssignee(f.ctx, taskID, "usr-group"); err != nil {
+			t.Fatalf("assign %s: %v", taskID, err)
+		}
+	}
+	// waiting holds approved tasks at even indexes and blocked dependents at odd ones.
+	operator, agent, waiting, terminal := f.byGroup["operator"], f.byGroup["agent"], f.byGroup["waiting"], f.byGroup["terminal"]
+	serves := map[string]bool{}
+	governs := map[string]bool{}
+	assigned := map[string]bool{}
+	for _, id := range []string{operator[0], operator[2], agent[0], waiting[0], waiting[1], terminal[0], terminal[3]} {
+		attach(id, store.TaskContextRequirementAdded, "req-group")
+		serves[id] = true
+	}
+	// A detached requirement and a detached design no longer match.
+	for _, id := range []string{agent[1], terminal[1]} {
+		attach(id, store.TaskContextRequirementAdded, "req-group")
+		attach(id, store.TaskContextRequirementRemoved, "req-group")
+	}
+	for _, id := range []string{operator[1], operator[2], agent[2], waiting[3], terminal[0], terminal[2]} {
+		attach(id, store.TaskContextDesignAdded, "design-group")
+		governs[id] = true
+	}
+	attach(waiting[2], store.TaskContextDesignAdded, "design-group")
+	attach(waiting[2], store.TaskContextDesignRemoved, "design-group")
+	for _, id := range []string{operator[0], operator[1], agent[0], agent[2], waiting[1], waiting[2], waiting[3]} {
+		assign(id)
+		assigned[id] = true
+	}
+	groupOf := map[string]taskOperationsGroup{}
+	for _, group := range taskOperationsGroups {
+		for _, id := range f.byGroup[string(group)] {
+			groupOf[id] = group
+		}
+	}
+	stateOf := map[string]string{}
+	all := decodeGroupRows(t, g.get("/v1/task-operations?workspace_id=demo"))
+	for _, row := range all {
+		stateOf[row.Task.ID] = row.Task.State
+		if member, _ := taskOperationsGroupForActor(row.NextAction.Actor); member != groupOf[row.Task.ID] {
+			t.Fatalf("fixture task %s stated actor %s, seeded in %s", row.Task.ID, row.NextAction.Actor, groupOf[row.Task.ID])
+		}
+	}
+	for _, testCase := range []struct {
+		name  string
+		query string
+		match func(id string) bool
+	}{
+		{"served requirement", "serves_requirement=req-group", func(id string) bool { return serves[id] }},
+		{"detached or absent requirement", "serves_requirement=req-absent", func(string) bool { return false }},
+		{"several requirements", "serves_requirement=req-absent&serves_requirement=req-group", func(id string) bool { return serves[id] }},
+		{"governing design", "governing_design=design-group", func(id string) bool { return governs[id] }},
+		{"several designs", "governing_design=design-absent&governing_design=design-group", func(id string) bool { return governs[id] }},
+		{"assignee", "assignee=usr-group", func(id string) bool { return assigned[id] }},
+		{"unassigned", "assignee=unassigned", func(id string) bool { return !assigned[id] }},
+		{"unknown assignee", "assignee=usr-nobody", func(string) bool { return false }},
+		{"requirement and design", "serves_requirement=req-group&governing_design=design-group", func(id string) bool { return serves[id] && governs[id] }},
+		{"requirement and assignee", "serves_requirement=req-group&assignee=usr-group", func(id string) bool { return serves[id] && assigned[id] }},
+		{"design and assignee", "governing_design=design-group&assignee=usr-group", func(id string) bool { return governs[id] && assigned[id] }},
+		{"requirement and repository", "serves_requirement=req-group&repository=web", func(id string) bool { return serves[id] && f.repo[id] == "web" }},
+		{"design and state", "governing_design=design-group&state=awaiting_human&state=merged", func(id string) bool {
+			return governs[id] && (stateOf[id] == string(core.TaskAwaiting) || stateOf[id] == string(core.TaskMerged))
+		}},
+		{"assignee and free text", "assignee=usr-group&q=queued", func(id string) bool { return assigned[id] && strings.Contains(id, "queued") }},
+		{"unassigned requirement in conveyor", "assignee=unassigned&serves_requirement=req-group&repository=conveyor", func(id string) bool {
+			return !assigned[id] && serves[id] && f.repo[id] == "conveyor"
+		}},
+		{"every member", "serves_requirement=req-group&governing_design=design-group&assignee=unassigned&repository=conveyor&state=merged&q=merged&updated_from=2000-01-01T00:00:00Z&created_from=" + f.created.Format(time.RFC3339), func(id string) bool {
+			return serves[id] && governs[id] && !assigned[id] && f.repo[id] == "conveyor" && stateOf[id] == string(core.TaskMerged)
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			want := map[taskOperationsGroup][]string{}
+			matched := 0
+			for _, row := range all {
+				if testCase.match(row.Task.ID) {
+					want[groupOf[row.Task.ID]] = append(want[groupOf[row.Task.ID]], row.Task.ID)
+					matched++
+				}
+			}
+			if empty := strings.Contains(testCase.name, "absent") || strings.Contains(testCase.name, "unknown"); empty != (matched == 0) {
+				t.Fatalf("case selects %d seeded tasks", matched)
+			}
+			for _, group := range taskOperationsGroups {
+				response := g.get("/v1/task-operations?workspace_id=demo&limit=200&group=" + string(group) + "&" + testCase.query)
+				rows := decodeGroupRows(t, response)
+				if got := rowIDs(rows); !slices.Equal(got, want[group]) && len(got)+len(want[group]) > 0 {
+					t.Fatalf("group %s rows=%v want %v", group, got, want[group])
+				}
+				for _, row := range rows {
+					if member, _ := taskOperationsGroupForActor(row.NextAction.Actor); member != group {
+						t.Fatalf("group %s row %s actor %s", group, row.Task.ID, row.NextAction.Actor)
+					}
+				}
+				if response.Header().Get("X-Conveyor-Total") != strconv.Itoa(len(want[group])) {
+					t.Fatalf("group %s total=%s want %d", group, response.Header().Get("X-Conveyor-Total"), len(want[group]))
+				}
+				for _, member := range taskOperationsGroups {
+					if groupCounts(response)[member] != strconv.Itoa(len(want[member])) {
+						t.Fatalf("group %s counts=%v want %v", group, groupCounts(response), want)
+					}
+				}
+				// Every one-row page, and one page past the end.
+				for offset := 0; offset <= len(want[group]); offset++ {
+					page := g.get(fmt.Sprintf("/v1/task-operations?workspace_id=demo&limit=1&offset=%d&group=%s&%s", offset, group, testCase.query))
+					pageRows := decodeGroupRows(t, page)
+					var wantPage []string
+					if offset < len(want[group]) {
+						wantPage = want[group][offset : offset+1]
+					}
+					if got := rowIDs(pageRows); !slices.Equal(got, wantPage) && len(got)+len(wantPage) > 0 {
+						t.Fatalf("group %s offset %d rows=%v want %v", group, offset, got, wantPage)
+					}
+					if page.Header().Get("X-Conveyor-Total") != strconv.Itoa(len(want[group])) || page.Header().Get("X-Conveyor-Offset") != strconv.Itoa(offset) {
+						t.Fatalf("group %s offset %d headers=%v", group, offset, page.Header())
+					}
+				}
+			}
+			ungrouped := decodeGroupRows(t, g.get("/v1/task-operations?workspace_id=demo&"+testCase.query))
+			if len(ungrouped) != matched {
+				t.Fatalf("ungrouped read selected %d tasks, want %d", len(ungrouped), matched)
+			}
+		})
+	}
+	// The fixture is meaningful: matching and nonmatching tasks sit in several groups.
+	for name, set := range map[string]map[string]bool{"served": serves, "governed": governs, "assigned": assigned} {
+		groups := map[taskOperationsGroup]bool{}
+		for id := range set {
+			groups[groupOf[id]] = true
+		}
+		if len(groups) < 3 || len(set) == len(groupOf) {
+			t.Fatalf("%s tasks span only %v", name, groups)
+		}
+	}
+}

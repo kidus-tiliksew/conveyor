@@ -187,6 +187,13 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 			if page.Total != len(want) {
 				t.Fatalf("ListTaskOperations total=%d want %d", page.Total, len(want))
 			}
+			// The grouped read's candidate half applies the same predicate
+			// (component-persistence, Task-operations candidate and detail reads).
+			candidates, err := fixture.Store.ListTaskOperationsCandidates(fixture.Context, testCase.filter)
+			if err != nil {
+				t.Fatalf("ListTaskOperationsCandidates: %v", err)
+			}
+			assertTaskIDs(t, "ListTaskOperationsCandidates", taskIDs(candidates), want)
 		})
 	}
 
@@ -211,6 +218,11 @@ func RunTaskFilterConformance(t *testing.T, fixture TaskFilterFixture) {
 		CreatedFrom: filterInstant(6, 1), CreatedTo: filterInstant(2, 1),
 	}); err == nil {
 		t.Fatal("inverted created range accepted")
+	}
+	if _, err := fixture.Store.ListTaskOperationsCandidates(fixture.Context, store.TaskFilter{
+		CreatedFrom: filterInstant(6, 1), CreatedTo: filterInstant(2, 1),
+	}); err == nil {
+		t.Fatal("candidate read accepted an inverted created range")
 	}
 }
 
@@ -313,6 +325,13 @@ func RunTaskFilterUpdatedConformance(t *testing.T, fixture TaskFilterFixture) {
 			if page.Total != len(want) {
 				t.Fatalf("ListTaskOperations total=%d want %d", page.Total, len(want))
 			}
+			// The grouped read's candidate half applies the same predicate
+			// (component-persistence, Task-operations candidate and detail reads).
+			candidates, err := fixture.Store.ListTaskOperationsCandidates(fixture.Context, testCase.filter)
+			if err != nil {
+				t.Fatalf("ListTaskOperationsCandidates: %v", err)
+			}
+			assertTaskIDs(t, "ListTaskOperationsCandidates", taskIDs(candidates), want)
 		})
 	}
 
