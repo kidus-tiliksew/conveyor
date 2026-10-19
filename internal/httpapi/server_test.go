@@ -3323,6 +3323,185 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 	}
 }
 
+// taskOperationsPullRequestStore counts the batched pull-request event read
+// and can fail it, on top of the per-task read guards.
+type taskOperationsPullRequestStore struct {
+	taskOperationsBoundedStore
+	pullRequestCalls int
+	pullRequestIDs   [][]string
+	failPullRequests bool
+}
+
+func (st *taskOperationsPullRequestStore) ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	st.pullRequestCalls++
+	st.pullRequestIDs = append(st.pullRequestIDs, append([]string(nil), taskIDs...))
+	if st.failPullRequests {
+		return nil, errors.New("pull request events unavailable")
+	}
+	return st.Store.ListMonitorPullRequestEventsForTasks(ctx, taskIDs)
+}
+
+// TestTaskOperationsPullRequestFromLatestOpenedEvent proves the optional
+// pull_request on task-operations rows: the latest pull_request.opened by
+// (at, id) wins, it equals the bounded detail's summaries.pull_request, the
+// number travels only when stated, and rows without a URL omit it, on the
+// ungrouped and the grouped read alike, through one batched read per response
+// (req-operator-next-action AC-6.8; component-http-api, Task-operations pull
+// request).
+func TestTaskOperationsPullRequestFromLatestOpenedEvent(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	base := store.NewMemory()
+	created := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	for index, id := range []string{"reopened", "unnumbered", "urlless", "none"} {
+		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskMerged, CreatedAt: created.Add(time.Duration(index) * time.Minute)}
+		if err := base.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opened := func(taskID string, at time.Time, payload map[string]any) {
+		t.Helper()
+		if err := base.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "pull_request.opened", At: at, Payload: core.JSONPayload(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The later pull request is appended first, so a fold by append order or
+	// by ID alone would pick the earlier one.
+	opened("reopened", created.Add(2*time.Hour), map[string]any{"url": "https://example.test/acme/app/pull/12", "number": 12, "repository": "acme/app"})
+	opened("reopened", created.Add(time.Hour), map[string]any{"url": "https://example.test/acme/app/pull/9", "number": 9, "repository": "acme/app"})
+	opened("unnumbered", created.Add(time.Hour), map[string]any{"url": "https://example.test/acme/app/pull/31"})
+	opened("urlless", created.Add(time.Hour), map[string]any{"url": "https://example.test/acme/app/pull/40", "number": 40})
+	opened("urlless", created.Add(2*time.Hour), map[string]any{"number": 41, "head_sha": "abc"})
+
+	type pullRequestRow struct {
+		Task struct {
+			ID string `json:"id"`
+		} `json:"task"`
+		PullRequest *struct {
+			URL    string   `json:"url"`
+			Number *float64 `json:"number"`
+		} `json:"pull_request"`
+	}
+	observed := &taskOperationsPullRequestStore{taskOperationsBoundedStore: taskOperationsBoundedStore{Store: base}}
+	server := NewServer(observed)
+	server.Workspace = "demo"
+	read := func(path string) (*httptest.ResponseRecorder, map[string]pullRequestRow, map[string]map[string]json.RawMessage) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path, nil)))
+		if response.Code != http.StatusOK {
+			return response, nil, nil
+		}
+		var rows []pullRequestRow
+		var raw []map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		byID := map[string]pullRequestRow{}
+		rawByID := map[string]map[string]json.RawMessage{}
+		for index, row := range rows {
+			byID[row.Task.ID] = row
+			rawByID[row.Task.ID] = raw[index]
+		}
+		return response, byID, rawByID
+	}
+
+	// The bounded detail read is the authority the row must equal.
+	detailServer := NewServer(base)
+	detailServer.Workspace = "demo"
+	detailPullRequest := func(taskID string) (string, *float64) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		detailServer.Handler().ServeHTTP(response, authenticatedMemoryRead(detailServer, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/activity?view=bounded&workspace_id=demo", nil)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail %s status=%d body=%s", taskID, response.Code, response.Body.String())
+		}
+		var detail struct {
+			Summaries struct {
+				PullRequest *struct {
+					URL    string   `json:"url"`
+					Number *float64 `json:"number"`
+				} `json:"pull_request"`
+			} `json:"summaries"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.Summaries.PullRequest == nil {
+			return "", nil
+		}
+		return detail.Summaries.PullRequest.URL, detail.Summaries.PullRequest.Number
+	}
+
+	for _, path := range []string{
+		"/v1/task-operations?workspace_id=demo",
+		"/v1/task-operations?workspace_id=demo&limit=25",
+		"/v1/task-operations?workspace_id=demo&group=terminal&limit=25",
+	} {
+		observed.pullRequestCalls, observed.pullRequestIDs = 0, nil
+		response, rows, raw := read(path)
+		if rows == nil {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		if observed.pullRequestCalls != 1 || len(observed.pullRequestIDs[0]) != 4 {
+			t.Fatalf("%s pull request reads=%d ids=%v", path, observed.pullRequestCalls, observed.pullRequestIDs)
+		}
+		if observed.listEventsCalls != 0 || observed.latestPlanCalls != 0 {
+			t.Fatalf("%s per-task reads = events:%d plans:%d", path, observed.listEventsCalls, observed.latestPlanCalls)
+		}
+		reopened := rows["reopened"].PullRequest
+		if reopened == nil || reopened.URL != "https://example.test/acme/app/pull/12" || reopened.Number == nil || *reopened.Number != 12 {
+			t.Fatalf("%s reopened pull_request = %+v", path, reopened)
+		}
+		unnumbered := rows["unnumbered"].PullRequest
+		if unnumbered == nil || unnumbered.URL != "https://example.test/acme/app/pull/31" || unnumbered.Number != nil {
+			t.Fatalf("%s unnumbered pull_request = %+v", path, unnumbered)
+		}
+		if strings.Contains(string(raw["unnumbered"]["pull_request"]), "number") {
+			t.Fatalf("%s unnumbered pull_request carries a number: %s", path, raw["unnumbered"]["pull_request"])
+		}
+		for _, absent := range []string{"urlless", "none"} {
+			if _, present := raw[absent]["pull_request"]; present {
+				t.Fatalf("%s %s carries pull_request %s", path, absent, raw[absent]["pull_request"])
+			}
+		}
+		for _, id := range []string{"reopened", "unnumbered", "urlless", "none"} {
+			url, number := detailPullRequest(id)
+			row := rows[id].PullRequest
+			if url == "" {
+				if row != nil {
+					t.Fatalf("%s %s row pull_request %+v without a detail URL", path, id, row)
+				}
+				continue
+			}
+			if row == nil || row.URL != url || (row.Number == nil) != (number == nil) || (number != nil && *row.Number != *number) {
+				t.Fatalf("%s %s row pull_request %+v, detail url=%q number=%v", path, id, row, url, number)
+			}
+		}
+	}
+
+	// An empty page reads nothing.
+	observed.pullRequestCalls = 0
+	if response, rows, _ := read("/v1/task-operations?workspace_id=demo&group=operator&limit=25"); rows == nil || len(rows) != 0 || observed.pullRequestCalls != 0 {
+		t.Fatalf("empty group status=%d rows=%v pull request reads=%d", response.Code, rows, observed.pullRequestCalls)
+	}
+
+	// A failed batch read is the handler's generic server error, and a grouped
+	// response then states no group count.
+	observed.failPullRequests = true
+	for _, path := range []string{"/v1/task-operations?workspace_id=demo", "/v1/task-operations?workspace_id=demo&group=terminal&limit=25"} {
+		response, _, _ := read(path)
+		if response.Code != http.StatusInternalServerError || strings.TrimSpace(response.Body.String()) != "internal server error" {
+			t.Fatalf("%s failure status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		if response.Header().Get("X-Conveyor-Group-Terminal-Total") != "" {
+			t.Fatalf("%s failure wrote group headers: %v", path, response.Header())
+		}
+	}
+}
+
 // AC-1.1 and AC-1.2: the projection is one flat, filterable list carrying the
 // state and repository every row filters on, plus the durable dependency and
 // blocking authority — never a second derivation of it (REQ-1).
