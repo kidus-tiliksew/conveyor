@@ -1845,6 +1845,17 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The group selector is read here only, so /v1/activity and the
+	// document-events read keep accepting exactly what they accepted.
+	group, grouped, err := parseTaskOperationsGroup(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if grouped {
+		s.listGroupedTaskOperations(w, r, query, paginated, group)
+		return
+	}
 	page, err := s.Store.ListTaskOperations(ctx, query)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
@@ -1891,19 +1902,31 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	items, err := s.taskOperationsItems(ctx, page.Tasks, page.Events, page.Plans, markerByTask, projected, blockers)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// taskOperationsItems assembles task-operations rows. The ungrouped and
+// grouped reads share it, so a row means the same on both (component-http-api,
+// Grouped task-operations read).
+func (s *Server) taskOperationsItems(ctx context.Context, tasks []core.Task, events map[string][]core.Event, plans map[string]core.SpecVersion, markerByTask map[string]store.ActivityMarker, projected map[string]nextaction.NextAction, blockers map[string]store.DependencyBlockers) ([]taskOperationsItem, error) {
 	// Attached documents repeat across rows; memoizing only the document reads
 	// keeps the authoritative fold in store.TaskContextFromEvents.
 	documents := &taskContextDocumentCache{Store: s.Store, requirements: map[string]core.Requirement{}, designs: map[string]core.SystemDesign{}}
-	items := make([]taskOperationsItem, 0, len(page.Tasks))
-	for _, task := range page.Tasks {
-		events := page.Events[task.ID]
-		task.Context, err = store.TaskContextFromEvents(ctx, documents, events)
+	items := make([]taskOperationsItem, 0, len(tasks))
+	for _, task := range tasks {
+		taskEvents := events[task.ID]
+		var err error
+		task.Context, err = store.TaskContextFromEvents(ctx, documents, taskEvents)
 		if err != nil {
-			log.Printf("handle API request: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+			return nil, err
 		}
-		latest, hasPlan := page.Plans[task.ID]
+		latest, hasPlan := plans[task.ID]
 		marker := markerByTask[task.ID]
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
@@ -1918,10 +1941,10 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 			NextAction:           &compact,
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
-			Plan:                 taskPlanStatusFor(task, latest, hasPlan, events),
+			Plan:                 taskPlanStatusFor(task, latest, hasPlan, taskEvents),
 		})
 	}
-	writeJSON(w, http.StatusOK, items)
+	return items, nil
 }
 
 // parseTaskFilter reads the one filter family the Tasks list and the Board both

@@ -29,6 +29,8 @@ import type {
   TaskFlow,
   TaskHistoryPage,
   TaskHistorySelection,
+  TaskOperationsGroup,
+  TaskOperationsGroupCounts,
   TaskOperationsItem,
   TaskOperationsPage,
   TaskRestartInput,
@@ -1183,24 +1185,52 @@ export async function resolveTaskContextProposal(
 // Every member of the shared filter family travels to the server (AC-2.3): the
 // browser asks for one page of what already matches rather than for the
 // workspace it then narrows.
+// The count header of each Board list group on a grouped task-operations read
+// (component-http-api, Grouped task-operations read).
+const taskOperationsGroupHeaders: Record<TaskOperationsGroup, string> = {
+  operator: 'X-Conveyor-Group-Operator-Total',
+  agent: 'X-Conveyor-Group-Agent-Total',
+  waiting: 'X-Conveyor-Group-Waiting-Total',
+  terminal: 'X-Conveyor-Group-Terminal-Total',
+}
+
+// taskOperationsGroupCounts reads all four group counts. A missing, nondecimal,
+// or unsafe count throws: no count is defaulted or invented.
+function taskOperationsGroupCounts(headers: Headers): TaskOperationsGroupCounts {
+  const counts = {} as TaskOperationsGroupCounts
+  for (const [group, name] of Object.entries(taskOperationsGroupHeaders) as [TaskOperationsGroup, string][]) {
+    const raw = headers.get(name)
+    const value = raw !== null && /^[0-9]+$/.test(raw) ? Number(raw) : Number.NaN
+    if (!Number.isSafeInteger(value)) throw new Error('Invalid task operations group counts')
+    counts[group] = value
+  }
+  return counts
+}
+
 export async function fetchTaskOperations(input: {
   limit: number
   offset: number
   filter?: Record<string, string | string[] | undefined>
+  group?: TaskOperationsGroup
 }) {
   const query = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) })
   for (const [key, value] of Object.entries(input.filter ?? {})) {
+    // The typed selector is the only way to group the read.
+    if (key === 'group') continue
     for (const entry of Array.isArray(value) ? value : value ? [value] : []) query.append(key, entry)
   }
+  if (input.group !== undefined) query.set('group', input.group)
   const response = await fetch(workspaceURL(`/v1/task-operations?${query}`))
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const items = (await response.json()) as TaskOperationsItem[]
-  return {
+  const page: TaskOperationsPage = {
     items,
     total: Number(response.headers.get('X-Conveyor-Total') ?? items.length),
     limit: Number(response.headers.get('X-Conveyor-Limit') ?? input.limit),
     offset: Number(response.headers.get('X-Conveyor-Offset') ?? input.offset),
-  } satisfies TaskOperationsPage
+  }
+  if (input.group !== undefined) page.groupCounts = taskOperationsGroupCounts(response.headers)
+  return page
 }
 // The Board map's one read (req-board-map AC-3.1, AC-3.4): every open task
 // with its relations, stated next action, and served requirements, plus the

@@ -617,11 +617,22 @@ export interface TaskOperationsItem {
   next_action?: NextActionCompact
 }
 
+// TaskOperationsGroup selects one Board list group of GET /v1/task-operations:
+// the tasks whose stated next action names that actor family
+// (req-operator-next-action AC-6.5; component-http-api, Grouped
+// task-operations read).
+export type TaskOperationsGroup = 'operator' | 'agent' | 'waiting' | 'terminal'
+
+// TaskOperationsGroupCounts holds every group's filtered count from one grouped read.
+export type TaskOperationsGroupCounts = Record<TaskOperationsGroup, number>
+
 export interface TaskOperationsPage {
   items: TaskOperationsItem[]
   total: number
   limit: number
   offset: number
+  // Present only on a grouped read.
+  groupCounts?: TaskOperationsGroupCounts
 }
 
 // GET /v1/task-map: the Board map's one workspace-wide read (req-board-map
