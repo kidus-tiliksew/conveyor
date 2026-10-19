@@ -339,23 +339,80 @@ test('board pages beyond the 200th activity item and walks back without blanking
   })
 
   await page.goto('/')
-  await expect(page.getByText('Showing 1–100 of 323')).toBeVisible()
+  await expect(page.getByText('1–100 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
   await page.getByRole('button', { name: 'Next' }).click()
-  await expect(page.getByText('Showing 101–200 of 323')).toBeVisible()
+  await expect(page.getByText('101–200 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
   await page.getByRole('button', { name: 'Next' }).click()
-  await expect(page.getByText('Showing 201–300 of 323')).toBeVisible()
+  await expect(page.getByText('201–300 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
   await page.getByRole('button', { name: 'Next' }).click()
-  await expect(page.getByText('Showing 301–323 of 323')).toBeVisible()
+  await expect(page.getByText('301–323 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(23)
   await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
   await page.getByRole('button', { name: 'Previous' }).click()
-  await expect(page.getByText('Showing 201–300 of 323')).toBeVisible()
+  await expect(page.getByText('201–300 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
   expect(seen.some((url) => new URL(url).searchParams.get('offset') === '200')).toBe(true)
   expect(seen.some((url) => new URL(url).searchParams.get('offset') === '300')).toBe(true)
+})
+
+// The Kanban toolbar's pager is one group: the range, then icon buttons that
+// keep the names Previous and Next (component-web-task-surfaces).
+test('the Kanban pager shows its range beside named icon buttons', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
+  const seen: string[] = []
+  await openBoard(page, seen)
+  const pager = page.getByRole('navigation', { name: 'Board pages' })
+  await expect(pager).toHaveText(/^1–3 of 3$/)
+  for (const name of ['Previous', 'Next']) {
+    const button = pager.getByRole('button', { name, exact: true })
+    await expect(button).toHaveAttribute('title', name)
+    await expect(button).toHaveText('')
+    await expect(button).toBeDisabled()
+  }
+  await expect(page.getByText(/Showing/)).toHaveCount(0)
+})
+
+// The Filters trigger is an icon whose badge counts narrowed categories, as
+// the panel's category dots do: the Board's default Updated window and the
+// search text never count, several values in one category count once, and
+// the badge is absent at zero.
+test('the Kanban Filters icon counts narrowed categories', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
+  const seen: string[] = []
+  await openBoard(page, seen)
+  const trigger = page.getByRole('button', { name: 'Filters', exact: true })
+  const badge = page.getByTestId('filter-count')
+  await expect(trigger).toHaveAttribute('title', 'Filters')
+  await expect(trigger).toHaveAccessibleName('Filters')
+  await expect(badge).toHaveCount(0)
+
+  await page.getByRole('searchbox', { name: 'Search tasks' }).fill('conveyor')
+  await expect(badge).toHaveCount(0)
+  await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
+
+  await trigger.click()
+  await page.getByRole('tab', { name: 'Status' }).click()
+  // The first option is "Any status"; the next two are real states.
+  const states = page.getByRole('listbox', { name: 'Status' }).getByRole('option')
+  await states.nth(1).click()
+  await expect(badge).toHaveText('1')
+  await states.nth(2).click()
+  await expect(badge).toHaveText('1')
+
+  await page.getByRole('tab', { name: 'Assignee' }).click()
+  await page.getByRole('option', { name: 'Unassigned' }).click()
+  await expect(badge).toHaveText('2')
+  await page.getByRole('tab', { name: 'Updated' }).click()
+  await page.getByRole('option', { name: 'Any time' }).click()
+  await expect(badge).toHaveText('3')
+
+  await page.getByRole('heading', { name: 'Board', exact: true }).click()
+  await page.getByRole('button', { name: 'Reset filters' }).click()
+  await expect(badge).toHaveCount(0)
+  await expect(trigger).toHaveAccessibleName('Filters')
 })
 
 test('board opens on the last month and remembers the operator adjustment per workspace', async ({ page }) => {
@@ -381,14 +438,14 @@ test('board opens on the last month and remembers the operator adjustment per wo
   expect(requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
 
   // Adjusting it is what gets remembered — including across a reload.
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('option', { name: 'Any time' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
   await page.reload()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Any time' })).toHaveAttribute('aria-selected', 'true')
 
@@ -400,7 +457,7 @@ test('board opens on the last month and remembers the operator adjustment per wo
   )
   await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
   await page.reload()
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
 })
@@ -433,7 +490,7 @@ test('saved Created windows migrate to Updated per workspace', async ({ page }) 
   expect(demo.has('updated_from')).toBe(true)
   expect(demo.has('created_from')).toBe(false)
   expect(demo.getAll('repository')).toEqual(['conveyor'])
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last 7 days' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('option', { name: 'Any time' }).click()
@@ -446,7 +503,7 @@ test('saved Created windows migrate to Updated per workspace', async ({ page }) 
   // The other workspace migrates its own custom range, untouched by demo's.
   await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
   await page.reload()
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Custom range' })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByLabel('Updated from')).toHaveValue('2026-08-08')
@@ -469,7 +526,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   expect(seen.some((url) => url.includes('q=ancient'))).toBe(true)
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
 
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await page.getByRole('option', { name: 'Any time' }).click()
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
