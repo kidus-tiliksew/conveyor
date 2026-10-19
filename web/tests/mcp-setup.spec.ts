@@ -55,8 +55,12 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
   await routeDashboard(page)
   await page.goto('/')
 
+  // The Board header shows the trigger as an icon that keeps the name MCP
+  // and says it on hover.
   const trigger = page.getByRole('button', { name: 'MCP', exact: true })
   await expect(trigger).toBeVisible()
+  await expect(trigger).toHaveAttribute('title', 'MCP')
+  await expect(trigger).toHaveText('')
   await trigger.click()
 
   const dialog = page.getByRole('dialog', { name: 'MCP Setup' })

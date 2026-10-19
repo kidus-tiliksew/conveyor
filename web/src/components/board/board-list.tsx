@@ -35,6 +35,7 @@ import { Card, CardContent } from '../ui/card'
 import { Disclosure } from '../ui/disclosure'
 import { Skeleton } from '../ui/skeleton'
 import { type BoardSearch, boardSearchFilter } from './board-search'
+import { BoardToolbar } from './board-toolbar'
 import { isAgentQuestion } from './task-card'
 
 const PAGE_SIZE = 25
@@ -121,123 +122,133 @@ export function BoardList() {
   }, [filterKey])
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
-        <header className="flex items-center gap-2">
-          <p className="max-w-2xl text-sm text-muted">
-            Every task in this workspace with its ordering, attached context, and plan status.
-          </p>
-          {/* The server counts what the filters match, so the badge reports
+    <>
+      {/* The list keeps its filters with its content; the shared toolbar holds
+          only the view switch so it stays where the other views put it. */}
+      <BoardToolbar />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
+          <header className="flex items-center gap-2">
+            <p className="max-w-2xl text-sm text-muted">
+              Every task in this workspace with its ordering, attached context, and plan status.
+            </p>
+            {/* The server counts what the filters match, so the badge reports
               the whole matching set rather than the page in hand. */}
-          <Badge variant="mono" className="ml-auto" aria-label="Matching tasks">
-            {page?.total ?? 0}
-          </Badge>
-        </header>
+            <Badge variant="mono" className="ml-auto" aria-label="Matching tasks">
+              {page?.total ?? 0}
+            </Badge>
+          </header>
 
-        {/* What is waiting on me personally leads the surface, above the list
+          {/* What is waiting on me personally leads the surface, above the list
             it is drawn from and above the filters — a return that only showed
             up once the right filter was chosen would not be attention (REQ-6).
             Without an identity there is no "me" to scope it to, so it is
             absent rather than guessed at. */}
-        {me && <ReturnedForChangesAttention />}
+          {me && <ReturnedForChangesAttention />}
 
-        <div className="mt-6 flex flex-wrap items-center gap-2">
-          <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} />
-          {me && <MyTasksPreset me={me.id} value={filter} onChange={setFilter} />}
-        </div>
-
-        {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
-        {isLoading && workspace && (
-          <div className="mt-7 space-y-3">
-            {['one', 'two', 'three'].map((key) => (
-              <Skeleton key={key} className="h-24 w-full rounded-lg" />
-            ))}
+          <div className="mt-6 flex flex-wrap items-center gap-2">
+            <TaskFilters value={filter} onChange={setFilter} fallback={emptyTaskFilter} />
+            {me && <MyTasksPreset me={me.id} value={filter} onChange={setFilter} />}
           </div>
-        )}
-        {error != null && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load tasks.')}</EmptyMessage>}
 
-        {items && items.length === 0 && (
-          <Card className="mt-8 border-dashed">
-            <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
-              <ListChecks className="size-7 text-primary" />
-              {/* Every filter is applied by the server, so an empty page no
+          {!workspace && <EmptyMessage>Choose a workspace to open its tasks.</EmptyMessage>}
+          {isLoading && workspace && (
+            <div className="mt-7 space-y-3">
+              {['one', 'two', 'three'].map((key) => (
+                <Skeleton key={key} className="h-24 w-full rounded-lg" />
+              ))}
+            </div>
+          )}
+          {error != null && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load tasks.')}</EmptyMessage>}
+
+          {items && items.length === 0 && (
+            <Card className="mt-8 border-dashed">
+              <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                <ListChecks className="size-7 text-primary" />
+                {/* Every filter is applied by the server, so an empty page no
                   longer means an empty workspace — whether any filter is active
                   is what separates the two messages. */}
-              <h2 className="mt-4 text-base font-semibold">
-                {filtersActive ? 'No tasks match these filters' : 'No tasks yet'}
-              </h2>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                {filtersActive
-                  ? 'Reset the filters to see the rest of the workspace.'
-                  : 'Delivery work arrives here once planning files a task set.'}
-              </p>
-            </CardContent>
-          </Card>
-        )}
+                <h2 className="mt-4 text-base font-semibold">
+                  {filtersActive ? 'No tasks match these filters' : 'No tasks yet'}
+                </h2>
+                <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                  {filtersActive
+                    ? 'Reset the filters to see the rest of the workspace.'
+                    : 'Delivery work arrives here once planning files a task set.'}
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
-        {items && items.length > 0 && (
-          <section className="mt-7 overflow-hidden rounded-xl border border-border bg-card" aria-label="Tasks table">
-            {/* The scroll lives on the outer element and the width floor on the
+          {items && items.length > 0 && (
+            <section className="mt-7 overflow-hidden rounded-xl border border-border bg-card" aria-label="Tasks table">
+              {/* The scroll lives on the outer element and the width floor on the
                 content inside it: a floor on the scroller itself pushes the
                 table past its own viewport and clips the last column instead of
                 offering the scroll it was meant to. */}
-            <div className="overflow-x-auto">
-              <div className="md:min-w-[860px]">
-                <div
-                  className={`hidden md:grid ${TASK_COLUMNS} border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted`}
-                >
-                  <SortHeader label="Name" />
-                  <SortHeader label="State" />
-                  <SortHeader label="Stage" />
-                  <SortHeader label="Context" />
-                  <SortHeader label="Updated" />
-                </div>
-                {/* One static group over the whole page: it labels and counts
+              <div className="overflow-x-auto">
+                <div className="md:min-w-[860px]">
+                  <div
+                    className={`hidden md:grid ${TASK_COLUMNS} border-b border-border bg-background/70 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.12em] text-muted`}
+                  >
+                    <SortHeader label="Name" />
+                    <SortHeader label="State" />
+                    <SortHeader label="Stage" />
+                    <SortHeader label="Context" />
+                    <SortHeader label="Updated" />
+                  </div>
+                  {/* One static group over the whole page: it labels and counts
                     what is below it, and carries no expand affordance, because
                     there is nothing here to collapse it into. */}
-                <div className="flex items-center gap-2 border-b border-border bg-raised/40 px-4 py-3 text-sm font-medium">
-                  <ListChecks className="size-4 text-primary" aria-hidden="true" />
-                  <span>All tasks</span>
-                  <span className="text-xs text-muted">{page?.total ?? items.length}</span>
+                  <div className="flex items-center gap-2 border-b border-border bg-raised/40 px-4 py-3 text-sm font-medium">
+                    <ListChecks className="size-4 text-primary" aria-hidden="true" />
+                    <span>All tasks</span>
+                    <span className="text-xs text-muted">{page?.total ?? items.length}</span>
+                  </div>
+                  <ul aria-label="Tasks">
+                    {items.map((item) => (
+                      <TaskRow
+                        key={item.task.id}
+                        item={item}
+                        selected={item.task.id === selectedId}
+                        members={members}
+                      />
+                    ))}
+                  </ul>
                 </div>
-                <ul aria-label="Tasks">
-                  {items.map((item) => (
-                    <TaskRow key={item.task.id} item={item} selected={item.task.id === selectedId} members={members} />
-                  ))}
-                </ul>
               </div>
-            </div>
-            <p className="border-t border-border px-4 py-3 text-xs text-muted">
-              {page?.total ?? items.length} {page?.total === 1 ? 'task' : 'tasks'}
-            </p>
-          </section>
-        )}
+              <p className="border-t border-border px-4 py-3 text-xs text-muted">
+                {page?.total ?? items.length} {page?.total === 1 ? 'task' : 'tasks'}
+              </p>
+            </section>
+          )}
 
-        {page && page.total > page.limit && (
-          <nav className="mt-5 flex items-center justify-end gap-2" aria-label="Task pages">
-            <button
-              type="button"
-              className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
-              disabled={page.offset === 0}
-              onClick={() => setOffset(Math.max(0, page.offset - page.limit))}
-            >
-              Previous
-            </button>
-            <span className="text-xs text-muted">
-              {page.offset + 1}–{Math.min(page.offset + page.items.length, page.total)} of {page.total}
-            </span>
-            <button
-              type="button"
-              className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
-              disabled={page.offset + page.limit >= page.total}
-              onClick={() => setOffset(page.offset + page.limit)}
-            >
-              Next
-            </button>
-          </nav>
-        )}
+          {page && page.total > page.limit && (
+            <nav className="mt-5 flex items-center justify-end gap-2" aria-label="Task pages">
+              <button
+                type="button"
+                className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
+                disabled={page.offset === 0}
+                onClick={() => setOffset(Math.max(0, page.offset - page.limit))}
+              >
+                Previous
+              </button>
+              <span className="text-xs text-muted">
+                {page.offset + 1}–{Math.min(page.offset + page.items.length, page.total)} of {page.total}
+              </span>
+              <button
+                type="button"
+                className="rounded-md border border-border px-3 py-1.5 text-xs disabled:opacity-40"
+                disabled={page.offset + page.limit >= page.total}
+                onClick={() => setOffset(page.offset + page.limit)}
+              >
+                Next
+              </button>
+            </nav>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 

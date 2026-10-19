@@ -1218,7 +1218,7 @@ test('Tasks and Board share Updated range parameters', async ({ page }) => {
 
   // The Board offers the same member and sends the same parameters.
   await page.goto('/')
-  await page.getByRole('button', { name: 'Open filters' }).click()
+  await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
   expect(boardRequests.at(-1)?.searchParams.has('updated_from')).toBe(true)

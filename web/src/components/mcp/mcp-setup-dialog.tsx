@@ -2,7 +2,7 @@ import claudeIcon from '@lobehub/icons-static-svg/icons/claude-color.svg?raw'
 import codexIcon from '@lobehub/icons-static-svg/icons/codex.svg?raw'
 import cursorIcon from '@lobehub/icons-static-svg/icons/cursor.svg?raw'
 import opencodeIcon from '@lobehub/icons-static-svg/icons/opencode.svg?raw'
-import { Cable, CheckCircle2, X } from 'lucide-react'
+import { Cable, CheckCircle2, Plug, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { type MCPClient, mcpClientSetups, mcpEndpoint } from '../../lib/mcp'
 import { cn } from '../../lib/utils'
@@ -17,15 +17,30 @@ const clientLogos: Partial<Record<MCPClient, string>> = {
   codex: codexIcon,
 }
 
-export function MCPSetup() {
+// The Board header shows the trigger as an icon with the same accessible
+// name; the Tasks header keeps the labelled button.
+export function MCPSetup({ iconOnly = false }: { iconOnly?: boolean }) {
   const [open, setOpen] = useState(false)
 
   return (
     <>
-      <Button type="button" size="sm" variant="secondary" onClick={() => setOpen(true)}>
-        <Cable />
-        MCP
-      </Button>
+      {iconOnly ? (
+        <Button
+          type="button"
+          size="icon"
+          variant="secondary"
+          aria-label="MCP"
+          title="MCP"
+          onClick={() => setOpen(true)}
+        >
+          <Plug />
+        </Button>
+      ) : (
+        <Button type="button" size="sm" variant="secondary" onClick={() => setOpen(true)}>
+          <Cable />
+          MCP
+        </Button>
+      )}
       {open && <MCPSetupDialog onClose={() => setOpen(false)} />}
     </>
   )

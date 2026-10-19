@@ -741,3 +741,107 @@ test('500 open and 2,000 finished tasks show their tiles within two seconds of t
   await expect(page.locator('.react-flow__node-tile')).toHaveCount(25)
   await expect(taskNodes(page)).toHaveCount(0)
 })
+
+// The title row carries only the title and the actions; the shared toolbar
+// closes with the icon view switch, which keeps one position in every view
+// (component-web-task-surfaces; req-board-map AC-1.1; req-operator-next-action
+// AC-6.1).
+test('the view switch closes one shared toolbar at the same position in every view', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await mockMap(page)
+  await page.goto('/')
+  const title = page.getByRole('heading', { name: 'Board', exact: true, level: 1 })
+  const header = page.locator('header').filter({ has: title })
+  await expect(header.getByRole('group', { name: 'Board view' })).toHaveCount(0)
+  const mcp = header.getByRole('button', { name: 'MCP', exact: true })
+  await expect(mcp).toHaveAttribute('title', 'MCP')
+  await expect(mcp).toHaveText('')
+
+  const toolbar = page.getByTestId('board-toolbar')
+  const views = toolbar.getByRole('group', { name: 'Board view' })
+  const button = (name: string) => views.getByRole('button', { name, exact: true })
+  const place = async () => {
+    const box = await views.boundingBox()
+    const bar = await toolbar.boundingBox()
+    if (!box || !bar) throw new Error('the view switch is not laid out')
+    // The switch is the toolbar's last control: nothing sits to its right
+    // but the toolbar's own padding.
+    expect(bar.x + bar.width - (box.x + box.width)).toBeLessThanOrEqual(24.5)
+    return { right: Math.round(box.x + box.width), top: Math.round(box.y) }
+  }
+  const expectPressed = async (pressed: string) => {
+    for (const name of ['Kanban', 'List', 'Graph']) {
+      await expect(button(name)).toHaveAttribute('title', name)
+      await expect(button(name)).toHaveText('')
+      await expect(button(name)).toHaveAttribute('aria-pressed', String(name === pressed))
+    }
+    // The selection takes the soft treatment; New task keeps the only fill.
+    await expect(button(pressed)).toHaveClass(/bg-primary-soft/)
+    await expect(button(pressed)).not.toHaveClass(/(^|\s)bg-primary(\s|$)/)
+  }
+
+  await expect(toolbar).toHaveCount(1)
+  await expectPressed('Kanban')
+  const kanban = await place()
+
+  await button('List').click()
+  await expect(page).toHaveURL(/view=list/)
+  await expect(toolbar).toHaveCount(1)
+  await expectPressed('List')
+  expect(await place()).toEqual(kanban)
+
+  await button('Graph').click()
+  await expect(page).toHaveURL(/view=map/)
+  await expect(tile(page, 'req-alpha')).toBeVisible()
+  await expect(toolbar).toHaveCount(1)
+  await expect(toolbar.getByRole('group', { name: 'Arrange by' })).toBeVisible()
+  await expectPressed('Graph')
+  expect(await place()).toEqual(kanban)
+
+  await button('Kanban').click()
+  await expect(page).not.toHaveURL(/view=/)
+  await expectPressed('Kanban')
+})
+
+// A failed map read still leaves the switch in place, so the operator can
+// leave the view without reloading.
+test('the view switch stays reachable when the map read fails', async ({ page }) => {
+  await mockMap(page)
+  await page.route('**/v1/task-map**', (route) => route.fulfill({ status: 500, json: { error: 'unavailable' } }))
+  await page.goto('/?view=map')
+  // Wait for the error branch itself, not the loading skeleton before it.
+  await expect(page.getByText(/unavailable/)).toBeVisible()
+  const views = page.getByTestId('board-toolbar').getByRole('group', { name: 'Board view' })
+  await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await views.getByRole('button', { name: 'List', exact: true }).click()
+  await expect(page).toHaveURL(/view=list/)
+})
+
+// At phone width the title row and the toolbar wrap inside the viewport and
+// every control stays reachable, in all three views.
+test('at 390 px the Board header and toolbar wrap without overflow in every view', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockMap(page)
+  for (const path of ['/', '/?view=list', '/?view=map']) {
+    await page.goto(path)
+    const header = page.locator('header').filter({ has: page.getByRole('heading', { name: 'Board', exact: true }) })
+    const toolbar = page.getByTestId('board-toolbar')
+    if (path.endsWith('map')) await expect(toolbar.getByRole('group', { name: 'Arrange by' })).toBeVisible()
+    await expect(toolbar.getByRole('group', { name: 'Board view' })).toBeInViewport()
+    for (const row of [header, toolbar]) {
+      expect(await row.evaluate((node) => node.scrollWidth <= node.clientWidth), `${path} row overflow`).toBe(true)
+      const controls = row.locator('button, input, select, a[href]')
+      expect(await controls.count(), `${path} row has controls`).toBeGreaterThan(0)
+      for (const control of await controls.all()) {
+        const box = await control.boundingBox()
+        expect(box, `${path} control laid out`).not.toBeNull()
+        expect((box?.x ?? -1) >= 0 && (box?.x ?? 0) + (box?.width ?? 0) <= 390.5, `${path} control inside 390 px`).toBe(
+          true,
+        )
+      }
+    }
+  }
+  await page.goto('/')
+  await page.getByRole('button', { name: 'MCP', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'MCP Setup' })).toBeVisible()
+})
