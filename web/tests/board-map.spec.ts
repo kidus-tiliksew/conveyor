@@ -809,6 +809,8 @@ test('the view switch stays reachable when the map read fails', async ({ page })
   await mockMap(page)
   await page.route('**/v1/task-map**', (route) => route.fulfill({ status: 500, json: { error: 'unavailable' } }))
   await page.goto('/?view=map')
+  // Wait for the error branch itself, not the loading skeleton before it.
+  await expect(page.getByText(/unavailable/)).toBeVisible()
   const views = page.getByTestId('board-toolbar').getByRole('group', { name: 'Board view' })
   await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await views.getByRole('button', { name: 'List', exact: true }).click()
@@ -828,7 +830,9 @@ test('at 390 px the Board header and toolbar wrap without overflow in every view
     await expect(toolbar.getByRole('group', { name: 'Board view' })).toBeInViewport()
     for (const row of [header, toolbar]) {
       expect(await row.evaluate((node) => node.scrollWidth <= node.clientWidth), `${path} row overflow`).toBe(true)
-      for (const control of await row.getByRole('button').all()) {
+      const controls = row.locator('button, input, select, a[href]')
+      expect(await controls.count(), `${path} row has controls`).toBeGreaterThan(0)
+      for (const control of await controls.all()) {
         const box = await control.boundingBox()
         expect(box, `${path} control laid out`).not.toBeNull()
         expect((box?.x ?? -1) >= 0 && (box?.x ?? 0) + (box?.width ?? 0) <= 390.5, `${path} control inside 390 px`).toBe(
