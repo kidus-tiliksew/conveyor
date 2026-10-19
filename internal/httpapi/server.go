@@ -1813,6 +1813,32 @@ type taskOperationsItem struct {
 	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids,omitempty"`
 	ChildRollup          *taskChildRollup    `json:"child_rollup,omitempty"`
 	Plan                 taskPlanStatus      `json:"plan"`
+	// PullRequest is the task's latest pull_request.opened, read through the
+	// same fold as the bounded detail's summaries.pull_request, so the Board
+	// list links the same pull request the task page names
+	// (req-operator-next-action AC-6.8; component-http-api, Task-operations
+	// pull request). It is absent when no opened event states a URL.
+	PullRequest *taskOperationsPullRequest `json:"pull_request,omitempty"`
+}
+
+// taskOperationsPullRequest is the row-scoped pull request: the URL, and the
+// number only when the event states one. It is never parsed from the URL.
+type taskOperationsPullRequest struct {
+	URL    string    `json:"url"`
+	Number *jsNumber `json:"number,omitempty"`
+}
+
+// taskOperationsPullRequestFor folds one task's pull_request.opened events,
+// already restricted to that kind, through the detail summary rule.
+func taskOperationsPullRequestFor(events []core.Event) *taskOperationsPullRequest {
+	if len(events) == 0 {
+		return nil
+	}
+	summary := deriveTaskDetailSummaries(events, nil, nil).PullRequest
+	if summary == nil || summary.URL == "" {
+		return nil
+	}
+	return &taskOperationsPullRequest{URL: summary.URL, Number: summary.Number}
 }
 
 // taskStalledSummary is the list-scoped view of store.StalledState. The detail
@@ -1918,6 +1944,19 @@ func (s *Server) taskOperationsItems(ctx context.Context, tasks []core.Task, eve
 	// Attached documents repeat across rows; memoizing only the document reads
 	// keeps the authoritative fold in store.TaskContextFromEvents.
 	documents := &taskContextDocumentCache{Store: s.Store, requirements: map[string]core.Requirement{}, designs: map[string]core.SystemDesign{}}
+	// One batched read of the rows' pull_request.opened events; an empty page
+	// reads nothing.
+	pullRequests := map[string][]core.Event{}
+	if len(tasks) > 0 {
+		ids := make([]string, 0, len(tasks))
+		for _, task := range tasks {
+			ids = append(ids, task.ID)
+		}
+		var err error
+		if pullRequests, err = s.Store.ListMonitorPullRequestEventsForTasks(ctx, ids); err != nil {
+			return nil, err
+		}
+	}
 	items := make([]taskOperationsItem, 0, len(tasks))
 	for _, task := range tasks {
 		taskEvents := events[task.ID]
@@ -1942,6 +1981,7 @@ func (s *Server) taskOperationsItems(ctx context.Context, tasks []core.Task, eve
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
 			Plan:                 taskPlanStatusFor(task, latest, hasPlan, taskEvents),
+			PullRequest:          taskOperationsPullRequestFor(pullRequests[task.ID]),
 		})
 	}
 	return items, nil

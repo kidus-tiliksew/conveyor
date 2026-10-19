@@ -24,12 +24,18 @@ export function AssigneeChip({
   assignee,
   className = '',
   compact = false,
+  tone = 'primary',
 }: {
   assignee?: TaskAssignee
   className?: string
   // A Board card's single row holds the initials alone; the name stays in the
   // chip's details and its accessible name.
   compact?: boolean
+  // The Board list keeps every row neutral apart from its operator and
+  // progress marks, so its initials sit on the raised neutral instead of the
+  // primary tint the cards use (component-web-task-surfaces, Board and Tasks
+  // list).
+  tone?: 'primary' | 'neutral'
 }) {
   if (!assignee) return null
   const name = assigneeName(assignee)
@@ -43,7 +49,9 @@ export function AssigneeChip({
     >
       <span
         aria-hidden="true"
-        className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[9px] font-medium leading-none text-primary"
+        className={`flex size-4 shrink-0 items-center justify-center rounded-full text-[9px] font-medium leading-none ${
+          tone === 'neutral' ? 'bg-raised text-muted ring-1 ring-border' : 'bg-primary/15 text-primary'
+        }`}
       >
         {initials(name)}
       </span>

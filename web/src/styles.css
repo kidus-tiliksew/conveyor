@@ -194,6 +194,29 @@ body {
   background: linear-gradient(to bottom, transparent, var(--color-card));
 }
 
+/* The Board list's in-progress stage segment: a light band sweeps across the
+   primary fill to show work under way. The fill itself stays primary, so the
+   segment reads the same with the motion stopped, and reduced motion stops it
+   (component-web-dashboard, Presentation rules). */
+.progress-sheen {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-primary-foreground) 45%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: progress-sheen 1.6s linear infinite;
+}
+@keyframes progress-sheen {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-sheen { animation: none; }
+}
+
 /* Task descriptions: agent-authored bodies often open with their own headings;
    demoted here so they never outrank the task title rendered above them. */
 .markdown.markdown-demoted h1,

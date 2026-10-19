@@ -208,6 +208,20 @@ async function mockTaskCreateAPIs(
       })
       return
     }
+    if (url.pathname === '/v1/task-operations') {
+      // An empty grouped read of the Board list states its four zero counts
+      // (component-http-api, Grouped task-operations read).
+      await route.fulfill({
+        json: [],
+        headers: {
+          'X-Conveyor-Group-Operator-Total': '0',
+          'X-Conveyor-Group-Agent-Total': '0',
+          'X-Conveyor-Group-Waiting-Total': '0',
+          'X-Conveyor-Group-Terminal-Total': '0',
+        },
+      })
+      return
+    }
     await route.fulfill({ json: [] })
   })
   return {

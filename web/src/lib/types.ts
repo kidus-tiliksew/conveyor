@@ -615,6 +615,16 @@ export interface TaskOperationsItem {
   child_rollup?: TaskChildRollup
   plan: TaskPlanStatus
   next_action?: NextActionCompact
+  // The task's latest opened pull request, present only when the server
+  // states one (component-http-api, Task-operations pull request).
+  pull_request?: TaskOperationsPullRequest
+}
+
+// The number is present only when the opening event stated one; it is never
+// parsed from the URL.
+export interface TaskOperationsPullRequest {
+  url: string
+  number?: number
 }
 
 // TaskOperationsGroup selects one Board list group of GET /v1/task-operations:
