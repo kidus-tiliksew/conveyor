@@ -67,6 +67,7 @@ func main() {
 		repoCmd(),
 		docsCmd(),
 		taskCmd(),
+		planCmd(),
 		inboxCmd(),
 		orderCmd(),
 		artifactCmd(),
