@@ -8,7 +8,18 @@ export const CARD_HEIGHT = 80
 export const HUB_WIDTH = 300
 export const HUB_HEIGHT = 132
 
-let elk: InstanceType<typeof ELK> | undefined
+// The worker starts when the map's code loads, and a two-node layout compiles
+// its layered code, so the first real layout does not wait for either.
+const elk = new ELK({ workerUrl })
+void elk.layout({
+  id: 'warm',
+  layoutOptions: { 'elk.algorithm': 'layered', 'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX' },
+  children: [
+    { id: 'a', width: CARD_WIDTH, height: CARD_HEIGHT },
+    { id: 'b', width: CARD_WIDTH, height: CARD_HEIGHT },
+  ],
+  edges: [{ id: 'a->b', sources: ['a'], targets: ['b'] }],
+})
 
 export interface LayoutEdge {
   id: string
@@ -23,7 +34,6 @@ export interface LayoutNode {
 }
 
 export async function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], direction: 'RIGHT' | 'DOWN' = 'RIGHT') {
-  elk ??= new ELK({ workerUrl })
   const result = await elk.layout({
     id: 'root',
     layoutOptions: {
@@ -71,7 +81,6 @@ export interface Rect {
 // The map: each document's tasks flow top to bottom into its hub, and the
 // frames are placed in the order given (req-board-map AC-1.3).
 export async function layoutClusters(clusters: ClusterInput[]) {
-  elk ??= new ELK({ workerUrl })
   const result = await elk.layout({
     id: 'root',
     // ELK only sizes the frames; placeFrames places them.
@@ -114,17 +123,34 @@ export async function layoutClusters(clusters: ClusterInput[]) {
   return { positions, frames }
 }
 
-// Rows in the given order, left to right and top to bottom. The row width
-// fits the widest frame and makes the canvas about 1.7 times wider than it is
-// tall, so no frame splits across rows or overlaps another.
+// Rows in the given order, left to right and top to bottom, so no frame
+// splits across rows or overlaps another. The row width is the widest frame or
+// the width of some run of consecutive frames: whichever brings the canvas
+// closest to 1.7 times wider than tall.
 export function placeFrames(sizes: Array<{ width: number; height: number }>) {
-  const area = sizes.reduce((sum, size) => sum + (size.width + FRAME_GAP) * (size.height + FRAME_GAP), 0)
-  const widest = sizes.reduce((max, size) => Math.max(max, size.width), 0)
-  const rowWidth = Math.max(widest, Math.sqrt(area * CANVAS_ASPECT))
+  const widths = new Set([sizes.reduce((max, size) => Math.max(max, size.width), 0)])
+  for (let first = 0; first < sizes.length; first++) {
+    let run = -FRAME_GAP
+    for (let last = first; last < sizes.length; last++) {
+      run += sizes[last].width + FRAME_GAP
+      widths.add(run)
+    }
+  }
+  let best: { placed: Array<{ x: number; y: number }>; score: number } | undefined
+  for (const rowWidth of widths) {
+    const { placed, width, height } = placeRows(sizes, rowWidth)
+    const score = Math.abs(Math.log(width / Math.max(height, 1) / CANVAS_ASPECT))
+    if (!best || score < best.score) best = { placed, score }
+  }
+  return best?.placed ?? []
+}
+
+function placeRows(sizes: Array<{ width: number; height: number }>, rowWidth: number) {
   const placed: Array<{ x: number; y: number }> = []
   let x = 0
   let y = 0
   let rowHeight = 0
+  let width = 0
   for (const size of sizes) {
     if (x > 0 && x + size.width > rowWidth) {
       x = 0
@@ -132,8 +158,9 @@ export function placeFrames(sizes: Array<{ width: number; height: number }>) {
       rowHeight = 0
     }
     placed.push({ x: FRAME_PADDING + x, y: FRAME_PADDING + y })
+    width = Math.max(width, x + size.width)
     x += size.width + FRAME_GAP
     rowHeight = Math.max(rowHeight, size.height)
   }
-  return placed
+  return { placed, width, height: y + rowHeight }
 }

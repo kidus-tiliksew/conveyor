@@ -10,11 +10,12 @@ import {
   MarkerType,
   MiniMap,
   type Node,
+  type NodeHandle,
   type NodeProps,
+  Position,
   ReactFlow,
   useReactFlow,
   useStore,
-  useUpdateNodeInternals,
 } from '@xyflow/react'
 import { Maximize2 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
@@ -23,7 +24,7 @@ import { byUrgency } from './doc-map'
 import { type DocIndex, mapClusters, UNATTACHED } from './docs'
 import { DONE, type GraphStatus, type GraphTask, labelOf, type TaskGraphModel, walk } from './graph-model'
 import { type HubFlowNode, HubNode } from './hub-node'
-import { CARD_HEIGHT, CARD_WIDTH, CLUSTER_HEADER, layoutClusters, type Rect } from './layout'
+import { CARD_HEIGHT, CARD_WIDTH, CLUSTER_HEADER, HUB_HEIGHT, HUB_WIDTH, layoutClusters, type Rect } from './layout'
 import { DOT_ZOOM, type TaskFlowNode, TaskNode } from './task-node'
 
 // The least zoom a selected requirement is shown at, where task titles read
@@ -100,10 +101,8 @@ export function MapView({
   onOpen: (id: string) => void
 }) {
   const flow = useReactFlow()
-  // Dots and cards anchor edges differently, so handles are re-measured when
-  // the zoom crosses the dot threshold.
+  // Dots and cards anchor edges at different points.
   const dots = useStore((state) => state.transform[2] < DOT_ZOOM)
-  const updateNodeInternals = useUpdateNodeInternals()
   const [hoverTask, setHoverTask] = useState<string>()
 
   const clustering = useMemo(() => mapClusters(visible, model, index), [visible, model, index])
@@ -196,6 +195,9 @@ export function MapView({
             id: cluster.hubId,
             type: 'hub',
             position,
+            width: HUB_WIDTH,
+            height: HUB_HEIGHT,
+            handles: hubHandles,
             data: {
               doc: { ...doc, kind: index.kind },
               stats: stats ?? { total: 0, merged: 0, open: 0, byStatus: {} },
@@ -214,6 +216,9 @@ export function MapView({
           id,
           type: 'task',
           position,
+          width: CARD_WIDTH,
+          height: CARD_HEIGHT,
+          handles: dots ? dotHandles : cardHandles,
           data: {
             task,
             unblocks: model.unblocks.get(id) ?? 0,
@@ -232,7 +237,7 @@ export function MapView({
       }
     }
     return list
-  }, [layout, clustering, model, index, selected, chain, highlight, activeTask, matches])
+  }, [layout, clustering, model, index, selected, chain, highlight, activeTask, matches, dots])
 
   const edges = useMemo<Edge[]>(() => {
     const upstream = activeTask ? walk(activeTask, 'up', model.tasks, model.dependents) : undefined
@@ -287,11 +292,6 @@ export function MapView({
       }
     })
   }, [clustering, model, activeTask, hoverTask])
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: re-measure on a mode switch only
-  useEffect(() => {
-    requestAnimationFrame(() => updateNodeInternals(nodes.map((node) => node.id)))
-  }, [dots])
 
   // The zoom that fits every group in the pane. A group too tall for the
   // usual least zoom, such as one long chain, lowers the least zoom to it, so
@@ -466,6 +466,21 @@ export function MapView({
     </ReactFlow>
   )
 }
+
+// Task and hub nodes state their sizes and handles, so edges draw in the
+// first render rather than after React Flow measures 500 nodes (AC-3.2).
+// Cards connect top to bottom; a dot connects at its centre.
+const HANDLE = 4
+function handle(type: NodeHandle['type'], width: number, y: number): NodeHandle {
+  const position = type === 'target' ? Position.Top : Position.Bottom
+  return { type, position, x: width / 2 - HANDLE / 2, y, width: HANDLE, height: HANDLE }
+}
+const cardHandles = [handle('target', CARD_WIDTH, -HANDLE / 2), handle('source', CARD_WIDTH, CARD_HEIGHT - HANDLE / 2)]
+const dotHandles = [
+  handle('target', CARD_WIDTH, CARD_HEIGHT / 2 - HANDLE / 2),
+  handle('source', CARD_WIDTH, CARD_HEIGHT / 2 - HANDLE * 1.5),
+]
+const hubHandles = [handle('target', HUB_WIDTH, -HANDLE / 2)]
 
 function fitZoom(bounds: Rect, width: number, height: number) {
   return Math.min(1, Math.min(width / bounds.width, height / bounds.height) * 0.94)

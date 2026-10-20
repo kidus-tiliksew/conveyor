@@ -497,10 +497,12 @@ test('selecting a requirement flies to its single-home group, flowing into the r
   // The merged prerequisite stays hidden while Finished is off.
   await expect(node(page, 'f1')).toHaveCount(0)
 
-  // Clicking the selected group again, from the whole map, flies there again.
+  // Clicking the selected group again, from a zoomed-out whole map, flies
+  // there again.
   await page.getByRole('button', { name: 'Whole map' }).click()
   await expectEveryGroupInPane(page)
-  expect(await zoom(page)).toBeLessThan(0.38)
+  while ((await zoom(page)) >= 0.3) await page.locator('.react-flow__controls-zoomout').click()
+  await expect.poll(() => zoom(page)).toBeLessThan(0.3)
   await clickHeader(page, 'req-alpha')
   await expect(page).toHaveURL(/scope=req-alpha/)
   await waitForCamera(node(page, 'a1'))
