@@ -20,28 +20,41 @@ import { VersionDismissDialog } from '../documents/version-dismiss-dialog'
 import { type ReviseTarget, VersionReviseDialog } from '../documents/version-revise-dialog'
 import { NextActionIDs } from '../task/next-action-parts'
 import { Button } from '../ui/button'
+import { Kbd } from './inbox-keyboard'
+import { ProposalContext } from './proposal-context'
 import { nextActionsQueryKey } from './use-next-actions'
 
-const tierLabels: Record<PendingProposal['tier'], string> = {
+export const tierLabels: Record<PendingProposal['tier'], string> = {
   requirement: 'Requirement',
   system_design: 'System Design',
   decision: 'Decision',
 }
 
-function knownTier(tier: string): tier is PendingProposal['tier'] {
+export function knownTier(tier: string): tier is PendingProposal['tier'] {
   return tier === 'requirement' || tier === 'system_design' || tier === 'decision'
 }
 
-// A pending document proposal in the Inbox's decisions band
+// The selected pending document proposal in the Inbox's detail view
 // (feature-operator-next-action NA-6; req-operator-next-action AC-1.8,
-// AC-2.6). It reads like a task decision card: the server's label, question
-// and if-ignored text, a footer band of choices, and raw identifiers only in
-// the IDs disclosure. The acts keep the retired pending-proposals queue's
+// AC-2.6, AC-2.8, AC-2.9). It reads like a task decision: the server's label,
+// question and if-ignored text, the proposed change in place, a footer band of
+// choices with their keys, and raw identifiers only in the IDs disclosure.
+// `onActed` runs after a confirm or dismiss succeeds and when the Revise
+// dialog closes; the page moves the selection only if the item then leaves
+// (AC-2.10). The acts keep the retired pending-proposals queue's
 // rules: Confirm reads the document's current version first and confirms
 // against it; Requirement and System Design Dismiss ask why, Decision Dismiss
 // sends at once; without confirm_documents, or for a tier this client does not
 // know, the card is read-only. `sentence` is the server's multi-version note.
-export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: PendingProposal }) {
+export function ProposalDetail({
+  item,
+  proposal,
+  onActed,
+}: {
+  item: InboxItem
+  proposal: PendingProposal
+  onActed: () => void
+}) {
   const canConfirmDocuments = useWorkspaceCapability('confirm_documents')
   const canProposeDocuments = useWorkspaceCapability('propose_documents')
   const { workspace } = useWorkspaceSelection()
@@ -64,6 +77,7 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
     },
     onSuccess: (_, variables) => {
       if (variables.action === 'dismiss') setDismissing(false)
+      onActed()
     },
     onSettled: async (_data, _error, _variables, context) => {
       const acted = context?.workspace ?? workspace
@@ -86,11 +100,20 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
   const label = item.label || (known ? `${tierLabels[proposal.tier]} proposal` : 'Document proposal')
 
   return (
-    <li
+    <article
       data-inbox-item="document_proposal"
-      className="min-w-0 overflow-hidden rounded-lg border border-attention/40 bg-card"
+      aria-label={proposal.title}
+      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-border bg-card md:overflow-hidden"
     >
-      {reviseTarget && <VersionReviseDialog target={reviseTarget} onClose={() => setReviseTarget(null)} />}
+      {reviseTarget && (
+        <VersionReviseDialog
+          target={reviseTarget}
+          onClose={() => {
+            setReviseTarget(null)
+            onActed()
+          }}
+        />
+      )}
       {dismissing && proposal.tier !== 'decision' && proposal.version != null && (
         <VersionDismissDialog
           documentTitle={proposal.title}
@@ -101,7 +124,7 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
           onConfirm={(note) => resolve.mutate({ action: 'dismiss', note })}
         />
       )}
-      <div className="min-w-0 space-y-2.5 px-4 pb-3 pt-4">
+      <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-4">
         <div className="flex flex-wrap items-center gap-2">
           <span data-decision-label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">
             {label}
@@ -117,29 +140,44 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
             </time>
           )}
         </div>
-        <h3 title={proposal.title} className="line-clamp-2 break-words font-medium leading-6">
+        <h2 data-detail-title className="break-words text-base font-semibold leading-6">
           {proposal.title}
-        </h3>
+        </h2>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           <span>Origin: {originLink(proposal)}</span>
           {known && contextLink(proposal)}
         </div>
         {item.question && <p className="text-sm leading-6">{item.question}</p>}
+        {known && (
+          <div className="border-t border-border pt-3">
+            <ProposalContext proposal={proposal} />
+          </div>
+        )}
+      </div>
+      <div
+        data-decision-footer
+        className="z-10 shrink-0 space-y-2 rounded-b-lg border-t border-border bg-surface px-4 py-3 max-md:sticky max-md:bottom-0"
+      >
         {resolve.error && !dismissing && (
           <p className="text-xs text-failure">{errorMessage(resolve.error, 'Could not resolve this proposal.')}</p>
         )}
-      </div>
-      <div data-decision-footer className="space-y-2 border-t border-border bg-surface/60 px-4 py-3">
         {canAct && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={resolve.isPending} onClick={() => resolve.mutate({ action: 'confirm' })}>
+            <Button
+              size="sm"
+              data-shortcut="c"
+              disabled={resolve.isPending}
+              onClick={() => resolve.mutate({ action: 'confirm' })}
+            >
               <Check />
               {action === 'confirm' ? 'Confirming…' : 'Confirm'}
             </Button>
+            <Kbd>c</Kbd>
             {canRevise && (
               <Button
                 size="sm"
                 variant="secondary"
+                data-shortcut="r"
                 disabled={resolve.isPending}
                 onClick={() =>
                   setReviseTarget({
@@ -153,9 +191,11 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
                 Revise
               </Button>
             )}
+            {canRevise && <Kbd>r</Kbd>}
             <Button
               size="sm"
               variant="ghost"
+              data-shortcut="d"
               disabled={resolve.isPending}
               onClick={() => {
                 resolve.reset()
@@ -166,6 +206,7 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
               <X />
               {action === 'dismiss' ? 'Dismissing…' : 'Dismiss'}
             </Button>
+            <Kbd>d</Kbd>
           </div>
         )}
         <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted">
@@ -188,7 +229,7 @@ export function ProposalCard({ item, proposal }: { item: InboxItem; proposal: Pe
           </div>
         </div>
       </div>
-    </li>
+    </article>
   )
 }
 
@@ -238,6 +279,14 @@ function contextLink(proposal: PendingProposal) {
       View decision →
     </Link>
   )
+}
+
+// The origin in plain words for a list row, without its link.
+export function originWord(proposal: Pick<PendingProposal, 'origin_type' | 'origin_id'>) {
+  if (proposal.origin_type === 'task' && proposal.origin_id) return 'Task'
+  if (proposal.origin_type === 'session' && proposal.origin_id) return 'Planning session'
+  if (proposal.origin_type === 'drift') return 'Change signal'
+  return 'Operator'
 }
 
 // The origin in plain words; its identifier stays in the IDs disclosure.

@@ -1,6 +1,4 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { X } from 'lucide-react'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
 import { fetchRequirement, fetchSystemDesign } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -13,14 +11,12 @@ import type {
 } from '../../lib/types'
 import { absoluteTime } from '../../lib/utils'
 import { usePendingProposals, useWorkspaceSelection } from '../app-shell'
-import { GateChoices } from '../task/merge-at-gate'
 import { SpecCard } from '../task/spec-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
 import { useTaskDetail } from '../task/use-task-detail'
 import { VerificationEntry } from '../task/verification-entry'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
 import { planFiles, planHeadings, splitPlanSections } from './plan-sections'
 import { useNextAction } from './use-next-actions'
@@ -29,31 +25,27 @@ type JobEntry = Extract<TimelineEntry, { type: 'job' }>
 
 const planKinds = new Set(['plan_approval', 'plan_revision'])
 
-// The context a decision needs, opened beside the Inbox without leaving it
-// (AC-2.3). The section is chosen by the server's next-action kind; each one
-// is the task-detail component that already renders that context. A plan
-// decision repeats the card's choices in the sheet footer, so it can be taken
-// where it is read (feature-operator-next-action NA-6).
-export function InboxContextSheet({ taskId, kind, onClose }: { taskId: string; kind: string; onClose: () => void }) {
-  const { data: item, isLoading, error } = useTaskDetail(taskId)
+// The context a decision needs, rendered in the selected decision's detail
+// view without leaving the Inbox (req-operator-next-action AC-2.3, AC-2.8).
+// The section is chosen by the server's next-action kind; each one is the
+// task-detail component that already renders that context. The task read has
+// its own loading and error-with-retry state, and the detail view is keyed by
+// workspace and item, so a late read never shows under another selection.
+export function DecisionContext({ taskId, kind }: { taskId: string; kind: string }) {
+  const { data: item, error, refetch, isFetching } = useTaskDetail(taskId)
   return (
-    <Sheet onClose={onClose} label="Decision context">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{item?.task.title ?? taskId}</h2>
-        <Link to="/tasks/$taskId/full" params={{ taskId }} className="text-xs font-medium text-primary hover:underline">
-          Open task
-        </Link>
-        <Button variant="ghost" size="icon" aria-label="Close" onClick={onClose}>
-          <X />
-        </Button>
-      </div>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {isLoading && <Skeleton className="h-32" />}
-        {error && <p className="text-sm text-failure">Could not load this task.</p>}
-        {item && <ContextSection item={item} kind={kind} />}
-      </div>
-      {planKinds.has(kind) && <PlanSheetChoices taskId={taskId} onActed={onClose} />}
-    </Sheet>
+    <section aria-label="Decision context" data-decision-context={kind} aria-busy={!item && error == null}>
+      {!item && error == null && <Skeleton className="h-32" />}
+      {error != null && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-failure">{errorMessage(error, 'Could not load this task.')}</span>
+          <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {item && <ContextSection item={item} kind={kind} />}
+    </section>
   )
 }
 
@@ -207,21 +199,11 @@ function ProposedDocument({ proposal }: { proposal: NextActionContextProposal })
 }
 
 // The title and the current confirmed version of either document read.
+// A read of an unexpected shape yields no title and no version rather than
+// failing the whole page.
 function confirmedDocument(view: RequirementView | SystemDesignView) {
-  if ('requirement' in view) return { title: view.requirement.title, current: view.current_version }
-  return { title: view.document.title, current: view.current_version }
-}
-
-// The card's choices repeated under the plan, so the decision can be taken
-// where it is read. It mounts only for a plan decision.
-function PlanSheetChoices({ taskId, onActed }: { taskId: string; onActed: () => void }) {
-  const { data: action } = useNextAction(taskId)
-  if (!action || action.choices.length === 0) return null
-  return (
-    <div data-sheet-choices className="border-t border-border px-4 py-3 text-[13px]">
-      <GateChoices taskId={taskId} action={action} onActed={onActed} />
-    </div>
-  )
+  if ('requirement' in view) return { title: view.requirement?.title, current: view.current_version }
+  return { title: view.document?.title, current: view.current_version }
 }
 
 // A plan split at its five required headings, under a header naming the

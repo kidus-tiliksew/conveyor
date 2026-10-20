@@ -265,18 +265,33 @@ function decisionsFixture(): Fixture {
   }
 }
 
-const decisionCards = (page: Page) => page.getByRole('region', { name: 'Decisions' }).locator('[data-inbox-item]')
+// The decision list's rows, in the server's order, and the selected item's
+// detail view (req-operator-next-action AC-2.8; DEC-82).
+const decisionRows = (page: Page) => page.getByRole('region', { name: 'Decisions' }).locator('[data-inbox-row]')
+const decisionDetail = (page: Page) => page.locator('[data-inbox-detail] [data-inbox-item]')
 
-test('bands render in server order with the decision card the server states', async ({ page }) => {
+// Selects the row whose text matches and waits for its detail view.
+async function select(page: Page, text: string | RegExp) {
+  await decisionRows(page).filter({ hasText: text }).click()
+  await expect(decisionDetail(page)).toContainText(text)
+  return decisionDetail(page)
+}
+
+test('bands render in server order with the decision detail the server states', async ({ page }) => {
   await serve(page, decisionsFixture())
   await page.goto('/inbox')
 
-  await expect(decisionCards(page)).toHaveCount(3)
-  await expect(decisionCards(page).locator('h3')).toHaveText([
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(decisionRows(page).locator('[data-row-title]')).toHaveText([
     'Zeta plan everyone waits on',
     'Alpha agent question',
     'Mid item without a deadline',
   ])
+  // A row carries no choice control (DEC-82(1)); the first item is selected.
+  await expect(decisionRows(page).getByRole('button')).toHaveCount(0)
+  await expect(decisionRows(page).first()).toHaveAttribute('aria-current', 'true')
+  await expect(decisionRows(page).nth(1)).toContainText('No PR yet')
+  await expect(decisionRows(page).first()).toContainText('acme/conveyor#77')
   const bands = page.locator(
     'section[aria-label="Decisions"], section[aria-label="Blocked"], section[aria-label="Automatic"]',
   )
@@ -287,7 +302,7 @@ test('bands render in server order with the decision card the server states', as
     'Automatic',
   ])
 
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   await expect(card.getByText('Approve the plan', { exact: true })).toBeVisible()
   await expect(card.getByRole('link', { name: 'acme/conveyor#77' })).toHaveAttribute(
     'href',
@@ -302,10 +317,7 @@ test('bands render in server order with the decision card the server states', as
   await expect(card.locator('[data-decision-footer]')).toContainText(
     'If you do nothing: The task waits at the plan gate.',
   )
-  await expect(card.locator('[data-context-link]')).toHaveText('View plan →')
-  await expect(decisionCards(page).nth(1).getByText('No PR yet')).toBeVisible()
-  await expect(decisionCards(page).nth(1).locator('[data-context-link]')).toHaveText('View checkpoint →')
-  await expect(decisionCards(page).nth(2).locator('[data-context-link]')).toHaveText('View review →')
+  await expect(card.locator('[data-context-heading]')).toHaveText('Plan')
   await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', soon)
   await card.getByText('Show IDs').click()
   await expect(card.getByText('wo-zeta-1')).toBeVisible()
@@ -317,8 +329,14 @@ test('bands render in server order with the decision card the server states', as
   await expect(card.getByText('Needs the operate tasks capability.')).toBeVisible()
   await expect(card.getByRole('button', { name: 'Summon dragon' })).toBeDisabled()
   await expect(card.getByText('This page cannot send this choice.')).toBeVisible()
+
+  const alpha = await select(page, 'Alpha agent question')
+  await expect(alpha.getByText('No PR yet')).toBeVisible()
+  await expect(alpha.locator('[data-context-heading]')).toHaveText('Checkpoint')
   // The null-deadline item states none.
-  await expect(decisionCards(page).nth(2).locator('[data-next-action-deadline]')).toHaveCount(0)
+  const mid = await select(page, 'Mid item without a deadline')
+  await expect(mid.locator('[data-context-heading]')).toHaveText('Latest review')
+  await expect(mid.locator('[data-next-action-deadline]')).toHaveCount(0)
 })
 
 test('a choice sends one request as stated, refetches the inbox and the badge, and the item leaves', async ({
@@ -347,8 +365,10 @@ test('a choice sends one request as stated, refetches the inbox and the badge, a
   await expect(inbox.getByText('3', { exact: true })).toBeVisible()
   const before = harness.inboxRequests.length
 
-  await decisionCards(page).first().getByRole('button', { name: 'Approve plan' }).dblclick()
-  await expect(decisionCards(page)).toHaveCount(2)
+  await decisionDetail(page).getByRole('button', { name: 'Approve plan' }).dblclick()
+  await expect(decisionRows(page)).toHaveCount(2)
+  // The selection moves to the next item (AC-2.10).
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
   expect(harness.posts).toHaveLength(1)
   const [post] = harness.posts
   expect(post.method()).toBe('POST')
@@ -525,7 +545,7 @@ test('the context card lists each proposed document and decides one at a time un
     return { state: 'confirmed' }
   })
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   const rows = card.locator('[data-context-proposal]')
   await expect(rows).toHaveCount(2)
 
@@ -566,7 +586,7 @@ test('the context card lists each proposed document and decides one at a time un
   expect(sent.headers()['x-conveyor-csrf']).toBe('1')
   expect(new URL(sent.url()).searchParams.get('workspace_id')).toBe('demo')
   await expect(rows).toHaveCount(1)
-  await expect(decisionCards(page)).toHaveCount(1)
+  await expect(decisionRows(page)).toHaveCount(1)
   // One proposal left: no batch controls.
   await expect(card.locator('[data-context-batch]')).toHaveCount(0)
 
@@ -575,7 +595,8 @@ test('the context card lists each proposed document and decides one at a time un
   expect(new URL(harness.posts[1].url()).pathname).toBe(
     `/v1/tasks/T-ctx/context/proposals/system_design/${design.id}/dismiss`,
   )
-  await expect(decisionCards(page)).toHaveCount(0)
+  await expect(decisionRows(page)).toHaveCount(0)
+  await expect(page.locator('[data-no-decisions]')).toHaveText('No decisions are waiting for you.')
 
   // The task detail reads the confirmed attachment.
   fixture.activity = {
@@ -628,14 +649,14 @@ test('the context card lists each proposed document and decides one at a time un
 
 for (const act of ['confirm', 'dismiss'] as const) {
   const name = act === 'confirm' ? 'Confirm all' : 'Dismiss all'
-  test(`${name} posts each proposal once in the server order and the card leaves`, async ({ page }) => {
+  test(`${name} posts each proposal once in the server order and the item leaves`, async ({ page }) => {
     const fixture = contextFixture({ targets: contextTargets })
     const harness = await serve(page, fixture, (_request, path) => {
       if (path.endsWith(`/${contextTargets[2].id}/${act}`)) decide(fixture, [])
       return { state: act === 'confirm' ? 'confirmed' : 'dismissed' }
     })
     await page.goto('/inbox')
-    const card = decisionCards(page).first()
+    const card = decisionDetail(page)
     await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
     await card.getByRole('button', { name, exact: true }).dblclick()
     await expect.poll(() => harness.posts.length).toBe(3)
@@ -643,7 +664,7 @@ for (const act of ['confirm', 'dismiss'] as const) {
       contextTargets.map((target) => `/v1/tasks/T-ctx/context/proposals/${target.kind}/${target.id}/${act}`),
     )
     for (const post of harness.posts) expect(post.postData()).toBeNull()
-    await expect(decisionCards(page)).toHaveCount(0)
+    await expect(decisionRows(page)).toHaveCount(0)
     expect(harness.posts).toHaveLength(3)
   })
 }
@@ -663,7 +684,7 @@ test('leaving the inbox mid-batch sends nothing after the request in flight', as
   const held = gate()
   harness.holdPosts = held.held
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   await card.getByRole('button', { name: 'Confirm all', exact: true }).click()
   await expect.poll(() => harness.posts.length).toBe(1)
   // Opening the task leaves the inbox while the first act is in flight.
@@ -686,7 +707,7 @@ test('switching workspace mid-batch sends nothing after the request in flight, a
   const held = gate()
   harness.holdPosts = held.held
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   await card.getByRole('button', { name: 'Confirm all', exact: true }).click()
   await expect.poll(() => harness.posts.length).toBe(1)
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
@@ -711,7 +732,7 @@ test('a refused send stops Dismiss all, shows the refusal, and keeps the acts al
     return { state: 'dismissed' }
   })
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   await card.getByRole('button', { name: 'Dismiss all', exact: true }).click()
   await expect(card.locator('[data-context-refusal]')).toContainText('already decided')
   expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual([
@@ -730,7 +751,7 @@ test('task-context choices a caller may not take stay disabled in the inbox with
 }) => {
   const harness = await serve(page, contextFixture({ allowed: false }))
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   const decisions = card.locator('[data-context-proposals]').getByRole('button')
   await expect(decisions).toHaveCount(4)
   for (const button of await decisions.all()) await expect(button).toBeDisabled()
@@ -750,7 +771,7 @@ test('a monitor-filed task states its origin with the run link, and without one 
   })
   await serve(page, fixture)
   await page.goto('/inbox')
-  const origin = decisionCards(page).first().locator('[data-monitor-origin]')
+  const origin = decisionDetail(page).locator('[data-monitor-origin]')
   await expect(origin).toContainText('Filed by the monitor: post-merge failure')
   await expect(origin.getByRole('link', { name: 'View the run' })).toHaveAttribute('href', run)
 
@@ -759,13 +780,13 @@ test('a monitor-filed task states its origin with the run link, and without one 
     summary: 'Filed by the monitor: post-merge failure',
   })
   await page.reload()
-  const bare = decisionCards(page).first().locator('[data-monitor-origin]')
+  const bare = decisionDetail(page).locator('[data-monitor-origin]')
   await expect(bare).toContainText('Filed by the monitor: post-merge failure')
   await expect(bare.getByRole('link')).toHaveCount(0)
 })
 
-// The sheet fixture: the task body, one requirement and one System Design
-// target, each document read answering from `documents` by path.
+// The proposed-context fixture: the task body, one requirement and one System
+// Design target, each document read answering from `documents` by path.
 function sheetFixture(
   documents: Record<string, Record<string, unknown> | number>,
   body = 'The post-merge run failed on **main**.',
@@ -804,12 +825,23 @@ function designView(version: number, content: string) {
   }
 }
 
+// Selects the context decision; its detail renders the proposed context in
+// place (AC-2.3, AC-2.8).
 async function openProposedContext(page: Page) {
-  await decisionCards(page).first().getByRole('button', { name: 'View proposed context →' }).click()
-  return page.getByRole('dialog', { name: 'Decision context' })
+  await decisionRows(page).first().click()
+  return decisionDetail(page).getByRole('region', { name: 'Decision context' })
 }
 
-test('View proposed context opens each document as confirmed today beside the task body', async ({ page }) => {
+// Leaves the decisions band and returns to it, which unmounts and remounts
+// the detail view.
+async function reselect(page: Page) {
+  await page.locator('[data-band-chip="blocked"]').click()
+  await expect(decisionDetail(page)).toHaveCount(0)
+  await page.locator('[data-band-chip="all"]').click()
+  return openProposedContext(page)
+}
+
+test('the proposed context shows each document as confirmed today beside the task body', async ({ page }) => {
   const documents: Record<string, Record<string, unknown> | number> = {
     [requirementPath]: requirementView(4, '# Review gates\n\nEvery gate keeps its evidence.'),
     [designPath]: 503,
@@ -843,7 +875,7 @@ test('View proposed context opens each document as confirmed today beside the ta
   expect(harness.posts).toHaveLength(0)
 })
 
-test('a document without a confirmed version says so in the sheet', async ({ page }) => {
+test('a document without a confirmed version says so in the detail', async ({ page }) => {
   await serve(
     page,
     sheetFixture({
@@ -858,7 +890,7 @@ test('a document without a confirmed version says so in the sheet', async ({ pag
   )
 })
 
-test('a reopened sheet never shows cached content while its fresh read fails, until Retry succeeds', async ({
+test('a reselected decision never shows cached content while its fresh read fails, until Retry succeeds', async ({
   page,
 }) => {
   const documents: Record<string, Record<string, unknown> | number> = {
@@ -870,12 +902,10 @@ test('a reopened sheet never shows cached content while its fresh read fails, un
   let sheet = await openProposedContext(page)
   const requirementRegion = () => sheet.getByRole('region', { name: contextTargets[0].title })
   await expect(requirementRegion()).toContainText('Version four content.')
-  await sheet.getByRole('button', { name: 'Close' }).click()
-  await expect(sheet).toHaveCount(0)
 
   // The document became unavailable: the cached v4 must not stand in for it.
   documents[requirementPath] = 503
-  sheet = await openProposedContext(page)
+  sheet = await reselect(page)
   await expect(requirementRegion().getByRole('button', { name: 'Retry' })).toBeVisible()
   await expect(requirementRegion()).not.toContainText('Version four content.')
   await expect(requirementRegion()).not.toContainText('v4')
@@ -886,7 +916,7 @@ test('a reopened sheet never shows cached content while its fresh read fails, un
   await expect(requirementRegion()).toContainText('Version five content.')
 })
 
-test('a read left in flight by a closed sheet never shows when the sheet reopens', async ({ page }) => {
+test('a read left in flight by a left detail never shows when the decision is reselected', async ({ page }) => {
   const documents: Record<string, Record<string, unknown> | number> = {
     [requirementPath]: requirementView(4, 'Late content from the closed sheet.'),
     [designPath]: designView(32, 'Suites run in CI.'),
@@ -895,16 +925,17 @@ test('a read left in flight by a closed sheet never shows when the sheet reopens
   const held = gate()
   harness.holdDocuments = held.held
   await page.goto('/inbox')
-  let sheet = await openProposedContext(page)
+  await openProposedContext(page)
   await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(2)
-  await sheet.getByRole('button', { name: 'Close' }).click()
-  await expect(sheet).toHaveCount(0)
-  // The read answers after the sheet closed; the document then fails.
+  await page.locator('[data-band-chip="blocked"]').click()
+  await expect(decisionDetail(page)).toHaveCount(0)
+  // The read answers after the detail unmounted; the document then fails.
   held.release()
   harness.holdDocuments = undefined
   await page.waitForTimeout(300)
   documents[requirementPath] = 503
-  sheet = await openProposedContext(page)
+  await page.locator('[data-band-chip="all"]').click()
+  const sheet = await openProposedContext(page)
   const region = sheet.getByRole('region', { name: contextTargets[0].title })
   await expect(region.getByRole('button', { name: 'Retry' })).toBeVisible()
   await expect(region).not.toContainText('Late content from the closed sheet.')
@@ -925,12 +956,7 @@ test('switching workspace with a document read in flight shows no document conte
   await page.goto('/inbox')
   await openProposedContext(page)
   await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(2)
-  // The modal sheet covers the rail, so the switch is dispatched to it directly,
-  // as a workspace change from outside the sheet would arrive.
-  await page
-    .getByRole('navigation', { name: 'Workspaces' })
-    .getByRole('button', { name: 'Switch to Other' })
-    .dispatchEvent('click')
+  await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
   held.release()
   await page.waitForTimeout(500)
   await expect(page.getByText('Content of the first workspace.')).toHaveCount(0)
@@ -938,7 +964,7 @@ test('switching workspace with a document read in flight shows no document conte
     expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
 })
 
-test('the opened sheet fits a 390px viewport with long documents', async ({ page }) => {
+test('the selected decision fits a 390px viewport with long documents', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   const long = `${'Long-unbroken-document-text-'.repeat(12)}\n\n| a | b |\n|---|---|\n| ${'x'.repeat(80)} | y |`
   await serve(
@@ -956,11 +982,11 @@ test('the opened sheet fits a 390px viewport with long documents', async ({ page
   await expect(sheet.getByRole('region', { name: contextTargets[1].title })).toContainText('v32')
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
-  const sheetOverflow = await sheet.evaluate((element) => element.scrollWidth - element.clientWidth)
-  expect(sheetOverflow).toBeLessThanOrEqual(0)
+  const detailOverflow = await decisionDetail(page).evaluate((element) => element.scrollWidth - element.clientWidth)
+  expect(detailOverflow).toBeLessThanOrEqual(0)
 })
 
-test('the context card fits a 390px viewport with long titles and justifications', async ({ page }) => {
+test('the context decision fits a 390px viewport with long titles and justifications', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   const long = contextTargets.map((target) => ({
     ...target,
@@ -979,7 +1005,8 @@ test('the context card fits a 390px viewport with long titles and justifications
     }),
   )
   await page.goto('/inbox')
-  await expect(decisionCards(page).first().locator('[data-context-proposal]')).toHaveCount(3)
+  await decisionRows(page).first().click()
+  await expect(decisionDetail(page).locator('[data-context-proposal]')).toHaveCount(3)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
 })
@@ -987,7 +1014,7 @@ test('the context card fits a 390px viewport with long titles and justifications
 test('agent_question opens the direction input and posts the direction', async ({ page }) => {
   const harness = await serve(page, decisionsFixture())
   await page.goto('/inbox')
-  const card = decisionCards(page).nth(1)
+  const card = await select(page, 'Alpha agent question')
   await card.getByRole('button', { name: 'Answer' }).click()
   await card.getByLabel('Direction').fill('Use the shared cache.')
   await card.getByRole('button', { name: 'Answer' }).last().click()
@@ -1041,7 +1068,7 @@ test('the inbox offers the one-act merge only behind the confirm naming the revi
   }
   const harness = await serve(page, fixture)
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   await expect(card.locator('[data-choice="approve"]')).toBeVisible()
   // The merge choice is never a one-click button.
   await expect(card.locator('[data-choice="merge"]')).toHaveCount(0)
@@ -1056,7 +1083,7 @@ test('the inbox offers the one-act merge only behind the confirm naming the revi
     .toEqual(['/v1/tasks/T-merge/merge'])
 })
 
-test('View opens the decision context for each kind without leaving the inbox', async ({ page }) => {
+test('selecting each decision shows its context in place without leaving the inbox', async ({ page }) => {
   const fixture = decisionsFixture()
   const base = (id: string, title: string) => ({
     task: task(id, title),
@@ -1148,29 +1175,27 @@ test('View opens the decision context for each kind without leaving the inbox', 
   await serve(page, fixture)
   await page.goto('/inbox')
 
-  await decisionCards(page).nth(0).getByRole('button', { name: 'View' }).click()
-  const sheet = page.getByRole('dialog', { name: 'Decision context' })
-  await expect(sheet.getByText('Plan body for zeta')).toBeVisible()
-  await sheet.getByRole('button', { name: 'Close' }).click()
+  const context = () => decisionDetail(page).getByRole('region', { name: 'Decision context' })
+  await expect(context().getByText('Plan body for zeta')).toBeVisible()
 
-  await decisionCards(page).nth(1).getByRole('button', { name: 'View' }).click()
-  await expect(sheet.getByRole('region', { name: 'Agent checkpoint' })).toContainText('Which cache should it use?')
-  await expect(sheet.getByText(/Cache design \(sd-cache\) cites v2/)).toBeVisible()
-  await sheet.getByRole('button', { name: 'Close' }).click()
+  await select(page, 'Alpha agent question')
+  await expect(context().getByRole('region', { name: 'Agent checkpoint' })).toContainText('Which cache should it use?')
+  await expect(context().getByText(/Cache design \(sd-cache\) cites v2/)).toBeVisible()
 
-  await decisionCards(page).nth(2).getByRole('button', { name: 'View' }).click()
-  await expect(sheet.getByRole('region', { name: 'Latest reviewer feedback' })).toContainText(
+  await select(page, 'Mid item without a deadline')
+  await expect(context().getByRole('region', { name: 'Latest reviewer feedback' })).toContainText(
     'Reviewer says the cache key is wrong.',
   )
-  await expect(sheet.getByRole('region', { name: 'Implementer reply' })).toContainText(
+  await expect(context().getByRole('region', { name: 'Implementer reply' })).toContainText(
     'Implementer fixed the cache key.',
   )
-  await expect(page).toHaveURL(/\/inbox$/)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page).toHaveURL(/\/inbox\?selected=T-mid$/)
 })
 
 // The inbox has no stream of its own; a task's event stream moves that task's
 // next action, so it refreshes the inbox listing it (lib/use-task-stream.ts).
-test('a task stream event refreshes the inbox listing while its context is open', async ({ page }) => {
+test('a task stream event refreshes the inbox listing while its decision is selected', async ({ page }) => {
   const fixture = decisionsFixture()
   fixture.activity = {
     'T-zeta': {
@@ -1191,17 +1216,18 @@ test('a task stream event refreshes the inbox listing while its context is open'
     await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
   })
   await page.goto('/inbox')
-  await expect(decisionCards(page)).toHaveCount(3)
-  await decisionCards(page).nth(0).getByRole('button', { name: 'View' }).click()
-  await expect(page.getByRole('dialog', { name: 'Decision context' })).toBeVisible()
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(decisionDetail(page).getByRole('region', { name: 'Decision context' })).toBeVisible()
 
   // The plan was decided elsewhere; only the stream can tell this page.
   harness.fixture = { ...fixture, items: fixture.items.filter((item) => item.task?.id !== 'T-zeta') }
   const before = harness.inboxRequests.length
   releaseStream()
   await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(before)
-  await expect(decisionCards(page)).toHaveCount(2)
-  await expect(decisionCards(page).getByText('Zeta plan everyone waits on')).toHaveCount(0)
+  await expect(decisionRows(page)).toHaveCount(2)
+  await expect(decisionRows(page).getByText('Zeta plan everyone waits on')).toHaveCount(0)
+  // A selection that left without an act from this page falls back to the first item.
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
 })
 
 test('blocked rows link blockers, the automatic band offers its one choice and a collapsed acts log', async ({
@@ -1218,8 +1244,8 @@ test('blocked rows link blockers, the automatic band offers its one choice and a
   )
   await expect(blocked.getByRole('link', { name: 'Elsewhere dependency' })).toHaveAttribute('href', '/tasks/T-done')
   await blocked.getByRole('link', { name: 'Zeta plan everyone waits on' }).click()
-  await expect(decisionCards(page)).toHaveCount(1)
-  await expect(decisionCards(page).locator('h3')).toHaveText('Zeta plan everyone waits on')
+  await expect(decisionRows(page)).toHaveCount(1)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
   await page.getByRole('link', { name: 'Show all' }).click()
 
   const automatic = page.getByRole('region', { name: 'Automatic' })
@@ -1289,7 +1315,7 @@ function proposalFixture(): Fixture {
   }
 }
 
-test('proposal cards keep the retired queue rules for every tier', async ({ page }) => {
+test('proposal details keep the retired queue rules for every tier', async ({ page }) => {
   const fixture = proposalFixture()
   const seen: string[] = []
   const harness = await serve(page, fixture, (request, path) => {
@@ -1309,48 +1335,48 @@ test('proposal cards keep the retired queue rules for every tier', async ({ page
     })
   })
   await page.goto('/inbox')
-  const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(5)
-  await expect(cards.first().getByText('Confirming a later one dismisses the earlier ones.')).toBeVisible()
-  const unknown = cards.filter({ hasText: 'Unknown tier proposal' })
-  await expect(unknown).toBeVisible()
-  await expect(unknown.getByRole('button')).toHaveCount(0)
+  await expect(decisionRows(page)).toHaveCount(5)
+  const footer = () => decisionDetail(page).locator('[data-decision-footer]')
+  await expect(footer().getByText('Confirming a later one dismisses the earlier ones.')).toBeVisible()
+  const unknown = await select(page, 'Unknown tier proposal')
+  await expect(unknown.locator('[data-decision-footer]').getByRole('button')).toHaveCount(0)
 
   // Confirm reads the current version first and confirms against it.
-  await cards.filter({ hasText: 'Operator attention' }).getByRole('button', { name: 'Confirm' }).click()
-  await expect(cards).toHaveCount(4)
+  await select(page, 'Operator attention')
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(decisionRows(page)).toHaveCount(4)
   expect(seen.indexOf('GET /v1/requirements/req-attention')).toBeLessThan(
     seen.indexOf('POST /v1/requirements/req-attention/versions/3/confirm'),
   )
 
   // System Design Dismiss asks first; Decision Dismiss sends at once.
-  const design = cards.filter({ hasText: 'Dashboard architecture' })
-  await design.getByRole('button', { name: 'Dismiss' }).click()
+  await select(page, 'Dashboard architecture')
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
   await expect(page.getByRole('dialog')).toBeVisible()
   const sentBeforeCancel = harness.posts.length
   await page.getByRole('button', { name: 'Cancel' }).click()
   expect(harness.posts.length).toBe(sentBeforeCancel)
 
-  await cards.filter({ hasText: 'All FunnelFlux repositories' }).getByRole('button', { name: 'Dismiss' }).click()
-  await expect(cards).toHaveCount(3)
+  await select(page, 'All FunnelFlux repositories')
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
+  await expect(decisionRows(page)).toHaveCount(3)
   await expect(page.getByRole('dialog')).toHaveCount(0)
 })
 
 test('task, document and tier narrow the decisions band', async ({ page }) => {
   await serve(page, proposalFixture())
   await page.goto('/inbox?task=review-task')
-  const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(3)
-  await expect(cards.locator('h3')).toHaveText(['Operator attention', 'Other requirement', 'Unknown tier proposal'])
+  const titles = decisionRows(page).locator('[data-row-title]')
+  await expect(titles).toHaveText(['Operator attention', 'Other requirement', 'Unknown tier proposal'])
 
   await page.goto('/inbox?document=req-attention&tier=requirement')
-  await expect(cards).toHaveCount(1)
-  await expect(cards.locator('h3')).toHaveText('Operator attention')
+  await expect(titles).toHaveText(['Operator attention'])
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Operator attention')
 
   // The tier must match too: the same id at another tier is not this document.
   await page.goto('/inbox?document=req-attention&tier=system_design')
   await expect(page.getByText('No decisions are waiting for you.')).toBeVisible()
-  await expect(cards).toHaveCount(0)
+  await expect(decisionRows(page)).toHaveCount(0)
 })
 
 test('a maintainer without confirm_documents reads proposals without acting', async ({ page }) => {
@@ -1359,23 +1385,24 @@ test('a maintainer without confirm_documents reads proposals without acting', as
   fixture.role = 'maintainer'
   await serve(page, fixture)
   await page.goto('/inbox')
-  const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(5)
-  await expect(cards.getByRole('button')).toHaveCount(0)
+  await expect(decisionRows(page)).toHaveCount(5)
+  for (const title of ['Operator attention', 'Dashboard architecture', 'All FunnelFlux repositories']) {
+    const detail = await select(page, title)
+    await expect(detail.locator('[data-decision-footer]').getByRole('button')).toHaveCount(0)
+  }
 })
 
-// The document-proposal card reads like a task decision card: the server's
+// The document-proposal detail reads like a task decision: the server's
 // label, question and if-ignored text, a footer band of choices, and raw IDs
 // only in the IDs disclosure (feature-operator-next-action NA-6;
 // req-operator-next-action AC-1.8, AC-2.6).
-test('proposal cards use the decision-card layout with server copy and a safe age', async ({ page }) => {
+test('proposal details use the decision layout with server copy and a safe age', async ({ page }) => {
   await serve(page, proposalFixture())
   await page.goto('/inbox')
-  const cards = page.locator('[data-inbox-item="document_proposal"]')
-  await expect(cards).toHaveCount(5)
+  await expect(decisionRows(page)).toHaveCount(5)
   await expect(page.locator('body')).not.toContainText('NaN')
 
-  const requirement = cards.filter({ hasText: 'Operator attention' })
+  const requirement = await select(page, 'Operator attention')
   await expect(requirement.locator('[data-decision-label]')).toHaveText('Requirement proposal')
   await expect(requirement.locator('[data-proposal-version]')).toHaveText('v3')
   await expect(requirement.locator('[data-proposal-age]')).toHaveText(/ago$/)
@@ -1407,20 +1434,23 @@ test('proposal cards use the decision-card layout with server copy and a safe ag
 
   // A missing or unusable age falls back to proposed_at.
   for (const title of ['Dashboard architecture', 'All FunnelFlux repositories']) {
-    const age = cards.filter({ hasText: title }).locator('[data-proposal-age]')
+    const age = (await select(page, title)).locator('[data-proposal-age]')
     await expect(age).toHaveText(/ago$/)
     await expect(age).toHaveAttribute('datetime', '2026-10-10T10:00:00.000Z')
   }
 
-  // A decision reads its own question and context link, with a long title
-  // clamped to two lines and the full text kept in its tooltip.
-  const decision = cards.filter({ hasText: 'All FunnelFlux repositories' })
+  // A decision reads its own question and context link and its full title;
+  // its list row clamps a long title to two lines and keeps the full text in
+  // its tooltip.
+  const decision = decisionDetail(page)
   await expect(decision.locator('[data-decision-label]')).toHaveText('Decision proposal')
   await expect(decision.locator('[data-proposal-version]')).toHaveCount(0)
   await expect(decision.getByText('Confirm or dismiss this proposed decision?')).toBeVisible()
   await expect(decision.getByRole('link', { name: 'View decision →' })).toBeVisible()
   await expect(decision.getByRole('button', { name: 'Revise' })).toHaveCount(0)
-  const title = decision.locator('h3')
+  await expect(decision.locator('[data-detail-title]')).toHaveText(longDecision)
+  await page.goto('/inbox')
+  const title = decisionRows(page).filter({ hasText: 'All FunnelFlux repositories' }).locator('[data-row-title]')
   await expect(title).toHaveAttribute('title', longDecision)
   await expect(title).toHaveClass(/line-clamp-2/)
   await page.setViewportSize({ width: 390, height: 900 })
@@ -1440,7 +1470,7 @@ test('proposal cards omit the age when neither age nor proposed time is usable',
   delete first.proposal.age_seconds
   await serve(page, fixture)
   await page.goto('/inbox')
-  const card = page.locator('[data-inbox-item="document_proposal"]').filter({ hasText: 'Operator attention' })
+  const card = await select(page, 'Operator attention')
   await expect(card.locator('[data-decision-label]')).toHaveText('Requirement proposal')
   await expect(card.locator('[data-proposal-age]')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('NaN')
@@ -1479,10 +1509,14 @@ test('the inbox fits a 390px viewport without horizontal overflow', async ({ pag
   await page.setViewportSize({ width: 390, height: 900 })
   await serve(page, decisionsFixture())
   await page.goto('/inbox')
-  await expect(decisionCards(page)).toHaveCount(3)
+  await expect(decisionRows(page)).toHaveCount(3)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
   await expect(page.getByRole('link', { name: '3 decisions waiting in the Inbox' })).toBeVisible()
+  await decisionRows(page).first().click()
+  await expect(decisionDetail(page)).toBeVisible()
+  const detailOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(detailOverflow).toBeLessThanOrEqual(0)
 })
 
 test('band chips count every band from one unfiltered read and filter in the browser', async ({ page }) => {
@@ -1503,7 +1537,7 @@ test('band chips count every band from one unfiltered read and filter in the bro
   await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
 
   await chips.locator('[data-band-chip="all"]').click()
-  await expect(decisionCards(page)).toHaveCount(3)
+  await expect(decisionRows(page)).toHaveCount(3)
   // Every read of the inbox omitted the band.
   expect(harness.inboxRequests.length).toBeGreaterThan(0)
   expect(harness.inboxRequests.every((search) => !new URLSearchParams(search).has('band'))).toBe(true)
@@ -1520,7 +1554,9 @@ test('a decision that blocks other tasks names them on hover and keyboard focus'
   await serve(page, fixture)
   await page.goto('/inbox')
 
-  const card = decisionCards(page).first()
+  await expect(decisionRows(page).first().locator('[data-row-blocks]')).toHaveText('Blocks 2')
+  await expect(decisionRows(page).nth(1).locator('[data-row-blocks]')).toHaveCount(0)
+  const card = decisionDetail(page)
   const chip = card.getByRole('button', { name: 'Blocks 2 tasks' })
   await expect(chip).toBeVisible()
   await chip.hover()
@@ -1532,14 +1568,11 @@ test('a decision that blocks other tasks names them on hover and keyboard focus'
   await expect(list.locator('li')).toHaveText(['Waiting on zeta', 'Generate the typed client'])
 
   // A decision without dependents shows no chip.
-  await expect(
-    decisionCards(page)
-      .nth(1)
-      .getByRole('button', { name: /^Blocks / }),
-  ).toHaveCount(0)
+  const alpha = await select(page, 'Alpha agent question')
+  await expect(alpha.getByRole('button', { name: /^Blocks / })).toHaveCount(0)
 })
 
-test('the plan panel splits the plan at its headings and its footer decides the plan', async ({ page }) => {
+test('the plan context splits the plan at its headings beside the choices that decide it', async ({ page }) => {
   const fixture = decisionsFixture()
   fixture.activity = {
     'T-zeta': {
@@ -1595,8 +1628,7 @@ test('the plan panel splits the plan at its headings and its footer decides the 
   })
   await page.goto('/inbox')
 
-  await decisionCards(page).first().locator('[data-context-link]').click()
-  const sheet = page.getByRole('dialog', { name: 'Decision context' })
+  const sheet = decisionDetail(page)
   const plan = sheet.locator('[data-plan-context]')
   await expect(plan.getByRole('heading', { name: 'Plan v2' })).toBeVisible()
   await expect(plan).toContainText('Reproducible builds')
@@ -1612,12 +1644,13 @@ test('the plan panel splits the plan at its headings and its footer decides the 
   await expect(plan.locator('[data-plan-section="Files touched"]')).toContainText('new module pinning the generators')
   await expect(plan.locator('[data-plan-section="Approach"]')).toContainText('Pin protoc in one tools module.')
 
-  // The footer repeats the card's choices; deciding there posts once and closes the sheet.
-  const footer = sheet.locator('[data-sheet-choices]')
+  // The footer under the plan holds the choices; deciding there posts once
+  // and the selection moves on.
+  const footer = sheet.locator('[data-decision-footer]')
   await footer.getByRole('button', { name: 'Approve plan' }).click()
-  await expect(sheet).toHaveCount(0)
+  await expect(decisionRows(page)).toHaveCount(2)
   expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(['/v1/tasks/T-zeta/spec/review'])
-  await expect(decisionCards(page)).toHaveCount(2)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
 })
 
 function dispositionFixture(binding: boolean): Fixture {
@@ -1668,8 +1701,8 @@ function dispositionFixture(binding: boolean): Fixture {
 test('a verification disposition posts the server binding with the operator reason', async ({ page }) => {
   const harness = await serve(page, dispositionFixture(true))
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
-  await expect(card.locator('[data-context-link]')).toHaveText('View operation log →')
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-context-heading]')).toHaveText('Operation log')
   await card.getByRole('button', { name: 'Yes, it applied…' }).click()
   const send = card.locator('[data-next-action-choices]').getByRole('button', { name: 'Yes, it applied…' }).last()
   await expect(send).toBeDisabled()
@@ -1693,7 +1726,7 @@ test('a verification disposition posts the server binding with the operator reas
 test('without a binding the disposition choices stay disabled with the server refusal', async ({ page }) => {
   const harness = await serve(page, dispositionFixture(false))
   await page.goto('/inbox')
-  const card = decisionCards(page).first()
+  const card = decisionDetail(page)
   await expect(card.getByRole('button', { name: 'Yes, it applied…' })).toBeDisabled()
   // The reasons sit beside the choices; the IDs disclosure repeats the raw details.
   const choices = card.locator('[data-next-action-choices]')
@@ -1722,7 +1755,7 @@ test('band counts cover every page of the inbox', async ({ page }) => {
   expect(offsets).toContain('100')
 })
 
-test('the plan panel keeps a preamble and the Files touched intro beside the five sections', async ({ page }) => {
+test('the plan context keeps a preamble and the Files touched intro beside the five sections', async ({ page }) => {
   const fixture = decisionsFixture()
   fixture.activity = {
     'T-zeta': {
@@ -1761,8 +1794,7 @@ test('the plan panel keeps a preamble and the Files touched intro beside the fiv
   }
   await serve(page, fixture)
   await page.goto('/inbox')
-  await decisionCards(page).first().locator('[data-context-link]').click()
-  const sheet = page.getByRole('dialog', { name: 'Decision context' })
+  const sheet = decisionDetail(page)
   const plan = sheet.locator('[data-plan-context]')
   await expect(plan.locator('[data-plan-section]')).toHaveCount(5)
   await expect(plan.locator('[data-plan-preamble]')).toHaveText(
@@ -1774,7 +1806,7 @@ test('the plan panel keeps a preamble and the Files touched intro beside the fiv
   )
   await expect(files.locator('code')).toHaveText(['tools/tools.go'])
   await expect(files).toContainText('nested detail stays with its file')
-  await expect(sheet.locator('[data-sheet-choices]').getByRole('button', { name: 'Approve plan' })).toBeVisible()
+  await expect(sheet.locator('[data-decision-footer]').getByRole('button', { name: 'Approve plan' })).toBeVisible()
 })
 
 test('the inbox reads past 2,000 items to the server total', async ({ page }) => {
@@ -1797,4 +1829,369 @@ test('the inbox reads past 2,000 items to the server total', async ({ page }) =>
   ).toBeAttached()
   const offsets = harness.inboxRequests.map((search) => new URLSearchParams(search).get('offset'))
   expect(offsets).toContain('2000')
+})
+
+// The review pane (req-operator-next-action AC-2.8 to AC-2.11; DEC-82).
+
+test('a selected row shows its detail and the selection round-trips through the URL', async ({ page }) => {
+  await serve(page, decisionsFixture())
+  await page.goto('/inbox?band=decisions')
+  // With no selection the first item is selected without writing the URL.
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+  await expect(page).toHaveURL(/\/inbox\?band=decisions$/)
+
+  await decisionRows(page).nth(1).click()
+  await expect(page).toHaveURL(/[?&]selected=T-alpha/)
+  await expect(page).toHaveURL(/[?&]band=decisions/)
+  // The router marks the linked selection as the current page.
+  await expect(decisionRows(page).nth(1)).toHaveAttribute('aria-current', /^(true|page)$/)
+  await expect(decisionRows(page).first()).not.toHaveAttribute('aria-current', /.+/)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+
+  await page.reload()
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+  await decisionRows(page).nth(2).click()
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+  await page.goBack()
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+
+  // A stale selection falls back to the first item.
+  await page.goto('/inbox?selected=T-gone')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+  await expect(decisionRows(page).first()).toHaveAttribute('aria-current', 'true')
+})
+
+test('task decisions and document proposals keep the server order in one list', async ({ page }) => {
+  const fixture = decisionsFixture()
+  const proposals = proposalFixture().items
+  // Interleaved, not grouped by kind or tier (DEC-82(2)).
+  fixture.items = [
+    proposals[2],
+    fixture.items[0],
+    proposals[0],
+    fixture.items[1],
+    proposals[1],
+    ...fixture.items.slice(2),
+  ]
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  await expect(decisionRows(page).locator('[data-row-title]')).toHaveText([
+    longDecision,
+    'Zeta plan everyone waits on',
+    'Operator attention',
+    'Alpha agent question',
+    'Dashboard architecture',
+    'Mid item without a deadline',
+  ])
+  await expect(decisionRows(page).locator('[data-row-kind]')).toHaveText([
+    'Decision proposal',
+    'Approve the plan',
+    'Requirement proposal',
+    'Answer the agent',
+    'System Design proposal',
+    'Decide after repeated review bounces',
+  ])
+  // Each row carries one key: decision proposals by ID, versions by tier, ID and version.
+  expect(await decisionRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-inbox-row')))).toEqual(
+    [
+      'decision:DEC-16',
+      'T-zeta',
+      'requirement:req-attention:3',
+      'T-alpha',
+      'system_design:design-dashboard:4',
+      'T-mid',
+    ],
+  )
+})
+
+function versionView(kind: 'requirement' | 'system_design', id: string, current: number | null, pending: number) {
+  const version = (number: number, text: string) => ({
+    version: number,
+    content: `# ${id}\n\n## Scope\n\nShared paragraph.\n\n## Rules\n\n${text}`,
+    statements: [],
+    confirmed: number === current,
+  })
+  const head = kind === 'requirement' ? { requirement: { id, title: id } } : { document: { id, title: id } }
+  return {
+    ...head,
+    ...(current == null ? {} : { current_version: version(current, 'Confirmed rule text.') }),
+    pending_versions: [version(pending, 'Proposed rule text.')],
+    versions: [],
+  }
+}
+
+test('a version proposal shows its changes in place and a decision proposal shows its full text', async ({ page }) => {
+  const fixture = proposalFixture()
+  fixture.documents = {
+    '/v1/requirements/req-attention': versionView('requirement', 'req-attention', 2, 3),
+    '/v1/system-designs/design-dashboard': 503,
+    '/v1/requirements/req-other': versionView('requirement', 'req-other', null, 1),
+    '/v1/decisions/DEC-16': {
+      id: 'DEC-16',
+      statement: longDecision,
+      context: 'Each repository ships its own kit.',
+      alternatives_rejected: 'One shared kit was rejected: repositories diverge.',
+      status: 'proposed',
+    },
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox')
+
+  const changes = () => decisionDetail(page).getByRole('region', { name: 'Proposed changes' })
+  await expect(changes().locator('[data-comparison-base]')).toHaveText('Confirmed v2 compared with proposed v3.')
+  const comparison = changes().getByRole('region', { name: 'Version comparison' })
+  await expect(comparison).toContainText('Proposed rule text.')
+  await expect(comparison).toContainText('1 changed sections')
+  await expect(decisionDetail(page).getByRole('link', { name: 'View changes →' })).toHaveAttribute(
+    'href',
+    /tab=changes/,
+  )
+
+  // A failed read offers Retry and then shows the comparison.
+  await select(page, 'Dashboard architecture')
+  await expect(changes().getByRole('button', { name: 'Retry' })).toBeVisible()
+  fixture.documents['/v1/system-designs/design-dashboard'] = versionView('system_design', 'design-dashboard', 3, 4)
+  await changes().getByRole('button', { name: 'Retry' }).click()
+  await expect(changes().locator('[data-comparison-base]')).toHaveText('Confirmed v3 compared with proposed v4.')
+
+  // A first proposal compares against an empty base, so it shows whole.
+  await select(page, 'Other requirement')
+  await expect(changes().locator('[data-comparison-base]')).toContainText('No version is confirmed yet')
+  await expect(changes()).toContainText('Shared paragraph.')
+  await expect(changes()).toContainText('Proposed rule text.')
+
+  const decision = await select(page, 'All FunnelFlux repositories')
+  const text = decision.getByRole('region', { name: 'Proposed decision' })
+  await expect(text).toContainText(longDecision)
+  await expect(text).toContainText('Each repository ships its own kit.')
+  await expect(text).toContainText('One shared kit was rejected: repositories diverge.')
+  await expect(decision.getByRole('link', { name: 'View decision →' })).toBeVisible()
+
+  for (const request of harness.documentRequests)
+    expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
+  expect(harness.posts).toHaveLength(0)
+})
+
+test('a late read from a left selection never shows under the new one', async ({ page }) => {
+  const fixture = proposalFixture()
+  fixture.documents = {
+    '/v1/requirements/req-attention': versionView('requirement', 'req-attention', 2, 3),
+    '/v1/system-designs/design-dashboard': versionView('system_design', 'design-dashboard', 3, 4),
+  }
+  const harness = await serve(page, fixture)
+  const held = gate()
+  harness.holdDocuments = held.held
+  await page.goto('/inbox')
+  await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(1)
+  await decisionRows(page).filter({ hasText: 'Dashboard architecture' }).click()
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Dashboard architecture')
+  held.release()
+  harness.holdDocuments = undefined
+  const changes = decisionDetail(page).getByRole('region', { name: 'Proposed changes' })
+  await expect(changes.locator('[data-comparison-base]')).toHaveText('Confirmed v3 compared with proposed v4.')
+  await expect(decisionDetail(page)).not.toContainText('Confirmed v2 compared with proposed v3.')
+})
+
+test('resolving the selected item selects the next one, or the previous when it was last', async ({ page }) => {
+  const fixture = proposalFixture()
+  fixture.items = fixture.items.filter((item) => item.proposal?.id !== 'charter-x')
+  fixture.documents = {
+    '/v1/requirements/req-attention': versionView('requirement', 'req-attention', 2, 3),
+    '/v1/requirements/req-other': versionView('requirement', 'req-other', null, 1),
+    '/v1/system-designs/design-dashboard': versionView('system_design', 'design-dashboard', 3, 4),
+  }
+  let refuse = true
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path === '/v1/system-designs/design-dashboard/versions/4/confirm' && refuse)
+      return { status: 422, error: 'The document moved.' }
+    const leaving = path.match(/^\/v1\/(?:requirements|system-designs|decisions)\/([^/]+)\//)?.[1]
+    if (leaving) fixture.items = fixture.items.filter((item) => item.proposal?.id !== leaving)
+    return undefined
+  })
+  await page.goto('/inbox?selected=system_design:design-dashboard:4')
+  const footer = () => decisionDetail(page).locator('[data-decision-footer]')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Dashboard architecture')
+
+  // A refused act leaves the item and the selection where they are.
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(footer()).toContainText('The document moved.')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Dashboard architecture')
+  // Cancelling a dialog is no act either.
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Dashboard architecture')
+
+  refuse = false
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(page).toHaveURL(/selected=decision%3ADEC-16|selected=decision:DEC-16/)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText(longDecision)
+
+  // The last item resolves to its previous neighbour.
+  await select(page, 'Other requirement')
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /Dismiss/ })
+    .click()
+  await expect(decisionRows(page)).toHaveCount(2)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText(longDecision)
+
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
+  await expect(decisionRows(page)).toHaveCount(1)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Operator attention')
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(page.locator('[data-no-decisions]')).toHaveText('No decisions are waiting for you.')
+  expect(harness.posts.length).toBeGreaterThanOrEqual(5)
+})
+
+test('keys move the selection and act through the selected item’s own controls', async ({ page }) => {
+  const fixture = decisionsFixture()
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path === '/v1/tasks/T-zeta/spec/review')
+      fixture.items = fixture.items.filter((item) => item.task?.id !== 'T-zeta')
+    return undefined
+  })
+  await page.goto('/inbox')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+  // The hint sits beside the control it activates, and the move keys by the list.
+  const approve = decisionDetail(page).locator('[data-shortcut="c"]')
+  await expect(approve).toHaveText('Approve plan')
+  await expect(approve.locator('xpath=following-sibling::*[@data-kbd-hint]')).toHaveText('c')
+  await expect(page.locator('[data-move-hint]')).toBeVisible()
+
+  await page.keyboard.press('j')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+  await expect(page).toHaveURL(/selected=T-alpha/)
+  await page.keyboard.press('ArrowDown')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+  // Movement stops at the ends.
+  await page.keyboard.press('j')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+  // A held modifier is not a shortcut.
+  await page.keyboard.press('Control+k')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Mid item without a deadline')
+  await page.keyboard.press('k')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+
+  // c on a choice that needs input opens its composer and sends nothing; keys
+  // typed into it stay text.
+  await page.keyboard.press('c')
+  const direction = decisionDetail(page).getByLabel('Direction')
+  await expect(direction).toBeFocused()
+  await page.keyboard.type('jkcd')
+  await expect(direction).toHaveValue('jkcd')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+  // With the composer open and focus elsewhere, c still does nothing.
+  await page.locator('h1').click()
+  await page.keyboard.press('c')
+  expect(harness.posts).toHaveLength(0)
+
+  // c on the plan approval records the same act as its button, once.
+  await page.keyboard.press('k')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+  await page.keyboard.down('c')
+  await page.keyboard.press('c')
+  await page.keyboard.up('c')
+  await expect.poll(() => harness.posts.length).toBe(1)
+  expect(new URL(harness.posts[0].url()).pathname).toBe('/v1/tasks/T-zeta/spec/review')
+  expect(harness.posts[0].postDataJSON()).toMatchObject({ action: 'approve' })
+  await expect(decisionRows(page)).toHaveCount(2)
+})
+
+test('document keys open the same dialogs as their buttons, and no key acts while a dialog is open', async ({
+  page,
+}) => {
+  const fixture = proposalFixture()
+  fixture.documents = {
+    '/v1/system-designs/design-dashboard': versionView('system_design', 'design-dashboard', 3, 4),
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox?selected=system_design:design-dashboard:4')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Dashboard architecture')
+  for (const [key, label] of [
+    ['c', 'Confirm'],
+    ['r', 'Revise'],
+    ['d', 'Dismiss'],
+  ])
+    await expect(decisionDetail(page).locator(`[data-shortcut="${key}"]`)).toHaveText(label)
+
+  await page.keyboard.press('d')
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('j')
+  await page.keyboard.press('c')
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Dashboard architecture')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(dialog).toHaveCount(0)
+
+  await page.keyboard.press('r')
+  await expect(page.getByRole('dialog', { name: /Revise version 4 of Dashboard architecture/ })).toBeVisible()
+  await page.keyboard.press('Escape')
+  expect(harness.posts).toHaveLength(0)
+})
+
+test('c on a merge approval opens the merge confirmation and never merges by itself', async ({ page }) => {
+  const fixture: Fixture = {
+    items: [
+      {
+        band: 'decisions',
+        task: task('T-merge', 'Merge me', 'awaiting_human'),
+        next_action: { kind: 'merge_approval', label: 'Approve merge', actor: 'operator', judgment: true, summary: '' },
+      },
+    ],
+    actions: {
+      'T-merge': {
+        kind: 'merge_approval',
+        label: 'Approve merge',
+        actor: 'operator',
+        judgment: true,
+        summary: 'Waiting for merge approval.',
+        choices: [
+          choice('merge', 'Merge', '/v1/tasks/T-merge/merge'),
+          choice('approve', 'Approve only', '/v1/tasks/T-merge/review'),
+        ],
+        deadline: null,
+        details: { gate_kind: 'merge_approval' },
+      },
+    },
+    activity: {
+      'T-merge': {
+        task: task('T-merge', 'Merge me', 'awaiting_human'),
+        events: [],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+        merge_readiness: { state: 'MERGEABLE', head_sha: 'feedface1234567', number: 9 },
+      },
+    },
+  }
+  const harness = await serve(page, fixture)
+  await page.goto('/inbox')
+  await expect(decisionDetail(page).locator('[data-merge-hint]')).toContainText('opens Merge')
+  await expect(decisionDetail(page).locator('[data-shortcut="c"]')).toHaveCount(0)
+  await page.keyboard.press('c')
+  await expect(page.getByRole('dialog', { name: 'Confirm merge' })).toBeVisible()
+  expect(harness.posts).toHaveLength(0)
+})
+
+test('below md the list and the detail show one at a time, and Back keeps the other filters', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 })
+  await serve(page, decisionsFixture())
+  await page.goto('/inbox?band=decisions')
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(page.locator('[data-inbox-detail]')).toBeHidden()
+  await expect(page.locator('[data-move-hint]')).toBeHidden()
+
+  await decisionRows(page).nth(1).click()
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+  await expect(decisionRows(page).first()).toBeHidden()
+  await expect(decisionDetail(page).locator('[data-kbd-hint]').first()).toBeHidden()
+
+  await page.locator('[data-inbox-back]').click()
+  await expect(page).toHaveURL(/\/inbox\?band=decisions$/)
+  await expect(decisionRows(page).first()).toBeVisible()
+  await expect(page.locator('[data-inbox-detail]')).toBeHidden()
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
 })
