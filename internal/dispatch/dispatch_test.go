@@ -1060,6 +1060,224 @@ func TestPlanSubmissionPreservesSpecGateLifecycleSequences(t *testing.T) {
 	}
 }
 
+const planReviewSeatsMarkdown = "## Approach\nPlan the panel.\n\n## Files touched\n- internal/dispatch/dispatch.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Loss.\n\n## Done criteria\n- The planned count reaches review."
+
+// newPlanReviewSeatsTask creates a plan-stage task with a frozen panel of
+// minimum seats and its spec job.
+func newPlanReviewSeatsTask(t *testing.T, ctx context.Context, st store.Store, id string, gate bool, minimum int) (core.Task, core.Job) {
+	t.Helper()
+	task := core.Task{ID: id, Workspace: "demo", Repo: "api", Title: "Planned seats", PolicyVersion: 1, SpecApproval: gate, State: core.TaskRunning, NextStage: core.StageSpec,
+		Branch: "conveyor/task-" + id, BaseBranch: "main", CreatedAt: time.Now(),
+		SetupContract: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, minimum)}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "45m"}}}}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	return task, job
+}
+
+func requirePlanVersionSeats(t *testing.T, ctx context.Context, st store.Store, taskID string, version int, want *int, approved bool) {
+	t.Helper()
+	stored, ok, err := st.GetSpecVersion(ctx, taskID, version)
+	if err != nil || !ok || stored.Approved != approved || (stored.ReviewSeats == nil) != (want == nil) || (want != nil && *stored.ReviewSeats != *want) {
+		t.Fatalf("plan version %d=%+v ok=%t err=%v, want review_seats %v approved %t", version, stored, ok, err, want, approved)
+	}
+}
+
+// TestPlanReviewSeatsPersistenceAndApproval proves the planned review seat
+// count reaches the plan version through ApplyExternalPlan and in-process plan
+// output, that manual and automatic approval leave it unchanged, that
+// omission and legacy spec rendering store none, and that in-process output
+// below the minimum takes the existing invalid-output path without a version
+// (req-review-gates-evidence AC-2.8; feature-review-seat-minimum RS-3).
+func TestPlanReviewSeatsPersistenceAndApproval(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 3, Repos: []config.Repo{{Name: "api"}}}
+	for _, tc := range []struct {
+		name    string
+		gate    bool
+		seats   *int
+		approve bool
+	}{
+		{name: "gate on manual approval", gate: true, seats: seats(3), approve: true},
+		{name: "gate on pending", gate: true, seats: seats(2)},
+		{name: "gate off automatic approval", seats: seats(3)},
+		{name: "omitted", gate: true, approve: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task, job := newPlanReviewSeatsTask(t, ctx, st, "plan-seats-persist", tc.gate, 2)
+			d := New(st, cfg, nil)
+			version, err := d.ApplyExternalPlan(ctx, task, job, pipeline.StructuredPlan{Markdown: planReviewSeatsMarkdown, Decomposition: []pipeline.DecompositionItem{}, ReviewSeats: tc.seats}, "codex", "gpt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.seats, !tc.gate)
+			if tc.approve {
+				current, _ := st.GetTask(ctx, task.ID)
+				if err = d.HandleIntervention(ctx, current, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionApprove, ReasonCode: "plan-approved"}); err != nil {
+					t.Fatal(err)
+				}
+				requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.seats, true)
+			}
+		})
+	}
+	t.Run("legacy spec stores none", func(t *testing.T) {
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		st := store.NewMemory()
+		task, _ := newPlanReviewSeatsTask(t, ctx, st, "plan-seats-legacy", false, 2)
+		legacy, err := pipeline.RenderStructuredSpec(`{"markdown":"## Intent\nKeep legacy.\n\n## Non-goals\nNone.","acceptance":[{"id":"AC-1","criterion":"Legacy","verify":"test"}],"decomposition":[]}`)
+		if err != nil || legacy.ReviewSeats != nil {
+			t.Fatalf("legacy spec=%+v err=%v", legacy, err)
+		}
+		version, err := New(st, cfg, nil).completeSpecVersion(ctx, task, legacy, "codex", "gpt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, nil, true)
+	})
+	t.Run("in-process output", func(t *testing.T) {
+		encoded, err := json.Marshal(planReviewSeatsMarkdown)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name  string
+			seats string
+			want  *int
+		}{{name: "count", seats: "4", want: seats(4)}, {name: "null", seats: "null"}} {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task, job := newPlanReviewSeatsTask(t, ctx, st, "plan-seats-inprocess-"+tc.name, true, 2)
+			output := `{"markdown":` + string(encoded) + `,"decomposition":[],"review_seats":` + tc.seats + `}`
+			if err = New(st, cfg, nil).completeOutput(ctx, cfg, task, job, output, "planner", 0); err != nil {
+				t.Fatal(err)
+			}
+			requirePlanVersionSeats(t, ctx, st, task.ID, 1, tc.want, false)
+		}
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		st := store.NewMemory()
+		task, job := newPlanReviewSeatsTask(t, ctx, st, "plan-seats-inprocess-below", true, 2)
+		output := `{"markdown":` + string(encoded) + `,"decomposition":[],"review_seats":1}`
+		if err = New(st, cfg, nil).completeOutput(ctx, cfg, task, job, output, "planner", 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, getErr := st.GetLatestSpecVersion(ctx, task.ID); getErr != nil || ok {
+			t.Fatalf("below-minimum in-process plan wrote a version ok=%t err=%v", ok, getErr)
+		}
+		events, err := st.ListEvents(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refused := false
+		for _, event := range events {
+			refused = refused || (event.Kind == "spec.output_invalid" && strings.Contains(string(event.Payload), "review_seats_below_minimum") && strings.Contains(string(event.Payload), "minimum_seat_count=2"))
+		}
+		if !refused {
+			t.Fatalf("below-minimum in-process plan events=%+v", events)
+		}
+	})
+}
+
+// TestPlanReviewSeatsFirstRoundPlanned proves an approved plan's count above
+// the minimum opens the first real review round at that count with source
+// planned in the record and review.round_created, and that an approved count
+// equal to the minimum opens the minimum. The resolver's floor is the
+// submission-floor proof while RS-4's admission is absent from this base
+// (req-review-gates-evidence AC-2.3, AC-2.4, AC-2.7, AC-2.8;
+// feature-review-seat-minimum RS-3).
+func TestPlanReviewSeatsFirstRoundPlanned(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		planned *int
+		count   int
+		source  string
+	}{
+		{name: "planned above minimum", planned: seats(4), count: 4, source: store.ReviewSeatSourcePlanned},
+		{name: "planned equal to minimum", planned: seats(2), count: 2, source: store.ReviewSeatSourceMinimum},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task, job := newPlanReviewSeatsTask(t, ctx, st, "plan-seats-round", true, 2)
+			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeout: time.Hour, Repos: []config.Repo{{Name: "api", Base: "main"}},
+				Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "45m"}}}}
+			d := New(st, cfg, nil)
+			version, err := d.ApplyExternalPlan(ctx, task, job, pipeline.StructuredPlan{Markdown: planReviewSeatsMarkdown, Decomposition: []pipeline.DecompositionItem{}, ReviewSeats: tc.planned}, "codex", "gpt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, _ := st.GetTask(ctx, task.ID)
+			if err = d.HandleIntervention(ctx, current, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionApprove, ReasonCode: "plan-approved"}); err != nil {
+				t.Fatal(err)
+			}
+			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.planned, true)
+			// Implementation and its submission are outside RS-3; the task
+			// starts implementation and advances to review as a submission would.
+			if err = d.transition(ctx, task.ID, core.TaskDispatchStart, "", ""); err != nil {
+				t.Fatal(err)
+			}
+			if err = d.transition(ctx, task.ID, core.TaskStageAdvance, core.StageReview, ""); err != nil {
+				t.Fatal(err)
+			}
+			current, _ = st.GetTask(ctx, task.ID)
+			floor, err := ResolveTaskReviewRoundSeats(ctx, st, cfg, current, 1)
+			if err != nil || floor.FloorSeatCount != *tc.planned || floor.MinimumSeatCount != 2 || floor.SeatCount != tc.count || floor.Source != tc.source {
+				t.Fatalf("resolution=%+v err=%v", floor, err)
+			}
+			if err = d.DispatchNow(ctx, task.ID); err != nil {
+				t.Fatal(err)
+			}
+			orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seat := 0
+			for _, order := range orders {
+				if order.Stage != core.StageReview {
+					continue
+				}
+				seat++
+				if order.ReviewRound != 1 || order.ReviewSeat != seat || order.ID != fmt.Sprintf("%s-review-1-seat-%d", task.ID, seat) {
+					t.Fatalf("review seat %d=%+v", seat, order)
+				}
+			}
+			records, err := st.ListReviewRoundSeats(ctx, task.ID)
+			if err != nil || seat != tc.count || len(records) != 1 || records[0].ReviewRound != 1 || records[0].SeatCount != tc.count || records[0].SeatCountSource != tc.source || records[0].MinimumSeatCount != 2 {
+				t.Fatalf("review seats=%d records=%+v err=%v", seat, records, err)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := 0
+			for _, event := range events {
+				if event.Kind != "review.round_created" {
+					continue
+				}
+				created++
+				var payload struct {
+					ReviewRound      int    `json:"review_round"`
+					SeatCount        int    `json:"seat_count"`
+					SeatCountSource  string `json:"seat_count_source"`
+					MinimumSeatCount int    `json:"minimum_seat_count"`
+				}
+				if err = json.Unmarshal(event.Payload, &payload); err != nil || payload.ReviewRound != 1 || payload.SeatCount != tc.count || payload.SeatCountSource != tc.source || payload.MinimumSeatCount != 2 {
+					t.Fatalf("review.round_created=%s err=%v", event.Payload, err)
+				}
+			}
+			if created != 1 {
+				t.Fatalf("review.round_created events=%d", created)
+			}
+		})
+	}
+}
+
 func TestMergeAndRecoveryInterventionsDoNotRequireSpec(t *testing.T) {
 	for _, command := range []core.TaskCommand{core.TaskGateMerge, core.TaskJobFail, core.TaskStageBounceLimit} {
 		for _, action := range []core.InterventionAction{core.InterventionApprove, core.InterventionRedirect} {
