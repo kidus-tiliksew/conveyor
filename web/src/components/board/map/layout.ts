@@ -55,19 +55,27 @@ export interface ClusterInput {
 }
 
 export const CLUSTER_HEADER = 72
+// The narrowest frame still holds its header's title and open count.
+export const FRAME_MIN_WIDTH = 560
+const FRAME_GAP = 96
+const FRAME_PADDING = 24
+const CANVAS_ASPECT = 1.7
+
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 // The map: each document's tasks flow top to bottom into its hub, and the
-// clusters are packed into one canvas.
+// frames are placed in the order given (req-board-map AC-1.3).
 export async function layoutClusters(clusters: ClusterInput[]) {
   elk ??= new ELK({ workerUrl })
   const result = await elk.layout({
     id: 'root',
-    layoutOptions: {
-      'elk.algorithm': 'rectpacking',
-      'elk.aspectRatio': '1.7',
-      'elk.spacing.nodeNode': '96',
-      'elk.padding': '[top=24,left=24,bottom=24,right=24]',
-    },
+    // ELK only sizes the frames; placeFrames places them.
+    layoutOptions: { 'elk.algorithm': 'fixed' },
     children: clusters.map((cluster) => ({
       id: `frame:${cluster.id}`,
       layoutOptions: {
@@ -78,10 +86,8 @@ export async function layoutClusters(clusters: ClusterInput[]) {
         'elk.spacing.nodeNode': '18',
         'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
         'elk.separateConnectedComponents': 'false',
-        // A floor on every tile, so a two-task requirement still reads as a
-        // tile when zoomed out.
         'elk.nodeSize.constraints': 'MINIMUM_SIZE',
-        'elk.nodeSize.minimum': '(1200, 900)',
+        'elk.nodeSize.minimum': `(${FRAME_MIN_WIDTH}, 0)`,
         'elk.contentAlignment': 'H_CENTER V_TOP',
       },
       children: [
@@ -91,14 +97,43 @@ export async function layoutClusters(clusters: ClusterInput[]) {
       edges: cluster.edges.map((edge) => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
     })),
   })
+  const sized = (result.children ?? []).map((frame) => ({
+    id: frame.id.slice('frame:'.length),
+    width: frame.width ?? 0,
+    height: frame.height ?? 0,
+    children: frame.children ?? [],
+  }))
+  const placed = placeFrames(sized)
   const positions = new Map<string, { x: number; y: number }>()
-  const frames = new Map<string, { x: number; y: number; width: number; height: number }>()
-  for (const frame of result.children ?? []) {
-    const fx = frame.x ?? 0
-    const fy = frame.y ?? 0
-    frames.set(frame.id.slice('frame:'.length), { x: fx, y: fy, width: frame.width ?? 0, height: frame.height ?? 0 })
-    for (const child of frame.children ?? [])
-      positions.set(child.id, { x: fx + (child.x ?? 0), y: fy + (child.y ?? 0) })
-  }
+  const frames = new Map<string, Rect>()
+  sized.forEach((frame, index) => {
+    const { x, y } = placed[index]
+    frames.set(frame.id, { x, y, width: frame.width, height: frame.height })
+    for (const child of frame.children) positions.set(child.id, { x: x + (child.x ?? 0), y: y + (child.y ?? 0) })
+  })
   return { positions, frames }
+}
+
+// Rows in the given order, left to right and top to bottom. The row width
+// fits the widest frame and makes the canvas about 1.7 times wider than it is
+// tall, so no frame splits across rows or overlaps another.
+export function placeFrames(sizes: Array<{ width: number; height: number }>) {
+  const area = sizes.reduce((sum, size) => sum + (size.width + FRAME_GAP) * (size.height + FRAME_GAP), 0)
+  const widest = sizes.reduce((max, size) => Math.max(max, size.width), 0)
+  const rowWidth = Math.max(widest, Math.sqrt(area * CANVAS_ASPECT))
+  const placed: Array<{ x: number; y: number }> = []
+  let x = 0
+  let y = 0
+  let rowHeight = 0
+  for (const size of sizes) {
+    if (x > 0 && x + size.width > rowWidth) {
+      x = 0
+      y += rowHeight + FRAME_GAP
+      rowHeight = 0
+    }
+    placed.push({ x: FRAME_PADDING + x, y: FRAME_PADDING + y })
+    x += size.width + FRAME_GAP
+    rowHeight = Math.max(rowHeight, size.height)
+  }
+  return placed
 }

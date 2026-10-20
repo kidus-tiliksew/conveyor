@@ -4,7 +4,7 @@ import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { waitForSheetSettled } from './helpers/sheet'
 
-// The Board map (req-board-map v2; req-operator-next-action AC-1.7, AC-3.4,
+// The Board map (req-board-map v3; req-operator-next-action AC-1.7, AC-3.4,
 // AC-6.1; component-web-task-surfaces, Board map). GET /v1/task-map is mocked
 // in the shape internal/httpapi/task_map.go serves, so every assertion reads
 // the rendering of the server's stated next actions and relations; the map
@@ -74,7 +74,7 @@ function task(
 // - beta holds one, plus two gates and the tie-broken t1;
 // - gamma holds three judgments and the factory's merge;
 // - delta is served only by m1, whose neighbours home it in alpha, so delta
-//   has no tile.
+//   has no group.
 // Lifecycle states deliberately disagree with the stated actions.
 const openTasks: TaskMapItem[] = [
   task('a1', 'Wire the alpha form', blocked, {
@@ -212,7 +212,8 @@ async function mockMap(page: Page, server: MapServer = defaultServer) {
   return seen
 }
 
-const tile = (page: Page, id: string) => page.getByTestId(`rf__node-frame:${id}`)
+const group = (page: Page, id: string) => page.getByTestId(`rf__node-frame:${id}`)
+const groups = (page: Page) => page.locator('.react-flow__node-frame')
 const node = (page: Page, id: string) => page.getByTestId(`rf__node-${id}`)
 const edge = (page: Page, id: string) => page.getByTestId(`rf__edge-${id}`)
 const taskNodes = (page: Page) => page.locator('.react-flow__node-task')
@@ -247,11 +248,11 @@ async function viewport(page: Page) {
   return page.locator('.react-flow__viewport').evaluate((element) => (element as HTMLElement).style.transform)
 }
 
-// The order tiles occupy the grid: by row, then by column.
-async function tileOrder(page: Page) {
-  const tiles = page.locator('.react-flow__node-tile')
-  await expect(tiles.first()).toBeVisible()
-  const boxes = await tiles.evaluateAll((elements) =>
+// The order groups read in on screen: by row, then by column. Each row's
+// frames share their top edge, whatever their heights.
+async function groupOrder(page: Page) {
+  await expect(groups(page).first()).toBeVisible()
+  const boxes = await groups(page).evaluateAll((elements) =>
     elements.map((element) => {
       const box = element.getBoundingClientRect()
       return { id: element.getAttribute('data-id') ?? '', x: Math.round(box.x), y: Math.round(box.y) }
@@ -260,8 +261,15 @@ async function tileOrder(page: Page) {
   return boxes.sort((a, b) => a.y - b.y || a.x - b.x).map((box) => box.id.slice('frame:'.length))
 }
 
-async function openTile(page: Page, id: string) {
-  await tile(page, id).click()
+// A group's header selects its requirement; the tasks sit below the header.
+async function clickHeader(page: Page, id: string) {
+  const box = await group(page, id).boundingBox()
+  if (!box) throw new Error(`no ${id} group`)
+  await page.mouse.click(box.x + box.width / 2, box.y + 4)
+}
+
+async function openGroup(page: Page, id: string) {
+  await clickHeader(page, id)
   await expect(page).toHaveURL(new RegExp(`scope=${id}`))
   await expect(page.getByTestId(`rf__node-doc:${id}`)).toBeVisible()
 }
@@ -283,6 +291,26 @@ async function waitForCamera(locator: Locator) {
     .toBe(true)
 }
 
+// Every group lies inside the map pane (req-board-map AC-1.9).
+async function expectEveryGroupInPane(page: Page) {
+  await waitForCamera(groups(page).first())
+  const pane = await page.locator('.react-flow').boundingBox()
+  if (!pane) throw new Error('no map pane')
+  const boxes = await groups(page).evaluateAll((elements) =>
+    elements.map((element) => {
+      const box = element.getBoundingClientRect()
+      return { id: element.getAttribute('data-id'), left: box.left, top: box.top, right: box.right, bottom: box.bottom }
+    }),
+  )
+  expect(boxes.length).toBeGreaterThan(0)
+  for (const box of boxes) {
+    expect(box.left, `${box.id} left`).toBeGreaterThanOrEqual(pane.x - 1)
+    expect(box.top, `${box.id} top`).toBeGreaterThanOrEqual(pane.y - 1)
+    expect(box.right, `${box.id} right`).toBeLessThanOrEqual(pane.x + pane.width + 1)
+    expect(box.bottom, `${box.id} bottom`).toBeLessThanOrEqual(pane.y + pane.height + 1)
+  }
+}
+
 test('the Graph switch writes view=map, and the address restores arrangement, requirement, and task', async ({
   page,
 }) => {
@@ -293,7 +321,7 @@ test('the Graph switch writes view=map, and the address restores arrangement, re
   await page.getByRole('button', { name: 'Graph' }).click()
   await expect(page).toHaveURL(/view=map/)
   await expect(page.getByRole('button', { name: 'Graph' })).toHaveAttribute('aria-pressed', 'true')
-  await expect(tile(page, 'req-alpha')).toBeVisible()
+  await expect(group(page, 'req-alpha')).toBeVisible()
 
   await page.getByRole('button', { name: 'Dependencies' }).click()
   await expect(page).toHaveURL(/arrangement=dependencies/)
@@ -316,43 +344,57 @@ test('the Graph switch writes view=map, and the address restores arrangement, re
   await expect(page).not.toHaveURL(/arrangement|scope|focus/)
 })
 
-test('zoomed out, the map shows one equal tile per home cluster in blocked-then-judgment order, and nothing else', async ({
+test('the map opens on every group in urgency order, each with its tasks, hub, and edges, and no tile', async ({
   page,
 }) => {
   await mockMap(page)
   await page.goto('/?view=map')
-  // Delta is served only by m1, whose home is alpha, so it has no tile
-  // (req-board-map AC-1.2).
-  expect(await tileOrder(page)).toEqual(['req-alpha', 'req-beta', 'req-gamma', '__none'])
-  await expect(tile(page, 'req-delta')).toHaveCount(0)
+  // Delta is served only by m1, whose home is alpha, so it has no group
+  // (req-board-map AC-1.2). Alpha holds two blocked tasks and beta one; gamma
+  // holds three judgments (AC-1.3).
+  expect(await groupOrder(page)).toEqual(['req-alpha', 'req-beta', 'req-gamma', '__none'])
+  await expect(group(page, 'req-delta')).toHaveCount(0)
+  // The map opens framed on every group (AC-1.9).
+  await expectEveryGroupInPane(page)
 
-  const sizes = await page
-    .locator('.react-flow__node-tile')
-    .evaluateAll((elements) => elements.map((element) => `${element.clientWidth}x${element.clientHeight}`))
-  expect(new Set(sizes).size).toBe(1)
-
-  // Title, the blocked count or else the judgment count, the open count, and
-  // the server's merged/total progress (AC-1.3).
-  const alpha = tile(page, 'req-alpha')
+  // Each header shows the title, a blocked mark or else a judgment mark, and
+  // the open count; each hub shows the server's merged/total (AC-1.3).
+  const alpha = group(page, 'req-alpha')
   await expect(alpha).toContainText('Alpha delivery')
-  await expect(alpha).toContainText('2 blocked')
   await expect(alpha).toContainText('4 open')
-  await expect(alpha).toContainText('20%')
-  const beta = tile(page, 'req-beta')
-  await expect(beta).toContainText('1 blocked')
-  await expect(beta).toContainText('4 open')
-  await expect(beta).toContainText('50%')
-  const gamma = tile(page, 'req-gamma')
-  await expect(gamma).toContainText('3 to decide')
+  await expect(alpha.locator('.bg-failure')).toHaveCount(1)
+  await expect(group(page, 'req-beta').locator('.bg-failure')).toHaveCount(1)
+  const gamma = group(page, 'req-gamma')
   await expect(gamma).toContainText('4 open')
-  await expect(gamma).toContainText('0%')
-  await expect(tile(page, '__none')).toContainText('No requirement')
-  await expect(tile(page, '__none')).toContainText('2 open')
+  await expect(gamma.locator('.bg-failure')).toHaveCount(0)
+  await expect(gamma.locator('.bg-attention-dot')).toHaveCount(1)
+  await expect(group(page, '__none')).toContainText('No requirement')
+  await expect(group(page, '__none')).toContainText('2 open')
+  await expect(page.getByTestId('rf__node-doc:req-alpha')).toContainText('1/5 delivered')
+  await expect(page.getByTestId('rf__node-doc:req-beta')).toContainText('4/8 delivered')
+  await expect(page.getByTestId('rf__node-doc:req-gamma')).toContainText('0/5 delivered')
 
-  // Zoomed out, no task node and no edge renders (AC-1.4).
-  await expect(taskNodes(page)).toHaveCount(0)
-  await expect(page.locator('.react-flow__node-hub')).toHaveCount(0)
-  await expect(page.locator('.react-flow__edge')).toHaveCount(0)
+  // Zoomed out, every group keeps its tasks, hub, and edges, and no summary
+  // tile or progress ring replaces it (AC-1.8): at the opening zoom, below the
+  // former 0.3 tile threshold, and at dot zoom.
+  const everything = async () => {
+    await expect(taskNodes(page)).toHaveCount(openTasks.length)
+    await expect(page.locator('.react-flow__node-hub')).toHaveCount(3)
+    await expect(edge(page, 'a2->a1')).toHaveCount(1)
+    await expect(edge(page, 'a1=>doc:req-alpha')).toHaveCount(1)
+    await expect(page.locator('.react-flow__node-tile')).toHaveCount(0)
+    await expect(page.getByText(/\d+% delivered/)).toHaveCount(0)
+  }
+  await everything()
+  while ((await zoom(page)) >= 0.25) await page.locator('.react-flow__controls-zoomout').click()
+  await expect.poll(() => zoom(page)).toBeLessThan(0.25)
+  await everything()
+
+  // Whole map frames every group again.
+  await page.mouse.move(300, 300)
+  await page.mouse.wheel(0, -1200)
+  await page.getByRole('button', { name: 'Whole map' }).click()
+  await expectEveryGroupInPane(page)
 })
 
 test('a blocked task outranks any number of tasks needing judgment', async ({ page }) => {
@@ -368,16 +410,44 @@ test('a blocked task outranks any number of tasks needing judgment', async ({ pa
     requirements,
   }))
   await page.goto('/?view=map')
-  expect(await tileOrder(page)).toEqual(['req-beta', 'req-gamma', '__none'])
-  await expect(tile(page, 'req-gamma')).toContainText('101 to decide')
+  expect(await groupOrder(page)).toEqual(['req-beta', 'req-gamma', '__none'])
+  await expect(group(page, 'req-gamma')).toContainText('101 open')
+  await expect(group(page, 'req-gamma').locator('.bg-attention-dot')).toHaveCount(1)
+  // Frames differ in size, and rows still read in urgency order.
+  const heights = await groups(page).evaluateAll((elements) => elements.map((element) => element.clientHeight))
+  expect(new Set(heights).size).toBeGreaterThan(1)
+  await expectEveryGroupInPane(page)
 })
 
-test('selecting a tile flies into its single-home cluster, flowing into the requirement at a readable zoom', async ({
+test('a change in urgency with the same tasks reorders the groups', async ({ page }) => {
+  // The same tasks and edges in both reads; only the stated next action of
+  // p1 changes, from queued to blocked by p2.
+  const groupsFor = (blockedNow: boolean) => [
+    task('p1', 'First beta step', blockedNow ? blocked : queued, {
+      depends: ['p2'],
+      blocking: blockedNow ? ['p2'] : [],
+      reqs: ['req-beta'],
+    }),
+    task('p2', 'Second beta step', working, { reqs: ['req-beta'] }),
+    task('q1', 'Gamma decision', proposal, { reqs: ['req-gamma'] }),
+    task('q2', 'Gamma follow-up', queued, { reqs: ['req-gamma'] }),
+  ]
+  const seen = await mockMap(page, ({ includeFinished }) => ({ tasks: groupsFor(includeFinished), requirements }))
+  await page.goto('/?view=map')
+  expect(await groupOrder(page)).toEqual(['req-gamma', 'req-beta'])
+  await page.getByRole('button', { name: 'Finished', exact: true }).click()
+  await expect.poll(() => seen.reads.at(-1)?.includeFinished).toBe(true)
+  await expect(group(page, 'req-beta').locator('.bg-failure')).toHaveCount(1)
+  await expect.poll(() => groupOrder(page)).toEqual(['req-beta', 'req-gamma'])
+})
+
+test('selecting a requirement flies to its single-home group, flowing into the requirement at a readable zoom', async ({
   page,
 }) => {
   await mockMap(page)
   await page.goto('/?view=map')
-  await openTile(page, 'req-alpha')
+  await expect(groups(page).first()).toBeVisible()
+  await openGroup(page, 'req-alpha')
   for (const id of ['a1', 'a2', 'a3', 'm1']) await expect(node(page, id)).toBeInViewport()
   await waitForCamera(node(page, 'a1'))
   expect(await zoom(page)).toBeGreaterThanOrEqual(0.38)
@@ -386,7 +456,8 @@ test('selecting a tile flies into its single-home cluster, flowing into the requ
   const hub = await page.getByTestId('rf__node-doc:req-alpha').boundingBox()
   const leaf = await node(page, 'a1').boundingBox()
   expect(hub && leaf && hub.y > leaf.y).toBe(true)
-  await expect(page.getByTestId('rf__node-doc:req-alpha')).toContainText('1/5 delivered')
+  // The hub prints merged/total compactly below card zoom and in words above it.
+  await expect(page.getByTestId('rf__node-doc:req-alpha')).toContainText(/1(\/| of )5 delivered/)
 
   // Every open task has exactly one home: t1 ties beta and gamma on
   // neighbours and goes to beta, the requirement fewer open tasks serve; m1
@@ -398,6 +469,16 @@ test('selecting a tile flies into its single-home cluster, flowing into the requ
   expect(beta && t1 && t1.x >= beta.x && t1.x <= beta.x + beta.width && t1.y >= beta.y).toBe(true)
   // The merged prerequisite stays hidden while Finished is off.
   await expect(node(page, 'f1')).toHaveCount(0)
+
+  // Clicking the selected group again, from the whole map, flies there again.
+  await page.getByRole('button', { name: 'Whole map' }).click()
+  await expectEveryGroupInPane(page)
+  expect(await zoom(page)).toBeLessThan(0.38)
+  await clickHeader(page, 'req-alpha')
+  await expect(page).toHaveURL(/scope=req-alpha/)
+  await waitForCamera(node(page, 'a1'))
+  expect(await zoom(page)).toBeGreaterThanOrEqual(0.38)
+  for (const id of ['a1', 'a2', 'a3', 'm1']) await expect(node(page, id)).toBeInViewport()
 })
 
 test('task nodes print the stated label with a mark from the stated actor, and waiting is a separate mark', async ({
@@ -569,7 +650,7 @@ test('hover lights only the task’s own edges after a pause and dims nothing, i
 test('search by title or ID selects the first match and moves to it', async ({ page }) => {
   await mockMap(page)
   await page.goto('/?view=map')
-  await expect(tile(page, 'req-alpha')).toBeVisible()
+  await expect(group(page, 'req-alpha')).toBeVisible()
   const find = page.getByRole('textbox', { name: 'Find a task' })
   await find.fill('gamma question')
   await find.press('Enter')
@@ -598,15 +679,15 @@ test('the dependency arrangement lays every open task and its finished prerequis
 test('repository and Finished filters travel to the one map read in both arrangements', async ({ page }) => {
   const seen = await mockMap(page)
   await page.goto('/?view=map')
-  await expect(tile(page, 'req-alpha')).toBeVisible()
+  await expect(group(page, 'req-alpha')).toBeVisible()
   expect(seen.reads.at(-1)).toEqual({ repositories: [], includeFinished: false })
 
   // Finished on: finished tasks join clusters with open work, and never make
-  // a finished-only tile.
+  // a finished-only group.
   await page.getByRole('button', { name: 'Finished', exact: true }).click()
   await expect.poll(() => seen.reads.at(-1)).toEqual({ repositories: [], includeFinished: true })
-  expect(await tileOrder(page)).toEqual(['req-alpha', 'req-beta', 'req-gamma', '__none'])
-  await openTile(page, 'req-alpha')
+  expect(await groupOrder(page)).toEqual(['req-alpha', 'req-beta', 'req-gamma', '__none'])
+  await openGroup(page, 'req-alpha')
   await expect(node(page, 'f2')).toHaveCount(1)
   await expect(node(page, 'f1')).toHaveCount(1)
   await page.getByRole('button', { name: 'Finished', exact: true }).click()
@@ -620,8 +701,8 @@ test('repository and Finished filters travel to the one map read in both arrange
   await page.getByRole('button', { name: 'Finished', exact: true }).click()
   await expect.poll(() => seen.reads.at(-1)).toEqual({ repositories: ['web'], includeFinished: true })
   await page.getByRole('button', { name: 'Requirements' }).click()
-  await expect(tile(page, '__none')).toBeVisible()
-  await expect(tile(page, 'req-alpha')).toHaveCount(0)
+  await expect(group(page, '__none')).toBeVisible()
+  await expect(group(page, 'req-alpha')).toHaveCount(0)
   expect(seen.taskOperations).toBe(0)
 })
 
@@ -656,33 +737,9 @@ test('opening a task shows the Board sheet over the map, and closing it returns 
   await waitForSheetSettled(page.getByRole('dialog'))
 })
 
-test('zooming across the threshold keeps the requirement under the pointer', async ({ page }) => {
-  await mockMap(page)
-  await page.goto('/?view=map')
-  await expect(tile(page, 'req-gamma')).toBeVisible()
-  await expect.poll(() => zoom(page)).toBeLessThan(0.3)
-  const box = await tile(page, 'req-gamma').boundingBox()
-  if (!box) throw new Error('no gamma tile')
-  const pointer = { x: box.x + box.width * 0.6, y: box.y + box.height * 0.4 }
-  await page.mouse.move(pointer.x, pointer.y)
-  const under = () =>
-    page.evaluate(
-      ({ x, y }) =>
-        document
-          .elementsFromPoint(x, y)
-          .map((element) => element.closest('.react-flow__node-tile')?.getAttribute('data-id'))
-          .find(Boolean),
-      pointer,
-    )
-  while ((await zoom(page)) < 0.3) await page.mouse.wheel(0, -120)
-  await expect(taskNodes(page).first()).toBeVisible()
-  expect(await under()).toBe('frame:req-gamma')
-  while ((await zoom(page)) >= 0.3) await page.mouse.wheel(0, 120)
-  await expect(taskNodes(page)).toHaveCount(0)
-  expect(await under()).toBe('frame:req-gamma')
-})
-
-test('500 open and 2,000 finished tasks show their tiles within two seconds of the read', async ({ page }) => {
+test('500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read', async ({
+  page,
+}) => {
   test.setTimeout(60_000)
   const kinds = [working, queued, blocked, planGate, merging]
   const open: TaskMapItem[] = []
@@ -723,11 +780,22 @@ test('500 open and 2,000 finished tasks show their tiles within two seconds of t
     }
   })
   await page.goto('/?view=map')
-  const tilesAt = await page.evaluate(
+  // Every group, hub, and default-visible open task node, with the edges
+  // between them, renders before the timer stops (AC-1.8, AC-3.2). Each
+  // requirement's twenty tasks form one chain into its hub: 19 dependency
+  // edges and one delivery edge per group.
+  const renderedAt = await page.evaluate(
     () =>
       new Promise<number>((resolve) => {
         const tick = () => {
-          if (document.querySelectorAll('.react-flow__node-tile').length >= 25) resolve(performance.now())
+          const count = (selector: string) => document.querySelectorAll(selector).length
+          if (
+            count('.react-flow__node-frame') >= 25 &&
+            count('.react-flow__node-hub') >= 25 &&
+            count('.react-flow__node-task') >= 500 &&
+            count('.react-flow__edge') >= 500
+          )
+            resolve(performance.now())
           else requestAnimationFrame(tick)
         }
         tick()
@@ -735,11 +803,19 @@ test('500 open and 2,000 finished tasks show their tiles within two seconds of t
   )
   const readAt = await page.evaluate(() => (window as unknown as { mapReadAt: number }).mapReadAt)
   expect(readAt).toBeGreaterThan(0)
-  const elapsed = tilesAt - readAt
-  test.info().annotations.push({ type: 'tiles after read (ms)', description: String(Math.round(elapsed)) })
+  const elapsed = renderedAt - readAt
+  test.info().annotations.push({
+    type: 'groups, tasks, and edges after read (ms)',
+    description: String(Math.round(elapsed)),
+  })
   expect(elapsed).toBeLessThanOrEqual(2000)
-  await expect(page.locator('.react-flow__node-tile')).toHaveCount(25)
-  await expect(taskNodes(page)).toHaveCount(0)
+  await expect(groups(page)).toHaveCount(25)
+  await expect(page.locator('.react-flow__node-hub')).toHaveCount(25)
+  await expect(taskNodes(page)).toHaveCount(500)
+  await expect(page.locator('.react-flow__edge')).toHaveCount(500)
+  await expect(edge(page, 'o0->o25')).toHaveCount(1)
+  await expect(edge(page, 'o475=>doc:req-0')).toHaveCount(1)
+  await expect(page.locator('.react-flow__node-tile')).toHaveCount(0)
 })
 
 // The title row carries only the title and the actions; the shared toolbar
@@ -792,7 +868,7 @@ test('the view switch closes one shared toolbar at the same position in every vi
 
   await button('Graph').click()
   await expect(page).toHaveURL(/view=map/)
-  await expect(tile(page, 'req-alpha')).toBeVisible()
+  await expect(group(page, 'req-alpha')).toBeVisible()
   await expect(toolbar).toHaveCount(1)
   await expect(toolbar.getByRole('group', { name: 'Arrange by' })).toBeVisible()
   await expectPressed('Graph')
