@@ -956,6 +956,47 @@ func TestPlanPushChangedItems(t *testing.T) {
 		}
 	})
 
+	t.Run("dismissed system design revision", func(t *testing.T) {
+		f := newPlanFakeFactory(t)
+		f.seedDesign("feature-rev", "Revised design", 1, planDesignText)
+		root := newPlanDraftDir(t)
+		revise := "---\nmode: revise\nbase_version: 1\n---\n"
+		writePlanFile(t, root, "system-designs/feature-rev.md", revise+strings.Replace(planDesignText, "The design text.", "The revised design text.", 1))
+		writePlanFile(t, root, "system-designs/feature-rev.base.md", planDesignText)
+		approveAllPlanItems(t, root)
+		mustPushPlan(t, root, PlanLayerSystemDesigns)
+		f.dismissDesign("feature-rev", 2)
+		f.mu.Lock()
+		archived := f.designs["feature-rev"].doc.Archived
+		f.mu.Unlock()
+		if archived {
+			t.Fatal("dismissing a revision archived a document with a confirmed version")
+		}
+		posts := f.postCount()
+		out := mustPushPlan(t, root, PlanLayerSystemDesigns)
+		expectPlanLine(t, out, "feature-rev: unchanged since push;", "feature-rev v2 is dismissed")
+		if f.postCount() != posts {
+			t.Fatal("an unchanged rerun of a dismissed revision posted")
+		}
+		writePlanFile(t, root, "system-designs/feature-rev.md", revise+strings.Replace(planDesignText, "The design text.", "The twice revised design text.", 1))
+		expectPlanRefusal(t, f, root, PlanLayerSystemDesigns, "feature-rev: AC-3.1:", "changed since approval")
+		approveAllPlanItems(t, root)
+		out = mustPushPlan(t, root, PlanLayerSystemDesigns)
+		expectPlanLine(t, out, "posted feature-rev:", "feature-rev v3 (pending)")
+		if posted := f.postsTo("/v1/system-designs/feature-rev/versions"); len(posted) != 2 {
+			t.Fatalf("revision posts = %d, want v2 and v3", len(posted))
+		}
+		f.mu.Lock()
+		versions := f.designs["feature-rev"].versions
+		f.mu.Unlock()
+		if len(versions) != 3 || versions[2].Confirmed || versions[2].Dismissed {
+			t.Fatalf("versions = %+v, want a pending v3", versions)
+		}
+		if record := planPushRecord(t, root, "feature-rev"); record.Phase != PlanPushPosted || record.ServerID != "feature-rev" || record.Version != 3 {
+			t.Fatalf("record after re-push = %+v", record)
+		}
+	})
+
 	// req-local-planning v6 AC-3.13, DEC-83(2): a created document whose only
 	// proposal was dismissed stays archived, so the revised item is refused
 	// with the remedy, and the renamed item posts.
