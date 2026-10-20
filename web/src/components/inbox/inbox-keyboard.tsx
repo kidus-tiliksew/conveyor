@@ -86,14 +86,18 @@ export function useInboxKeyboard({
       const active = document.activeElement
       if (active && active !== document.body && !page.contains(active)) return
       if (document.querySelector('[role="dialog"]')) return
+      // An open composer holds an unsent draft: moving would unmount the
+      // detail and lose it, so no key acts until the composer closes, wherever
+      // focus sits.
+      const detail = page.querySelector('[data-inbox-detail]')
+      if (detail?.querySelector('textarea')) return
       if (step) {
         event.preventDefault()
         moveRef.current(step)
         return
       }
       if (event.repeat) return
-      const detail = page.querySelector('[data-inbox-detail]')
-      if (!detail || !shown(detail) || detail.querySelector('textarea')) return
+      if (!detail || !shown(detail)) return
       const target =
         detail.querySelector(`[data-shortcut="${act}"]`) ??
         (act === 'c' ? detail.querySelector('[data-shortcut-merge] [data-merge-at-gate]') : null)

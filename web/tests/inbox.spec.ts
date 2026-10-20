@@ -2082,10 +2082,26 @@ test('keys move the selection and act through the selected item’s own controls
   await page.keyboard.type('jkcd')
   await expect(direction).toHaveValue('jkcd')
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
-  // With the composer open and focus elsewhere, c still does nothing.
-  await page.locator('h1').click()
-  await page.keyboard.press('c')
+  // While the composer is open no key moves the selection or acts, whether
+  // focus sits on a composer button or elsewhere on the page, so the unsent
+  // draft survives.
+  const url = page.url()
+  const composerCancel = decisionDetail(page).getByRole('button', { name: 'Cancel', exact: true })
+  for (const focus of ['composer button', 'page'] as const) {
+    if (focus === 'composer button') await composerCancel.focus()
+    else await page.locator('h1').click()
+    for (const key of ['j', 'k', 'ArrowDown', 'ArrowUp', 'c']) {
+      await page.keyboard.press(key)
+      await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
+      await expect(direction).toHaveValue('jkcd')
+      expect(page.url()).toBe(url)
+    }
+  }
   expect(harness.posts).toHaveLength(0)
+
+  // Once the composer is cancelled, movement works again.
+  await composerCancel.click()
+  await expect(direction).toHaveCount(0)
 
   // c on the plan approval records the same act as its button, once.
   await page.keyboard.press('k')
