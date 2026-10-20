@@ -178,6 +178,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			content = append(content, map[string]any{"type": "input_image", "image_url": dataURL, "detail": "auto"})
 			auditContent = append(auditContent, map[string]any{"type": "input_image", "image_url": metadata})
 		case AttachmentDocument:
+			mediaType := documentWireMediaType(attachment.ContentType)
+			dataURL = "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(attachment.Content)
+			metadata = fmt.Sprintf("[binary omitted: artifact %s, %s, %d bytes]", attachment.ID, mediaType, len(attachment.Content))
 			content = append(content, map[string]any{"type": "input_file", "filename": attachment.Name, "file_data": dataURL})
 			auditContent = append(auditContent, map[string]any{"type": "input_file", "filename": attachment.Name, "file_data": metadata})
 		case AttachmentAudio:
@@ -372,6 +375,13 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 		}
 		if diagnostic.ProviderCode != "" {
 			details += " provider_code=" + diagnostic.ProviderCode
+		}
+		message, messageErr := client.providerMessage(ctx, raw)
+		if messageErr != nil {
+			return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, messageErr
+		}
+		if message != "" {
+			details += " provider_message=" + message
 		}
 		if diagnostic.Phase == "structured_output_unsupported" {
 			return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, fmt.Errorf("Responses API (%s) provider rejected the required structured output schema for model %q: %s%s", endpointHost, model, status, details)
@@ -663,9 +673,68 @@ func providerErrorCode(raw []byte) string {
 	return fmt.Sprint(envelope.Error.Code)
 }
 
+// providerErrorMessage reads error.message from the same top-level error
+// object as providerErrorCode. A missing or non-string message is empty.
+func providerErrorMessage(raw []byte) string {
+	var envelope struct {
+		Error struct {
+			Message any `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return ""
+	}
+	message, _ := envelope.Error.Message.(string)
+	return message
+}
+
+// providerMessage returns the provider's error message for a stage error:
+// redacted in full first, then collapsed to one line, then bounded to
+// providerMessageLimit characters including the "..." marker
+// (component-triage).
+func (client *OpenAI) providerMessage(ctx context.Context, raw []byte) (string, error) {
+	message := providerErrorMessage(raw)
+	if strings.TrimSpace(message) == "" {
+		return "", nil
+	}
+	redactor, err := client.redactor(ctx)
+	if err != nil {
+		return "", err
+	}
+	clean, _ := redactor.Redact(message)
+	clean = strings.Join(strings.Fields(clean), " ")
+	if runes := []rune(clean); len(runes) > providerMessageLimit {
+		clean = string(runes[:providerMessageLimit-len("...")]) + "..."
+	}
+	return clean, nil
+}
+
+const providerMessageLimit = 300
+
+// documentWireMediaType returns the media type a document's data URL carries.
+// JSON, XML, RTF, and +json or +xml types go out as text/plain because some
+// providers accept only PDF and text/* documents; every other type keeps its
+// recorded value, parameters included (component-triage).
+func documentWireMediaType(contentType string) string {
+	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if strings.HasPrefix(base, "text/") {
+		return contentType
+	}
+	switch {
+	case base == "application/json", base == "application/xml", base == "application/rtf",
+		strings.HasSuffix(base, "+json"), strings.HasSuffix(base, "+xml"):
+		return "text/plain"
+	}
+	return contentType
+}
+
+func (client *OpenAI) redactor(ctx context.Context) (*redact.Redactor, error) {
+	return redact.WithSecrets(ctx, client.RedactionSecrets, []string{client.APIKey})
+}
+
 func (client *OpenAI) auditEnvelope(ctx context.Context, request, response any) ([]byte, core.RedactionStats, error) {
 	envelope, _ := json.Marshal(map[string]any{"request": request, "result": response})
-	redactor, err := redact.WithSecrets(ctx, client.RedactionSecrets, []string{client.APIKey})
+	redactor, err := client.redactor(ctx)
 	if err != nil {
 		return nil, core.RedactionStats{}, err
 	}

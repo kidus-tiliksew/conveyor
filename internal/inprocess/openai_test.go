@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"image"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestOpenAIRunUsesStructuredBinaryInputsAndTranscribesAudio(t *testing.T) {
@@ -753,5 +755,195 @@ func TestOpenAIChecksEveryPreparedAudioTextBeforeResponses(t *testing.T) {
 				t.Fatal("transcribed content leaked into audit")
 			}
 		})
+	}
+}
+
+type documentSecretSource []string
+
+func (s documentSecretSource) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
+	return []string(s), nil
+}
+
+type failingDocumentSecretSource struct{}
+
+func (failingDocumentSecretSource) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
+	return nil, errors.New("secret source unavailable")
+}
+
+// runDocuments sends attachments through Run and returns each input_file item
+// by filename, plus the audit transcript.
+func runDocuments(t *testing.T, attachments []Attachment) (map[string]map[string]any, []byte) {
+	t.Helper()
+	var request struct {
+		Input []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"input"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		_, _ = io.WriteString(w, `{"model":"m","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+	result, err := (&OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client()}).Run(context.Background(), "m", Input{Prompt: "analyze", Attachments: attachments})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]map[string]any{}
+	for _, item := range request.Input {
+		for _, part := range item.Content {
+			if part["type"] == "input_file" {
+				files[part["filename"].(string)] = part
+			}
+		}
+	}
+	if len(files) != len(attachments) {
+		t.Fatalf("input_file items = %d, want %d", len(files), len(attachments))
+	}
+	return files, result.Transcript
+}
+
+func TestOpenAIRunSendsTextualDocumentsAsPlainText(t *testing.T) {
+	t.Parallel()
+	attachments := []Attachment{
+		{ID: "json-id", Name: "policy.json", ContentType: "application/json", Content: []byte(`{"gate":"make test"}`)},
+		{ID: "xml-id", Name: "feed.xml", ContentType: "application/xml", Content: []byte("<feed/>")},
+		{ID: "api-id", Name: "api.json", ContentType: "application/vnd.api+json", Content: []byte(`{"data":[]}`)},
+		{ID: "atom-id", Name: "atom.xml", ContentType: "application/atom+xml", Content: []byte("<feed xmlns=\"http://www.w3.org/2005/Atom\"/>")},
+		{ID: "charset-id", Name: "charset.json", ContentType: "application/json; charset=utf-8", Content: []byte(`{"k":"v"}`)},
+		{ID: "upper-id", Name: "upper.json", ContentType: " APPLICATION/JSON ", Content: []byte(`[1]`)},
+		{ID: "rtf-id", Name: "notes.rtf", ContentType: "application/rtf", Content: []byte(`{\rtf1 notes}`)},
+	}
+	for i := range attachments {
+		attachments[i].Kind = AttachmentDocument
+	}
+	original := append([]Attachment(nil), attachments...)
+	files, transcript := runDocuments(t, attachments)
+	for i, attachment := range attachments {
+		if attachment.ContentType != original[i].ContentType || !bytes.Equal(attachment.Content, original[i].Content) {
+			t.Fatalf("caller attachment %s changed: %+v", attachment.ID, attachment)
+		}
+		file := files[attachment.Name]
+		if file == nil {
+			t.Fatalf("missing input_file for %s", attachment.Name)
+		}
+		want := "data:text/plain;base64," + base64.StdEncoding.EncodeToString(attachment.Content)
+		if file["file_data"] != want {
+			t.Fatalf("%s file_data = %v, want %s", attachment.Name, file["file_data"], want)
+		}
+		metadata := fmt.Sprintf("[binary omitted: artifact %s, text/plain, %d bytes]", attachment.ID, len(attachment.Content))
+		if !strings.Contains(string(transcript), metadata) {
+			t.Fatalf("audit metadata %q missing from transcript: %s", metadata, transcript)
+		}
+	}
+}
+
+func TestOpenAIRunPreservesOtherDocumentMediaTypes(t *testing.T) {
+	t.Parallel()
+	attachments := []Attachment{
+		{ID: "md-id", Name: "notes.md", ContentType: "text/markdown"},
+		{ID: "txt-id", Name: "log.txt", ContentType: "text/plain; charset=utf-8"},
+		{ID: "csv-id", Name: "rows.csv", ContentType: "text/csv; header=present"},
+		{ID: "pdf-id", Name: "file.pdf", ContentType: "application/pdf"},
+		{ID: "doc-id", Name: "file.doc", ContentType: "application/msword"},
+		{ID: "docx-id", Name: "file.docx", ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{ID: "odt-id", Name: "file.odt", ContentType: "application/vnd.oasis.opendocument.text"},
+		{ID: "ppt-id", Name: "file.ppt", ContentType: "application/vnd.ms-powerpoint"},
+		{ID: "pptx-id", Name: "file.pptx", ContentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+		{ID: "xls-id", Name: "file.xls", ContentType: "application/vnd.ms-excel"},
+		{ID: "xlsx-id", Name: "file.xlsx", ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+	}
+	for i := range attachments {
+		attachments[i].Kind = AttachmentDocument
+		attachments[i].Content = []byte("bytes of " + attachments[i].Name)
+	}
+	files, transcript := runDocuments(t, attachments)
+	for _, attachment := range attachments {
+		want := "data:" + attachment.ContentType + ";base64," + base64.StdEncoding.EncodeToString(attachment.Content)
+		if file := files[attachment.Name]; file == nil || file["file_data"] != want {
+			t.Fatalf("%s input_file = %v, want file_data %s", attachment.Name, file, want)
+		}
+		metadata := fmt.Sprintf("[binary omitted: artifact %s, %s, %d bytes]", attachment.ID, attachment.ContentType, len(attachment.Content))
+		if !strings.Contains(string(transcript), metadata) {
+			t.Fatalf("audit metadata %q missing from transcript: %s", metadata, transcript)
+		}
+	}
+}
+
+func TestOpenAIRunReportsProviderErrorMessage(t *testing.T) {
+	t.Parallel()
+	const message = "Unsupported file media type application/json: this provider accepts application/pdf and text/* documents"
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		w.Header().Set("x-request-id", "req-400")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":{"code":400,"message":%q,"metadata":{"previous_errors":[{"code":400,"message":%q,"provider_name":"Anthropic"}]}}}`, message, message)
+	}))
+	defer server.Close()
+	client := &OpenAI{APIKey: "sk-test", BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond}
+	result, err := client.Run(context.Background(), "anthropic/claude-haiku-5.5", Input{Prompt: "work"})
+	if err == nil {
+		t.Fatal("expected provider error")
+	}
+	for _, want := range []string{"provider_response", "400 Bad Request", "request_id=req-400", "provider_code=400", "provider_message=" + message} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+	if attempts != 1 || result.Diagnostic == nil || result.Diagnostic.Attempts != 1 || result.Diagnostic.Retryable {
+		t.Fatalf("attempts=%d diagnostic=%+v", attempts, result.Diagnostic)
+	}
+}
+
+func TestProviderErrorMessageDetail(t *testing.T) {
+	t.Parallel()
+	const apiKey = "sk-boundary-api-key-value"
+	const appKey = "github-app-private-key-material"
+	client := &OpenAI{APIKey: apiKey, RedactionSecrets: documentSecretSource{appKey}}
+	body := func(message any) []byte {
+		encoded, _ := json.Marshal(map[string]any{"error": map[string]any{"code": 400, "message": message}})
+		return encoded
+	}
+	padding := strings.Repeat("a", 290)
+	for _, tc := range []struct {
+		name   string
+		raw    []byte
+		want   string
+		absent []string
+	}{
+		{name: "api key", raw: body("bad key " + apiKey), absent: []string{apiKey}},
+		{name: "shared source", raw: body("leaked " + appKey + " here"), absent: []string{appKey}},
+		{name: "whitespace", raw: body("  line one\n\tline   two \r\n"), want: "line one line two"},
+		{name: "missing", raw: []byte(`{"error":{"code":400}}`), want: ""},
+		{name: "empty", raw: body(" \n\t "), want: ""},
+		{name: "non-string", raw: body(42), want: ""},
+		{name: "malformed", raw: []byte(`not json`), want: ""},
+		{name: "two kilobytes", raw: body(strings.Repeat("x", 2048)), want: strings.Repeat("x", 297) + "..."},
+		{name: "multibyte", raw: body(strings.Repeat("é", 400)), want: strings.Repeat("é", 297) + "..."},
+		{name: "secret spans boundary", raw: body(padding + " " + appKey + " tail"), absent: []string{appKey[:8]}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := client.providerMessage(context.Background(), tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.absent == nil && got != tc.want {
+				t.Fatalf("message = %q, want %q", got, tc.want)
+			}
+			for _, secret := range tc.absent {
+				if strings.Contains(got, secret) || !strings.Contains(got, "[REDAC") {
+					t.Fatalf("message %q leaks %q or lacks a redaction placeholder", got, secret)
+				}
+			}
+			if n := utf8.RuneCountInString(got); n > providerMessageLimit || !utf8.ValidString(got) {
+				t.Fatalf("message has %d characters, valid=%v", n, utf8.ValidString(got))
+			}
+		})
+	}
+	failing := &OpenAI{APIKey: apiKey, RedactionSecrets: failingDocumentSecretSource{}}
+	if _, err := failing.providerMessage(context.Background(), body("message")); err == nil {
+		t.Fatal("secret source failure must fail closed")
 	}
 }
