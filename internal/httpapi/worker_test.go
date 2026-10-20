@@ -1055,3 +1055,183 @@ func volatilePairingContext(t *testing.T, backend store.Backend, ctx context.Con
 	}
 	return userCtx
 }
+
+// TestSubmissionChannelsReviewSeats proves the worker, run, and MCP submit
+// channels share one review_seats parser and floor admission: omission keeps
+// today's result, a count at or above the floor persists, a count below it
+// answers HTTP 422 or an MCP tool error with both counts, and malformed,
+// foreign-session, and foreign-workspace calls write nothing
+// (req-review-gates-evidence AC-2.3; feature-review-seat-minimum RS-4).
+func TestSubmissionChannelsReviewSeats(t *testing.T) {
+	type outcome struct {
+		status   int
+		declared *int
+		contains string
+	}
+	seats := func(n int) *int { return &n }
+	cases := []struct {
+		name      string
+		value     string
+		session   string
+		workspace string
+		want      outcome
+	}{
+		{name: "omitted", want: outcome{status: http.StatusOK}},
+		{name: "equal-floor", value: "3", want: outcome{status: http.StatusOK, declared: seats(3)}},
+		{name: "above-floor", value: "5", want: outcome{status: http.StatusOK, declared: seats(5)}},
+		{name: "below-floor", value: "2", want: outcome{status: http.StatusUnprocessableEntity, contains: "review_seats_below_floor: review_seats 2 is below the task's review seat floor 3 (minimum_seat_count=2, planned_seat_count=3)"}},
+		{name: "string", value: `"3"`, want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer from 1 to 2147483647"}},
+		{name: "fraction", value: "2.5", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "zero", value: "0", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "negative", value: "-4", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "null", value: "null", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "boolean", value: "true", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "too-large", value: "2147483648", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		// Fractions that float64 rounding would turn into accepted integers
+		// stay refused; integral literal forms stay accepted.
+		{name: "rounds-up-to-floor", value: "2.99999999999999999", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "rounds-up-to-one", value: "0.99999999999999999", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "rounds-down-to-max", value: "2147483647.00000001", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "rounds-down-above-floor", value: "4.0000000000000001", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "integral-decimal", value: "4.0", want: outcome{status: http.StatusOK, declared: seats(4)}},
+		{name: "integral-exponent", value: "3e0", want: outcome{status: http.StatusOK, declared: seats(3)}},
+		{name: "foreign-session", value: "3", session: "another", want: outcome{status: http.StatusConflict}},
+		{name: "foreign-workspace", value: "3", workspace: "elsewhere", want: outcome{status: http.StatusNotFound, contains: "workspace_not_found"}},
+	}
+	for _, channel := range []string{"worker", "run", "mcp"} {
+		for _, test := range cases {
+			t.Run(channel+"/"+test.name, func(t *testing.T) {
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+				st := store.NewMemory()
+				setup := config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}
+				task := core.Task{ID: "seats", Workspace: "demo", Repo: "app", Title: "Seats", Branch: "conveyor/task-seats", BaseBranch: "main", PolicyVersion: 1, SetupContract: setup, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+				if err := st.CreateTask(ctx, task); err != nil {
+					t.Fatal(err)
+				}
+				plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "plan", ReviewSeats: seats(3)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = st.ApproveSpecVersion(ctx, task.ID, plan.Version); err != nil {
+					t.Fatal(err)
+				}
+				job := core.Job{ID: "seats-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+				if err = st.CreateJob(ctx, job); err != nil {
+					t.Fatal(err)
+				}
+				if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+					t.Fatal(err)
+				}
+				cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+				dispatcher := dispatch.New(st, cfg, nil)
+				dispatcher.DisableMemoryQueueForTest()
+				orders := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+				workers := &workerservice.Service{Store: st, WorkOrders: orders}
+				claim := core.WorkOrderClaim{SessionID: "session", ClientToken: "claim-token", ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner", Lease: time.Minute}
+				credential := "run-bearer"
+				if channel == "worker" {
+					pairing, _, pairErr := workers.IssuePairing(memberPairingContext(t, st, ctx, "owner"), time.Minute)
+					if pairErr != nil {
+						t.Fatal(pairErr)
+					}
+					enrollment, enrollErr := workers.Enroll(store.WithActor(t.Context(), store.SystemActor()), pairing, "worker")
+					if enrollErr != nil {
+						t.Fatal(enrollErr)
+					}
+					credential = enrollment.Credential
+					claim.ClaimantID = enrollment.Worker.ID
+					claim.WorkerID = enrollment.Worker.ID
+				}
+				if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, claim); err != nil {
+					t.Fatal(err)
+				}
+				server := NewServer(st)
+				server.Workspace = "demo"
+				server.WorkOrders = orders
+				server.Workers = workers
+				server.Credentials = staticCredentialVerifier{"run-bearer": {ID: "run-agent", OwnerUserID: "owner", Kind: core.CredentialAgent, RunWorkspaceID: "demo", RunWorkOrderID: job.ID, RunSessionID: "session"}}
+				handler := server.Handler()
+				session, workspace := "session", "demo"
+				if test.session != "" {
+					session = test.session
+				}
+				if test.workspace != "" {
+					workspace = test.workspace
+				}
+				body := fmt.Sprintf(`{"workspace_id":%q,"work_order_id":%q,"session_id":%q,"head_sha":"named-head"`, workspace, job.ID, session)
+				if test.value != "" {
+					body += `,"review_seats":` + test.value
+				}
+				body += "}"
+				endpoint := "/v1/work-orders/" + job.ID + "/submit-for-review"
+				if channel == "worker" {
+					endpoint = "/v1/worker/work-orders/" + job.ID + "/submit-for-review"
+				}
+				if channel == "mcp" {
+					endpoint = "/mcp"
+					body = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"submit_for_review","arguments":` + body + `}}`
+				}
+				eventsBefore, _ := st.ListEvents(ctx, task.ID)
+				request := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(body))
+				request.Header.Set("Authorization", "Bearer "+credential)
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				order, _ := st.GetWorkOrder(ctx, job.ID)
+				eventsAfter, _ := st.ListEvents(ctx, task.ID)
+				text := response.Body.String()
+				if channel == "mcp" {
+					var envelope struct {
+						Result struct {
+							IsError bool `json:"isError"`
+							Content []struct {
+								Text string `json:"text"`
+							} `json:"content"`
+						} `json:"result"`
+					}
+					if err = json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || response.Code != http.StatusOK || len(envelope.Result.Content) != 1 {
+						t.Fatalf("mcp status=%d body=%s err=%v", response.Code, text, err)
+					}
+					if envelope.Result.IsError != (test.want.status != http.StatusOK) {
+						t.Fatalf("mcp isError=%t body=%s", envelope.Result.IsError, text)
+					}
+					text = envelope.Result.Content[0].Text
+				} else if response.Code != test.want.status {
+					t.Fatalf("status=%d want %d body=%s", response.Code, test.want.status, text)
+				}
+				if !strings.Contains(text, test.want.contains) {
+					t.Fatalf("response %q does not contain %q", text, test.want.contains)
+				}
+				if test.want.status != http.StatusOK {
+					if order.State != core.WorkOrderClaimed || order.SessionID != "session" || order.DeclaredReviewSeats != nil || len(eventsAfter) != len(eventsBefore) {
+						t.Fatalf("refusal wrote state: order=%+v events %d→%d", order, len(eventsBefore), len(eventsAfter))
+					}
+					if test.name == "below-floor" && channel != "mcp" {
+						var refusal map[string]any
+						if err = json.Unmarshal(response.Body.Bytes(), &refusal); err != nil || refusal["error"] != "review_seats_below_floor" || refusal["review_seats"] != float64(2) ||
+							refusal["seat_floor"] != float64(3) || refusal["minimum_seat_count"] != float64(2) || refusal["planned_seat_count"] != float64(3) || response.Header().Get("Content-Type") != "application/json" {
+							t.Fatalf("422 body=%s content-type=%s err=%v", text, response.Header().Get("Content-Type"), err)
+						}
+					}
+					return
+				}
+				if order.State != core.WorkOrderSubmitted {
+					t.Fatalf("order=%+v body=%s", order, text)
+				}
+				if (test.want.declared == nil) != (order.DeclaredReviewSeats == nil) || (test.want.declared != nil && *order.DeclaredReviewSeats != *test.want.declared) {
+					t.Fatalf("declared=%v want %v", order.DeclaredReviewSeats, test.want.declared)
+				}
+				var result map[string]any
+				if err = json.Unmarshal([]byte(text), &result); err != nil {
+					t.Fatalf("result %s: %v", text, err)
+				}
+				if test.want.declared == nil {
+					if _, ok := result["review_seats"]; ok {
+						t.Fatalf("omitted result=%s", text)
+					}
+				} else if result["review_seats"] != float64(*test.want.declared) || result["review_seats_applied"] != true {
+					t.Fatalf("declared result=%s", text)
+				}
+			})
+		}
+	}
+}

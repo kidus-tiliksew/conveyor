@@ -648,7 +648,7 @@ func TestPlanCommandsOffline(t *testing.T) {
 	}
 }
 
-// DEC-69: main registers the plan group with exactly check, approve, and status.
+// DEC-69: main registers the plan group with exactly check, approve, status, and push.
 func TestPlanCommandRegistration(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
@@ -683,7 +683,7 @@ func TestPlanCommandRegistration(t *testing.T) {
 	for _, command := range planCmd().Commands() {
 		names = append(names, command.Name())
 	}
-	if strings.Join(names, ",") != "approve,check,status" {
+	if strings.Join(names, ",") != "approve,check,push,status" {
 		t.Fatalf("plan subcommands = %q", names)
 	}
 }

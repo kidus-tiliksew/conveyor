@@ -1,9 +1,10 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { hashKey, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { fetchNextAction, fetchNextActions } from '../../lib/api'
 import { taskDetailQueryKey } from '../../lib/query-keys'
-import type { InboxItem, NextActionsPage } from '../../lib/types'
+import type { NextActionsPage } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
+import { inboxItemKey } from './inbox-selection'
 
 export const INBOX_PAGE_SIZE = 100
 
@@ -29,12 +30,6 @@ export function useNextActions() {
   })
 }
 
-function inboxKey(item: InboxItem) {
-  return item.proposal
-    ? `${item.proposal.tier}:${item.proposal.id}:${item.proposal.version ?? 0}`
-    : (item.task?.id ?? '')
-}
-
 // Reads every page of the inbox in server order, so the band counts cover the
 // whole inbox and not its first page. The first page's total is the walk's
 // finite target; a page that returns nothing ends the walk early, and the
@@ -52,7 +47,7 @@ async function fetchWholeInbox(workspace: string, signal?: AbortSignal): Promise
   }
   const seen = new Set<string>()
   const unique = items.filter((item) => {
-    const key = inboxKey(item)
+    const key = inboxItemKey(item)
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -65,9 +60,23 @@ async function fetchWholeInbox(workspace: string, signal?: AbortSignal): Promise
 export function useNextAction(taskId: string, enabled = true) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
+  // Only events of this task's detail entry wake the hook, and they wake it
+  // after the current render: another component that creates or observes the
+  // entry while rendering emits a cache event synchronously, and acting on it
+  // there would update this component mid-render.
   const subscribe = useCallback(
-    (onChange: () => void) => queryClient.getQueryCache().subscribe(onChange),
-    [queryClient],
+    (onChange: () => void) => {
+      const detailHash = hashKey(taskDetailQueryKey(workspace, taskId))
+      let active = true
+      const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+        if (event.query.queryHash === detailHash) queueMicrotask(() => active && onChange())
+      })
+      return () => {
+        active = false
+        unsubscribe()
+      }
+    },
+    [queryClient, workspace, taskId],
   )
   const dataUpdatedAt = useSyncExternalStore(
     subscribe,

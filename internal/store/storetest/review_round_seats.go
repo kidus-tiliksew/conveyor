@@ -29,10 +29,12 @@ func RunReviewRoundSeatsConformance(t *testing.T, x Fixture) {
 	t.Run("FailedPolicyHandoffRollsBack", func(t *testing.T) { runSeatPolicyHandoff(t, x, true) })
 	t.Run("LatestApprovedPlanFloor", func(t *testing.T) { runSeatLatestApprovedPlanFloor(t, x) })
 	t.Run("ApprovedOmittedCountClearsFloor", func(t *testing.T) { runSeatApprovedOmittedCount(t, x) })
+	t.Run("PlanVersionReviewSeatsRoundTrip", func(t *testing.T) { runPlanVersionReviewSeatsRoundTrip(t, x) })
 	t.Run("LegacyCarryAndReplay", func(t *testing.T) { runSeatLegacyCarry(t, x) })
 	t.Run("LegacyPartialRoundRefused", func(t *testing.T) { runSeatLegacyPartial(t, x) })
 	t.Run("FailedCreateRollsBack", func(t *testing.T) { runSeatFailedCreate(t, x) })
 	t.Run("WorkspaceIsolation", func(t *testing.T) { runSeatWorkspaceIsolation(t, x) })
+	runReviewSeatAdditionConformance(t, x)
 }
 
 const seatFixtureHead, seatFixtureBase = "submitted-head", "submitted-base"
@@ -405,6 +407,63 @@ func runSeatApprovedOmittedCount(t *testing.T, x Fixture) {
 	jobs, orders := seatMembers(task.ID, 1, seats.SeatCount)
 	requireOK(t, createSeatRound(x, task.ID, seats, jobs, orders))
 	requireSeatRecord(t, x, task.ID, 1, 2, store.ReviewSeatSourceMinimum, 2)
+}
+
+// runPlanVersionReviewSeatsRoundTrip proves the planned count that RS-3's
+// submit_plan stores reads back through the latest, exact-version, and
+// approved readers before and after approval, that approval leaves it
+// unchanged, that an omitted count reads as none, and that a newer
+// unapproved version never displaces the approved one
+// (req-review-gates-evidence AC-2.8; feature-review-seat-minimum RS-3).
+func runPlanVersionReviewSeatsRoundTrip(t *testing.T, x Fixture) {
+	task := seatTask(t, x, 2)
+	requirePlanSeats := func(label string, spec core.SpecVersion, ok bool, err error, version int, want *int, approved bool) {
+		t.Helper()
+		requireOK(t, err)
+		if !ok || spec.Version != version || spec.Approved != approved || (spec.ReviewSeats == nil) != (want == nil) || (want != nil && *spec.ReviewSeats != *want) {
+			t.Fatalf("%s plan=%+v ok=%t, want version %d review_seats %v approved %t", label, spec, ok, version, want, approved)
+		}
+	}
+	requireReads := func(label string, latest int, latestSeats *int, latestApproved bool, approved int, approvedSeats *int) {
+		t.Helper()
+		spec, ok, err := x.Backend.GetLatestSpecVersion(x.Context, task.ID)
+		requirePlanSeats(label+" latest", spec, ok, err, latest, latestSeats, latestApproved)
+		spec, ok, err = x.Backend.GetSpecVersion(x.Context, task.ID, latest)
+		requirePlanSeats(label+" exact", spec, ok, err, latest, latestSeats, latestApproved)
+		spec, ok, err = x.Backend.GetApprovedSpecVersion(x.Context, task.ID)
+		if approved == 0 {
+			requireOK(t, err)
+			if ok {
+				t.Fatalf("%s approved plan=%+v before any approval", label, spec)
+			}
+			return
+		}
+		requirePlanSeats(label+" approved", spec, ok, err, approved, approvedSeats, true)
+	}
+
+	first := approvePlan(t, x, task.ID, seatCount(3), false)
+	if first.ReviewSeats == nil || *first.ReviewSeats != 3 {
+		t.Fatalf("created plan=%+v", first)
+	}
+	requireReads("stated draft", first.Version, seatCount(3), false, 0, nil)
+	requireOK(t, x.Backend.ApproveSpecVersion(x.Context, task.ID, first.Version))
+	requireReads("stated approved", first.Version, seatCount(3), true, first.Version, seatCount(3))
+
+	omitted := approvePlan(t, x, task.ID, nil, false)
+	requireReads("omitted draft", omitted.Version, nil, false, first.Version, seatCount(3))
+	requireOK(t, x.Backend.ApproveSpecVersion(x.Context, task.ID, omitted.Version))
+	requireReads("omitted approved", omitted.Version, nil, true, omitted.Version, nil)
+	spec, ok, err := x.Backend.GetSpecVersion(x.Context, task.ID, first.Version)
+	requirePlanSeats("earlier approved", spec, ok, err, first.Version, seatCount(3), true)
+
+	raised := approvePlan(t, x, task.ID, seatCount(5), false)
+	requireReads("raised draft", raised.Version, seatCount(5), false, omitted.Version, nil)
+	if seats := resolveSeats(t, x, task.ID, 1); seats.FloorSeatCount != 2 || seats.Source != store.ReviewSeatSourceMinimum {
+		t.Fatalf("an unapproved draft set the floor: %+v", seats)
+	}
+	*raised.ReviewSeats = 9
+	spec, ok, err = x.Backend.GetSpecVersion(x.Context, task.ID, raised.Version)
+	requirePlanSeats("caller mutation", spec, ok, err, raised.Version, seatCount(5), false)
 }
 
 // seatLegacyRound persists round 1's seats without a record, as rounds

@@ -1094,6 +1094,9 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err != nil {
 			return invalid(err)
 		}
+		if err = CheckPlanReviewSeats(cfg, task, result.ReviewSeats); err != nil {
+			return invalid(err)
+		}
 		return d.completeSpec(ctx, task, result, reviewer, job.ModelTier)
 	case core.StageReview:
 		result, err := pipeline.ParseReview(output)
@@ -1133,11 +1136,45 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 // exact existing spec-version gate/auto-approval path. Stage identity and
 // lifecycle events intentionally remain unchanged.
 func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (core.SpecVersion, error) {
-	result, err := pipeline.ParsePlan(value.Markdown, value.Decomposition)
+	result, err := pipeline.ParseStructuredPlan(value)
 	if err != nil {
 		return core.SpecVersion{}, err
 	}
 	return d.completeSpecVersion(ctx, task, result, agent, model)
+}
+
+// PlanReviewSeatsBelowMinimumError refuses a planned review seat count below
+// the task's minimum (req-review-gates-evidence AC-2.8; DEC-78;
+// feature-review-seat-minimum RS-3).
+type PlanReviewSeatsBelowMinimumError struct {
+	ReviewSeats      int
+	MinimumSeatCount int
+}
+
+func (e *PlanReviewSeatsBelowMinimumError) Error() string {
+	return fmt.Sprintf("review_seats_below_minimum: plan review_seats %d is below the task's minimum review seat count %d (minimum_seat_count=%d)", e.ReviewSeats, e.MinimumSeatCount, e.MinimumSeatCount)
+}
+
+// CheckPlanReviewSeats validates a plan's optional planned review seat count
+// against the task's minimum, computed by the RS-2 store.ReviewSeatMinimum
+// with cfg's workspace seat list as the absent-list fallback. It compares
+// against the minimum only, never a previous plan's count, so a later plan may
+// lower or clear the planned contribution (feature-review-seat-minimum RS-3).
+func CheckPlanReviewSeats(cfg *config.Config, task core.Task, seats *int) error {
+	if seats == nil {
+		return nil
+	}
+	if err := pipeline.ValidatePlanReviewSeats(seats); err != nil {
+		return err
+	}
+	workspaceSeats := 0
+	if cfg != nil {
+		workspaceSeats = len(cfg.Review.Seats)
+	}
+	if minimum := store.ReviewSeatMinimum(task.SetupContract, workspaceSeats); *seats < minimum {
+		return &PlanReviewSeatsBelowMinimumError{ReviewSeats: *seats, MinimumSeatCount: minimum}
+	}
+	return nil
 }
 
 func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) error {
@@ -1146,7 +1183,7 @@ func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pi
 }
 
 func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) (core.SpecVersion, error) {
-	version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model})
+	version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model, ReviewSeats: result.ReviewSeats})
 	if err != nil {
 		return core.SpecVersion{}, err
 	}

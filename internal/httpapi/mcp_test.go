@@ -2254,6 +2254,173 @@ func TestMCPSubmitSpecNameIsRetiredWithPlanRedirect(t *testing.T) {
 	}
 }
 
+// TestMCPSubmitPlanReviewSeatsSchema keeps submit_plan's optional planned
+// review seat count published as an integer of at least 1 without adding it
+// to the required arguments (feature-review-seat-minimum RS-3).
+func TestMCPSubmitPlanReviewSeatsSchema(t *testing.T) {
+	t.Parallel()
+	var tool map[string]any
+	for _, candidate := range mcpTools() {
+		if candidate["name"] == "submit_plan" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatal("submit_plan is not registered")
+	}
+	schema, _ := tool["inputSchema"].(map[string]any)
+	properties, _ := schema["properties"].(map[string]any)
+	seats, _ := properties["review_seats"].(map[string]any)
+	if seats["type"] != "integer" || seats["minimum"] != 1 {
+		t.Fatalf("review_seats schema=%#v", seats)
+	}
+	if required, _ := schema["required"].([]string); !slices.Equal(required, []string{"work_order_id", "session_id", "markdown", "decomposition"}) {
+		t.Fatalf("submit_plan required=%v", required)
+	}
+	if description, _ := tool["description"].(string); !strings.Contains(description, "review_seats_below_minimum") || !strings.Contains(description, "leave the order claimed") {
+		t.Fatalf("submit_plan description=%q", description)
+	}
+	if _, err := json.Marshal(tool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMCPSubmitPlanReviewSeats drives submit_plan through the JSON-RPC tool
+// envelope: omitted and null counts store none, malformed values and counts
+// below the task's minimum are in-band tool errors that leave the order
+// claimed and write no plan version, and a corrected retry on the same claim
+// stores the accepted count (req-review-gates-evidence AC-2.8;
+// feature-review-seat-minimum RS-3).
+func TestMCPSubmitPlanReviewSeats(t *testing.T) {
+	markdown := "## Approach\nPlan seats.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Loss.\n\n## Done criteria\n- The count persists."
+	setup := func(t *testing.T, id string) (context.Context, store.Store, *Server, *http.Request, string) {
+		t.Helper()
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		st := store.NewMemory()
+		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		// The task freezes no seat list, so its minimum is the workspace's two seats.
+		provider := func(context.Context) (*config.Config, error) {
+			return &config.Config{Workspace: "demo", Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Timeout: time.Hour}}}}, nil
+		}
+		server := NewServer(st)
+		server.Workspace = "demo"
+		server.WorkOrders = &workorder.Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}, ConfigProvider: provider}
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-planner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+		if _, err := server.callMCPTool(request, "claim_work_order", map[string]any{
+			"workspace_id": "demo", "work_order_id": job.ID, "session_id": "plan-session", "client_token": "secret", "agent": "codex", "model": "gpt",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ctx, st, server, request, job.ID
+	}
+	call := func(t *testing.T, server *Server, request *http.Request, orderID string, seats ...any) (string, bool) {
+		t.Helper()
+		args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": "plan-session", "markdown": markdown, "decomposition": []any{}}
+		if len(seats) > 0 {
+			args["review_seats"] = seats[0]
+		}
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "submit_plan", "arguments": args}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		server.handleMCP(response, httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(payload)).WithContext(request.Context()))
+		var envelope struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+			Error *rpcError `json:"error"`
+		}
+		if err = json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || envelope.Error != nil || len(envelope.Result.Content) != 1 {
+			t.Fatalf("submit_plan status=%d body=%s", response.Code, response.Body.String())
+		}
+		return envelope.Result.Content[0].Text, envelope.Result.IsError
+	}
+	requireClaimedWithoutPlan := func(t *testing.T, ctx context.Context, st store.Store, orderID, label string) {
+		t.Helper()
+		order, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil || order.State != core.WorkOrderClaimed || order.SessionID != "plan-session" {
+			t.Fatalf("%s: order=%+v err=%v", label, order, err)
+		}
+		if _, ok, err := st.GetLatestSpecVersion(ctx, order.TaskID); err != nil || ok {
+			t.Fatalf("%s wrote a plan version ok=%t err=%v", label, ok, err)
+		}
+		task, err := st.GetTask(ctx, order.TaskID)
+		if err != nil || task.State != core.TaskRunning || task.NextStage != core.StageSpec {
+			t.Fatalf("%s changed the task=%+v err=%v", label, task, err)
+		}
+	}
+	requireStored := func(t *testing.T, ctx context.Context, st store.Store, text string, isError bool, taskID string, want *int) {
+		t.Helper()
+		if isError {
+			t.Fatalf("submit_plan refused: %s", text)
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(text), &result); err != nil || result["version"] != float64(1) {
+			t.Fatalf("submit_plan result=%s err=%v", text, err)
+		}
+		version, ok, err := st.GetLatestSpecVersion(ctx, taskID)
+		if err != nil || !ok || (version.ReviewSeats == nil) != (want == nil) || (want != nil && *version.ReviewSeats != *want) {
+			t.Fatalf("plan version=%+v ok=%t err=%v, want review_seats %v", version, ok, err, want)
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		seats []any
+	}{{name: "omitted"}, {name: "null", seats: []any{nil}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, st, server, request, orderID := setup(t, "mcp-plan-seats-"+strings.ReplaceAll(tc.name, " ", "-"))
+			text, isError := call(t, server, request, orderID, tc.seats...)
+			requireStored(t, ctx, st, text, isError, strings.TrimSuffix(orderID, "-spec-1"), nil)
+		})
+	}
+
+	ctx, st, server, request, orderID := setup(t, "mcp-plan-seats-refusals")
+	for _, tc := range []struct {
+		value any
+		want  string
+	}{
+		{value: "3", want: "invalid structured plan"},
+		{value: 2.5, want: "invalid structured plan"},
+		{value: true, want: "invalid structured plan"},
+		{value: map[string]any{"count": 3}, want: "invalid structured plan"},
+		{value: 0, want: "review_seats must be at least 1"},
+		{value: -1, want: "review_seats must be at least 1"},
+		{value: 1, want: "review_seats_below_minimum: plan review_seats 1 is below the task's minimum review seat count 2 (minimum_seat_count=2)"},
+	} {
+		text, isError := call(t, server, request, orderID, tc.value)
+		if !isError || !strings.Contains(text, tc.want) {
+			t.Fatalf("review_seats %#v result=%q isError=%t, want %q", tc.value, text, isError, tc.want)
+		}
+		requireClaimedWithoutPlan(t, ctx, st, orderID, fmt.Sprintf("review_seats %#v", tc.value))
+	}
+	text, isError := call(t, server, request, orderID, 3)
+	requireStored(t, ctx, st, text, isError, "mcp-plan-seats-refusals", planReviewSeatPointer(3))
+	if order, err := st.GetWorkOrder(ctx, orderID); err != nil || order.State != core.WorkOrderCompleted {
+		t.Fatalf("corrected plan order=%+v err=%v", order, err)
+	}
+}
+
+func planReviewSeatPointer(value int) *int { return &value }
+
 // A nil Go slice marshals to `"required": null`, which the official MCP
 // SDK's validation rejects — taking every tool down with it as a
 // "tools fetch failed" at connection time.
@@ -2899,5 +3066,103 @@ func TestMCPDocumentationAssessmentAdmission(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no review completion")
+	}
+}
+
+// TestMCPSubmitForReviewReviewSeatsSchema proves submit_for_review publishes
+// an optional integer review_seats of at least 1 and names the floor refusal
+// (feature-review-seat-minimum RS-4).
+func TestMCPSubmitForReviewReviewSeatsSchema(t *testing.T) {
+	for _, tool := range mcpTools() {
+		if tool["name"] != "submit_for_review" {
+			continue
+		}
+		if description, _ := tool["description"].(string); !strings.Contains(description, "review_seats_below_floor") {
+			t.Fatalf("description=%q", description)
+		}
+		schema := tool["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		if !reflect.DeepEqual(properties["review_seats"], map[string]any{"type": "integer", "minimum": 1}) {
+			t.Fatalf("review_seats schema=%#v", properties["review_seats"])
+		}
+		if !reflect.DeepEqual(schema["required"], []string{"work_order_id", "session_id", "head_sha"}) {
+			t.Fatalf("required=%#v", schema["required"])
+		}
+		for _, field := range []string{"harness", "model", "effort"} {
+			if _, present := properties[field]; present {
+				t.Fatalf("submit_for_review publishes %s", field)
+			}
+		}
+		if _, err := json.Marshal(tool); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatal("submit_for_review tool missing")
+}
+
+// TestMCPSubmitForReviewReviewSeatsArgumentValidation proves the shared
+// parser judges the exact JSON literal: it accepts only json.Number literals
+// that denote an integer from 1 through the INT bound, including integral
+// forms such as 4.0 and 4e0, and refuses fractions hidden by float64 rounding,
+// float64 values, and every non-number without truncating, rounding, or
+// treating a present value as absent (feature-review-seat-minimum RS-4).
+func TestMCPSubmitForReviewReviewSeatsArgumentValidation(t *testing.T) {
+	if seats, err := reviewSeatsArg(map[string]any{"head_sha": "abc"}); seats != nil || err != nil {
+		t.Fatalf("absent=%v err=%v", seats, err)
+	}
+	for literal, want := range map[string]int{
+		"1": 1, "3": 3, "4.0": 4, "4.000": 4, "4e0": 4, "4E+0": 4, "40e-1": 4, "0.4e1": 4, "0.04E+2": 4,
+		"2147483647": 2147483647, "2147483647.0": 2147483647, "2.147483647e9": 2147483647,
+	} {
+		seats, err := reviewSeatsArg(map[string]any{"review_seats": json.Number(literal)})
+		if err != nil || seats == nil || *seats != want {
+			t.Fatalf("%s => %v err=%v", literal, seats, err)
+		}
+	}
+	refused := []any{nil, "3", true, float64(3), float64(2.5), map[string]any{}, []any{json.Number("3")}}
+	for _, literal := range []string{
+		"2.99999999999999999", "0.99999999999999999", "2147483647.00000001", "2.0000000000000001", "3.5", "35e-1",
+		"0", "0.0", "-0", "-1", "-4.0", "2147483648", "2147483648.0", "2.147483648e9", "1e10", "1e1001", "1e-1001",
+		"00", "01", "+3", "3.", ".5", "0x10", "NaN", "Infinity", "", "3 ", "1e400",
+	} {
+		refused = append(refused, json.Number(literal))
+	}
+	for _, value := range refused {
+		seats, err := reviewSeatsArg(map[string]any{"review_seats": value})
+		if seats != nil || err == nil || err.Error() != "review_seats must be an integer from 1 to 2147483647" {
+			t.Fatalf("%#v => %v err=%v", value, seats, err)
+		}
+	}
+}
+
+// TestMCPExactReviewSeatsArgument proves the tools/call re-read keeps
+// submit_for_review's raw review_seats literal and leaves other arguments as
+// the envelope decoded them (feature-review-seat-minimum RS-4).
+func TestMCPExactReviewSeatsArgument(t *testing.T) {
+	params := json.RawMessage(`{"name":"submit_for_review","arguments":{"head_sha":"abc","lease_seconds":30,"review_seats":2.99999999999999999}}`)
+	var call mcpToolCallEnvelope
+	if err := core.DecodeVerificationRequest(params, &call); err != nil {
+		t.Fatal(err)
+	}
+	if call.Arguments["review_seats"] != float64(3) {
+		t.Fatalf("envelope decoding changed: %#v", call.Arguments["review_seats"])
+	}
+	if err := mcpExactReviewSeatsArgument(params, call.Arguments); err != nil {
+		t.Fatal(err)
+	}
+	if call.Arguments["review_seats"] != json.Number("2.99999999999999999") || call.Arguments["lease_seconds"] != float64(30) || call.Arguments["head_sha"] != "abc" {
+		t.Fatalf("arguments=%#v", call.Arguments)
+	}
+	absent := map[string]any{"head_sha": "abc"}
+	if err := mcpExactReviewSeatsArgument(json.RawMessage(`{"name":"submit_for_review","arguments":{"head_sha":"abc"}}`), absent); err != nil || len(absent) != 1 {
+		t.Fatalf("absent=%#v err=%v", absent, err)
+	}
+	null := map[string]any{"review_seats": nil}
+	if err := mcpExactReviewSeatsArgument(json.RawMessage(`{"name":"submit_for_review","arguments":{"review_seats":null}}`), null); err != nil {
+		t.Fatal(err)
+	}
+	if value, present := null["review_seats"]; !present || value != nil {
+		t.Fatalf("null=%#v", null)
 	}
 }

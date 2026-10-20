@@ -1009,6 +1009,13 @@ func TestConflictFixSubmissionCompletesOnceWhenRefreshAlreadyDispatched(t *testi
 			if err != nil || replay["replayed"] != true || f.eventCount(t) != events {
 				t.Fatalf("replay=%v err=%v events before=%d after=%d", replay, err, events, f.eventCount(t))
 			}
+			// Without a declaration neither result gains review seat keys
+			// (feature-review-seat-minimum RS-4).
+			for _, shaped := range []map[string]any{result, replay} {
+				if _, ok := shaped["review_seats_applied"]; ok {
+					t.Fatalf("undeclared refresh result=%v", shaped)
+				}
+			}
 			if _, err = f.service.PullRequestTemplate(f.ctx, f.order.ID, "fixer"); err != nil {
 				t.Fatalf("template reread for replay: %v", err)
 			}
@@ -1361,6 +1368,41 @@ func TestConflictFixSubmissionReplayAfterCompleteHandoffWritesNothing(t *testing
 	}
 	if f.eventCount(t) != events || f.reads != reads || f.reconciled != 1 {
 		t.Fatalf("replay wrote state: events %d→%d reads %d→%d reconciled=%d", events, f.eventCount(t), reads, f.reads, f.reconciled)
+	}
+	// Without a declaration the result keeps its shape
+	// (feature-review-seat-minimum RS-4).
+	if _, ok := replay["review_seats"]; ok {
+		t.Fatalf("undeclared replay=%v", replay)
+	}
+}
+
+// TestConflictFixSubmissionReviewSeatsReplayWritesNothing proves a forge-backed
+// submission persists its declaration and a replay with another count
+// reports the recorded one without any write (feature-review-seat-minimum
+// RS-4).
+func TestConflictFixSubmissionReviewSeatsReplayWritesNothing(t *testing.T) {
+	f := newConflictSubmission(t, config.ExecutionSetup{})
+	declared := 2
+	first, err := f.service.SubmitForReviewWithReviewSeats(f.ctx, f.order.ID, "fixer", "fix-head", &declared)
+	if err != nil || first["review_seats"] != 2 || first["review_seats_applied"] != true {
+		t.Fatalf("first=%v err=%v", first, err)
+	}
+	declared = 7
+	order, err := f.st.GetWorkOrder(f.ctx, f.order.ID)
+	if err != nil || order.DeclaredReviewSeats == nil || *order.DeclaredReviewSeats != 2 {
+		t.Fatalf("order=%+v err=%v", order, err)
+	}
+	events, reads := f.eventCount(t), f.reads
+	other := 5
+	replay, err := f.service.SubmitForReviewWithReviewSeats(f.ctx, f.order.ID, "fixer", "fix-head", &other)
+	if err != nil || replay["replayed"] != true || replay["review_seats"] != 2 || replay["review_seats_applied"] != true {
+		t.Fatalf("replay=%v err=%v", replay, err)
+	}
+	if f.eventCount(t) != events || f.reads != reads || f.reconciled != 1 {
+		t.Fatalf("replay wrote state: events %d→%d reads %d→%d reconciled=%d", events, f.eventCount(t), reads, f.reads, f.reconciled)
+	}
+	if order, err = f.st.GetWorkOrder(f.ctx, f.order.ID); err != nil || *order.DeclaredReviewSeats != 2 {
+		t.Fatalf("replay rewrote the declaration: %+v err=%v", order, err)
 	}
 }
 

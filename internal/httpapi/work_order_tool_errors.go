@@ -3,6 +3,8 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // errWorkspaceNotVisible is the one workspace-visibility refusal: no binding,
@@ -31,8 +33,10 @@ func invalidToolArgument(err error) error {
 // (pull-request-template, submit-for-review, context-refresh). Only typed
 // categories are classified, never error text: a workspace-visibility refusal
 // answers the canonical 404 workspace_not_found, an invalid argument answers
-// 400, and every other claim or lifecycle error keeps 409
-// (req-accounts-and-membership AC-4.2; component-http-api).
+// 400, a declared review seat count below the task's floor answers 422 with
+// its counts (feature-review-seat-minimum RS-4), and every other claim or
+// lifecycle error keeps 409 (req-accounts-and-membership AC-4.2;
+// component-http-api).
 func writeWorkOrderToolError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errWorkspaceNotVisible) {
 		writeWorkspaceNotFound(w)
@@ -41,6 +45,15 @@ func writeWorkOrderToolError(w http.ResponseWriter, err error) {
 	var invalid *invalidToolArgumentError
 	if errors.As(err, &invalid) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var belowFloor *workorder.ReviewSeatsBelowFloorError
+	if errors.As(err, &belowFloor) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error": workorder.ReviewSeatsBelowFloorCode, "message": belowFloor.Error(),
+			"review_seats": belowFloor.ReviewSeats, "seat_floor": belowFloor.SeatFloor,
+			"minimum_seat_count": belowFloor.MinimumSeatCount, "planned_seat_count": belowFloor.PlannedSeatCount,
+		})
 		return
 	}
 	http.Error(w, err.Error(), http.StatusConflict)

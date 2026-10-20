@@ -1558,6 +1558,19 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 // work-order lifecycle. Validation errors remain in-band and retain the claim.
 func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipeline.StructuredPlan) (map[string]any, error) {
 	return s.submitStageDocument(ctx, id, session, func(task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
+		// A planned review seat count below the task's minimum is refused
+		// before any plan version or lifecycle change, so the order stays
+		// claimed for correction (req-review-gates-evidence AC-2.8;
+		// feature-review-seat-minimum RS-3).
+		if value.ReviewSeats != nil {
+			cfg, err := s.config(ctx)
+			if err != nil {
+				return core.SpecVersion{}, err
+			}
+			if err = dispatch.CheckPlanReviewSeats(cfg, task, value.ReviewSeats); err != nil {
+				return core.SpecVersion{}, err
+			}
+		}
 		return s.Dispatcher.ApplyExternalPlan(ctx, task, job, value, order.Agent, order.Model)
 	})
 }

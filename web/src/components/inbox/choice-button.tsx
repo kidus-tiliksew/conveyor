@@ -8,6 +8,7 @@ import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { choiceBody } from './choice-bodies'
+import { Kbd, useShortcutChoice } from './inbox-keyboard'
 import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 
 // The server's choices for one next action, rendered generically on the inbox,
@@ -33,6 +34,9 @@ export function NextActionChoices({
   // isPending lands a render after the click, so a double click would send
   // twice; the ref closes that window.
   const inFlight = useRef(false)
+  // The Inbox binds `c` to one choice of the selected decision (AC-2.11);
+  // elsewhere this is null and no choice carries a key.
+  const shortcut = useShortcutChoice()
 
   const mutation = useMutation({
     onMutate: (): MutationWorkspace => ({ workspace }),
@@ -88,32 +92,37 @@ export function NextActionChoices({
             : !body
               ? 'This page cannot send this choice.'
               : (body.unavailable?.(details) ?? '')
+          const keyed = shortcut === choice.id && reason === ''
           return (
             // A long server label (a task-context choice names its target)
             // wraps inside the button rather than overflowing a phone-width
             // card; the label and endpoint stay whole.
             <span key={choice.id} className="inline-flex max-w-full min-w-0 flex-col gap-0.5">
-              <Button
-                size="sm"
-                className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
-                variant={choice.id === 'reject' ? 'ghost' : index === 0 && reason === '' ? 'default' : 'secondary'}
-                title={`${choice.effect} (${choice.method} ${choice.path})`}
-                data-choice={choice.id}
-                data-endpoint={`${choice.method} ${choice.path}`}
-                aria-expanded={body?.input ? composing?.id === choice.id : undefined}
-                disabled={mutation.isPending || reason !== ''}
-                onClick={() => {
-                  mutation.reset()
-                  if (body?.input) {
-                    setComposing((current) => (current?.id === choice.id ? null : choice))
-                    setInput('')
-                    return
-                  }
-                  send(choice, '')
-                }}
-              >
-                {mutation.isPending && mutation.variables?.choice.id === choice.id ? 'Recording…' : choice.label}
-              </Button>
+              <span className="inline-flex max-w-full min-w-0 items-center gap-1.5">
+                <Button
+                  size="sm"
+                  className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
+                  variant={choice.id === 'reject' ? 'ghost' : index === 0 && reason === '' ? 'default' : 'secondary'}
+                  title={`${choice.effect} (${choice.method} ${choice.path})`}
+                  data-choice={choice.id}
+                  data-shortcut={keyed ? 'c' : undefined}
+                  data-endpoint={`${choice.method} ${choice.path}`}
+                  aria-expanded={body?.input ? composing?.id === choice.id : undefined}
+                  disabled={mutation.isPending || reason !== ''}
+                  onClick={() => {
+                    mutation.reset()
+                    if (body?.input) {
+                      setComposing((current) => (current?.id === choice.id ? null : choice))
+                      setInput('')
+                      return
+                    }
+                    send(choice, '')
+                  }}
+                >
+                  {mutation.isPending && mutation.variables?.choice.id === choice.id ? 'Recording…' : choice.label}
+                </Button>
+                {keyed && <Kbd>c</Kbd>}
+              </span>
               {reason && <span className="text-[11px] text-muted">{reason}</span>}
             </span>
           )

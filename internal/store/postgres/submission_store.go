@@ -292,7 +292,7 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 		// The order update takes the task lock first, matching claim and
 		// release ordering; any later refusal rolls the update back.
 		var err error
-		lifecycleErr, err = s.updateWorkOrderCommandTx(ctx, tx, q, lease, order, core.WorkOrderCmdSubmitForReview)
+		lifecycleErr, err = s.updateWorkOrderSubmissionTx(ctx, tx, q, lease, order, request.ReviewSeats, core.WorkOrderCmdSubmitForReview)
 		if err != nil || lifecycleErr != nil {
 			return err
 		}
