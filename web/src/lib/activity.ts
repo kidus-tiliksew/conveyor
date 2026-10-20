@@ -13,6 +13,7 @@ import type {
   TaskRelation,
   TaskReviewResult,
   TaskReviewRound,
+  TaskReviewRoundSummary,
   TaskSummaries,
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
@@ -816,7 +817,17 @@ export type TimelineEntry =
       order: WorkOrder
     }
   | { type: 'intervention'; at: string; intervention: Intervention }
-  | { type: 'panel'; at: string; key: string; round: number; seats: PanelSeat[]; resolution?: PanelResolution }
+  | {
+      type: 'panel'
+      at: string
+      key: string
+      round: number
+      seats: PanelSeat[]
+      resolution?: PanelResolution
+      // The round's current summary from `summaries.review_round_summaries`,
+      // shown above the seats (feature-review-round-summary SU-6).
+      roundSummary?: TaskReviewRoundSummary
+    }
 
 // One review round is rendered as a single deliberating body: seats appear
 // inside one card instead of N sibling job cards. A seat is
@@ -961,6 +972,7 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       round: group.round,
       seats,
       resolution,
+      roundSummary: group.round > 0 ? summaries?.review_round_summaries?.[String(group.round)] : undefined,
     })
   }
   return index
