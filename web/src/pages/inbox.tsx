@@ -1,16 +1,14 @@
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { ArrowLeft } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { AutomaticBand } from '../components/inbox/automatic-band'
 import { BlockedRow } from '../components/inbox/blocked-row'
-import { DecisionDetail } from '../components/inbox/decision-card'
 import { InboxBandChips } from '../components/inbox/inbox-band-chips'
 import { useInboxKeyboard } from '../components/inbox/inbox-keyboard'
+import { InboxReviewDetail } from '../components/inbox/inbox-review-detail'
 import { InboxReviewList } from '../components/inbox/inbox-review-list'
 import type { InboxSearch } from '../components/inbox/inbox-search'
 import { inboxItemKey, steppedKey, survivingNeighbour } from '../components/inbox/inbox-selection'
-import { ProposalDetail } from '../components/inbox/proposal-card'
 import { useNextActions } from '../components/inbox/use-next-actions'
 import { Badge } from '../components/ui/badge'
 import { errorMessage } from '../lib/errors'
@@ -150,39 +148,14 @@ export function InboxPage() {
                 <div className={cn('min-w-0', explicit ? 'hidden md:block' : 'block')}>
                   <InboxReviewList items={decisions} selectedKey={selectedKey} search={search} />
                 </div>
-                <div
-                  data-inbox-detail={selectedKey}
-                  className={cn(
-                    'min-w-0 flex-col md:sticky md:top-4 md:flex md:max-h-[calc(100dvh-12rem)]',
-                    explicit ? 'flex' : 'hidden',
-                  )}
-                >
-                  <Link
-                    to="/inbox"
-                    search={{ ...search, selected: undefined }}
-                    resetScroll={false}
-                    data-inbox-back
-                    className="mb-2 inline-flex items-center gap-1 self-start text-xs font-medium text-primary hover:underline md:hidden"
-                  >
-                    <ArrowLeft className="size-3.5" />
-                    Back to decisions
-                  </Link>
-                  {selectedItem?.kind === 'document_proposal' && selectedItem.proposal ? (
-                    <ProposalDetail
-                      key={`${workspace}:${selectedKey}`}
-                      item={selectedItem}
-                      proposal={selectedItem.proposal}
-                      onActed={markActed(selectedKey ?? '')}
-                    />
-                  ) : selectedItem?.task ? (
-                    <DecisionDetail
-                      key={`${workspace}:${selectedKey}`}
-                      item={selectedItem}
-                      task={selectedItem.task}
-                      onActed={markActed(selectedKey ?? '')}
-                    />
-                  ) : null}
-                </div>
+                <InboxReviewDetail
+                  item={selectedItem}
+                  itemKey={selectedKey}
+                  workspace={workspace}
+                  explicit={explicit != null}
+                  search={search}
+                  onActed={markActed(selectedKey ?? '')}
+                />
               </div>
             )}
           </section>
