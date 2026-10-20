@@ -263,6 +263,7 @@ Full docs live in [docs/](docs/README.md). There's no docs site yet.
 - [Testing strategy](docs/playbooks/conveyor-testing-doc.md): write the testing-strategy System Design document that reviewers judge verification against
 - [Authoring verification kits](docs/playbooks/conveyor-kit.md): declare repository kits in `.conveyor/kits/manifest.yaml`
 - [Executing verification kits](docs/playbooks/conveyor-kit-verify.md): run kits and ordinary checks under a verify claim and submit typed evidence
+- [Coordinating tasks](docs/playbooks/conveyor-coordinate.md): keep several tasks moving with one thread per stage order, routine decisions within delegated scope, and plain-language timeline text
 
 [Checkpoint recovery](docs/playbooks/checkpoint-recovery.md) is an operator
 procedure for recovering preserved implementation work. It is not installed
