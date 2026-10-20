@@ -3252,6 +3252,7 @@ type BulkCheckpointState = {
   pending: Record<string, number[]>
   failOn?: string
   ignore?: Set<string>
+  failActivity?: boolean
 }
 
 function bulkCheckpoint(state: BulkCheckpointState) {
@@ -3298,6 +3299,10 @@ async function routeBulkCheckpoint(page: Page, state: BulkCheckpointState) {
   let activityReads = 0
   await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
     activityReads++
+    if (state.failActivity) {
+      await route.fulfill({ status: 503, json: { error: 'unavailable', message: 'Task activity is unavailable.' } })
+      return
+    }
     const item = activity('operator-checkpoint', false)
     const order = item.work_orders?.[0]
     if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
@@ -3430,6 +3435,56 @@ test('a failed confirm and resume stops, reports in the row, and retries only th
     { path: '/v1/system-designs/component-alpha/versions/5/confirm', ifMatch: '"4"' },
     { path: '/v1/requirements/req-beta/versions/2/confirm', ifMatch: '"1"' },
   ])
+  expect(recoveries).toEqual([])
+})
+
+// Review round 1 (seat 1): a failed task-detail read after a partial
+// confirmation keeps the stale projection mounted. Confirmation stays disabled
+// until a read succeeds, so v4 is never confirmed twice.
+test('a failed refresh after partial confirmation keeps confirmation disabled until a successful read', async ({
+  page,
+}) => {
+  const state: BulkCheckpointState = { ...freshBulkState(), failOn: 'component-alpha:5' }
+  const { confirms, recoveries } = await routeBulkCheckpoint(page, state)
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  const stale = card.getByRole('button', { name: 'Confirm 3 revisions & resume' })
+  await expect(stale).toBeEnabled()
+  state.failActivity = true
+  await stale.click()
+
+  const refreshFailure = card.getByRole('alert').filter({ hasText: 'Could not refresh this task' })
+  await expect(refreshFailure).toBeVisible()
+  await expect(card.getByRole('alert').filter({ hasText: 'This design changed' })).toBeVisible()
+  expect(confirms.map((confirm) => confirm.path)).toEqual([
+    '/v1/system-designs/component-alpha/versions/4/confirm',
+    '/v1/system-designs/component-alpha/versions/5/confirm',
+  ])
+  await expect(stale).toBeDisabled()
+  await card.getByRole('button', { name: 'Review' }).click()
+  for (const version of [4, 5, 2]) {
+    await expect(card.getByRole('button', { name: `Confirm v${version}`, exact: true })).toBeDisabled()
+  }
+  // Manual recovery stays available while the projection is stale.
+  await page.getByLabel('Operator direction').fill('Continue with the confirmed intake rules.')
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeEnabled()
+  await stale.click({ force: true })
+  expect(confirms).toHaveLength(2)
+
+  // A successful read restores the controls from the refreshed versions.
+  state.failActivity = false
+  state.failOn = undefined
+  await refreshFailure.getByRole('button', { name: 'Refresh' }).click()
+  await expect(refreshFailure).toHaveCount(0)
+  const retry = card.getByRole('button', { name: 'Confirm 2 revisions & resume' })
+  await expect(retry).toBeEnabled()
+  await retry.click()
+  await expect(card.getByRole('status')).toHaveText('Confirmed — resuming')
+  expect(confirms.slice(2)).toEqual([
+    { path: '/v1/system-designs/component-alpha/versions/5/confirm', ifMatch: '"4"' },
+    { path: '/v1/requirements/req-beta/versions/2/confirm', ifMatch: '"1"' },
+  ])
+  expect(confirms.filter((confirm) => confirm.path.endsWith('/versions/4/confirm'))).toHaveLength(1)
   expect(recoveries).toEqual([])
 })
 

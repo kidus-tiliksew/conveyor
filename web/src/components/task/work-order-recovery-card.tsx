@@ -325,13 +325,37 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
-  const refreshDocumentFamilies = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(workspace, item.task.id) }),
+  // A document confirmation changes the versions every confirm control reads,
+  // so those controls stay disabled until task detail is read again. A failed
+  // read keeps the old projection mounted; it is offered a read-only retry and
+  // never re-enables confirmation (component-web-task-surfaces).
+  const [projection, setProjection] = useState<'current' | 'refreshing' | 'stale'>('current')
+  const refreshProjection = async () => {
+    setProjection('refreshing')
+    try {
+      await queryClient.invalidateQueries(
+        { queryKey: taskDetailQueryKey(workspace, item.task.id) },
+        { throwOnError: true },
+      )
+      setProjection('current')
+      return true
+    } catch {
+      setProjection('stale')
+      return false
+    }
+  }
+  const refreshDocumentFamilies = async () => {
+    const [current] = await Promise.all([
+      refreshProjection(),
       queryClient.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
       queryClient.invalidateQueries({ queryKey: ['requirements', workspace] }),
       queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] }),
     ])
+    return current
+  }
+  const retryProjection = async () => {
+    if (await refreshProjection()) setResume((current) => (current === 'resuming' ? 'refreshed' : current))
+  }
   const confirmProposal = useMutation({
     mutationFn: ({
       citation,
@@ -345,6 +369,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         ? confirmRequirementVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
         : confirmSystemDesignVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
     },
+    onMutate: () => setProjection('refreshing'),
     onSettled: refreshDocumentFamilies,
   })
   const bulk = authorityConflict ? bulkConfirmation(citedDocuments) : undefined
@@ -363,13 +388,22 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         }
       }
     },
+    onMutate: () => setProjection('refreshing'),
     onSuccess: () => setResume('resuming'),
     onSettled: async (_data, error) => {
-      await refreshDocumentFamilies()
-      if (error == null) setResume('refreshed')
+      const current = await refreshDocumentFamilies()
+      if (error == null && current) setResume('refreshed')
     },
   })
-  const documentDecisionPending = confirmProposal.isPending || confirmAll.isPending
+  const documentDecisionPending = confirmProposal.isPending || confirmAll.isPending || projection !== 'current'
+  const projectionAlert = projection === 'stale' && (
+    <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-failure">
+      <span>Could not refresh this task after the confirmation. Refresh it before confirming again.</span>
+      <Button variant="secondary" size="sm" onClick={() => void retryProjection()}>
+        <RotateCcw aria-hidden /> Refresh
+      </Button>
+    </div>
+  )
 
   if (state.kind === 'retry_pending') {
     return (
@@ -517,6 +551,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
             <p>{state.nextAction}</p>
           </div>
         </div>
+        {projectionAlert}
         {recoveryForm}
       </section>
     )
@@ -588,6 +623,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
       {bulk != null && !resuming && !canConfirmDocuments && (
         <p className="text-xs text-muted">Document confirmation capability is required.</p>
       )}
+      {projectionAlert}
       {confirmAll.error != null && (
         <p role="alert" className="text-xs text-failure">
           {errorMessage(confirmAll.error, 'Could not confirm the cited revisions.')}
