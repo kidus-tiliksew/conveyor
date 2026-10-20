@@ -341,6 +341,7 @@ report, and exit. Do not claim any other order.
 
 Repeat step 1 after each stage result: a verification success creates the
 review orders, and a re-dispatched order needs a new agent.
+After a round settles, a session that coordinated its seats may optionally record an informative summary with `submit_review_summary`; every seat that requested changes must be cited by at least one finding, and the seat verdicts decide the round.
 
 ### Choose how each stage runs
 
