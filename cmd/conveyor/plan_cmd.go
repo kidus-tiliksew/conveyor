@@ -1,12 +1,13 @@
 package main
 
-// `conveyor plan` command group (feature-local-planning-drafts LP-2–LP-4;
-// req-local-planning REQ-1, REQ-2, AC-4.1; DEC-69). check, approve, and status
+// `conveyor plan` command group (feature-local-planning-drafts LP-2–LP-5;
+// req-local-planning REQ-1–REQ-3, AC-4.1; DEC-69). check, approve, and status
 // never construct the REST client, make a network request, serve a page, or
-// open a listening port.
+// open a listening port. Only push reaches the factory.
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -15,11 +16,12 @@ import (
 func planCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "plan",
-		Short: "Check, approve, and inspect a local planning draft",
+		Short: "Check, approve, inspect, and push a local planning draft",
 		Long: "Work with a local planning draft: a git-ignored directory of requirement, decision, System Design, and task items.\n" +
-			"check, approve, and status run offline. A local approval only permits a later push of unconfirmed proposals; it confirms nothing.",
+			"check, approve, and status run offline. A local approval only permits a later push of unconfirmed proposals; it confirms nothing.\n" +
+			"push posts one approved layer as unconfirmed proposals and tasks; an operator confirms them.",
 	}
-	command.AddCommand(planCheckCmd(), planApproveCmd(), planStatusCmd())
+	command.AddCommand(planCheckCmd(), planApproveCmd(), planStatusCmd(), planPushCmd())
 	return command
 }
 
@@ -128,4 +130,23 @@ func planStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func planPushCmd() *cobra.Command {
+	var options planPushOptions
+	command := &cobra.Command{
+		Use:   "push <draft-dir> --layer requirements|decisions|system-designs|tasks [--dry-run]",
+		Short: "Post one approved draft layer as unconfirmed proposals and tasks",
+		Long: "Run the draft check and every read-only pre-check for the layer, then post its items in dependency order.\n" +
+			"Any refused item stops the whole layer before its first post. A rerun recovers an interrupted post from factory state.\n" +
+			"Push calls no confirm or dismiss route. --dry-run applies every check, prints each request, and posts nothing.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPlanPush(cmd.Context(), args[0], options, newPlanAPI(), cmd.OutOrStdout())
+		},
+	}
+	command.Flags().StringVar(&options.Layer, "layer", "", "layer to push: "+strings.Join(PlanLayers, ", "))
+	command.Flags().BoolVar(&options.DryRun, "dry-run", false, "apply every check and print the requests without posting")
+	_ = command.MarkFlagRequired("layer")
+	return command
 }
