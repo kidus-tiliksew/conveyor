@@ -131,6 +131,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	if isMCPRead(name) {
 		return s.callMCPRead(r, name, args)
 	}
+	if name == reviewSummaryTool {
+		return s.callReviewSummaryMCP(r, args)
+	}
 	stringArg := func(key string) string { value, _ := args[key].(string); return value }
 	stringSliceArg := func(key string) []string {
 		values, _ := args[key].([]any)
@@ -645,6 +648,7 @@ var mcpCapabilities = map[string]core.Capability{
 	"submit_for_review":              core.CapabilityClaimWork,
 	"await_review":                   core.CapabilityClaimWork,
 	"submit_review_verdict":          core.CapabilityClaimWork,
+	"submit_review_summary":          core.CapabilityClaimWork,
 }
 
 func mcpCapability(name string) core.Capability { return mcpCapabilities[name] }
@@ -999,5 +1003,6 @@ func mcpTools() []map[string]any {
 		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str}, "work_order_id", "session_id", "head_sha")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
 		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, governance and documentation assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment, "verification_assessment": core.VerificationJSONSchema(reflect.TypeOf(core.VerificationAssessment{})), "documentation_assessment": object(map[string]any{"applicable": map[string]any{"type": "boolean"}, "summary": str, "updated_paths": stringList, "unresolved": stringList, "conflicts": stringList}, "applicable", "summary", "updated_paths", "unresolved", "conflicts")}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
+		reviewSummaryMCPTool(),
 	}...)
 }

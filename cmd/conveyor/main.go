@@ -413,6 +413,7 @@ func taskCmd() *cobra.Command {
 		addTaskDependencyCmd(),
 		removeTaskDependencyCmd(),
 		requestTaskChangesCmd(),
+		taskReviewSummaryCmd(),
 		mergeTaskCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),
