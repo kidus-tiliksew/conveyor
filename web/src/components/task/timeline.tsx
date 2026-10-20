@@ -190,7 +190,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
               card: (
                 <section
                   aria-label={proposalNoticeLabel(proposalEffect)}
-                  className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
+                  className="rounded-lg border border-border bg-card px-3 py-3"
                 >
                   <ProposalReviewNotice effect={proposalEffect} taskId={item.task.id} pending={pendingItems} />
                 </section>

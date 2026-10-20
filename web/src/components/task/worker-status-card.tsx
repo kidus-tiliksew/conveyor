@@ -10,10 +10,7 @@ export function WorkerStatusCard({ item }: { item: ActivityItem }) {
   if (!status || status.available) return null
   const requiredHarnesses = status.required_harnesses ?? []
   return (
-    <section
-      className="rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
-      aria-label="Enrolled worker unavailable"
-    >
+    <section className="rounded-lg border border-border bg-card px-3 py-3" aria-label="Enrolled worker unavailable">
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" />
         <div className="text-xs leading-5 text-muted">

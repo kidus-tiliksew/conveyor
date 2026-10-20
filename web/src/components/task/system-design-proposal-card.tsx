@@ -290,7 +290,7 @@ export function SystemDesignProposalCard({
   return (
     <section
       aria-label={notice?.waiting ? waitingRegionLabel : 'System Design proposals from this task'}
-      className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
+      className="space-y-3 rounded-lg border border-border bg-card px-3 py-3"
     >
       {notice && <ProposalReviewNotice effect={notice} taskId={task.id} pending={pending} showLink={false} />}
       {proposals.map((proposal) => {

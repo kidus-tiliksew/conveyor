@@ -31,7 +31,7 @@ export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) 
   const retainedCount = mutation.data?.retained_orders?.length ?? 0
   return (
     <section
-      className="space-y-3 rounded-lg border border-attention/40 bg-attention-soft px-3 py-3"
+      className="space-y-3 rounded-lg border border-border bg-card px-3 py-3"
       aria-label="Interrupted review round recovery"
     >
       <div className="flex items-start gap-2">
