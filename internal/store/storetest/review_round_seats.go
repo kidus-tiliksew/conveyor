@@ -34,6 +34,7 @@ func RunReviewRoundSeatsConformance(t *testing.T, x Fixture) {
 	t.Run("LegacyPartialRoundRefused", func(t *testing.T) { runSeatLegacyPartial(t, x) })
 	t.Run("FailedCreateRollsBack", func(t *testing.T) { runSeatFailedCreate(t, x) })
 	t.Run("WorkspaceIsolation", func(t *testing.T) { runSeatWorkspaceIsolation(t, x) })
+	runReviewSeatAdditionConformance(t, x)
 }
 
 const seatFixtureHead, seatFixtureBase = "submitted-head", "submitted-base"
