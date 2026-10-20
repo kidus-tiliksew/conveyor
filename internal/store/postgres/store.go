@@ -887,7 +887,7 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
-rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb`
+rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb, declared_review_seats`
 
 func nullableTimeValue(value time.Time) any {
 	if value.IsZero() {

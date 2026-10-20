@@ -6,6 +6,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 func TestPolicyOnlyDispatchCarriesTimeoutAndNoExecutionPins(t *testing.T) {
@@ -32,7 +33,8 @@ func TestPolicyOnlyReviewRoundFreezesSeatShapeNotExecution(t *testing.T) {
 		WorkOrderQueueTimeout: time.Hour,
 		Review:                config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "one", Harness: "codex"}, {Model: "two", Harness: "claude", Effort: "high"}}},
 	}
-	_, orders, err := BuildReviewRound(cfg, core.Task{ID: "policy-review"}, config.StageRoute{TimeoutText: "45m"}, 1)
+	minimum := store.ReviewSeatMinimum(config.ExecutionSetup{}, len(cfg.Review.Seats))
+	_, orders, err := BuildReviewRound(cfg, core.Task{ID: "policy-review"}, config.StageRoute{TimeoutText: "45m"}, 1, minimum, minimum)
 	if err != nil || len(orders) != 2 {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
@@ -70,7 +72,10 @@ func TestFrozenPolicySurvivesWorkspacePolicyEdits(t *testing.T) {
 	if err != nil || implement.ExecutionTimeoutText != "2h" {
 		t.Fatalf("implementation order=%+v err=%v", implement, err)
 	}
-	_, reviews, err := BuildReviewRound(current, task, current.Routing.Stages["review"], 1)
+	// The frozen two-seat list stays the minimum after the workspace shrinks
+	// to one seat (DEC-77).
+	minimum := store.ReviewSeatMinimum(task.SetupContract, len(current.Review.Seats))
+	_, reviews, err := BuildReviewRound(current, task, current.Routing.Stages["review"], 1, minimum, minimum)
 	if err != nil || len(reviews) != 2 || reviews[0].ExecutionTimeoutText != "40m" {
 		t.Fatalf("review orders=%+v err=%v", reviews, err)
 	}

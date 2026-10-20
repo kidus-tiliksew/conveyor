@@ -35,8 +35,11 @@ func (p TaskPolicyChange) Validate() error {
 // PlanTaskPolicyChange runs inside the backend task transaction, after replay
 // resolution and claim exclusion. It never accepts client-supplied order plans.
 // Every derived field is reset first, so a caller-supplied execution setup,
-// order update, or review plan never reaches persistence (DEC-56).
-func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest) (SetupChangeRequest, error) {
+// order update, or review plan never reaches persistence (DEC-56). A handoff
+// to review resolves its round's seats through ResolveReviewRoundSeats from
+// the seat inputs the backend loaded in the same transaction
+// (feature-review-seat-minimum RS-2).
+func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest, seats PolicyHandoffSeatInputs) (SetupChangeRequest, error) {
 	if r.Policy == nil {
 		return r, fmt.Errorf("a frozen-policy change is required")
 	}
@@ -60,6 +63,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	r.NextStage = task.NextStage
 	r.WorkOrderUpdates, r.NewJobs, r.NewWorkOrders, r.SupersedeWorkOrderIDs = nil, nil, nil, nil
 	r.PriorReviewRound, r.ResultingReviewRound = 0, 0
+	r.ReviewRoundSeats = nil
 	for _, order := range orders {
 		if order.State == core.WorkOrderClaimed || (order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted) {
 			return r, fmt.Errorf("%w: task has an executing attempt or in-flight review verdict", ErrSetupChangeConflict)
@@ -126,10 +130,13 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	count := 1
 	timeout := r.Setup.ExecutionSettings.Verify.TimeoutText
 	if target == core.StageReview {
-		count = len(r.Setup.Review.Seats)
-		if count == 0 {
-			count = 1
+		minimum := ReviewSeatMinimum(r.Setup, r.WorkspaceReviewSeats)
+		resolved := ResolveReviewRoundSeats(ReviewRoundSeatInputsFor(minimum, reviewRound, orders, seats.Events, seats.Records, seats.PlannedSeatCount))
+		if resolved.SeatCount < resolved.FloorSeatCount {
+			return r, fmt.Errorf("%w: review round %d seat count %d is below the seat floor %d", ErrSetupChangeConflict, reviewRound, resolved.SeatCount, resolved.FloorSeatCount)
 		}
+		count = resolved.SeatCount
+		r.ReviewRoundSeats = &resolved
 		timeout = r.Setup.ExecutionSettings.Review.TimeoutText
 		r.ResultingReviewRound = reviewRound
 	}

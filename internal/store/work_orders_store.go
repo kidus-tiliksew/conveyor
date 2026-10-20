@@ -1405,6 +1405,8 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if !core.ValidWorkOrderStage(order.Stage) {
 		return fmt.Errorf("invalid work-order stage %s", order.Stage)
 	}
+	// Creation never writes a declared review seat count (RS-2; RS-4 owns it).
+	order.DeclaredReviewSeats = nil
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[order.TaskID]
@@ -1461,7 +1463,7 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	return nil
 }
 
-func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, seats ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
 	if _, err := RequireActor(ctx); err != nil {
 		return err
 	}
@@ -1487,27 +1489,44 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return fmt.Errorf("review round requires one job per work order")
 	}
+	round := orders[0].ReviewRound
+	// A recorded round replays as a no-op (feature-review-seat-minimum RS-2).
+	if m.reviewRoundSeatsExistLocked(task.Workspace, taskID, round) {
+		return nil
+	}
 	existing := 0
 	for _, order := range orders {
 		if _, ok := m.workOrders[order.ID]; ok {
 			existing++
 		}
 	}
+	// A legacy round without a record keeps the order-count check.
 	if existing == len(orders) {
 		return nil
 	}
 	if existing != 0 {
-		return fmt.Errorf("review round %d is only partially persisted", orders[0].ReviewRound)
+		return fmt.Errorf("review round %d is only partially persisted", round)
 	}
 	for i, job := range jobs {
-		if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID {
+		if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID || orders[i].ReviewRound != round {
 			return fmt.Errorf("invalid review round member %d", i)
 		}
 		if _, _, exists := m.findJobLocked(job.ID); exists {
 			return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, job.ID)
 		}
 	}
+	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(taskID), m.reviewRoundSeatsLocked(task.Workspace, taskID), len(orders)); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
+	record := seats.Record(taskID, round, now)
+	if err := record.Validate(); err != nil {
+		return err
+	}
+	created, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+	if err != nil {
+		return err
+	}
 	for i, job := range jobs {
 		m.jobs[taskID] = append(m.jobs[taskID], job)
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job)})
@@ -1521,15 +1540,13 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 		if order.QueueDeadline.IsZero() {
 			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 		}
-		state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
-		if transitionErr != nil {
-			return transitionErr
-		}
-		order.State, order.Claimable, order.UpdatedAt = state, true, now
+		order.State, order.Claimable, order.UpdatedAt = created, true, now
+		order.DeclaredReviewSeats = nil
 		m.workOrders[order.ID] = order
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	}
-	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": orders[0].ReviewRound, "seat_count": len(orders)})})
+	m.putReviewRoundSeatsLocked(task.Workspace, record)
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(ReviewRoundCreatedPayload(round, seats))})
 	return nil
 }
 
@@ -1555,6 +1572,7 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	if err := core.ValidateVerifyDispatch(task, order); err != nil {
 		return false, err
 	}
+	order.DeclaredReviewSeats = nil
 	// Creation agrees with core.WorkOrderHoldsStage: for non-review stages, a
 	// stored same-stage claim refuses creation for executor exclusivity even
 	// behind a newer stage. In the absence of a claim, the latest-order
@@ -1624,7 +1642,7 @@ func (m *memory) taskBlockedLocked(taskID string) bool {
 	return false
 }
 
-func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
+func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, seats ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return ReviewRoundRetryResult{}, err
 	}
@@ -1684,6 +1702,20 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 			return ReviewRoundRetryResult{}, fmt.Errorf("%w: work order %s already exists", ErrReviewRetryConflict, order.ID)
 		}
 	}
+	if m.reviewRoundSeatsExistLocked(task.Workspace, request.TaskID, newRound) {
+		return ReviewRoundRetryResult{}, fmt.Errorf("%w: review round %d is already recorded", ErrReviewRetryConflict, newRound)
+	}
+	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(request.TaskID), m.reviewRoundSeatsLocked(task.Workspace, request.TaskID), len(orders)); err != nil {
+		return ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", ErrReviewRetryConflict, err)
+	}
+	record := seats.Record(request.TaskID, newRound, now)
+	if err := record.Validate(); err != nil {
+		return ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", ErrReviewRetryConflict, err)
+	}
+	createdState, err := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
+	if err != nil {
+		return ReviewRoundRetryResult{}, err
+	}
 	created := make([]core.WorkOrder, 0, len(orders))
 	for i, job := range jobs {
 		m.jobs[request.TaskID] = append(m.jobs[request.TaskID], job)
@@ -1698,11 +1730,8 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 		if order.QueueDeadline.IsZero() {
 			order.QueueDeadline = order.QueueEnteredAt.Add(config.DefaultWorkOrderQueueTimeout)
 		}
-		state, transitionErr := core.TransitionWorkOrder("", core.WorkOrderCmdCreate)
-		if transitionErr != nil {
-			return ReviewRoundRetryResult{}, transitionErr
-		}
-		order.State, order.Claimable, order.UpdatedAt = state, true, now
+		order.State, order.Claimable, order.UpdatedAt = createdState, true, now
+		order.DeclaredReviewSeats = nil
 		m.workOrders[order.ID] = order
 		created = append(created, order)
 		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})
@@ -1725,7 +1754,10 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 		payload["automatic"] = true
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now})
-	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now})
+	m.putReviewRoundSeatsLocked(task.Workspace, record)
+	createdPayload := ReviewRoundCreatedPayload(newRound, seats)
+	createdPayload["retry_request_id"] = request.RequestID
+	m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(createdPayload), At: now})
 	result := ReviewRoundRetryResult{RequestID: request.RequestID, TaskID: request.TaskID, PriorRound: request.PriorRound, NewRound: newRound, PRHead: request.PRHead, WorkOrders: created}
 	m.reviewRetries[key] = memoryReviewRoundRetry{Workspace: workspace, Request: request, Result: result}
 	return result, nil
@@ -2611,6 +2643,9 @@ func (m *memory) updateWorkOrderCommandLocked(ctx context.Context, lease taskops
 		m.supersedeVerificationLocked(ctx, task.ID, order.HeadSHA)
 		m.tasks[order.TaskID] = task
 	}
+	// The declared review seat count has no update writer
+	// (feature-review-seat-minimum RS-2); the stored value is kept.
+	order.DeclaredReviewSeats = copySeatCount(current.DeclaredReviewSeats)
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
@@ -2668,7 +2703,10 @@ func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (
 	if spec.CreatedAt.IsZero() {
 		spec.CreatedAt = time.Now().UTC()
 	}
-	m.specs[spec.TaskID] = append(m.specs[spec.TaskID], spec)
+	stored := spec
+	stored.ReviewSeats = copySeatCount(spec.ReviewSeats)
+	spec.ReviewSeats = copySeatCount(spec.ReviewSeats)
+	m.specs[spec.TaskID] = append(m.specs[spec.TaskID], stored)
 	m.appendEventLocked(ctx, core.Event{TaskID: spec.TaskID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": spec.Version, "acceptance_count": spec.AcceptanceCount})})
 	return spec, nil
 }
@@ -2680,7 +2718,7 @@ func (m *memory) GetLatestSpecVersion(_ context.Context, taskID string) (core.Sp
 	if len(versions) == 0 {
 		return core.SpecVersion{}, false, nil
 	}
-	return versions[len(versions)-1], true, nil
+	return copySpecVersion(versions[len(versions)-1]), true, nil
 }
 
 func (m *memory) GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error) {
@@ -2694,7 +2732,7 @@ func (m *memory) GetSpecVersion(ctx context.Context, taskID string, version int)
 	}
 	for _, spec := range m.specs[taskID] {
 		if spec.Version == version {
-			return spec, true, nil
+			return copySpecVersion(spec), true, nil
 		}
 	}
 	return core.SpecVersion{}, false, nil
@@ -2710,10 +2748,16 @@ func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.
 	versions := m.specs[taskID]
 	for index := len(versions) - 1; index >= 0; index-- {
 		if versions[index].Approved {
-			return versions[index], true, nil
+			return copySpecVersion(versions[index]), true, nil
 		}
 	}
 	return core.SpecVersion{}, false, nil
+}
+
+// copySpecVersion keeps a caller from mutating a stored planned seat count.
+func copySpecVersion(spec core.SpecVersion) core.SpecVersion {
+	spec.ReviewSeats = copySeatCount(spec.ReviewSeats)
+	return spec
 }
 
 func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {

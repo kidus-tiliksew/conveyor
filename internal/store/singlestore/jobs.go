@@ -118,15 +118,17 @@ func (s *Store) GetLatestJob(ctx context.Context, id string) (core.Job, bool, er
 	return j, err == nil, err
 }
 
-const specColumns = `task_id,version,content,acceptance_count,acceptance,decomposition,approved,created_at,approved_at,agent,model`
+const specColumns = `task_id,version,content,acceptance_count,acceptance,decomposition,approved,created_at,approved_at,agent,model,review_seats`
 
 func scanSpec(row interface{ Scan(...any) error }) (core.SpecVersion, error) {
 	var s core.SpecVersion
 	var at *time.Time
-	err := row.Scan(&s.TaskID, &s.Version, &s.Content, &s.AcceptanceCount, &s.Acceptance, &s.Decomposition, &s.Approved, &s.CreatedAt, &at, &s.Agent, &s.Model)
+	var reviewSeats sql.NullInt64
+	err := row.Scan(&s.TaskID, &s.Version, &s.Content, &s.AcceptanceCount, &s.Acceptance, &s.Decomposition, &s.Approved, &s.CreatedAt, &at, &s.Agent, &s.Model, &reviewSeats)
 	if at != nil {
 		s.ApprovedAt = *at
 	}
+	s.ReviewSeats = seatCountFromNull(reviewSeats)
 	return s, err
 }
 func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
@@ -148,7 +150,7 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 		}
 		spec.Approved = false
 		spec.ApprovedAt = time.Time{}
-		_, err := writeRow(ctx, tx, rowWrite{table: "task_specs", operation: "INSERT", values: map[string]any{"workspace_id": documentWorkspace(ctx), "task_id": spec.TaskID, "version": spec.Version, "content": spec.Content, "acceptance_count": spec.AcceptanceCount, "acceptance": []byte(spec.Acceptance), "decomposition": []byte(spec.Decomposition), "created_at": spec.CreatedAt, "agent": spec.Agent, "model": spec.Model}})
+		_, err := writeRow(ctx, tx, rowWrite{table: "task_specs", operation: "INSERT", values: map[string]any{"workspace_id": documentWorkspace(ctx), "task_id": spec.TaskID, "version": spec.Version, "content": spec.Content, "acceptance_count": spec.AcceptanceCount, "acceptance": []byte(spec.Acceptance), "decomposition": []byte(spec.Decomposition), "created_at": spec.CreatedAt, "agent": spec.Agent, "model": spec.Model, "review_seats": nullSeatCount(spec.ReviewSeats)}})
 		if err != nil {
 			return err
 		}

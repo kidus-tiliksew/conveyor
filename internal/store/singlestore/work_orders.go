@@ -28,7 +28,7 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
-rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
+rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
 	if snapshot == nil {
@@ -66,7 +66,8 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
+		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
+		&order.DeclaredReviewSeats)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(checkpoint) > 0 && string(checkpoint) != "{}" {
 		var value core.WorkOrderCheckpoint

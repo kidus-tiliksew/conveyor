@@ -71,17 +71,37 @@ func CreateStageWorkOrder(ctx context.Context, st store.Store, job core.Job, ord
 	})
 }
 
+// CreateReviewRound and RetryReviewRound keep their fixture signatures and
+// derive the round seat metadata from the stored task and the order count
+// (feature-review-seat-minimum RS-2): the count is the number of orders, the
+// minimum is the task's minimum with that count as the workspace length, and
+// the source is minimum when they match and carried otherwise.
 func CreateReviewRound(ctx context.Context, st store.Store, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+	seats := fixtureReviewRoundSeats(ctx, st, taskID, len(orders))
 	_, err := taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
-		return struct{}{}, st.CreateReviewRoundCommand(ctx, lease, taskID, jobs, orders)
+		return struct{}{}, st.CreateReviewRoundCommand(ctx, lease, taskID, seats, jobs, orders)
 	})
 	return err
 }
 
 func RetryReviewRound(ctx context.Context, st store.Store, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+	seats := fixtureReviewRoundSeats(ctx, st, request.TaskID, len(orders))
 	return taskops.ExecuteWorkOrder(ctx, st, request.TaskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
-		return st.RetryReviewRoundCommand(ctx, lease, request, jobs, orders)
+		return st.RetryReviewRoundCommand(ctx, lease, request, seats, jobs, orders)
 	})
+}
+
+func fixtureReviewRoundSeats(ctx context.Context, st store.Store, taskID string, count int) store.ReviewRoundSeatResolution {
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		return store.ReviewRoundSeatResolution{SeatCount: count, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: count, FloorSeatCount: count}
+	}
+	minimum := store.ReviewSeatMinimum(task.SetupContract, count)
+	source := store.ReviewSeatSourceCarried
+	if count == minimum {
+		source = store.ReviewSeatSourceMinimum
+	}
+	return store.ReviewRoundSeatResolution{SeatCount: count, Source: source, MinimumSeatCount: minimum, FloorSeatCount: minimum}
 }
 
 func RecoverInterruptedReviewRound(ctx context.Context, st store.Store, request store.InterruptedReviewRecoveryRequest, timeout time.Duration) (store.InterruptedReviewRecoveryResult, error) {

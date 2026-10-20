@@ -138,7 +138,7 @@ WHERE s.task_id = t.id
   AND s.version = $2
   AND t.workspace_id = $3
   AND s.version = (SELECT MAX(version) FROM task_specs WHERE task_id = $1)
-RETURNING s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model
+RETURNING s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model, s.review_seats
 `
 
 type ApproveLatestSpecVersionParams struct {
@@ -162,6 +162,7 @@ func (q *Queries) ApproveLatestSpecVersion(ctx context.Context, arg ApproveLates
 		&i.ApprovedAt,
 		&i.Agent,
 		&i.Model,
+		&i.ReviewSeats,
 	)
 	return i, err
 }
@@ -342,7 +343,7 @@ func (q *Queries) GetLatestJob(ctx context.Context, arg GetLatestJobParams) (Job
 }
 
 const getLatestSpecVersion = `-- name: GetLatestSpecVersion :one
-SELECT s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model FROM task_specs s
+SELECT s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model, s.review_seats FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE s.task_id = $1 AND t.workspace_id = $2
 ORDER BY s.version DESC
@@ -369,6 +370,7 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 		&i.ApprovedAt,
 		&i.Agent,
 		&i.Model,
+		&i.ReviewSeats,
 	)
 	return i, err
 }
@@ -700,7 +702,7 @@ func (q *Queries) InsertJob(ctx context.Context, arg InsertJobParams) (Job, erro
 const insertSpecVersion = `-- name: InsertSpecVersion :one
 INSERT INTO task_specs (
     task_id, version, content, acceptance_count, acceptance, decomposition,
-    approved, approved_at, created_at, agent, model
+    approved, approved_at, created_at, agent, model, review_seats
 )
 SELECT
     $1,
@@ -713,10 +715,11 @@ SELECT
     NULL,
     $6,
     $7,
-    $8
+    $8,
+    $9
 FROM task_specs
 WHERE task_id = $1
-RETURNING task_id, version, content, acceptance_count, acceptance, decomposition, approved, created_at, approved_at, agent, model
+RETURNING task_id, version, content, acceptance_count, acceptance, decomposition, approved, created_at, approved_at, agent, model, review_seats
 `
 
 type InsertSpecVersionParams struct {
@@ -728,6 +731,7 @@ type InsertSpecVersionParams struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	Agent           string             `json:"agent"`
 	Model           string             `json:"model"`
+	ReviewSeats     pgtype.Int4        `json:"review_seats"`
 }
 
 func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionParams) (TaskSpec, error) {
@@ -740,6 +744,7 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 		arg.CreatedAt,
 		arg.Agent,
 		arg.Model,
+		arg.ReviewSeats,
 	)
 	var i TaskSpec
 	err := row.Scan(
@@ -754,6 +759,7 @@ func (q *Queries) InsertSpecVersion(ctx context.Context, arg InsertSpecVersionPa
 		&i.ApprovedAt,
 		&i.Agent,
 		&i.Model,
+		&i.ReviewSeats,
 	)
 	return i, err
 }
@@ -1349,7 +1355,7 @@ func (q *Queries) ListTaskOperationsEvents(ctx context.Context, arg ListTaskOper
 }
 
 const listTaskOperationsLatestPlans = `-- name: ListTaskOperationsLatestPlans :many
-SELECT DISTINCT ON (s.task_id) s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model
+SELECT DISTINCT ON (s.task_id) s.task_id, s.version, s.content, s.acceptance_count, s.acceptance, s.decomposition, s.approved, s.created_at, s.approved_at, s.agent, s.model, s.review_seats
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE t.workspace_id = $1
@@ -1383,6 +1389,7 @@ func (q *Queries) ListTaskOperationsLatestPlans(ctx context.Context, arg ListTas
 			&i.ApprovedAt,
 			&i.Agent,
 			&i.Model,
+			&i.ReviewSeats,
 		); err != nil {
 			return nil, err
 		}

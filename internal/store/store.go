@@ -254,8 +254,14 @@ type WorkOrderStore interface {
 	// order. It returns false when the same order already exists, making queue
 	// redelivery and concurrent dispatch idempotent without a session lock.
 	CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error)
-	CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error
-	RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
+	// CreateReviewRoundCommand and RetryReviewRoundCommand revalidate the
+	// round's resolved seats in their task transaction and write its
+	// review_round_seats record with its orders (feature-review-seat-minimum RS-2).
+	CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, seats ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error
+	RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, seats ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
+	// ListReviewRoundSeats returns the selected workspace's round seat records
+	// for a task, ordered by round; a task without records returns none.
+	ListReviewRoundSeats(ctx context.Context, taskID string) ([]ReviewRoundSeats, error)
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
@@ -590,6 +596,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		harnessModelFailures:        map[string]core.HarnessModelFailure{},
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
+		reviewRoundSeats:            map[string]memoryReviewRoundSeats{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
 		preemptions:                 map[string]memoryWorkOrderPreemption{},
@@ -658,6 +665,7 @@ type memory struct {
 	harnessModelFailures        map[string]core.HarnessModelFailure
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
+	reviewRoundSeats            map[string]memoryReviewRoundSeats
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
 	preemptions                 map[string]memoryWorkOrderPreemption

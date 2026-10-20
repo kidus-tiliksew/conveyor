@@ -946,7 +946,8 @@ func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
 	if err != nil || len(orders) != 1 || orders[0].RequiredHarness != "" || orders[0].RequiredModel != "" || orders[0].RequiredEffort != "" || orders[0].ExecutionTimeoutText != "2h" {
 		t.Fatalf("implementation orders=%+v err=%v", orders, err)
 	}
-	jobs, reviewOrders, err := BuildReviewRound(cfg, task, cfg.Routing.Stages["review"], 1)
+	minimum := store.ReviewSeatMinimum(task.SetupContract, len(cfg.Review.Seats))
+	jobs, reviewOrders, err := BuildReviewRound(cfg, task, cfg.Routing.Stages["review"], 1, minimum, minimum)
 	if err != nil || len(jobs) != 1 || len(reviewOrders) != 1 || reviewOrders[0].RequiredHarness != "" || reviewOrders[0].RequiredModel != "" || reviewOrders[0].RequiredEffort != "" || reviewOrders[0].ExecutionTimeoutText != "45m" {
 		t.Fatalf("review jobs=%+v orders=%+v err=%v", jobs, reviewOrders, err)
 	}
