@@ -467,6 +467,16 @@ func (f *planFakeFactory) dismissRequirement(id string, number int) {
 	}
 }
 
+func (f *planFakeFactory) dismissDesign(id string, number int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	design := f.designs[id]
+	design.versions[number-1].Dismissed = true
+	if design.doc.CurrentVersion == 0 {
+		design.doc.Archived, design.doc.ArchiveReason = true, core.ArchiveReasonOnlyProposalDismissed
+	}
+}
+
 func (f *planFakeFactory) setDecisionStatus(id string, status core.DecisionStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -892,7 +902,7 @@ func planRequirementWithSecond() string {
 	return "# Revised capability\n\nThe revised capability keeps drafts local.\n\n```conveyor:requirements\n- id: REQ-1\n  statement: The CLI shall check drafts.\n  acceptance_criteria:\n    - id: AC-1.1\n      statement: When AC-1.1 runs, the CLI shall pass.\n- id: REQ-2\n  statement: The CLI shall stay small.\n  acceptance_criteria:\n    - id: AC-2.1\n      statement: When it grows, the CLI shall refuse.\n```\n"
 }
 
-// AC-3.13, DEC-81(2), DEC-81(3): a changed item is refused while its
+// AC-3.13, DEC-83(2), DEC-83(3): a changed item is refused while its
 // proposal is pending, after it was confirmed, or after its task was
 // created; once its proposal is dismissed and the item is approved again,
 // it posts as a new proposal.
@@ -945,6 +955,55 @@ func TestPlanPushChangedItems(t *testing.T) {
 			t.Fatalf("record after re-push = %+v", record)
 		}
 	})
+
+	// req-local-planning v6 AC-3.13, DEC-83(2): a created document whose only
+	// proposal was dismissed stays archived, so the revised item is refused
+	// with the remedy, and the renamed item posts.
+	dismissedCreations := []struct {
+		name, rel, renamed, first, changed, again string
+		dismiss                                   func(f *planFakeFactory)
+		posts                                     string
+	}{
+		{"dismissed created requirement", "requirements/req-new.md", "requirements/req-new-two.md",
+			"---\nmode: create\n---\n" + planRequirementText("New capability", "AC-1.1"),
+			"---\nmode: create\n---\n" + strings.Replace(planRequirementText("New capability", "AC-1.1"), "keeps drafts", "keeps all drafts", 1),
+			"---\nmode: create\n---\n" + strings.Replace(planRequirementText("Second capability", "AC-1.1"), "keeps drafts", "keeps all drafts", 1),
+			func(f *planFakeFactory) { f.dismissRequirement("req-new", 1) }, "/v1/requirements"},
+		{"dismissed created system design", "system-designs/feature-new.md", "system-designs/feature-new-two.md",
+			"---\nmode: create\ntitle: New design\ncategory: Feature design\n---\n" + planDesignText,
+			"---\nmode: create\ntitle: New design\ncategory: Feature design\n---\n" + strings.Replace(planDesignText, "The design text.", "The changed design text.", 1),
+			"---\nmode: create\ntitle: Second design\ncategory: Feature design\n---\n" + strings.Replace(planDesignText, "The design text.", "The changed design text.", 1),
+			func(f *planFakeFactory) { f.dismissDesign("feature-new", 1) }, "/v1/system-designs"},
+	}
+	for _, tc := range dismissedCreations {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPlanFakeFactory(t)
+			root := newPlanDraftDir(t)
+			layer := strings.Split(tc.rel, "/")[0]
+			itemID := strings.TrimSuffix(strings.Split(tc.rel, "/")[1], ".md")
+			writePlanFile(t, root, tc.rel, tc.first)
+			approveAllPlanItems(t, root)
+			mustPushPlan(t, root, layer)
+			tc.dismiss(f)
+			writePlanFile(t, root, tc.rel, tc.changed)
+			approveAllPlanItems(t, root)
+			out := expectPlanRefusal(t, f, root, layer, itemID+": AC-3.13:", "whose only proposal "+itemID+" v1 was dismissed", "archived "+itemID, "new document ID and title")
+			if lines := planLinesWith(strings.Split(strings.TrimSpace(out), "\n"), itemID+":"); len(lines) != 1 {
+				t.Fatalf("refusal lines = %q", lines)
+			}
+			if err := os.Remove(filepath.Join(root, filepath.FromSlash(tc.rel))); err != nil {
+				t.Fatal(err)
+			}
+			writePlanFile(t, root, tc.renamed, tc.again)
+			approveAllPlanItems(t, root)
+			renamed := strings.TrimSuffix(strings.Split(tc.renamed, "/")[1], ".md")
+			out = mustPushPlan(t, root, layer)
+			expectPlanLine(t, out, "posted "+renamed+":", renamed+" v1 (pending)")
+			if posts := f.postsTo(tc.posts); len(posts) != 2 {
+				t.Fatalf("create posts = %d, want the original and the renamed item", len(posts))
+			}
+		})
+	}
 
 	t.Run("dismissed decision", func(t *testing.T) {
 		f := newPlanFakeFactory(t)
@@ -1130,7 +1189,7 @@ func TestPlanPushTaskRequests(t *testing.T) {
 	expectPlanRefusal(t, f, root, PlanLayerTasks, "draft:task/"+long+": LP-5:", "at most 200")
 }
 
-// AC-3.6, DEC-81(1): for every kind, a rerun after the factory accepted a
+// AC-3.6, DEC-83(1): for every kind, a rerun after the factory accepted a
 // post but before the CLI recorded it creates no second proposal or task.
 func TestPlanPushRecoversAcceptedPosts(t *testing.T) {
 	v1 := planRequirementText("Revised capability", "AC-1.1")

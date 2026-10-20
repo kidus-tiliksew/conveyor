@@ -115,7 +115,11 @@ func (p *planPusher) checkEarlierLayers(ctx context.Context, rank int) error {
 		case planProposalPending:
 			p.refuse(item.ID, "AC-3.8", "the %s item's proposal %s is pending; it must be confirmed first", item.Layer, state.Detail)
 		default:
-			p.refuse(item.ID, "AC-3.8", "the %s item's proposal %s is %s; change and push it again, or remove the item from the draft", item.Layer, state.Detail, state.State)
+			remedy := "change and push it again"
+			if item.Mode == PlanModeCreate {
+				remedy = "give it a new document ID and title and push its layer again"
+			}
+			p.refuse(item.ID, "AC-3.8", "the %s item's proposal %s is %s; %s, or remove the item from the draft", item.Layer, state.Detail, state.State, remedy)
 		}
 	}
 	return nil

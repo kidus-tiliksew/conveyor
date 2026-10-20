@@ -1,7 +1,7 @@
 package main
 
 // REST adapter for `conveyor plan push` (feature-local-planning-drafts LP-1,
-// LP-5; req-local-planning REQ-3; DEC-69, DEC-81(1)). It reads and posts
+// LP-5; req-local-planning REQ-3; DEC-69, DEC-83(1)). It reads and posts
 // through existing factory routes with the credential resolveClientConfig
 // resolves. It refuses every confirm and dismiss route, so push can create
 // only unconfirmed proposals and tasks (AC-3.4).

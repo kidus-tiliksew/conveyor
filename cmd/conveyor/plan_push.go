@@ -1,7 +1,7 @@
 package main
 
 // `conveyor plan push` (feature-local-planning-drafts LP-5; req-local-planning
-// REQ-3 AC-3.1–AC-3.15; DEC-69, DEC-81). Push runs the offline check, then
+// REQ-3 AC-3.1–AC-3.15; DEC-69, DEC-83). Push runs the offline check, then
 // every read-only pre-check for one layer, and only then posts that layer's
 // items in dependency order as unconfirmed proposals and tasks. Each post is
 // bracketed by an intent record and a posted record so a rerun recovers an
@@ -185,7 +185,7 @@ func (p *planPusher) prepare(ctx context.Context, rank int) ([]*planPushEntry, e
 }
 
 // classify decides the action for one approved item from its push record
-// (AC-3.6, AC-3.13; DEC-81(1), DEC-81(3)).
+// (AC-3.6, AC-3.13; DEC-83(1), DEC-83(2), DEC-83(3)).
 func (p *planPusher) classify(ctx context.Context, entry *planPushEntry) error {
 	item, record := entry.Item, entry.Record
 	switch {
@@ -208,8 +208,18 @@ func (p *planPusher) classify(ctx context.Context, entry *planPushEntry) error {
 		case planProposalCreated:
 			p.refuse(item.ID, "AC-3.13", "the item changed after %s was created", state.Detail)
 		default:
+			archived, err := p.dismissalArchived(ctx, item)
+			if err != nil {
+				return err
+			}
+			if archived {
+				// The factory archived the created document with its only
+				// proposal, so it takes no new proposal (AC-3.13; DEC-83(2)).
+				p.refuse(item.ID, "AC-3.13", "the item creates %s %s, whose only proposal %s was dismissed, so the factory archived %s and it takes no new proposal; give the item a new document ID and title", planDocumentNoun(item.Kind), item.ID, state.Detail, item.ID)
+				return nil
+			}
 			// A dismissed proposal is replaced by a new intent and a new
-			// proposal once the changed item is approved again (DEC-81(2)).
+			// proposal once the changed item is approved again (DEC-83(2)).
 			entry.Action = planActionPost
 		}
 	case record.Phase == PlanPushIntent:

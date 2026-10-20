@@ -2,7 +2,7 @@ package main
 
 // Push records, proposal state, and intent recovery for `conveyor plan push`
 // (feature-local-planning-drafts LP-2, LP-5 recovery column; req-local-planning
-// AC-3.6, AC-3.13; DEC-81(1)). No factory route takes an idempotency key for
+// AC-3.6, AC-3.13; DEC-83(1)). No factory route takes an idempotency key for
 // proposals, so an interrupted post is resolved by reading factory state back.
 
 import (
@@ -122,6 +122,35 @@ func (p *planPusher) proposalState(ctx context.Context, item PlanItem, record Pl
 		return planProposalState{State: planProposalCreated, Detail: fmt.Sprintf("task %s (%s)", task.ID, task.State)}, nil
 	}
 	return planProposalState{}, fmt.Errorf("%s: unknown item kind %q", item.ID, item.Kind)
+}
+
+// dismissalArchived reports whether a created document item's document was
+// archived because its only proposal was dismissed. Such a document refuses
+// new versions and cannot be restored, so it takes no new proposal
+// (conveyor:internal/store/requirements.go#DismissRequirementVersion; DEC-83(2)).
+func (p *planPusher) dismissalArchived(ctx context.Context, item PlanItem) (bool, error) {
+	if item.Mode != PlanModeCreate {
+		return false, nil
+	}
+	var archived bool
+	var reason string
+	switch item.Kind {
+	case PlanKindRequirement:
+		requirement, found, err := p.api.requirement(ctx, item.ID)
+		if err != nil || !found {
+			return false, err
+		}
+		archived, reason = requirement.Archived, requirement.ArchiveReason
+	case PlanKindSystemDesign:
+		design, found, err := p.api.systemDesign(ctx, item.ID)
+		if err != nil || !found {
+			return false, err
+		}
+		archived, reason = design.Archived, design.ArchiveReason
+	default:
+		return false, nil
+	}
+	return archived && reason == core.ArchiveReasonOnlyProposalDismissed, nil
 }
 
 // planNormalizeContent applies the factory's content normalization for the
