@@ -109,6 +109,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
           spec={item.spec}
           overflowExpandable
           routeVariant="sheet"
+          minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
         />
       )}
       {/* While a gate is open the evidence belongs with the decision, and the

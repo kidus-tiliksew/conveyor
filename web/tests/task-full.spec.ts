@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, type Locator, type Page, type Route } from '@playwright/test'
-import { test } from './helpers/bounded-detail'
+import type { ActivityItem, TaskReviewSeatMetadata, TaskSummaries, WorkOrder } from '../src/lib/types'
+import { boundedView, type CompleteActivity, test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
@@ -4909,7 +4910,7 @@ test('review panel replaces duplicate review and bounce activity notes', async (
   await page.goto('/tasks/reviews/full')
 
   // One panel card, not one card per seat.
-  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+  const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
   await expect(panel).toHaveCount(1)
 
   // Both seats resolve their verdicts — including the seat whose
@@ -4929,7 +4930,7 @@ test('review panel replaces duplicate review and bounce activity notes', async (
 
   const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
   await expect(timelineRows).toHaveCount(2)
-  await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
+  await expect(timelineRows.nth(0)).toContainText(/Panel of 2\b.*unanimous to pass/)
   await expect(timelineRows.nth(1)).toContainText('Pull request opened')
 })
 
@@ -5044,7 +5045,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(
     page.getByText(/review claim is active without a successful submit_review_verdict response/),
   ).toHaveCount(0)
-  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+  const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
   await expect(panel).toHaveCount(1)
   await expect(panel.getByText('Deliberating')).toHaveCount(2)
   await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
@@ -5052,7 +5053,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
 
   const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
   await expect(timelineRows).toHaveCount(3)
-  await expect(timelineRows.nth(0)).toContainText('Panel of 2 · unanimous to pass')
+  await expect(timelineRows.nth(0)).toContainText(/Panel of 2\b.*unanimous to pass/)
   await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
   await expect(timelineRows.nth(2)).toContainText('Pull request opened')
   // The claimed attempt's stop affordance lives once in the next-action box,
@@ -5064,7 +5065,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
   // The task sheet uses the same historical rendering boundary.
   await page.goto('/tasks/diagnostics')
   await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
-  await expect(page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })).toHaveCount(1)
+  await expect(page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })).toHaveCount(1)
   await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
 })
 
@@ -5092,7 +5093,7 @@ test('review panel hides generated metadata while preserving reported zero usage
   })
 
   await page.goto('/tasks/review-panel-cleanup/full')
-  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+  const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
 
   await expect(panel).toContainText('gpt-review')
   await expect(panel).toContainText('claude-review')
@@ -5196,7 +5197,7 @@ test('external Cursor Auto claims show the Cursor logo in the job header and rev
   })
 
   await page.goto('/tasks/cursor-auto-review/full')
-  const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+  const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
   const autoSeat = panel.locator('span.group\\/model').filter({ hasText: 'auto' })
   await expect(autoSeat.getByText('auto', { exact: true })).toBeVisible()
   expect(await logoPaths(autoSeat)).toEqual(iconPaths('cursor'))
@@ -6807,7 +6808,7 @@ for (const withNotes of [true, false]) {
       }),
     )
     await page.goto('/tasks/reviews/full')
-    const panel = page.locator('article').filter({ hasText: 'Panel of 2 · unanimous to pass' })
+    const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
     await expect(panel).toBeVisible()
     const notes = panel.getByRole('region', { name: "Operator notes on this task's proposals" })
     if (withNotes) {
@@ -8956,4 +8957,447 @@ test('with a gate open the full route keeps verification evidence in the gate ca
     (await inspector.boundingBox())!.x,
   )
   await expectInsideColumns(page)
+})
+
+// ---- Review seat minimum (feature-review-seat-minimum RS-7, RS-3) ----------
+
+type SeatFixtureOrder = {
+  round: number
+  seat: number
+  model: string
+  verdict?: 'approve' | 'changes_requested'
+  id?: string
+}
+
+function seatOrder(taskId: string, order: SeatFixtureOrder, index: number): WorkOrder {
+  const id = order.id ?? `${taskId}-review-${order.round}-seat-${order.seat}`
+  const at = new Date(Date.parse('2026-07-15T12:00:00Z') + order.round * 3_600_000 + index * 1_000).toISOString()
+  return {
+    id,
+    task_id: taskId,
+    job_id: id,
+    stage: 'review',
+    state: order.verdict ? 'completed' : 'claimed',
+    review_round: order.round,
+    review_seat: order.seat,
+    required_model: order.model,
+    queue_entered_at: at,
+    queue_deadline: '2026-07-20T12:00:00Z',
+    redispatch_count: 0,
+    cost_usd: 0,
+    tokens_in: 0,
+    tokens_out: 0,
+    usage_reported: false,
+    self_reported: true,
+  } as WorkOrder
+}
+
+function seatMeta(
+  round: number,
+  count: number,
+  source: TaskReviewSeatMetadata['seat_count_source'],
+  extra: Partial<TaskReviewSeatMetadata> = {},
+): TaskReviewSeatMetadata {
+  return { review_round: round, seat_count: count, seat_count_source: source, minimum_seat_count: 2, ...extra }
+}
+
+// A bounded task-detail response as the server sends it, with the review seat
+// summaries stated directly (internal/httpapi/task_detail_review_seats.go).
+function seatPanelItem(
+  taskId: string,
+  options: {
+    orders: SeatFixtureOrder[]
+    summaries: Partial<TaskSummaries>
+    state?: string
+    spec?: { review_seats?: number | null; approved?: boolean }
+  },
+): ActivityItem {
+  const item = activity(taskId, false) as unknown as CompleteActivity
+  item.task = { ...item.task, state: (options.state ?? 'running') as ActivityItem['task']['state'] }
+  item.jobs = []
+  item.events = []
+  item.work_orders = options.orders.map((order, index) => seatOrder(taskId, order, index))
+  if (item.spec)
+    item.spec = { ...item.spec, approved: options.spec?.approved ?? true, review_seats: options.spec?.review_seats }
+  const bounded = boundedView(item, taskId)
+  const byOrder: NonNullable<NonNullable<TaskSummaries['review_results']>['by_order']> = {}
+  for (const order of item.work_orders ?? []) {
+    const verdict = options.orders.find(
+      (candidate, index) => seatOrder(taskId, candidate, index).id === order.id,
+    )?.verdict
+    if (verdict) byOrder[order.id] = { verdict, summary: 'Seat verdict.', feedback: '', at: order.queue_entered_at }
+  }
+  bounded.summaries = {
+    ...bounded.summaries,
+    review_results: { by_order: byOrder, by_job: {} },
+    ...options.summaries,
+  }
+  return bounded
+}
+
+const seatHistory = {
+  orders: [
+    { round: 1, seat: 1, model: 'r1-model', verdict: 'changes_requested' as const },
+    { round: 1, seat: 2, model: 'r1-model', verdict: 'changes_requested' as const },
+    { round: 2, seat: 1, model: 'r2-model', verdict: 'approve' as const },
+    { round: 2, seat: 2, model: 'r2-model' },
+    { round: 2, seat: 3, model: 'r2-model' },
+  ],
+  rounds: {
+    '1': {
+      event_id: '41',
+      verdict: 'changes_requested' as const,
+      summary: 'Round 1 settled.',
+      at: '2026-07-15T13:30:00Z',
+    },
+  },
+}
+
+function openRoundItem(
+  taskId: string,
+  overrides: { state?: string; seatsInRound2?: number; superseded?: boolean } = {},
+) {
+  const extra = overrides.seatsInRound2 ?? 3
+  const orders = [
+    ...seatHistory.orders.filter((order) => order.round === 1),
+    ...Array.from({ length: extra }, (_, index) => ({
+      round: 2,
+      seat: index + 1,
+      model: 'r2-model',
+      verdict: index === 0 ? ('approve' as const) : undefined,
+    })),
+  ]
+  const round2 = seatMeta(2, extra, 'carried', {
+    carried_from_round: 1,
+    planned_seat_count: 3,
+    superseded: overrides.superseded,
+  })
+  return seatPanelItem(taskId, {
+    orders,
+    state: overrides.state,
+    summaries: {
+      review_round: { ...round2 },
+      review_round_seats: {
+        by_round: { '1': seatMeta(1, 2, 'minimum', { planned_seat_count: 3 }), '2': round2 },
+        by_order: {},
+      },
+      review_seat_policy: { minimum_seat_count: 2, planned_seat_count: 3 },
+      review_rounds: { by_round: seatHistory.rounds, by_order: {} },
+    },
+  })
+}
+
+const roundPanel = (page: Page, model: string) => page.locator('article').filter({ hasText: model })
+
+test('review seat header shows each source and approved planned count', async ({ page }) => {
+  const taskId = 'seat-sources'
+  const orders: SeatFixtureOrder[] = [
+    { round: 1, seat: 1, model: 'declared-model', verdict: 'changes_requested' },
+    { round: 2, seat: 1, model: 'planned-model', verdict: 'changes_requested' },
+    { round: 4, seat: 1, model: 'carried-model', verdict: 'changes_requested' },
+    { round: 5, seat: 1, model: 'minimum-model' },
+    { round: 5, seat: 2, model: 'minimum-model' },
+  ]
+  const item = seatPanelItem(taskId, {
+    orders,
+    summaries: {
+      review_round: seatMeta(5, 2, 'minimum', { planned_seat_count: 3 }),
+      review_round_seats: {
+        by_round: {
+          '1': seatMeta(1, 1, 'declared', { planned_seat_count: 3 }),
+          '2': seatMeta(2, 1, 'planned', { planned_seat_count: 3 }),
+          '4': seatMeta(4, 1, 'carried', { carried_from_round: 2, planned_seat_count: 3 }),
+          '5': seatMeta(5, 2, 'minimum', { planned_seat_count: 3 }),
+        },
+        by_order: {},
+      },
+      review_seat_policy: { minimum_seat_count: 2, planned_seat_count: 3 },
+    },
+  })
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
+  await page.goto(`/tasks/${taskId}/full`)
+  for (const [model, header, title] of [
+    ['declared-model', 'Panel of 1 · minimum 2', 'Seat count declared at submission · Plan: 3 seats'],
+    ['planned-model', 'Panel of 1 · minimum 2', 'Seat count planned · Plan: 3 seats'],
+    // Round 3 never existed: the tooltip names round 2, not an assumed R-1.
+    ['carried-model', 'Panel of 1 · minimum 2', 'Seat count carried from round 2 · Plan: 3 seats'],
+    ['minimum-model', 'Panel of 2 · minimum 2', 'Seat count is the workspace minimum · Plan: 3 seats'],
+  ] as const) {
+    const panel = roundPanel(page, model)
+    await expect(panel.getByTitle(title, { exact: true })).toHaveText(header)
+  }
+  // A one-seat panel states no unanimity; a larger panel keeps it beside the header.
+  await expect(roundPanel(page, 'declared-model').getByText('unanimous to pass')).toHaveCount(0)
+  await expect(roundPanel(page, 'minimum-model').getByText('· unanimous to pass')).toBeVisible()
+  // Source machine codes never reach the page.
+  await expect(page.getByText(/^(declared|planned|carried|minimum)$/)).toHaveCount(0)
+})
+
+test('review seat metadata stays with its historical round', async ({ page }) => {
+  const taskId = 'seat-history'
+  const item = seatPanelItem(taskId, {
+    orders: [
+      { round: 0, seat: 1, model: 'legacy-model', verdict: 'approve', id: 'seat-history-legacy-1' },
+      ...seatHistory.orders,
+      { round: 3, seat: 1, model: 'r3-model' },
+      { round: 3, seat: 2, model: 'r3-model' },
+    ],
+    summaries: {
+      review_round: seatMeta(3, 2, 'carried'),
+      review_round_seats: {
+        by_round: {
+          '1': seatMeta(1, 2, 'minimum'),
+          '2': seatMeta(2, 3, 'declared'),
+          // A carried record without a known predecessor.
+          '3': seatMeta(3, 2, 'carried'),
+        },
+        by_order: { 'seat-history-legacy-1': seatMeta(0, 1, 'minimum') },
+      },
+      review_seat_policy: { minimum_seat_count: 2 },
+      review_rounds: {
+        by_round: {
+          ...seatHistory.rounds,
+          '2': {
+            event_id: '52',
+            verdict: 'changes_requested',
+            summary: 'Round 2 settled.',
+            at: '2026-07-15T14:30:00Z',
+          },
+        },
+        by_order: {},
+      },
+    },
+  })
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
+  await page.goto(`/tasks/${taskId}/full`)
+  await expect(
+    roundPanel(page, 'r1-model').getByTitle('Seat count is the workspace minimum', { exact: true }),
+  ).toHaveText('Panel of 2 · minimum 2')
+  await expect(
+    roundPanel(page, 'r2-model').getByTitle('Seat count declared at submission', { exact: true }),
+  ).toHaveText('Panel of 3 · minimum 2')
+  await expect(
+    roundPanel(page, 'r3-model').getByTitle('Seat count carried from the previous round', { exact: true }),
+  ).toHaveText('Panel of 2 · minimum 2')
+  // A round-zero panel is a single-seat panel with its own order's metadata.
+  await expect(
+    roundPanel(page, 'legacy-model').getByTitle('Seat count is the workspace minimum', { exact: true }),
+  ).toHaveText('Panel of 1 · minimum 2')
+  // The latest round's carried source is never copied onto older panels.
+  await expect(roundPanel(page, 'r1-model').getByTitle(/carried/)).toHaveCount(0)
+  await expect(roundPanel(page, 'r2-model').getByTitle(/carried/)).toHaveCount(0)
+  // Existing seat rows, verdict pills, and counts are unchanged.
+  await expect(roundPanel(page, 'r2-model')).toContainText('Changes requested')
+  await expect(roundPanel(page, 'r1-model')).toContainText('Changes requested — 2 of 2 seats')
+
+  // An older server without metadata prints the seat count alone.
+  const legacyServer = seatPanelItem('seat-no-metadata', { orders: seatHistory.orders.slice(0, 2), summaries: {} })
+  await page.route('**/v1/tasks/seat-no-metadata/activity*', (route) => route.fulfill({ json: legacyServer }))
+  await page.goto('/tasks/seat-no-metadata/full')
+  const panel = roundPanel(page, 'r1-model')
+  await expect(panel).toContainText('Panel of 2')
+  await expect(panel).not.toContainText('minimum')
+})
+
+test('planned review seats appear on the displayed plan version', async ({ page }) => {
+  const taskId = 'seat-plan'
+  let reviewSeats: number | null = 4
+  // The approved plan's count (3) differs from the displayed draft's (4).
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) =>
+    route.fulfill({
+      json: seatPanelItem(taskId, {
+        orders: [],
+        state: 'awaiting_human',
+        spec: { review_seats: reviewSeats, approved: false },
+        summaries: {
+          review_round_seats: { by_round: {}, by_order: {} },
+          review_seat_policy: { minimum_seat_count: 2, planned_seat_count: 3 },
+        },
+      }),
+    }),
+  )
+  await page.goto(`/tasks/${taskId}/full`)
+  const plan = page.getByRole('region', { name: 'Execution plan' })
+  await expect(plan.getByText('Review: 4 seats (minimum 2)', { exact: true })).toBeVisible()
+  await expect(plan.getByText(/Review: 3 seats/)).toHaveCount(0)
+
+  // The Board sheet shows the same line.
+  await page.goto(`/tasks/${taskId}`)
+  await expect(page.getByText('Review: 4 seats (minimum 2)', { exact: true })).toBeVisible()
+
+  // A version without a count shows no line.
+  reviewSeats = null
+  await page.goto(`/tasks/${taskId}/full`)
+  await expect(page.getByRole('region', { name: 'Execution plan' }).getByText('Execution plan')).toBeVisible()
+  await expect(page.getByText(/^Review: \d+ seat/)).toHaveCount(0)
+})
+
+test('review seat addition is visible only for the current unsettled round and operate_gates', async ({ page }) => {
+  const addButton = page.getByRole('button', { name: 'Add reviewer seat' })
+  await page.route('**/v1/tasks/seat-open/activity*', (route) => route.fulfill({ json: openRoundItem('seat-open') }))
+  await page.goto('/tasks/seat-open/full')
+  await expect(roundPanel(page, 'r2-model').getByRole('button', { name: 'Add reviewer seat' })).toBeVisible()
+  await expect(addButton).toHaveCount(1)
+  await expect(roundPanel(page, 'r1-model').getByRole('button', { name: 'Add reviewer seat' })).toHaveCount(0)
+
+  // A merged task, a superseded latest round, and a settled latest round offer no addition.
+  for (const [taskId, item] of [
+    ['seat-merged', openRoundItem('seat-merged', { state: 'merged' })],
+    ['seat-superseded', openRoundItem('seat-superseded', { superseded: true })],
+  ] as const) {
+    await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
+    await page.goto(`/tasks/${taskId}/full`)
+    await expect(roundPanel(page, 'r2-model')).toContainText('Panel of 3 · minimum 2')
+    await expect(addButton).toHaveCount(0)
+  }
+  const settled = openRoundItem('seat-settled')
+  settled.summaries = {
+    ...settled.summaries,
+    review_rounds: {
+      by_round: { ...seatHistory.rounds, '2': { event_id: '60', verdict: 'approve', at: '2026-07-15T15:00:00Z' } },
+      by_order: {},
+    },
+  }
+  await page.route('**/v1/tasks/seat-settled/activity*', (route) => route.fulfill({ json: settled }))
+  await page.goto('/tasks/seat-settled/full')
+  await expect(roundPanel(page, 'r2-model').locator('[data-review-verdict]')).toHaveText('Approved')
+  await expect(addButton).toHaveCount(0)
+
+  // Without the served operate_gates capability the control never renders.
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: callerIdentity({ id: 'usr_contributor', role: 'contributor' }, route.request()) }),
+  )
+  await page.goto('/tasks/seat-open/full')
+  await expect(roundPanel(page, 'r2-model')).toContainText('Panel of 3 · minimum 2')
+  await expect(addButton).toHaveCount(0)
+})
+
+test('review seat addition validates input and refreshes the panel', async ({ page }) => {
+  const taskId = 'seat-add'
+  let seats = 3
+  let detailReads = 0
+  const posts: { url: string; body: Record<string, unknown> }[] = []
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => {
+    detailReads++
+    return route.fulfill({ json: openRoundItem(taskId, { seatsInRound2: seats }) })
+  })
+  await page.route(`**/v1/tasks/${taskId}/review-round/seats*`, (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    posts.push({ url: route.request().url(), body })
+    seats = 5
+    return route.fulfill({
+      json: { request_id: body.request_id, task_id: taskId, review_round: 2, prior_seat_count: 3, seat_count: 5 },
+    })
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  const panel = roundPanel(page, 'r2-model')
+  await panel.getByRole('button', { name: 'Add reviewer seat' }).click()
+  const form = panel.getByRole('form', { name: 'Add reviewer seats to round 2' })
+  const count = form.getByLabel('Seats to add')
+  const reason = form.getByLabel('Reason')
+  await expect(count).toHaveValue('1')
+
+  await count.fill('0')
+  await reason.fill('Security-sensitive change')
+  await form.getByRole('button', { name: 'Add seats' }).click()
+  await expect(panel.getByRole('alert')).toHaveText('Enter a whole number of seats from 1 to 2147483647.')
+  await count.fill('2')
+  await reason.fill('   ')
+  await form.getByRole('button', { name: 'Add seats' }).click()
+  await expect(panel.getByRole('alert')).toHaveText('Give a reason for adding seats.')
+  expect(posts).toHaveLength(0)
+
+  const readsBefore = detailReads
+  await reason.fill('  Security-sensitive change  ')
+  await form.getByRole('button', { name: 'Add seats' }).click()
+  await expect(panel.getByRole('status')).toHaveText('Round 2 now has 5 seats.')
+  expect(posts).toHaveLength(1)
+  expect(new URL(posts[0].url).searchParams.get('workspace_id')).toBe('demo')
+  expect(Object.keys(posts[0].body).sort()).toEqual(['add', 'reason', 'request_id'])
+  expect(posts[0].body).toMatchObject({ add: 2, reason: 'Security-sensitive change' })
+  expect(posts[0].body.request_id).toMatch(/^[0-9a-f-]{36}$/)
+  // Success refreshes the task detail, so the panel shows the added seats.
+  await expect(panel.getByTitle(/Seat count carried from round 1/)).toHaveText('Panel of 5 · minimum 2')
+  expect(detailReads).toBeGreaterThan(readsBefore)
+  await expect(form).toHaveCount(0)
+})
+
+test('review seat addition keeps refusals and retry identity in place', async ({ page }) => {
+  const taskId = 'seat-refusal'
+  let settled = false
+  let detailReads = 0
+  const requestIds: string[] = []
+  const responses: ((route: Route) => Promise<void>)[] = [
+    (route) => route.abort('failed'),
+    (route) =>
+      route.fulfill({
+        status: 409,
+        json: { error: 'review_round_not_open', message: 'review round is not open for task seat-refusal' },
+      }),
+    (route) =>
+      route.fulfill({
+        status: 409,
+        json: { error: 'review_seat_addition_conflict', message: 'request_id was already used with a different body' },
+      }),
+    (route) => {
+      settled = true
+      return route.fulfill({
+        status: 409,
+        json: { error: 'review_round_settled', message: 'review round 2 of task seat-refusal is settled' },
+      })
+    },
+  ]
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => {
+    detailReads++
+    const item = openRoundItem(taskId)
+    if (settled)
+      item.summaries = {
+        ...item.summaries,
+        review_rounds: {
+          by_round: { ...seatHistory.rounds, '2': { event_id: '70', verdict: 'approve', at: '2026-07-15T15:00:00Z' } },
+          by_order: {},
+        },
+      }
+    return route.fulfill({ json: item })
+  })
+  await page.route(`**/v1/tasks/${taskId}/review-round/seats*`, (route) => {
+    requestIds.push(String((route.request().postDataJSON() as { request_id: string }).request_id))
+    return responses[requestIds.length - 1](route)
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  const panel = roundPanel(page, 'r2-model')
+  await panel.getByRole('button', { name: 'Add reviewer seat' }).click()
+  const form = panel.getByRole('form', { name: 'Add reviewer seats to round 2' })
+  const submit = form.getByRole('button', { name: 'Add seats' })
+  await form.getByLabel('Reason').fill('Needs a database reviewer')
+
+  // A transport failure keeps the input and says a retry repeats the request.
+  await submit.click()
+  await expect(panel.getByRole('alert')).toContainText('Retrying sends the same request.')
+  await expect(form.getByLabel('Reason')).toHaveValue('Needs a database reviewer')
+
+  // The unchanged retry reuses the request ID; a stale round refreshes detail.
+  const readsBefore = detailReads
+  await submit.click()
+  await expect(panel.getByRole('alert')).toHaveText('review round is not open for task seat-refusal')
+  expect(requestIds[1]).toBe(requestIds[0])
+  await expect.poll(() => detailReads).toBeGreaterThan(readsBefore)
+  await expect(form.getByLabel('Reason')).toHaveValue('Needs a database reviewer')
+
+  // Changed inputs take a fresh request ID.
+  await form.getByLabel('Seats to add').fill('2')
+  await submit.click()
+  await expect(panel.getByRole('alert')).toHaveText('request_id was already used with a different body')
+  expect(requestIds[2]).not.toBe(requestIds[1])
+  await expect(form.getByLabel('Seats to add')).toHaveValue('2')
+
+  // A settled refusal refreshes the panel; the refusal stays in place after
+  // the round closes to additions.
+  await submit.click()
+  expect(requestIds[3]).toBe(requestIds[2])
+  await expect(panel.getByText('review round 2 of task seat-refusal is settled')).toBeVisible()
+  await expect(panel.locator('[data-review-verdict]')).toHaveText('Approved')
+  await expect(panel.getByRole('button', { name: 'Add reviewer seat' })).toHaveCount(0)
+  await expect(panel.getByText('review round 2 of task seat-refusal is settled')).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}/full$`))
 })

@@ -121,7 +121,13 @@ function FullBody({ item }: { item: ActivityItem }) {
         </div>
         <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-2')}>
           {item.spec ? (
-            <SpecCard spec={item.spec} collapsible={false} overflowExpandable routeVariant="full" />
+            <SpecCard
+              spec={item.spec}
+              collapsible={false}
+              overflowExpandable
+              routeVariant="full"
+              minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
+            />
           ) : (
             <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">
               No execution plan yet — the planning stage has not produced a version.

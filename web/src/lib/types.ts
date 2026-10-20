@@ -425,13 +425,16 @@ export interface TaskSummaries {
     event_id: string
     at: string
   }
+  // The latest review round. Settlement fields come from its
+  // review.round_completed and are absent while the round is open; the seat
+  // fields describe the round either way (feature-review-seat-minimum RS-7).
   review_round?: {
-    verdict: 'approve' | 'changes_requested'
+    verdict?: 'approve' | 'changes_requested'
     summary?: string
-    review_count: number
-    event_id: string
-    at: string
-  }
+    review_count?: number
+    event_id?: string
+    at?: string
+  } & Partial<TaskReviewSeatMetadata>
   returned_for_changes?: { feedback: string; at: string }
   run_implementation?: boolean
   plan_revision_request?: { rationale: string; plan_version: number; event_id: string; at: string }
@@ -448,6 +451,36 @@ export interface TaskSummaries {
   review_results?: { by_order?: Record<string, TaskReviewResult>; by_job?: Record<string, TaskReviewResult> }
   review_rounds?: { by_round?: Record<string, TaskReviewRound>; by_order?: Record<string, TaskReviewRound> }
   review_bounces?: Record<string, number>
+  // Seat metadata per positive round and per round-zero order, and the task's
+  // minimum and approved planned count before any round (RS-7, RS-3).
+  review_round_seats?: {
+    by_round?: Record<string, TaskReviewSeatMetadata>
+    by_order?: Record<string, TaskReviewSeatMetadata>
+  }
+  review_seat_policy?: { minimum_seat_count: number; planned_seat_count?: number }
+}
+
+export type ReviewSeatCountSource = 'declared' | 'planned' | 'carried' | 'minimum'
+
+// One review round's seat count beside the task's minimum
+// (feature-review-seat-minimum RS-7).
+export interface TaskReviewSeatMetadata {
+  review_round: number
+  seat_count: number
+  seat_count_source: ReviewSeatCountSource
+  minimum_seat_count: number
+  planned_seat_count?: number
+  carried_from_round?: number
+  superseded?: boolean
+}
+
+// The result of POST /v1/tasks/{id}/review-round/seats (RS-5).
+export interface ReviewSeatAdditionResult {
+  request_id: string
+  task_id: string
+  review_round: number
+  prior_seat_count: number
+  seat_count: number
 }
 
 export type LineageNodeType =
@@ -536,6 +569,8 @@ export interface SpecVersion {
   approved: boolean
   created_at: string
   approved_at?: string
+  // The plan's stated review seat count (feature-review-seat-minimum RS-3).
+  review_seats?: number | null
 }
 
 export type ActivityTask = Pick<

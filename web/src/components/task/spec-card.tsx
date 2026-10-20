@@ -29,11 +29,15 @@ export function SpecCard({
   collapsible = true,
   overflowExpandable = false,
   routeVariant = 'sheet',
+  minimumSeatCount,
 }: {
   spec: SpecVersion
   collapsible?: boolean
   overflowExpandable?: boolean
   routeVariant?: TaskRouteVariant
+  // The task's review seat minimum, stated beside this version's planned
+  // count (feature-review-seat-minimum RS-3, RS-7).
+  minimumSeatCount?: number
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [contentExpanded, setContentExpanded] = useState(false)
@@ -49,6 +53,9 @@ export function SpecCard({
     [spec.content],
   )
   const criteria = spec.acceptance ?? []
+  // Only this displayed version's own count is shown; no other plan's count
+  // substitutes for it.
+  const plannedSeats = typeof spec.review_seats === 'number' ? spec.review_seats : undefined
   const relatedRoute = relatedTaskRoute(routeVariant)
 
   useLayoutEffect(() => {
@@ -96,6 +103,12 @@ export function SpecCard({
           </div>
         )}
         <div className="flex shrink-0 items-center gap-2">
+          {plannedSeats !== undefined && (
+            <span className="whitespace-nowrap text-xs text-muted">
+              {`Review: ${plannedSeats} ${plannedSeats === 1 ? 'seat' : 'seats'}`}
+              {minimumSeatCount !== undefined ? ` (minimum ${minimumSeatCount})` : ''}
+            </span>
+          )}
           <span className="whitespace-nowrap text-xs text-faint">
             {spec.approved && spec.approved_at
               ? `approved ${absoluteTime(spec.approved_at)}`
