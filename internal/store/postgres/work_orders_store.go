@@ -32,6 +32,7 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 		row, err := q.InsertSpecVersion(ctx, db.InsertSpecVersionParams{
 			TaskID: spec.TaskID, Content: spec.Content, AcceptanceCount: int32(spec.AcceptanceCount),
 			Acceptance: spec.Acceptance, Decomposition: spec.Decomposition, CreatedAt: timestamp(spec.CreatedAt), Agent: spec.Agent, Model: spec.Model,
+			ReviewSeats: int4FromSeatCount(spec.ReviewSeats),
 		})
 		if err != nil {
 			return err
@@ -61,12 +62,12 @@ func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.S
 func (s *Store) GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error) {
 	var row db.TaskSpec
 	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
-	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model
+	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, version, workspace(ctx)).Scan(
 		&row.TaskID, &row.Version, &row.Content, &row.AcceptanceCount, &row.Acceptance,
-		&row.Decomposition, &row.Approved, &row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model,
+		&row.Decomposition, &row.Approved, &row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model, &row.ReviewSeats,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.SpecVersion{}, false, nil
@@ -88,14 +89,14 @@ WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, versio
 func (s *Store) GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
 	var row db.TaskSpec
 	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
-	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model
+	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE s.task_id = $1 AND t.workspace_id = $2 AND s.approved
 ORDER BY s.version DESC
 LIMIT 1`, taskID, workspace(ctx)).Scan(&row.TaskID, &row.Version, &row.Content,
 		&row.AcceptanceCount, &row.Acceptance, &row.Decomposition, &row.Approved,
-		&row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model)
+		&row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model, &row.ReviewSeats)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.SpecVersion{}, false, nil
 	}
@@ -143,7 +144,7 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
-rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot`
+rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
 	if snapshot == nil {
@@ -271,7 +272,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 	})
 }
 
-func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
+func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
 	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
 	}
@@ -299,20 +300,30 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				return fmt.Errorf("review requires completed verification for the submitted head")
 			}
 		}
-		var existing int
-		if err = tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspace(ctx), taskID, orders[0].ReviewRound).Scan(&existing); err != nil {
+		round := orders[0].ReviewRound
+		// A recorded round replays as a no-op (feature-review-seat-minimum RS-2).
+		recorded, err := reviewRoundSeatsExistTx(ctx, tx, workspace(ctx), taskID, round)
+		if err != nil || recorded {
 			return err
 		}
+		var existing int
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='review' AND review_round=$3`, workspace(ctx), taskID, round).Scan(&existing); err != nil {
+			return err
+		}
+		// A legacy round without a record keeps the order-count check.
 		if existing == len(orders) {
 			return nil
 		}
 		if existing != 0 {
-			return fmt.Errorf("review round %d is only partially persisted", orders[0].ReviewRound)
+			return fmt.Errorf("review round %d is only partially persisted", round)
 		}
 		for i, job := range jobs {
-			if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID || orders[i].ReviewRound != orders[0].ReviewRound {
+			if job.TaskID != taskID || job.Stage != core.StageReview || orders[i].TaskID != taskID || orders[i].JobID != job.ID || orders[i].ReviewRound != round {
 				return fmt.Errorf("invalid review round member %d", i)
 			}
+		}
+		if err = checkReviewRoundSeatsTx(ctx, tx, workspace(ctx), task, seats, len(orders)); err != nil {
+			return err
 		}
 		now := time.Now().UTC()
 		for i, job := range jobs {
@@ -360,7 +371,10 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				return err
 			}
 		}
-		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": orders[0].ReviewRound, "seat_count": len(orders)})})
+		if err = insertReviewRoundSeatsTx(ctx, tx, workspace(ctx), seats.Record(taskID, round, now)); err != nil {
+			return err
+		}
+		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(round, seats))})
 	})
 }
 
@@ -475,7 +489,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 // for a review work_orders row.
 const reviewSeatRecoveryExhaustedSQL = `state='queued' AND retry_suppressed AND retry_suppression_reason='` + core.AutomaticRecoveryExhaustedReason + `' AND session_id='' AND worker_id=''`
 
-func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
 	}
@@ -568,6 +582,9 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 			return store.ReviewRoundRetryResult{}, fmt.Errorf("invalid review retry member %d", i)
 		}
 	}
+	if err = checkReviewRoundSeatsTx(ctx, tx, workspaceID, taskFromDB(before), seats, len(orders)); err != nil {
+		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, err)
+	}
 	now := time.Now().UTC()
 	created := make([]core.WorkOrder, 0, len(orders))
 	for i, job := range jobs {
@@ -646,7 +663,12 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_retried", Payload: core.JSONPayload(payload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
-	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": newRound, "seat_count": len(created), "retry_request_id": request.RequestID}), At: now}); err != nil {
+	if err = insertReviewRoundSeatsTx(ctx, tx, workspaceID, seats.Record(request.TaskID, newRound, now)); err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	createdPayload := store.ReviewRoundCreatedPayload(newRound, seats)
+	createdPayload["retry_request_id"] = request.RequestID
+	if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.round_created", Payload: core.JSONPayload(createdPayload), At: now}); err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -2390,7 +2412,8 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
 		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot)
+		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
+		&order.DeclaredReviewSeats)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(checkpoint) > 0 && string(checkpoint) != "{}" {
 		var value core.WorkOrderCheckpoint
@@ -2500,9 +2523,26 @@ func specFromDB(spec db.TaskSpec) core.SpecVersion {
 		TaskID: spec.TaskID, Version: int(spec.Version), Content: spec.Content,
 		AcceptanceCount: int(spec.AcceptanceCount), Acceptance: append([]byte(nil), spec.Acceptance...),
 		Decomposition: append([]byte(nil), spec.Decomposition...), Approved: spec.Approved,
-		Agent: spec.Agent, Model: spec.Model,
+		Agent: spec.Agent, Model: spec.Model, ReviewSeats: seatCountFromInt4(spec.ReviewSeats),
 		CreatedAt: spec.CreatedAt.Time, ApprovedAt: nullableTime(spec.ApprovedAt),
 	}
+}
+
+// int4FromSeatCount and seatCountFromInt4 map the nullable planned review
+// seat count (feature-review-seat-minimum RS-2).
+func int4FromSeatCount(value *int) pgtype.Int4 {
+	if value == nil {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: int32(*value), Valid: true}
+}
+
+func seatCountFromInt4(value pgtype.Int4) *int {
+	if !value.Valid {
+		return nil
+	}
+	count := int(value.Int32)
+	return &count
 }
 
 func firstOrderDirectionTx(ctx context.Context, tx pgx.Tx, order *core.WorkOrder) error {

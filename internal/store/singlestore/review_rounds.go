@@ -18,7 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, id string, jobs []core.Job, orders []core.WorkOrder) error {
+func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, id string, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
 	if !lease.ValidForCommand(id, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
 	}
@@ -42,27 +42,40 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				return fmt.Errorf("review requires completed verification for the submitted head")
 			}
 		}
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='review' AND review_round=?`, documentWorkspace(ctx), id, orders[0].ReviewRound).Scan(&count); err != nil {
+		round := orders[0].ReviewRound
+		// A recorded round replays as a no-op (feature-review-seat-minimum RS-2).
+		recorded, err := reviewRoundSeatsExistTx(ctx, tx, id, round)
+		if err != nil || recorded {
 			return err
 		}
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='review' AND review_round=?`, documentWorkspace(ctx), id, round).Scan(&count); err != nil {
+			return err
+		}
+		// A legacy round without a record keeps the order-count check.
 		if count == len(orders) {
 			return nil
 		}
 		if count != 0 {
-			return fmt.Errorf("review round %d is only partially persisted", orders[0].ReviewRound)
+			return fmt.Errorf("review round %d is only partially persisted", round)
 		}
 		for i, j := range jobs {
-			if j.TaskID != id || j.Stage != core.StageReview || orders[i].TaskID != id || orders[i].JobID != j.ID || orders[i].ReviewRound != orders[0].ReviewRound {
+			if j.TaskID != id || j.Stage != core.StageReview || orders[i].TaskID != id || orders[i].JobID != j.ID || orders[i].ReviewRound != round {
 				return fmt.Errorf("invalid review round member %d", i)
 			}
+		}
+		if err := checkReviewRoundSeatsTx(ctx, tx, task, seats, len(orders)); err != nil {
+			return err
 		}
 		for i, j := range jobs {
 			if err := s.insertReviewMemberTx(ctx, tx, j, orders[i]); err != nil {
 				return err
 			}
 		}
-		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "review.round_created", Payload: core.JSONPayload(map[string]any{"review_round": orders[0].ReviewRound, "seat_count": len(orders)})})
+		if err := insertReviewRoundSeatsTx(ctx, tx, seats.Record(id, round, time.Now().UTC())); err != nil {
+			return err
+		}
+		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "review.round_created", Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(round, seats))})
 	})
 }
 func (s *Store) insertReviewMemberTx(ctx context.Context, tx *sql.Tx, j core.Job, o core.WorkOrder) error {
@@ -546,7 +559,7 @@ func reviewRoundOrdersTx(ctx context.Context, tx *sql.Tx, id string, round int) 
 	}
 	return out, rows.Err()
 }
-func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, r store.ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, r store.ReviewRoundRetryRequest, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
 	var result store.ReviewRoundRetryResult
 	if !lease.ValidForCommand(r.TaskID, string(core.WorkOrderCmdCreate)) {
 		return result, fmt.Errorf("review retry requires a valid taskops lease")
@@ -635,6 +648,9 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 				return fmt.Errorf("invalid review retry member %d", i)
 			}
 		}
+		if err = checkReviewRoundSeatsTx(ctx, tx, t, seats, len(orders)); err != nil {
+			return fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, err)
+		}
 		for i, j := range jobs {
 			if err = s.insertReviewMemberTx(ctx, tx, j, orders[i]); err != nil {
 				return err
@@ -656,7 +672,12 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_retried", At: now, Payload: core.JSONPayload(retriedPayload)}); err != nil {
 			return err
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(map[string]any{"review_round": next, "seat_count": len(created), "retry_request_id": r.RequestID})}); err != nil {
+		if err = insertReviewRoundSeatsTx(ctx, tx, seats.Record(r.TaskID, next, now)); err != nil {
+			return err
+		}
+		createdPayload := store.ReviewRoundCreatedPayload(next, seats)
+		createdPayload["retry_request_id"] = r.RequestID
+		if err = taskEvent(ctx, tx, core.Event{TaskID: r.TaskID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(createdPayload)}); err != nil {
 			return err
 		}
 		result = store.ReviewRoundRetryResult{RequestID: r.RequestID, TaskID: r.TaskID, PriorRound: r.PriorRound, NewRound: next, PRHead: r.PRHead, WorkOrders: created}

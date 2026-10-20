@@ -32,6 +32,12 @@ type SetupChangeRequest struct {
 	TaskID      string
 	RequestID   string
 	Reason      string
+	// WorkspaceReviewSeats is the effective workspace seat-list length, set by
+	// the work-order service from its configuration provider and never from
+	// the HTTP request. It sizes the minimum of a task without a frozen seat
+	// list; zero means 1. It is not part of the replay identity
+	// (feature-review-seat-minimum RS-2).
+	WorkspaceReviewSeats int `json:"-"`
 	// Derived by PlanTaskPolicyChange.
 	NextStage             core.Stage
 	Setup                 config.ExecutionSetup
@@ -42,6 +48,8 @@ type SetupChangeRequest struct {
 	ReviewTransition      string
 	PriorReviewRound      int
 	ResultingReviewRound  int
+	// ReviewRoundSeats is the resolved seat metadata of a handoff review round.
+	ReviewRoundSeats *ReviewRoundSeatResolution
 }
 
 // SetupChangeResult is the persisted replay result of a frozen-policy change.
@@ -177,9 +185,23 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 		}
 		orders = append(orders, order)
 	}
-	request, err = PlanTaskPolicyChange(task, orders, request)
+	request, err = PlanTaskPolicyChange(task, orders, request, PolicyHandoffSeatInputs{
+		Events: m.events[task.ID], Records: m.reviewRoundSeatsLocked(task.Workspace, task.ID), PlannedSeatCount: m.approvedPlannedSeatsLocked(task.ID),
+	})
 	if err != nil {
 		return SetupChangeResult{}, err
+	}
+	now := time.Now().UTC()
+	var seatRecord *ReviewRoundSeats
+	if request.ReviewRoundSeats != nil {
+		record := request.ReviewRoundSeats.Record(task.ID, request.ResultingReviewRound, now)
+		if err = record.Validate(); err != nil {
+			return SetupChangeResult{}, fmt.Errorf("%w: %w", ErrSetupChangeConflict, err)
+		}
+		if m.reviewRoundSeatsExistLocked(task.Workspace, task.ID, record.ReviewRound) {
+			return SetupChangeResult{}, fmt.Errorf("%w: review round %d is already recorded", ErrSetupChangeConflict, record.ReviewRound)
+		}
+		seatRecord = &record
 	}
 	for _, desired := range request.WorkOrderUpdates {
 		current, exists := m.workOrders[desired.ID]
@@ -205,7 +227,6 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 			return SetupChangeResult{}, fmt.Errorf("%w: superseded work order %s is invalid", ErrSetupChangeConflict, id)
 		}
 	}
-	now := time.Now().UTC()
 	fromStage := task.NextStage
 	priorSetup := task.SetupContract
 	// The frozen policy changes; the task's legacy SetupName is left as is.
@@ -285,6 +306,10 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 		if order.Stage == core.StageReview {
 			m.appendEventLocked(ctx, setupSeatEvent(task.ID, order, actor, workspace, priorSetup, request, "created_under_new_setup", now))
 		}
+	}
+	if seatRecord != nil {
+		m.putReviewRoundSeatsLocked(task.Workspace, *seatRecord)
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.round_created", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(ReviewRoundCreatedPayload(seatRecord.ReviewRound, *request.ReviewRoundSeats)), At: now})
 	}
 	payload := setupChangePayload(workspace, actor, priorSetup, request, result)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.setup.changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(payload), At: now})

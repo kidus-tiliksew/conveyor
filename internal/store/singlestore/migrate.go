@@ -173,6 +173,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 24 {
+			if err := s.migrateReviewRoundSeatColumns(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -273,6 +278,17 @@ func (s *Store) migrateAutomaticRecoveryLedger(ctx context.Context) error {
 		nullableColumn{"work_orders", "next_automatic_recovery_at", "DATETIME(6) NULL"},
 		nullableColumn{"github_lifecycles", "automatic_reenqueue_at", "DATETIME(6) NULL"},
 		nullableColumn{"review_publications", "automatic_reenqueue_at", "DATETIME(6) NULL"},
+	)
+}
+
+// migrateReviewRoundSeatColumns adds the feature-review-seat-minimum RS-2
+// nullable columns before the version 24 file creates its tables. Each column
+// is checked separately, so a restart after a partial DDL step adds only what
+// is missing. There is no backfill.
+func (s *Store) migrateReviewRoundSeatColumns(ctx context.Context) error {
+	return s.addNullableColumns(ctx,
+		nullableColumn{"work_orders", "declared_review_seats", "INT NULL"},
+		nullableColumn{"task_specs", "review_seats", "INT NULL"},
 	)
 }
 

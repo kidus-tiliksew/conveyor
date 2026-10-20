@@ -908,9 +908,19 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 	if result.WorkOrders[0].ExecutionTimeoutText != "45m" || result.WorkOrders[0].RequiredModel != "" || result.WorkOrders[0].RequiredHarness != "" || result.WorkOrders[0].RequiredHarnessConfig != nil || result.WorkOrders[1].RequiredHarnessConfig != nil {
 		t.Fatalf("current snapshots=%+v", result.WorkOrders)
 	}
+	// The retried round resolves through RS-2: round 1 is a legacy round of
+	// two non-superseded seats at the workspace minimum of two, so the retry
+	// carries two seats and records them (feature-review-seat-minimum RS-2).
+	records, err := st.ListReviewRoundSeats(ctx, task.ID)
+	if err != nil || len(records) != 1 || records[0].ReviewRound != 2 || records[0].SeatCount != 2 || records[0].SeatCountSource != store.ReviewSeatSourceCarried || records[0].MinimumSeatCount != 2 {
+		t.Fatalf("retry records=%+v err=%v", records, err)
+	}
 	duplicate, err := service.RetryReviewRound(ctx, task.ID, "retry-head", "reviewer timed out")
 	if err != nil || duplicate.NewRound != 2 || len(duplicate.WorkOrders) != 2 {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+	if replayed, _ := st.ListReviewRoundSeats(ctx, task.ID); len(replayed) != 1 {
+		t.Fatalf("duplicate retry wrote records %+v", replayed)
 	}
 }
 

@@ -20,14 +20,29 @@ func (a testLifecycleAdapter) CreateWorkOrder(ctx context.Context, order core.Wo
 }
 func (a testLifecycleAdapter) CreateReviewRound(ctx context.Context, taskID string, jobs []core.Job, orders []core.WorkOrder) error {
 	_, err := taskops.ExecuteWorkOrder(ctx, a.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
-		return struct{}{}, a.CreateReviewRoundCommand(ctx, lease, taskID, jobs, orders)
+		return struct{}{}, a.CreateReviewRoundCommand(ctx, lease, taskID, a.fixtureReviewRoundSeats(ctx, taskID, len(orders)), jobs, orders)
 	})
 	return err
 }
 func (a testLifecycleAdapter) RetryReviewRound(ctx context.Context, request ReviewRoundRetryRequest, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error) {
 	return taskops.ExecuteWorkOrder(ctx, a.Store, request.TaskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (ReviewRoundRetryResult, error) {
-		return a.RetryReviewRoundCommand(ctx, lease, request, jobs, orders)
+		return a.RetryReviewRoundCommand(ctx, lease, request, a.fixtureReviewRoundSeats(ctx, request.TaskID, len(orders)), jobs, orders)
 	})
+}
+
+// fixtureReviewRoundSeats derives round seat metadata from the stored task and
+// the order count, as the storetest adapters do (feature-review-seat-minimum RS-2).
+func (a testLifecycleAdapter) fixtureReviewRoundSeats(ctx context.Context, taskID string, count int) ReviewRoundSeatResolution {
+	task, err := a.GetTask(ctx, taskID)
+	if err != nil {
+		return ReviewRoundSeatResolution{SeatCount: count, Source: ReviewSeatSourceMinimum, MinimumSeatCount: count, FloorSeatCount: count}
+	}
+	minimum := ReviewSeatMinimum(task.SetupContract, count)
+	source := ReviewSeatSourceCarried
+	if count == minimum {
+		source = ReviewSeatSourceMinimum
+	}
+	return ReviewRoundSeatResolution{SeatCount: count, Source: source, MinimumSeatCount: minimum, FloorSeatCount: minimum}
 }
 func (a testLifecycleAdapter) RecoverInterruptedReviewRound(ctx context.Context, request InterruptedReviewRecoveryRequest, timeout time.Duration) (InterruptedReviewRecoveryResult, error) {
 	return taskops.ExecuteWorkOrder(ctx, a.Store, request.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (InterruptedReviewRecoveryResult, error) {

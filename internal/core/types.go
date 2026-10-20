@@ -674,6 +674,9 @@ type RateLimitHealth struct {
 
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent.
+// DeclaredReviewSeats is an implement order's declared review seat count,
+// nil when it declared none; only the submission path writes it
+// (feature-review-seat-minimum RS-2, RS-4).
 type WorkOrder struct {
 	VerificationContextID            string               `json:"verification_context_id,omitempty"`
 	ID                               string               `json:"id"`
@@ -696,6 +699,7 @@ type WorkOrder struct {
 	WorkerID                         string               `json:"worker_id,omitempty"`
 	ReviewRound                      int                  `json:"review_round,omitempty"`
 	ReviewSeat                       int                  `json:"review_seat,omitempty"`
+	DeclaredReviewSeats              *int                 `json:"declared_review_seats,omitempty"`
 	ReasonCode                       string               `json:"reason_code,omitempty"`
 	ReviewKind                       string               `json:"review_kind,omitempty"`
 	ReviewScope                      string               `json:"review_scope,omitempty"`
@@ -1381,6 +1385,8 @@ func (a Artifact) ValidateAttachmentTarget() error {
 
 // SpecVersion is an immutable spec-agent artifact. Approval is recorded on
 // the exact version that becomes the implementation contract.
+// ReviewSeats is the version's planned review seat count, nil when the plan
+// stated none (feature-review-seat-minimum RS-2, RS-3).
 type SpecVersion struct {
 	TaskID               string          `json:"task_id"`
 	Version              int             `json:"version"`
@@ -1392,6 +1398,7 @@ type SpecVersion struct {
 	Agent                string          `json:"agent,omitempty"`
 	Model                string          `json:"model,omitempty"`
 	Approved             bool            `json:"approved"`
+	ReviewSeats          *int            `json:"review_seats,omitempty"`
 	// LegacyGate is true only for an unapproved pre-Phase-8.3 version captured
 	// by migration 075. It grants approval-time compatibility, never creation.
 	LegacyGate bool      `json:"legacy_gate,omitempty"`

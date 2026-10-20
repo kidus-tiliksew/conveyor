@@ -657,13 +657,20 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	if target.HeadSHA != recordedHead {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: PR head changed from %s to %s and requires implementation handoff", store.ErrReviewRetryConflict, recordedHead, target.HeadSHA)
 	}
-	jobs, newOrders, err := dispatch.BuildReviewRound(cfg, task, route, recovery.PriorRound+1)
+	// The retried round resolves through RS-2 and therefore carries the
+	// retried round's seat count, additions included
+	// (feature-review-seat-minimum RS-2, RS-6).
+	seats, err := dispatch.ResolveTaskReviewRoundSeats(ctx, s.Store, cfg, task, recovery.PriorRound+1)
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
+	jobs, newOrders, err := dispatch.BuildReviewRound(cfg, task, route, recovery.PriorRound+1, seats.SeatCount, seats.FloorSeatCount)
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
 	request := store.ReviewRoundRetryRequest{TaskID: taskID, RequestID: requestID, Reason: reason, PriorRound: recovery.PriorRound, PRHead: target.HeadSHA, Automatic: automatic}
 	return taskops.ExecuteWorkOrder(ctx, s.Store, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ReviewRoundRetryResult, error) {
-		return s.Store.RetryReviewRoundCommand(ctx, lease, request, jobs, newOrders)
+		return s.Store.RetryReviewRoundCommand(ctx, lease, request, seats, jobs, newOrders)
 	})
 }
 

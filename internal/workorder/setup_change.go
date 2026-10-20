@@ -19,6 +19,16 @@ func (s *Service) ChangeTaskPolicy(ctx context.Context, taskID, reason, requestI
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}
+	// A handoff review round of a task without a frozen seat list is sized
+	// against the effective workspace seat list, which only this service's
+	// configuration provider knows (feature-review-seat-minimum RS-2).
+	if s.ConfigProvider != nil {
+		cfg, cfgErr := s.config(ctx)
+		if cfgErr != nil {
+			return store.SetupChangeResult{}, cfgErr
+		}
+		request.WorkspaceReviewSeats = len(cfg.Review.Seats)
+	}
 	var result store.SetupChangeResult
 	err = s.Store.WithTaskSideEffectLock(ctx, taskID, func(ctx context.Context) error {
 		var changeErr error

@@ -14,8 +14,9 @@ import (
 // and stored contracts whose seats are absent or null carry no frozen seat
 // count, so the production review sweep builds the new round with every
 // configured workspace seat. A contract frozen to an empty seat array stays
-// frozen and gets the single route seat; one frozen to two seats reads back
-// frozen at two.
+// frozen with a minimum of one seat, so the retried round carries round 1's
+// two seats (feature-review-seat-minimum RS-2; req-review-gates-evidence
+// AC-2.4); one frozen to two seats reads back frozen at two.
 func RunZeroSetupReviewSeatsConformance(t *testing.T, x Fixture, sweep ReviewSweepFunc) {
 	st, ctx, workspace := x.Backend, x.Context, x.Workspace
 	restore := setAutomaticRecoveryBound(t, st, ctx, 1)
@@ -30,7 +31,7 @@ func RunZeroSetupReviewSeatsConformance(t *testing.T, x Fixture, sweep ReviewSwe
 		{"ZeroContract", "", false, len(cfg.Review.Seats)},
 		{"SeatsAbsent", `{"max_bounces":0,"stage_timeouts":{"implement":"","review":"","spec":"","verify":""},"review":{}}`, false, len(cfg.Review.Seats)},
 		{"SeatsNull", `{"max_bounces":0,"stage_timeouts":{"implement":"","review":"","spec":"","verify":""},"review":{"seats":null}}`, false, len(cfg.Review.Seats)},
-		{"SeatsEmpty", `{"max_bounces":0,"stage_timeouts":{"implement":"","review":"","spec":"","verify":""},"review":{"seats":[]}}`, true, 1},
+		{"SeatsEmpty", `{"max_bounces":0,"stage_timeouts":{"implement":"","review":"","spec":"","verify":""},"review":{"seats":[]}}`, true, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requireReviewSweep(t, sweep)

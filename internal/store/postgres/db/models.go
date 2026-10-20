@@ -345,6 +345,7 @@ type TaskSpec struct {
 	ApprovedAt      pgtype.Timestamptz `json:"approved_at"`
 	Agent           string             `json:"agent"`
 	Model           string             `json:"model"`
+	ReviewSeats     pgtype.Int4        `json:"review_seats"`
 }
 
 type Transcript struct {

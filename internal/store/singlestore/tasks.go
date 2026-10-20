@@ -1481,7 +1481,11 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 				return fmt.Errorf("%w: task has an in-flight review verdict", store.ErrSetupChangeConflict)
 			}
 		}
-		r, err = store.PlanTaskPolicyChange(t, orders, r)
+		seatInputs, err := policyHandoffSeatInputsTx(ctx, tx, t.ID)
+		if err != nil {
+			return err
+		}
+		r, err = store.PlanTaskPolicyChange(t, orders, r, seatInputs)
 		if err != nil {
 			return err
 		}
@@ -1593,6 +1597,16 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 				continue
 			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, JobID: j.ID, Kind: "review.seat.setup_rebuilt", At: now, Payload: core.JSONPayload(map[string]any{"workspace_id": ws, "request_id": r.RequestID, "review_round": o.ReviewRound, "review_seat": o.ReviewSeat, "work_order_id": o.ID, "outcome": "created_under_new_setup", "previous_setup": prior, "new_setup": r.Setup})}); err != nil {
+				return err
+			}
+		}
+		if r.ReviewRoundSeats != nil {
+			// The handoff round's record and its single round-created event commit
+			// with its orders (feature-review-seat-minimum RS-2).
+			if err = insertReviewRoundSeatsTx(ctx, tx, r.ReviewRoundSeats.Record(t.ID, r.ResultingReviewRound, now)); err != nil {
+				return err
+			}
+			if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "review.round_created", At: now, Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(r.ResultingReviewRound, *r.ReviewRoundSeats))}); err != nil {
 				return err
 			}
 		}

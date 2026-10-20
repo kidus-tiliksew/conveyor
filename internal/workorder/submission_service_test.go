@@ -574,7 +574,8 @@ func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	}
 	// The next refresh round must contract the newly pushed head, not the
 	// head recorded when the approval went stale (design-git-delivery).
-	_, orders, err := dispatch.BuildReviewRound(cfg, updated, cfg.Routing.Stages["review"], 2)
+	minimum := store.ReviewSeatMinimum(updated.SetupContract, len(cfg.Review.Seats))
+	_, orders, err := dispatch.BuildReviewRound(cfg, updated, cfg.Routing.Stages["review"], 2, minimum, minimum)
 	if err != nil || len(orders) == 0 {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
@@ -944,7 +945,8 @@ func (f *conflictSubmission) dispatchExistingRefresh(t *testing.T, head, scope s
 		}
 		return
 	}
-	jobs, orders, err := dispatch.BuildReviewRound(f.cfg, task, f.cfg.Routing.Stages["review"], 2)
+	minimum := store.ReviewSeatMinimum(task.SetupContract, len(f.cfg.Review.Seats))
+	jobs, orders, err := dispatch.BuildReviewRound(f.cfg, task, f.cfg.Routing.Stages["review"], 2, minimum, minimum)
 	if err != nil {
 		t.Fatal(err)
 	}

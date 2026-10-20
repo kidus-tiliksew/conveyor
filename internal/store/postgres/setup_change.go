@@ -105,7 +105,11 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}
-	request, err = store.PlanTaskPolicyChange(task, orders, request)
+	seatInputs, err := policyHandoffSeatInputsTx(ctx, tx, q, workspaceID, task.ID)
+	if err != nil {
+		return store.SetupChangeResult{}, err
+	}
+	request, err = store.PlanTaskPolicyChange(task, orders, request, seatInputs)
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}
@@ -248,6 +252,16 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "review.seat.setup_rebuilt", ActorID: actor.ID, ActorRole: actor.Role,
 			Payload: core.JSONPayload(map[string]any{"workspace_id": workspaceID, "request_id": request.RequestID, "review_round": order.ReviewRound, "review_seat": order.ReviewSeat, "work_order_id": order.ID, "outcome": "created_under_new_setup", "previous_setup": priorSetup, "new_setup": request.Setup}), At: now}); err != nil {
+			return store.SetupChangeResult{}, err
+		}
+	}
+	if request.ReviewRoundSeats != nil {
+		// The handoff round's record and its single round-created event commit
+		// with its orders (feature-review-seat-minimum RS-2).
+		if err = insertReviewRoundSeatsTx(ctx, tx, workspaceID, request.ReviewRoundSeats.Record(task.ID, request.ResultingReviewRound, now)); err != nil {
+			return store.SetupChangeResult{}, err
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "review.round_created", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(store.ReviewRoundCreatedPayload(request.ResultingReviewRound, *request.ReviewRoundSeats)), At: now}); err != nil {
 			return store.SetupChangeResult{}, err
 		}
 	}

@@ -487,7 +487,14 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 			return nil
 		}
 	}
-	jobs, orders, err := BuildReviewRound(cfg, task, route, round)
+	// The round's seat count comes from RS-2 resolution, not the frozen policy
+	// length (feature-review-seat-minimum RS-2; DEC-77). The store command
+	// revalidates it inside the task transaction.
+	seats, err := ResolveTaskReviewRoundSeats(ctx, d.Store, cfg, task, round)
+	if err != nil {
+		return err
+	}
+	jobs, orders, err := BuildReviewRound(cfg, task, route, round, seats.SeatCount, seats.FloorSeatCount)
 	if err != nil {
 		return err
 	}
@@ -503,7 +510,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		}
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, d.Store, task.ID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (struct{}, error) {
-		return struct{}{}, d.Store.CreateReviewRoundCommand(ctx, lease, task.ID, jobs, orders)
+		return struct{}{}, d.Store.CreateReviewRoundCommand(ctx, lease, task.ID, seats, jobs, orders)
 	}); err != nil {
 		return err
 	}
@@ -517,9 +524,16 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 
 // BuildReviewRound freezes only review-seat shape and timeout policy. Harness,
 // model, and effort are resolved by the claimant's local execution setup.
-func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round int) ([]core.Job, []core.WorkOrder, error) {
+// seatCount is the round's RS-2 resolved count and floor its seat floor; a
+// count below the floor is refused before any job or order is built, and
+// seats beyond the configured list are content-free like every persisted seat
+// (feature-review-seat-minimum RS-2; DEC-56(2), DEC-77, DEC-78).
+func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round, seatCount, floor int) ([]core.Job, []core.WorkOrder, error) {
 	if cfg == nil || round <= 0 {
 		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
+	}
+	if seatCount < 1 || seatCount < floor {
+		return nil, nil, fmt.Errorf("review round %d seat count %d is below the seat floor %d", round, seatCount, floor)
 	}
 	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(task.SetupContract)
@@ -530,20 +544,10 @@ func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRout
 	if queueTimeout <= 0 {
 		queueTimeout = config.DefaultWorkOrderQueueTimeout
 	}
-	seats := cfg.Review.Seats
-	if len(seats) == 0 {
-		seats = []config.ReviewSeat{{Model: route.Model, Harness: route.Harness}}
-	}
-	jobs := make([]core.Job, 0, len(seats))
-	orders := make([]core.WorkOrder, 0, len(seats))
-	for i, seat := range seats {
-		seatNumber := i + 1
+	jobs := make([]core.Job, 0, seatCount)
+	orders := make([]core.WorkOrder, 0, seatCount)
+	for seatNumber := 1; seatNumber <= seatCount; seatNumber++ {
 		jobID := fmt.Sprintf("%s-review-%d-seat-%d", task.ID, round, seatNumber)
-		harness := seat.Harness
-		if harness == "" {
-			harness = route.Harness
-		}
-		_ = harness
 		jobs = append(jobs, core.Job{ID: jobID, TaskID: task.ID, Stage: core.StageReview, Harness: "external-mcp", AuthMode: "byoa", Runner: "external", Confinement: "none", State: core.JobPending})
 		orders = append(orders, core.WorkOrder{
 			ID: jobID, TaskID: task.ID, JobID: jobID, Stage: core.StageReview,
