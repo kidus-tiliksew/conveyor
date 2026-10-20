@@ -98,6 +98,45 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 	}
 }
 
+// `conveyor repo init` installs the coordination skill into every supported
+// tool's project root with the other embedded skills (req-agent-coordination
+// AC-1.1; req-agent-guidance-install AC-2.3).
+func TestRepoInitInstallsCoordinationSkillForEveryTool(t *testing.T) {
+	root := t.TempDir()
+	var output bytes.Buffer
+	if err := prepareRepository(root, "v2.0.0", "example", "trunk", &output); err != nil {
+		t.Fatal(err)
+	}
+	destinations := skillDestinations(root, supportedSkillTools, true)
+	if len(destinations) != 4 {
+		t.Fatalf("destinations = %d, want 4", len(destinations))
+	}
+	for _, destination := range destinations {
+		for _, asset := range embeddedSkillManifest {
+			if !strings.HasPrefix(asset.relative, "conveyor-coordinate/") {
+				continue
+			}
+			installed := filepath.Join(destination.root, filepath.FromSlash(asset.relative))
+			if !strings.Contains(output.String(), destination.tool.name+"\twritten\t"+installed) {
+				t.Errorf("repo init did not report %s for %s:\n%s", installed, destination.tool.name, output.String())
+			}
+			want, err := renderEmbeddedSkill(asset, "v2.0.0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(installed)
+			if err != nil || !bytes.Equal(want, got) {
+				t.Fatalf("%s %s differs from the embedded skill: %v", destination.tool.name, asset.relative, err)
+			}
+		}
+		for _, name := range []string{"SKILL.md", "conveyor-coordinate.md"} {
+			if _, err := os.Stat(filepath.Join(destination.root, "conveyor-coordinate", name)); err != nil {
+				t.Errorf("%s missing conveyor-coordinate/%s: %v", destination.tool.name, name, err)
+			}
+		}
+	}
+}
+
 func TestRepoInitSectionContract(t *testing.T) {
 	section, err := renderRepoInit("v1.2.3", "example", "trunk")
 	if err != nil {

@@ -77,6 +77,19 @@ var embeddedSkillManifest = []embeddedSkillFile{
 		relative:   "conveyor-testing-doc/conveyor-testing-doc.md",
 	},
 	{
+		assetPath:   "skills_assets/conveyor-coordinate/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-coordinate/SKILL.md",
+		relative:    "conveyor-coordinate/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-coordinate.md](../../../docs/playbooks/conveyor-coordinate.md)",
+		rewriteTo:   "[conveyor-coordinate.md](conveyor-coordinate.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-coordinate/conveyor-coordinate.md",
+		sourcePath: "docs/playbooks/conveyor-coordinate.md",
+		relative:   "conveyor-coordinate/conveyor-coordinate.md",
+	},
+	{
 		assetPath:   "skills_assets/conveyor-work/SKILL.md",
 		sourcePath:  ".claude/skills/conveyor-work/SKILL.md",
 		relative:    "conveyor-work/SKILL.md",

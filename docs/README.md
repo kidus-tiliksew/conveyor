@@ -47,6 +47,7 @@ Codex, Cursor, and OpenCode by `conveyor repo init`, or user-globally by
 - [Testing strategy](playbooks/conveyor-testing-doc.md): write the testing-strategy System Design document that reviewers judge verification against
 - [Authoring verification kits](playbooks/conveyor-kit.md): declare repository kits in `.conveyor/kits/manifest.yaml`
 - [Executing verification kits](playbooks/conveyor-kit-verify.md): run kits and ordinary checks under a verify claim and submit typed evidence
+- [Coordinating tasks](playbooks/conveyor-coordinate.md): keep several tasks moving with one thread per stage order, routine decisions within delegated scope, and plain-language timeline text
 
 Operator procedures:
 

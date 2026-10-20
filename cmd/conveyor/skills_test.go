@@ -53,8 +53,8 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// component-cli-onboarding: both wrappers and their canonical playbooks must be released.
-	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify"} {
+	// component-cli-onboarding: these wrappers and their canonical playbooks must be released.
+	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify", "conveyor-coordinate"} {
 		for _, required := range []string{".claude/skills/" + name + "/SKILL.md", "docs/playbooks/" + name + ".md"} {
 			count := 0
 			for _, source := range manifestSources {
@@ -104,6 +104,83 @@ func TestVerificationKitSkillsInstallWithSiblingPlaybooks(t *testing.T) {
 			}
 			if _, owned := managedSkillVersion(playbook, "docs/playbooks/"+name+".md"); !owned {
 				t.Errorf("%s installed %s playbook has no ownership marker", destination.tool.name, name)
+			}
+		}
+	}
+}
+
+// The coordination skill installs with the other embedded skills for every
+// supported tool, in user-global and project scope, through the
+// `conveyor skills install` command (req-agent-coordination AC-1.1;
+// component-cli-onboarding, Embedded skills).
+func TestConveyorCoordinateSkillInstallsForEveryTool(t *testing.T) {
+	lookPath := func(name string) (string, error) { return "/tools/" + name, nil }
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := t.TempDir()
+	t.Chdir(project)
+	files := map[string]string{
+		"conveyor-coordinate/SKILL.md":               ".claude/skills/conveyor-coordinate/SKILL.md",
+		"conveyor-coordinate/conveyor-coordinate.md": "docs/playbooks/conveyor-coordinate.md",
+	}
+	for _, scope := range []struct {
+		name string
+		args []string
+		base string
+	}{
+		{name: "global", base: home},
+		{name: "project", args: []string{"--project"}, base: project},
+	} {
+		command := skillsInstallCmdWithLookPath(lookPath)
+		command.SetArgs(scope.args)
+		var output bytes.Buffer
+		command.SetOut(&output)
+		command.SetErr(&output)
+		if err := command.Execute(); err != nil {
+			t.Fatalf("%s install: %v\n%s", scope.name, err, output.String())
+		}
+		base, err := filepath.EvalSymlinks(scope.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		destinations := skillDestinations(base, supportedSkillTools, scope.name == "project")
+		if len(destinations) != 4 {
+			t.Fatalf("%s destinations = %d, want 4", scope.name, len(destinations))
+		}
+		for _, destination := range destinations {
+			for relative, source := range files {
+				installed := filepath.Join(destination.root, filepath.FromSlash(relative))
+				if !strings.Contains(output.String(), destination.tool.name+"\tcreated\t"+installed) {
+					t.Errorf("%s %s install did not report %s:\n%s", scope.name, destination.tool.name, installed, output.String())
+				}
+				content, err := os.ReadFile(installed)
+				if err != nil {
+					t.Fatalf("%s %s: %v", scope.name, destination.tool.name, err)
+				}
+				if _, owned := managedSkillVersion(content, source); !owned {
+					t.Errorf("%s %s %s has no ownership marker", scope.name, destination.tool.name, relative)
+				}
+			}
+			root := filepath.Join(destination.root, "conveyor-coordinate")
+			wrapper, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(wrapper, []byte("[conveyor-coordinate.md](conveyor-coordinate.md)")) || bytes.Contains(wrapper, []byte("../../../docs/")) {
+				t.Errorf("%s %s coordination wrapper does not link to its sibling playbook", scope.name, destination.tool.name)
+			}
+			playbook, err := os.ReadFile(filepath.Join(root, "conveyor-coordinate.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, criterion := range []string{"AC-1.1", "AC-1.2", "AC-1.3", "AC-1.4", "AC-1.5", "AC-1.6", "AC-1.7", "AC-1.8", "AC-2.1", "AC-2.2", "AC-2.3", "AC-2.4", "AC-2.5", "AC-2.6", "AC-3.1", "AC-3.2", "AC-3.3"} {
+				if !bytes.Contains(playbook, []byte(criterion)) {
+					t.Errorf("%s %s coordination playbook does not cite req-agent-coordination %s", scope.name, destination.tool.name, criterion)
+				}
+			}
+			// Each of the three thread role prompts carries the timeline rule (AC-3.3).
+			if got := bytes.Count(playbook, []byte("Timeline text: the first sentence of every progress message, decision reason,\nand review summary you write states in plain language what happened and what\nhappens next.")); got != 3 {
+				t.Errorf("%s %s coordination playbook carries the timeline rule in %d role prompts, want 3", scope.name, destination.tool.name, got)
 			}
 		}
 	}
