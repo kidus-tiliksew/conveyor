@@ -260,6 +260,10 @@ type WorkOrderStore interface {
 	// review_round_seats record with its orders (feature-review-seat-minimum RS-2).
 	CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, seats ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error
 	RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request ReviewRoundRetryRequest, seats ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (ReviewRoundRetryResult, error)
+	// AddReviewSeatsCommand adds operator seats to the latest open review
+	// round with its record, ledger row, and review.seats_added event in one
+	// task-serialized transaction (feature-review-seat-minimum RS-5).
+	AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLease, request ReviewSeatAdditionRequest) (ReviewSeatAdditionResult, error)
 	// ListReviewRoundSeats returns the selected workspace's round seat records
 	// for a task, ordered by round; a task without records returns none.
 	ListReviewRoundSeats(ctx context.Context, taskID string) ([]ReviewRoundSeats, error)
@@ -598,6 +602,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		reviewRoundSeats:            map[string]memoryReviewRoundSeats{},
+		reviewSeatAdditions:         map[string]memoryReviewSeatAddition{},
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
 		preemptions:                 map[string]memoryWorkOrderPreemption{},
@@ -667,6 +672,7 @@ type memory struct {
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
 	reviewRoundSeats            map[string]memoryReviewRoundSeats
+	reviewSeatAdditions         map[string]memoryReviewSeatAddition
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
 	preemptions                 map[string]memoryWorkOrderPreemption
