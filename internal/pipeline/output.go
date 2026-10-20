@@ -62,6 +62,9 @@ type Spec struct {
 	Markdown      string
 	Acceptance    []AcceptanceCriterion
 	Decomposition []DecompositionItem
+	// ReviewSeats is a plan's planned review seat count, nil when the plan
+	// states none (feature-review-seat-minimum RS-3; DEC-78).
+	ReviewSeats *int
 }
 
 // StructuredSpec is the model-owned semantic spec result. Conveyor validates
@@ -78,6 +81,10 @@ type StructuredSpec struct {
 type StructuredPlan struct {
 	Markdown      string              `json:"markdown"`
 	Decomposition []DecompositionItem `json:"decomposition"`
+	// ReviewSeats is the optional planned review seat count; omission and
+	// null both mean no count (req-review-gates-evidence AC-2.8;
+	// feature-review-seat-minimum RS-3).
+	ReviewSeats *int `json:"review_seats,omitempty"`
 }
 
 var (
@@ -218,9 +225,40 @@ func StructuredPlanSchema() map[string]any {
 				"type": "array", "maxItems": 0,
 				"items": map[string]any{"type": "object"},
 			},
+			// Strict JSON-schema output requires every property in required,
+			// so the optional count is nullable rather than omitted
+			// (feature-review-seat-minimum RS-3).
+			"review_seats": map[string]any{"type": []string{"integer", "null"}, "minimum": 1},
 		},
-		"required": []string{"markdown", "decomposition"},
+		"required": []string{"markdown", "decomposition", "review_seats"},
 	}
+}
+
+// ValidatePlanReviewSeats refuses a supplied planned review seat count below
+// 1; nil means the plan states no count (feature-review-seat-minimum RS-3).
+func ValidatePlanReviewSeats(seats *int) error {
+	if seats != nil && *seats < 1 {
+		return fmt.Errorf("plan review_seats must be at least 1")
+	}
+	return nil
+}
+
+// ParseStructuredPlan validates a structured plan and carries its optional
+// planned review seat count into the returned Spec as a copy
+// (req-review-gates-evidence AC-2.8; feature-review-seat-minimum RS-3).
+func ParseStructuredPlan(value StructuredPlan) (Spec, error) {
+	result, err := ParsePlan(value.Markdown, value.Decomposition)
+	if err != nil {
+		return Spec{}, err
+	}
+	if err = ValidatePlanReviewSeats(value.ReviewSeats); err != nil {
+		return Spec{}, err
+	}
+	if value.ReviewSeats != nil {
+		seats := *value.ReviewSeats
+		result.ReviewSeats = &seats
+	}
+	return result, nil
 }
 
 func RenderStructuredPlan(output string) (Spec, error) {
@@ -237,7 +275,7 @@ func RenderStructuredPlan(output string) (Spec, error) {
 		}
 		return Spec{}, fmt.Errorf("structured plan has trailing data: %w", err)
 	}
-	return ParsePlan(value.Markdown, value.Decomposition)
+	return ParseStructuredPlan(value)
 }
 
 // PlanDoneCriteria returns the done-criteria section, including its heading,
