@@ -163,6 +163,25 @@ func planLinesWith(lines []string, prefix string) []string {
 	return found
 }
 
+// LP-2: a malformed or extra YAML document after a decision's first document
+// is an item-level parse failure, never a silently shortened item.
+func TestPlanReadMalformedTrailingYAML(t *testing.T) {
+	for name, tc := range map[string]struct{ trailer, reason string }{
+		"malformed":       {"---\ncontext: [unterminated\n", "decisions/use-cli.yaml: decision YAML: trailing YAML document:"},
+		"second document": {"---\ncontext: Another document.\n", "decisions/use-cli.yaml: decision YAML: holds more than one YAML document"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := newPlanFixture(t)
+			writePlanFile(t, root, "decisions/use-cli.yaml", planFixtureDecision+tc.trailer)
+			expectPlanFailure(t, root, "draft:dec/use-cli: LP-2: "+tc.reason)
+			draft := readPlanFixture(t, root)
+			if _, err := PlanItemDigest(draft.Item("draft:dec/use-cli")[0]); err == nil {
+				t.Fatal("an item with a trailing YAML document has a digest")
+			}
+		})
+	}
+}
+
 // REQ-1 / LP-2: the reader takes exactly the layout's paths, keeps notes and
 // other files out, and reports layout problems by item.
 func TestPlanReadDraftLayout(t *testing.T) {
@@ -375,6 +394,23 @@ func TestPlanCheckRules(t *testing.T) {
 			lines := expectPlanFailure(t, root, "req-other: AC-1.7: acceptance criterion AC-1.1 is added")
 			if got := planLinesWith(lines, "req-demo: AC-1.7:"); len(got) != 0 {
 				t.Fatalf("req-demo is cited: %q", got)
+			}
+		})
+		t.Run("external requirement citation is not credited to a draft requirement", func(t *testing.T) {
+			for name, body := range map[string]string{
+				"after draft mention":  "Implement req-demo AC-1.1 following draft:dec/use-cli. Separately implement req-external AC-1.2.\n",
+				"before draft mention": "Implement req-external AC-1.2 first, then req-demo AC-1.1 following draft:dec/use-cli.\n",
+				"listed requirement":   "Cover AC-1.1 as draft:dec/use-cli decides. Separately implement req-external AC-1.2.\n",
+			} {
+				t.Run(name, func(t *testing.T) {
+					root := newPlanFixture(t)
+					writePlanFile(t, root, "requirements/req-demo.md", twoCriteria)
+					writePlanFile(t, root, "tasks/build.md", "---\nrepo: conveyor\nrequirement_ids: [req-demo]\n---\n"+body)
+					lines := expectPlanFailure(t, root, "req-demo: AC-1.7: acceptance criterion AC-1.2 is added and no task item cites it")
+					if got := planLinesWith(lines, "req-demo: AC-1.7:"); len(got) != 1 {
+						t.Fatalf("AC-1.1 is cited; only AC-1.2 may fail: %q", got)
+					}
+				})
 			}
 		})
 		t.Run("requirement_ids attribute leading criteria", func(t *testing.T) {

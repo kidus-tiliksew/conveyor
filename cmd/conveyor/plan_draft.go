@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -326,11 +327,18 @@ func decodePlanYAML(text string, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
-	var extra any
-	if err := decoder.Decode(&extra); err == nil {
-		return fmt.Errorf("holds more than one YAML document")
+	// Only a clean end of input ends the item. A malformed or additional
+	// document after the first is a parse failure, never a silently
+	// shortened item.
+	var extra yaml.Node
+	err := decoder.Decode(&extra)
+	if errors.Is(err, io.EOF) {
+		return nil
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("trailing YAML document: %w", err)
+	}
+	return fmt.Errorf("holds more than one YAML document")
 }
 
 func parsePlanDocumentItem(item *PlanItem, data []byte) error {

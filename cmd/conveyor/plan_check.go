@@ -616,11 +616,14 @@ func planCycles(nodes []string, edges map[string][]string) [][]string {
 	return result
 }
 
-// taskCriterionCitations maps requirement item ID to the acceptance criteria
-// that task items cite (AC-1.7). Each AC-n.m in a task body belongs to the
-// nearest preceding draft requirement ID in the body, or, before any such ID,
-// to every draft requirement the task lists in requirement_ids. A range such
-// as `AC-1.1–AC-1.4` cites each criterion it spans.
+// taskCriterionCitations maps requirement document ID to the acceptance
+// criteria that task items cite (AC-1.7). Each AC-n.m in a task body belongs
+// to the nearest preceding requirement document ID in the body, whether a
+// draft requirement item or a `req-` document outside the draft, or, before
+// any such ID, to every draft requirement the task lists in requirement_ids.
+// A citation qualified by a document outside the draft therefore never
+// covers a draft criterion. A range such as `AC-1.1–AC-1.4` cites each
+// criterion it spans.
 func (c *planChecker) taskCriterionCitations() map[string]map[string]bool {
 	citations := map[string]map[string]bool{}
 	requirements := map[string]bool{}
@@ -643,11 +646,27 @@ func (c *planChecker) taskCriterionCitations() map[string]map[string]bool {
 			position int
 			document string
 		}
-		var mentions []mention
+		// The longest requirement document ID starting at each position
+		// wins, so a draft ID that extends a `req-` token is kept whole.
+		byPosition := map[int]string{}
+		record := func(position int, id string) {
+			if len(id) > len(byPosition[position]) {
+				byPosition[position] = id
+			}
+		}
+		for _, match := range planRequirementDocPattern.FindAllStringIndex(task.Content, -1) {
+			if planTokenBoundary(task.Content, match[0], match[1]) {
+				record(match[0], task.Content[match[0]:match[1]])
+			}
+		}
 		for id := range requirements {
 			for _, position := range planTokenPositions(task.Content, id) {
-				mentions = append(mentions, mention{position, id})
+				record(position, id)
 			}
+		}
+		var mentions []mention
+		for position, id := range byPosition {
+			mentions = append(mentions, mention{position, id})
 		}
 		sort.Slice(mentions, func(i, j int) bool { return mentions[i].position < mentions[j].position })
 		var listed []string
