@@ -29,7 +29,7 @@ import { DOT_ZOOM, type TaskFlowNode, TaskNode } from './task-node'
 // The least zoom a selected requirement is shown at, where task titles read
 // (AC-1.5).
 const READABLE_ZOOM = 0.38
-// Low enough that a large workspace's whole map still fits the pane.
+// The usual least zoom; a whole map that needs less lowers it (AC-1.9).
 const MIN_ZOOM = 0.02
 
 const GATES = new Set<GraphStatus>(['plan_gate', 'merge_gate', 'needs_you'])
@@ -293,6 +293,15 @@ export function MapView({
     requestAnimationFrame(() => updateNodeInternals(nodes.map((node) => node.id)))
   }, [dots])
 
+  // The zoom that fits every group in the pane. A group too tall for the
+  // usual least zoom, such as one long chain, lowers the least zoom to it, so
+  // the whole map always fits (AC-1.9).
+  const paneWidth = useStore((state) => state.width)
+  const paneHeight = useStore((state) => state.height)
+  const bounds = useMemo(() => enclosing(layout?.frames.values() ?? []), [layout])
+  const fit = bounds && paneWidth && paneHeight ? fitZoom(bounds, paneWidth, paneHeight) : undefined
+  const minZoom = Math.min(MIN_ZOOM, fit ?? MIN_ZOOM)
+
   function paneSize() {
     const pane = document.querySelector('.react-flow')?.getBoundingClientRect()
     return { width: pane?.width ?? 1200, height: pane?.height ?? 800 }
@@ -323,10 +332,9 @@ export function MapView({
   }
   // The whole map: every group inside the pane (AC-1.9).
   function overview(duration?: number) {
-    const bounds = enclosing(layout?.frames.values() ?? [])
     if (!bounds) return
     const { width, height } = paneSize()
-    const zoom = Math.max(MIN_ZOOM, Math.min(1, Math.min(width / bounds.width, height / bounds.height) * 0.94))
+    const zoom = fitZoom(bounds, width, height)
     void flow.setViewport(
       {
         x: (width - bounds.width * zoom) / 2 - bounds.x * zoom,
@@ -387,7 +395,7 @@ export function MapView({
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable={false}
-      minZoom={MIN_ZOOM}
+      minZoom={minZoom}
       maxZoom={1.6}
       onNodeMouseEnter={(_, node) => {
         clearTimeout(hoverTimer.current)
@@ -457,6 +465,10 @@ export function MapView({
       />
     </ReactFlow>
   )
+}
+
+function fitZoom(bounds: Rect, width: number, height: number) {
+  return Math.min(1, Math.min(width / bounds.width, height / bounds.height) * 0.94)
 }
 
 function enclosing(rects: Iterable<Rect>): Rect | undefined {

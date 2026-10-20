@@ -419,6 +419,33 @@ test('a blocked task outranks any number of tasks needing judgment', async ({ pa
   await expectEveryGroupInPane(page)
 })
 
+test('a 500-task chain in one group still opens, and returns to Whole map, inside the pane', async ({ page }) => {
+  test.setTimeout(60_000)
+  // One requirement whose open tasks form a single dependency chain lays out
+  // as one frame tens of thousands of pixels tall, too tall for the usual
+  // least zoom (req-board-map AC-1.9).
+  const chain = Array.from({ length: 500 }, (_, index) =>
+    task(`c${index}`, `Chain step ${index}`, queued, {
+      depends: index > 0 ? [`c${index - 1}`] : [],
+      reqs: ['req-alpha'],
+    }),
+  )
+  await mockMap(page, () => ({ tasks: chain, requirements }))
+  for (const size of [
+    { width: 1280, height: 720 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(size)
+    await page.goto('/?view=map')
+    await expect(taskNodes(page)).toHaveCount(500)
+    await expectEveryGroupInPane(page)
+    await page.mouse.move(size.width / 2, size.height / 2)
+    await page.mouse.wheel(0, -2400)
+    await page.getByRole('button', { name: 'Whole map' }).click()
+    await expectEveryGroupInPane(page)
+  }
+})
+
 test('a change in urgency with the same tasks reorders the groups', async ({ page }) => {
   // The same tasks and edges in both reads; only the stated next action of
   // p1 changes, from queued to blocked by p2.
