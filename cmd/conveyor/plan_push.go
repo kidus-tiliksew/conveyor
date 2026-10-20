@@ -69,6 +69,8 @@ type planPusher struct {
 	designs         map[string]core.SystemDesign
 	decisions       map[string]core.Decision
 	highestDecision int
+	// edges are the same-layer prerequisites of each item.
+	edges map[string][]string
 	// simulated holds dry-run server IDs for items posted earlier in the
 	// same dry run, so later payloads show the replacement.
 	simulated map[string]string
@@ -120,7 +122,7 @@ func runPlanPush(ctx context.Context, dir string, opts planPushOptions, api *pla
 		_, err := fmt.Fprintf(out, "plan push: the %s layer has no items\n", opts.Layer)
 		return err
 	}
-	return p.push(ctx, planPushOrder(entries))
+	return p.push(ctx, planPushOrder(entries, p.edges))
 }
 
 // prepare applies every pre-check for the layer and classifies each item.
@@ -159,6 +161,7 @@ func (p *planPusher) prepare(ctx context.Context, rank int) ([]*planPushEntry, e
 	if err := p.checkEarlierLayers(ctx, rank); err != nil {
 		return nil, err
 	}
+	p.edges = p.checkPostOrder(entries)
 	for _, entry := range entries {
 		if err := p.classify(ctx, entry); err != nil {
 			return nil, err
@@ -246,31 +249,64 @@ func (p *planPusher) taskIntakeKey(entry *planPushEntry) string {
 	return planIntakeKey(p.draft.State.DraftID, entry.Item.ID, entry.Digest)
 }
 
-// planPushOrder orders the layer topologically over draft-local citations
-// (decisions) and depends_on plus body citations (tasks), breaking ties by
-// item ID (AC-3.5). A cycle the offline check cannot see falls back to the
-// lowest remaining ID.
-func planPushOrder(entries []*planPushEntry) []*planPushEntry {
-	byID := map[string]*planPushEntry{}
+// planPushPrerequisites maps each item to the items of the same layer it
+// cites or depends on, itself included: their server IDs must exist before
+// it posts (AC-3.5). Decisions cite by draft-local ID; tasks also list
+// depends_on.
+func planPushPrerequisites(entries []*planPushEntry) map[string][]string {
+	inLayer := map[string]bool{}
 	for _, entry := range entries {
-		byID[entry.Item.ID] = entry
+		inLayer[entry.Item.ID] = true
 	}
-	prerequisites := map[string]map[string]bool{}
+	edges := map[string][]string{}
 	for _, entry := range entries {
-		cited := planDraftLocalCitations(planCitationText(entry.Item))
-		cited = append(cited, entry.Item.Task.DependsOn...)
-		for _, id := range cited {
-			if id != entry.Item.ID && byID[id] != nil {
-				if prerequisites[entry.Item.ID] == nil {
-					prerequisites[entry.Item.ID] = map[string]bool{}
-				}
-				prerequisites[entry.Item.ID][id] = true
+		cited := append(planDraftLocalCitations(planCitationText(entry.Item)), entry.Item.Task.DependsOn...)
+		for _, id := range planUnique(cited) {
+			if inLayer[id] {
+				edges[entry.Item.ID] = append(edges[entry.Item.ID], id)
 			}
 		}
 	}
+	return edges
+}
+
+// checkPostOrder refuses every item of a citation or dependency cycle within
+// the layer, including an item that cites itself: no post order gives each
+// cited item its server ID first (AC-3.5). Dry run and push share this
+// check, so both refuse before any post (AC-3.3).
+func (p *planPusher) checkPostOrder(entries []*planPushEntry) map[string][]string {
+	edges := planPushPrerequisites(entries)
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.Item.ID)
+	}
+	for _, cycle := range planCycles(ids, edges) {
+		members := map[string]bool{}
+		for _, id := range cycle {
+			members[id] = true
+		}
+		for _, id := range cycle {
+			var cited []string
+			for _, target := range edges[id] {
+				if members[target] {
+					cited = append(cited, target)
+				}
+			}
+			p.refuse(id, "AC-3.5", "cites or depends on %s; citations and dependencies in the %s layer form a cycle among %s, so no item of it can post with its cited server IDs", strings.Join(cited, ", "), p.opts.Layer, strings.Join(cycle, ", "))
+		}
+	}
+	return edges
+}
+
+// planPushOrder orders the layer topologically over the prerequisites,
+// breaking ties by item ID (AC-3.5). checkPostOrder has refused every cycle
+// before this runs.
+func planPushOrder(entries []*planPushEntry, edges map[string][]string) []*planPushEntry {
+	byID := map[string]*planPushEntry{}
 	remaining := make([]string, 0, len(entries))
-	for id := range byID {
-		remaining = append(remaining, id)
+	for _, entry := range entries {
+		byID[entry.Item.ID] = entry
+		remaining = append(remaining, entry.Item.ID)
 	}
 	sort.Strings(remaining)
 	done := map[string]bool{}
@@ -279,7 +315,7 @@ func planPushOrder(entries []*planPushEntry) []*planPushEntry {
 		next := 0
 		for index, id := range remaining {
 			ready := true
-			for prerequisite := range prerequisites[id] {
+			for _, prerequisite := range edges[id] {
 				if !done[prerequisite] {
 					ready = false
 					break

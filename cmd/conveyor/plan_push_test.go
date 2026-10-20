@@ -1340,3 +1340,51 @@ func TestPlanPushNeverConfirmsOrDismisses(t *testing.T) {
 		})
 	}
 }
+
+// AC-3.3, AC-3.5: a citation or dependency cycle within the layer, a
+// self-citation included, refuses the layer in both dry run and push before
+// any post, even when an independent item would post first.
+func TestPlanPushRefusesSameLayerCycles(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		lines [][]string
+	}{
+		{"citation and dependency cycle", map[string]string{
+			"tasks/build.md": planFixtureBuildTask + "See draft:task/docs.\n",
+		}, [][]string{{"draft:task/build: AC-3.5:", "cites or depends on draft:task/docs", "cycle among draft:task/build, draft:task/docs"}, {"draft:task/docs: AC-3.5:", "cites or depends on draft:task/build"}}},
+		{"independent item sorts first", map[string]string{
+			"tasks/build.md":    planFixtureBuildTask + "See draft:task/docs.\n",
+			"tasks/aaa-solo.md": "---\nrepo: conveyor\n---\nShip req-demo AC-1.1 alone.\n",
+		}, [][]string{{"draft:task/build: AC-3.5:"}, {"draft:task/docs: AC-3.5:"}}},
+		{"self-citation", map[string]string{
+			"tasks/build.md": planFixtureBuildTask + "Track it as draft:task/build.\n",
+		}, [][]string{{"draft:task/build: AC-3.5:", "cites or depends on draft:task/build", "cycle among draft:task/build"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPlanFakeFactory(t)
+			root := newPlanFixture(t)
+			for rel, content := range tc.files {
+				writePlanFile(t, root, rel, content)
+			}
+			if _, err := runPlanCommand(t, "check", root); err != nil {
+				t.Fatalf("offline check refused the draft: %v", err)
+			}
+			approveAllPlanItems(t, root)
+			pushPlanThrough(t, f, root, PlanLayerTasks)
+			posts, state := f.postCount(), readPlanStateBytes(t, root)
+			dryOut, dryErr := pushPlan(t, root, PlanLayerTasks, "--dry-run")
+			realOut, realErr := pushPlan(t, root, PlanLayerTasks)
+			if dryErr == nil || realErr == nil || dryErr.Error() != realErr.Error() || dryOut != realOut {
+				t.Fatalf("dry run %v\n%s\npush %v\n%s", dryErr, dryOut, realErr, realOut)
+			}
+			for _, line := range tc.lines {
+				expectPlanLine(t, realOut, line[0], line[1:]...)
+			}
+			if f.postCount() != posts || !bytes.Equal(state, readPlanStateBytes(t, root)) {
+				t.Fatalf("a refused layer posted %d request(s) or changed state", f.postCount()-posts)
+			}
+		})
+	}
+}
