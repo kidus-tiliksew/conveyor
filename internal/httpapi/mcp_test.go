@@ -2254,6 +2254,173 @@ func TestMCPSubmitSpecNameIsRetiredWithPlanRedirect(t *testing.T) {
 	}
 }
 
+// TestMCPSubmitPlanReviewSeatsSchema keeps submit_plan's optional planned
+// review seat count published as an integer of at least 1 without adding it
+// to the required arguments (feature-review-seat-minimum RS-3).
+func TestMCPSubmitPlanReviewSeatsSchema(t *testing.T) {
+	t.Parallel()
+	var tool map[string]any
+	for _, candidate := range mcpTools() {
+		if candidate["name"] == "submit_plan" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatal("submit_plan is not registered")
+	}
+	schema, _ := tool["inputSchema"].(map[string]any)
+	properties, _ := schema["properties"].(map[string]any)
+	seats, _ := properties["review_seats"].(map[string]any)
+	if seats["type"] != "integer" || seats["minimum"] != 1 {
+		t.Fatalf("review_seats schema=%#v", seats)
+	}
+	if required, _ := schema["required"].([]string); !slices.Equal(required, []string{"work_order_id", "session_id", "markdown", "decomposition"}) {
+		t.Fatalf("submit_plan required=%v", required)
+	}
+	if description, _ := tool["description"].(string); !strings.Contains(description, "review_seats_below_minimum") || !strings.Contains(description, "leave the order claimed") {
+		t.Fatalf("submit_plan description=%q", description)
+	}
+	if _, err := json.Marshal(tool); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMCPSubmitPlanReviewSeats drives submit_plan through the JSON-RPC tool
+// envelope: omitted and null counts store none, malformed values and counts
+// below the task's minimum are in-band tool errors that leave the order
+// claimed and write no plan version, and a corrected retry on the same claim
+// stores the accepted count (req-review-gates-evidence AC-2.8;
+// feature-review-seat-minimum RS-3).
+func TestMCPSubmitPlanReviewSeats(t *testing.T) {
+	markdown := "## Approach\nPlan seats.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Loss.\n\n## Done criteria\n- The count persists."
+	setup := func(t *testing.T, id string) (context.Context, store.Store, *Server, *http.Request, string) {
+		t.Helper()
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		st := store.NewMemory()
+		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+		if err := st.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		// The task freezes no seat list, so its minimum is the workspace's two seats.
+		provider := func(context.Context) (*config.Config, error) {
+			return &config.Config{Workspace: "demo", Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Timeout: time.Hour}}}}, nil
+		}
+		server := NewServer(st)
+		server.Workspace = "demo"
+		server.WorkOrders = &workorder.Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}, ConfigProvider: provider}
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-planner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+		if _, err := server.callMCPTool(request, "claim_work_order", map[string]any{
+			"workspace_id": "demo", "work_order_id": job.ID, "session_id": "plan-session", "client_token": "secret", "agent": "codex", "model": "gpt",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ctx, st, server, request, job.ID
+	}
+	call := func(t *testing.T, server *Server, request *http.Request, orderID string, seats ...any) (string, bool) {
+		t.Helper()
+		args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": "plan-session", "markdown": markdown, "decomposition": []any{}}
+		if len(seats) > 0 {
+			args["review_seats"] = seats[0]
+		}
+		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "submit_plan", "arguments": args}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		server.handleMCP(response, httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(payload)).WithContext(request.Context()))
+		var envelope struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+			Error *rpcError `json:"error"`
+		}
+		if err = json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusOK || envelope.Error != nil || len(envelope.Result.Content) != 1 {
+			t.Fatalf("submit_plan status=%d body=%s", response.Code, response.Body.String())
+		}
+		return envelope.Result.Content[0].Text, envelope.Result.IsError
+	}
+	requireClaimedWithoutPlan := func(t *testing.T, ctx context.Context, st store.Store, orderID, label string) {
+		t.Helper()
+		order, err := st.GetWorkOrder(ctx, orderID)
+		if err != nil || order.State != core.WorkOrderClaimed || order.SessionID != "plan-session" {
+			t.Fatalf("%s: order=%+v err=%v", label, order, err)
+		}
+		if _, ok, err := st.GetLatestSpecVersion(ctx, order.TaskID); err != nil || ok {
+			t.Fatalf("%s wrote a plan version ok=%t err=%v", label, ok, err)
+		}
+		task, err := st.GetTask(ctx, order.TaskID)
+		if err != nil || task.State != core.TaskRunning || task.NextStage != core.StageSpec {
+			t.Fatalf("%s changed the task=%+v err=%v", label, task, err)
+		}
+	}
+	requireStored := func(t *testing.T, ctx context.Context, st store.Store, text string, isError bool, taskID string, want *int) {
+		t.Helper()
+		if isError {
+			t.Fatalf("submit_plan refused: %s", text)
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(text), &result); err != nil || result["version"] != float64(1) {
+			t.Fatalf("submit_plan result=%s err=%v", text, err)
+		}
+		version, ok, err := st.GetLatestSpecVersion(ctx, taskID)
+		if err != nil || !ok || (version.ReviewSeats == nil) != (want == nil) || (want != nil && *version.ReviewSeats != *want) {
+			t.Fatalf("plan version=%+v ok=%t err=%v, want review_seats %v", version, ok, err, want)
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		seats []any
+	}{{name: "omitted"}, {name: "null", seats: []any{nil}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, st, server, request, orderID := setup(t, "mcp-plan-seats-"+strings.ReplaceAll(tc.name, " ", "-"))
+			text, isError := call(t, server, request, orderID, tc.seats...)
+			requireStored(t, ctx, st, text, isError, strings.TrimSuffix(orderID, "-spec-1"), nil)
+		})
+	}
+
+	ctx, st, server, request, orderID := setup(t, "mcp-plan-seats-refusals")
+	for _, tc := range []struct {
+		value any
+		want  string
+	}{
+		{value: "3", want: "invalid structured plan"},
+		{value: 2.5, want: "invalid structured plan"},
+		{value: true, want: "invalid structured plan"},
+		{value: map[string]any{"count": 3}, want: "invalid structured plan"},
+		{value: 0, want: "review_seats must be at least 1"},
+		{value: -1, want: "review_seats must be at least 1"},
+		{value: 1, want: "review_seats_below_minimum: plan review_seats 1 is below the task's minimum review seat count 2 (minimum_seat_count=2)"},
+	} {
+		text, isError := call(t, server, request, orderID, tc.value)
+		if !isError || !strings.Contains(text, tc.want) {
+			t.Fatalf("review_seats %#v result=%q isError=%t, want %q", tc.value, text, isError, tc.want)
+		}
+		requireClaimedWithoutPlan(t, ctx, st, orderID, fmt.Sprintf("review_seats %#v", tc.value))
+	}
+	text, isError := call(t, server, request, orderID, 3)
+	requireStored(t, ctx, st, text, isError, "mcp-plan-seats-refusals", planReviewSeatPointer(3))
+	if order, err := st.GetWorkOrder(ctx, orderID); err != nil || order.State != core.WorkOrderCompleted {
+		t.Fatalf("corrected plan order=%+v err=%v", order, err)
+	}
+}
+
+func planReviewSeatPointer(value int) *int { return &value }
+
 // A nil Go slice marshals to `"required": null`, which the official MCP
 // SDK's validation rejects — taking every tool down with it as a
 // "tools fetch failed" at connection time.
