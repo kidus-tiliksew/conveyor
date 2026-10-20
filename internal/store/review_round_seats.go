@@ -640,6 +640,9 @@ func (m *memory) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLe
 	if err := request.Validate(); err != nil {
 		return ReviewSeatAdditionResult{}, err
 	}
+	if _, err := RequireActor(ctx); err != nil {
+		return ReviewSeatAdditionResult{}, fmt.Errorf("%w: %w", ErrReviewSeatAdditionForbidden, err)
+	}
 	actor, err := RequireReviewSeatOperator(ctx)
 	if err != nil {
 		return ReviewSeatAdditionResult{}, err
