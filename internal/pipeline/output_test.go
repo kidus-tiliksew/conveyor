@@ -334,3 +334,97 @@ func TestParseDocumentationAssessment(t *testing.T) {
 		t.Fatal("overlapping documentation classification accepted")
 	}
 }
+
+// TestStructuredPlanReviewSeats proves the optional planned review seat count
+// decodes as nullable, is advertised by the strict plan schema, survives
+// RenderStructuredPlan and ParseStructuredPlan, and refuses zero, negative, and
+// malformed values (req-review-gates-evidence AC-2.8;
+// feature-review-seat-minimum RS-3).
+func TestStructuredPlanReviewSeats(t *testing.T) {
+	const markdown = "## Approach\nPlan seats.\n\n## Files touched\n- internal/pipeline/output.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Loss.\n\n## Done criteria\n- Seats persist."
+	encoded, err := json.Marshal(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(seats string) (Spec, error) {
+		body := `{"markdown":` + string(encoded) + `,"decomposition":[]`
+		if seats != "" {
+			body += `,"review_seats":` + seats
+		}
+		return RenderStructuredPlan(body + "}")
+	}
+	for _, tc := range []struct {
+		name  string
+		seats string
+		want  *int
+	}{
+		{name: "omitted"},
+		{name: "null", seats: "null"},
+		{name: "one", seats: "1", want: intPointer(1)},
+		{name: "four", seats: "4", want: intPointer(4)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, renderErr := render(tc.seats)
+			if renderErr != nil {
+				t.Fatal(renderErr)
+			}
+			if (spec.ReviewSeats == nil) != (tc.want == nil) || (tc.want != nil && *spec.ReviewSeats != *tc.want) {
+				t.Fatalf("review_seats=%v, want %v", spec.ReviewSeats, tc.want)
+			}
+			if spec.Markdown != markdown || len(spec.Acceptance) != 0 || len(spec.Decomposition) != 0 {
+				t.Fatalf("plan spec=%+v", spec)
+			}
+		})
+	}
+	for _, tc := range []struct{ seats, want string }{
+		{seats: "0", want: "review_seats must be at least 1"},
+		{seats: "-2", want: "review_seats must be at least 1"},
+		{seats: "1.5", want: "structured plan"},
+		{seats: `"2"`, want: "structured plan"},
+		{seats: "true", want: "structured plan"},
+		{seats: "[2]", want: "structured plan"},
+	} {
+		if _, renderErr := render(tc.seats); renderErr == nil || !strings.Contains(renderErr.Error(), tc.want) {
+			t.Fatalf("review_seats %s error=%v, want %q", tc.seats, renderErr, tc.want)
+		}
+	}
+
+	value := StructuredPlan{Markdown: markdown, Decomposition: []DecompositionItem{}, ReviewSeats: intPointer(3)}
+	spec, err := ParseStructuredPlan(value)
+	if err != nil || spec.ReviewSeats == nil || *spec.ReviewSeats != 3 {
+		t.Fatalf("parsed spec=%+v err=%v", spec, err)
+	}
+	*value.ReviewSeats = 9
+	if *spec.ReviewSeats != 3 {
+		t.Fatal("ParseStructuredPlan aliased the caller's count")
+	}
+	if _, err = ParseStructuredPlan(StructuredPlan{Markdown: "no headings", ReviewSeats: intPointer(2)}); err == nil || !strings.Contains(err.Error(), "heading") {
+		t.Fatalf("plan shape error=%v", err)
+	}
+	if err = ValidatePlanReviewSeats(nil); err != nil {
+		t.Fatalf("nil count error=%v", err)
+	}
+	omitted, err := json.Marshal(StructuredPlan{Markdown: markdown, Decomposition: []DecompositionItem{}})
+	if err != nil || strings.Contains(string(omitted), "review_seats") {
+		t.Fatalf("nil count encoded=%s err=%v", omitted, err)
+	}
+
+	schema := StructuredPlanSchema()
+	properties, _ := schema["properties"].(map[string]any)
+	seats, _ := properties["review_seats"].(map[string]any)
+	types, _ := seats["type"].([]string)
+	if strings.Join(types, ",") != "integer,null" || seats["minimum"] != 1 {
+		t.Fatalf("review_seats schema=%#v", seats)
+	}
+	required, _ := schema["required"].([]string)
+	if strings.Join(required, ",") != "markdown,decomposition,review_seats" || schema["additionalProperties"] != false {
+		t.Fatalf("strict plan schema required=%v schema=%#v", required, schema)
+	}
+	for name := range properties {
+		if !strings.Contains(","+strings.Join(required, ",")+",", ","+name+",") {
+			t.Fatalf("strict plan schema property %s is not required", name)
+		}
+	}
+}
+
+func intPointer(value int) *int { return &value }
