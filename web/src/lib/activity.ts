@@ -14,6 +14,7 @@ import type {
   TaskReviewResult,
   TaskReviewRound,
   TaskReviewRoundSummary,
+  TaskReviewSeatMetadata,
   TaskSummaries,
   WorkOrder,
   WorkOrderVerificationCheckpointGround,
@@ -167,8 +168,9 @@ export function mergeGateReview(item: ActivityItem): MergeGateReview {
   }
   // The last completed round is the verdict the gate opened on; the seats that
   // reported into it say how many independent reviewers stand behind it.
+  // Seat metadata alone describes an open round; only a stated verdict is one.
   const round = item.summaries?.review_round
-  if (round) {
+  if (round && (round.verdict === 'approve' || round.verdict === 'changes_requested')) {
     review.verdict = {
       verdict: round.verdict === 'changes_requested' ? 'changes_requested' : 'approve',
       summary: typeof round.summary === 'string' && round.summary.trim() ? round.summary.trim() : undefined,
@@ -827,6 +829,10 @@ export type TimelineEntry =
       // The round's current summary from `summaries.review_round_summaries`,
       // shown above the seats (feature-review-round-summary SU-6).
       roundSummary?: TaskReviewRoundSummary
+      // This round's own seat count and minimum, and whether an operator may
+      // add seats to it now (feature-review-seat-minimum RS-7).
+      seatMetadata?: TaskReviewSeatMetadata
+      seatAdditionOpen?: boolean
     }
 
 // One review round is rendered as a single deliberating body: seats appear
@@ -931,6 +937,11 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       at: round.at,
     }
 
+  // Seats are added only to the latest positive round while it is open
+  // (feature-review-seat-minimum RS-5, RS-7); the server stays authoritative.
+  const latestRound = summaries?.review_round?.review_round
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+
   for (const [key, group] of groups) {
     const seats: PanelSeat[] = group.orders
       .slice()
@@ -962,6 +973,17 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
     if (resolution && resolution.verdict === 'changes_requested') {
       resolution.bounce = summaries?.review_bounces?.[String(group.round)]
     }
+    const seatMetadata =
+      group.round > 0
+        ? summaries?.review_round_seats?.by_round?.[String(group.round)]
+        : summaries?.review_round_seats?.by_order?.[group.orders[0].id]
+    const seatAdditionOpen =
+      group.round > 0 &&
+      group.round === latestRound &&
+      seatMetadata?.superseded !== true &&
+      !resolution &&
+      seats.some((seat) => !seat.review) &&
+      !terminal
     index.panels.push({
       type: 'panel',
       at: group.orders.reduce(
@@ -973,6 +995,8 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       seats,
       resolution,
       roundSummary: group.round > 0 ? summaries?.review_round_summaries?.[String(group.round)] : undefined,
+      seatMetadata,
+      seatAdditionOpen,
     })
   }
   return index

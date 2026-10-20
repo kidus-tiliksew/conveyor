@@ -266,6 +266,10 @@ type taskDetailSummaries struct {
 	ReviewRounds                 taskReviewRounds          `json:"review_rounds"`
 	ReviewBounces                map[string]jsNumber       `json:"review_bounces"`
 	ReviewRoundSummaries         taskRoundSummaries        `json:"review_round_summaries"`
+	// ReviewRoundSeats and ReviewSeatPolicy are set by
+	// enrichReviewSeatSummaries for the bounded view (feature-review-seat-minimum RS-7).
+	ReviewRoundSeats *taskReviewRoundSeats `json:"review_round_seats,omitempty"`
+	ReviewSeatPolicy *taskReviewSeatPolicy `json:"review_seat_policy,omitempty"`
 }
 
 type taskCreatorSummary struct {
@@ -284,13 +288,18 @@ type taskPullRequestSummary struct {
 	Truncated  bool      `json:"truncated,omitempty"`
 }
 
+// taskReviewRoundSummary describes the latest review round. Its settlement
+// fields come from that round's review.round_completed and are absent while
+// the round is open; the embedded seat metadata describes the round either
+// way (feature-review-seat-minimum RS-7).
 type taskReviewRoundSummary struct {
-	Verdict     string  `json:"verdict"`
+	Verdict     string  `json:"verdict,omitempty"`
 	Summary     *string `json:"summary,omitempty"`
-	ReviewCount int     `json:"review_count"`
-	EventID     string  `json:"event_id"`
-	At          string  `json:"at"`
+	ReviewCount *int    `json:"review_count,omitempty"`
+	EventID     string  `json:"event_id,omitempty"`
+	At          string  `json:"at,omitempty"`
 	Truncated   bool    `json:"truncated,omitempty"`
+	*taskReviewSeatMetadata
 }
 
 type taskReturnedForChanges struct {
@@ -624,7 +633,8 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 				item.Summary, item.Truncated = &cut, truncated
 			}
 			reviews, _ := payload["reviews"].([]any)
-			round.ReviewCount = len(reviews)
+			reviewCount := len(reviews)
+			round.ReviewCount = &reviewCount
 			summaries.ReviewRound = round
 			if number, ok := payload.num("review_round"); ok && number > 0 {
 				summaries.ReviewRounds.ByRound[jsNumberString(number)] = item

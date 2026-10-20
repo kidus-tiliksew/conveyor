@@ -37,6 +37,7 @@ import type {
   TaskEvent,
   TaskEventView,
   TaskHistorySelection,
+  TaskReviewSeatMetadata,
   WorkOrder,
   WorkOrderTranscriptCapture,
 } from '../../lib/types'
@@ -58,6 +59,7 @@ import {
 } from './review-panel'
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { ReviewRoundSummary } from './review-round-summary'
+import { ReviewSeatAdd } from './review-seat-add'
 import {
   hasProposalReviewNotice,
   ProposalReviewNotice,
@@ -957,7 +959,7 @@ function PanelEntry({
   usageReportedOrderIDs: Set<string>
   operatorNotes?: ActivityItem['operator_notes']
 }) {
-  const { seats, resolution } = entry
+  const { seats, resolution, seatMetadata } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
   const changes = seats.filter((seat) => seat.review?.verdict === 'changes_requested').length
   const deliberating = !resolution && seats.some((seat) => seat.status === 'deliberating')
@@ -996,9 +998,12 @@ function PanelEntry({
               {resolution.verdict === 'approve' ? 'Approved' : 'Changes requested'}
             </Badge>
           )}
-          <span className="text-xs text-muted">
-            {seats.length > 1 ? `Panel of ${seats.length} · unanimous to pass` : 'Panel of 1'}
+          <span className="text-xs text-muted" title={seatMetadata ? reviewSeatSourceTitle(seatMetadata) : undefined}>
+            {seatMetadata
+              ? `Panel of ${seats.length} · minimum ${seatMetadata.minimum_seat_count}`
+              : `Panel of ${seats.length}`}
           </span>
+          {seats.length > 1 && <span className="text-xs text-muted">· unanimous to pass</span>}
           <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
             {seats.map((seat) => (
               <span
@@ -1078,6 +1083,9 @@ function PanelEntry({
             ))}
           </div>
         )}
+        {entry.round > 0 && (
+          <ReviewSeatAdd taskId={taskId} round={entry.round} open={entry.seatAdditionOpen === true} />
+        )}
         {resolution ? (
           <div
             className={cn(
@@ -1117,6 +1125,23 @@ function PanelEntry({
       </article>
     </li>
   )
+}
+
+// The panel header's tooltip names where the round's seat count came from in
+// words, never the source code (feature-review-seat-minimum RS-7).
+function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
+  const source =
+    metadata.seat_count_source === 'declared'
+      ? 'Seat count declared at submission'
+      : metadata.seat_count_source === 'planned'
+        ? 'Seat count planned'
+        : metadata.seat_count_source === 'carried'
+          ? metadata.carried_from_round
+            ? `Seat count carried from round ${metadata.carried_from_round}`
+            : 'Seat count carried from the previous round'
+          : 'Seat count is the workspace minimum'
+  const planned = metadata.planned_seat_count
+  return planned ? `${source} · Plan: ${planned} ${planned === 1 ? 'seat' : 'seats'}` : source
 }
 
 function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {

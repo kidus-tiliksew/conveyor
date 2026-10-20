@@ -1662,6 +1662,42 @@ export async function retryReviewRound(taskId: string, requestId: string, reason
   return response.json() as Promise<import('./types').ReviewRoundRetryResult>
 }
 
+// A refused review seat addition: the HTTP status, the server's error code
+// (such as review_round_not_open, review_round_settled, or
+// review_seat_addition_conflict), and its message (feature-review-seat-minimum RS-7).
+export class ReviewSeatAdditionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message)
+  }
+}
+
+// Adds `add` seats to the task's open review round in the workspace captured
+// when the mutation started. `add` is a count of new seats, never a target.
+export async function addReviewSeats(
+  taskId: string,
+  workspace: string,
+  input: { request_id: string; reason: string; add: number },
+) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/seats`, workspace), {
+    method: 'POST',
+    headers: mutationHeaders(),
+    body: JSON.stringify({ request_id: input.request_id, reason: input.reason, add: input.add }),
+  })
+  if (!response.ok) {
+    const body = await response.text()
+    throw new ReviewSeatAdditionError(
+      apiErrorMessage(body, response.statusText),
+      response.status,
+      membershipErrorCode(body),
+    )
+  }
+  return response.json() as Promise<import('./types').ReviewSeatAdditionResult>
+}
+
 export async function recoverInterruptedReviewRound(taskId: string, requestId: string) {
   const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/recover`), {
     method: 'POST',
