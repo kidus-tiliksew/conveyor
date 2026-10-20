@@ -67,6 +67,7 @@ type Context struct {
 	GovernanceSnapshot        *core.GovernanceSnapshot        `json:"governance_snapshot,omitempty"`
 	DocumentationGateEvidence *core.DocumentationGateEvidence `json:"documentation_gate_evidence,omitempty"`
 	BounceHistory             []json.RawMessage               `json:"bounce_history,omitempty"`
+	ReviewSummaries           []json.RawMessage               `json:"review_summaries,omitempty"` // feature-review-round-summary SU-5
 	PriorFeedback             []string                        `json:"prior_feedback,omitempty"`
 	PlanRevision              *PlanRevisionContext            `json:"plan_revision,omitempty"`
 	Artifacts                 []ArtifactReference             `json:"artifacts,omitempty"`
@@ -990,6 +991,10 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			}
 		}
 	}
+	// Informative rework context, rebuilt on every read and kept outside the
+	// context-freshness snapshot (feature-review-round-summary SU-5;
+	// req-review-gates-evidence AC-10.6).
+	result.ReviewSummaries = reviewSummariesForBounces(events)
 	interventions, _ := s.Store.ListInterventions(ctx, task.ID)
 	for _, item := range interventions {
 		if item.Action == core.InterventionRedirect && strings.TrimSpace(item.Comment) != "" {

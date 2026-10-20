@@ -13,6 +13,7 @@ import type {
   TaskRelation,
   TaskReviewResult,
   TaskReviewRound,
+  TaskReviewRoundSummary,
   TaskReviewSeatMetadata,
   TaskSummaries,
   WorkOrder,
@@ -825,6 +826,9 @@ export type TimelineEntry =
       round: number
       seats: PanelSeat[]
       resolution?: PanelResolution
+      // The round's current summary from `summaries.review_round_summaries`,
+      // shown above the seats (feature-review-round-summary SU-6).
+      roundSummary?: TaskReviewRoundSummary
       // This round's own seat count and minimum, and whether an operator may
       // add seats to it now (feature-review-seat-minimum RS-7).
       seatMetadata?: TaskReviewSeatMetadata
@@ -990,6 +994,7 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       round: group.round,
       seats,
       resolution,
+      roundSummary: group.round > 0 ? summaries?.review_round_summaries?.[String(group.round)] : undefined,
       seatMetadata,
       seatAdditionOpen,
     })

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // Task 261015-3721c6; component-http-api "Bounded detail view";
@@ -79,6 +81,12 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))
+	}
+	// A round summary is read from summaries.review_round_summaries and renders
+	// inside its review panel, never as a standalone note
+	// (feature-review-round-summary SU-6).
+	if slices.Contains(noteKinds, store.ReviewSummaryRecordedEvent) || slices.Contains(humanTimelineEventKinds, store.ReviewSummaryRecordedEvent) {
+		t.Fatalf("%s must stay out of noteEventKinds and the human timeline kinds", store.ReviewSummaryRecordedEvent)
 	}
 }
 
@@ -408,4 +416,122 @@ func TestJavaScriptNumberSemantics(t *testing.T) {
 	if got := jsToString([]any{json.Number("1"), nil, []any{"a", true}, map[string]any{}}); got != "1,,a,true,[object Object]" {
 		t.Fatalf("jsToString=%q", got)
 	}
+}
+
+// TestTaskDetailReviewRoundSummaries pins summaries.review_round_summaries
+// (req-review-gates-evidence AC-10.5; DEC-79; feature-review-round-summary
+// SU-6): each round's current version by (at, id) over the complete ledger,
+// its version count, provenance, and UTF-8-safe text truncation.
+func TestTaskDetailReviewRoundSummaries(t *testing.T) {
+	derive := func(events ...core.Event) taskRoundSummaries {
+		return deriveTaskDetailSummaries(events, nil, nil).ReviewRoundSummaries
+	}
+	summaryRecorded := func(id int64, seconds int, payload store.ReviewSummaryPayload) core.Event {
+		event := summaryEvent(id, seconds, store.ReviewSummaryRecordedEvent, "", summaryJSON(t, payload))
+		event.ActorID, event.ActorRole = payload.Author.ActorID, payload.Author.ActorRole
+		return event
+	}
+	author := store.ReviewSummaryAuthor{ActorID: "agent:agt_coordinator", ActorRole: core.ActorAgent, WorkOrderID: "task-review-1-seat-1", SessionID: "seat-session", Model: "claude-opus-5-5", ModelEnforcement: store.ReviewSummaryModelEnforcement}
+	version := func(round, number int, summary string) store.ReviewSummaryPayload {
+		return store.ReviewSummaryPayload{WorkspaceID: "demo", ReviewRound: round, Version: number, RequestID: summary, Summary: summary, Author: author, Findings: []store.ReviewSummaryFinding{
+			{Severity: store.ReviewSummarySeverityBlocking, Problem: "Missing test for " + summary, Location: "internal/x.go:12", Fix: "Add the test.", Seats: []int{1, 3}},
+			{Severity: store.ReviewSummarySeverityNonBlocking, Problem: "Naming.", Seats: []int{2}},
+		}}
+	}
+
+	t.Run("absent without summary events", func(t *testing.T) {
+		got := derive(summaryEvent(1, 0, "review.round_completed", "", `{"review_round":1,"verdict":"changes_requested"}`))
+		if got == nil || len(got) != 0 {
+			t.Fatalf("review_round_summaries=%v, want an empty map", got)
+		}
+		data, err := json.Marshal(deriveTaskDetailSummaries(nil, nil, nil))
+		if err != nil || !strings.Contains(string(data), `"review_round_summaries":{}`) {
+			t.Fatalf("serialized summaries=%s err=%v", data, err)
+		}
+	})
+
+	t.Run("multiple rounds keep their current version and count", func(t *testing.T) {
+		got := derive(
+			summaryRecorded(10, 10, version(1, 1, "r1 v1")),
+			summaryRecorded(11, 20, version(1, 2, "r1 v2")),
+			summaryRecorded(12, 30, version(2, 1, "r2 v1")),
+			summaryRecorded(13, 40, version(1, 3, "r1 v3")),
+		)
+		if len(got) != 2 {
+			t.Fatalf("rounds=%v", got)
+		}
+		one, two := got["1"], got["2"]
+		if one.Summary != "r1 v3" || one.Version != 3 || one.VersionCount != 3 || one.EventID != "13" || one.RecordedAt != at(40) || one.Truncated {
+			t.Fatalf("round 1=%+v", one)
+		}
+		if two.Summary != "r2 v1" || two.Version != 1 || two.VersionCount != 1 || two.EventID != "12" || two.RecordedAt != at(30) {
+			t.Fatalf("round 2=%+v", two)
+		}
+		wantAuthor := taskRoundSummaryAuthor{ActorID: author.ActorID, ActorRole: author.ActorRole, WorkOrderID: author.WorkOrderID, SessionID: author.SessionID, Model: author.Model, ModelEnforcement: "self-reported"}
+		if one.Author != wantAuthor {
+			t.Fatalf("author=%+v want %+v", one.Author, wantAuthor)
+		}
+		wantFindings := []taskRoundSummaryFinding{
+			{Severity: "blocking", Problem: "Missing test for r1 v3", Location: "internal/x.go:12", Fix: "Add the test.", Seats: []int{1, 3}},
+			{Severity: "non-blocking", Problem: "Naming.", Seats: []int{2}},
+		}
+		if !reflect.DeepEqual(one.Findings, wantFindings) {
+			t.Fatalf("findings=%+v", one.Findings)
+		}
+	})
+
+	t.Run("latest is the maximum (at, id) whatever the slice order", func(t *testing.T) {
+		got := derive(
+			// Committed later with a lower ID at the same instant: it sorts first.
+			summaryRecorded(20, 10, version(1, 2, "higher id")),
+			summaryRecorded(5, 10, version(1, 1, "lower id")),
+			// A later timestamp wins over a higher ID.
+			summaryRecorded(99, 5, version(2, 1, "earlier")),
+			summaryRecorded(30, 6, version(2, 2, "later")),
+		)
+		if got["1"].Summary != "higher id" || got["1"].EventID != "20" || got["1"].VersionCount != 2 {
+			t.Fatalf("round 1=%+v", got["1"])
+		}
+		if got["2"].Summary != "later" || got["2"].EventID != "30" || got["2"].VersionCount != 2 {
+			t.Fatalf("round 2=%+v", got["2"])
+		}
+	})
+
+	t.Run("an unreadable round is skipped", func(t *testing.T) {
+		got := derive(
+			summaryEvent(1, 0, store.ReviewSummaryRecordedEvent, "", `{"review_round":0,"summary":"zero"}`),
+			summaryEvent(2, 1, store.ReviewSummaryRecordedEvent, "", `{"review_round":"1","summary":"string"}`),
+			summaryEvent(3, 2, store.ReviewSummaryRecordedEvent, "", `{"summary":"none"}`),
+			summaryEvent(4, 3, store.ReviewSummaryRecordedEvent, "", `not json`),
+		)
+		if len(got) != 0 {
+			t.Fatalf("review_round_summaries=%+v", got)
+		}
+	})
+
+	t.Run("text truncation cuts at a rune boundary and names its event", func(t *testing.T) {
+		long := "x" + strings.Repeat("é", taskSummaryTextMaxBytes) // two bytes per rune
+		payload := version(1, 1, long)
+		payload.Findings[0].Problem, payload.Findings[0].Fix, payload.Findings[1].Location = long, long, long
+		payload.Author.Model = long
+		event := summaryRecorded(77, 0, payload)
+		original := append(json.RawMessage(nil), event.Payload...)
+		got := derive(event)["1"]
+		texts := []string{got.Summary, got.Findings[0].Problem, got.Findings[0].Fix, got.Findings[1].Location, got.Author.Model}
+		for i, text := range texts {
+			if len(text) != taskSummaryTextMaxBytes-1 || !utf8.ValidString(text) {
+				t.Fatalf("text %d: bytes=%d valid=%v", i, len(text), utf8.ValidString(text))
+			}
+		}
+		if !got.Truncated || got.EventID != "77" || got.Findings[0].Location != "internal/x.go:12" {
+			t.Fatalf("entry truncated=%v event=%s location=%q", got.Truncated, got.EventID, got.Findings[0].Location)
+		}
+		if string(event.Payload) != string(original) {
+			t.Fatal("deriving summaries modified the event payload")
+		}
+		short := derive(summaryRecorded(1, 0, version(1, 1, "short")))["1"]
+		if short.Truncated {
+			t.Fatal("short summary marked truncated")
+		}
+	})
 }

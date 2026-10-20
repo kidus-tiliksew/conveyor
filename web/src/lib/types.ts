@@ -409,6 +409,42 @@ export interface TaskReviewRound {
   at: string
 }
 
+/** One consolidated finding of a round summary and the seats that raised it. */
+export interface TaskReviewSummaryFinding {
+  // 'blocking' or 'non-blocking' as recorded.
+  severity: string
+  problem: string
+  location?: string
+  fix?: string
+  seats: number[]
+}
+
+/** The credential-derived author of a round summary; the model is self-reported. */
+export interface TaskReviewSummaryAuthor {
+  actor_id: string
+  actor_role: string
+  work_order_id?: string
+  session_id?: string
+  model?: string
+  model_enforcement: string
+}
+
+/**
+ * A settled round's current summary version, informative only
+ * (feature-review-round-summary SU-6; DEC-79). Text cut at 16,384 bytes sets
+ * `truncated`, and `event_id` names the event whose audit read has the full text.
+ */
+export interface TaskReviewRoundSummary {
+  summary: string
+  findings: TaskReviewSummaryFinding[]
+  version: number
+  version_count: number
+  author: TaskReviewSummaryAuthor
+  event_id: string
+  recorded_at: string
+  truncated?: boolean
+}
+
 /**
  * Current task facts the server folds from the complete ledger by (`at`, `id`)
  * order, so no surface reads them from the bounded event page
@@ -451,6 +487,7 @@ export interface TaskSummaries {
   review_results?: { by_order?: Record<string, TaskReviewResult>; by_job?: Record<string, TaskReviewResult> }
   review_rounds?: { by_round?: Record<string, TaskReviewRound>; by_order?: Record<string, TaskReviewRound> }
   review_bounces?: Record<string, number>
+  review_round_summaries?: Record<string, TaskReviewRoundSummary>
   // Seat metadata per positive round and per round-zero order, and the task's
   // minimum and approved planned count before any round (RS-7, RS-3).
   review_round_seats?: {

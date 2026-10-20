@@ -58,6 +58,7 @@ import {
   useCanRequestTaskChanges,
 } from './review-panel'
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
+import { ReviewRoundSummary } from './review-round-summary'
 import { ReviewSeatAdd } from './review-seat-add'
 import {
   hasProposalReviewNotice,
@@ -1022,6 +1023,20 @@ function PanelEntry({
             {resolution ? `Settled ${absoluteTime(resolution.at)}` : `Convened ${absoluteTime(entry.at)}`}
           </time>
         </div>
+        {entry.roundSummary && (
+          <ReviewRoundSummary
+            round={entry.round}
+            summary={entry.roundSummary}
+            audit={
+              <AuditDisclosure
+                taskId={taskId}
+                kind="event"
+                recordId={entry.roundSummary.event_id}
+                label="Full summary text (shortened here)"
+              />
+            }
+          />
+        )}
         <div className="divide-y divide-border/60">
           {seats.map((seat, index) => (
             <SeatRow
