@@ -1839,6 +1839,13 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 }
 
 func (s *Store) updateWorkOrderCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) (lifecycleErr error, err error) {
+	return s.updateWorkOrderSubmissionTx(ctx, tx, q, lease, order, store.SubmissionReviewSeats{}, commands...)
+}
+
+// updateWorkOrderSubmissionTx is the work-order update; only
+// SubmitImplementationCommand passes review seats (feature-review-seat-minimum
+// RS-4), and every other caller passes none.
+func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, lease taskops.TaskLease, order core.WorkOrder, seats store.SubmissionReviewSeats, commands ...core.WorkOrderCommand) (lifecycleErr error, err error) {
 	err = func() error {
 		taskID, err := workOrderTaskIDTx(ctx, tx, workspace(ctx), order.ID)
 		if err != nil {
@@ -1953,7 +1960,19 @@ func (s *Store) updateWorkOrderCommandTx(ctx context.Context, tx pgx.Tx, q *db.Q
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("work order %s not found", order.ID)
 		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)}); err != nil {
+		// The ordinary update never writes declared_review_seats, so the event
+		// carries the stored value; only the implementation submission writes
+		// an admitted declaration in this transaction
+		// (feature-review-seat-minimum RS-4).
+		order.DeclaredReviewSeats = current.DeclaredReviewSeats
+		if seats.Declared != nil {
+			if _, err = tx.Exec(ctx, `UPDATE work_orders SET declared_review_seats=$1 WHERE workspace_id=$2 AND id=$3`, *seats.Declared, workspace(ctx), order.ID); err != nil {
+				return err
+			}
+			declared := *seats.Declared
+			order.DeclaredReviewSeats = &declared
+		}
+		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: store.SubmissionWorkOrderEventPayload(order, seats)}); err != nil {
 			return err
 		}
 		if current.State != core.WorkOrderCompleted && order.State == core.WorkOrderCompleted {

@@ -778,7 +778,7 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 			return fmt.Errorf("work order %s does not match its submission", order.ID)
 		}
 		var err error
-		lifecycleErr, err = s.updateWorkOrderCommandTx(ctx, tx, current, lease, order, core.WorkOrderCmdSubmitForReview)
+		lifecycleErr, err = s.updateWorkOrderSubmissionTx(ctx, tx, current, lease, order, request.ReviewSeats, core.WorkOrderCmdSubmitForReview)
 		if err != nil || lifecycleErr != nil {
 			return err
 		}
@@ -821,6 +821,13 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 }
 
 func (s *Store) updateWorkOrderCommandTx(ctx context.Context, tx *sql.Tx, current core.WorkOrder, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) (lifecycleErr error, err error) {
+	return s.updateWorkOrderSubmissionTx(ctx, tx, current, lease, order, store.SubmissionReviewSeats{}, commands...)
+}
+
+// updateWorkOrderSubmissionTx is the work-order update; only
+// SubmitImplementationCommand passes review seats (feature-review-seat-minimum
+// RS-4), and every other caller passes none.
+func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx *sql.Tx, current core.WorkOrder, lease taskops.TaskLease, order core.WorkOrder, seats store.SubmissionReviewSeats, commands ...core.WorkOrderCommand) (lifecycleErr error, err error) {
 	err = func() error {
 		var err error
 		now := time.Now().UTC()
@@ -910,7 +917,19 @@ func (s *Store) updateWorkOrderCommandTx(ctx context.Context, tx *sql.Tx, curren
 		if _, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: values, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": current.ID}}); err != nil {
 			return err
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)}); err != nil {
+		// The ordinary update never writes declared_review_seats, so the event
+		// carries the stored value; only the implementation submission writes
+		// an admitted declaration in this transaction
+		// (feature-review-seat-minimum RS-4).
+		order.DeclaredReviewSeats = current.DeclaredReviewSeats
+		if seats.Declared != nil {
+			if _, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: map[string]any{"declared_review_seats": *seats.Declared}, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": current.ID}}); err != nil {
+				return err
+			}
+			declared := *seats.Declared
+			order.DeclaredReviewSeats = &declared
+		}
+		if err = taskEvent(ctx, tx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: store.SubmissionWorkOrderEventPayload(order, seats)}); err != nil {
 			return err
 		}
 		if current.State != core.WorkOrderCompleted && order.State == core.WorkOrderCompleted {

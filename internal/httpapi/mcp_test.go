@@ -2901,3 +2901,60 @@ func TestMCPDocumentationAssessmentAdmission(t *testing.T) {
 		t.Fatal("no review completion")
 	}
 }
+
+// TestMCPSubmitForReviewReviewSeatsSchema proves submit_for_review publishes
+// an optional integer review_seats of at least 1 and names the floor refusal
+// (feature-review-seat-minimum RS-4).
+func TestMCPSubmitForReviewReviewSeatsSchema(t *testing.T) {
+	for _, tool := range mcpTools() {
+		if tool["name"] != "submit_for_review" {
+			continue
+		}
+		if description, _ := tool["description"].(string); !strings.Contains(description, "review_seats_below_floor") {
+			t.Fatalf("description=%q", description)
+		}
+		schema := tool["inputSchema"].(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		if !reflect.DeepEqual(properties["review_seats"], map[string]any{"type": "integer", "minimum": 1}) {
+			t.Fatalf("review_seats schema=%#v", properties["review_seats"])
+		}
+		if !reflect.DeepEqual(schema["required"], []string{"work_order_id", "session_id", "head_sha"}) {
+			t.Fatalf("required=%#v", schema["required"])
+		}
+		for _, field := range []string{"harness", "model", "effort"} {
+			if _, present := properties[field]; present {
+				t.Fatalf("submit_for_review publishes %s", field)
+			}
+		}
+		if _, err := json.Marshal(tool); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatal("submit_for_review tool missing")
+}
+
+// TestMCPSubmitForReviewReviewSeatsArgumentValidation proves the shared
+// parser accepts only integral numbers from 1 through the INT bound, from MCP
+// float64 and REST json.Number values alike, and never truncates, rounds, or
+// treats a present value as absent (feature-review-seat-minimum RS-4).
+func TestMCPSubmitForReviewReviewSeatsArgumentValidation(t *testing.T) {
+	if seats, err := reviewSeatsArg(map[string]any{"head_sha": "abc"}); seats != nil || err != nil {
+		t.Fatalf("absent=%v err=%v", seats, err)
+	}
+	for _, accepted := range []struct {
+		value any
+		want  int
+	}{{float64(1), 1}, {float64(3), 3}, {json.Number("4"), 4}, {json.Number("4.0"), 4}, {float64(2147483647), 2147483647}, {json.Number("2147483647"), 2147483647}} {
+		seats, err := reviewSeatsArg(map[string]any{"review_seats": accepted.value})
+		if err != nil || seats == nil || *seats != accepted.want {
+			t.Fatalf("%#v => %v err=%v", accepted.value, seats, err)
+		}
+	}
+	for _, refused := range []any{nil, "3", true, float64(2.5), float64(0), float64(-1), float64(2147483648), json.Number("2.5"), json.Number("0"), json.Number("1e400"), json.Number("2147483648"), map[string]any{}, []any{float64(3)}} {
+		seats, err := reviewSeatsArg(map[string]any{"review_seats": refused})
+		if seats != nil || err == nil || err.Error() != "review_seats must be an integer from 1 to 2147483647" {
+			t.Fatalf("%#v => %v err=%v", refused, seats, err)
+		}
+	}
+}

@@ -23,8 +23,20 @@ var submissionPRHeadBackoff = []time.Duration{100 * time.Millisecond, 200 * time
 
 // SubmitForReview admits the exact claimed implement session, or a replay by
 // the same session of an order it already submitted at the identical head.
-// Every other lifecycle call keeps claimed-only admission.
+// Every other lifecycle call keeps claimed-only admission. It declares no
+// review seat count; SubmitForReviewWithReviewSeats takes one
+// (feature-review-seat-minimum RS-4).
 func (s *Service) SubmitForReview(ctx context.Context, id, session, headSHA string) (map[string]any, error) {
+	return s.SubmitForReviewWithReviewSeats(ctx, id, session, headSHA, nil)
+}
+
+// SubmitForReviewWithReviewSeats is SubmitForReview with an optional declared
+// review seat count; nil declares none (feature-review-seat-minimum RS-4).
+func (s *Service) SubmitForReviewWithReviewSeats(ctx context.Context, id, session, headSHA string, reviewSeats *int) (map[string]any, error) {
+	if reviewSeats != nil {
+		declared := *reviewSeats
+		reviewSeats = &declared
+	}
 	order, _, err := s.admitSubmission(ctx, id, session, headSHA)
 	if err != nil {
 		return nil, err
@@ -32,7 +44,7 @@ func (s *Service) SubmitForReview(ctx context.Context, id, session, headSHA stri
 	var result map[string]any
 	err = s.Store.WithTaskSideEffectLock(ctx, order.TaskID, func(ctx context.Context) error {
 		var submitErr error
-		result, submitErr = s.submitForReviewLocked(ctx, id, session, headSHA)
+		result, submitErr = s.submitForReviewLocked(ctx, id, session, headSHA, reviewSeats)
 		return submitErr
 	})
 	return result, err
@@ -61,7 +73,7 @@ func (s *Service) admitSubmission(ctx context.Context, id, session, headSHA stri
 	return order, false, err
 }
 
-func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSHA string) (map[string]any, error) {
+func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSHA string, reviewSeats *int) (map[string]any, error) {
 	order, replay, err := s.admitSubmission(ctx, id, session, headSHA)
 	if err != nil {
 		return nil, err
@@ -90,6 +102,12 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(task.SetupContract)
 	}
+	// A declared review seat count below the task's floor is refused before
+	// every submission effect, the refresh completion included
+	// (feature-review-seat-minimum RS-4).
+	if err = s.admitReviewSeats(ctx, cfg, task, reviewSeats); err != nil {
+		return nil, err
+	}
 	// A refresh already dispatched for this exact conflict-fix head owns the
 	// review; the order and its own job complete once without repeating any
 	// PR, context, stale-approval, stage, or dispatch effect.
@@ -100,7 +118,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		if gateErr != nil {
 			return nil, gateErr
 		}
-		return s.completeDispatchedRefresh(ctx, cfg, task, order, headSHA, refresh, checked, documentation)
+		return s.completeDispatchedRefresh(ctx, cfg, task, order, headSHA, refresh, checked, documentation, reviewSeats)
 	}
 	// Read-only admission: the task must accept stage.advance and the order's
 	// own job must be completable before any submission side effect.
@@ -230,7 +248,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		}
 	}
 	freshness := s.refreshContext(ctx, order, "", "context.verdict_refresh_observed")
-	if err = s.completeImplementationSubmission(ctx, order, headSHA, repo.GitHub != "", documentationEvidence); err != nil {
+	if err = s.completeImplementationSubmission(ctx, order, headSHA, repo.GitHub != "", documentationEvidence, store.SubmissionReviewSeats{Declared: reviewSeats}); err != nil {
 		return nil, err
 	}
 	// Only a fix dispatched from the approved head refreshes that approval. A
@@ -270,14 +288,14 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		result["pr_url"] = prURL
 		result["review_execution"] = reviewExecution
 		result["await_review"] = false
-		return result, nil
+		return withReviewSeatsResult(result, reviewSeats, true), nil
 	}
 	s.Dispatcher.Enqueue(ctx, task.ID)
 	result := map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true, "context_freshness": freshness}
 	if nextStage == core.StageVerify {
 		result["next_stage"] = nextStage
 	}
-	return result, nil
+	return withReviewSeatsResult(result, reviewSeats, true), nil
 }
 
 func (s *Service) discoverDocumentationPolicy(ctx context.Context, slug, revision string) github.DocumentationPolicyDiscovery {
@@ -459,11 +477,11 @@ func (s *Service) submissionJobReady(ctx context.Context, order core.WorkOrder) 
 
 // completeImplementationSubmission records the submitted order and completes
 // its own job atomically; a completion failure leaves neither written.
-func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string, documentationChecked bool, documentation *core.DocumentationGateEvidence) error {
+func (s *Service) completeImplementationSubmission(ctx context.Context, order core.WorkOrder, headSHA string, documentationChecked bool, documentation *core.DocumentationGateEvidence, reviewSeats store.SubmissionReviewSeats) error {
 	order.State = core.WorkOrderSubmitted
 	order.HeadSHA = headSHA
 	_, err := taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdSubmitForReview, func(lease taskops.TaskLease) (core.Job, error) {
-		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC(), DocumentationChecked: documentationChecked, DocumentationEvidence: documentation})
+		return s.Store.SubmitImplementationCommand(ctx, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC(), DocumentationChecked: documentationChecked, DocumentationEvidence: documentation, ReviewSeats: reviewSeats})
 	})
 	return err
 }
@@ -559,12 +577,14 @@ func refreshScopeCovers(scope, minimum string) bool {
 }
 
 // completeDispatchedRefresh completes the claimed conflict-fix order and its
-// own job once. The existing refresh keeps its round, seats, and dispatch.
-func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Config, task core.Task, order core.WorkOrder, head string, refresh dispatchedRefresh, documentationChecked bool, documentation *core.DocumentationGateEvidence) (map[string]any, error) {
+// own job once. The existing refresh keeps its round, seats, and dispatch; an
+// admitted review seat count is recorded unused and never becomes the order's
+// declaration (feature-review-seat-minimum RS-4).
+func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Config, task core.Task, order core.WorkOrder, head string, refresh dispatchedRefresh, documentationChecked bool, documentation *core.DocumentationGateEvidence, reviewSeats *int) (map[string]any, error) {
 	if err := s.submissionJobReady(ctx, order); err != nil {
 		return nil, err
 	}
-	if err := s.completeImplementationSubmission(ctx, order, head, documentationChecked, documentation); err != nil {
+	if err := s.completeImplementationSubmission(ctx, order, head, documentationChecked, documentation, store.SubmissionReviewSeats{Unused: reviewSeats}); err != nil {
 		return nil, err
 	}
 	result := map[string]any{"pr_url": s.recordedPRURL(ctx, task.ID), "review_execution": cfg.Routing.Stages["review"].Execution, "await_review": true, "refresh_already_dispatched": true}
@@ -573,7 +593,7 @@ func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Con
 	} else {
 		result["review_round"] = refresh.Round
 	}
-	return result, nil
+	return withReviewSeatsResult(result, reviewSeats, false), nil
 }
 
 // submissionReplayResult answers a same-session, same-head replay of an
@@ -634,6 +654,18 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 	}
 	if task.SetupContract.VerifyStage {
 		result["next_stage"] = core.StageVerify
+	}
+	// The replay reports the recorded declaration and never rewrites it
+	// (feature-review-seat-minimum RS-4).
+	if order.DeclaredReviewSeats != nil {
+		return withReviewSeatsResult(result, order.DeclaredReviewSeats, true), nil
+	}
+	if refreshed {
+		unused, unusedErr := s.recordedUnusedReviewSeats(ctx, order)
+		if unusedErr != nil {
+			return nil, unusedErr
+		}
+		return withReviewSeatsResult(result, unused, false), nil
 	}
 	return result, nil
 }

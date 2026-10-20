@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -528,7 +529,11 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if strings.TrimSpace(stringArg("head_sha")) == "" {
 			return nil, invalidToolArgument(errors.New("head_sha is required"))
 		}
-		return s.WorkOrders.SubmitForReview(ctx, stringArg("work_order_id"), session, stringArg("head_sha"))
+		reviewSeats, seatsErr := reviewSeatsArg(args)
+		if seatsErr != nil {
+			return nil, invalidToolArgument(seatsErr)
+		}
+		return s.WorkOrders.SubmitForReviewWithReviewSeats(ctx, stringArg("work_order_id"), session, stringArg("head_sha"), reviewSeats)
 	case "await_review":
 		seconds := 300.0
 		if value, ok := floatArg(args["timeout_seconds"]); ok {
@@ -932,6 +937,44 @@ func boolArg(args map[string]any, key string) *bool {
 	return &value
 }
 
+// reviewSeatsSchema is submit_for_review's optional declared review seat
+// count (feature-review-seat-minimum RS-4).
+var reviewSeatsSchema = map[string]any{"type": "integer", "minimum": 1}
+
+// maxReviewSeats is the declared count's bound, the INT column's maximum.
+const maxReviewSeats = math.MaxInt32
+
+// reviewSeatsArg decodes submit_for_review's optional review_seats. An absent
+// key declares nothing. A present value must be a JSON number with an
+// integral value from 1 through maxReviewSeats; null, strings, booleans,
+// fractions, and out-of-range numbers are refused, never truncated or treated
+// as absent (feature-review-seat-minimum RS-4).
+func reviewSeatsArg(args map[string]any) (*int, error) {
+	value, present := args["review_seats"]
+	if !present {
+		return nil, nil
+	}
+	invalid := fmt.Errorf("review_seats must be an integer from 1 to %d", maxReviewSeats)
+	var number float64
+	switch typed := value.(type) {
+	case float64:
+		number = typed
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err != nil {
+			return nil, invalid
+		}
+		number = parsed
+	default:
+		return nil, invalid
+	}
+	if math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 1 || number > maxReviewSeats {
+		return nil, invalid
+	}
+	seats := int(number)
+	return &seats, nil
+}
+
 func mcpTools() []map[string]any {
 	object := func(properties map[string]any, required ...string) map[string]any {
 		schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
@@ -1000,7 +1043,7 @@ func mcpTools() []map[string]any {
 		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan persists the task execution plan."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
-		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str}, "work_order_id", "session_id", "head_sha")},
+		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review. Optional review_seats declares the next round's review seat count; a count below the task's seat floor is refused with review_seats_below_floor and the order stays claimed.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str, "review_seats": reviewSeatsSchema}, "work_order_id", "session_id", "head_sha")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
 		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, governance and documentation assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment, "verification_assessment": core.VerificationJSONSchema(reflect.TypeOf(core.VerificationAssessment{})), "documentation_assessment": object(map[string]any{"applicable": map[string]any{"type": "boolean"}, "summary": str, "updated_paths": stringList, "unresolved": stringList, "conflicts": stringList}, "applicable", "summary", "updated_paths", "unresolved", "conflicts")}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
 		reviewSummaryMCPTool(),
