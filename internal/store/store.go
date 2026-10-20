@@ -118,6 +118,7 @@ type Store interface {
 	ActivityStore
 	StoreMetadata
 	NextActionInputStore
+	ReviewSummaryStore
 }
 
 // TaskStore owns the task, dependency, job and intervention contract.
