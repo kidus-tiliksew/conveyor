@@ -2562,6 +2562,7 @@ test('preemption is rendered as attributed activity rather than a failure', asyn
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
   await page.goto('/tasks/null-worker-status/full')
   await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).not.toHaveClass(/bg-attention-soft/)
   await expect(page.getByText('Required harnesses: not yet routed.')).toBeVisible()
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
@@ -2819,7 +2820,12 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await page.goto('/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByText(order.checkpoint.decision_request, { exact: true })).toBeVisible()
+  // One cited document is already answered, so the row offers Respond rather
+  // than confirm-and-resume (component-web-task-surfaces).
+  await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
+  await expect(card.getByRole('button', { name: 'Respond' })).toBeVisible()
   await expect(card.getByText(checkpointProgress, { exact: true })).not.toBeVisible()
+  await card.getByRole('button', { name: 'Review' }).click()
   await card.getByText('Show full progress report').click()
   await expect(card.getByText(checkpointProgress, { exact: true })).toBeVisible()
   await expect(card.getByRole('link', { name: 'Checkpoint requirement' })).toHaveAttribute(
@@ -2838,10 +2844,11 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await expect(card.getByText('A revision is waiting for your decision.')).toBeVisible()
   const standalone = page.getByRole('region', { name: 'System Design proposals from this task' })
   await expect(standalone).toHaveCount(1)
+  await expect(standalone).not.toHaveClass(/bg-attention-soft/)
   await expect(standalone.getByRole('link', { name: 'Checkpoint design' })).toHaveCount(0)
   await expect(standalone.getByRole('link', { name: 'Uncited design' })).toHaveCount(1)
   await expect(standalone.getByRole('link', { name: 'Requirement identity design' })).toHaveCount(1)
-  await expect(card.getByRole('button', { name: 'Confirm v2' })).toHaveCount(1)
+  await expect(card.getByRole('button', { name: 'Confirm v2', exact: true })).toHaveCount(1)
   await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
   await expect(standalone.getByRole('button', { name: 'Confirm version 3' })).toHaveCount(1)
   await expect(standalone.getByRole('button', { name: 'Confirm version 4' })).toHaveCount(1)
@@ -2851,7 +2858,8 @@ test('structured authority checkpoint leads with the decision and resolves throu
   await expect(page.getByText('Showing System Design proposals for design-checkpoint.')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Checkpoint design' })).toBeVisible()
   await page.goBack()
-  await card.getByRole('button', { name: 'Confirm v2' }).click()
+  await card.getByRole('button', { name: 'Review' }).click()
+  await card.getByRole('button', { name: 'Confirm v2', exact: true }).click()
   await expect.poll(() => resolved).toBe(true)
   expect(confirmHeaders.authorization).toBeUndefined()
   expect(confirmHeaders['if-match']).toBe('"1"')
@@ -2964,6 +2972,11 @@ test('an authority-conflict checkpoint states the server question and groups sev
 
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Confirm 4 revisions & resume' })).toBeVisible()
+  const review = card.getByRole('button', { name: 'Review' })
+  await expect(review).toHaveAttribute('aria-expanded', 'false')
+  await review.click()
+  await expect(review).toHaveAttribute('aria-expanded', 'true')
   await expect(
     card.getByText(
       'Confirm or dismiss the pending revisions of HTTP API, Web task surfaces, Web dashboard, and MCP investigation reads. That decision settles the conflict; recover the order with direction after it.',
@@ -3028,6 +3041,7 @@ test('an authority-conflict pre-fill never overwrites operator direction', async
   await page.goto('/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   const direction = page.getByLabel('Operator direction')
+  await card.getByRole('button', { name: 'Review' }).click()
   await expect(card.getByRole('button', { name: /^Confirm v/ })).toHaveCount(1)
   await direction.fill('Keep the operator wording.')
   await card.getByRole('button', { name: 'Confirm v44' }).click()
@@ -3062,6 +3076,8 @@ test('an authority conflict without proposals asks for authorship', async ({ pag
   await page.goto('/tasks/operator-checkpoint/full')
   await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
+  await card.getByRole('button', { name: 'Respond' }).click()
   await expect(
     card.getByText(
       'No cited document has a pending revision. Author a revision of Web dashboard, then recover the order with direction.',
@@ -3133,7 +3149,9 @@ test('a resumed checkpoint order follows the queued server statement', async ({ 
 
   await page.goto('/tasks/operator-checkpoint/full')
   await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
-  await expect(page.getByText('Decision needed', { exact: true })).toBeVisible()
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByText('Cited documents need a revision', { exact: true })).toBeVisible()
+  await card.getByRole('button', { name: 'Review' }).click()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
 
   resumed = true
@@ -3166,6 +3184,9 @@ test('a generic decision request keeps the generic direction guidance', async ({
   await expect(banner.getByText('Answer the agent?')).toBeVisible()
   await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
+  await card.getByRole('button', { name: 'Respond' }).click()
+  await expect(page.getByLabel('Operator direction')).toBeFocused()
   await expect(
     card.getByText(
       'A decision is required before this work can continue. Recovery without direction will repeat the checkpoint.',
@@ -3221,6 +3242,321 @@ test('structured authority checkpoint omits the standalone card when every propo
   await expect(page.getByRole('button', { name: 'Confirm v2' })).toHaveCount(1)
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
+})
+
+// Confirm and resume (component-web-task-surfaces, Implementation checkpoints;
+// req-260820-394cac AC-1.2, AC-2.6, AC-2.7): a System Design document with two
+// pending versions and a requirement with one, cited in that order.
+type BulkCheckpointState = {
+  current: Record<string, number>
+  pending: Record<string, number[]>
+  failOn?: string
+  ignore?: Set<string>
+  failActivity?: boolean
+}
+
+function bulkCheckpoint(state: BulkCheckpointState) {
+  const documents = [
+    {
+      id: 'component-alpha',
+      kind: 'system_design' as const,
+      title: 'Alpha design',
+      cited: 3,
+      sections: ['Intake', 'Output'],
+    },
+    { id: 'req-beta', kind: 'requirement' as const, title: 'Beta requirement', cited: 1, sections: ['AC-1.1'] },
+  ]
+  return {
+    decision_request:
+      'Confirm or dismiss component-alpha v4 and v5 and req-beta v2, which replace the intake rules the approved plan conflicts with, then let the order resume under them without a separate recovery act.',
+    class: 'authority_conflict',
+    citations: documents.flatMap((document) =>
+      document.sections.map((section) => ({
+        document_id: document.id,
+        document_kind: document.kind,
+        document_title: document.title,
+        cited_version: document.cited,
+        statement_or_section_id: section,
+        current_confirmed_version: state.current[document.id],
+        newer_confirmed: state.current[document.id] > document.cited,
+        pending_proposals: state.pending[document.id].map((version) => ({
+          id: document.id,
+          title: document.title,
+          tier: document.kind,
+          version,
+          origin_type: 'task' as const,
+          origin_id: 'operator-checkpoint',
+          proposed_at: createdAt,
+        })),
+      })),
+    ),
+  }
+}
+
+async function routeBulkCheckpoint(page: Page, state: BulkCheckpointState) {
+  const confirms: Array<{ path: string; ifMatch?: string }> = []
+  const recoveries: Array<Record<string, unknown>> = []
+  let activityReads = 0
+  await page.route('**/v1/tasks/operator-checkpoint/activity*', async (route) => {
+    activityReads++
+    if (state.failActivity) {
+      await route.fulfill({ status: 503, json: { error: 'unavailable', message: 'Task activity is unavailable.' } })
+      return
+    }
+    const item = activity('operator-checkpoint', false)
+    const order = item.work_orders?.[0]
+    if (!order) throw new Error('Expected the checkpoint fixture to include a work order.')
+    order.checkpoint = bulkCheckpoint(state)
+    await route.fulfill({ json: item })
+  })
+  const confirm = async (route: Route) => {
+    const path = new URL(route.request().url()).pathname
+    const [, , , id, , version] = path.split('/')
+    confirms.push({ path, ifMatch: route.request().headers()['if-match'] })
+    if (state.failOn === `${id}:${version}`) {
+      await route.fulfill({
+        status: 409,
+        json: { error: 'version_conflict', message: `${id} moved before v${version}.` },
+      })
+      return
+    }
+    if (!state.ignore?.has(id)) {
+      state.current[id] = Number(version)
+      state.pending[id] = state.pending[id].filter((pending) => pending !== Number(version))
+    }
+    await route.fulfill({ json: {} })
+  }
+  await page.route('**/v1/system-designs/*/versions/*/confirm**', confirm)
+  await page.route('**/v1/requirements/*/versions/*/confirm**', confirm)
+  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
+    recoveries.push(route.request().postDataJSON() as Record<string, unknown>)
+    await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
+  })
+  return { confirms, recoveries, activityReads: () => activityReads }
+}
+
+function freshBulkState(): BulkCheckpointState {
+  return { current: { 'component-alpha': 3, 'req-beta': 1 }, pending: { 'component-alpha': [5, 4], 'req-beta': [2] } }
+}
+
+test('a decision checkpoint renders one row with the server label, a clamped request, Review, and one primary act', async ({
+  page,
+}) => {
+  await routeBulkCheckpoint(page, freshBulkState())
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByText('Cited revisions need a decision', { exact: true })).toBeVisible()
+  const request = card.getByTestId('checkpoint-decision-request')
+  await expect(request).toHaveClass(/line-clamp-2/)
+  await expect(card.getByRole('button', { name: 'Confirm 3 revisions & resume' })).toBeEnabled()
+  await expect(card.getByRole('button', { name: 'Respond' })).toHaveCount(0)
+  const review = card.getByRole('button', { name: 'Review' })
+  const drawer = page.locator(`#${await review.getAttribute('aria-controls')}`)
+  await expect(review).toHaveAttribute('aria-expanded', 'false')
+  await expect(drawer).toBeHidden()
+  await expect(page.getByLabel('Operator direction')).toBeHidden()
+  await expect(card).not.toHaveClass(/bg-attention-soft/)
+
+  // Expanding shows the whole request in place, the guidance once, and the
+  // recovery form; typed direction survives closing and reopening.
+  await review.click()
+  await expect(drawer).toBeVisible()
+  await expect(request).not.toHaveClass(/line-clamp-2/)
+  await expect(card.getByText(/That decision settles the conflict/)).toHaveCount(1)
+  await expect(card.getByRole('list', { name: /^Citations of / })).toHaveCount(2)
+  await expect(card.getByRole('button', { name: /^Confirm v\d+$/ })).toHaveCount(3)
+  await page.getByLabel('Operator direction').fill('Hold the intake rules as written.')
+  await review.click()
+  await expect(drawer).toBeHidden()
+  await review.click()
+  await expect(page.getByLabel('Operator direction')).toHaveValue('Hold the intake rules as written.')
+})
+
+test('confirm and resume confirms every cited proposal in ascending order and never recovers', async ({ page }) => {
+  const { confirms, recoveries } = await routeBulkCheckpoint(page, freshBulkState())
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await card.getByRole('button', { name: 'Confirm 3 revisions & resume' }).click()
+
+  // The refreshed order is still released until the server's clock tick, and
+  // every citation is answered, so the row keeps the resuming status.
+  await expect(card.getByRole('status')).toHaveText('Confirmed — resuming')
+  expect(confirms).toEqual([
+    { path: '/v1/system-designs/component-alpha/versions/4/confirm', ifMatch: '"3"' },
+    { path: '/v1/system-designs/component-alpha/versions/5/confirm', ifMatch: '"4"' },
+    { path: '/v1/requirements/req-beta/versions/2/confirm', ifMatch: '"1"' },
+  ])
+  await expect(card.getByText('Now confirmed at v5', { exact: true })).toHaveCount(1)
+  await expect(card.getByRole('button', { name: 'Review' })).toHaveAttribute('aria-expanded', 'false')
+  await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
+  expect(recoveries).toEqual([])
+})
+
+test('confirm and resume opens the recovery drawer when the refreshed checkpoint is not answered', async ({ page }) => {
+  // The requirement confirmation succeeds but the refreshed citation still
+  // carries its pending proposal: an AC-2.7 case the operator recovers.
+  const state = { ...freshBulkState(), ignore: new Set(['req-beta']) }
+  const { recoveries } = await routeBulkCheckpoint(page, state)
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await card.getByRole('button', { name: 'Confirm 3 revisions & resume' }).click()
+  await expect(card.getByRole('button', { name: 'Review' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByLabel('Operator direction')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+  await expect(card.getByText('Confirmed — resuming')).toHaveCount(0)
+  expect(recoveries).toEqual([])
+})
+
+test('a failed confirm and resume stops, reports in the row, and retries only the remaining proposals', async ({
+  page,
+}) => {
+  const state: BulkCheckpointState = { ...freshBulkState(), failOn: 'component-alpha:5' }
+  const { confirms, recoveries } = await routeBulkCheckpoint(page, state)
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await card.getByRole('button', { name: 'Confirm 3 revisions & resume' }).click()
+  await expect(card.getByRole('alert')).toContainText('This design changed while you were reviewing it.')
+  expect(confirms.map((confirm) => confirm.path)).toEqual([
+    '/v1/system-designs/component-alpha/versions/4/confirm',
+    '/v1/system-designs/component-alpha/versions/5/confirm',
+  ])
+  await expect(card.getByText('Confirmed — resuming')).toHaveCount(0)
+
+  // The refreshed state names the remaining proposals and the current
+  // confirmed version; v4 is never confirmed twice.
+  state.failOn = undefined
+  const retry = card.getByRole('button', { name: 'Confirm 2 revisions & resume' })
+  await expect(retry).toBeEnabled()
+  await card.getByRole('button', { name: 'Review' }).click()
+  await expect(page.getByLabel('Operator direction')).toBeVisible()
+  await retry.click()
+  await expect(card.getByRole('status')).toHaveText('Confirmed — resuming')
+  expect(confirms.slice(2)).toEqual([
+    { path: '/v1/system-designs/component-alpha/versions/5/confirm', ifMatch: '"4"' },
+    { path: '/v1/requirements/req-beta/versions/2/confirm', ifMatch: '"1"' },
+  ])
+  expect(recoveries).toEqual([])
+})
+
+// Review round 1 (seat 1): a failed task-detail read after a partial
+// confirmation keeps the stale projection mounted. Confirmation stays disabled
+// until a read succeeds, so v4 is never confirmed twice.
+test('a failed refresh after partial confirmation keeps confirmation disabled until a successful read', async ({
+  page,
+}) => {
+  const state: BulkCheckpointState = { ...freshBulkState(), failOn: 'component-alpha:5' }
+  const { confirms, recoveries } = await routeBulkCheckpoint(page, state)
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  const stale = card.getByRole('button', { name: 'Confirm 3 revisions & resume' })
+  await expect(stale).toBeEnabled()
+  state.failActivity = true
+  await stale.click()
+
+  const refreshFailure = card.getByRole('alert').filter({ hasText: 'Could not refresh this task' })
+  await expect(refreshFailure).toBeVisible()
+  await expect(card.getByRole('alert').filter({ hasText: 'This design changed' })).toBeVisible()
+  expect(confirms.map((confirm) => confirm.path)).toEqual([
+    '/v1/system-designs/component-alpha/versions/4/confirm',
+    '/v1/system-designs/component-alpha/versions/5/confirm',
+  ])
+  await expect(stale).toBeDisabled()
+  await card.getByRole('button', { name: 'Review' }).click()
+  for (const version of [4, 5, 2]) {
+    await expect(card.getByRole('button', { name: `Confirm v${version}`, exact: true })).toBeDisabled()
+  }
+  // Manual recovery stays available while the projection is stale.
+  await page.getByLabel('Operator direction').fill('Continue with the confirmed intake rules.')
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeEnabled()
+  await stale.click({ force: true })
+  expect(confirms).toHaveLength(2)
+
+  // A successful read restores the controls from the refreshed versions.
+  state.failActivity = false
+  state.failOn = undefined
+  await refreshFailure.getByRole('button', { name: 'Refresh' }).click()
+  await expect(refreshFailure).toHaveCount(0)
+  const retry = card.getByRole('button', { name: 'Confirm 2 revisions & resume' })
+  await expect(retry).toBeEnabled()
+  await retry.click()
+  await expect(card.getByRole('status')).toHaveText('Confirmed — resuming')
+  expect(confirms.slice(2)).toEqual([
+    { path: '/v1/system-designs/component-alpha/versions/5/confirm', ifMatch: '"4"' },
+    { path: '/v1/requirements/req-beta/versions/2/confirm', ifMatch: '"1"' },
+  ])
+  expect(confirms.filter((confirm) => confirm.path.endsWith('/versions/4/confirm'))).toHaveLength(1)
+  expect(recoveries).toEqual([])
+})
+
+test('confirm and resume requires document confirmation capability', async ({ page }) => {
+  await page.route('**/v1/me**', (route) =>
+    route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }, route.request()) }),
+  )
+  await routeBulkCheckpoint(page, freshBulkState())
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByRole('button', { name: 'Confirm 3 revisions & resume' })).toBeDisabled()
+  await expect(card.getByText('Document confirmation capability is required.').first()).toBeVisible()
+})
+
+test('Show changes reads the proposal only after it opens and renders the bounded diff', async ({ page }) => {
+  await routeBulkCheckpoint(page, freshBulkState())
+  let documentReads = 0
+  await page.route(
+    (url) => url.pathname === '/v1/system-designs/component-alpha',
+    async (route) => {
+      documentReads++
+      const version = (n: number, content: string, confirmed: boolean) => ({
+        document_id: 'component-alpha',
+        version: n,
+        content,
+        governs: [],
+        origin: 'implementation_deliberation',
+        confirmed,
+        dismissed: false,
+      })
+      await route.fulfill({
+        json: {
+          document: { id: 'component-alpha', title: 'Alpha design', current_version: 3 },
+          current_version: version(3, '# Alpha\n\nIntake keeps the recorded media type.', true),
+          pending_versions: [
+            version(4, '# Alpha\n\nIntake sends textual documents as text/plain.', false),
+            version(5, '# Alpha\n\nIntake sends textual documents as text/plain.\n\nOutput is redacted.', false),
+          ],
+          versions: [version(3, '# Alpha\n\nIntake keeps the recorded media type.', true)],
+          lineage: [],
+          lineage_total: 0,
+          lineage_snapshot_id: 0,
+          drift: [],
+        },
+      })
+    },
+  )
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await card.getByRole('button', { name: 'Review' }).click()
+  await expect(card.getByText('Show changes in v4')).toBeVisible()
+  expect(documentReads).toBe(0)
+  await card.getByText('Show changes in v4').click()
+  await expect(card.getByText('Confirmed v3', { exact: true })).toBeVisible()
+  await expect(card.getByText('Proposed v4', { exact: true })).toBeVisible()
+  await expect(card.getByText('Intake sends textual documents as text/plain.')).toBeVisible()
+  expect(documentReads).toBeGreaterThan(0)
+  await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
+})
+
+test('the decision row and its open drawer stay inside a 390 px viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await routeBulkCheckpoint(page, freshBulkState())
+  await page.goto('/tasks/operator-checkpoint/full')
+  const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
+  await expect(card.getByRole('button', { name: 'Confirm 3 revisions & resume' })).toBeVisible()
+  const overflow = () =>
+    page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  expect(await overflow()).toBeLessThanOrEqual(0)
+  await card.getByRole('button', { name: 'Review' }).click()
+  await expect(page.getByLabel('Operator direction')).toBeVisible()
+  expect(await overflow()).toBeLessThanOrEqual(0)
 })
 
 test('stalled task is labelled on its board card with recover and reasoned cancel controls', async ({ page }) => {
@@ -3677,6 +4013,7 @@ test('timed-out review round exposes a reasoned full-round retry and preserves h
   })
   await page.goto('/tasks/review-retry/full')
   await expect(page.getByText('Review round 1 needs operator attention')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Review round recovery' })).not.toHaveClass(/bg-attention-soft/)
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   await expect(page.getByText(/review harness exhausted retries/)).toBeVisible()
   await expect(page.getByText(/Round one feedback remains visible/)).toBeVisible()
@@ -3712,6 +4049,9 @@ test('interrupted review round offers one same-round recovery and retains comple
     })
   })
   await page.goto('/tasks/interrupted-review/full')
+  await expect(page.getByRole('region', { name: 'Interrupted review round recovery' })).not.toHaveClass(
+    /bg-attention-soft/,
+  )
   await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
   await expect(page.getByText(/This work was interrupted/)).toBeVisible()
   await expect(page.getByText(/completed verdict retained/)).toBeVisible()

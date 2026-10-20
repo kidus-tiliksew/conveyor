@@ -1,15 +1,17 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { CurrentExecutionState } from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { ActivityItem, WorkOrderCheckpointCitation, WorkOrderCheckpointPendingProposal } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
+import { CheckpointProposalDiff } from './checkpoint-proposal-diff'
 import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 import { VerificationCheckpointGrounds } from './verification-checkpoint-grounds'
@@ -97,7 +99,7 @@ export function CheckpointProposalRecoveryCard({
   return (
     <section
       aria-label="Confirm proposals and recover work order"
-      className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3"
+      className="space-y-3 rounded-lg border border-border bg-card px-3 py-3"
     >
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
@@ -109,7 +111,7 @@ export function CheckpointProposalRecoveryCard({
       {state.order.progress?.trim() && (
         <div className="space-y-1.5 text-xs leading-5 text-muted">
           <p className="font-medium text-foreground">Agent checkpoint message</p>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface p-2 font-sans text-sm text-foreground">
             {state.order.progress}
           </pre>
         </div>
@@ -201,7 +203,7 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
   return (
     <section
       aria-label="Verification checkpoint"
-      className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3"
+      className="space-y-3 rounded-lg border border-border bg-card px-3 py-3"
     >
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
@@ -235,7 +237,7 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
         />
       )}
       {operations.length > 0 ? (
-        <div className="space-y-1 rounded border border-attention/30 bg-surface/60 p-2 text-xs leading-5 text-muted">
+        <div className="space-y-1 rounded border border-border bg-surface/60 p-2 text-xs leading-5 text-muted">
           <p className="font-medium text-foreground">Typed disposition required</p>
           <p>
             Recovery must record an applied, not applied or unknown disposition for{' '}
@@ -276,6 +278,8 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
+  const drawerId = useId()
+  const directionRef = useRef<HTMLTextAreaElement>(null)
   const [checkoutResolved, setCheckoutResolved] = useState(false)
   const requestedDecision = order.checkpoint?.decision_request?.trim() ?? ''
   const authorityConflict = order.checkpoint?.class === 'authority_conflict'
@@ -283,6 +287,12 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
   const resolvedDirection = checkpointResolvedDirection(order.checkpoint?.class, citedDocuments)
   const [direction, setDirection] = useState(resolvedDirection)
   const [attachingContext, setAttachingContext] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [focusDirection, setFocusDirection] = useState(false)
+  // 'resuming' follows a successful confirm-and-resume until refreshed task
+  // detail arrives; the server's work-order clock recovers an answered
+  // conflict on its next tick (req-260820-394cac AC-2.6).
+  const [resume, setResume] = useState<'idle' | 'resuming' | 'refreshed'>('idle')
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     if (state.kind !== 'retry_pending') return
@@ -293,6 +303,19 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
     if (!resolvedDirection) return
     setDirection((current) => (current.trim() ? current : resolvedDirection))
   }, [resolvedDirection])
+  useEffect(() => {
+    if (!drawerOpen || !focusDirection) return
+    directionRef.current?.focus()
+    setFocusDirection(false)
+  }, [drawerOpen, focusDirection])
+  const answered = authorityConflict && citedDocuments.length > 0 && citedDocuments.every(isAnswered)
+  // A refreshed order that is still released and not answered is an AC-2.7
+  // case: the operator recovers it, so the drawer opens on the recovery form.
+  useEffect(() => {
+    if (resume !== 'refreshed' || answered) return
+    setResume('idle')
+    setDrawerOpen(true)
+  }, [resume, answered])
   const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
     mutationFn: () => recoverWorkOrder(order.id, requestId.current, direction.trim() || undefined),
@@ -302,6 +325,37 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
+  // A document confirmation changes the versions every confirm control reads,
+  // so those controls stay disabled until task detail is read again. A failed
+  // read keeps the old projection mounted; it is offered a read-only retry and
+  // never re-enables confirmation (component-web-task-surfaces).
+  const [projection, setProjection] = useState<'current' | 'refreshing' | 'stale'>('current')
+  const refreshProjection = async () => {
+    setProjection('refreshing')
+    try {
+      await queryClient.invalidateQueries(
+        { queryKey: taskDetailQueryKey(workspace, item.task.id) },
+        { throwOnError: true },
+      )
+      setProjection('current')
+      return true
+    } catch {
+      setProjection('stale')
+      return false
+    }
+  }
+  const refreshDocumentFamilies = async () => {
+    const [current] = await Promise.all([
+      refreshProjection(),
+      queryClient.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
+      queryClient.invalidateQueries({ queryKey: ['requirements', workspace] }),
+      queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] }),
+    ])
+    return current
+  }
+  const retryProjection = async () => {
+    if (await refreshProjection()) setResume((current) => (current === 'resuming' ? 'refreshed' : current))
+  }
   const confirmProposal = useMutation({
     mutationFn: ({
       citation,
@@ -315,15 +369,41 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         ? confirmRequirementVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
         : confirmSystemDesignVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
     },
-    onSettled: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(workspace, item.task.id) }),
-        queryClient.invalidateQueries({ queryKey: ['pending-proposals', workspace] }),
-        queryClient.invalidateQueries({ queryKey: ['requirements', workspace] }),
-        queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] }),
-      ])
+    onMutate: () => setProjection('refreshing'),
+    onSettled: refreshDocumentFamilies,
+  })
+  const bulk = authorityConflict ? bulkConfirmation(citedDocuments) : undefined
+  // Confirm and resume: the click's plan is frozen, confirmations run in
+  // ascending version order per document with If-Match advancing from the
+  // version confirmed before, and nothing calls the recovery route.
+  const confirmAll = useMutation({
+    mutationFn: async (plan: BulkConfirmation) => {
+      for (const step of plan.documents) {
+        let expected = step.expected
+        for (const version of step.versions) {
+          await (step.kind === 'requirement'
+            ? confirmRequirementVersion(step.id, version, expected)
+            : confirmSystemDesignVersion(step.id, version, expected))
+          expected = version
+        }
+      }
+    },
+    onMutate: () => setProjection('refreshing'),
+    onSuccess: () => setResume('resuming'),
+    onSettled: async (_data, error) => {
+      const current = await refreshDocumentFamilies()
+      if (error == null && current) setResume('refreshed')
     },
   })
+  const documentDecisionPending = confirmProposal.isPending || confirmAll.isPending || projection !== 'current'
+  const projectionAlert = projection === 'stale' && (
+    <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-failure">
+      <span>Could not refresh this task after the confirmation. Refresh it before confirming again.</span>
+      <Button variant="secondary" size="sm" onClick={() => void retryProjection()}>
+        <RotateCcw aria-hidden /> Refresh
+      </Button>
+    </div>
+  )
 
   if (state.kind === 'retry_pending') {
     return (
@@ -347,26 +427,8 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
     !mutation.isPending &&
     (!checkoutBlocked || checkoutResolved) &&
     (!checkpointReleased || direction.trim().length > 0)
-  return (
-    <section
-      aria-label={requestedDecision ? 'Checkpoint decision and recovery' : 'Work order recovery'}
-      className="space-y-3 rounded-lg border border-attention/50 bg-attention-soft px-3 py-3"
-    >
-      <div className="flex items-start gap-2">
-        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-        {requestedDecision ? (
-          <div className="min-w-0 space-y-1 leading-5">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">Decision needed</p>
-            <p className="text-sm font-semibold text-foreground">{requestedDecision}</p>
-            <p className="text-xs text-muted">{state.nextAction}</p>
-          </div>
-        ) : (
-          <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
-            <p className="font-medium text-attention">{state.title}</p>
-            <p>{state.nextAction}</p>
-          </div>
-        )}
-      </div>
+  const recoveryForm = (
+    <>
       <div className="space-y-2 text-xs leading-5 text-muted">
         {checkpointReleased && authorityConflict && citedDocuments.length > 0 ? (
           <AuthorityConflictGuidance documents={citedDocuments} />
@@ -380,20 +442,10 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         {checkpointReleased && !requestedDecision && order.progress?.trim() && (
           <div className="space-y-1.5">
             <p className="font-medium text-foreground">Agent checkpoint message</p>
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface p-2 font-sans text-sm text-foreground">
               {order.progress}
             </pre>
           </div>
-        )}
-        {checkpointReleased && requestedDecision && order.progress?.trim() && (
-          <details>
-            <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
-              Show full progress report
-            </summary>
-            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-sans text-sm text-foreground">
-              {order.progress}
-            </pre>
-          </details>
         )}
         {checkpointReleased && authorityConflict && (
           <section className="space-y-2" aria-label="Authority conflict references">
@@ -408,7 +460,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
                     ? `${confirmProposal.variables.citation.document_id}:${confirmProposal.variables.proposal.version ?? 0}`
                     : ''
                 }
-                isPending={confirmProposal.isPending}
+                isPending={documentDecisionPending}
                 error={confirmProposal.error}
                 onConfirm={(proposal) =>
                   confirmProposal.mutate({
@@ -420,7 +472,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
             ))}
           </section>
         )}
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-attention/30 bg-surface/60 p-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-border bg-surface/60 p-2">
           <span>
             <span className="font-medium text-foreground">Attached context: </span>
             {(item.task.context?.requirements?.length ?? 0) + (item.task.context?.designs?.length ?? 0) === 0
@@ -436,13 +488,14 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         <label className="block space-y-1.5">
           <span className="font-medium text-foreground">Operator direction</span>
           <textarea
+            ref={directionRef}
             aria-label="Operator direction"
             maxLength={4096}
             rows={4}
             value={direction}
             onChange={(event) => setDirection(event.target.value)}
             placeholder="State the decision or instruction the agent should follow."
-            className="w-full resize-y rounded-md border border-attention/30 bg-surface px-3 py-2 text-sm text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-primary"
+            className="w-full resize-y rounded-md border border-edge bg-surface px-3 py-2 text-sm text-foreground outline-none placeholder:text-faint focus-visible:ring-2 focus-visible:ring-primary"
           />
         </label>
       </div>
@@ -451,7 +504,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
           <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
             Show technical details
           </summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-attention/30 bg-surface p-2 font-mono">
+          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface p-2 font-mono">
             {order.last_failure_detail}
           </pre>
         </details>
@@ -462,7 +515,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
             Review the affected files, then commit, stash, or otherwise resolve those changes in the primary checkout.
             Conveyor will not clean, commit, stash, or discard them.
           </p>
-          <label className="flex cursor-pointer items-start gap-2 rounded border border-attention/30 bg-surface/60 p-2 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
+          <label className="flex cursor-pointer items-start gap-2 rounded border border-border bg-surface/60 p-2 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary">
             <input
               type="checkbox"
               className="mt-0.5 size-4 accent-primary"
@@ -485,8 +538,156 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
       {!canRecoverWork && <p className="text-xs text-muted">Work recovery capability is required.</p>}
       {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
       {attachingContext && <TaskContextAttachmentDialog task={item.task} onClose={() => setAttachingContext(false)} />}
+    </>
+  )
+
+  if (!requestedDecision) {
+    return (
+      <section aria-label="Work order recovery" className="space-y-3 rounded-lg border border-border bg-card px-3 py-3">
+        <div className="flex items-start gap-2">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
+          <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
+            <p className="font-medium text-attention">{state.title}</p>
+            <p>{state.nextAction}</p>
+          </div>
+        </div>
+        {projectionAlert}
+        {recoveryForm}
+      </section>
+    )
+  }
+
+  // component-web-task-surfaces, Implementation checkpoints: a decision request
+  // renders as one row (the server label, the request clamped to two lines,
+  // Review, and at most one primary act) over a drawer holding the rest
+  // (req-260820-394cac AC-1.2).
+  const resuming = resume === 'resuming' || (resume === 'refreshed' && answered)
+  const confirmLabel =
+    bulk == null
+      ? ''
+      : bulk.count === 1
+        ? `Confirm v${bulk.documents.find((step) => step.versions.length > 0)?.versions[0]} & resume`
+        : `Confirm ${bulk.count} revisions & resume`
+  return (
+    <section
+      aria-label="Checkpoint decision and recovery"
+      className="space-y-3 rounded-lg border border-border bg-card px-3 py-3"
+    >
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-attention-dot" />
+        <div className="min-w-0 flex-1 basis-56 leading-5">
+          <p className="text-sm font-semibold text-foreground">{state.title}</p>
+          <p
+            data-testid="checkpoint-decision-request"
+            className={cn('whitespace-pre-wrap break-words text-xs text-muted', !drawerOpen && 'line-clamp-2')}
+          >
+            {requestedDecision}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-expanded={drawerOpen}
+            aria-controls={drawerId}
+            onClick={() => setDrawerOpen((open) => !open)}
+          >
+            Review
+          </Button>
+          {resuming ? (
+            <p role="status" className="flex items-center gap-1.5 text-xs font-medium text-positive">
+              <Check className="size-4" aria-hidden /> Confirmed — resuming
+            </p>
+          ) : bulk != null ? (
+            <Button
+              size="sm"
+              disabled={!canConfirmDocuments || documentDecisionPending}
+              onClick={() => confirmAll.mutate(bulk)}
+            >
+              <Check aria-hidden />
+              {confirmAll.isPending ? 'Confirming…' : confirmLabel}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => {
+                setDrawerOpen(true)
+                setFocusDirection(true)
+              }}
+            >
+              Respond
+            </Button>
+          )}
+        </div>
+      </div>
+      {bulk != null && !resuming && !canConfirmDocuments && (
+        <p className="text-xs text-muted">Document confirmation capability is required.</p>
+      )}
+      {projectionAlert}
+      {confirmAll.error != null && (
+        <p role="alert" className="text-xs text-failure">
+          {errorMessage(confirmAll.error, 'Could not confirm the cited revisions.')}
+        </p>
+      )}
+      <div id={drawerId} hidden={!drawerOpen} className="space-y-3 border-t border-border pt-3">
+        <div className="space-y-2 text-xs leading-5 text-muted">
+          {checkpointReleased && order.progress?.trim() && (
+            <details>
+              <summary className="cursor-pointer rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
+                Show full progress report
+              </summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface p-2 font-sans text-sm text-foreground">
+                {order.progress}
+              </pre>
+            </details>
+          )}
+        </div>
+        {recoveryForm}
+      </div>
     </section>
   )
+}
+
+function isAnswered(document: CitedDocument) {
+  return document.newerConfirmed && document.proposals.length === 0
+}
+
+interface BulkConfirmation {
+  count: number
+  documents: Array<{
+    id: string
+    kind: WorkOrderCheckpointCitation['document_kind']
+    expected: number
+    versions: number[]
+  }>
+}
+
+// The cited documents' pending proposals that one confirm-and-resume act
+// decides (component-web-task-surfaces, Implementation checkpoints). It is
+// offered only when every cited document carries pending proposals with known
+// versions and a known current confirmed version; otherwise the decision
+// belongs in the drawer.
+function bulkConfirmation(documents: CitedDocument[]): BulkConfirmation | undefined {
+  if (documents.length === 0) return undefined
+  const steps: BulkConfirmation['documents'] = []
+  for (const document of documents) {
+    const versions = document.proposals.flatMap((proposal) => (proposal.version == null ? [] : [proposal.version]))
+    if (
+      versions.length === 0 ||
+      versions.length !== document.proposals.length ||
+      !Number.isFinite(document.currentConfirmedVersion)
+    )
+      return undefined
+    const [first] = document.citations
+    steps.push({
+      id: first.document_id,
+      kind: first.document_kind,
+      expected: document.currentConfirmedVersion,
+      versions: [...versions].sort((left, right) => left - right),
+    })
+  }
+  const count = steps.reduce((total, step) => total + step.versions.length, 0)
+  return { count, documents: steps }
 }
 
 // One cited document of an authority-conflict checkpoint. A checkpoint cites
@@ -596,7 +797,7 @@ function CitedDocumentBlock({
 }) {
   const [first] = document.citations
   return (
-    <div className="space-y-2 rounded border border-attention/30 bg-surface/60 p-2">
+    <div className="space-y-2 rounded border border-border bg-surface/60 p-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           {first.document_kind === 'requirement' ? (
@@ -643,7 +844,7 @@ function CitedDocumentBlock({
               ? 'A revision is waiting for your decision.'
               : `${document.proposals.length} revisions are waiting for your decision.`}
           </p>
-          <div className="flex flex-wrap gap-2">
+          <div className="space-y-2">
             {document.proposals.map((proposal) => {
               const key = `${first.document_id}:${proposal.version ?? 0}`
               return (
@@ -660,6 +861,14 @@ function CitedDocumentBlock({
                     >
                       Review or dismiss v{proposal.version}
                     </Link>
+                  )}
+                  {proposal.version != null && (
+                    <CheckpointProposalDiff
+                      kind={first.document_kind}
+                      documentId={first.document_id}
+                      baseVersion={document.currentConfirmedVersion}
+                      proposedVersion={proposal.version}
+                    />
                   )}
                 </div>
               )
