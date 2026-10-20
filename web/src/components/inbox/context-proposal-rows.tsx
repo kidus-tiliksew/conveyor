@@ -9,6 +9,7 @@ import { absoluteTime, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { choiceBody } from './choice-bodies'
+import { Kbd, useShortcutChoice } from './inbox-keyboard'
 import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 
 // The words the row prints for a proposal's stored source (NA-6).
@@ -38,8 +39,12 @@ function unavailable(choice: NextActionChoice | undefined) {
 // synchronous guard covers row and batch sends, and leaving the card abandons
 // the unsent remainder. Every post is the same audited act as the row button
 // (AC-2.2; DEC-45); there is no bulk route (NA-6).
-export function useContextProposalSends(taskId: string) {
+// `onSent` runs after each recorded act, so the Inbox can tell its own acts
+// from other operators' when the item leaves (AC-2.10).
+export function useContextProposalSends(taskId: string, onSent?: () => void) {
   const { workspace } = useWorkspaceSelection()
+  const sent = useRef(onSent)
+  sent.current = onSent
   const client = useQueryClient()
   const inFlight = useRef(false)
   const mounted = useRef(true)
@@ -67,6 +72,7 @@ export function useContextProposalSends(taskId: string) {
         for (const choice of choices) {
           if (!mounted.current || current.current !== acted) return
           await postNextActionChoice(acted, choice, undefined)
+          sent.current?.()
         }
       } catch (failure) {
         if (mounted.current) setError(failure)
@@ -181,21 +187,27 @@ function ProposalButton({
   choice: NextActionChoice | undefined
   sends: ContextProposalSends
 }) {
+  const shortcut = useShortcutChoice()
   if (!choice) return null
   const reason = unavailable(choice)
+  const keyed = shortcut === choice.id && reason === ''
   return (
     <span className="inline-flex max-w-full min-w-0 flex-col gap-0.5">
-      <Button
-        size="sm"
-        variant={act === 'confirm' && reason === '' ? 'default' : 'secondary'}
-        className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
-        title={choice.effect}
-        data-choice={choice.id}
-        disabled={sends.busy || reason !== ''}
-        onClick={() => void sends.run([choice])}
-      >
-        {choice.label}
-      </Button>
+      <span className="inline-flex max-w-full min-w-0 items-center gap-1.5">
+        <Button
+          size="sm"
+          variant={act === 'confirm' && reason === '' ? 'default' : 'secondary'}
+          className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
+          title={choice.effect}
+          data-choice={choice.id}
+          data-shortcut={keyed ? 'c' : undefined}
+          disabled={sends.busy || reason !== ''}
+          onClick={() => void sends.run([choice])}
+        >
+          {choice.label}
+        </Button>
+        {keyed && <Kbd>c</Kbd>}
+      </span>
       {reason && <span className="text-[11px] text-muted">{reason}</span>}
     </span>
   )

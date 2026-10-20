@@ -1,8 +1,10 @@
 import { Link } from '@tanstack/react-router'
+import { errorMessage } from '../../lib/errors'
 import type { InboxItem, NextActionBlocker, Task } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
 import { GateChoices } from '../task/merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from '../task/next-action-parts'
+import { Button } from '../ui/button'
 import { Disclosure } from '../ui/disclosure'
 import { Skeleton } from '../ui/skeleton'
 import {
@@ -12,133 +14,165 @@ import {
   MonitorOriginLine,
   useContextProposalSends,
 } from './context-proposal-rows'
+import { DecisionContext } from './inbox-context'
+import { Kbd, ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
 import { useNextAction } from './use-next-actions'
 
-// What the card's context link opens, by next-action kind (AC-2.3). A kind
-// without in-place context opens the sheet's pointer to the task.
-const contextLinks: Record<string, string> = {
-  plan_approval: 'View plan',
-  plan_revision: 'View plan',
-  agent_question: 'View checkpoint',
-  review_bounce_limit: 'View review',
-  verification_disposition: 'View operation log',
-  context_proposal: 'View proposed context',
+// What the detail's context section holds, by next-action kind (AC-2.3).
+const contextHeadings: Record<string, string> = {
+  plan_approval: 'Plan',
+  plan_revision: 'Plan',
+  agent_question: 'Checkpoint',
+  review_bounce_limit: 'Latest review',
+  verification_disposition: 'Operation log',
+  context_proposal: 'Proposed context',
 }
 
-// One task decision in the Inbox (AC-2.1; feature-operator-next-action NA-6).
-// The list item carries only the compact next action, so the card reads the
-// task's full next action for the question, choices, consequence, deadline
-// and identifiers. The label, question, choices and consequence are server
-// text; the card adds only its chrome.
-export function DecisionCard({ item, task, onView }: { item: InboxItem; task: Task; onView: (task: Task) => void }) {
-  const { data: action, isLoading } = useNextAction(task.id)
+// The selected task decision in the Inbox's detail view (AC-2.1, AC-2.3,
+// AC-2.8; DEC-82(1)). The list item carries only the compact next action, so
+// the detail reads the task's full next action for the question, choices,
+// consequence, deadline and identifiers, and renders the decision's context in
+// place. The label, question, choices and consequence are server text; the
+// detail adds only its chrome. `onActed` runs after each recorded act, so the
+// page can move the selection when the item leaves (AC-2.10).
+export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task: Task; onActed: () => void }) {
+  const { data: action, isLoading, error, refetch, isFetching } = useNextAction(task.id)
   const compact = item.next_action
   const kind = action?.kind ?? compact?.kind ?? ''
   const blocks = action?.blocks ?? compact?.blocks ?? []
   const pullRequest = item.pull_request
   const titles = new Map((task.context?.requirements ?? []).map((requirement) => [requirement.id, requirement.title]))
-  const sends = useContextProposalSends(task.id)
+  const sends = useContextProposalSends(task.id, onActed)
   // A context decision lists one row per proposed document in place of the
   // flat choice row (NA-6).
   const contextRows = kind === 'context_proposal' && action?.details?.context_proposals ? action : undefined
+  const shortcut = action ? shortcutChoiceId(action) : null
   return (
-    <li data-inbox-item={task.id} className="min-w-0 overflow-hidden rounded-lg border border-attention/40 bg-card">
-      <div className="min-w-0 space-y-2.5 px-4 pb-3 pt-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <span data-decision-label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">
-            {action?.label ?? compact?.label}
-          </span>
-          {blocks.length > 0 && <BlocksChip blocks={blocks} />}
-          {item.last_event_at && (
-            <time dateTime={item.last_event_at} className="ml-auto text-xs text-faint">
-              {relativeTime(item.last_event_at)}
-            </time>
-          )}
-        </div>
-        <h3 className="break-words font-medium leading-6">
-          <Link to="/tasks/$taskId" params={{ taskId: task.id }} className="hover:underline">
-            {task.title}
-          </Link>
-        </h3>
-        <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">
-          {pullRequest?.issue_number != null ? (
-            pullRequest.issue_url ? (
-              <a href={pullRequest.issue_url} className="font-mono text-primary hover:underline">
-                {pullRequest.repository}#{pullRequest.issue_number}
-              </a>
-            ) : (
-              <span className="font-mono">
-                {pullRequest.repository}#{pullRequest.issue_number}
-              </span>
-            )
-          ) : (
-            <span>No PR yet</span>
-          )}
-          {item.serves?.map((id) => (
-            <span
-              key={id}
-              data-serves={id}
-              className="inline-flex min-w-0 max-w-full items-center gap-1 rounded border border-border px-1.5 py-0.5 text-foreground"
-            >
-              <span className="font-mono text-primary">{id}</span>
-              {titles.get(id) && <span className="min-w-0 truncate">{titles.get(id)}</span>}
+    <ShortcutChoiceProvider choiceId={shortcut}>
+      <article
+        data-inbox-item={task.id}
+        aria-label={task.title}
+        className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-border bg-card md:overflow-hidden"
+      >
+        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span data-decision-label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">
+              {action?.label ?? compact?.label}
             </span>
-          ))}
-        </div>
-        {isLoading && <Skeleton className="h-12" />}
-        {action?.question && <p className="text-sm leading-6">{action.question}</p>}
-        {contextRows && (
-          <div className="space-y-2">
-            <MonitorOriginLine action={contextRows} />
-            <ContextProposalRows action={contextRows} sends={sends} />
+            {blocks.length > 0 && <BlocksChip blocks={blocks} />}
+            {item.last_event_at && (
+              <time dateTime={item.last_event_at} className="ml-auto text-xs text-faint">
+                {relativeTime(item.last_event_at)}
+              </time>
+            )}
           </div>
-        )}
-        {item.recommendation && <p className="text-sm text-muted">Recommendation: {item.recommendation}</p>}
-        <div className="text-xs">
-          <button
-            type="button"
-            data-context-link
-            className="text-xs font-medium text-primary hover:underline"
-            onClick={() => onView(task)}
-          >
-            {contextLinks[kind] ?? 'View context'} →
-          </button>
-        </div>
-      </div>
-      <div data-decision-footer className="space-y-2 border-t border-border bg-surface/60 px-4 py-3">
-        {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
-        {contextRows ? (
-          <>
-            <ContextProposalBatch action={contextRows} sends={sends} />
-            <ContextProposalError sends={sends} />
-          </>
-        ) : (
-          action && (
-            <div className="text-[13px]">
-              <GateChoices taskId={task.id} action={action} />
+          <h2 data-detail-title className="break-words text-base font-semibold leading-6">
+            <Link to="/tasks/$taskId" params={{ taskId: task.id }} className="hover:underline">
+              {task.title}
+            </Link>
+          </h2>
+          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">
+            {pullRequest?.issue_number != null ? (
+              pullRequest.issue_url ? (
+                <a href={pullRequest.issue_url} className="font-mono text-primary hover:underline">
+                  {pullRequest.repository}#{pullRequest.issue_number}
+                </a>
+              ) : (
+                <span className="font-mono">
+                  {pullRequest.repository}#{pullRequest.issue_number}
+                </span>
+              )
+            ) : (
+              <span>No PR yet</span>
+            )}
+            {item.serves?.map((id) => (
+              <span
+                key={id}
+                data-serves={id}
+                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded border border-border px-1.5 py-0.5 text-foreground"
+              >
+                <span className="font-mono text-primary">{id}</span>
+                {titles.get(id) && <span className="min-w-0 truncate">{titles.get(id)}</span>}
+              </span>
+            ))}
+            <Link
+              to="/tasks/$taskId/full"
+              params={{ taskId: task.id }}
+              className="ml-auto font-medium text-primary hover:underline"
+            >
+              Open task →
+            </Link>
+          </div>
+          {isLoading && <Skeleton className="h-12" />}
+          {error != null && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-failure">{errorMessage(error, 'Could not load this decision.')}</span>
+              <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
+                Retry
+              </Button>
             </div>
-          )
-        )}
-        <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted">
-          {action?.if_ignored && (
-            <p className="min-w-0 break-words">
-              If you do nothing: <span className="font-medium text-foreground">{action.if_ignored}</span>
-            </p>
           )}
-          <NextActionDeadline deadline={action ? action.deadline : (item.deadline ?? compact?.deadline)} />
-          {action && (
-            <div className="ml-auto">
-              <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+          {action?.question && <p className="text-sm leading-6">{action.question}</p>}
+          {contextRows && (
+            <div className="space-y-2">
+              <MonitorOriginLine action={contextRows} />
+              <ContextProposalRows action={contextRows} sends={sends} />
+            </div>
+          )}
+          {item.recommendation && <p className="text-sm text-muted">Recommendation: {item.recommendation}</p>}
+          {kind && (
+            <div className="space-y-2 border-t border-border pt-3">
+              <h3 data-context-heading className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+                {contextHeadings[kind] ?? 'Context'}
+              </h3>
+              <DecisionContext taskId={task.id} kind={kind} />
             </div>
           )}
         </div>
-      </div>
-    </li>
+        <div
+          data-decision-footer
+          data-shortcut-merge={shortcut === 'merge' ? '' : undefined}
+          className="z-10 shrink-0 space-y-2 rounded-b-lg border-t border-border bg-surface px-4 py-3 max-md:sticky max-md:bottom-0"
+        >
+          {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
+          {contextRows ? (
+            <>
+              <ContextProposalBatch action={contextRows} sends={sends} />
+              <ContextProposalError sends={sends} />
+            </>
+          ) : (
+            action && (
+              <div className="text-[13px]">
+                {shortcut === 'merge' && (
+                  <p className="mb-1.5 hidden items-center gap-1.5 text-[11px] text-faint md:flex" data-merge-hint>
+                    <Kbd>c</Kbd> opens Merge
+                  </p>
+                )}
+                <GateChoices taskId={task.id} action={action} onActed={onActed} />
+              </div>
+            )
+          )}
+          <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted">
+            {action?.if_ignored && (
+              <p className="min-w-0 break-words">
+                If you do nothing: <span className="font-medium text-foreground">{action.if_ignored}</span>
+              </p>
+            )}
+            <NextActionDeadline deadline={action ? action.deadline : (item.deadline ?? compact?.deadline)} />
+            {action && (
+              <div className="ml-auto">
+                <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+              </div>
+            )}
+          </div>
+        </div>
+      </article>
+    </ShortcutChoiceProvider>
   )
 }
 
 // The tasks waiting on this decision, named on hover, focus or tap.
-function BlocksChip({ blocks }: { blocks: NextActionBlocker[] }) {
+export function BlocksChip({ blocks }: { blocks: NextActionBlocker[] }) {
   return (
     <Disclosure
       className="text-[11px]"

@@ -1362,6 +1362,11 @@ export class SystemDesignConflictError extends Error {}
 export function fetchDecisions() {
   return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions'))
 }
+// One decision with its statement, context and rejected alternatives, for
+// the Inbox's decision-proposal detail (req-operator-next-action AC-2.9).
+export function fetchDecision(id: string, workspace?: string, signal?: AbortSignal) {
+  return getJSON<import('./types').Decision>(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}`, workspace), signal)
+}
 export async function resolveDecision(id: string, action: 'confirm' | 'dismiss') {
   const response = await fetch(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}/${action}`), {
     method: 'POST',
