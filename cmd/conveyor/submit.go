@@ -23,7 +23,19 @@ import (
 const submitCredentialRemedy = "set CONVEYOR_GIT_TOKEN, or configure git credential fill for https://github.com on this machine"
 
 func submitCmd() *cobra.Command {
-	return &cobra.Command{Use: "submit <task-id>", Short: "Push the task branch, open its pull request locally, and submit for review", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var reviewSeatsFlag int
+	cmd := &cobra.Command{Use: "submit <task-id>", Short: "Push the task branch, open its pull request locally, and submit for review", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		// --review-seats declares the next round's review seat count only when
+		// set; an invalid count is refused before any credential, template,
+		// push, or pull-request effect (feature-review-seat-minimum RS-4).
+		var reviewSeats *int
+		if cmd.Flags().Changed("review-seats") {
+			if reviewSeatsFlag < 1 {
+				return fmt.Errorf("--review-seats must be at least 1")
+			}
+			declared := reviewSeatsFlag
+			reviewSeats = &declared
+		}
 		c, err := newClient().withLocalGitCredential()
 		if err != nil {
 			return err
@@ -32,7 +44,7 @@ func submitCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		result, err := c.submitTask(cmd.Context(), args[0], os.Getenv("CONVEYOR_WORK_ORDER_ID"), os.Getenv("CONVEYOR_SESSION_ID"), directory)
+		result, err := c.submitTask(cmd.Context(), args[0], os.Getenv("CONVEYOR_WORK_ORDER_ID"), os.Getenv("CONVEYOR_SESSION_ID"), directory, reviewSeats)
 		if err != nil {
 			return err
 		}
@@ -48,13 +60,18 @@ func submitCmd() *cobra.Command {
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	}}
+	cmd.Flags().IntVar(&reviewSeatsFlag, "review-seats", 0, "declare the next review round's seat count (at least the task's seat floor); omitted unless set")
+	return cmd
 }
 
 // submitTask keeps all forge credentials local. Every potentially credential-
 // bearing diagnostic is scrubbed before returning it to the caller.
-func (c *client) submitTask(ctx context.Context, taskID, orderID, session, directory string) (result map[string]any, retErr error) {
+func (c *client) submitTask(ctx context.Context, taskID, orderID, session, directory string, reviewSeats *int) (result map[string]any, retErr error) {
 	if orderID == "" || session == "" {
 		return nil, fmt.Errorf("CONVEYOR_WORK_ORDER_ID and CONVEYOR_SESSION_ID are required; run from the claimed task session")
+	}
+	if reviewSeats != nil && *reviewSeats < 1 {
+		return nil, fmt.Errorf("--review-seats must be at least 1")
 	}
 	g := c.gitCredentials
 	if g == nil {
@@ -181,7 +198,11 @@ func (c *client) submitTask(ctx context.Context, taskID, orderID, session, direc
 	if _, err = github.EnsureSubmissionPRWithCredential(ctx, template.Repository, template.Branch, template.Base, template.Title, template.Body, token); err != nil {
 		return nil, fmt.Errorf("open task pull request: %w; %s; pushed branch is preserved", err, submitCredentialRemedy)
 	}
-	body, _ := json.Marshal(map[string]string{"session_id": session, "head_sha": head, "workspace_id": c.workspace})
+	request := map[string]any{"session_id": session, "head_sha": head, "workspace_id": c.workspace}
+	if reviewSeats != nil {
+		request["review_seats"] = *reviewSeats
+	}
+	body, _ := json.Marshal(request)
 	err = c.workerDoContext(ctx, http.MethodPost, endpoint+"/submit-for-review", body, &result, c.token)
 	return result, err
 }

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -415,9 +416,10 @@ func (r workOrderAttemptCheckpointRequest) checkpoint() core.WorkOrderAttemptChe
 // worker and run channels enforce exact claimant, workspace, and session scope.
 func (s *Server) submitWorkOrderReview(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		SessionID   string `json:"session_id"`
-		HeadSHA     string `json:"head_sha"`
-		WorkspaceID string `json:"workspace_id"`
+		SessionID   string          `json:"session_id"`
+		HeadSHA     string          `json:"head_sha"`
+		WorkspaceID string          `json:"workspace_id"`
+		ReviewSeats json.RawMessage `json:"review_seats"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -426,12 +428,37 @@ func (s *Server) submitWorkOrderReview(w http.ResponseWriter, r *http.Request) {
 	if request.WorkspaceID == "" {
 		request.WorkspaceID = r.Header.Get("X-Workspace-ID")
 	}
-	result, err := s.callMCPTool(r, "submit_for_review", map[string]any{"work_order_id": chi.URLParam(r, "id"), "session_id": request.SessionID, "head_sha": request.HeadSHA, "workspace_id": request.WorkspaceID})
+	args := map[string]any{"work_order_id": chi.URLParam(r, "id"), "session_id": request.SessionID, "head_sha": request.HeadSHA, "workspace_id": request.WorkspaceID}
+	// A present review_seats passes unchanged to the shared submit_for_review
+	// parser, which validates it after admission (feature-review-seat-minimum
+	// RS-4).
+	if request.ReviewSeats != nil {
+		value, err := submitReviewSeatsValue(request.ReviewSeats)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		args["review_seats"] = value
+	}
+	result, err := s.callMCPTool(r, "submit_for_review", args)
 	if err != nil {
 		writeWorkOrderToolError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// submitReviewSeatsValue decodes a present REST review_seats value with
+// UseNumber, so JSON null stays a present nil the shared parser refuses and
+// numbers are never rounded through float64 before validation.
+func submitReviewSeatsValue(raw json.RawMessage) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {

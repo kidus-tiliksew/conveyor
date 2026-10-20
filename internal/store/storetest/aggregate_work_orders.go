@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -39,6 +40,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("VerifyPolicyStranded", func(t *testing.T) { runVerifyPolicyStranded(t, x) })
 	t.Run("UsageTokenUpdates", func(t *testing.T) { runUsageTokenUpdates(t, x) })
 	t.Run("ImplementationSubmission", func(t *testing.T) { runImplementationSubmission(t, x) })
+	t.Run("ImplementationSubmissionReviewSeats", func(t *testing.T) { runImplementationSubmissionReviewSeats(t, x) })
 	t.Run("BaseConflictCheck", func(t *testing.T) { runBaseConflictCheck(t, x) })
 	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
 	st, ctx := x.Backend, x.Context
@@ -305,4 +307,163 @@ func runImplementationSubmission(t *testing.T, x Fixture) {
 	if completed.ID != foreign.JobID {
 		t.Fatalf("completed job=%s", completed.ID)
 	}
+}
+
+// submitImplementationReviewSeats admits SubmitImplementationCommand with a
+// review seat declaration through the submit_for_review command lease
+// (feature-review-seat-minimum RS-4).
+func submitImplementationReviewSeats(x Fixture, command core.WorkOrderCommand, order core.WorkOrder, head string, seats store.SubmissionReviewSeats) (core.Job, error) {
+	order.State, order.HeadSHA = core.WorkOrderSubmitted, head
+	return taskops.ExecuteWorkOrder(x.Context, x.Backend, order.TaskID, command, func(lease taskops.TaskLease) (core.Job, error) {
+		return x.Backend.SubmitImplementationCommand(x.Context, lease, store.ImplementationSubmission{Order: order, EndedAt: time.Now().UTC().Truncate(time.Microsecond), ReviewSeats: seats})
+	})
+}
+
+// submissionUpdatePayload is the order's newest work_order.updated payload.
+func submissionUpdatePayload(t *testing.T, x Fixture, order core.WorkOrder) map[string]json.RawMessage {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, order.TaskID)
+	requireOK(t, err)
+	for i := len(events) - 1; i >= 0; i-- {
+		var payload map[string]json.RawMessage
+		if events[i].Kind != "work_order.updated" || json.Unmarshal(events[i].Payload, &payload) != nil || string(payload["id"]) != `"`+order.ID+`"` {
+			continue
+		}
+		return payload
+	}
+	t.Fatalf("no work_order.updated event for %s", order.ID)
+	return nil
+}
+
+// requireDeclaredReviewSeats reads the stored declaration through both the
+// exact and list reads.
+func requireDeclaredReviewSeats(t *testing.T, x Fixture, order core.WorkOrder, want *int) {
+	t.Helper()
+	current, err := x.Backend.GetWorkOrder(x.Context, order.ID)
+	requireOK(t, err)
+	listed, err := x.Backend.ListTaskWorkOrders(x.Context, order.TaskID)
+	requireOK(t, err)
+	var fromList *int
+	found := false
+	for _, candidate := range listed {
+		if candidate.ID == order.ID {
+			fromList, found = candidate.DeclaredReviewSeats, true
+		}
+	}
+	for label, got := range map[string]*int{"get": current.DeclaredReviewSeats, "list": fromList} {
+		if (want == nil) != (got == nil) || (want != nil && *want != *got) {
+			t.Fatalf("%s declared_review_seats=%s, want %s (listed=%t)", label, core.JSONPayload(got), core.JSONPayload(want), found)
+		}
+	}
+}
+
+// runImplementationSubmissionReviewSeats proves the submission-only writer of
+// declared_review_seats: an accepted declaration is written atomically with
+// the order update and its event and survives later metadata updates, caller
+// pointers cannot alter stored state, omission stays null, an unused refresh
+// count is recorded only in the event, and every refusal rolls back
+// (feature-review-seat-minimum RS-4).
+func runImplementationSubmissionReviewSeats(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("usr-seats"), OwnerUserID: "usr-seats", SessionID: "seats", ClientToken: "fixture", Lease: time.Hour, ExecutionTimeout: time.Hour}
+	three := 3
+
+	accepted := newAggregateOrder(t, x)
+	claimed, err := ClaimWorkOrder(ctx, st, accepted.ID, claim)
+	requireOK(t, err)
+	// A caller-supplied order field is never the writer.
+	claimed.DeclaredReviewSeats = &three
+	declared := 2
+	_, err = submitImplementationReviewSeats(x, core.WorkOrderCmdSubmitForReview, claimed, "seats-head", store.SubmissionReviewSeats{Declared: &declared})
+	requireOK(t, err)
+	declared = 9
+	two := 2
+	requireDeclaredReviewSeats(t, x, accepted, &two)
+	payload := submissionUpdatePayload(t, x, accepted)
+	if string(payload["declared_review_seats"]) != "2" || string(payload["state"]) != `"submitted"` || payload["review_seats"] != nil || payload["review_seats_applied"] != nil {
+		t.Fatalf("accepted submission payload=%s", core.JSONPayload(payload))
+	}
+	current, err := st.GetWorkOrder(ctx, accepted.ID)
+	requireOK(t, err)
+	*current.DeclaredReviewSeats = 8
+	requireDeclaredReviewSeats(t, x, accepted, &two)
+	// A later metadata update cannot replace or clear the declaration, and
+	// its event carries the stored value.
+	current.Progress = "metadata"
+	current.DeclaredReviewSeats = &three
+	requireOK(t, UpdateWorkOrder(ctx, st, current))
+	requireDeclaredReviewSeats(t, x, accepted, &two)
+	if payload = submissionUpdatePayload(t, x, accepted); string(payload["declared_review_seats"]) != "2" {
+		t.Fatalf("metadata update payload=%s", core.JSONPayload(payload))
+	}
+	current.DeclaredReviewSeats = nil
+	current.Progress = "metadata-clear"
+	requireOK(t, UpdateWorkOrder(ctx, st, current))
+	requireDeclaredReviewSeats(t, x, accepted, &two)
+
+	// Omission keeps the column null and the event shape unchanged.
+	omitted := newAggregateOrder(t, x)
+	claimed, err = ClaimWorkOrder(ctx, st, omitted.ID, claim)
+	requireOK(t, err)
+	_, err = submitImplementationReviewSeats(x, core.WorkOrderCmdSubmitForReview, claimed, "seats-head", store.SubmissionReviewSeats{})
+	requireOK(t, err)
+	requireDeclaredReviewSeats(t, x, omitted, nil)
+	if payload = submissionUpdatePayload(t, x, omitted); payload["declared_review_seats"] != nil || payload["review_seats"] != nil || payload["review_seats_applied"] != nil {
+		t.Fatalf("omitted submission payload=%s", core.JSONPayload(payload))
+	}
+
+	// An unused refresh count is recorded in the event only.
+	unused := newAggregateOrder(t, x)
+	claimed, err = ClaimWorkOrder(ctx, st, unused.ID, claim)
+	requireOK(t, err)
+	four := 4
+	_, err = submitImplementationReviewSeats(x, core.WorkOrderCmdSubmitForReview, claimed, "seats-head", store.SubmissionReviewSeats{Unused: &four})
+	requireOK(t, err)
+	requireDeclaredReviewSeats(t, x, unused, nil)
+	if payload = submissionUpdatePayload(t, x, unused); payload["declared_review_seats"] != nil || string(payload["review_seats"]) != "4" || string(payload["review_seats_applied"]) != "false" || string(payload["state"]) != `"submitted"` {
+		t.Fatalf("unused submission payload=%s", core.JSONPayload(payload))
+	}
+
+	// Refusals write nothing: invalid counts, a non-running job after the
+	// order update, a foreign session, and a lease for another command.
+	refused := newAggregateOrder(t, x)
+	refusedClaim, err := ClaimWorkOrder(ctx, st, refused.ID, claim)
+	requireOK(t, err)
+	zero := 0
+	for _, seats := range []store.SubmissionReviewSeats{{Declared: &zero}, {Unused: &zero}, {Declared: &two, Unused: &four}} {
+		beforeOrder, _, beforeEvents, _ := submissionSnapshot(t, x, refused)
+		if _, err = submitImplementationReviewSeats(x, core.WorkOrderCmdSubmitForReview, refusedClaim, "seats-head", seats); err == nil {
+			t.Fatalf("invalid review seats %+v accepted", seats)
+		}
+		afterOrder, _, afterEvents, _ := submissionSnapshot(t, x, refused)
+		if afterOrder.State != beforeOrder.State || afterEvents != beforeEvents {
+			t.Fatalf("invalid review seats wrote state")
+		}
+	}
+	for _, attempt := range []struct {
+		session string
+		command core.WorkOrderCommand
+	}{{"intruder", core.WorkOrderCmdSubmitForReview}, {"seats", core.WorkOrderCmdCreate}} {
+		beforeOrder, _, beforeEvents, _ := submissionSnapshot(t, x, refused)
+		foreign := refusedClaim
+		foreign.SessionID = attempt.session
+		if _, err = submitImplementationReviewSeats(x, attempt.command, foreign, "seats-head", store.SubmissionReviewSeats{Declared: &two}); err == nil {
+			t.Fatalf("submission %+v accepted", attempt)
+		}
+		afterOrder, _, afterEvents, _ := submissionSnapshot(t, x, refused)
+		if afterOrder.State != beforeOrder.State || afterEvents != beforeEvents {
+			t.Fatal("refused submission wrote state")
+		}
+		requireDeclaredReviewSeats(t, x, refused, nil)
+	}
+	requireOK(t, st.UpdateJob(ctx, core.Job{ID: refused.JobID, TaskID: refused.TaskID, Stage: core.StageImplement, State: core.JobFailed, EndedAt: time.Now().UTC()}))
+	beforeOrder, _, beforeEvents, _ := submissionSnapshot(t, x, refused)
+	if _, err = submitImplementationReviewSeats(x, core.WorkOrderCmdSubmitForReview, refusedClaim, "seats-head", store.SubmissionReviewSeats{Declared: &two}); err == nil {
+		t.Fatal("submission with a failed job accepted")
+	}
+	afterOrder, _, afterEvents, _ := submissionSnapshot(t, x, refused)
+	if afterOrder.State != beforeOrder.State || afterOrder.HeadSHA != beforeOrder.HeadSHA || afterEvents != beforeEvents {
+		t.Fatal("failed job submission did not roll back")
+	}
+	requireDeclaredReviewSeats(t, x, refused, nil)
 }

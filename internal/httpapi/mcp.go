@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -100,6 +103,12 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		if call.Name == "refresh_work_order_context" && len(request.Params) > 8192 {
 			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
 			break
+		}
+		if call.Name == "submit_for_review" {
+			if err := mcpExactReviewSeatsArgument(request.Params, call.Arguments); err != nil {
+				response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
+				break
+			}
 		}
 		result, err := s.callMCPTool(r, call.Name, call.Arguments)
 		if err != nil {
@@ -535,7 +544,11 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if strings.TrimSpace(stringArg("head_sha")) == "" {
 			return nil, invalidToolArgument(errors.New("head_sha is required"))
 		}
-		return s.WorkOrders.SubmitForReview(ctx, stringArg("work_order_id"), session, stringArg("head_sha"))
+		reviewSeats, seatsErr := reviewSeatsArg(args)
+		if seatsErr != nil {
+			return nil, invalidToolArgument(seatsErr)
+		}
+		return s.WorkOrders.SubmitForReviewWithReviewSeats(ctx, stringArg("work_order_id"), session, stringArg("head_sha"), reviewSeats)
 	case "await_review":
 		seconds := 300.0
 		if value, ok := floatArg(args["timeout_seconds"]); ok {
@@ -939,6 +952,110 @@ func boolArg(args map[string]any, key string) *bool {
 	return &value
 }
 
+// reviewSeatsSchema is submit_for_review's optional declared review seat
+// count (feature-review-seat-minimum RS-4).
+var reviewSeatsSchema = map[string]any{"type": "integer", "minimum": 1}
+
+// maxReviewSeats is the declared count's bound, the INT column's maximum.
+const maxReviewSeats = math.MaxInt32
+
+// reviewSeatsArg decodes submit_for_review's optional review_seats. An absent
+// key declares nothing. A present value must be a json.Number whose literal
+// denotes an integer from 1 through maxReviewSeats exactly; null, strings,
+// booleans, fractions, out-of-range numbers, and float64 values (which have
+// already lost their literal) are refused, never truncated, rounded, or treated
+// as absent (feature-review-seat-minimum RS-4).
+func reviewSeatsArg(args map[string]any) (*int, error) {
+	value, present := args["review_seats"]
+	if !present {
+		return nil, nil
+	}
+	invalid := fmt.Errorf("review_seats must be an integer from 1 to %d", maxReviewSeats)
+	number, ok := value.(json.Number)
+	if !ok {
+		return nil, invalid
+	}
+	seats, ok := exactReviewSeats(string(number))
+	if !ok {
+		return nil, invalid
+	}
+	return &seats, nil
+}
+
+// exactReviewSeatsLiteral is the JSON number grammar: sign, integer digits,
+// optional fraction digits, optional exponent.
+var exactReviewSeatsLiteral = regexp.MustCompile(`^(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$`)
+
+// exactReviewSeats judges a JSON number literal without a float conversion: it
+// accepts the literal only when it denotes an integer from 1 through
+// maxReviewSeats exactly, so 4.0 and 4e0 are 4 while 2.99999999999999999 is
+// refused. An exponent beyond +/-1000 is refused without being expanded.
+func exactReviewSeats(literal string) (int, bool) {
+	parts := exactReviewSeatsLiteral.FindStringSubmatch(literal)
+	if parts == nil || parts[1] == "-" {
+		return 0, false
+	}
+	exponent := 0
+	if parts[4] != "" {
+		parsed, err := strconv.Atoi(parts[4])
+		if err != nil || parsed > 1000 || parsed < -1000 {
+			return 0, false
+		}
+		exponent = parsed
+	}
+	digits := parts[2] + parts[3]
+	point := len(parts[2]) + exponent
+	if point < 0 {
+		point = 0
+	}
+	if point < len(digits) {
+		if strings.Trim(digits[point:], "0") != "" {
+			return 0, false
+		}
+		digits = digits[:point]
+	} else {
+		digits += strings.Repeat("0", point-len(digits))
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" || len(digits) > 10 {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || value < 1 || value > maxReviewSeats {
+		return 0, false
+	}
+	return int(value), true
+}
+
+// mcpExactReviewSeatsArgument re-reads submit_for_review's raw review_seats
+// argument with UseNumber, because the tools/call envelope decodes arguments
+// as float64 and would round the literal before validation. Every other tool
+// and argument keeps the envelope's decoding (feature-review-seat-minimum
+// RS-4).
+func mcpExactReviewSeatsArgument(params json.RawMessage, arguments map[string]any) error {
+	if _, present := arguments["review_seats"]; !present {
+		return nil
+	}
+	var raw struct {
+		Arguments map[string]json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(params, &raw); err != nil {
+		return err
+	}
+	literal, present := raw.Arguments["review_seats"]
+	if !present {
+		return fmt.Errorf("review_seats argument is unavailable")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(literal))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	arguments["review_seats"] = value
+	return nil
+}
+
 func mcpTools() []map[string]any {
 	object := func(properties map[string]any, required ...string) map[string]any {
 		schema := map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
@@ -1007,7 +1124,7 @@ func mcpTools() []map[string]any {
 		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Optional review_seats states the planned review seat count; a count below the task's minimum is refused with review_seats_below_minimum. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "review_seats": map[string]any{"type": "integer", "minimum": 1, "description": "Optional planned review seat count, at least the task's minimum review seat count. Omit it to plan no count."}, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan persists the task execution plan."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
-		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str}, "work_order_id", "session_id", "head_sha")},
+		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review. Optional review_seats declares the next round's review seat count; a count below the task's seat floor is refused with review_seats_below_floor and the order stays claimed.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str, "review_seats": reviewSeatsSchema}, "work_order_id", "session_id", "head_sha")},
 		{"name": "await_review", "description": "Long-poll for the review verdict so changes requested returns to the warm implementer session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "timeout_seconds": num}, "work_order_id", "session_id")},
 		{"name": "submit_review_verdict", "description": "Submit a validated independent review verdict, feedback, pinned REQ-n/AC-n.m citations, plan done-criteria coverage, governance and documentation assessment.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "verdict": map[string]any{"type": "string", "enum": []string{"approve", "changes_requested"}}, "reason_code": str, "summary": str, "feedback": str, "requirement_citations": requirementCitations, "done_criteria_coverage": doneCriteriaCoverage, "governance_assessment": governanceAssessment, "verification_assessment": core.VerificationJSONSchema(reflect.TypeOf(core.VerificationAssessment{})), "documentation_assessment": object(map[string]any{"applicable": map[string]any{"type": "boolean"}, "summary": str, "updated_paths": stringList, "unresolved": stringList, "conflicts": stringList}, "applicable", "summary", "updated_paths", "unresolved", "conflicts")}, "work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment")},
 		reviewSummaryMCPTool(),

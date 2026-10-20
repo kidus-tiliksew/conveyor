@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -150,6 +152,52 @@ type ImplementationSubmission struct {
 	EndedAt               time.Time
 	DocumentationChecked  bool
 	DocumentationEvidence *core.DocumentationGateEvidence
+	ReviewSeats           SubmissionReviewSeats
+}
+
+// SubmissionReviewSeats is a submission's admitted review seat declaration
+// (feature-review-seat-minimum RS-4; DEC-78). Declared is written to the
+// implement order's declared_review_seats; Unused, for a submission that
+// completes an already dispatched refresh, is recorded only in the
+// submission's work_order.updated payload and never becomes a declaration.
+type SubmissionReviewSeats struct {
+	Declared *int
+	Unused   *int
+}
+
+// normalize copies both counts and refuses a count below 1 or both set.
+func (s SubmissionReviewSeats) normalize() (SubmissionReviewSeats, error) {
+	if s.Declared != nil && s.Unused != nil {
+		return SubmissionReviewSeats{}, fmt.Errorf("implementation submission review seats are either declared or unused, not both")
+	}
+	for _, count := range []*int{s.Declared, s.Unused} {
+		if count != nil && *count < 1 {
+			return SubmissionReviewSeats{}, fmt.Errorf("implementation submission review_seats must be at least 1")
+		}
+	}
+	return SubmissionReviewSeats{Declared: copySeatCount(s.Declared), Unused: copySeatCount(s.Unused)}, nil
+}
+
+// SubmissionWorkOrderEventPayload is the submission's work_order.updated
+// payload: the order itself, with "review_seats" and "review_seats_applied":
+// false appended when the submission records an unused count. Without one the
+// payload is exactly the order's JSON (feature-review-seat-minimum RS-4).
+func SubmissionWorkOrderEventPayload(order core.WorkOrder, seats SubmissionReviewSeats) json.RawMessage {
+	payload := core.JSONPayload(order)
+	if seats.Unused == nil {
+		return payload
+	}
+	trimmed := bytes.TrimRight(payload, " \n")
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+		return payload
+	}
+	separator := ","
+	if len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0 {
+		separator = ""
+	}
+	extended := append([]byte(nil), trimmed[:len(trimmed)-1]...)
+	extended = append(extended, fmt.Sprintf(`%s"review_seats":%d,"review_seats_applied":false}`, separator, *seats.Unused)...)
+	return extended
 }
 
 // NormalizeImplementationSubmission validates the exact head and documentation
@@ -172,6 +220,11 @@ func NormalizeImplementationSubmission(ctx context.Context, request Implementati
 		}
 		request.DocumentationEvidence = &evidence
 	}
+	seats, err := request.ReviewSeats.normalize()
+	if err != nil {
+		return request, err
+	}
+	request.ReviewSeats = seats
 	return request, ctx.Err()
 }
 
@@ -349,7 +402,7 @@ func (m *memory) SubmitImplementationCommand(ctx context.Context, lease taskops.
 	if current, ok := m.workOrders[order.ID]; !ok || current.TaskID != order.TaskID || current.JobID != order.JobID || current.Stage != core.StageImplement {
 		return core.Job{}, fmt.Errorf("work order %s does not match its submission", order.ID)
 	}
-	if err := m.updateWorkOrderCommandLocked(ctx, lease, order, core.WorkOrderCmdSubmitForReview); err != nil {
+	if err := m.updateWorkOrderSubmissionLocked(ctx, lease, order, request.ReviewSeats, core.WorkOrderCmdSubmitForReview); err != nil {
 		return core.Job{}, err
 	}
 	if request.DocumentationChecked {

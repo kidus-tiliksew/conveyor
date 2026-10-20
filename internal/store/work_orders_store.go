@@ -1942,8 +1942,11 @@ func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requiremen
 
 // ProjectWorkOrderAt applies elapsed clock semantics to a copy for
 // observational responses. It performs no store writes; the queue order clock
-// persists the same canonical commands asynchronously.
+// persists the same canonical commands asynchronously. The copy owns its
+// declared review seat count, so a reader cannot mutate stored state through
+// it (feature-review-seat-minimum RS-2, RS-4).
 func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
+	order.DeclaredReviewSeats = copySeatCount(order.DeclaredReviewSeats)
 	if (order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed) &&
 		!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now) {
 		if order.State == core.WorkOrderClaimed {
@@ -2014,6 +2017,7 @@ func (m *memory) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([
 			continue
 		}
 		order.Assignee = task.Assignee
+		order.DeclaredReviewSeats = copySeatCount(order.DeclaredReviewSeats)
 		out = append(out, order)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -2586,6 +2590,13 @@ func (m *memory) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (m *memory) updateWorkOrderCommandLocked(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+	return m.updateWorkOrderSubmissionLocked(ctx, lease, order, SubmissionReviewSeats{}, commands...)
+}
+
+// updateWorkOrderSubmissionLocked is the work-order update; only
+// SubmitImplementationCommand passes review seats (feature-review-seat-minimum
+// RS-4), and every other caller passes none.
+func (m *memory) updateWorkOrderSubmissionLocked(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, seats SubmissionReviewSeats, commands ...core.WorkOrderCommand) error {
 	current, ok := m.workOrders[order.ID]
 	if !ok {
 		return fmt.Errorf("work order %s not found", order.ID)
@@ -2643,12 +2654,16 @@ func (m *memory) updateWorkOrderCommandLocked(ctx context.Context, lease taskops
 		m.supersedeVerificationLocked(ctx, task.ID, order.HeadSHA)
 		m.tasks[order.TaskID] = task
 	}
-	// The declared review seat count has no update writer
-	// (feature-review-seat-minimum RS-2); the stored value is kept.
+	// The declared review seat count has no ordinary update writer
+	// (feature-review-seat-minimum RS-2); the stored value is kept, and only
+	// the implementation submission writes an admitted declaration (RS-4).
 	order.DeclaredReviewSeats = copySeatCount(current.DeclaredReviewSeats)
+	if seats.Declared != nil {
+		order.DeclaredReviewSeats = copySeatCount(seats.Declared)
+	}
 	order.UpdatedAt = time.Now().UTC()
 	m.workOrders[order.ID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order)})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: SubmissionWorkOrderEventPayload(order, seats)})
 	if current.State != core.WorkOrderCompleted && order.State == core.WorkOrderCompleted {
 		m.retireWorkOrderSiblingsLocked(ctx, order, "stage completed", order.UpdatedAt, false)
 	}
