@@ -3102,26 +3102,67 @@ func TestMCPSubmitForReviewReviewSeatsSchema(t *testing.T) {
 }
 
 // TestMCPSubmitForReviewReviewSeatsArgumentValidation proves the shared
-// parser accepts only integral numbers from 1 through the INT bound, from MCP
-// float64 and REST json.Number values alike, and never truncates, rounds, or
-// treats a present value as absent (feature-review-seat-minimum RS-4).
+// parser judges the exact JSON literal: it accepts only json.Number literals
+// that denote an integer from 1 through the INT bound, including integral
+// forms such as 4.0 and 4e0, and refuses fractions hidden by float64 rounding,
+// float64 values, and every non-number without truncating, rounding, or
+// treating a present value as absent (feature-review-seat-minimum RS-4).
 func TestMCPSubmitForReviewReviewSeatsArgumentValidation(t *testing.T) {
 	if seats, err := reviewSeatsArg(map[string]any{"head_sha": "abc"}); seats != nil || err != nil {
 		t.Fatalf("absent=%v err=%v", seats, err)
 	}
-	for _, accepted := range []struct {
-		value any
-		want  int
-	}{{float64(1), 1}, {float64(3), 3}, {json.Number("4"), 4}, {json.Number("4.0"), 4}, {float64(2147483647), 2147483647}, {json.Number("2147483647"), 2147483647}} {
-		seats, err := reviewSeatsArg(map[string]any{"review_seats": accepted.value})
-		if err != nil || seats == nil || *seats != accepted.want {
-			t.Fatalf("%#v => %v err=%v", accepted.value, seats, err)
+	for literal, want := range map[string]int{
+		"1": 1, "3": 3, "4.0": 4, "4.000": 4, "4e0": 4, "4E+0": 4, "40e-1": 4, "0.4e1": 4, "0.04E+2": 4,
+		"2147483647": 2147483647, "2147483647.0": 2147483647, "2.147483647e9": 2147483647,
+	} {
+		seats, err := reviewSeatsArg(map[string]any{"review_seats": json.Number(literal)})
+		if err != nil || seats == nil || *seats != want {
+			t.Fatalf("%s => %v err=%v", literal, seats, err)
 		}
 	}
-	for _, refused := range []any{nil, "3", true, float64(2.5), float64(0), float64(-1), float64(2147483648), json.Number("2.5"), json.Number("0"), json.Number("1e400"), json.Number("2147483648"), map[string]any{}, []any{float64(3)}} {
-		seats, err := reviewSeatsArg(map[string]any{"review_seats": refused})
+	refused := []any{nil, "3", true, float64(3), float64(2.5), map[string]any{}, []any{json.Number("3")}}
+	for _, literal := range []string{
+		"2.99999999999999999", "0.99999999999999999", "2147483647.00000001", "2.0000000000000001", "3.5", "35e-1",
+		"0", "0.0", "-0", "-1", "-4.0", "2147483648", "2147483648.0", "2.147483648e9", "1e10", "1e1001", "1e-1001",
+		"00", "01", "+3", "3.", ".5", "0x10", "NaN", "Infinity", "", "3 ", "1e400",
+	} {
+		refused = append(refused, json.Number(literal))
+	}
+	for _, value := range refused {
+		seats, err := reviewSeatsArg(map[string]any{"review_seats": value})
 		if seats != nil || err == nil || err.Error() != "review_seats must be an integer from 1 to 2147483647" {
-			t.Fatalf("%#v => %v err=%v", refused, seats, err)
+			t.Fatalf("%#v => %v err=%v", value, seats, err)
 		}
+	}
+}
+
+// TestMCPExactReviewSeatsArgument proves the tools/call re-read keeps
+// submit_for_review's raw review_seats literal and leaves other arguments as
+// the envelope decoded them (feature-review-seat-minimum RS-4).
+func TestMCPExactReviewSeatsArgument(t *testing.T) {
+	params := json.RawMessage(`{"name":"submit_for_review","arguments":{"head_sha":"abc","lease_seconds":30,"review_seats":2.99999999999999999}}`)
+	var call mcpToolCallEnvelope
+	if err := core.DecodeVerificationRequest(params, &call); err != nil {
+		t.Fatal(err)
+	}
+	if call.Arguments["review_seats"] != float64(3) {
+		t.Fatalf("envelope decoding changed: %#v", call.Arguments["review_seats"])
+	}
+	if err := mcpExactReviewSeatsArgument(params, call.Arguments); err != nil {
+		t.Fatal(err)
+	}
+	if call.Arguments["review_seats"] != json.Number("2.99999999999999999") || call.Arguments["lease_seconds"] != float64(30) || call.Arguments["head_sha"] != "abc" {
+		t.Fatalf("arguments=%#v", call.Arguments)
+	}
+	absent := map[string]any{"head_sha": "abc"}
+	if err := mcpExactReviewSeatsArgument(json.RawMessage(`{"name":"submit_for_review","arguments":{"head_sha":"abc"}}`), absent); err != nil || len(absent) != 1 {
+		t.Fatalf("absent=%#v err=%v", absent, err)
+	}
+	null := map[string]any{"review_seats": nil}
+	if err := mcpExactReviewSeatsArgument(json.RawMessage(`{"name":"submit_for_review","arguments":{"review_seats":null}}`), null); err != nil {
+		t.Fatal(err)
+	}
+	if value, present := null["review_seats"]; !present || value != nil {
+		t.Fatalf("null=%#v", null)
 	}
 }

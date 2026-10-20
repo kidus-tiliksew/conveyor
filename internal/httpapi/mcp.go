@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -101,6 +103,12 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		if call.Name == "refresh_work_order_context" && len(request.Params) > 8192 {
 			response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
 			break
+		}
+		if call.Name == "submit_for_review" {
+			if err := mcpExactReviewSeatsArgument(request.Params, call.Arguments); err != nil {
+				response.Error = &rpcError{Code: -32602, Message: "invalid tool arguments"}
+				break
+			}
 		}
 		result, err := s.callMCPTool(r, call.Name, call.Arguments)
 		if err != nil {
@@ -952,9 +960,10 @@ var reviewSeatsSchema = map[string]any{"type": "integer", "minimum": 1}
 const maxReviewSeats = math.MaxInt32
 
 // reviewSeatsArg decodes submit_for_review's optional review_seats. An absent
-// key declares nothing. A present value must be a JSON number with an
-// integral value from 1 through maxReviewSeats; null, strings, booleans,
-// fractions, and out-of-range numbers are refused, never truncated or treated
+// key declares nothing. A present value must be a json.Number whose literal
+// denotes an integer from 1 through maxReviewSeats exactly; null, strings,
+// booleans, fractions, out-of-range numbers, and float64 values (which have
+// already lost their literal) are refused, never truncated, rounded, or treated
 // as absent (feature-review-seat-minimum RS-4).
 func reviewSeatsArg(args map[string]any) (*int, error) {
 	value, present := args["review_seats"]
@@ -962,24 +971,89 @@ func reviewSeatsArg(args map[string]any) (*int, error) {
 		return nil, nil
 	}
 	invalid := fmt.Errorf("review_seats must be an integer from 1 to %d", maxReviewSeats)
-	var number float64
-	switch typed := value.(type) {
-	case float64:
-		number = typed
-	case json.Number:
-		parsed, err := typed.Float64()
-		if err != nil {
-			return nil, invalid
-		}
-		number = parsed
-	default:
+	number, ok := value.(json.Number)
+	if !ok {
 		return nil, invalid
 	}
-	if math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 1 || number > maxReviewSeats {
+	seats, ok := exactReviewSeats(string(number))
+	if !ok {
 		return nil, invalid
 	}
-	seats := int(number)
 	return &seats, nil
+}
+
+// exactReviewSeatsLiteral is the JSON number grammar: sign, integer digits,
+// optional fraction digits, optional exponent.
+var exactReviewSeatsLiteral = regexp.MustCompile(`^(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$`)
+
+// exactReviewSeats judges a JSON number literal without a float conversion: it
+// accepts the literal only when it denotes an integer from 1 through
+// maxReviewSeats exactly, so 4.0 and 4e0 are 4 while 2.99999999999999999 is
+// refused. An exponent beyond +/-1000 is refused without being expanded.
+func exactReviewSeats(literal string) (int, bool) {
+	parts := exactReviewSeatsLiteral.FindStringSubmatch(literal)
+	if parts == nil || parts[1] == "-" {
+		return 0, false
+	}
+	exponent := 0
+	if parts[4] != "" {
+		parsed, err := strconv.Atoi(parts[4])
+		if err != nil || parsed > 1000 || parsed < -1000 {
+			return 0, false
+		}
+		exponent = parsed
+	}
+	digits := parts[2] + parts[3]
+	point := len(parts[2]) + exponent
+	if point < 0 {
+		point = 0
+	}
+	if point < len(digits) {
+		if strings.Trim(digits[point:], "0") != "" {
+			return 0, false
+		}
+		digits = digits[:point]
+	} else {
+		digits += strings.Repeat("0", point-len(digits))
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" || len(digits) > 10 {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil || value < 1 || value > maxReviewSeats {
+		return 0, false
+	}
+	return int(value), true
+}
+
+// mcpExactReviewSeatsArgument re-reads submit_for_review's raw review_seats
+// argument with UseNumber, because the tools/call envelope decodes arguments
+// as float64 and would round the literal before validation. Every other tool
+// and argument keeps the envelope's decoding (feature-review-seat-minimum
+// RS-4).
+func mcpExactReviewSeatsArgument(params json.RawMessage, arguments map[string]any) error {
+	if _, present := arguments["review_seats"]; !present {
+		return nil
+	}
+	var raw struct {
+		Arguments map[string]json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(params, &raw); err != nil {
+		return err
+	}
+	literal, present := raw.Arguments["review_seats"]
+	if !present {
+		return fmt.Errorf("review_seats argument is unavailable")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(literal))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	arguments["review_seats"] = value
+	return nil
 }
 
 func mcpTools() []map[string]any {

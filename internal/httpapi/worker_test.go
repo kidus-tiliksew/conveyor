@@ -1087,6 +1087,14 @@ func TestSubmissionChannelsReviewSeats(t *testing.T) {
 		{name: "null", value: "null", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
 		{name: "boolean", value: "true", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
 		{name: "too-large", value: "2147483648", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		// Fractions that float64 rounding would turn into accepted integers
+		// stay refused; integral literal forms stay accepted.
+		{name: "rounds-up-to-floor", value: "2.99999999999999999", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "rounds-up-to-one", value: "0.99999999999999999", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "rounds-down-to-max", value: "2147483647.00000001", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "rounds-down-above-floor", value: "4.0000000000000001", want: outcome{status: http.StatusBadRequest, contains: "review_seats must be an integer"}},
+		{name: "integral-decimal", value: "4.0", want: outcome{status: http.StatusOK, declared: seats(4)}},
+		{name: "integral-exponent", value: "3e0", want: outcome{status: http.StatusOK, declared: seats(3)}},
 		{name: "foreign-session", value: "3", session: "another", want: outcome{status: http.StatusConflict}},
 		{name: "foreign-workspace", value: "3", workspace: "elsewhere", want: outcome{status: http.StatusNotFound, contains: "workspace_not_found"}},
 	}
