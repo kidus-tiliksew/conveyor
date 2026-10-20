@@ -695,3 +695,202 @@ test.describe('at 390 px', () => {
     })
   }
 })
+
+// A settled round's current summary renders inside its review panel above the
+// seat rows, while seat rows, verdicts, and feedback render unchanged and a
+// round without a summary shows no summary block (req-review-gates-evidence
+// AC-10.5; DEC-79; feature-review-round-summary SU-6).
+const seatID = (round: number, seat: number) => `${taskId}-review-${round}-seat-${seat}`
+
+function seatOrder(round: number, seat: number) {
+  return order(seatID(round, seat), {
+    stage: 'review',
+    state: 'completed',
+    job_id: seatID(round, seat),
+    review_round: round,
+    review_seat: seat,
+    agent: 'codex',
+    model: seat === 1 ? 'gpt-6' : 'gpt-6-mini',
+    queue_entered_at: minutes(round * 10),
+  })
+}
+
+const roundOneSummary = {
+  summary: 'Seat 1 found a missing regression test.\nSeat 2 approved with a naming nit.',
+  findings: [
+    {
+      severity: 'blocking',
+      problem: 'The refresh path has no regression test.',
+      location: 'internal/workorder/service.go:983',
+      fix: 'Add a test that records a summary after the claim.',
+      seats: [1],
+    },
+    { severity: 'non-blocking', problem: 'Rename the helper for clarity.', seats: [1, 2] },
+  ],
+  version: 2,
+  version_count: 2,
+  author: {
+    actor_id: 'agent:agt_coordinator',
+    actor_role: 'agent',
+    model: 'claude-opus-5-5',
+    model_enforcement: 'self-reported',
+  },
+  event_id: '150',
+  recorded_at: minutes(18),
+  truncated: false,
+}
+
+function summarizedPanels(extraSummaries: Record<string, unknown> = {}) {
+  return activity({
+    latest_stage: 'implement',
+    work_orders: [seatOrder(1, 1), seatOrder(1, 2), seatOrder(2, 1), order(`${taskId}-implement-2`, {})],
+    summaries: {
+      review_results: {
+        by_order: {
+          [seatID(1, 1)]: {
+            verdict: 'changes_requested',
+            summary: 'Changes needed',
+            feedback: 'Seat 1 feedback: add the missing regression test.',
+            at: minutes(15),
+            event_id: '120',
+          },
+          [seatID(1, 2)]: { verdict: 'approve', summary: 'Fine', feedback: '', at: minutes(16), event_id: '121' },
+          [seatID(2, 1)]: {
+            verdict: 'approve',
+            summary: 'Fine',
+            feedback: 'Round 2 seat 1: the test is in place.',
+            at: minutes(25),
+            event_id: '220',
+          },
+        },
+        by_job: {},
+      },
+      review_rounds: {
+        by_round: {
+          '1': {
+            event_id: '130',
+            verdict: 'changes_requested',
+            summary: 'The review panel requested changes.',
+            at: minutes(17),
+          },
+          '2': { event_id: '230', verdict: 'approve', summary: 'All review panel seats approved.', at: minutes(26) },
+        },
+        by_order: {},
+      },
+      review_bounces: { '1': 1 },
+      review_round_summaries: { '1': roundOneSummary, ...extraSummaries },
+    },
+  })
+}
+
+test('round summaries attach only to their matching review panels', () => {
+  const item = summarizedPanels()
+  // No review.summary_recorded event is on the bounded page: the summary
+  // comes from summaries alone.
+  expect((item.events as unknown[]).length).toBe(0)
+  const panels = timelineOf(item).filter((entry) => entry.type === 'panel')
+  expect(panels.map((panel) => panel.round)).toEqual([1, 2])
+  expect(panels[0].roundSummary).toEqual(roundOneSummary)
+  expect(panels[1].roundSummary).toBeUndefined()
+  // A round-0 panel predates rounds and never takes a summary.
+  const legacy = timelineOf(
+    activity({
+      work_orders: [order(`${taskId}-review-legacy`, { stage: 'review', review_seat: 1, review_round: 0 })],
+      summaries: { review_round_summaries: { '0': roundOneSummary } },
+    }),
+  ).filter((entry) => entry.type === 'panel')
+  expect(legacy).toHaveLength(1)
+  expect(legacy[0].roundSummary).toBeUndefined()
+})
+
+test('review panel shows its current round summary above unchanged seat feedback', async ({ page }, testInfo) => {
+  await mockAPI(page, summarizedPanels(), nextAction(`${taskId}-implement-2`))
+  await page.goto(`/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  const summary = page.getByRole('region', { name: 'Round 1 summary' })
+  await expect(timeline.getByRole('region', { name: 'Round 1 summary' })).toBeVisible()
+  await expect(timeline.locator('[data-review-round-summary]')).toHaveCount(1)
+  const summarized = timeline.locator('li article').filter({ has: summary })
+  const unsummarized = timeline.locator('li article').filter({ hasText: 'Round 2 seat 1: the test is in place.' })
+  await expect(summarized).toHaveCount(1)
+  await expect(unsummarized).toHaveCount(1)
+
+  await expect(summary.getByText('Seat 1 found a missing regression test.')).toBeVisible()
+  await expect(summary.getByText('version 2 of 2')).toBeVisible()
+  const author = summary.locator('[data-review-summary-author]')
+  await expect(author).toContainText('By agent:agt_coordinator')
+  await expect(author).toContainText('claude-opus-5-5')
+  await expect(author).toContainText('(self-reported)')
+  const blocking = summary.locator('[data-review-summary-severity="blocking"]')
+  await expect(blocking.getByRole('heading')).toHaveText('Blocking 1')
+  await expect(blocking.getByText('The refresh path has no regression test.')).toBeVisible()
+  await expect(blocking.getByText('internal/workorder/service.go:983')).toBeVisible()
+  await expect(blocking.getByText('Fix: Add a test that records a summary after the claim.')).toBeVisible()
+  await expect(blocking.getByText('Seat 1', { exact: true })).toBeVisible()
+  const nonBlocking = summary.locator('[data-review-summary-severity="non-blocking"]')
+  await expect(nonBlocking.getByRole('heading')).toHaveText('Non-blocking 1')
+  await expect(nonBlocking.getByText('Seats 1, 2', { exact: true })).toBeVisible()
+  await expect(nonBlocking.getByText(/^Fix:/)).toHaveCount(0)
+
+  // The summary sits above the seat rows; seats, verdicts, and feedback are unchanged.
+  const seatRows = summarized.locator('div.divide-y > div')
+  await expect(seatRows).toHaveCount(2)
+  const above = await summary.evaluate(
+    (element, other) => Boolean(other && element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING),
+    await seatRows.first().elementHandle(),
+  )
+  expect(above).toBe(true)
+  await expect(summarized.locator('[data-review-verdict]')).toHaveText('Changes requested')
+  await expect(summarized.getByText('Seat 1 feedback: add the missing regression test.')).toBeVisible()
+  await expect(summarized.getByText('Changes requested — 1 of 2 seats')).toBeVisible()
+  await expect(unsummarized.locator('[data-review-round-summary]')).toHaveCount(0)
+  await expect(unsummarized.locator('[data-review-verdict]')).toHaveText('Approved')
+  await expect(unsummarized.locator('div.divide-y > div')).toHaveCount(1)
+  await expect(timeline).not.toContainText('undefined')
+
+  await summarized.screenshot({ path: testInfo.outputPath('review-round-summary-panel.png') })
+  await unsummarized.screenshot({ path: testInfo.outputPath('review-round-without-summary-panel.png') })
+})
+
+test('a single-version summary with no findings shows no version counter or finding groups', async ({ page }) => {
+  const item = summarizedPanels({
+    '2': {
+      ...roundOneSummary,
+      summary: 'Approved.\n\nNo findings this round.',
+      findings: [],
+      version: 1,
+      version_count: 1,
+      author: { actor_id: 'user:usr_operator', actor_role: 'user', model_enforcement: 'self-reported' },
+      event_id: '250',
+    },
+  })
+  await mockAPI(page, item, nextAction(`${taskId}-implement-2`))
+  await page.goto(`/tasks/${taskId}/full`)
+  const summary = page.getByRole('region', { name: 'Round 2 summary' })
+  await expect(summary).toBeVisible()
+  await expect(summary.locator('p').first()).toHaveText('Approved.\n\nNo findings this round.', { useInnerText: false })
+  await expect(summary.locator('[data-review-summary-version]')).toHaveCount(0)
+  await expect(summary.locator('[data-review-summary-severity]')).toHaveCount(0)
+  await expect(summary.locator('[data-review-summary-author]')).toContainText('By user:usr_operator')
+  await expect(summary.locator('[data-review-summary-author]')).not.toContainText('self-reported')
+})
+
+test.describe('round summary at 390 px', () => {
+  test.use({ viewport: { width: 390, height: 844 } })
+
+  test('the summarized review panel has no horizontal scroll', async ({ page }, testInfo) => {
+    await mockAPI(page, summarizedPanels(), nextAction(`${taskId}-implement-2`))
+    await page.goto(`/tasks/${taskId}/full`)
+    const summary = page.getByRole('region', { name: 'Round 1 summary' })
+    await expect(summary).toBeVisible()
+    const panel = page.locator('li article').filter({ has: summary })
+    const card = await panel.evaluate((element) => [element.scrollWidth, element.clientWidth])
+    expect(card[0]).toBeLessThanOrEqual(card[1])
+    const viewport = await page.evaluate(() => [
+      document.documentElement.scrollWidth,
+      document.documentElement.clientWidth,
+    ])
+    expect(viewport[0]).toBeLessThanOrEqual(viewport[1])
+    await panel.screenshot({ path: testInfo.outputPath('review-round-summary-panel-390.png') })
+  })
+})

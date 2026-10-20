@@ -265,6 +265,7 @@ type taskDetailSummaries struct {
 	ReviewResults                taskReviewResults         `json:"review_results"`
 	ReviewRounds                 taskReviewRounds          `json:"review_rounds"`
 	ReviewBounces                map[string]jsNumber       `json:"review_bounces"`
+	ReviewRoundSummaries         taskRoundSummaries        `json:"review_round_summaries"`
 }
 
 type taskCreatorSummary struct {
@@ -557,6 +558,7 @@ var summaryKinds = map[string]bool{
 	"pipeline.bounced": true, "work_order.claimed": true, "work_order.plan_revision_requested": true,
 	"review.completed": true, "job.failed": true, "job.summary": true, "triage.completed": true,
 	"triage.output_invalid": true, "spec.output_invalid": true, "review.output_invalid": true,
+	store.ReviewSummaryRecordedEvent: true,
 }
 
 // deriveTaskDetailSummaries reproduces the dashboard's selection rules in
@@ -708,12 +710,119 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 		summaries.PlanRevisionRequest = planRevisionRequestFrom(*lastPlanRevision, lastPlanRevisionPayload)
 	}
 	summaries.TriageFailure = deriveTriageFailure(ordered, jobs, orders)
+	summaries.ReviewRoundSummaries = deriveReviewRoundSummaries(ordered)
 	return summaries
 }
 
 // userRequestChangesSource is the bounce source the merge-gate
 // request-changes command records (store.UserRequestChangesPending).
 const userRequestChangesSource = "user-request-changes"
+
+// taskRoundSummaries maps a decimal review round to its current summary
+// (feature-review-round-summary SU-6; req-review-gates-evidence AC-10.5).
+type taskRoundSummaries map[string]taskRoundSummaryEntry
+
+// taskRoundSummaryEntry is a round's current review.summary_recorded version:
+// the latest by (at, id), with the count of versions recorded for the round.
+// Summaries are informative and confer no verdict or decision (DEC-79).
+type taskRoundSummaryEntry struct {
+	Summary      string                    `json:"summary"`
+	Findings     []taskRoundSummaryFinding `json:"findings"`
+	Version      int                       `json:"version"`
+	VersionCount int                       `json:"version_count"`
+	Author       taskRoundSummaryAuthor    `json:"author"`
+	EventID      string                    `json:"event_id"`
+	RecordedAt   string                    `json:"recorded_at"`
+	Truncated    bool                      `json:"truncated"`
+}
+
+type taskRoundSummaryFinding struct {
+	Severity string `json:"severity"`
+	Problem  string `json:"problem"`
+	Location string `json:"location,omitempty"`
+	Fix      string `json:"fix,omitempty"`
+	Seats    []int  `json:"seats"`
+}
+
+type taskRoundSummaryAuthor struct {
+	ActorID          string         `json:"actor_id"`
+	ActorRole        core.ActorRole `json:"actor_role"`
+	WorkOrderID      string         `json:"work_order_id,omitempty"`
+	SessionID        string         `json:"session_id,omitempty"`
+	Model            string         `json:"model,omitempty"`
+	ModelEnforcement string         `json:"model_enforcement"`
+}
+
+// deriveReviewRoundSummaries folds every review.summary_recorded event of the
+// (at, id)-ordered complete ledger, independent of the bounded page. Each
+// round keeps its latest event and counts its versions. Displayed text passes
+// through truncateSummaryText, and truncated marks any cut; the entry's
+// event_id names the event whose audit read returns the full text. Event
+// payloads are never modified.
+func deriveReviewRoundSummaries(ordered []core.Event) taskRoundSummaries {
+	result := taskRoundSummaries{}
+	counts := map[int]int{}
+	latest := map[int]core.Event{}
+	var rounds []int
+	for _, event := range ordered {
+		if event.Kind != store.ReviewSummaryRecordedEvent {
+			continue
+		}
+		var header struct {
+			ReviewRound *int `json:"review_round"`
+		}
+		if json.Unmarshal(event.Payload, &header) != nil || header.ReviewRound == nil || *header.ReviewRound < 1 {
+			continue
+		}
+		round := *header.ReviewRound
+		if counts[round] == 0 {
+			rounds = append(rounds, round)
+		}
+		counts[round]++
+		latest[round] = event
+	}
+	for _, round := range rounds {
+		event := latest[round]
+		// A field of the wrong type decodes as its zero value; the rest of the
+		// payload still decodes.
+		var payload store.ReviewSummaryPayload
+		_ = json.Unmarshal(event.Payload, &payload)
+		entry := taskRoundSummaryEntry{
+			Version:      payload.Version,
+			VersionCount: counts[round],
+			Findings:     make([]taskRoundSummaryFinding, 0, len(payload.Findings)),
+			EventID:      formatTaskEventID(event.ID),
+			RecordedAt:   formatTaskEventTime(event.At),
+			Author: taskRoundSummaryAuthor{
+				ActorRole:        payload.Author.ActorRole,
+				WorkOrderID:      payload.Author.WorkOrderID,
+				SessionID:        payload.Author.SessionID,
+				ModelEnforcement: payload.Author.ModelEnforcement,
+			},
+		}
+		cut := false
+		text := func(value string) string {
+			shown, truncated := truncateSummaryText(value)
+			cut = cut || truncated
+			return shown
+		}
+		entry.Summary = text(payload.Summary)
+		entry.Author.ActorID = text(payload.Author.ActorID)
+		entry.Author.Model = text(payload.Author.Model)
+		for _, finding := range payload.Findings {
+			entry.Findings = append(entry.Findings, taskRoundSummaryFinding{
+				Severity: text(finding.Severity),
+				Problem:  text(finding.Problem),
+				Location: text(finding.Location),
+				Fix:      text(finding.Fix),
+				Seats:    append([]int{}, finding.Seats...),
+			})
+		}
+		entry.Truncated = cut
+		result[strconv.Itoa(round)] = entry
+	}
+	return result
+}
 
 // planRevisionRequestFrom accepts only a decidable request: a non-blank
 // rationale and a positive integer plan version (activity.ts
