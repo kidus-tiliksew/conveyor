@@ -866,8 +866,8 @@ func TestVerificationCorrectableRefusals(t *testing.T) {
 			tool  string
 			input any
 		}{
-			"coverage": {"submit_verification", submit(func(c *store.VerificationCoverage) { c.Sources[1].Source.SectionID = secret })},
-			"finding": {"submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: valid, Feedback: "x", Findings: []store.VerificationFinding{{Source: store.VerificationCoverageReference{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: secret}, Statement: "x"}}}},
+			"coverage":   {"submit_verification", submit(func(c *store.VerificationCoverage) { c.Sources[1].Source.SectionID = secret })},
+			"finding":    {"submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: valid, Feedback: "x", Findings: []store.VerificationFinding{{Source: store.VerificationCoverageReference{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: secret}, Statement: "x"}}}},
 			"obligation": {"register_verification_obligation", workorder.VerificationObligationRequest{ContextID: contextID, ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: secret, Version: 1, SectionID: secret}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}}},
 			"subject": {"submit_verification", submit(func(c *store.VerificationCoverage) {
 				c.Sources[0].Subjects = []core.VerificationSubject{{Kind: "ordinary", ObligationID: secret, ContractDigest: strings.Repeat("0", 64)}}
