@@ -76,6 +76,9 @@ type Querier interface {
 	UpsertRepo(ctx context.Context, arg UpsertRepoParams) error
 	UpsertTranscript(ctx context.Context, arg UpsertTranscriptParams) (Transcript, error)
 	DeleteLineageLinks(ctx context.Context, workspaceID string) (int64, error)
+	GetRequirementInsightHeadline(ctx context.Context, arg GetRequirementInsightHeadlineParams) (RequirementInsightHeadline, error)
+	LockRequirementInsightHeadline(ctx context.Context, arg LockRequirementInsightHeadlineParams) (RequirementInsightHeadline, error)
+	UpsertRequirementInsightHeadline(ctx context.Context, arg UpsertRequirementInsightHeadlineParams) (RequirementInsightHeadline, error)
 }
 
 var _ Querier = (*Queries)(nil)
