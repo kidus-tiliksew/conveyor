@@ -117,6 +117,10 @@ type Server struct {
 	Workers               *workerservice.Service
 	Monitor               *monitor.Service
 	Planning              *planning.Service
+
+	// requirementInsightLocks serializes headline generation per workspace
+	// and requirement in this process (feature-requirement-insights RI-5).
+	requirementInsightLocks requirementInsightLocks
 }
 
 type CredentialVerifier interface {
@@ -292,6 +296,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/requirements/{id}/events", s.listRequirementEventPage)
 			r.Get("/requirements/{id}/versions", s.listRequirementVersions)
 			r.Get("/requirements/{id}/checkpoint-context-candidates", s.listCheckpointContextCandidates)
+			// Requirement insights (feature-requirement-insights RI-6; DEC-87
+			// (6)): reads need view_workspace, generation needs create_tasks.
+			r.Get("/requirements/{id}/insights/summary", s.getRequirementInsightSummary)
+			r.With(s.requireMutationCapability(core.CapabilityCreateTasks)).Post("/requirements/{id}/insights/summary", s.generateRequirementInsightSummary)
+			r.Get("/requirements/{id}/insights/progress", s.getRequirementInsightProgress)
+			r.Get("/requirements/{id}/insights/documents", s.getRequirementInsightDocuments)
 			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/requirements/{id}/versions", s.proposeRequirementVersion)
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/requirements/{id}/versions/{version}/confirm", s.confirmRequirementVersion)
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/requirements/{id}/versions/{version}/dismiss", s.dismissRequirementVersion)
