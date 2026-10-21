@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"reflect"
@@ -534,4 +536,133 @@ func TestTaskDetailReviewRoundSummaries(t *testing.T) {
 			t.Fatal("short summary marked truncated")
 		}
 	})
+}
+
+// TestTaskDetailParkReasonAndDispatchFailure covers the park reason and
+// dispatch failure summaries over the complete (at, id)-ordered ledger: the
+// latest triage decides, a later triage that proceeds clears the reason,
+// empty and non-string brief entries drop, lists and texts are bounded, and
+// the latest dispatch failure with an error wins (component-http-api, Bounded
+// detail view; feature-operator-next-action NA-6; task 261021-cd3bf8).
+func TestTaskDetailParkReasonAndDispatchFailure(t *testing.T) {
+	derive := func(events ...core.Event) taskDetailSummaries {
+		return deriveTaskDetailSummaries(events, nil, nil)
+	}
+	triage := func(id int64, seconds int, route, summary string, questions, risks []any) core.Event {
+		return summaryEvent(id, seconds, "triage.completed", "triage-1", summaryJSON(t, map[string]any{
+			"class": "bug", "route": route, "summary": summary,
+			"brief": map[string]any{"questions": questions, "risks": risks, "affected_areas": []any{"web"}},
+		}))
+	}
+
+	if got := derive(); got.ParkReason != nil || got.DispatchFailure != nil {
+		t.Fatalf("empty ledger: park=%+v dispatch=%+v", got.ParkReason, got.DispatchFailure)
+	}
+
+	parked := derive(triage(1, 1, "parked", "  No seat-count field to sync from.  ", []any{"Per organization?", "", 7, " Per workspace? "}, []any{"Locks out members."}))
+	want := &taskParkReason{Summary: "No seat-count field to sync from.", Questions: []string{"Per organization?", "Per workspace?"}, Risks: []string{"Locks out members."}, EventID: "1", At: at(1)}
+	if !reflect.DeepEqual(parked.ParkReason, want) {
+		t.Fatalf("park reason = %+v, want %+v", parked.ParkReason, want)
+	}
+	// A triage stage summary for the job is unchanged by the new rule.
+	if result := parked.JobResults["triage-1"]; result == nil || result.StageSummary == nil || result.StageSummary.EventID != "1" {
+		t.Fatalf("triage stage summary = %+v", parked.JobResults["triage-1"])
+	}
+
+	if got := derive(triage(1, 1, "parked", "first", nil, nil), triage(2, 2, "proceed", "second", nil, nil)); got.ParkReason != nil {
+		t.Fatalf("a later proceeding triage left park reason %+v", got.ParkReason)
+	}
+	// Tied timestamps order by ID, and the input order does not matter.
+	got := derive(triage(9, 5, "parked", "later id", nil, nil), triage(4, 5, "parked", "earlier id", nil, nil), triage(2, 2, "proceed", "proceeded", nil, nil))
+	if got.ParkReason == nil || got.ParkReason.Summary != "later id" || got.ParkReason.EventID != "9" || len(got.ParkReason.Questions) != 0 || got.ParkReason.Questions == nil {
+		t.Fatalf("latest park reason = %+v", got.ParkReason)
+	}
+	for name, payload := range map[string]string{"not an object": `"parked"`, "no route": `{"summary":"x"}`, "invalid json": `{`} {
+		if got := derive(summaryEvent(1, 1, "triage.completed", "triage-1", payload)); got.ParkReason != nil {
+			t.Fatalf("%s: park reason = %+v", name, got.ParkReason)
+		}
+	}
+	missing := derive(summaryEvent(1, 1, "triage.completed", "triage-1", `{"route":"parked","brief":"nope"}`))
+	if missing.ParkReason == nil || missing.ParkReason.Summary != "" || len(missing.ParkReason.Questions) != 0 || len(missing.ParkReason.Risks) != 0 || missing.ParkReason.Truncated {
+		t.Fatalf("parked without summary or brief = %+v", missing.ParkReason)
+	}
+
+	many := make([]any, parkReasonListMax+5)
+	for i := range many {
+		many[i] = fmt.Sprintf("question %d", i)
+	}
+	long := strings.Repeat("é", taskSummaryTextMaxBytes)
+	bounded := derive(triage(1, 1, "parked", long, many, []any{long})).ParkReason
+	if bounded == nil || !bounded.Truncated || len(bounded.Questions) != parkReasonListMax || bounded.Questions[parkReasonListMax-1] != fmt.Sprintf("question %d", parkReasonListMax-1) {
+		t.Fatalf("bounded park reason questions=%d truncated=%v", len(bounded.Questions), bounded != nil && bounded.Truncated)
+	}
+	if len(bounded.Summary) > taskSummaryTextMaxBytes || !utf8.ValidString(bounded.Summary) || len(bounded.Risks[0]) > taskSummaryTextMaxBytes || !utf8.ValidString(bounded.Risks[0]) {
+		t.Fatalf("park reason texts exceed the bound: summary=%d risk=%d", len(bounded.Summary), len(bounded.Risks[0]))
+	}
+	if only := derive(triage(1, 1, "parked", "short", many[:parkReasonListMax], nil)).ParkReason; only.Truncated || len(only.Questions) != parkReasonListMax {
+		t.Fatalf("exactly %d questions: %+v", parkReasonListMax, only)
+	}
+
+	dispatch := derive(
+		summaryEvent(1, 1, "dispatch.failed", "", `{"attempt":1,"max_attempts":5,"error":"first"}`),
+		summaryEvent(3, 3, "dispatch.failed", "", `{"attempt":5,"max_attempts":5,"error":"git fetch: authentication failed"}`),
+		summaryEvent(4, 4, "dispatch.failed", "", `{"attempt":6,"error":""}`),
+	).DispatchFailure
+	five := jsNumber(5)
+	if dispatch == nil || dispatch.Error != "git fetch: authentication failed" || !reflect.DeepEqual(dispatch.Attempt, &five) || !reflect.DeepEqual(dispatch.MaxAttempts, &five) || dispatch.EventID != "3" || dispatch.At != at(3) {
+		t.Fatalf("dispatch failure = %+v", dispatch)
+	}
+	bare := derive(summaryEvent(1, 1, "dispatch.failed", "", `{"error":"queue discarded the job","attempt":"x"}`)).DispatchFailure
+	if bare == nil || bare.Attempt != nil || bare.MaxAttempts != nil || bare.Error != "queue discarded the job" {
+		t.Fatalf("dispatch failure without numbers = %+v", bare)
+	}
+	if cut := derive(summaryEvent(1, 1, "dispatch.failed", "", summaryJSON(t, map[string]any{"error": long}))).DispatchFailure; cut == nil || !cut.Truncated || len(cut.Error) > taskSummaryTextMaxBytes {
+		t.Fatalf("long dispatch failure = %+v", cut != nil && cut.Truncated)
+	}
+}
+
+// TestBoundedDetailParkReasonOutsideEventPage reads the park reason and the
+// dispatch failure through the bounded view when both events lie outside the
+// 100-event presentation page (component-http-api, Bounded detail view).
+func TestBoundedDetailParkReasonOutsideEventPage(t *testing.T) {
+	st := store.NewMemory()
+	h := newHistoryHarness(t, st)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), historyWorkspace)
+	if err := st.CreateTask(ctx, core.Task{ID: "parked-task", Workspace: historyWorkspace, State: core.TaskParked, Title: "Parked", CreatedAt: historyEpoch}); err != nil {
+		t.Fatal(err)
+	}
+	appendAt := func(ms int, kind, payload string) {
+		t.Helper()
+		if err := st.AppendEvent(ctx, core.Event{TaskID: "parked-task", Kind: kind, At: historyEpoch.Add(time.Duration(ms) * time.Millisecond), Payload: json.RawMessage(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendAt(1, "dispatch.failed", `{"attempt":3,"max_attempts":3,"error":"queue discarded the job"}`)
+	appendAt(2, "triage.completed", `{"class":"feature","route":"parked","summary":"Seat floor scope is undecided.","brief":{"questions":["Per organization?"],"risks":["Locks out members."],"affected_areas":[]}}`)
+	for i := range 130 {
+		appendAt(10+i, "job.timeout", `{"stage":"implement"}`)
+	}
+	detail, response := h.bounded("parked-task")
+	for _, event := range detail.Events {
+		if event.Kind == "triage.completed" || event.Kind == "dispatch.failed" {
+			t.Fatalf("source event %s is on the presentation page; the fixture must place it outside", event.Kind)
+		}
+	}
+	var body struct {
+		Summaries struct {
+			ParkReason      *taskParkReason      `json:"park_reason"`
+			DispatchFailure *taskDispatchFailure `json:"dispatch_failure"`
+		} `json:"summaries"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	reason := body.Summaries.ParkReason
+	if reason == nil || reason.Summary != "Seat floor scope is undecided." || !reflect.DeepEqual(reason.Questions, []string{"Per organization?"}) || !reflect.DeepEqual(reason.Risks, []string{"Locks out members."}) {
+		t.Fatalf("park_reason = %+v", reason)
+	}
+	failure := body.Summaries.DispatchFailure
+	if failure == nil || failure.Error != "queue discarded the job" || failure.Attempt == nil || *failure.Attempt != 3 {
+		t.Fatalf("dispatch_failure = %+v", failure)
+	}
 }
