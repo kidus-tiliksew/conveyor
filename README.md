@@ -12,6 +12,8 @@ identifying where it has drifted from the agreed intent.
 
 Conveyor has used this process to build itself since July 2026.
 
+https://github.com/user-attachments/assets/f50c12bc-81ed-429c-ba10-90dd3cdb8c34
+
 <table>
   <tr>
     <td colspan="2">
