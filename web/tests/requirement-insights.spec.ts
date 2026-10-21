@@ -350,6 +350,8 @@ async function zoomNear(page: Page) {
 
 // The node and its toolbar lie inside the map pane, beside the panel.
 async function expectHubBesidePanel(page: Page, id = 'req-alpha') {
+  // The toolbar renders once the framing move passes the near zoom.
+  await expect(toolbar(page, id)).toBeVisible()
   await waitForCamera(hub(page, id))
   const pane = await page.locator('.react-flow').boundingBox()
   const side = await panel(page).boundingBox()
@@ -392,6 +394,7 @@ test('near zoom shows the requirement pill toolbar and far zoom hides it', async
   await expect(toolbar(page).getByRole('button', { name: 'Charts' })).toHaveAttribute('aria-pressed', 'true')
   // The node is outlined while its panel is open.
   await expect(card(page, 'doc:req-alpha')).toHaveClass(/ring-foreground/)
+  await waitForCamera(hub(page))
 
   // Zoomed out again, the toolbar goes away and the panel stays.
   while ((await zoom(page)) >= 0.62) await page.locator('.react-flow__controls-zoomout').click()
@@ -466,10 +469,16 @@ test('switching view or arrangement clears insight', async ({ page }) => {
   // Selecting another requirement's group closes the panel.
   await page.goto('/?view=map&scope=req-alpha&insight=summary')
   await expect(panel(page)).toBeVisible()
+  // The panel can show before the layout lands; the opening camera move
+  // follows the layout, so the whole map is framed only after it settles.
+  await expect(hub(page)).toBeVisible()
+  await waitForCamera(hub(page))
   await page.getByRole('button', { name: 'Whole map' }).click()
   await waitForCamera(page.getByTestId('rf__node-frame:req-beta'))
   const beta = await page.getByTestId('rf__node-frame:req-beta').boundingBox()
-  if (!beta) throw new Error('no beta group')
+  const side = await panel(page).boundingBox()
+  if (!beta || !side) throw new Error('no beta group or panel')
+  expect(beta.x + beta.width).toBeLessThanOrEqual(side.x)
   await page.mouse.click(beta.x + beta.width / 2, beta.y + 4)
   await expect(page).toHaveURL(/scope=req-beta/)
   await expect(page).not.toHaveURL(/insight=/)
