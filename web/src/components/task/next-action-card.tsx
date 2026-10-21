@@ -1,8 +1,16 @@
+import { Link } from '@tanstack/react-router'
 import { deriveCurrentExecutionState } from '../../lib/activity'
 import type { TaskRouteVariant } from '../../lib/task-route'
-import type { ActivityItem } from '../../lib/types'
+import type { ActivityItem, NextAction } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useWorkspaceCapability } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import {
+  ContextProposalChecklist,
+  ContextProposalFooter,
+  MonitorOriginLine,
+  useContextProposalSelection,
+  useContextProposalSends,
+} from '../inbox/context-proposal-rows'
 import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Card, CardContent } from '../ui/card'
@@ -31,6 +39,7 @@ export function NextActionCard({
 }) {
   const { data: action, isLoading } = useNextAction(item.task.id)
   const canRecover = useWorkspaceCapability('recover_work')
+  const { workspace } = useWorkspaceSelection()
   // A claimed order keeps its stop affordance whether or not an execution
   // state maps (a claimed refresh-review round does not), and it renders once.
   const preemptOrder = canRecover ? claimedWorkOrder(item) : undefined
@@ -66,7 +75,12 @@ export function NextActionCard({
           {execution && <ExecutionTitle state={execution} />}
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
-          {!gateOpen && <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />}
+          {!gateOpen &&
+            (action.kind === 'context_proposal' && action.details?.context_proposals?.length ? (
+              <ContextProposalDecision key={`${workspace}:${item.task.id}`} taskId={item.task.id} action={action} />
+            ) : (
+              <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />
+            ))}
           {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
           <NextActionDeadline deadline={action.deadline} />
           {execution?.order.state === 'claimed' && execution.order.activity_snapshot && (
@@ -81,5 +95,31 @@ export function NextActionCard({
         </CardContent>
       </Card>
     </section>
+  )
+}
+
+// Task detail's form of the context_proposal checklist: compact rows, the
+// same Apply and Dismiss all as the Inbox detail, and a link to the decision
+// in the Inbox (feature-operator-next-action NA-6; component-web-task-surfaces
+// Next-action card).
+function ContextProposalDecision({ taskId, action }: { taskId: string; action: NextAction }) {
+  const sends = useContextProposalSends(taskId)
+  const selection = useContextProposalSelection(taskId)
+  return (
+    <div data-context-decision className="min-w-0 space-y-2.5">
+      <MonitorOriginLine action={action} />
+      <ContextProposalChecklist action={action} selection={selection} sends={sends} compact />
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+        <ContextProposalFooter action={action} selection={selection} sends={sends} />
+        <Link
+          to="/inbox"
+          search={{ selected: taskId }}
+          data-review-in-inbox
+          className="text-xs font-medium text-primary hover:underline"
+        >
+          Review in Inbox →
+        </Link>
+      </div>
+    </div>
   )
 }

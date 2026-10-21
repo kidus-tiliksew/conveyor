@@ -535,14 +535,22 @@ async function textOutsideIDs(card: import('@playwright/test').Locator) {
   })
 }
 
-test('the context card lists each proposed document and decides one at a time until the item leaves', async ({
+// The checklist's Apply button, labelled by the current selection (NA-6).
+const applyButton = (card: import('@playwright/test').Locator) => card.locator('[data-context-apply]')
+const dismissAllButton = (card: import('@playwright/test').Locator) =>
+  card.getByRole('button', { name: 'Dismiss all', exact: true })
+const rowCheck = (card: import('@playwright/test').Locator, target: ContextTarget) =>
+  card.locator(`[data-context-check="${target.kind}:${target.id}"]`)
+const contextPath = (target: ContextTarget, act: 'confirm' | 'dismiss') =>
+  `/v1/tasks/T-ctx/context/proposals/${target.kind}/${target.id}/${act}`
+
+test('the context checklist lists each proposed document checked, and Apply attaches them all until the item leaves', async ({
   page,
 }) => {
   const [requirement, design] = contextTargets
-  const fixture = contextFixture()
+  const fixture = contextFixture({ targets: [requirement, { ...design, source: 'triage' }] })
   const harness = await serve(page, fixture, (_request, path) => {
-    if (path.endsWith(`/requirement/${requirement.id}/confirm`)) decide(fixture, [design])
-    if (path.endsWith(`/system_design/${design.id}/dismiss`)) decide(fixture, [])
+    if (path.endsWith(`/system_design/${design.id}/confirm`)) decide(fixture, [])
     return { state: 'confirmed' }
   })
   await page.goto('/inbox')
@@ -550,7 +558,10 @@ test('the context card lists each proposed document and decides one at a time un
   const rows = card.locator('[data-context-proposal]')
   await expect(rows).toHaveCount(2)
 
-  // Each row: tier word, linked title, justification, source and proposer, age.
+  // One shared source line; each row: checkbox, tier word, linked title,
+  // justification. No row carries a Confirm or Dismiss button.
+  await expect(card.locator('[data-context-source]')).toHaveText('Suggested by triage · 2 hours ago')
+  await expect(card.locator('[data-context-row-meta]')).toHaveCount(0)
   const first = rows.nth(0)
   await expect(first).toContainText('requirement')
   await expect(first.getByRole('link', { name: requirement.title })).toHaveAttribute(
@@ -558,48 +569,47 @@ test('the context card lists each proposed document and decides one at a time un
     `/requirements?requirement=${requirement.id}`,
   )
   await expect(first).toContainText(requirement.justification)
-  await expect(first).toContainText('Suggested by triage')
-  await expect(first).toContainText('2 hours ago')
   await expect(rows.nth(1).getByRole('link', { name: design.title })).toHaveAttribute(
     'href',
     `/system-design?document=${design.id}`,
   )
   await expect(rows.nth(1)).toContainText('System Design')
-  await expect(rows.nth(1)).toContainText('Suggested by planning')
-  for (const target of [requirement, design])
-    for (const act of ['confirm', 'dismiss'] as const)
-      await expect(card.getByRole('button', { name: contextLabel(act, target), exact: true })).toBeEnabled()
+  await expect(
+    card.locator('[data-context-proposals]').getByRole('button', { name: /^(Confirm|Dismiss) / }),
+  ).toHaveCount(0)
+  // Each checkbox is named by the server label of the choice its state selects.
+  await expect(card.getByRole('checkbox', { name: contextLabel('confirm', requirement), exact: true })).toBeChecked()
+  await expect(card.getByRole('checkbox', { name: contextLabel('confirm', design), exact: true })).toBeChecked()
+  await expect(applyButton(card)).toHaveText('Attach all 2')
+  await expect(dismissAllButton(card)).toBeEnabled()
+  // Short justifications fit their two lines, so no row offers Show more.
+  await expect(card.locator('[data-context-expand]')).toHaveCount(0)
   await expect(card).not.toContainText('cannot send')
 
-  // Raw target IDs appear only inside the IDs disclosure.
+  // Raw target IDs and the proposer appear only inside the IDs disclosure.
   const outside = await textOutsideIDs(card)
   for (const target of [requirement, design]) expect(outside).not.toContain(target.id)
-  await expect(card.locator('details')).toContainText(requirement.id)
+  expect(outside).not.toContain('system:triage')
+  await expect(card.locator('details').last()).toContainText(requirement.id)
 
-  // A double click still sends one body-less POST to the stated route, and
-  // only that row leaves.
-  await card.getByRole('button', { name: contextLabel('confirm', requirement), exact: true }).dblclick()
-  await expect.poll(() => harness.posts.length).toBe(1)
-  const [sent] = harness.posts
-  expect(sent.method()).toBe('POST')
-  expect(new URL(sent.url()).pathname).toBe(`/v1/tasks/T-ctx/context/proposals/requirement/${requirement.id}/confirm`)
-  expect(sent.postData()).toBeNull()
-  expect(sent.headers()['x-conveyor-csrf']).toBe('1')
-  expect(new URL(sent.url()).searchParams.get('workspace_id')).toBe('demo')
-  await expect(rows).toHaveCount(1)
-  await expect(decisionRows(page)).toHaveCount(1)
-  // One proposal left: no batch controls.
-  await expect(card.locator('[data-context-batch]')).toHaveCount(0)
-
-  await card.getByRole('button', { name: contextLabel('dismiss', design), exact: true }).click()
+  // A double click still runs once: one body-less POST per row, in order.
+  await applyButton(card).dblclick()
   await expect.poll(() => harness.posts.length).toBe(2)
-  expect(new URL(harness.posts[1].url()).pathname).toBe(
-    `/v1/tasks/T-ctx/context/proposals/system_design/${design.id}/dismiss`,
-  )
+  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual([
+    contextPath(requirement, 'confirm'),
+    contextPath(design, 'confirm'),
+  ])
+  for (const post of harness.posts) {
+    expect(post.method()).toBe('POST')
+    expect(post.postData()).toBeNull()
+    expect(post.headers()['x-conveyor-csrf']).toBe('1')
+    expect(new URL(post.url()).searchParams.get('workspace_id')).toBe('demo')
+  }
   await expect(decisionRows(page)).toHaveCount(0)
   await expect(page.locator('[data-no-decisions]')).toHaveText('No decisions are waiting for you.')
+  expect(harness.posts).toHaveLength(2)
 
-  // The task detail reads the confirmed attachment.
+  // The task detail reads the confirmed attachments as audited acts.
   fixture.activity = {
     'T-ctx': {
       task: {
@@ -610,8 +620,6 @@ test('the context card lists each proposed document and decides one at a time un
           proposals: [],
         },
       },
-      // The decisions as the audited routes record them: kind, target, and
-      // the requirement ID the confirm route adds for a requirement.
       events: [
         {
           id: '901',
@@ -621,15 +629,6 @@ test('the context card lists each proposed document and decides one at a time un
           actor_role: 'operator',
           at: '2026-10-16T18:10:00.000000Z',
           payload: { target_kind: 'requirement', target_id: requirement.id, requirement_id: requirement.id },
-        },
-        {
-          id: '902',
-          task_id: 'T-ctx',
-          kind: 'task.context_proposal_dismissed',
-          actor_id: 'user:usr_operator',
-          actor_role: 'operator',
-          at: '2026-10-16T18:11:00.000000Z',
-          payload: { target_kind: 'system_design', target_id: design.id },
         },
       ],
       jobs: [],
@@ -641,36 +640,111 @@ test('the context card lists each proposed document and decides one at a time un
   await expect(
     page.getByRole('region', { name: 'Attached context' }).getByLabel(`${requirement.title} (${requirement.id})`),
   ).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Suggested context' })).toHaveCount(0)
-  // Both inbox decisions read as the audited acts in the task timeline.
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText(`Context confirmed: requirement ${requirement.id}`)).toBeVisible()
-  await expect(timeline.getByText(`Context dismissed: System Design ${design.id}`)).toBeVisible()
 })
 
-for (const act of ['confirm', 'dismiss'] as const) {
-  const name = act === 'confirm' ? 'Confirm all' : 'Dismiss all'
-  test(`${name} posts each proposal once in the server order and the item leaves`, async ({ page }) => {
-    const fixture = contextFixture({ targets: contextTargets })
-    const harness = await serve(page, fixture, (_request, path) => {
-      if (path.endsWith(`/${contextTargets[2].id}/${act}`)) decide(fixture, [])
-      return { state: act === 'confirm' ? 'confirmed' : 'dismissed' }
-    })
-    await page.goto('/inbox')
-    const card = decisionDetail(page)
-    await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
-    await card.getByRole('button', { name, exact: true }).dblclick()
-    await expect.poll(() => harness.posts.length).toBe(3)
-    expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(
-      contextTargets.map((target) => `/v1/tasks/T-ctx/context/proposals/${target.kind}/${target.id}/${act}`),
-    )
-    for (const post of harness.posts) expect(post.postData()).toBeNull()
-    await expect(decisionRows(page)).toHaveCount(0)
-    expect(harness.posts).toHaveLength(3)
+test('a mixed selection posts each row’s selected choice in the server order', async ({ page }) => {
+  const [requirement, design, dashboard] = contextTargets
+  const fixture = contextFixture({ targets: contextTargets })
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path.endsWith(`/${dashboard.id}/confirm`)) decide(fixture, [])
+    return { state: 'decided' }
   })
-}
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  // Sources differ, so each row states its own.
+  await expect(card.locator('[data-context-source]')).toHaveCount(0)
+  await expect(card.locator('[data-context-row-meta]').nth(1)).toContainText('Suggested by planning')
+  // Equal relative ages still print on each row, with the absolute time on hover.
+  for (const meta of await card.locator('[data-context-row-meta]').all()) {
+    await expect(meta).toContainText('2 hours ago')
+    await expect(meta.locator('time')).toHaveAttribute('title', /\S/)
+  }
+  await expect(applyButton(card)).toHaveText('Attach all 3')
 
-test('leaving the inbox mid-batch sends nothing after the request in flight', async ({ page }) => {
+  await rowCheck(card, design).uncheck()
+  await expect(card.getByRole('checkbox', { name: contextLabel('dismiss', design), exact: true })).not.toBeChecked()
+  await expect(card.locator('[data-context-proposal]').nth(1)).toHaveAttribute('data-checked', 'false')
+  await expect(applyButton(card)).toHaveText('Attach 2 · dismiss 1')
+  // c still acts with focus on a checkbox.
+  await page.keyboard.press('c')
+  await expect.poll(() => harness.posts.length).toBe(3)
+  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual([
+    contextPath(requirement, 'confirm'),
+    contextPath(design, 'dismiss'),
+    contextPath(dashboard, 'confirm'),
+  ])
+  await expect(decisionRows(page)).toHaveCount(0)
+})
+
+test('one source with distinct creation times that round to the same age keeps each row’s own time', async ({
+  page,
+}) => {
+  await page.clock.setFixedTime(new Date('2026-10-21T12:00:00Z'))
+  const fixture = contextFixture()
+  const action = fixture.actions['T-ctx'] as { details: { context_proposals: Record<string, unknown>[] } }
+  const times = ['2026-10-19T03:00:00Z', '2026-10-19T15:00:00Z']
+  action.details.context_proposals.forEach((proposal, index) => {
+    proposal.source = 'triage'
+    proposal.created_at = times[index]
+  })
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  // The source is shared; the age is not, because the times differ.
+  await expect(card.locator('[data-context-source]')).toHaveText('Suggested by triage')
+  const metas = card.locator('[data-context-row-meta]')
+  await expect(metas).toHaveCount(2)
+  for (const [index, time] of times.entries()) {
+    await expect(metas.nth(index)).toHaveText('2 days ago')
+    await expect(metas.nth(index).locator('time')).toHaveAttribute('datetime', time)
+    await expect(metas.nth(index).locator('time')).toHaveAttribute('title', /\S/)
+  }
+  const titles = await metas.locator('time').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title')))
+  expect(new Set(titles).size).toBe(2)
+})
+
+test('Apply reads the effect of every selection, and one proposal reads Attach or Dismiss', async ({ page }) => {
+  const [requirement, design] = contextTargets
+  const fixture = contextFixture()
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-kbd-hint]').filter({ hasText: 'c' })).toBeVisible()
+  await rowCheck(card, requirement).uncheck()
+  await rowCheck(card, design).uncheck()
+  await expect(applyButton(card)).toHaveText('Dismiss all 2')
+  await rowCheck(card, design).check()
+  await expect(applyButton(card)).toHaveText('Attach 1 · dismiss 1')
+
+  fixture.actions['T-ctx'] = contextAction([requirement])
+  await page.reload()
+  await expect(applyButton(decisionDetail(page))).toHaveText('Attach')
+  await rowCheck(decisionDetail(page), requirement).uncheck()
+  await expect(applyButton(decisionDetail(page))).toHaveText('Dismiss')
+})
+
+test('Dismiss all posts every dismiss choice once in the server order and the item leaves', async ({ page }) => {
+  const fixture = contextFixture({ targets: contextTargets })
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path.endsWith(`/${contextTargets[2].id}/dismiss`)) decide(fixture, [])
+    return { state: 'dismissed' }
+  })
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
+  await dismissAllButton(card).dblclick()
+  await expect.poll(() => harness.posts.length).toBe(3)
+  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(
+    contextTargets.map((target) => contextPath(target, 'dismiss')),
+  )
+  for (const post of harness.posts) expect(post.postData()).toBeNull()
+  await expect(decisionRows(page)).toHaveCount(0)
+  expect(harness.posts).toHaveLength(3)
+})
+
+test('leaving the inbox mid-run sends nothing after the request in flight', async ({ page }) => {
   const fixture = contextFixture({ targets: contextTargets })
   fixture.activity = {
     'T-ctx': {
@@ -686,8 +760,10 @@ test('leaving the inbox mid-batch sends nothing after the request in flight', as
   harness.holdPosts = held.held
   await page.goto('/inbox')
   const card = decisionDetail(page)
-  await card.getByRole('button', { name: 'Confirm all', exact: true }).click()
+  await applyButton(card).click()
   await expect.poll(() => harness.posts.length).toBe(1)
+  // Selection is frozen while the run is in flight.
+  await expect(rowCheck(card, contextTargets[1])).toBeDisabled()
   // Opening the task leaves the inbox while the first act is in flight.
   await card.getByRole('link', { name: 'Repair post-merge test failures' }).click()
   await expect(page).toHaveURL(/\/tasks\/T-ctx/)
@@ -696,7 +772,7 @@ test('leaving the inbox mid-batch sends nothing after the request in flight', as
   expect(harness.posts).toHaveLength(1)
 })
 
-test('switching workspace mid-batch sends nothing after the request in flight, and nothing to the new workspace', async ({
+test('switching workspace mid-run sends nothing after the request in flight, and nothing to the new workspace', async ({
   page,
 }) => {
   const fixture = contextFixture({ targets: contextTargets })
@@ -709,7 +785,7 @@ test('switching workspace mid-batch sends nothing after the request in flight, a
   harness.holdPosts = held.held
   await page.goto('/inbox')
   const card = decisionDetail(page)
-  await card.getByRole('button', { name: 'Confirm all', exact: true }).click()
+  await applyButton(card).click()
   await expect.poll(() => harness.posts.length).toBe(1)
   await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
   await expect(
@@ -721,7 +797,7 @@ test('switching workspace mid-batch sends nothing after the request in flight, a
   expect(new URL(harness.posts[0].url()).searchParams.get('workspace_id')).toBe('demo')
 })
 
-test('a refused send stops Dismiss all, shows the refusal, and keeps the acts already recorded', async ({ page }) => {
+test('a refused send stops the run, states how far it got, and keeps the acts already recorded', async ({ page }) => {
   const [requirement, design, dashboard] = contextTargets
   const fixture = contextFixture({ targets: contextTargets })
   const harness = await serve(page, fixture, (_request, path) => {
@@ -734,33 +810,67 @@ test('a refused send stops Dismiss all, shows the refusal, and keeps the acts al
   })
   await page.goto('/inbox')
   const card = decisionDetail(page)
-  await card.getByRole('button', { name: 'Dismiss all', exact: true }).click()
-  await expect(card.locator('[data-context-refusal]')).toContainText('already decided')
+  await dismissAllButton(card).click()
+  const refusal = card.locator('[data-context-refusal]')
+  await expect(refusal).toContainText('1 of 3 recorded.')
+  await expect(refusal).toContainText('already decided')
   expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual([
-    `/v1/tasks/T-ctx/context/proposals/requirement/${requirement.id}/dismiss`,
-    `/v1/tasks/T-ctx/context/proposals/system_design/${design.id}/dismiss`,
+    contextPath(requirement, 'dismiss'),
+    contextPath(design, 'dismiss'),
   ])
   // The refreshed card keeps the refusal and the two proposals still pending.
   await expect(card.locator('[data-context-proposal]')).toHaveCount(2)
-  await expect(card.locator('[data-context-refusal]')).toBeVisible()
+  await expect(refusal).toBeVisible()
   await page.waitForTimeout(300)
   expect(harness.posts).toHaveLength(2)
 })
 
-test('task-context choices a caller may not take stay disabled in the inbox with the capability reason', async ({
+test('task-context choices a caller may not take disable both controls in the inbox with the capability reason', async ({
   page,
 }) => {
   const harness = await serve(page, contextFixture({ allowed: false }))
   await page.goto('/inbox')
   const card = decisionDetail(page)
-  const decisions = card.locator('[data-context-proposals]').getByRole('button')
-  await expect(decisions).toHaveCount(4)
-  for (const button of await decisions.all()) await expect(button).toBeDisabled()
-  const batch = card.locator('[data-context-batch]').getByRole('button')
-  await expect(batch).toHaveCount(2)
-  for (const button of await batch.all()) await expect(button).toBeDisabled()
-  await expect(card.getByText('Needs the operate gates capability.').first()).toBeVisible()
+  await expect(applyButton(card)).toBeDisabled()
+  await expect(dismissAllButton(card)).toBeDisabled()
+  await expect(card.locator('[data-context-control-reason]')).toHaveText('Needs the operate gates capability.')
+  await expect(card.locator('[data-context-row-reason]').first()).toHaveText('Needs the operate gates capability.')
+  await page.keyboard.press('c')
+  await page.waitForTimeout(200)
   expect(harness.posts).toHaveLength(0)
+})
+
+test('a disallowed dismiss leaves an all-checked Apply enabled and disables Dismiss all with its reason', async ({
+  page,
+}) => {
+  const [requirement, design] = contextTargets
+  const fixture = contextFixture()
+  const action = fixture.actions['T-ctx'] as { choices: { id: string; allowed: boolean }[] }
+  for (const entry of action.choices) if (entry.id.startsWith('dismiss:')) entry.allowed = false
+  const harness = await serve(page, fixture, (_request, path) => {
+    if (path.endsWith(`/${design.id}/confirm`)) decide(fixture, [])
+    return { state: 'confirmed' }
+  })
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  await expect(dismissAllButton(card)).toBeDisabled()
+  await expect(card.locator('[data-context-control-reason]')).toHaveText(
+    'Dismiss all: Needs the operate gates capability.',
+  )
+  await expect(card.locator('[data-context-row-reason]').first()).toHaveText(
+    'Dismiss: Needs the operate gates capability.',
+  )
+  // Unchecking a row would send a disallowed dismiss, so Apply disables.
+  await rowCheck(card, requirement).uncheck()
+  await expect(applyButton(card)).toBeDisabled()
+  await rowCheck(card, requirement).check()
+  await expect(applyButton(card)).toBeEnabled()
+  await applyButton(card).click()
+  await expect.poll(() => harness.posts.length).toBe(2)
+  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual([
+    contextPath(requirement, 'confirm'),
+    contextPath(design, 'confirm'),
+  ])
 })
 
 test('a monitor-filed task states its origin with the run link, and without one when none was observed', async ({
@@ -786,12 +896,8 @@ test('a monitor-filed task states its origin with the run link, and without one 
   await expect(bare.getByRole('link')).toHaveCount(0)
 })
 
-// The proposed-context fixture: the task body, one requirement and one System
-// Design target, each document read answering from `documents` by path.
-function sheetFixture(
-  documents: Record<string, Record<string, unknown> | number>,
-  body = 'The post-merge run failed on **main**.',
-) {
+test('the context section folds the task body and reads no proposed document', async ({ page }) => {
+  const body = '## Problem\n\nThe post-merge run failed on **main**.\n\nThe flaky suite needs a fix.'
   const fixture = contextFixture({ body })
   fixture.activity = {
     'T-ctx': {
@@ -802,189 +908,41 @@ function sheetFixture(
       interventions: [],
     },
   }
-  fixture.documents = documents
-  return fixture
-}
-
-const requirementPath = `/v1/requirements/${contextTargets[0].id}`
-const designPath = `/v1/system-designs/${contextTargets[1].id}`
-
-function requirementView(version: number, content: string, current = true) {
-  return {
-    requirement: { id: contextTargets[0].id, title: contextTargets[0].title },
-    ...(current ? { current_version: { version, content } } : {}),
-    pending_versions: [],
+  fixture.documents = {
+    [`/v1/requirements/${contextTargets[0].id}`]: { requirement: { id: contextTargets[0].id } },
+    [`/v1/system-designs/${contextTargets[1].id}`]: { document: { id: contextTargets[1].id } },
   }
-}
-
-function designView(version: number, content: string) {
-  return {
-    document: { id: contextTargets[1].id, title: contextTargets[1].title },
-    current_version: { version, content },
-    pending_versions: [],
-    versions: [],
-  }
-}
-
-// Selects the context decision; its detail renders the proposed context in
-// place (AC-2.3, AC-2.8).
-async function openProposedContext(page: Page) {
-  await decisionRows(page).first().click()
-  return decisionDetail(page).getByRole('region', { name: 'Decision context' })
-}
-
-// Leaves the decisions band and returns to it, which unmounts and remounts
-// the detail view.
-async function reselect(page: Page) {
-  await page.locator('[data-band-chip="blocked"]').click()
-  await expect(decisionDetail(page)).toHaveCount(0)
-  await page.locator('[data-band-chip="all"]').click()
-  return openProposedContext(page)
-}
-
-test('the proposed context shows each document as confirmed today beside the task body', async ({ page }) => {
-  const documents: Record<string, Record<string, unknown> | number> = {
-    [requirementPath]: requirementView(4, '# Review gates\n\nEvery gate keeps its evidence.'),
-    [designPath]: 503,
-  }
-  const harness = await serve(page, sheetFixture(documents))
-  const held = gate()
-  harness.holdDocuments = held.held
+  const harness = await serve(page, fixture)
   await page.goto('/inbox')
-  const sheet = await openProposedContext(page)
-  await expect(sheet.getByRole('region', { name: 'Task' })).toContainText('The post-merge run failed on main.')
-  // Held reads show their loading state and no content.
-  const confirmed = sheet.getByRole('region', { name: contextTargets[0].title })
-  await expect(confirmed).toHaveAttribute('aria-busy', 'true')
-  await expect(confirmed).not.toContainText('Every gate keeps its evidence.')
-  held.release()
-  harness.holdDocuments = undefined
-  await expect(confirmed).toContainText('v4')
-  await expect(confirmed).toContainText('Every gate keeps its evidence.')
-  await expect(confirmed).toHaveAttribute('aria-busy', 'false')
-  const failed = sheet.getByRole('region', { name: contextTargets[1].title })
-  await expect(failed.getByRole('button', { name: 'Retry' })).toBeVisible()
-
-  // Retry reads the document again and shows it once it answers.
-  documents[designPath] = designView(32, 'Suites run in CI.')
-  await failed.getByRole('button', { name: 'Retry' }).click()
-  await expect(failed).toContainText('v32')
-  await expect(failed).toContainText('Suites run in CI.')
-  for (const request of harness.documentRequests)
-    expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
-  // Reading context records no act.
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-context-heading]')).toHaveText('Proposed context')
+  const folded = card.locator('[data-task-body]')
+  await expect(folded.locator('summary')).toHaveText('The task·The post-merge run failed on main.')
+  await expect(folded.getByText('The flaky suite needs a fix.')).toBeHidden()
+  await folded.locator('summary').click()
+  await expect(folded.getByText('The flaky suite needs a fix.')).toBeVisible()
+  await expect(folded.getByRole('link', { name: 'Full task →' })).toHaveAttribute('href', '/tasks/T-ctx/full')
+  await page.waitForTimeout(300)
+  expect(harness.documentRequests).toHaveLength(0)
   expect(harness.posts).toHaveLength(0)
 })
 
-test('a document without a confirmed version says so in the detail', async ({ page }) => {
-  await serve(
-    page,
-    sheetFixture({
-      [requirementPath]: requirementView(0, '', false),
-      [designPath]: designView(32, 'Suites run in CI.'),
-    }),
-  )
-  await page.goto('/inbox')
-  const sheet = await openProposedContext(page)
-  await expect(sheet.getByRole('region', { name: contextTargets[0].title })).toContainText(
-    'This document has no confirmed version yet.',
-  )
-})
-
-test('a reselected decision never shows cached content while its fresh read fails, until Retry succeeds', async ({
-  page,
-}) => {
-  const documents: Record<string, Record<string, unknown> | number> = {
-    [requirementPath]: requirementView(4, 'Version four content.'),
-    [designPath]: designView(32, 'Suites run in CI.'),
+test('a task without a body says so in the context section', async ({ page }) => {
+  const fixture = contextFixture()
+  fixture.activity = {
+    'T-ctx': {
+      task: task('T-ctx', 'Repair post-merge test failures', 'queued'),
+      events: [],
+      jobs: [],
+      work_orders: [],
+      interventions: [],
+    },
   }
-  await serve(page, sheetFixture(documents))
+  await serve(page, fixture)
   await page.goto('/inbox')
-  let sheet = await openProposedContext(page)
-  const requirementRegion = () => sheet.getByRole('region', { name: contextTargets[0].title })
-  await expect(requirementRegion()).toContainText('Version four content.')
-
-  // The document became unavailable: the cached v4 must not stand in for it.
-  documents[requirementPath] = 503
-  sheet = await reselect(page)
-  await expect(requirementRegion().getByRole('button', { name: 'Retry' })).toBeVisible()
-  await expect(requirementRegion()).not.toContainText('Version four content.')
-  await expect(requirementRegion()).not.toContainText('v4')
-
-  documents[requirementPath] = requirementView(5, 'Version five content.')
-  await requirementRegion().getByRole('button', { name: 'Retry' }).click()
-  await expect(requirementRegion()).toContainText('v5')
-  await expect(requirementRegion()).toContainText('Version five content.')
-})
-
-test('a read left in flight by a left detail never shows when the decision is reselected', async ({ page }) => {
-  const documents: Record<string, Record<string, unknown> | number> = {
-    [requirementPath]: requirementView(4, 'Late content from the closed sheet.'),
-    [designPath]: designView(32, 'Suites run in CI.'),
-  }
-  const harness = await serve(page, sheetFixture(documents))
-  const held = gate()
-  harness.holdDocuments = held.held
-  await page.goto('/inbox')
-  await openProposedContext(page)
-  await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(2)
-  await page.locator('[data-band-chip="blocked"]').click()
-  await expect(decisionDetail(page)).toHaveCount(0)
-  // The read answers after the detail unmounted; the document then fails.
-  held.release()
-  harness.holdDocuments = undefined
-  await page.waitForTimeout(300)
-  documents[requirementPath] = 503
-  await page.locator('[data-band-chip="all"]').click()
-  const sheet = await openProposedContext(page)
-  const region = sheet.getByRole('region', { name: contextTargets[0].title })
-  await expect(region.getByRole('button', { name: 'Retry' })).toBeVisible()
-  await expect(region).not.toContainText('Late content from the closed sheet.')
-})
-
-test('switching workspace with a document read in flight shows no document content', async ({ page }) => {
-  const fixture = sheetFixture({
-    [requirementPath]: requirementView(4, 'Content of the first workspace.'),
-    [designPath]: designView(32, 'Suites run in CI.'),
-  })
-  fixture.workspaces = [
-    { id: 'demo', name: 'Demo' },
-    { id: 'other', name: 'Other' },
-  ]
-  const harness = await serve(page, fixture)
-  const held = gate()
-  harness.holdDocuments = held.held
-  await page.goto('/inbox')
-  await openProposedContext(page)
-  await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(2)
-  await page.getByRole('navigation', { name: 'Workspaces' }).getByRole('button', { name: 'Switch to Other' }).click()
-  held.release()
-  await page.waitForTimeout(500)
-  await expect(page.getByText('Content of the first workspace.')).toHaveCount(0)
-  for (const request of harness.documentRequests)
-    expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
-})
-
-test('the selected decision fits a 390px viewport with long documents', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 900 })
-  const long = `${'Long-unbroken-document-text-'.repeat(12)}\n\n| a | b |\n|---|---|\n| ${'x'.repeat(80)} | y |`
-  await serve(
-    page,
-    sheetFixture(
-      {
-        [requirementPath]: requirementView(4, long),
-        [designPath]: designView(32, long),
-      },
-      `Task body ${'with-a-very-long-unbroken-token-'.repeat(6)}`,
-    ),
+  await expect(decisionDetail(page).getByRole('region', { name: 'Decision context' })).toContainText(
+    'The task has no description.',
   )
-  await page.goto('/inbox')
-  const sheet = await openProposedContext(page)
-  await expect(sheet.getByRole('region', { name: contextTargets[1].title })).toContainText('v32')
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-  expect(overflow).toBeLessThanOrEqual(0)
-  const detailOverflow = await decisionDetail(page).evaluate((element) => element.scrollWidth - element.clientWidth)
-  expect(detailOverflow).toBeLessThanOrEqual(0)
 })
 
 test('the context decision fits a 390px viewport with long titles and justifications', async ({ page }) => {
@@ -1008,6 +966,12 @@ test('the context decision fits a 390px viewport with long titles and justificat
   await page.goto('/inbox')
   await decisionRows(page).first().click()
   await expect(decisionDetail(page).locator('[data-context-proposal]')).toHaveCount(3)
+  // A justification longer than its two lines expands and collapses.
+  const expand = decisionDetail(page).locator('[data-context-expand]').first()
+  await expect(expand).toHaveText('Show more')
+  await expand.click()
+  await expect(expand).toHaveText('Show less')
+  await expect(decisionDetail(page).locator('[data-context-justification]').first()).not.toHaveClass(/line-clamp-2/)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
 })

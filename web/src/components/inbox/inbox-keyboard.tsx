@@ -22,11 +22,17 @@ export function useShortcutChoice() {
   return useContext(ShortcutChoice)
 }
 
+// What c binds to for a context_proposal: the checklist's Apply, which marks
+// itself while it renders enabled (feature-operator-next-action NA-6).
+export const CONTEXT_APPLY_SHORTCUT = 'context-proposal:apply'
+
 // The first choice whose button renders enabled, matching the rules each
 // choice row applies: the gate's one-act merge needs only the capability (its
 // button opens the merge confirmation), and every other choice also needs a
-// request body this client can build and no server refusal.
+// request body this client can build and no server refusal. A context
+// proposal binds c to its checklist's Apply instead of any one choice.
 export function shortcutChoiceId(action: NextAction) {
+  if (action.kind === 'context_proposal' && action.details?.context_proposals?.length) return CONTEXT_APPLY_SHORTCUT
   for (const choice of action.choices) {
     if (!choice.allowed) continue
     if (action.kind === 'merge_approval' && choice.id === 'merge') return choice.id
@@ -50,10 +56,14 @@ export function Kbd({ children, className }: { children: ReactNode; className?: 
   )
 }
 
+// A text field takes typed keys. A checkbox or radio does not, so a key still
+// acts after the operator ticks a checklist row.
 function editable(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
-  return target.closest('input, textarea, select, [contenteditable="true"]') != null
+  const field = target.closest('input, textarea, select, [contenteditable="true"]')
+  if (field instanceof HTMLInputElement && (field.type === 'checkbox' || field.type === 'radio')) return false
+  return field != null
 }
 
 function shown(element: Element) {

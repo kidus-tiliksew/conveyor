@@ -719,9 +719,9 @@ test('the recovery card follows the order the server names as current', async ({
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
 })
 
-// Three pending task-context proposals: the next-action card's server choices
-// are the one place each is decided (component-web-task-surfaces, Next-action
-// card; feature-operator-next-action, Choices row context_proposal).
+// Three pending task-context proposals: the next-action card's compact
+// checklist is the one place task detail decides them (component-web-task-
+// surfaces, Next-action card; feature-operator-next-action NA-6).
 const contextTargets = [
   { kind: 'requirement', id: 'req-task-centric-operations-view', title: 'Task-centric operations view' },
   { kind: 'system_design', id: 'component-verification-strategy', title: 'Testing strategy' },
@@ -731,6 +731,8 @@ const contextTargets = [
     title: 'Web task surfaces: board, tasks, and task detail',
   },
 ] as const
+
+const tierWords: Record<string, string> = { requirement: 'requirement', system_design: 'System Design' }
 
 function contextProposalAction(allowed = true, extra: NextAction['choices'] = []): NextAction {
   return {
@@ -746,7 +748,7 @@ function contextProposalAction(allowed = true, extra: NextAction['choices'] = []
       ...contextTargets.flatMap((target) =>
         (['confirm', 'dismiss'] as const).map((action) => ({
           id: `${action}:task_context:${target.kind}:${target.id}`,
-          label: `${action === 'confirm' ? 'Confirm' : 'Dismiss'} context ${target.kind} ${target.id}`,
+          label: `${action === 'confirm' ? 'Confirm' : 'Dismiss'} ${target.title} (${tierWords[target.kind]})`,
           effect:
             action === 'confirm' ? 'Attaches the proposed context to this task.' : 'Dismisses the proposed context.',
           method: 'POST',
@@ -757,7 +759,18 @@ function contextProposalAction(allowed = true, extra: NextAction['choices'] = []
       ),
       ...extra,
     ],
-    details: {},
+    details: {
+      context_proposals: contextTargets.map((target) => ({
+        kind: target.kind,
+        target_id: target.id,
+        target_title: target.title,
+        tier_label: tierWords[target.kind],
+        justification: `Triage suggests ${target.title} because the change touches its scope.`,
+        source: 'triage',
+        proposed_by: 'queue:job/dispatch_task:task-1@1',
+        created_at: timestamp,
+      })),
+    },
   }
 }
 
@@ -789,12 +802,12 @@ function contextProposalDetail(action: NextAction) {
   }
 }
 
-const decisionLabels = contextTargets.flatMap((target) => [
-  `Confirm context ${target.kind} ${target.id}`,
-  `Dismiss context ${target.kind} ${target.id}`,
-])
+const contextPath = (target: (typeof contextTargets)[number], act: 'confirm' | 'dismiss') =>
+  `/v1/tasks/${taskId}/context/proposals/${target.kind}/${target.id}/${act}`
 
-test('three task-context proposals are decided once each from the next-action card on the sheet', async ({ page }) => {
+test('the next-action card decides task-context proposals through its compact checklist on the sheet', async ({
+  page,
+}) => {
   const malformed = {
     id: 'confirm:task_context:widget:',
     label: 'Confirm context widget',
@@ -820,46 +833,67 @@ test('three task-context proposals are decided once each from the next-action ca
   await expect(suggestions.getByRole('listitem')).toHaveCount(3)
   await expect(suggestions.getByRole('button')).toHaveCount(0)
 
-  // Exactly six usable decisions, each rendered once on the page.
-  const choices = card.locator('[data-next-action-choices]').getByRole('button')
-  await expect(choices).toHaveCount(7)
-  for (const label of decisionLabels) {
-    await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(1)
-    await expect(card.getByRole('button', { name: label, exact: true })).toBeEnabled()
-  }
-  // A malformed task-context id resolves to no body and stays disabled.
-  await expect(card.getByRole('button', { name: 'Confirm context widget', exact: true })).toBeDisabled()
-  await expect(card).toContainText('This page cannot send this choice.')
-
-  // Both acts post an empty body to the server-stated path.
-  await card.getByRole('button', { name: decisionLabels[0], exact: true }).click()
-  await expect.poll(() => posts.length).toBe(1)
-  expect(posts[0]).toEqual({
-    method: 'POST',
-    path: `/v1/tasks/${taskId}/context/proposals/requirement/req-task-centric-operations-view/confirm`,
-    body: null,
+  // The compact checklist replaces the flat choice row: no Confirm or Dismiss
+  // button, one checked row per proposal, the justification behind a chevron.
+  await expect(card.locator('[data-next-action-choices]')).toHaveCount(0)
+  await expect(card.locator('[data-context-checklist="compact"]')).toBeVisible()
+  await expect(card.getByRole('button', { name: /^(Confirm|Dismiss) .*\(/ })).toHaveCount(0)
+  const rows = card.locator('[data-context-proposal]')
+  await expect(rows).toHaveCount(3)
+  for (const target of contextTargets)
+    await expect(
+      card.getByRole('checkbox', { name: `Confirm ${target.title} (${tierWords[target.kind]})` }),
+    ).toBeChecked()
+  await expect(rows.nth(0).getByRole('link', { name: contextTargets[0].title })).toHaveAttribute(
+    'href',
+    `/requirements?requirement=${contextTargets[0].id}`,
+  )
+  await expect(rows.nth(0)).not.toContainText('Triage suggests')
+  await rows.nth(0).getByRole('button', { name: 'Show why' }).click()
+  await expect(rows.nth(0)).toContainText('Triage suggests Task-centric operations view')
+  await expect(card.locator('[data-context-source]')).toContainText('Suggested by triage')
+  // The proposer appears only inside the IDs disclosure.
+  const outside = await card.evaluate((element) => {
+    const clone = element.cloneNode(true) as HTMLElement
+    for (const details of clone.querySelectorAll('details')) details.remove()
+    return clone.textContent ?? ''
   })
-  await card.getByRole('button', { name: decisionLabels[3], exact: true }).click()
-  await expect.poll(() => posts.length).toBe(2)
-  expect(posts[1]).toEqual({
-    method: 'POST',
-    path: `/v1/tasks/${taskId}/context/proposals/system_design/component-verification-strategy/dismiss`,
-    body: null,
-  })
+  expect(outside).not.toContain('queue:job/dispatch_task')
+  await expect(card.getByRole('link', { name: 'Review in Inbox →' })).toHaveAttribute(
+    'href',
+    `/inbox?selected=${taskId}`,
+  )
+  // A choice naming no listed proposal stays visible with its reason.
+  await expect(card.locator('[data-context-unmatched]')).toContainText(
+    'Confirm context widget: This page cannot send this choice.',
+  )
 
-  // On the Flow tab the same choices stay usable from the card.
+  // Apply posts each row's selected choice once, body-less, in server order.
+  const apply = card.locator('[data-context-apply]')
+  await expect(apply).toHaveText('Attach all 3')
+  await card.locator(`[data-context-check="system_design:${contextTargets[1].id}"]`).uncheck()
+  await expect(apply).toHaveText('Attach 2 · dismiss 1')
+  await apply.dblclick()
+  await expect.poll(() => posts.length).toBe(3)
+  expect(posts).toEqual([
+    { method: 'POST', path: contextPath(contextTargets[0], 'confirm'), body: null },
+    { method: 'POST', path: contextPath(contextTargets[1], 'dismiss'), body: null },
+    { method: 'POST', path: contextPath(contextTargets[2], 'confirm'), body: null },
+  ])
+
+  // On the Flow tab the same checklist stays usable from the card.
   await sheet.getByRole('tab', { name: 'Flow' }).click()
   await expect(sheet.getByRole('tab', { name: 'Flow' })).toHaveAttribute('aria-selected', 'true')
-  for (const label of decisionLabels) await expect(card.getByRole('button', { name: label, exact: true })).toBeEnabled()
-  await card.getByRole('button', { name: decisionLabels[5], exact: true }).click()
-  await expect.poll(() => posts.length).toBe(3)
-  expect(posts[2]).toMatchObject({
-    path: `/v1/tasks/${taskId}/context/proposals/system_design/component-web-task-surfaces/dismiss`,
-    body: null,
-  })
+  await card.getByRole('button', { name: 'Dismiss all', exact: true }).click()
+  await expect.poll(() => posts.length).toBe(6)
+  expect(posts.slice(3).map((post) => post.path)).toEqual(
+    contextTargets.map((target) => contextPath(target, 'dismiss')),
+  )
 })
 
-test('task-context choices a caller may not take stay disabled with the capability reason', async ({ page }) => {
+test('task-context choices a caller may not take disable Apply and Dismiss all with the capability reason', async ({
+  page,
+}) => {
   const action = contextProposalAction(false)
   const posts = await mockAPI(
     page,
@@ -868,17 +902,17 @@ test('task-context choices a caller may not take stay disabled with the capabili
   )
   await page.goto(`/tasks/${taskId}`)
   const card = page.getByRole('dialog', { name: 'Task detail' }).getByRole('region', { name: 'Next action' })
-  for (const label of decisionLabels)
-    await expect(card.getByRole('button', { name: label, exact: true })).toBeDisabled()
-  await expect(card.getByText('Needs the operate gates capability.').first()).toBeVisible()
+  await expect(card.locator('[data-context-apply]')).toBeDisabled()
+  await expect(card.getByRole('button', { name: 'Dismiss all', exact: true })).toBeDisabled()
+  await expect(card.locator('[data-context-control-reason]')).toHaveText('Needs the operate gates capability.')
   expect(posts).toEqual([])
 })
 
-// The longest server labels wrap inside their buttons at phone width: every
-// button stays inside the card and the viewport on both detail surfaces. The
-// sheet clips overflow, so the document width alone would not catch this.
+// Long titles truncate on their one line and the checklist stays inside the
+// card and the viewport on both detail surfaces. The sheet clips overflow, so
+// the document width alone would not catch this.
 for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
-  test(`task-context choices wrap inside the next-action card at 390 px on ${surface}`, async ({ page }) => {
+  test(`the compact context checklist fits the next-action card at 390 px on ${surface}`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     const action = contextProposalAction()
     await mockAPI(
@@ -888,28 +922,117 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
     )
     await page.goto(surface)
     const card = page.getByRole('region', { name: 'Next action' })
-    await expect(card.getByRole('button', { name: decisionLabels[0], exact: true })).toBeVisible()
+    await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
     if (surface === `/tasks/${taskId}`) {
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
       await expect.poll(() => sheet.evaluate((node) => node.getAnimations().length)).toBe(0)
     }
     const cardBox = (await card.boundingBox())!
-    for (const label of decisionLabels) {
-      const box = (await card.getByRole('button', { name: label, exact: true }).boundingBox())!
+    expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(390)
+    for (const row of await card.locator('[data-context-proposal]').all()) {
+      const box = (await row.boundingBox())!
       expect(box.x).toBeGreaterThanOrEqual(cardBox.x - 0.5)
       expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5)
-      expect(box.x + box.width).toBeLessThanOrEqual(390)
     }
-    expect(cardBox.x + cardBox.width).toBeLessThanOrEqual(390)
-    // Wrapping keeps the whole label: the longest one takes more than a line.
-    const longest = card.getByRole('button', { name: decisionLabels[5], exact: true })
-    await expect(longest).toHaveText(decisionLabels[5])
+    for (const control of [
+      card.locator('[data-context-apply]'),
+      card.getByRole('link', { name: 'Review in Inbox →' }),
+    ]) {
+      const box = (await control.boundingBox())!
+      expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5)
+    }
+    // The longest title stays on one line, truncated.
+    const longest = card.getByRole('link', { name: contextTargets[2].title })
     const lines = await longest.evaluate(
       (node) => node.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(node).lineHeight),
     )
-    expect(lines).toBeGreaterThan(1.5)
+    expect(lines).toBeLessThan(1.5)
   })
 }
+
+// Two cached context_proposal tasks on the full route: the reused page keys
+// the checklist by workspace and task, so a held send never continues under
+// the next task and a return starts all-checked (feature-operator-next-action
+// NA-6).
+test('switching between cached context-proposal tasks isolates the checklist and its sends', async ({ page }) => {
+  const otherId = 'card-task-b'
+  const forTask = (id: string): NextAction => {
+    const action = contextProposalAction()
+    return {
+      ...action,
+      choices: action.choices.map((entry) => ({ ...entry, path: entry.path.replace(taskId, id) })),
+    }
+  }
+  const detailFor = (id: string) => {
+    const detail = contextProposalDetail(forTask(id))
+    return { ...detail, task: { ...detail.task, id, title: id === taskId ? 'Card task' : 'Second card task' } }
+  }
+  const posts: string[] = []
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await page.route('**/v1/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me')
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }, request),
+      })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({ json: { items: [], attention: { total: 0, task_count: 0, pending_proposal_count: 0 } } })
+    const read = path.match(/^\/v1\/tasks\/([^/]+)\/(next-action|activity)$/)
+    if (read) return route.fulfill({ json: read[2] === 'next-action' ? forTask(read[1]) : detailFor(read[1]) })
+    if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
+    if (request.method() !== 'GET') {
+      posts.push(path)
+      await held
+      return route.fulfill({ json: {} }).catch(() => {})
+    }
+    return route.fulfill({ json: [] })
+  })
+  // Client-side navigation keeps both tasks' reads cached and the page mounted.
+  const open = async (id: string, title: string) => {
+    await page.evaluate((path) => {
+      window.history.pushState(window.history.state, '', path)
+      window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+    }, `/tasks/${id}/full`)
+    await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
+  }
+  const card = page.getByRole('region', { name: 'Next action' })
+  const apply = card.locator('[data-context-apply]')
+  const strategy = card.locator(`[data-context-check="system_design:${contextTargets[1].id}"]`)
+
+  await page.goto(`/tasks/${otherId}/full`)
+  await expect(apply).toHaveText('Attach all 3')
+  await open(taskId, 'Card task')
+  await expect(apply).toHaveText('Attach all 3')
+
+  // A -> B -> A without touching B: A starts all-checked again.
+  await strategy.uncheck()
+  await expect(apply).toHaveText('Attach 2 · dismiss 1')
+  await open(otherId, 'Second card task')
+  await expect(apply).toHaveText('Attach all 3')
+  await open(taskId, 'Card task')
+  await expect(apply).toHaveText('Attach all 3')
+
+  // A held send, then a switch: the next task starts idle and all-checked,
+  // and the first task's remainder is never sent.
+  await apply.click()
+  await expect.poll(() => posts.length).toBe(1)
+  expect(posts[0]).toBe(`/v1/tasks/${taskId}/context/proposals/requirement/${contextTargets[0].id}/confirm`)
+  await open(otherId, 'Second card task')
+  await expect(apply).toHaveText('Attach all 3')
+  await expect(apply).toBeEnabled()
+  await expect(strategy).toBeEnabled()
+  await expect(card.locator('[data-context-refusal]')).toHaveCount(0)
+  release()
+  await page.waitForTimeout(500)
+  expect(posts).toHaveLength(1)
+})
 
 // The task page shares the inbox's one-row choices: one primary button, and a
 // start_over choice opens the restart dialog, whose success here opens the
