@@ -1,8 +1,10 @@
 package store
 
 import (
-	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"fmt"
 	"strings"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 // VerificationCoverageSource makes the verifier's interpretation reviewable;
@@ -21,13 +23,23 @@ type VerificationCoverageSource struct {
 }
 
 func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot VerificationSnapshot) error {
-	if coverage.ObligationIDs == nil || coverage.Sources == nil || strings.TrimSpace(coverage.Justification) == "" || len(snapshot.Contexts) != 1 {
+	if len(snapshot.Contexts) != 1 {
 		return ErrVerificationInvalid
 	}
+	switch {
+	case coverage.Sources == nil:
+		return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "coverage.sources", verificationRemedyList, "coverage.sources is required; send [] for an empty list.")
+	case coverage.ObligationIDs == nil:
+		return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "coverage.obligation_ids", verificationRemedyList, "coverage.obligation_ids is required; send [] when no ordinary obligation is registered.")
+	case strings.TrimSpace(coverage.Justification) == "":
+		return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "coverage.justification", verificationRemedyList, "coverage.justification is required, even for an empty set.")
+	}
 	obligations := map[string]bool{}
+	registered := []string{}
 	subjects := map[core.VerificationSubject]bool{}
 	for _, o := range snapshot.Obligations {
 		obligations[o.ID] = true
+		registered = append(registered, o.ID)
 		subjects[core.VerificationSubject{Kind: "ordinary", ObligationID: o.ID, ContractDigest: o.Digest}] = false
 	}
 	for _, selection := range snapshot.Selections {
@@ -35,51 +47,62 @@ func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot Verifi
 			subjects[s.Subject] = false
 		}
 	}
-	if len(obligations) != len(coverage.ObligationIDs) {
-		return ErrVerificationState
-	}
-	for _, id := range coverage.ObligationIDs {
-		if !obligations[id] {
-			return ErrVerificationState
+	listed := map[string]bool{}
+	for i, id := range coverage.ObligationIDs {
+		if strings.TrimSpace(id) == "" || listed[id] {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeObligationIDInvalid, fmt.Sprintf("coverage.obligation_ids[%d]", i), verificationRemedyCoverage, "obligation IDs must be non-blank and listed once.")
 		}
-		delete(obligations, id)
+		listed[id] = true
+		if !obligations[id] {
+			return verificationRefusal(ErrVerificationState, VerificationCodeObligationsMismatch, fmt.Sprintf("coverage.obligation_ids[%d]", i), verificationRemedyCoverage, "%q is not a registered obligation; the registered obligations are [%s].", id, strings.Join(registered, ", "))
+		}
+	}
+	if len(listed) != len(obligations) {
+		return verificationRefusal(ErrVerificationState, VerificationCodeObligationsMismatch, "coverage.obligation_ids", verificationRemedyCoverage, "coverage.obligation_ids must list exactly the registered obligations [%s].", strings.Join(registered, ", "))
 	}
 	seen := map[VerificationCoverageReference]bool{}
 	pins := map[string]bool{}
-	for _, mapping := range coverage.Sources {
-		if seen[mapping.Source] || mapping.Subjects == nil || strings.TrimSpace(mapping.Explanation) == "" {
-			return ErrVerificationInvalid
+	for i, mapping := range coverage.Sources {
+		field := fmt.Sprintf("coverage.sources[%d]", i)
+		if seen[mapping.Source] {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeSourceDuplicate, field+".source", verificationRemedyCoverage, "each source citation appears once; %s v%d %s repeats.", mapping.Source.DocumentID, mapping.Source.Version, mapping.Source.SectionID)
+		}
+		if mapping.Subjects == nil {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, field+".subjects", verificationRemedyList, "subjects is required; send [] for a not_applicable source.")
+		}
+		if strings.TrimSpace(mapping.Explanation) == "" {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, field+".explanation", verificationRemedyList, "explanation is required.")
 		}
 		seen[mapping.Source] = true
 		pins[mapping.Source.DocumentID] = true
 		switch mapping.Disposition {
 		case "covered":
 			if len(mapping.Subjects) == 0 {
-				return ErrVerificationInvalid
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeDispositionInvalid, field+".disposition", verificationRemedyCoverage, "covered needs at least one subject.")
 			}
 		case "not_applicable":
 			if len(mapping.Subjects) != 0 {
-				return ErrVerificationInvalid
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeDispositionInvalid, field+".disposition", verificationRemedyCoverage, "not_applicable needs an empty subjects list.")
 			}
 		default:
-			return ErrVerificationInvalid
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeDispositionInvalid, field+".disposition", verificationRemedyCoverage, "disposition must be covered or not_applicable.")
 		}
 		local := map[core.VerificationSubject]bool{}
-		for _, subject := range mapping.Subjects {
+		for j, subject := range mapping.Subjects {
 			if _, ok := subjects[subject]; !ok || local[subject] {
-				return ErrVerificationInvalid
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeSubjectUnknown, fmt.Sprintf("%s.subjects[%d]", field, j), verificationRemedySubject, "%s must equal a selected kit subject or a registered obligation subject of this context, including its digest, and appear once per source.", verificationSubjectName(subject))
 			}
 			local[subject], subjects[subject] = true, true
 		}
 	}
-	for _, covered := range subjects {
+	for subject, covered := range subjects {
 		if !covered {
-			return ErrVerificationState
+			return verificationRefusal(ErrVerificationState, VerificationCodeSubjectUnmapped, "coverage.sources", verificationRemedyCoverage, "%s appears in no covered source.", verificationSubjectName(subject))
 		}
 	}
 	for _, pin := range snapshot.Contexts[0].GoverningPins {
 		if !pins[pin.DocumentID] {
-			return ErrVerificationState
+			return verificationRefusal(ErrVerificationState, VerificationCodePinUnmapped, "coverage.sources", verificationRemedyCoverage, "governing pin %s v%d appears in no source.", pin.DocumentID, pin.Version)
 		}
 	}
 	// Registration can grow as additional ordinary obligations are identified,
@@ -93,7 +116,7 @@ func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot Verifi
 				}
 				found = true
 				if old.Disposition == "covered" && next.Disposition != "covered" {
-					return ErrVerificationState
+					return verificationRefusal(ErrVerificationState, VerificationCodeCoverageChanged, "coverage.sources", verificationRemedyCoverage, "registered source %s v%d %s was covered and must stay covered.", old.Source.DocumentID, old.Source.Version, old.Source.SectionID)
 				}
 				for _, subject := range old.Subjects {
 					retained := false
@@ -101,14 +124,22 @@ func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot Verifi
 						retained = retained || subject == candidate
 					}
 					if !retained {
-						return ErrVerificationState
+						return verificationRefusal(ErrVerificationState, VerificationCodeCoverageChanged, "coverage.sources", verificationRemedyCoverage, "registered source %s v%d %s must keep mapped subject %s.", old.Source.DocumentID, old.Source.Version, old.Source.SectionID, verificationSubjectName(subject))
 					}
 				}
 			}
 			if !found {
-				return ErrVerificationState
+				return verificationRefusal(ErrVerificationState, VerificationCodeCoverageChanged, "coverage.sources", verificationRemedyCoverage, "registered source %s v%d %s cannot disappear.", old.Source.DocumentID, old.Source.Version, old.Source.SectionID)
 			}
 		}
 	}
 	return nil
+}
+
+// verificationSubjectName renders a subject identity from the caller's own context.
+func verificationSubjectName(s core.VerificationSubject) string {
+	if s.Kind == "kit" {
+		return fmt.Sprintf("kit subject %s/%s (version %s, digest %s)", s.KitID, s.ExerciseID, s.KitVersion, s.ContentDigest)
+	}
+	return fmt.Sprintf("ordinary obligation %s (digest %s)", s.ObligationID, s.ContractDigest)
 }

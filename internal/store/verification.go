@@ -34,10 +34,10 @@ var (
 	ErrVerificationState    = errors.New("verification transition refused")
 	ErrVerificationInvalid  = errors.New("invalid verification record")
 
-	// component-verification-service: the only explicit invalid-input
-	// detail. Remedies are fixed text and never carry context or evidence data.
-	ErrVerificationOutcomeUnsupported   = &VerificationRemedyError{Code: "verification_outcome_unsupported", Remedy: VerificationOutcomeRemedy}
-	ErrVerificationCheckpointIncomplete = &VerificationRemedyError{Code: "verification_checkpoint_incomplete", Remedy: VerificationOutcomeRemedy}
+	// component-verification-service: the outcome remedies. Remedies are fixed
+	// text and never carry context or evidence data.
+	ErrVerificationOutcomeUnsupported   = &VerificationRemedyError{Code: "verification_outcome_unsupported", Field: "outcome", Rule: "outcome must be succeeded, feedback or operator_action_required.", Remedy: VerificationOutcomeRemedy, Class: ErrVerificationInvalid}
+	ErrVerificationCheckpointIncomplete = &VerificationRemedyError{Code: "verification_checkpoint_incomplete", Field: "feedback,required_action", Rule: "operator_action_required needs a non-blank feedback and required_action, each at most 4096 bytes.", Remedy: VerificationOutcomeRemedy, Class: ErrVerificationInvalid}
 )
 
 // VerificationCheckpointTextLimit bounds checkpoint reason and required action.
@@ -48,20 +48,12 @@ const VerificationCheckpointTextLimit = 4096
 const VerificationOutcomeMapping = "submit_verification.outcome accepts succeeded, feedback or operator_action_required. " +
 	"Exercise attempt states (blocked, waiting, failed, timed_out, cancelled) belong to report_verification_outcome.state. " +
 	"Map them as follows: every required subject succeeded with complete coverage and no unresolved operation -> succeeded; " +
-	"a failed attempt that needs a code correction -> feedback naming the failure; " +
-	"a blocked or waiting attempt, a timed_out or cancelled attempt that cannot be replayed, a subject not admitted before start (including a missing grant after the grant wait), or an unresolved external operation -> operator_action_required " +
+	"a failed attempt that needs a code correction, a declaration defect in the context, or a finding against the approved plan or a served requirement (sent in findings and cited in coverage.sources) -> feedback naming the failure; " +
+	"a blocked or waiting attempt, a timed_out or cancelled attempt that cannot be replayed, a subject not admitted before start (including a missing grant after the grant wait), unavailable discovery, or an unresolved external operation -> operator_action_required " +
 	"with feedback stating the reason and required_action stating the exact operator act."
 
 const VerificationOutcomeRemedy = VerificationOutcomeMapping + " Replacement call: submit_verification with the same context_id and coverage, " +
 	`outcome "operator_action_required", feedback (the reason) and required_action (the operator act); for a failed attempt use outcome "feedback".`
-
-type VerificationRemedyError struct {
-	Code   string
-	Remedy string
-}
-
-func (e *VerificationRemedyError) Error() string { return e.Code + ": " + e.Remedy }
-func (e *VerificationRemedyError) Unwrap() error { return ErrVerificationInvalid }
 
 // Access is not a wire payload. Users require durable workspace membership;
 // executions require the exact claim identity, token and current attempt.
@@ -239,6 +231,9 @@ type VerificationCommand struct {
 	// SealedCheckpoint is copied from the sealed result for the lifecycle
 	// adapter (component-verification-service); it is never decoded from a request.
 	SealedCheckpoint *VerificationCheckpoint
+	// SealedFeedback is copied from a feedback seal; its text is the delivered
+	// changes-requested feedback (component-verification-service).
+	SealedFeedback *VerificationFeedbackRecord
 	// SubmittedHeadSHA is the locked work order's task-repository head, bound
 	// by the backend adapter inside its transaction (component-verification-service). It is never
 	// decoded from a request.

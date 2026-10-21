@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -85,55 +86,112 @@ func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthorityS
 	if c.Submission != nil {
 		coverage = &c.Submission.Coverage
 	}
+	if coverage != nil && coverage.Sources == nil {
+		return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "coverage.sources", verificationRemedyList, "coverage.sources is required; send [] for an empty list.")
+	}
 	if coverage != nil {
 		planCovered := a.Plan == nil
-		for _, mapping := range coverage.Sources {
+		for i, mapping := range coverage.Sources {
 			if mapping.Source.DocumentID == "approved_plan" {
 				planCovered = true
 			}
-			citation := VerificationCommand{Kind: VerificationRegisterObligation, Obligation: &VerificationObligation{Sources: []VerificationCitation{VerificationCitation(mapping.Source)}}}
-			if err := VerifyVerificationAuthority(citation, a, o); err != nil {
-				return err
+			if !verificationCitationResolves(VerificationCitation(mapping.Source), a, o, true) {
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, fmt.Sprintf("coverage.sources[%d].source", i), verificationRemedyCitation, "%s v%d section %q resolves to no approved-plan section, served requirement statement or acceptance criterion, or served design section.", mapping.Source.DocumentID, mapping.Source.Version, mapping.Source.SectionID)
 			}
 		}
 		if !planCovered {
-			return ErrVerificationInvalid
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodePlanMissing, "coverage.sources", verificationRemedyCitation, "the task has approved plan v%d; coverage.sources must include an approved_plan source at that version.", a.Plan.Version)
+		}
+	}
+	if c.Submission != nil {
+		if err := verificationValidateFindings(*c.Submission, a, o); err != nil {
+			return err
 		}
 	}
 	if c.Kind == VerificationRegisterObligation {
 		if c.Obligation == nil {
 			return ErrVerificationInvalid
 		}
-		for _, citation := range c.Obligation.Sources {
-			found := false
-			if citation.DocumentID == "approved_plan" && a.Plan != nil && a.Plan.Version == citation.Version && citation.SectionID != "" && strings.Contains(a.Plan.Content, citation.SectionID) {
-				found = true
+		for i, citation := range c.Obligation.Sources {
+			if !verificationCitationResolves(citation, a, o, true) {
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, fmt.Sprintf("sources[%d]", i), verificationRemedyCitation, "%s v%d section %q resolves to no approved-plan section, served requirement statement or acceptance criterion, or served design section.", citation.DocumentID, citation.Version, citation.SectionID)
 			}
-			for _, r := range o.ServedRequirementSnapshot {
-				if r.ID != citation.DocumentID || r.Version != citation.Version {
-					continue
+		}
+	}
+	return nil
+}
+
+// verificationCitationResolves applies the citation rule of
+// component-verification-service: the approved plan at its version with a
+// section ID its content holds, a statement or acceptance criterion of a
+// served requirement version, or (when designs are allowed) a section of a
+// served design version.
+func verificationCitationResolves(citation VerificationCitation, a VerificationAuthoritySnapshot, o core.WorkOrder, designs bool) bool {
+	if citation.DocumentID == "approved_plan" && a.Plan != nil && a.Plan.Version == citation.Version && citation.SectionID != "" && strings.Contains(a.Plan.Content, citation.SectionID) {
+		return true
+	}
+	for _, r := range o.ServedRequirementSnapshot {
+		if r.ID != citation.DocumentID || r.Version != citation.Version {
+			continue
+		}
+		for _, statement := range r.Statements {
+			if statement.ID == citation.SectionID {
+				return true
+			}
+			for _, ac := range statement.AcceptanceCriteria {
+				if ac.ID == citation.SectionID {
+					return true
 				}
-				for _, statement := range r.Statements {
-					if statement.ID == citation.SectionID {
-						found = true
-					}
-					for _, ac := range statement.AcceptanceCriteria {
-						if ac.ID == citation.SectionID {
-							found = true
-						}
-					}
-				}
 			}
-			if o.GovernanceSnapshot != nil {
-				for _, d := range o.GovernanceSnapshot.Designs {
-					if d.ID == citation.DocumentID && d.Version == citation.Version && citation.SectionID != "" && strings.Contains(d.Content, citation.SectionID) {
-						found = true
-					}
-				}
+		}
+	}
+	if designs && o.GovernanceSnapshot != nil {
+		for _, d := range o.GovernanceSnapshot.Designs {
+			if d.ID == citation.DocumentID && d.Version == citation.Version && citation.SectionID != "" && strings.Contains(d.Content, citation.SectionID) {
+				return true
 			}
-			if !found {
-				return ErrVerificationInvalid
-			}
+		}
+	}
+	return false
+}
+
+// VerificationFindingLimit and VerificationFindingTextLimit bound the sourced
+// findings of a feedback submission (component-verification-service).
+const (
+	VerificationFindingLimit     = 20
+	VerificationFindingTextLimit = 1024
+)
+
+func verificationValidateFindings(s VerificationSubmission, a VerificationAuthoritySnapshot, o core.WorkOrder) error {
+	if len(s.Findings) == 0 {
+		return nil
+	}
+	remedy := "Send 1 to 20 findings with outcome feedback; each cites the approved plan or a served requirement once, states the finding in 1 to 1024 bytes, and its source also appears in coverage.sources."
+	if s.Outcome != "feedback" {
+		return verificationRefusal(ErrVerificationInvalid, VerificationCodeFindingInvalid, "findings", remedy, "only outcome feedback accepts findings.")
+	}
+	if len(s.Findings) > VerificationFindingLimit {
+		return verificationRefusal(ErrVerificationInvalid, VerificationCodeFindingInvalid, "findings", remedy, "a submission holds at most %d findings.", VerificationFindingLimit)
+	}
+	seen := map[VerificationCoverageReference]bool{}
+	for i, f := range s.Findings {
+		field := fmt.Sprintf("findings[%d]", i)
+		if text := strings.TrimSpace(f.Statement); text == "" || len(f.Statement) > VerificationFindingTextLimit {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFindingInvalid, field+".statement", remedy, "statement must be 1 to %d bytes.", VerificationFindingTextLimit)
+		}
+		if seen[f.Source] {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFindingInvalid, field+".source", remedy, "each finding source appears once.")
+		}
+		seen[f.Source] = true
+		if !verificationCitationResolves(VerificationCitation(f.Source), a, o, false) {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, field+".source", verificationRemedyCitation, "%s v%d section %q resolves to no approved-plan section or served requirement statement or acceptance criterion.", f.Source.DocumentID, f.Source.Version, f.Source.SectionID)
+		}
+		mapped := false
+		for _, m := range s.Coverage.Sources {
+			mapped = mapped || m.Source == f.Source
+		}
+		if !mapped {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFindingInvalid, field+".source", remedy, "the finding source must also appear in coverage.sources.")
 		}
 	}
 	return nil

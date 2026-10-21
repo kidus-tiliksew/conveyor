@@ -257,7 +257,7 @@ func kitAdmission(format string, args ...any) error {
 // checkpoint seal releases the order (req-verification-kits AC-3.2, AC-7.3;
 // component-verification-runner, component-verification-service).
 func kitMissingGrantRemedy(orderID, contextID string) string {
-	return fmt.Sprintf("while this claim is live, an operator runs `conveyor verification permissions inspect %[1]s` and grants the missing subject against context %[2]s; if the grant wait ends first, submit_verification with outcome operator_action_required seals context %[2]s and releases the order, and the operator then recovers verify order %[1]s, waits for the successor claim to prepare a new context, runs `conveyor verification permissions inspect %[1]s` again and grants against that new context; a grant on the sealed context does not carry over", orderID, contextID)
+	return store.VerificationMissingGrantRemedy(orderID, contextID)
 }
 
 // kitCheckpointGuidance prints the exact operator-checkpoint submission for

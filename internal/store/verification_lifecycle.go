@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -144,12 +143,15 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		v.Explanation = ""
 		v.Ordinal = 0
 		v.Recovery = nil
-		if c.Key == "" || v.SafeInputs == nil {
-			return ErrVerificationInvalid
+		if c.Key == "" {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "start_key", verificationRemedyList, "start_key is required.")
+		}
+		if v.SafeInputs == nil {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "safe_inputs", verificationRemedyList, "safe_inputs is required; send {} when the subject takes no input.")
 		}
 		contract, err := verificationContract(rows, c.ContextID, v.Subject)
 		if err != nil {
-			return err
+			return verificationRefusal(ErrVerificationState, VerificationCodeSubjectUnregistered, "subject", verificationRemedySubject, "%s matches no selected kit subject or registered obligation of this context.", verificationSubjectName(v.Subject))
 		}
 		v.EffectivePermissions = contract.Permissions // A manifest declaration is not execution authority.
 		grant, err := verificationLiveGrant(rows, vc, v.GrantID, v.Subject)
@@ -161,10 +163,10 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		}
 		effective, err := verification.RequireVerificationPermissions(v.EffectiveActions, grant.Actions, v.LocalActions)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrVerificationAccess, err)
+			return verificationRefusal(ErrVerificationAccess, VerificationCodeGrantActionsUncovered, "effective_actions", verificationRemedyAction, "%v", err)
 		}
 		if err := verification.ValidateRequestedActions(contract, effective); err != nil {
-			return fmt.Errorf("%w: %v", ErrVerificationAccess, err)
+			return verificationRefusal(ErrVerificationAccess, VerificationCodeGrantActionsUncovered, "effective_actions", verificationRemedyAction, "%v", err)
 		}
 		v.LocalActions, err = verification.NormalizeVerificationPermissions(v.LocalActions)
 		if err != nil {
@@ -216,7 +218,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 				}
 				if verificationEqual(old.Subject, v.Subject) {
 					if old.State == "running" || old.State == "pending" {
-						return ErrVerificationState
+						return verificationRefusal(ErrVerificationState, VerificationCodeAttemptRunning, "subject", verificationRemedyAttempt, "attempt %s of %s is still %s.", old.ID, verificationSubjectName(v.Subject), old.State)
 					}
 
 					if old.Ordinal >= ordinal {
@@ -228,7 +230,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 
 		if latest != nil {
 			if latest.EndedAt == nil {
-				return ErrVerificationState
+				return verificationRefusal(ErrVerificationState, VerificationCodeAttemptRunning, "subject", verificationRemedyAttempt, "attempt %s of %s is still %s.", latest.ID, verificationSubjectName(v.Subject), latest.State)
 			}
 			if contract.RetryPolicy == "operator_action_required" {
 				authorized := false
@@ -252,7 +254,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 					}
 				}
 				if !authorized {
-					return ErrVerificationState
+					return verificationRefusal(ErrVerificationState, VerificationCodeRetryAuthorizationRequired, "replay_authorization_id", verificationRemedyRetry, "the latest attempt %s of %s has retry policy operator_action_required and no unused operator authorization matches.", latest.ID, verificationSubjectName(v.Subject))
 				}
 				for _, row := range rows {
 					if row.Table == "verification_attempts" && verificationDecode[VerificationAttempt](row).ReplayAuthorizationID == v.ReplayAuthorizationID {
@@ -265,7 +267,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 			if row.Table == "verification_operations" {
 				op := verificationDecode[VerificationOperation](row)
 				if op.SubjectKey == verificationSubjectKey(v.Subject) && !verificationOperationResolved(row.State) {
-					return ErrVerificationState
+					return verificationRefusal(ErrVerificationState, VerificationCodeOperationUnresolved, "subject", verificationRemedyOperation, "operation %s for this subject is %s.", row.ID, row.State)
 				}
 			}
 		}

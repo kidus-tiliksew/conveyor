@@ -162,10 +162,16 @@ func (s *Server) verificationOrder(w http.ResponseWriter, r *http.Request) {
 	args["workspace_id"] = ws
 	result, err := s.callVerificationMCP(r, name, args)
 	if err != nil {
-		var remedy *store.VerificationRemedyError
-		if errors.As(err, &remedy) {
-			// The fixed remedy follows scope authentication and carries no record data.
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid verification request", "code": remedy.Code, "remedy": remedy.Remedy})
+		var refusal *store.VerificationRefusal
+		if errors.As(err, &refusal) {
+			// component-verification-service: a correctable refusal follows scope
+			// authentication; its rule and remedy carry no record data.
+			status := refusal.HTTPStatus()
+			message := "invalid verification request"
+			if status == http.StatusConflict {
+				message = "verification transition or retry conflict"
+			}
+			writeJSON(w, status, map[string]string{"error": message, "code": refusal.Code, "field": refusal.Field, "rule": refusal.Rule, "remedy": refusal.Remedy})
 			return
 		}
 		code := http.StatusBadRequest
