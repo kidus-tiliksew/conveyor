@@ -21,11 +21,12 @@ function escapeRegExp(text: string) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-// An ID token: not glued to a letter, digit, or hyphen before it, and not
-// continued by a digit or a further `.digit` after it, so REQ-1 never matches
-// REQ-10 and AC-7.1 never matches AC-7.10.
+// An ID token: no identifier character (letter, digit, underscore, or
+// hyphen) glued to either side, and no `.` followed by one after it, so REQ-1
+// never matches REQ-10, REQ-1extra, or REQ-1-other, and AC-7.1 never matches
+// AC-7.10 or AC-7.1suffix. Sentence punctuation after an ID still counts.
 function idPattern(id: string) {
-  return new RegExp(`(?<![\\p{L}\\p{N}-])${escapeRegExp(id)}(?![\\p{N}]|\\.\\p{N})`, 'u')
+  return new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRegExp(id)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, 'u')
 }
 
 // Heading words in order, separated by any run of whitespace, with no letter

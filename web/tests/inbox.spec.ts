@@ -1125,6 +1125,42 @@ test('Preview steps through the proposed documents and its checkbox mirrors the 
   expect(harness.posts).toHaveLength(0)
 })
 
+test('a Setext heading and a repeated heading are cited by the text their author wrote', async ({ page }) => {
+  const fixture = previewFixture(['Unrelated.', 'Its Verification section applies to this change.'])
+  fixture.documents = {
+    ...fixture.documents,
+    [previewDesignPath]: {
+      document: { id: contextTargets[1].id, title: contextTargets[1].title },
+      current_version: {
+        version: 32,
+        confirmed_at: '2026-10-18T10:00:00Z',
+        content:
+          '# Strategy\n\nIntro.\n\nVerification\n------------\n\nFirst verification.\n\n## Scope\n\nScope text.\n\n## Verification\n\nSecond verification.',
+      },
+      pending_versions: [],
+      versions: [],
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  await decisionDetail(page).getByRole('button', { name: contextTargets[1].title, exact: true }).click()
+  const panel = previewPanel(page)
+  await expect(panel.locator('[data-outline-entry]')).toHaveText([
+    'Strategy',
+    'Verification',
+    'Scope',
+    'Verification (2)',
+  ])
+  await expect(panel.locator('[data-preview-cited-count]')).toHaveText('2 of 4 sections cited')
+  const sections = panel.locator('[data-preview-section]')
+  await expect(sections.nth(1)).toHaveAttribute('data-cited', 'true')
+  await expect(sections.nth(3)).toHaveAttribute('data-cited', 'true')
+  await page.mouse.move(0, 0)
+  await expect.poll(() => opacityOf(sections.nth(1))).toBe(1)
+  await expect.poll(() => opacityOf(sections.nth(3))).toBe(1)
+  await expect.poll(() => opacityOf(sections.nth(2))).toBeCloseTo(0.4, 1)
+})
+
 test('a justification that names no section dims nothing and states no count', async ({ page }) => {
   await serve(page, previewFixture(['Unrelated prose about the dashboard.', 'Nothing here names a section.']))
   await page.goto('/inbox')
@@ -1157,6 +1193,11 @@ test('a reopened preview never shows cached content while its fresh read fails, 
   await expect(panel.getByRole('button', { name: 'Retry' })).toBeVisible()
   await expect(panel).not.toContainText('Scope text.')
   await expect(panel).not.toContainText('v32')
+  // The failed read is stated in neutral text, never the failure tone.
+  await expect(panel.locator('[data-preview-error]')).toHaveClass(/text-muted/)
+  expect(await panel.evaluate((node) => node.querySelectorAll('[class*="failure"], [class*="attention"]').length)).toBe(
+    0,
+  )
 
   fixture.documents = { ...fixture.documents, [previewDesignPath]: previewDesign(33, 'Fresh scope.') }
   await panel.getByRole('button', { name: 'Retry' }).click()
@@ -1217,6 +1258,9 @@ test('the citation matcher marks whole-token IDs, numbered headings, and parent 
   // Whole tokens: REQ-1 never matches REQ-10, AC-7.1 never matches AC-7.10.
   expect(cites('REQ-10 and AC-7.10 apply.')).toEqual(['AC-7.10', 'REQ-10', 'REQ-7'])
   expect(cites('PREREQ-1 and XAC-7.1 do not count.')).toEqual([])
+  // No identifier continuation after an ID either; sentence punctuation still counts.
+  expect(cites('REQ-1extra, REQ-1-other, REQ-1_x, AC-7.1suffix, and AC-7.1.b do not count.')).toEqual([])
+  expect(cites('See REQ-1. Then (AC-7.1), and REQ-10: done.')).toEqual(['AC-7.1', 'REQ-1', 'REQ-10', 'REQ-7'])
   // Case-insensitive whole words, inline marks ignored; no partial words.
   expect(cites('the FACTORY VERIFICATION rules')).toEqual([
     'heading:3.2 Verification:1',

@@ -18,7 +18,10 @@ import type { ContextProposalSelection } from './context-proposal-rows'
 // The words the panel prints for a proposal's stored source (NA-6).
 const sourceWords: Record<string, string> = { triage: 'triage', planning: 'planning', operator: 'operator' }
 
-const headingLine = /^\s{0,3}#{1,6}\s/
+// An ATX heading line, capturing its text without trailing closing hashes.
+const atxHeading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/
+// A Setext underline, which makes the line above it a heading.
+const setextUnderline = /^\s{0,3}(?:=+|-+)\s*$/
 
 // The document preview panel of a context_proposal (feature-operator-next-action
 // NA-6; AC-2.3). One Sheet stays mounted while the operator moves between
@@ -134,7 +137,13 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
   const cited = useMemo(
     () =>
       citedSections(
-        sections.map((section) => ({ id: section.id, title: section.title, heading: section.heading })),
+        sections.map((section) => ({
+          id: section.id,
+          // A heading matches by the text its author wrote, not by the
+          // display title, which numbers a repeated heading "Title (2)".
+          title: section.authored ?? section.title,
+          heading: section.heading,
+        })),
         proposal.justification,
       ),
     [sections, proposal.justification],
@@ -191,7 +200,9 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
         )}
         {error != null && (
           <div className="flex flex-1 flex-wrap items-start gap-2 p-4 text-sm">
-            <span className="text-failure">{errorMessage(error, 'Could not load this document.')}</span>
+            <span data-preview-error className="text-muted">
+              {errorMessage(error, 'Could not load this document.')}
+            </span>
             <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
               Retry
             </Button>
@@ -267,6 +278,8 @@ interface PreviewSection {
   title: string
   // A heading the author wrote, which the matcher may match by its text.
   heading: boolean
+  // That heading's text as written, in ATX or Setext form.
+  authored?: string
   // A REQ-n or AC-n.m statement, matched by its ID.
   statement: boolean
   // A label printed above content that carries no heading line of its own.
@@ -280,16 +293,27 @@ interface PreviewSection {
 function previewSections(version: ConfirmedVersion): PreviewSection[] {
   return reviewBlocks({ content: version.content, statements: version.statements }).map((block) => {
     const statement = !block.id.startsWith('heading:')
-    const ownHeading = headingLine.test(block.content.split('\n', 1)[0] ?? '')
+    const authored = statement ? undefined : authoredHeading(block.content)
     return {
       id: block.id,
       title: block.title,
-      heading: !statement && ownHeading,
+      heading: authored != null,
+      authored,
       statement,
       label: statement ? block.title : undefined,
       content: block.content,
     }
   })
+}
+
+// The heading a section's content opens with, in either Markdown form, or
+// undefined for an untitled preamble.
+function authoredHeading(content: string) {
+  const [first = '', second = ''] = content.split('\n', 2)
+  const atx = first.match(atxHeading)
+  if (atx) return atx[1]
+  if (first.trim() && setextUnderline.test(second)) return first.trim()
+  return undefined
 }
 
 type ConfirmedVersion = {
