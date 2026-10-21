@@ -51,7 +51,7 @@ func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count 
 	t.Helper()
 	suffix := strings.ToLower(core.NewTaskID())
 	requirement := "req-insight-scale-" + suffix
-	_, version, err := st.CreateRequirement(ctx, core.Requirement{ID: requirement, Title: "Scale"}, core.RequirementVersion{Content: "# Scale", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Insights scale."}}})
+	_, version, err := st.CreateRequirement(ctx, core.Requirement{ID: requirement, Title: "Scale " + suffix}, core.RequirementVersion{Content: "# Scale " + suffix, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Insights scale."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count 
 		t.Fatal(err)
 	}
 	design := "design-insight-scale-" + suffix
-	_, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: design, Title: "Scale design", Category: "Component design"}, core.SystemDesignVersion{Content: "# Scale design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/insight/**\n```", Origin: core.SystemDesignOriginOperator})
+	_, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: design, Title: "Scale design " + suffix, Category: "Component design"}, core.SystemDesignVersion{Content: "# Scale design " + suffix + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/insight/**\n```", Origin: core.SystemDesignOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}
