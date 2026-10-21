@@ -483,6 +483,25 @@ export interface TaskSummaries {
     superseded: boolean
     at: string
   }
+  // What the latest triage recorded when it parked the task, absent unless
+  // that triage parked it (component-http-api, Bounded detail view).
+  park_reason?: {
+    summary: string
+    questions: string[]
+    risks: string[]
+    event_id: string
+    at: string
+    truncated?: boolean
+  }
+  // The latest recorded dispatch failure.
+  dispatch_failure?: {
+    error: string
+    attempt?: number
+    max_attempts?: number
+    event_id: string
+    at: string
+    truncated?: boolean
+  }
   job_results?: Record<string, TaskJobResult>
   review_results?: { by_order?: Record<string, TaskReviewResult>; by_job?: Record<string, TaskReviewResult> }
   review_rounds?: { by_round?: Record<string, TaskReviewRound>; by_order?: Record<string, TaskReviewRound> }
@@ -1294,7 +1313,7 @@ export interface InboxItem {
   band: InboxBand
   task?: Task
   next_action?: NextActionCompact
-  pull_request?: GitHubLifecycle
+  pull_request?: InboxPullRequest
   serves?: string[]
   recommendation?: string
   no_judgment_needed?: boolean
@@ -1307,6 +1326,14 @@ export interface InboxItem {
   blockers?: NextActionBlocker[]
   deadline?: string | null
   last_event_at?: string
+}
+
+// A task item's recorded pull request: the latest pull_request.opened. The
+// task's GitHub issue stays on `task.github` (feature-operator-next-action NA-5).
+export interface InboxPullRequest {
+  url: string
+  number?: number
+  repository?: string
 }
 
 export interface FactoryAct {

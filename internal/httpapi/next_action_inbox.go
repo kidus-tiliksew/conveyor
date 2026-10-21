@@ -19,7 +19,7 @@ type inboxItem struct {
 	Band             string                  `json:"band"`
 	Task             *core.Task              `json:"task,omitempty"`
 	NextAction       *nextaction.Compact     `json:"next_action,omitempty"`
-	PullRequest      *core.GitHubLifecycle   `json:"pull_request,omitempty"`
+	PullRequest      *inboxPullRequest       `json:"pull_request,omitempty"`
 	Serves           []string                `json:"serves,omitempty"`
 	Recommendation   string                  `json:"recommendation,omitempty"`
 	NoJudgmentNeeded bool                    `json:"no_judgment_needed,omitempty"`
@@ -32,6 +32,16 @@ type inboxItem struct {
 	Deadline         *time.Time              `json:"deadline,omitempty"`
 	LastEventAt      time.Time               `json:"last_event_at,omitempty"`
 	SortID           string                  `json:"-"`
+}
+
+// inboxPullRequest is a task item's recorded pull request: the latest
+// pull_request.opened folded by the bounded detail summary rule. The task's
+// GitHub issue mirror stays on the task and is never stated as the pull
+// request (feature-operator-next-action NA-5).
+type inboxPullRequest struct {
+	URL        string    `json:"url"`
+	Number     *jsNumber `json:"number,omitempty"`
+	Repository string    `json:"repository,omitempty"`
 }
 
 // inboxProposal is a pending document proposal as the inbox states it: the
@@ -136,6 +146,9 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 		}
 	}
 	items := inboxTaskItems(candidates, projected, lastEvent, folded)
+	if err := s.attachInboxPullRequests(ctx, items); err != nil {
+		return nil, err
+	}
 	items = append(items, documentProposalItems(proposals, withholding, opts.Now)...)
 	if band != "" {
 		filtered := make([]inboxItem, 0, len(items))
@@ -158,7 +171,7 @@ func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.Next
 		}
 		action := projected[task.ID]
 		item := inboxItem{
-			Task: &task, NextAction: compactPtr(action), PullRequest: task.GitHub,
+			Task: &task, NextAction: compactPtr(action),
 			Serves: serves(task), Deadline: action.Deadline, LastEventAt: lastEvent[task.ID],
 			SortID: task.ID, Blockers: action.BlockedBy,
 		}
@@ -176,6 +189,44 @@ func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.Next
 		items = append(items, item)
 	}
 	return items
+}
+
+// attachInboxPullRequests reads every listed task item's pull_request.opened
+// events in one batched read, as the task-operations rows do, and sets each
+// item's recorded pull request (component-http-api, Task-operations pull
+// request; feature-operator-next-action NA-5). An inbox without task items
+// issues no read.
+func (s *Server) attachInboxPullRequests(ctx context.Context, items []inboxItem) error {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Task != nil {
+			ids = append(ids, item.Task.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	events, err := s.Store.ListMonitorPullRequestEventsForTasks(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if items[i].Task != nil {
+			items[i].PullRequest = inboxPullRequestFor(events[items[i].Task.ID])
+		}
+	}
+	return nil
+}
+
+func inboxPullRequestFor(events []core.Event) *inboxPullRequest {
+	if len(events) == 0 {
+		return nil
+	}
+	summary := deriveTaskDetailSummaries(events, nil, nil).PullRequest
+	if summary == nil || summary.URL == "" {
+		return nil
+	}
+	return &inboxPullRequest{URL: summary.URL, Number: summary.Number, Repository: summary.Repository}
 }
 
 func compactPtr(action nextaction.NextAction) *nextaction.Compact {

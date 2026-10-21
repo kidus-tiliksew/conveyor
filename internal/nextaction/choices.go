@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -255,7 +256,7 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 			path = replaceOrder(path, order.ID)
 		}
 		path = replaceTask(path, in.Task.ID)
-		refusal := refuseChoice(in, spec.ID, order)
+		refusal := refuseChoice(in, spec, order)
 		if refusal != "" {
 			refusals = append(refusals, Refusal{Choice: spec.ID, Text: refusal})
 			continue
@@ -271,9 +272,16 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 	return choices, refusals
 }
 
-func refuseChoice(in Input, id string, order *core.WorkOrder) string {
-	switch id {
+func refuseChoice(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
+	switch id := spec.ID; id {
 	case "recover", "answer":
+		// The parked recover names the task-scoped redispatch route, which
+		// admits a parked task with no current order and restores its
+		// recovery stage; only the order-scoped recover route needs an order
+		// (feature-operator-next-action NA-3; req-operator-next-action AC-1.4).
+		if strings.HasPrefix(spec.Path, "/v1/tasks/") {
+			return ""
+		}
 		if order == nil {
 			return "no order to recover"
 		}

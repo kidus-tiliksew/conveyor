@@ -1206,7 +1206,23 @@ func TestRedispatchRecoversParkedTaskAtRecordedStage(t *testing.T) {
 	s := NewServer(st)
 	s.BearerToken = "token"
 	s.OnCreate = func(_ context.Context, id string) { dispatched <- id }
-	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/halted/redispatch", bytes.NewReader([]byte(`{}`)))
+	// The parked next action offers Recover on this exact route, with no
+	// current order (feature-operator-next-action NA-3; task 261021-cd3bf8).
+	if err := st.AppendEvent(store.WithActor(context.Background(), store.SystemActor()), core.Event{TaskID: "halted", Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"command": "triage.park"})}); err != nil {
+		t.Fatal(err)
+	}
+	read := httptest.NewRequest(http.MethodGet, "/v1/tasks/halted/next-action", nil)
+	read.Header.Set("Authorization", "Bearer token")
+	readResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(readResponse, read)
+	var action nextaction.NextAction
+	if err := json.Unmarshal(readResponse.Body.Bytes(), &action); err != nil || readResponse.Code != http.StatusOK {
+		t.Fatalf("next action status=%d err=%v body=%s", readResponse.Code, err, readResponse.Body.String())
+	}
+	if action.Kind != nextaction.KindParked || len(action.Choices) == 0 || action.Choices[0].ID != "recover" || action.Choices[0].Method != http.MethodPost || action.Choices[0].Path != "/v1/tasks/halted/redispatch" {
+		t.Fatalf("parked next action = %+v, want recover first on POST /v1/tasks/halted/redispatch", action)
+	}
+	request := httptest.NewRequest(action.Choices[0].Method, action.Choices[0].Path, bytes.NewReader([]byte(`{}`)))
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, request)

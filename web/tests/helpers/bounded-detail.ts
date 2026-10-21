@@ -411,6 +411,34 @@ function triageFailure(item: CompleteActivity, ordered: Ordered[]): TaskSummarie
   }
 }
 
+// The park reason the server folds from the latest triage.completed: present
+// only when it parked the task, with the non-empty brief questions and risks.
+function parkReason(payload: Record<string, unknown>, id: string, at: string): TaskSummaries['park_reason'] {
+  if (payload.route !== 'parked') return undefined
+  let truncated = false
+  const brief = (payload.brief ?? {}) as Record<string, unknown>
+  const list = (key: string) => {
+    const out: string[] = []
+    for (const entry of Array.isArray(brief[key]) ? brief[key] : []) {
+      const value = typeof entry === 'string' ? entry.trim() : ''
+      if (!value) continue
+      if (out.length === 20) {
+        truncated = true
+        break
+      }
+      const bounded = cut(value)
+      truncated ||= Boolean(bounded.truncated)
+      out.push(bounded.text)
+    }
+    return out
+  }
+  const summary = cut(typeof payload.summary === 'string' ? payload.summary.trim() : '')
+  truncated ||= Boolean(summary.truncated)
+  const questions = list('questions')
+  const risks = list('risks')
+  return { summary: summary.text, questions, risks, event_id: id, at, ...(truncated ? { truncated } : {}) }
+}
+
 // The summaries the server folds from the complete ledger in (at, id) order.
 export function taskSummaries(item: CompleteActivity): TaskSummaries {
   const ordered = orderedEvents(item.events ?? [])
@@ -487,6 +515,19 @@ export function taskSummaries(item: CompleteActivity): TaskSummaries {
         summaries.plan_revision_request = request ? { ...request, event_id: id, at: event.at } : undefined
         break
       }
+      case 'triage.completed':
+        summaries.park_reason = parkReason(payload, id, event.at)
+        break
+      case 'dispatch.failed':
+        if (typeof payload.error === 'string' && payload.error)
+          summaries.dispatch_failure = {
+            ...(({ text, truncated }) => ({ error: text, ...(truncated ? { truncated } : {}) }))(cut(payload.error)),
+            ...(typeof payload.attempt === 'number' ? { attempt: payload.attempt } : {}),
+            ...(typeof payload.max_attempts === 'number' ? { max_attempts: payload.max_attempts } : {}),
+            event_id: id,
+            at: event.at,
+          }
+        break
       case 'review.completed': {
         summaries.latest_review_completed_event_id = id
         const summary = cut(typeof payload.summary === 'string' ? payload.summary : '')

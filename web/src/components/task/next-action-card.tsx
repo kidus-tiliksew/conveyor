@@ -79,7 +79,7 @@ export function NextActionCard({
             (action.kind === 'context_proposal' && action.details?.context_proposals?.length ? (
               <ContextProposalDecision key={`${workspace}:${item.task.id}`} taskId={item.task.id} action={action} />
             ) : (
-              <GateChoices taskId={item.task.id} action={action} />
+              <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />
             ))}
           {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
           <NextActionDeadline deadline={action.deadline} />

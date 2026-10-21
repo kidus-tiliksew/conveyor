@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { errorMessage } from '../../lib/errors'
-import type { InboxItem, NextActionBlocker, Task } from '../../lib/types'
+import type { InboxItem, InboxPullRequest, NextActionBlocker, Task } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
 import { GateChoices } from '../task/merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from '../task/next-action-parts'
@@ -15,7 +15,7 @@ import {
   useContextProposalSends,
 } from './context-proposal-rows'
 import { DecisionContext } from './inbox-context'
-import { Kbd, ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
+import { ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
 import { useNextAction } from './use-next-actions'
 
 // What the detail's context section holds, by next-action kind (AC-2.3).
@@ -26,6 +26,15 @@ const contextHeadings: Record<string, string> = {
   review_bounce_limit: 'Latest review',
   verification_disposition: 'Operation log',
   context_proposal: 'Proposed context',
+  parked: 'Why it is parked',
+  dispatch_exhausted: 'Why dispatch stopped',
+}
+
+// A recorded pull request as the inbox names it: "<repository> PR #<n>", or
+// "PR" when the event stated no number (feature-operator-next-action NA-6).
+export function pullRequestLabel(pullRequest: InboxPullRequest) {
+  const name = pullRequest.number != null ? `PR #${pullRequest.number}` : 'PR'
+  return pullRequest.repository ? `${pullRequest.repository} ${name}` : name
 }
 
 // The selected task decision in the Inbox's detail view (AC-2.1, AC-2.3,
@@ -41,6 +50,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   const kind = action?.kind ?? compact?.kind ?? ''
   const blocks = action?.blocks ?? compact?.blocks ?? []
   const pullRequest = item.pull_request
+  const issue = task.github?.issue_number != null ? task.github : undefined
   const titles = new Map((task.context?.requirements ?? []).map((requirement) => [requirement.id, requirement.title]))
   const sends = useContextProposalSends(task.id, onActed)
   const selection = useContextProposalSelection(task.id)
@@ -73,19 +83,27 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
             </Link>
           </h2>
           <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">
-            {pullRequest?.issue_number != null ? (
-              pullRequest.issue_url ? (
-                <a href={pullRequest.issue_url} className="font-mono text-primary hover:underline">
-                  {pullRequest.repository}#{pullRequest.issue_number}
-                </a>
-              ) : (
-                <span className="font-mono">
-                  {pullRequest.repository}#{pullRequest.issue_number}
-                </span>
-              )
+            {pullRequest ? (
+              <a data-pull-request href={pullRequest.url} className="font-mono text-primary hover:underline">
+                {pullRequestLabel(pullRequest)}
+              </a>
             ) : (
               <span>No PR yet</span>
             )}
+            {issue &&
+              (issue.issue_url ? (
+                <a
+                  data-issue
+                  href={issue.issue_url}
+                  className="rounded border border-border px-1.5 py-0.5 hover:text-foreground hover:underline"
+                >
+                  Issue #{issue.issue_number}
+                </a>
+              ) : (
+                <span data-issue className="rounded border border-border px-1.5 py-0.5">
+                  Issue #{issue.issue_number}
+                </span>
+              ))}
             {item.serves?.map((id) => (
               <span
                 key={id}
@@ -141,12 +159,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
           ) : (
             action && (
               <div className="text-[13px]">
-                {shortcut === 'merge' && (
-                  <p className="mb-1.5 hidden items-center gap-1.5 text-[11px] text-faint md:flex" data-merge-hint>
-                    <Kbd>c</Kbd> opens Merge
-                  </p>
-                )}
-                <GateChoices taskId={task.id} action={action} onActed={onActed} />
+                <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} />
               </div>
             )
           )}

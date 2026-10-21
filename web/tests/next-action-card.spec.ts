@@ -1033,3 +1033,56 @@ test('switching between cached context-proposal tasks isolates the checklist and
   await page.waitForTimeout(500)
   expect(posts).toHaveLength(1)
 })
+
+// The task page shares the inbox's one-row choices: one primary button, and a
+// start_over choice opens the restart dialog, whose success here opens the
+// successor task (component-web-task-surfaces; task 261021-cd3bf8).
+test('a parked next action shows one choice row and Start over opens the successor', async ({ page }) => {
+  const parked: NextAction = {
+    label: 'Decide on a parked task',
+    actor: 'operator',
+    kind: 'parked',
+    judgment: true,
+    summary: 'This task is parked.',
+    question: 'Put it back, or close it?',
+    if_ignored: 'It stays parked.',
+    deadline: null,
+    choices: [
+      ['recover', 'Recover', 'redispatch', 'recover_work'],
+      ['close', 'Close', 'close', 'operate_gates'],
+      ['start_over', 'Start over', 'restart', 'operate_gates'],
+    ].map(([id, label, route, capability]) => ({
+      id,
+      label,
+      effect: `${label} effect.`,
+      method: 'POST',
+      path: `/v1/tasks/${taskId}/${route}`,
+      capability,
+      allowed: true,
+    })),
+    details: {},
+  }
+  await mockAPI(
+    page,
+    () => activity('parked', parked),
+    () => parked,
+  )
+  let restart: Record<string, unknown> | undefined
+  await page.route(`**/v1/tasks/${taskId}/restart*`, (route) => {
+    restart = route.request().postDataJSON()
+    return route.fulfill({ json: { successor: { id: 'T-successor' }, cancelled_task: { id: taskId } } })
+  })
+  await page.goto(`/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const row = card.locator('[data-next-action-choices] > div').first()
+  await expect(row.getByRole('button')).toHaveText(['Recover', 'Close', 'Start over'])
+  await expect(row.locator('button.bg-primary')).toHaveCount(1)
+  await expect(row.getByRole('button', { name: 'Recover' })).toHaveClass(/bg-primary/)
+
+  await row.getByRole('button', { name: 'Start over', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Start over', exact: true })
+  await dialog.getByLabel(/Reason/).fill('Scope changed')
+  await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+  await expect(page).toHaveURL(/\/tasks\/T-successor\/full/)
+  expect(restart).toMatchObject({ reason: 'Scope changed' })
+})

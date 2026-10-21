@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -357,5 +358,62 @@ func TestNextActionInboxDocumentProposalsCarryAgeAndCopy(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatalf("tiers=%v body=%s", seen, response.Body.String())
+	}
+}
+
+// A task item's pull_request is the recorded pull request from its latest
+// pull_request.opened, never the task's GitHub issue mirror, even when the
+// issue number differs; a task with only an issue carries none
+// (feature-operator-next-action NA-5; task 261021-cd3bf8).
+func TestNextActionInboxPullRequestIsTheRecordedPullRequest(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC().Truncate(time.Second)
+	merge := core.Task{ID: "merge-task", Workspace: "demo", Repo: "conveyor", Branch: "merge", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, CreatedAt: now}
+	issueOnly := core.Task{ID: "issue-only", Workspace: "demo", Repo: "conveyor", Branch: "issue", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: now}
+	for _, task := range []core.Task{merge, issueOnly} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/runtime", IssueNumber: 1671, IssueURL: "https://github.com/acme/runtime/issues/1671"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, number := range []int{1700, 1709} {
+		if err := st.AppendEvent(ctx, core.Event{TaskID: merge.ID, Kind: "pull_request.opened", ActorRole: core.ActorSystem, At: now.Add(time.Duration(i) * time.Minute), Payload: core.JSONPayload(map[string]any{
+			"url": "https://github.com/acme/runtime/pull/" + strconv.Itoa(number), "number": number, "repository": "acme/runtime", "head_sha": "abc",
+		})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "token", "demo"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/next-actions?workspace_id=demo&band=decisions", nil)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Task *struct {
+				ID string `json:"id"`
+			} `json:"task"`
+			PullRequest json.RawMessage `json:"pull_request"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, item := range payload.Items {
+		if item.Task != nil {
+			got[item.Task.ID] = string(item.PullRequest)
+		}
+	}
+	if want := `{"url":"https://github.com/acme/runtime/pull/1709","number":1709,"repository":"acme/runtime"}`; got[merge.ID] != want {
+		t.Fatalf("merge pull_request = %s, want %s", got[merge.ID], want)
+	}
+	if pr, listed := got[issueOnly.ID]; !listed || pr != "" {
+		t.Fatalf("issue-only pull_request = %q (listed %v), want none", pr, listed)
 	}
 }
