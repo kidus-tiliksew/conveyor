@@ -28,6 +28,7 @@ export function BoardViewSwitch({ view }: { view: BoardView }) {
         arrangement: undefined,
         focus: undefined,
         scope: undefined,
+        insight: undefined,
         view: next === 'kanban' ? undefined : next,
       }),
     })

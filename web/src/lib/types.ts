@@ -766,6 +766,124 @@ export interface TaskMapRequirement {
   total_task_count: number
 }
 
+// The requirement insight views (req-requirement-insights REQ-2 to REQ-4;
+// feature-requirement-insights RI-6), mirroring the JSON tags of
+// internal/httpapi/requirement_insight.go and internal/insight/types.go.
+// Times and days are RFC 3339 strings; days and weeks are UTC. No view
+// carries a task body.
+export type RequirementInsightTab = 'summary' | 'charts' | 'documents'
+
+// One serving task as a summary section lists it, with its stated next
+// action unchanged (DEC-61).
+export interface RequirementInsightTask {
+  id: string
+  title: string
+  next_action: NextActionCompact
+}
+
+// The open serving tasks whose next action names one actor. The server
+// always sends the five actors in the order operator, agent, factory,
+// dependency, none.
+export interface RequirementInsightGroup {
+  actor: NextActionActor
+  count: number
+  tasks: RequirementInsightTask[]
+}
+
+// The stored generated headline; current is false when its inputs differ
+// from the requirement's current ones (AC-2.6).
+export interface RequirementInsightHeadline {
+  text: string
+  model: string
+  generated_at: string
+  generated_by: string
+  current: boolean
+}
+
+// The completion forecast (AC-3.2): the UTC day the open tasks finish at
+// the trailing 14-day delivery rate.
+export interface RequirementInsightForecast {
+  day: string
+  rate_per_day: number
+}
+
+// GET and POST /v1/requirements/{id}/insights/summary.
+export interface RequirementInsightSummary {
+  headline: RequirementInsightHeadline | null
+  fingerprint: string
+  can_generate: boolean
+  groups: RequirementInsightGroup[]
+  critical_path: { tasks: RequirementInsightTask[]; length: number }
+  forecast: RequirementInsightForecast | null
+}
+
+export interface RequirementInsightDailyPoint {
+  day: string
+  scope: number
+  open: number
+  delivered: number
+}
+
+export interface RequirementInsightWeek {
+  week_start: string
+  iso_year: number
+  iso_week: number
+  delivered: number
+  in_progress: boolean
+}
+
+// GET /v1/requirements/{id}/insights/progress.
+export interface RequirementInsightProgress {
+  daily: RequirementInsightDailyPoint[]
+  forecast: RequirementInsightForecast | null
+  weekly: RequirementInsightWeek[]
+  delivered: number
+  total: number
+  open: number
+  throughput_per_week: number
+  median_cycle_seconds: number | null
+  status_mix: {
+    delivered: number
+    closed: number
+    open: Array<{ actor: NextActionActor; count: number }>
+  }
+}
+
+export interface RequirementInsightDesign {
+  id: string
+  title: string
+  current_version: number
+  revision_pending: boolean
+  attached_task_count: number
+  names_requirement: boolean
+  attached_task_ids: string[]
+}
+
+export interface RequirementInsightDecision {
+  id: string
+  statement: string
+  context: string
+  status: Decision['status']
+  names_requirement: boolean
+  cited_by_requirement: boolean
+  citing_task_ids: string[]
+}
+
+export interface RequirementInsightCriterion {
+  id: string
+  statement: string
+  citing_task_ids: string[]
+}
+
+// GET /v1/requirements/{id}/insights/documents.
+export interface RequirementInsightDocuments {
+  designs: RequirementInsightDesign[]
+  decisions: RequirementInsightDecision[]
+  acceptance_criteria: RequirementInsightCriterion[]
+  cited_count: number
+  total: number
+}
+
 // The list-scoped stalled projection: the reason a row cannot move, without
 // the work order the detail surfaces render.
 export interface TaskStalledSummary {

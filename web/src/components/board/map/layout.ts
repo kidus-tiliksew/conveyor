@@ -65,6 +65,9 @@ export interface ClusterInput {
 }
 
 export const CLUSTER_HEADER = 72
+// The padding below a requirement's node: the insight toolbar hangs 10px
+// below the node and is about 40px tall (feature-requirement-insights RI-7).
+const HUB_FOOT = 76
 // The narrowest frame still holds its header's title and open count.
 export const FRAME_MIN_WIDTH = 560
 const FRAME_GAP = 96
@@ -90,7 +93,9 @@ export async function layoutClusters(clusters: ClusterInput[]) {
       layoutOptions: {
         'elk.algorithm': 'layered',
         'elk.direction': 'DOWN',
-        'elk.padding': `[top=${CLUSTER_HEADER},left=32,bottom=32,right=32]`,
+        // A requirement's group keeps room below its node for the insight
+        // toolbar, so the frame border passes below the pill.
+        'elk.padding': `[top=${CLUSTER_HEADER},left=32,bottom=${cluster.hubId ? HUB_FOOT : 32},right=32]`,
         'elk.layered.spacing.nodeNodeBetweenLayers': '56',
         'elk.spacing.nodeNode': '18',
         'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',

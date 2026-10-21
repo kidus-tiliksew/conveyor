@@ -1,9 +1,11 @@
+import type { RequirementInsightTab } from '../../lib/types'
 import { emptyTaskFilter, type TaskFilterState } from '../task/task-filters'
 
 // The Board's address (req-operator-next-action REQ-6): the view, task intake,
 // and the filter parameters the list view accepts on arrival. Kanban is the
 // default and is never written to the address (AC-6.1). The map view adds its
-// arrangement, requirement, and task (req-board-map AC-1.1).
+// arrangement, requirement, and task (req-board-map AC-1.1), and the open
+// requirement insight tab (req-requirement-insights AC-1.2).
 export interface BoardSearch {
   view?: 'list' | 'map'
   // The map's arrangement; requirements when absent.
@@ -12,6 +14,9 @@ export interface BoardSearch {
   focus?: string
   // The requirement the map is drilled into.
   scope?: string
+  // The requirement insight panel's open tab, for the requirement scope
+  // names (feature-requirement-insights RI-7).
+  insight?: RequirementInsightTab
   create?: true
   q?: string
   state?: string[]
@@ -32,14 +37,35 @@ function list(value: unknown) {
   return values.length > 0 ? values : undefined
 }
 
+const insightTabs: readonly RequirementInsightTab[] = ['summary', 'charts', 'documents']
+
+// The group of the map's open tasks that serve no requirement; it names no
+// requirement, so it opens no insight panel.
+const UNATTACHED_SCOPE = '__none'
+
 // Accepts exactly the Board's parameters; anything else is dropped (AC-6.3).
+// An insight tab is kept only with the map view arranged by requirement and a
+// scope that can name a requirement (req-requirement-insights AC-1.2); the
+// map drops it once its read shows the scope names no requirement group.
 export function validateBoardSearch(search: Record<string, unknown>): BoardSearch {
+  const view = search.view === 'list' || search.view === 'map' ? search.view : undefined
+  const arrangement =
+    search.arrangement === 'requirements' || search.arrangement === 'dependencies' ? search.arrangement : undefined
+  const scope = text(search.scope)
+  const insight =
+    view === 'map' &&
+    arrangement !== 'dependencies' &&
+    scope &&
+    scope !== UNATTACHED_SCOPE &&
+    insightTabs.includes(search.insight as RequirementInsightTab)
+      ? (search.insight as RequirementInsightTab)
+      : undefined
   return {
-    view: search.view === 'list' || search.view === 'map' ? search.view : undefined,
-    arrangement:
-      search.arrangement === 'requirements' || search.arrangement === 'dependencies' ? search.arrangement : undefined,
+    view,
+    arrangement,
     focus: text(search.focus),
-    scope: text(search.scope),
+    scope,
+    insight,
     create: search.create === true || search.create === 'true' ? true : undefined,
     q: text(search.q),
     state: list(search.state),

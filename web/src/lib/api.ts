@@ -1247,6 +1247,84 @@ export function fetchTaskMap(
   const suffix = query.toString() ? `?${query}` : ''
   return getJSON<import('./types').TaskMapResponse>(workspaceURL(`/v1/task-map${suffix}`, workspace), signal)
 }
+
+// A refused insight read or generation, keeping the HTTP status and the
+// server's error code and redacted detail, so the panel branches on the
+// status and names the code rather than raw JSON (feature-requirement-insights
+// RI-6, RI-7).
+export class RequirementInsightError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly detail?: string,
+  ) {
+    super(message)
+  }
+}
+
+async function requirementInsightJSON<T>(response: Response): Promise<T> {
+  if (response.ok) return response.json() as Promise<T>
+  const text = await response.text().catch(() => '')
+  let code: string | undefined
+  let detail: string | undefined
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; detail?: unknown }
+    if (typeof parsed.error === 'string') code = parsed.error
+    if (typeof parsed.detail === 'string') detail = parsed.detail
+  } catch {
+    // A non-JSON body keeps only the status.
+  }
+  throw new RequirementInsightError(
+    detail || code || text.trim() || response.statusText || `HTTP ${response.status}`,
+    response.status,
+    code,
+    detail,
+  )
+}
+
+function requirementInsightURL(workspace: string, requirementId: string, view: 'summary' | 'progress' | 'documents') {
+  return workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/insights/${view}`, workspace)
+}
+
+// The Summary tab's read (req-requirement-insights REQ-2). It never calls
+// the model.
+export async function fetchRequirementInsightSummary(workspace: string, requirementId: string, signal?: AbortSignal) {
+  return requirementInsightJSON<import('./types').RequirementInsightSummary>(
+    await fetch(requirementInsightURL(workspace, requirementId, 'summary'), { signal }),
+  )
+}
+
+// Generates and stores the headline under create_tasks (AC-2.5, AC-2.6).
+// 409 insight_headline_current, 503 insight_model_unconfigured, and 502
+// insight_generation_failed arrive as RequirementInsightError.
+export async function generateRequirementInsightSummary(
+  workspace: string,
+  requirementId: string,
+  signal?: AbortSignal,
+) {
+  return requirementInsightJSON<import('./types').RequirementInsightSummary>(
+    await fetch(requirementInsightURL(workspace, requirementId, 'summary'), {
+      method: 'POST',
+      headers: mutationHeaders(),
+      signal,
+    }),
+  )
+}
+
+// The Charts tab's read (REQ-3).
+export async function fetchRequirementInsightProgress(workspace: string, requirementId: string, signal?: AbortSignal) {
+  return requirementInsightJSON<import('./types').RequirementInsightProgress>(
+    await fetch(requirementInsightURL(workspace, requirementId, 'progress'), { signal }),
+  )
+}
+
+// The Documents tab's read (REQ-4).
+export async function fetchRequirementInsightDocuments(workspace: string, requirementId: string, signal?: AbortSignal) {
+  return requirementInsightJSON<import('./types').RequirementInsightDocuments>(
+    await fetch(requirementInsightURL(workspace, requirementId, 'documents'), { signal }),
+  )
+}
 export async function fetchArtifacts() {
   const response = await fetch(workspaceURL('/v1/artifacts'))
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
