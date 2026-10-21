@@ -43,9 +43,11 @@ func requirementInsightStore(t *testing.T) (*Store, *queryRecorder, context.Cont
 }
 
 // seedRequirementInsight creates a confirmed requirement served by count
-// tasks in a dependency chain, each attached to a design, with every fifth
-// task merged and every seventh closed.
-func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count int) string {
+// tasks, each attached to a design. Every fifth task is merged and every
+// seventh closed; the open tasks form one dependency chain, because a new
+// task may depend only on an open task. It returns the requirement and each
+// task's expected dependency count.
+func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count int) (string, map[string]int) {
 	t.Helper()
 	suffix := strings.ToLower(core.NewTaskID())
 	requirement := "req-insight-scale-" + suffix
@@ -68,12 +70,15 @@ func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count 
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	created := time.Now().UTC().Add(-24 * time.Hour)
 	previous := ""
+	wantDependencies := map[string]int{}
 	for i := 0; i < count; i++ {
 		id := fmt.Sprintf("insight-%04d-%s", i, suffix)
+		terminal := i%5 == 0 || i%7 == 0
 		var dependencies []string
-		if previous != "" {
+		if previous != "" && !terminal {
 			dependencies = []string{previous}
 		}
+		wantDependencies[id] = len(dependencies)
 		task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, Title: "Insight " + id, Body: "Body " + id, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created.Add(time.Duration(i) * time.Second)}
 		if err = st.CreateTaskWithDependencies(ctx, task, dependencies); err != nil {
 			t.Fatal(err)
@@ -90,9 +95,11 @@ func seedRequirementInsight(t *testing.T, st *Store, ctx context.Context, count 
 		if err != nil {
 			t.Fatal(err)
 		}
-		previous = id
+		if !terminal {
+			previous = id
+		}
 	}
-	return requirement
+	return requirement, wantDependencies
 }
 
 // The input read issues the same fixed number of queries for 3 and 200
@@ -103,7 +110,7 @@ func TestRequirementInsightInputsBoundedQueriesIntegration(t *testing.T) {
 	st, recorder, ctx := requirementInsightStore(t)
 	counts := map[int]int{}
 	for _, size := range []int{3, 200} {
-		requirement := seedRequirementInsight(t, st, ctx, size)
+		requirement, wantDependencies := seedRequirementInsight(t, st, ctx, size)
 		recorder.reset()
 		inputs, err := st.ReadRequirementInsightInputs(ctx, requirement)
 		queries := recorder.snapshot()
@@ -114,8 +121,8 @@ func TestRequirementInsightInputsBoundedQueriesIntegration(t *testing.T) {
 			t.Fatalf("size %d: %d serving tasks", size, len(inputs.Tasks))
 		}
 		merged, closed := 0, 0
-		for i, task := range inputs.Tasks {
-			if task.Task.Body == "" || len(task.Designs) != 1 || (i > 0 && len(task.DependsOn) != 1) {
+		for _, task := range inputs.Tasks {
+			if task.Task.Body == "" || len(task.Designs) != 1 || len(task.DependsOn) != wantDependencies[task.Task.ID] {
 				t.Fatalf("size %d: task %+v lacks its body, design, or dependency", size, task)
 			}
 			if !task.MergedAt.IsZero() {

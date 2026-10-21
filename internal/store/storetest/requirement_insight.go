@@ -6,6 +6,7 @@ package storetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -149,7 +150,10 @@ func (h *insightHarness) latestRequirementAdd(t *testing.T, ctx context.Context,
 	}
 	var latest time.Time
 	for _, event := range events {
-		if event.Kind == store.TaskContextRequirementAdded && strings.Contains(string(event.Payload), `"`+requirementID+`"`) {
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if event.Kind == store.TaskContextRequirementAdded && json.Unmarshal(event.Payload, &payload) == nil && payload.ID == requirementID {
 			latest = event.At
 		}
 	}
@@ -251,7 +255,10 @@ func (h *insightHarness) stateChangedAt(t *testing.T, ctx context.Context, taskI
 		t.Fatal(err)
 	}
 	for _, event := range events {
-		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"to":"`+string(to)+`"`) {
+		var payload struct {
+			To core.TaskState `json:"to"`
+		}
+		if event.Kind == "task.state_changed" && json.Unmarshal(event.Payload, &payload) == nil && payload.To == to {
 			return event.At
 		}
 	}
