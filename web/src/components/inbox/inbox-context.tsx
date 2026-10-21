@@ -1,16 +1,10 @@
-import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { ChevronRight } from 'lucide-react'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
-import { fetchRequirement, fetchSystemDesign } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
-import type {
-  ActivityItem,
-  NextActionContextProposal,
-  RequirementView,
-  SpecVersion,
-  SystemDesignView,
-} from '../../lib/types'
+import type { ActivityItem, SpecVersion } from '../../lib/types'
 import { absoluteTime } from '../../lib/utils'
-import { usePendingProposals, useWorkspaceSelection } from '../app-shell'
+import { usePendingProposals } from '../app-shell'
 import { SpecCard } from '../task/spec-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
 import { useTaskDetail } from '../task/use-task-detail'
@@ -125,85 +119,45 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
   )
 }
 
-// The task body and, for each proposed document, the version confirmed today.
-// A context proposal attaches an existing document to the task, so nothing
-// here is a proposed revision. The section is read-only (NA-6; AC-2.3).
+// The task body, folded behind a one-line disclosure that expands to the full
+// body and a link to the full task. The section renders no proposed
+// document's content and issues no document read: a checklist row's title
+// opens the document page. The section is read-only (NA-6; AC-2.3).
 function ProposedContext({ item }: { item: ActivityItem }) {
-  const { data: action } = useNextAction(item.task.id)
-  const proposals = action?.details?.context_proposals ?? []
+  const body = item.task.body?.trim() ?? ''
+  if (!body) return <p className="text-sm text-muted">The task has no description.</p>
   return (
-    <div className="space-y-3" data-proposed-context>
-      <section aria-label="Task" className="rounded-lg border border-border px-3 py-3">
-        <h3 className="text-xs font-medium text-muted">The task</h3>
-        {item.task.body ? (
-          <MarkdownProse className="mt-1 text-sm">{item.task.body}</MarkdownProse>
-        ) : (
-          <p className="mt-1 text-sm text-muted">The task has no description.</p>
-        )}
-      </section>
-      {proposals.map((proposal) => (
-        <ProposedDocument key={`${proposal.kind}:${proposal.target_id}`} proposal={proposal} />
-      ))}
-    </div>
+    <details data-task-body className="group min-w-0 rounded-lg border border-border px-3 py-2.5">
+      <summary className="flex min-w-0 cursor-pointer list-none items-baseline gap-1.5 text-xs text-muted [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          aria-hidden="true"
+          className="size-3.5 shrink-0 self-center text-faint transition-transform group-open:rotate-90"
+        />
+        <span className="shrink-0 font-medium text-foreground">The task</span>
+        <span aria-hidden="true">·</span>
+        <span className="min-w-0 truncate">{firstLine(body)}</span>
+      </summary>
+      <MarkdownProse className="mt-2 text-sm">{body}</MarkdownProse>
+      <Link
+        to="/tasks/$taskId/full"
+        params={{ taskId: item.task.id }}
+        className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+      >
+        Full task →
+      </Link>
+    </details>
   )
 }
 
-function ProposedDocument({ proposal }: { proposal: NextActionContextProposal }) {
-  const { workspace } = useWorkspaceSelection()
-  const requirement = proposal.kind === 'requirement'
-  // The document pages' own query keys and reads, so the sheet shares their
-  // cache; the key carries the workspace and the query's signal aborts on close.
-  // Every opening reads again, and content shows only from a read that
-  // succeeded since this sheet opened: cached content is never substituted for
-  // a pending or failed read (NA-6; AC-2.3).
-  const { data, error, refetch, isFetching, isFetchedAfterMount } = useQuery<RequirementView | SystemDesignView>({
-    queryKey: [requirement ? 'requirement' : 'system-design', workspace, proposal.target_id],
-    queryFn: ({ signal }) =>
-      requirement
-        ? fetchRequirement(proposal.target_id, workspace, signal)
-        : fetchSystemDesign(proposal.target_id, workspace, signal),
-    enabled: Boolean(workspace),
-    refetchOnMount: 'always',
-  })
-  const current = data && error == null && isFetchedAfterMount ? data : undefined
-  const loading = error == null && !current
-  const document = current ? confirmedDocument(current) : undefined
-  const title = document?.title || proposal.target_title || proposal.tier_label
-  return (
-    <section
-      aria-label={title}
-      aria-busy={loading || isFetching}
-      data-proposed-document={proposal.kind}
-      className="min-w-0 rounded-lg border border-border px-3 py-3"
-    >
-      <h3 className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm font-medium">
-        <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted">{proposal.tier_label}</span>
-        <span className="min-w-0 break-words">{title}</span>
-        {document?.current && <span className="text-xs text-muted">v{document.current.version}</span>}
-      </h3>
-      {loading && <Skeleton className="mt-2 h-16" />}
-      {error != null && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-failure">{errorMessage(error, 'Could not load this document.')}</span>
-          <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
-      )}
-      {document && !document.current && (
-        <p className="mt-2 text-sm text-muted">This document has no confirmed version yet.</p>
-      )}
-      {document?.current && <MarkdownProse className="mt-2 text-sm">{document.current.content}</MarkdownProse>}
-    </section>
-  )
-}
-
-// The title and the current confirmed version of either document read.
-// A read of an unexpected shape yields no title and no version rather than
-// failing the whole page.
-function confirmedDocument(view: RequirementView | SystemDesignView) {
-  if ('requirement' in view) return { title: view.requirement?.title, current: view.current_version }
-  return { title: view.document?.title, current: view.current_version }
+// The body's first line of prose, skipping Markdown headings, without list
+// or quote markers. A body of headings alone reads its first heading.
+function firstLine(body: string) {
+  const lines = body.split('\n').filter((text) => text.trim() !== '')
+  const line = lines.find((text) => !/^\s{0,3}#{1,6}\s/.test(text)) ?? lines[0] ?? ''
+  return line
+    .replace(/^\s{0,3}(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)/, '')
+    .replace(/[*_`]/g, '')
+    .trim()
 }
 
 // A plan split at its five required headings, under a header naming the

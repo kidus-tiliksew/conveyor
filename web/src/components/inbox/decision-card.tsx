@@ -8,10 +8,10 @@ import { Button } from '../ui/button'
 import { Disclosure } from '../ui/disclosure'
 import { Skeleton } from '../ui/skeleton'
 import {
-  ContextProposalBatch,
-  ContextProposalError,
-  ContextProposalRows,
+  ContextProposalChecklist,
+  ContextProposalFooter,
   MonitorOriginLine,
+  useContextProposalSelection,
   useContextProposalSends,
 } from './context-proposal-rows'
 import { DecisionContext } from './inbox-context'
@@ -43,8 +43,9 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   const pullRequest = item.pull_request
   const titles = new Map((task.context?.requirements ?? []).map((requirement) => [requirement.id, requirement.title]))
   const sends = useContextProposalSends(task.id, onActed)
-  // A context decision lists one row per proposed document in place of the
-  // flat choice row (NA-6).
+  const selection = useContextProposalSelection(task.id)
+  // A context decision lists its proposed documents as a checklist in place
+  // of the flat choice row, with Apply and Dismiss all in the footer (NA-6).
   const contextRows = kind === 'context_proposal' && action?.details?.context_proposals ? action : undefined
   const shortcut = action ? shortcutChoiceId(action) : null
   return (
@@ -116,7 +117,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
           {contextRows && (
             <div className="space-y-2">
               <MonitorOriginLine action={contextRows} />
-              <ContextProposalRows action={contextRows} sends={sends} />
+              <ContextProposalChecklist action={contextRows} selection={selection} sends={sends} />
             </div>
           )}
           {item.recommendation && <p className="text-sm text-muted">Recommendation: {item.recommendation}</p>}
@@ -136,10 +137,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
         >
           {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
           {contextRows ? (
-            <>
-              <ContextProposalBatch action={contextRows} sends={sends} />
-              <ContextProposalError sends={sends} />
-            </>
+            <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
           ) : (
             action && (
               <div className="text-[13px]">
