@@ -11,7 +11,10 @@ import { knownTier, originWord, proposalAge, tierLabels } from './proposal-card'
 // compact row per item, in the server's order (DEC-82(2)): the kind, the title
 // clamped to two lines, a short meta line and the age. A row carries no choice
 // control (DEC-82(1)); it is a link that names the item in `selected`, so the
-// selection survives reload and browser history.
+// selection survives reload and browser history. The link covers the whole row
+// through a stretched overlay; a task's pull request link sits above it, outside
+// the row's link, so it opens the pull request without selecting the row
+// (feature-operator-next-action NA-6).
 export function InboxReviewList({
   items,
   selectedKey,
@@ -61,38 +64,62 @@ function InboxRow({
   search: InboxSearch
 }) {
   const row = describeRow(item)
+  const pullRequest = item.kind === 'document_proposal' ? undefined : item.pull_request
   return (
-    <Link
-      to="/inbox"
-      search={{ ...search, selected: rowKey }}
-      resetScroll={false}
-      data-inbox-row={rowKey}
-      aria-current={selected ? 'true' : undefined}
+    <div
+      data-inbox-row-item={rowKey}
       className={cn(
-        'block min-w-0 border-l-2 px-3 py-2.5 outline-offset-[-2px] hover:bg-surface',
+        'relative min-w-0 border-l-2 px-3 py-2.5 hover:bg-surface',
         selected ? 'border-l-primary bg-primary-soft/40' : 'border-l-transparent',
       )}
     >
-      <span className="flex min-w-0 items-center gap-2 text-[11px]">
-        <span data-row-kind className="min-w-0 truncate font-semibold uppercase tracking-[0.06em] text-attention">
-          {row.kind}
-        </span>
-        {row.blocks > 0 && (
-          <span data-row-blocks className="shrink-0 rounded bg-attention-soft px-1.5 font-medium text-attention">
-            Blocks {row.blocks}
+      <Link
+        to="/inbox"
+        search={{ ...search, selected: rowKey }}
+        resetScroll={false}
+        data-inbox-row={rowKey}
+        aria-current={selected ? 'true' : undefined}
+        className="block min-w-0 outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:outline-2 focus-visible:after:outline-offset-[-2px] focus-visible:after:outline-primary"
+      >
+        <span className="flex min-w-0 items-center gap-2 text-[11px]">
+          <span data-row-kind className="min-w-0 truncate font-semibold uppercase tracking-[0.06em] text-attention">
+            {row.kind}
           </span>
-        )}
-        {row.age && (
-          <time dateTime={row.age.dateTime} title={row.age.absolute} className="ml-auto shrink-0 text-faint">
-            {row.age.relative}
-          </time>
-        )}
-      </span>
-      <span data-row-title title={row.title} className="mt-0.5 line-clamp-2 break-words text-sm font-medium leading-5">
-        {row.title}
-      </span>
-      {row.meta && <span className="mt-0.5 block truncate text-xs text-muted">{row.meta}</span>}
-    </Link>
+          {row.blocks > 0 && (
+            <span data-row-blocks className="shrink-0 rounded bg-attention-soft px-1.5 font-medium text-attention">
+              Blocks {row.blocks}
+            </span>
+          )}
+          {row.age && (
+            <time dateTime={row.age.dateTime} title={row.age.absolute} className="ml-auto shrink-0 text-faint">
+              {row.age.relative}
+            </time>
+          )}
+        </span>
+        <span
+          data-row-title
+          title={row.title}
+          className="mt-0.5 line-clamp-2 break-words text-sm font-medium leading-5"
+        >
+          {row.title}
+        </span>
+      </Link>
+      {pullRequest ? (
+        <span className="mt-0.5 block truncate text-xs">
+          <a
+            data-row-pull-request
+            href={pullRequest.url}
+            target="_blank"
+            rel="noreferrer"
+            className="relative z-10 font-mono text-primary hover:underline"
+          >
+            {row.meta}
+          </a>
+        </span>
+      ) : (
+        row.meta && <span className="mt-0.5 block truncate text-xs text-muted">{row.meta}</span>
+      )}
+    </div>
   )
 }
 

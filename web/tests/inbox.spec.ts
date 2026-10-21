@@ -267,6 +267,8 @@ function decisionsFixture(): Fixture {
 // The decision list's rows, in the server's order, and the selected item's
 // detail view (req-operator-next-action AC-2.8; DEC-82).
 const decisionRows = (page: Page) => page.getByRole('region', { name: 'Decisions' }).locator('[data-inbox-row]')
+// The whole row item: the selection link plus the meta line beside it.
+const rowItems = (page: Page) => page.getByRole('region', { name: 'Decisions' }).locator('[data-inbox-row-item]')
 const decisionDetail = (page: Page) => page.locator('[data-inbox-detail] [data-inbox-item]')
 
 // Selects the row whose text matches and waits for its detail view.
@@ -289,8 +291,8 @@ test('bands render in server order with the decision detail the server states', 
   // A row carries no choice control (DEC-82(1)); the first item is selected.
   await expect(decisionRows(page).getByRole('button')).toHaveCount(0)
   await expect(decisionRows(page).first()).toHaveAttribute('aria-current', 'true')
-  await expect(decisionRows(page).nth(1)).toContainText('No PR yet')
-  await expect(decisionRows(page).first()).toContainText('acme/conveyor PR #77')
+  await expect(rowItems(page).nth(1)).toContainText('No PR yet')
+  await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveText('acme/conveyor PR #77')
   const bands = page.locator(
     'section[aria-label="Decisions"], section[aria-label="Blocked"], section[aria-label="Automatic"]',
   )
@@ -2465,8 +2467,19 @@ test('a merge decision names the recorded pull request, keeps the issue apart, a
   }
   await serve(page, fixture)
   await page.goto('/inbox')
-  await expect(decisionRows(page).first()).toContainText('acme/runtime PR #1709')
-  await expect(decisionRows(page).first()).not.toContainText('1671')
+  // The row links the recorded pull request above its selection link, so the
+  // link opens the pull request and never selects the row or the issue.
+  const rowLink = rowItems(page).first().locator('[data-row-pull-request]')
+  await expect(rowLink).toHaveText('acme/runtime PR #1709')
+  await expect(rowLink).toHaveAttribute('href', 'https://github.com/acme/runtime/pull/1709')
+  await expect(rowItems(page).first()).not.toContainText('1671')
+  await expect(decisionRows(page).first().locator('a')).toHaveCount(0)
+  await page.context().route('https://github.com/**', (route) => route.fulfill({ body: 'pull request' }))
+  const inboxURL = page.url()
+  const [opened] = await Promise.all([page.waitForEvent('popup'), rowLink.click()])
+  expect(opened.url()).toBe('https://github.com/acme/runtime/pull/1709')
+  await opened.close()
+  expect(page.url()).toBe(inboxURL)
   const card = decisionDetail(page)
   await expect(card.locator('[data-pull-request]')).toHaveText('acme/runtime PR #1709')
   await expect(card.locator('[data-pull-request]')).toHaveAttribute('href', 'https://github.com/acme/runtime/pull/1709')
