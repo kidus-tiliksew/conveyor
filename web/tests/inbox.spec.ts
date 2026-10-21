@@ -1,4 +1,5 @@
 import { expect, type Page, type Request, type Route } from '@playwright/test'
+import { citedSections, headingWords } from '../src/components/inbox/citation-matcher'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity, capabilitiesForRole } from './helpers/caller-identity'
 
@@ -558,21 +559,18 @@ test('the context checklist lists each proposed document checked, and Apply atta
   const rows = card.locator('[data-context-proposal]')
   await expect(rows).toHaveCount(2)
 
-  // One shared source line; each row: checkbox, tier word, linked title,
-  // justification. No row carries a Confirm or Dismiss button.
+  // One shared source line; each row: checkbox, tier word, title that opens
+  // the preview panel, Preview, justification. No row carries a Confirm or
+  // Dismiss button.
   await expect(card.locator('[data-context-source]')).toHaveText('Suggested by triage · 2 hours ago')
   await expect(card.locator('[data-context-row-meta]')).toHaveCount(0)
   const first = rows.nth(0)
   await expect(first).toContainText('requirement')
-  await expect(first.getByRole('link', { name: requirement.title })).toHaveAttribute(
-    'href',
-    `/requirements?requirement=${requirement.id}`,
-  )
+  await expect(first.getByRole('button', { name: requirement.title, exact: true })).toBeVisible()
+  await expect(first.getByRole('button', { name: `Preview ${requirement.title}` })).toBeVisible()
+  await expect(first.getByRole('link')).toHaveCount(0)
   await expect(first).toContainText(requirement.justification)
-  await expect(rows.nth(1).getByRole('link', { name: design.title })).toHaveAttribute(
-    'href',
-    `/system-design?document=${design.id}`,
-  )
+  await expect(rows.nth(1).getByRole('button', { name: design.title, exact: true })).toBeVisible()
   await expect(rows.nth(1)).toContainText('System Design')
   await expect(
     card.locator('[data-context-proposals]').getByRole('button', { name: /^(Confirm|Dismiss) / }),
@@ -943,6 +941,336 @@ test('a task without a body says so in the context section', async ({ page }) =>
   await expect(decisionDetail(page).getByRole('region', { name: 'Decision context' })).toContainText(
     'The task has no description.',
   )
+})
+
+// The document preview panel (feature-operator-next-action NA-6; AC-2.3): a
+// row's title or Preview opens the confirmed document in place, the
+// sections the justification cites stay at full strength and the rest dim,
+// and the footer checkbox mirrors the row.
+const previewRequirementPath = `/v1/requirements/${contextTargets[0].id}`
+const previewDesignPath = `/v1/system-designs/${contextTargets[1].id}`
+
+function previewRequirement(version = 4) {
+  return {
+    requirement: { id: contextTargets[0].id, title: contextTargets[0].title },
+    current_version: {
+      version,
+      content: '# Review gates\n\nEvery gate keeps its evidence.',
+      confirmed_at: '2026-10-09T10:00:00Z',
+      statements: [
+        {
+          id: 'REQ-1',
+          statement: 'Each gate records who decided.',
+          acceptance_criteria: [{ id: 'AC-1.1', statement: 'The decider is named.' }],
+        },
+        {
+          id: 'REQ-7',
+          statement: 'Evidence stays attached to the gate.',
+          acceptance_criteria: [
+            { id: 'AC-7.1', statement: 'The evidence link survives a refresh.' },
+            { id: 'AC-7.10', statement: 'Archived evidence stays readable.' },
+          ],
+        },
+      ],
+    },
+    pending_versions: [{ version: version + 1, content: 'A PROPOSED REVISION', statements: [] }],
+  }
+}
+
+function previewDesign(version = 32, scope = 'Scope text.') {
+  return {
+    document: { id: contextTargets[1].id, title: contextTargets[1].title },
+    current_version: {
+      version,
+      content: `# Testing strategy\n\nPreamble.\n\n## Scope\n\n${scope}\n\n## Credential handling\n\nCredential text.\n\n## 3. Verification\n\nVerification text.`,
+      confirmed_at: '2026-10-18T10:00:00Z',
+    },
+    pending_versions: [{ version: version + 1, content: 'A PROPOSED REVISION' }],
+    versions: [],
+  }
+}
+
+function previewFixture(
+  justifications: [string, string] = [
+    'AC-7.1 requires the evidence link to survive.',
+    'Its Credential handling section and its Verification section apply.',
+  ],
+) {
+  const targets = contextTargets
+    .slice(0, 2)
+    .map((target, index) => ({ ...target, justification: justifications[index] }))
+  const fixture = contextFixture({ targets })
+  fixture.activity = {
+    'T-ctx': {
+      task: task('T-ctx', 'Repair post-merge test failures', 'queued'),
+      events: [],
+      jobs: [],
+      work_orders: [],
+      interventions: [],
+    },
+  }
+  fixture.documents = { [previewRequirementPath]: previewRequirement(), [previewDesignPath]: previewDesign() }
+  return fixture
+}
+
+const previewPanel = (page: Page) => page.getByRole('dialog', { name: /^Preview: / })
+const opacityOf = (locator: import('@playwright/test').Locator) =>
+  locator.evaluate((node) => Number.parseFloat(getComputedStyle(node).opacity))
+
+test('a row title opens the preview panel with the confirmed document, its header, and the cited sections', async ({
+  page,
+}) => {
+  const harness = await serve(page, previewFixture())
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  const title = card.getByRole('button', { name: contextTargets[1].title, exact: true })
+  await title.click()
+  const panel = previewPanel(page)
+  await expect(panel).toHaveAccessibleName(`Preview: ${contextTargets[1].title}`)
+  await expect(panel.locator('[data-preview-version]')).toContainText('v32 · confirmed')
+  await expect(panel.locator('[data-preview-version] time')).toHaveAttribute('title', /\S/)
+  await expect(panel.locator('[data-preview-why]')).toContainText('Why planning suggests it')
+  await expect(panel.locator('[data-preview-why]')).toContainText('Its Credential handling section')
+  await expect(panel.getByRole('link', { name: 'Open full page ↗' })).toHaveAttribute(
+    'href',
+    `/system-design?document=${contextTargets[1].id}`,
+  )
+  // The outline lists every section; cited entries read in the foreground.
+  const outline = panel.getByRole('navigation', { name: 'Outline' }).locator('[data-outline-entry]')
+  await expect(outline).toHaveText(['Testing strategy', 'Scope', 'Credential handling', '3. Verification'])
+  await expect(outline.nth(2)).toHaveClass(/text-foreground/)
+  await expect(outline.nth(1)).toHaveClass(/text-faint/)
+  await expect(panel.locator('[data-preview-cited-count]')).toHaveText('2 of 4 sections cited')
+  // Cited sections render like ordinary content; the rest dim until focused.
+  await page.mouse.move(0, 0)
+  const credential = panel.locator('[data-preview-section][data-cited="true"]').first()
+  const scope = panel.locator('[data-preview-section]').nth(1)
+  await expect(credential).toContainText('Credential text.')
+  await expect.poll(() => opacityOf(credential)).toBe(1)
+  await expect.poll(() => opacityOf(scope)).toBeCloseTo(0.4, 1)
+  await scope.focus()
+  await expect.poll(() => opacityOf(scope)).toBe(1)
+  // Only the confirmed version renders, never a proposed one.
+  await expect(panel).not.toContainText('A PROPOSED REVISION')
+  // The panel never uses the attention tone.
+  expect(await panel.evaluate((node) => node.querySelectorAll('[class*="attention"]').length)).toBe(0)
+  // Outline selection scrolls to the section inside the panel.
+  await outline.nth(3).click()
+  await expect(panel.locator('[data-preview-section]').nth(3)).toBeInViewport()
+
+  // Escape closes the panel, returns focus to the title, and keeps the detail.
+  await page.keyboard.press('Escape')
+  await expect(previewPanel(page)).toHaveCount(0)
+  await expect(title).toBeFocused()
+  await expect(card).toBeVisible()
+  for (const request of harness.documentRequests)
+    expect(new URL(request.url()).searchParams.get('workspace_id')).toBe('demo')
+  expect(harness.posts).toHaveLength(0)
+})
+
+test('Preview steps through the proposed documents and its checkbox mirrors the row without posting', async ({
+  page,
+}) => {
+  const harness = await serve(page, previewFixture())
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  const rows = card.locator('[data-context-proposal]')
+  await card.getByRole('button', { name: `Preview ${contextTargets[0].title}` }).click()
+  const panel = previewPanel(page)
+  await expect(panel).toHaveAccessibleName(`Preview: ${contextTargets[0].title}`)
+  await expect(panel.locator('[data-preview-position]')).toHaveText('1 of 2 proposed')
+  await expect(rows.nth(0)).toHaveAttribute('data-current', 'true')
+  await expect(panel.getByRole('button', { name: 'Previous document' })).toBeDisabled()
+
+  // A requirement's sections are its prose headings plus each REQ and AC; the
+  // AC-7.1 citation also cites REQ-7, and AC-7.10 stays uncited.
+  await expect(panel.locator('[data-outline-entry]')).toHaveText([
+    'Review gates',
+    'REQ-1',
+    'AC-1.1',
+    'REQ-7',
+    'AC-7.1',
+    'AC-7.10',
+  ])
+  await expect(panel.locator('[data-preview-cited-count]')).toHaveText('2 of 6 sections cited')
+  await expect(panel.locator('[data-preview-section="REQ-7"]')).toHaveAttribute('data-cited', 'true')
+  await expect(panel.locator('[data-preview-section="AC-7.1"]')).toHaveAttribute('data-cited', 'true')
+  await expect(panel.locator('[data-preview-section="AC-7.10"]')).toHaveAttribute('data-cited', 'false')
+
+  // The footer checkbox and the row share one state; neither posts.
+  await panel.locator('[data-preview-attach]').uncheck()
+  await expect(card.locator(`[data-context-check="requirement:${contextTargets[0].id}"]`)).not.toBeChecked()
+  await expect(card.locator('[data-context-apply]')).toHaveText('Attach 1 · dismiss 1')
+
+  // Inbox keys do not act while the panel is open.
+  await page.keyboard.press('c')
+  await page.keyboard.press('j')
+
+  // ArrowDown moves to the next document, bounded at the end.
+  await page.keyboard.press('ArrowDown')
+  await expect(panel).toHaveAccessibleName(`Preview: ${contextTargets[1].title}`)
+  await expect(panel.locator('[data-preview-position]')).toHaveText('2 of 2 proposed')
+  await expect(rows.nth(1)).toHaveAttribute('data-current', 'true')
+  await expect(rows.nth(0)).not.toHaveAttribute('data-current', 'true')
+  await expect(panel.locator('[data-preview-attach]')).toBeChecked()
+  await page.keyboard.press('ArrowDown')
+  await expect(panel.locator('[data-preview-position]')).toHaveText('2 of 2 proposed')
+  await expect(panel.getByRole('button', { name: 'Next document' })).toBeDisabled()
+  await panel.getByRole('button', { name: 'Previous document' }).click()
+  await expect(panel.locator('[data-preview-position]')).toHaveText('1 of 2 proposed')
+  await expect(panel.locator('[data-preview-attach]')).not.toBeChecked()
+  await page.keyboard.press('Escape')
+  await expect(card.getByRole('button', { name: `Preview ${contextTargets[0].title}` })).toBeFocused()
+  await page.waitForTimeout(200)
+  expect(harness.posts).toHaveLength(0)
+})
+
+test('a Setext heading and a repeated heading are cited by the text their author wrote', async ({ page }) => {
+  const fixture = previewFixture(['Unrelated.', 'Its Verification section applies to this change.'])
+  fixture.documents = {
+    ...fixture.documents,
+    [previewDesignPath]: {
+      document: { id: contextTargets[1].id, title: contextTargets[1].title },
+      current_version: {
+        version: 32,
+        confirmed_at: '2026-10-18T10:00:00Z',
+        content:
+          '# Strategy\n\nIntro.\n\nVerification\n------------\n\nFirst verification.\n\n## Scope\n\nScope text.\n\n## Verification\n\nSecond verification.',
+      },
+      pending_versions: [],
+      versions: [],
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  await decisionDetail(page).getByRole('button', { name: contextTargets[1].title, exact: true }).click()
+  const panel = previewPanel(page)
+  await expect(panel.locator('[data-outline-entry]')).toHaveText([
+    'Strategy',
+    'Verification',
+    'Scope',
+    'Verification (2)',
+  ])
+  await expect(panel.locator('[data-preview-cited-count]')).toHaveText('2 of 4 sections cited')
+  const sections = panel.locator('[data-preview-section]')
+  await expect(sections.nth(1)).toHaveAttribute('data-cited', 'true')
+  await expect(sections.nth(3)).toHaveAttribute('data-cited', 'true')
+  await page.mouse.move(0, 0)
+  await expect.poll(() => opacityOf(sections.nth(1))).toBe(1)
+  await expect.poll(() => opacityOf(sections.nth(3))).toBe(1)
+  await expect.poll(() => opacityOf(sections.nth(2))).toBeCloseTo(0.4, 1)
+})
+
+test('a justification that names no section dims nothing and states no count', async ({ page }) => {
+  await serve(page, previewFixture(['Unrelated prose about the dashboard.', 'Nothing here names a section.']))
+  await page.goto('/inbox')
+  await decisionDetail(page).getByRole('button', { name: contextTargets[1].title, exact: true }).click()
+  const panel = previewPanel(page)
+  await expect(panel.locator('[data-preview-section]')).toHaveCount(4)
+  await expect(panel.locator('[data-preview-cited-count]')).toHaveCount(0)
+  await page.mouse.move(0, 0)
+  for (const section of await panel.locator('[data-preview-section]').all())
+    await expect.poll(() => opacityOf(section)).toBe(1)
+  await expect(panel.locator('[data-outline-entry].text-faint')).toHaveCount(0)
+})
+
+test('a reopened preview never shows cached content while its fresh read fails, until Retry succeeds', async ({
+  page,
+}) => {
+  const fixture = previewFixture()
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  const title = card.getByRole('button', { name: contextTargets[1].title, exact: true })
+  await title.click()
+  await expect(previewPanel(page)).toContainText('Scope text.')
+  await page.keyboard.press('Escape')
+
+  // The document became unavailable: the cached v32 must not stand in for it.
+  fixture.documents = { ...fixture.documents, [previewDesignPath]: 503 }
+  await title.click()
+  const panel = previewPanel(page)
+  await expect(panel.getByRole('button', { name: 'Retry' })).toBeVisible()
+  await expect(panel).not.toContainText('Scope text.')
+  await expect(panel).not.toContainText('v32')
+  // The failed read is stated in neutral text, never the failure tone.
+  await expect(panel.locator('[data-preview-error]')).toHaveClass(/text-muted/)
+  expect(await panel.evaluate((node) => node.querySelectorAll('[class*="failure"], [class*="attention"]').length)).toBe(
+    0,
+  )
+
+  fixture.documents = { ...fixture.documents, [previewDesignPath]: previewDesign(33, 'Fresh scope.') }
+  await panel.getByRole('button', { name: 'Retry' }).click()
+  await expect(panel.locator('[data-preview-version]')).toContainText('v33')
+  await expect(panel).toContainText('Fresh scope.')
+})
+
+test('a read left in flight by a closed preview never shows when it reopens', async ({ page }) => {
+  const fixture = previewFixture()
+  fixture.documents = { [previewDesignPath]: previewDesign(32, 'Late content from the closed panel.') }
+  const harness = await serve(page, fixture)
+  const held = gate()
+  harness.holdDocuments = held.held
+  await page.goto('/inbox')
+  const title = decisionDetail(page).getByRole('button', { name: contextTargets[1].title, exact: true })
+  await title.click()
+  await expect.poll(() => harness.documentRequests.length).toBeGreaterThanOrEqual(1)
+  await page.keyboard.press('Escape')
+  await expect(previewPanel(page)).toHaveCount(0)
+  // The read answers after the panel closed; the document then fails.
+  held.release()
+  harness.holdDocuments = undefined
+  await page.waitForTimeout(300)
+  fixture.documents = { [previewDesignPath]: 503 }
+  await title.click()
+  const panel = previewPanel(page)
+  await expect(panel.getByRole('button', { name: 'Retry' })).toBeVisible()
+  await expect(panel).not.toContainText('Late content from the closed panel.')
+})
+
+test('the citation matcher marks whole-token IDs, numbered headings, and parent requirements', () => {
+  const sections = [
+    { id: 'heading:Overview:1', title: 'Overview', heading: false },
+    { id: 'heading:Credential handling:1', title: 'Credential handling', heading: true },
+    { id: 'heading:3.2 Verification:1', title: '3.2 Verification', heading: true },
+    { id: 'heading:Factory verification:1', title: '`Factory` verification', heading: true },
+    { id: 'heading:Known gaps:1', title: 'Known gaps', heading: true },
+    { id: 'REQ-1', title: 'REQ-1', heading: false },
+    { id: 'REQ-10', title: 'REQ-10', heading: false },
+    { id: 'REQ-7', title: 'REQ-7', heading: false },
+    { id: 'AC-7.1', title: 'AC-7.1', heading: false },
+    { id: 'AC-7.10', title: 'AC-7.10', heading: false },
+  ]
+  const cites = (text: string) => [...citedSections(sections, text)].sort()
+  // Recorded triage justifications.
+  expect(
+    cites(
+      'Its Credential handling section says Auth API accepts Clerk sessions only through the /v1/auth/validate exchange; its Verification section lists token-signature and cutoff tests this task extends.',
+    ),
+  ).toEqual(['heading:3.2 Verification:1', 'heading:Credential handling:1'])
+  expect(
+    cites(
+      'REQ-7 and AC-7.1 require exactly one sign-in event per session at the exchange, and REQ-1 requires identity to stay unchanged.',
+    ),
+  ).toEqual(['AC-7.1', 'REQ-1', 'REQ-7'])
+  // An AC cites its parent REQ; a REQ cites no AC.
+  expect(cites('Only AC-7.1 applies.')).toEqual(['AC-7.1', 'REQ-7'])
+  // Whole tokens: REQ-1 never matches REQ-10, AC-7.1 never matches AC-7.10.
+  expect(cites('REQ-10 and AC-7.10 apply.')).toEqual(['AC-7.10', 'REQ-10', 'REQ-7'])
+  expect(cites('PREREQ-1 and XAC-7.1 do not count.')).toEqual([])
+  // No identifier continuation after an ID either; sentence punctuation still counts.
+  expect(cites('REQ-1extra, REQ-1-other, REQ-1_x, AC-7.1suffix, and AC-7.1.b do not count.')).toEqual([])
+  expect(cites('See REQ-1. Then (AC-7.1), and REQ-10: done.')).toEqual(['AC-7.1', 'REQ-1', 'REQ-10', 'REQ-7'])
+  // Case-insensitive whole words, inline marks ignored; no partial words.
+  expect(cites('the FACTORY VERIFICATION rules')).toEqual([
+    'heading:3.2 Verification:1',
+    'heading:Factory verification:1',
+  ])
+  expect(cites('Credential handlingness is not a match.')).toEqual([])
+  // The synthetic Overview title never matches; empty text matches nothing.
+  expect(cites('An overview of the design.')).toEqual([])
+  expect(cites('   ')).toEqual([])
+  expect(headingWords('3. Verification')).toEqual(['Verification'])
 })
 
 test('the context decision fits a 390px viewport with long titles and justifications', async ({ page }) => {
