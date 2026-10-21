@@ -24,8 +24,10 @@ import {
 import { BookText, ExternalLink, Eye, EyeOff, Focus, Maximize2, Search, Workflow, X } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchTaskMap } from '../../../lib/api'
+import type { RequirementInsightTab } from '../../../lib/types'
 import { cn, relativeTime } from '../../../lib/utils'
 import { useWorkspace, useWorkspaceSelection } from '../../app-shell'
+import { InsightPanel } from '../../insights/insight-panel'
 import { Button } from '../../ui/button'
 import { Skeleton } from '../../ui/skeleton'
 import type { BoardSearch } from '../board-search'
@@ -45,7 +47,7 @@ import {
 } from './graph-model'
 import { type HubFlowNode, HubNode } from './hub-node'
 import { CARD_HEIGHT, CARD_WIDTH, HUB_HEIGHT, HUB_WIDTH, type LayoutEdge, layoutGraph } from './layout'
-import { MapView } from './map-view'
+import { type InsightEmphasis, MapView } from './map-view'
 import { DependencyMark, DOT_ZOOM, statusIcon, type TaskFlowNode, TaskNode } from './task-node'
 
 const nodeTypes = { task: TaskNode, hub: HubNode }
@@ -72,7 +74,7 @@ function BoardMapView() {
   const { workspace } = useWorkspaceSelection()
   const search = useSearch({ strict: false }) as BoardSearch
   const navigate = useNavigate()
-  const { focus, scope: chosenScope } = search
+  const { focus, scope: chosenScope, insight: chosenInsight } = search
   // The arrangement lives in the address with the requirement and the task
   // (req-board-map AC-1.1).
   const grouping: Grouping = search.arrangement ?? 'requirements'
@@ -95,6 +97,9 @@ function BoardMapView() {
   const [requirement, setRequirement] = useState('')
   const [query, setQuery] = useState('')
   const [hover, setHover] = useState<string>()
+  // The tasks a hovered insight panel row names (req-requirement-insights
+  // AC-1.3).
+  const [rowHover, setRowHover] = useState<InsightEmphasis>()
 
   const go = useCallback(
     (patch: Partial<BoardSearch>) =>
@@ -138,6 +143,17 @@ function BoardMapView() {
   // map.
   const mapped = grouping !== 'dependencies'
   const scope = mapped && chosenScope && cards.some((card) => card.id === chosenScope) ? chosenScope : undefined
+  // The insight tab is kept only while scope names a requirement group on the
+  // map (req-requirement-insights AC-1.2); once the read shows it names none,
+  // the address drops it, as an unknown arrangement is dropped.
+  const insight = scope && scope !== UNATTACHED ? chosenInsight : undefined
+  useEffect(() => {
+    if (data && chosenInsight && !insight) go({ insight: undefined })
+  }, [data, chosenInsight, insight, go])
+  const openInsight = useCallback(
+    (id: string, tab: RequirementInsightTab | undefined) => go({ scope: id, focus: undefined, insight: tab }),
+    [go],
+  )
 
   // The dependency view draws the whole workspace; the map draws itself.
   const scene = useMemo<Scene | undefined>(() => {
@@ -365,6 +381,10 @@ function BoardMapView() {
   const card = cards.find((entry) => entry.id === scope)
   const stats = scope && docIndex ? docIndex.stats.get(scope) : undefined
   const focused = focus ? model.tasks.get(focus) : undefined
+  // A selected task's panel takes the insight panel's place; clearing the
+  // task restores the tab the address still names (AC-1.4).
+  const shownInsight = focused ? undefined : insight
+  const insightDoc = shownInsight && scope ? docIndex?.docs.get(scope) : undefined
   const jump = () => {
     if (matches[0]) setFocus(matches[0])
   }
@@ -384,7 +404,12 @@ function BoardMapView() {
               type="button"
               aria-pressed={grouping === value}
               onClick={() =>
-                go({ arrangement: value === 'requirements' ? undefined : value, scope: undefined, focus: undefined })
+                go({
+                  arrangement: value === 'requirements' ? undefined : value,
+                  scope: undefined,
+                  focus: undefined,
+                  insight: undefined,
+                })
               }
               className={cn(
                 'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors',
@@ -440,7 +465,7 @@ function BoardMapView() {
           </Button>
         </div>
       </BoardToolbar>
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-2.5">
             <div className="min-w-0">
@@ -508,9 +533,15 @@ function BoardMapView() {
                 matches={matchSet}
                 selected={scope}
                 focus={focus}
-                onSelectDoc={(id) => go({ scope: id, focus: undefined })}
+                insight={insightDoc ? shownInsight : undefined}
+                emphasis={insightDoc && rowHover?.requirementId === scope ? rowHover : undefined}
+                // Another requirement's group closes the insight panel.
+                onSelectDoc={(id) =>
+                  go({ scope: id, focus: undefined, ...(id === scope ? {} : { insight: undefined }) })
+                }
+                onInsight={openInsight}
                 // Clicking empty canvas clears the task, then the selection.
-                onClear={() => go(focus ? { focus: undefined } : { scope: undefined })}
+                onClear={() => go(focus ? { focus: undefined } : { scope: undefined, insight: undefined })}
                 onFocus={setFocus}
                 onOpen={openTask}
               />
@@ -559,9 +590,29 @@ function BoardMapView() {
               model={model}
               onFocus={setFocus}
               onOpen={openTask}
-              onRequirement={(id) => go({ arrangement: undefined, scope: id, focus: undefined })}
+              onRequirement={(id) =>
+                go({
+                  arrangement: undefined,
+                  scope: id,
+                  focus: undefined,
+                  ...(id === scope ? {} : { insight: undefined }),
+                })
+              }
             />
           </aside>
+        )}
+        {shownInsight && insightDoc && scope && (
+          <InsightPanel
+            key={`${workspace}|${scope}`}
+            workspace={workspace}
+            requirement={insightDoc}
+            tab={shownInsight}
+            onTab={(tab) => go({ insight: tab })}
+            // Closing the panel keeps the requirement selected.
+            onClose={() => go({ insight: undefined })}
+            onHover={(taskIds) => setRowHover(taskIds ? { requirementId: scope, taskIds } : undefined)}
+            onActivateTask={setFocus}
+          />
         )}
       </div>
     </div>

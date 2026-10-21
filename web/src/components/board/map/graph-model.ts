@@ -44,8 +44,9 @@ export interface TaskGraphModel {
 // The treatment follows only the stated actor, judgment flag, and kind
 // (req-board-map AC-2.1; req-operator-next-action AC-1.7). Merged and closed
 // tasks keep their terminal presentation. Waiting on another task is a
-// separate dependency mark, never a status.
-export function statusOf(item: TaskMapItem): GraphStatus {
+// separate dependency mark, never a status. A requirement insight row, which
+// lists only open tasks, passes its next action alone.
+export function statusOf(item: Pick<TaskMapItem, 'next_action'> & { state?: TaskMapItem['state'] }): GraphStatus {
   const action = item.next_action
   if (item.state === 'merged') return 'merged'
   if (item.state === 'closed') return 'closed'

@@ -19,13 +19,14 @@ import {
 } from '@xyflow/react'
 import { Maximize2 } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import type { RequirementInsightTab } from '../../../lib/types'
 import { cn } from '../../../lib/utils'
 import { byUrgency } from './doc-map'
-import { type DocIndex, mapClusters, UNATTACHED } from './docs'
+import { type DocIndex, hubId, mapClusters, UNATTACHED } from './docs'
 import { DONE, type GraphStatus, type GraphTask, labelOf, type TaskGraphModel, walk } from './graph-model'
 import { type HubFlowNode, HubNode } from './hub-node'
 import { CARD_HEIGHT, CARD_WIDTH, CLUSTER_HEADER, HUB_HEIGHT, HUB_WIDTH, layoutClusters, type Rect } from './layout'
-import { DOT_ZOOM, type TaskFlowNode, TaskNode } from './task-node'
+import { DOT_ZOOM, type TaskFlowNode, TaskNode, TITLE_ZOOM } from './task-node'
 
 // The least zoom a selected requirement is shown at, where task titles read
 // (AC-1.5).
@@ -34,6 +35,20 @@ const READABLE_ZOOM = 0.38
 const MIN_ZOOM = 0.02
 
 const GATES = new Set<GraphStatus>(['plan_gate', 'merge_gate', 'needs_you'])
+// The height below a requirement's node that its insight toolbar takes.
+const TOOLBAR_SPACE = 56
+// The least zoom a requirement is framed at beside its insight panel: its
+// node and toolbar read at full size, above the toolbar's near threshold.
+const INSIGHT_ZOOM = Math.max(0.85, TITLE_ZOOM)
+// The pane's foot that the minimap covers, with its margin.
+const MINIMAP_SPACE = 176
+
+// The tasks an insight panel row names, and the requirement whose group the
+// rest of is dimmed (req-requirement-insights AC-1.3).
+export interface InsightEmphasis {
+  requirementId: string
+  taskIds: string[]
+}
 
 type FrameData = {
   title: string
@@ -83,7 +98,10 @@ export function MapView({
   matches,
   selected,
   focus,
+  insight,
+  emphasis,
   onSelectDoc,
+  onInsight,
   onClear,
   onFocus,
   onOpen,
@@ -95,7 +113,13 @@ export function MapView({
   matches: Set<string>
   selected?: string
   focus?: string
+  // The insight tab the panel beside the map shows for the selected
+  // requirement; absent while no insight panel is shown.
+  insight?: RequirementInsightTab
+  // The tasks a hovered insight panel row names.
+  emphasis?: InsightEmphasis
   onSelectDoc: (id: string) => void
+  onInsight: (id: string, tab: RequirementInsightTab | undefined) => void
   onClear: () => void
   onFocus: (id: string | undefined) => void
   onOpen: (id: string) => void
@@ -156,6 +180,13 @@ export function MapView({
       ...walk(activeTask, 'down', model.tasks, model.dependents),
     ])
   }, [activeTask, model])
+  // A hovered insight row marks its named tasks and dims the rest of its
+  // requirement's group with the tracing treatment (AC-2.3), independently of
+  // the map's own pointer hover, which dims nothing (AC-2.6).
+  const emphasized = useMemo(
+    () => (emphasis && !activeTask ? new Set(emphasis.taskIds) : undefined),
+    [emphasis, activeTask],
+  )
 
   const nodes = useMemo<Node[]>(() => {
     if (!layout) return []
@@ -168,6 +199,7 @@ export function MapView({
       for (const task of tasks) if (task) counts[task.status] = (counts[task.status] ?? 0) + 1
       const stats = index.stats.get(cluster.id)
       const touched = !chain || cluster.taskIds.some((id) => chain.has(id))
+      const rowGroup = emphasized && emphasis?.requirementId === cluster.id
       list.push({
         id: `frame:${cluster.id}`,
         type: 'frame',
@@ -201,8 +233,13 @@ export function MapView({
             data: {
               doc: { ...doc, kind: index.kind },
               stats: stats ?? { total: 0, merged: 0, open: 0, byStatus: {} },
-              emphasis: chain && !touched ? 'dim' : 'normal',
+              // The node is outlined while its insight panel is open.
+              emphasis: chain && !touched ? 'dim' : insight && cluster.id === selected ? 'focus' : 'normal',
               vertical: true,
+              insight: {
+                tab: cluster.id === selected ? insight : undefined,
+                onOpen: (tab) => onInsight(cluster.id, tab),
+              },
             },
           } satisfies HubFlowNode)
         }
@@ -225,11 +262,13 @@ export function MapView({
             emphasis:
               id === activeTask
                 ? 'focus'
-                : (chain && !chain.has(id)) || !highlighted
-                  ? 'dim'
-                  : chain
-                    ? 'chain'
-                    : 'normal',
+                : emphasized?.has(id)
+                  ? 'chain'
+                  : (chain && !chain.has(id)) || (rowGroup && !emphasized?.has(id)) || !highlighted
+                    ? 'dim'
+                    : chain
+                      ? 'chain'
+                      : 'normal',
             match: matches.has(id),
             vertical: true,
           },
@@ -237,7 +276,29 @@ export function MapView({
       }
     }
     return list
-  }, [layout, clustering, model, index, selected, chain, highlight, activeTask, matches, dots])
+  }, [
+    layout,
+    clustering,
+    model,
+    index,
+    selected,
+    chain,
+    highlight,
+    activeTask,
+    matches,
+    dots,
+    insight,
+    onInsight,
+    emphasis,
+    emphasized,
+  ])
+
+  // The row group's tasks a hovered insight row does not name.
+  const rowDimmed = useMemo(() => {
+    if (!emphasized || !emphasis) return undefined
+    const cluster = clustering.clusters.find((entry) => entry.id === emphasis.requirementId)
+    return new Set((cluster?.taskIds ?? []).filter((id) => !emphasized.has(id)))
+  }, [emphasized, emphasis, clustering])
 
   const edges = useMemo<Edge[]>(() => {
     const upstream = activeTask ? walk(activeTask, 'up', model.tasks, model.dependents) : undefined
@@ -273,7 +334,9 @@ export function MapView({
             : delivers
               ? 'var(--color-faint)'
               : 'var(--color-edge)'
-      const dim = Boolean(activeTask) && !lit && !hovered
+      const dim =
+        (Boolean(activeTask) && !lit && !hovered) ||
+        Boolean(rowDimmed && (rowDimmed.has(edge.source) || rowDimmed.has(edge.target)))
       return {
         id: edge.id,
         source: edge.source,
@@ -291,7 +354,7 @@ export function MapView({
         zIndex: lit || hovered ? 1 : 0,
       }
     })
-  }, [clustering, model, activeTask, hoverTask])
+  }, [clustering, model, activeTask, hoverTask, rowDimmed])
 
   // The zoom that fits every group in the pane. A group too tall for the
   // usual least zoom, such as one long chain, lowers the least zoom to it, so
@@ -315,6 +378,23 @@ export function MapView({
     const zoom = Math.min(1, Math.max(READABLE_ZOOM, Math.min(width / frame.width, height / frame.height) * 0.92))
     const y = frame.height * zoom <= height ? height / 2 - (frame.y + frame.height / 2) * zoom : 16 - frame.y * zoom
     void flow.setViewport({ x: width / 2 - (frame.x + frame.width / 2) * zoom, y, zoom }, { duration: 650 })
+  }
+  // A requirement whose insight panel opens: its node and toolbar inside the
+  // map area the panel leaves visible, at a zoom where the toolbar renders
+  // (AC-1.1). The node sits low in the pane, above the minimap, so its tasks
+  // show above it; a tall group's top-aligned flight would instead leave the
+  // node below the pane.
+  function frameHub(id: string) {
+    const position = layout?.positions.get(hubId(id))
+    if (!position) return
+    const { width, height } = paneSize()
+    const zoom = Math.min(1, Math.max(flow.getZoom(), INSIGHT_ZOOM))
+    const below = (HUB_HEIGHT + TOOLBAR_SPACE) * zoom
+    const y = height >= below + MINIMAP_SPACE + 48 ? height - MINIMAP_SPACE - below : (height - below) / 2
+    void flow.setViewport(
+      { x: width / 2 - (position.x + HUB_WIDTH / 2) * zoom, y: y - position.y * zoom, zoom },
+      { duration: 450 },
+    )
   }
   function centre(id: string) {
     const position = layout?.positions.get(id)
@@ -356,14 +436,21 @@ export function MapView({
     framed.current = true
     requestAnimationFrame(() => {
       if (focus) centre(focus)
+      else if (selected && insight) frameHub(selected)
       else if (selected) flyTo(selected)
       else if (first) overview()
     })
   }, [laidOutKey])
   // biome-ignore lint/correctness/useExhaustiveDependencies: fly on a new selection only
   useEffect(() => {
-    if (selected && laidOutKey && !focus) requestAnimationFrame(() => flyTo(selected))
+    if (selected && laidOutKey && !focus && !insight) requestAnimationFrame(() => flyTo(selected))
   }, [selected])
+  // An insight panel that opens, or a pane the panel resizes, reframes the
+  // requirement's node beside the panel.
+  const insightShown = Boolean(insight)
+  useEffect(() => {
+    if (selected && insightShown && laidOutKey && !focus) requestAnimationFrame(() => frameHub(selected))
+  }, [selected, insightShown, paneWidth, paneHeight])
   // biome-ignore lint/correctness/useExhaustiveDependencies: centre on a new focus only
   useEffect(() => {
     if (focus && laidOutKey) requestAnimationFrame(() => centre(focus))
