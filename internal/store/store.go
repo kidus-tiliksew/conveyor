@@ -119,6 +119,7 @@ type Store interface {
 	StoreMetadata
 	NextActionInputStore
 	ReviewSummaryStore
+	RequirementInsightStore
 }
 
 // TaskStore owns the task, dependency, job and intervention contract.
@@ -611,6 +612,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		monitorObservations:         map[string]monitor.ObservationRecord{},
 		monitorDrift:                map[string]monitor.Drift{},
 		monitorActivity:             map[string][]monitor.Activity{},
+		requirementInsightHeadlines: map[memoryScopedKey]RequirementInsightHeadline{},
 	}
 }
 
@@ -685,6 +687,7 @@ type memory struct {
 	monitorErrorCategory        map[string]string
 	monitorBackoff              map[string]time.Time
 	monitorActivity             map[string][]monitor.Activity
+	requirementInsightHeadlines map[memoryScopedKey]RequirementInsightHeadline
 	nextMonitorActivityID       int64
 	nextEventID                 int64
 	nextReviewID                int64
