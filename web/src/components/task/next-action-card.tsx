@@ -3,7 +3,7 @@ import { deriveCurrentExecutionState } from '../../lib/activity'
 import type { TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, NextAction } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { useWorkspaceCapability } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import {
   ContextProposalChecklist,
   ContextProposalFooter,
@@ -39,6 +39,7 @@ export function NextActionCard({
 }) {
   const { data: action, isLoading } = useNextAction(item.task.id)
   const canRecover = useWorkspaceCapability('recover_work')
+  const { workspace } = useWorkspaceSelection()
   // A claimed order keeps its stop affordance whether or not an execution
   // state maps (a claimed refresh-review round does not), and it renders once.
   const preemptOrder = canRecover ? claimedWorkOrder(item) : undefined
@@ -76,7 +77,7 @@ export function NextActionCard({
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
           {!gateOpen &&
             (action.kind === 'context_proposal' && action.details?.context_proposals?.length ? (
-              <ContextProposalDecision taskId={item.task.id} action={action} />
+              <ContextProposalDecision key={`${workspace}:${item.task.id}`} taskId={item.task.id} action={action} />
             ) : (
               <GateChoices taskId={item.task.id} action={action} />
             ))}

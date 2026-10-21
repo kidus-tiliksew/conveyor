@@ -56,6 +56,9 @@ export function useContextProposalSelection(taskId: string) {
     scope,
     unchecked: new Set(),
   })
+  // A new task or workspace commits a fresh, all-checked state during render,
+  // so a later return to an earlier scope never resurrects its selection.
+  if (state.scope !== scope) setState({ scope, unchecked: new Set() })
   const unchecked = state.scope === scope ? state.unchecked : new Set<string>()
   const checked = useCallback(
     (proposal: NextActionContextProposal) => !unchecked.has(proposalKey(proposal)),
@@ -93,13 +96,22 @@ export function useContextProposalSends(taskId: string, onSent?: () => void) {
   const client = useQueryClient()
   const inFlight = useRef(false)
   const mounted = useRef(true)
-  // The workspace on screen now; a run stops when it differs from the one the
-  // click acted in.
-  const current = useRef(workspace)
-  current.current = workspace
+  // The workspace and task on screen now; a run stops when either differs
+  // from the one the click acted in.
+  const scope = `${workspace}\u0000${taskId}`
+  const current = useRef(scope)
+  current.current = scope
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [progress, setProgress] = useState({ recorded: 0, total: 0 })
+  // A run's busy, refusal, and progress belong to the task it acted on.
+  const [shown, setShown] = useState(scope)
+  if (shown !== scope) {
+    setShown(scope)
+    setBusy(false)
+    setError(null)
+    setProgress({ recorded: 0, total: 0 })
+  }
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -110,25 +122,28 @@ export function useContextProposalSends(taskId: string, onSent?: () => void) {
     async (choices: NextActionChoice[]) => {
       if (inFlight.current || choices.length === 0) return
       inFlight.current = true
-      // The workspace the click acted in, kept for the refresh.
+      // The workspace the click acted in, kept for the refresh, and the scope
+      // the run belongs to.
       const acted = workspace
+      const runScope = current.current
+      const live = () => mounted.current && current.current === runScope
       let recorded = 0
       setBusy(true)
       setError(null)
       setProgress({ recorded, total: choices.length })
       try {
         for (const choice of choices) {
-          if (!mounted.current || current.current !== acted) return
+          if (!live()) return
           await postNextActionChoice(acted, choice, undefined)
           recorded += 1
-          if (mounted.current) setProgress({ recorded, total: choices.length })
+          if (live()) setProgress({ recorded, total: choices.length })
           sent.current?.()
         }
       } catch (failure) {
-        if (mounted.current) setError(failure)
+        if (live()) setError(failure)
       } finally {
         inFlight.current = false
-        if (mounted.current) setBusy(false)
+        if (live()) setBusy(false)
         await Promise.all([
           client.invalidateQueries({ queryKey: nextActionsQueryKey(acted) }),
           client.invalidateQueries({ queryKey: nextActionQueryKey(acted, taskId) }),
@@ -233,7 +248,7 @@ export function ContextProposalChecklist({
             sends={sends}
             compact={compact}
             source={sharedSource ? undefined : sourceWord(proposal)}
-            age={sharedAge ? undefined : proposal.created_at}
+            age={sharedSource && sharedAge ? undefined : proposal.created_at}
           />
         ))}
       </ul>

@@ -949,3 +949,87 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
     expect(lines).toBeLessThan(1.5)
   })
 }
+
+// Two cached context_proposal tasks on the full route: the reused page keys
+// the checklist by workspace and task, so a held send never continues under
+// the next task and a return starts all-checked (feature-operator-next-action
+// NA-6).
+test('switching between cached context-proposal tasks isolates the checklist and its sends', async ({ page }) => {
+  const otherId = 'card-task-b'
+  const forTask = (id: string): NextAction => {
+    const action = contextProposalAction()
+    return {
+      ...action,
+      choices: action.choices.map((entry) => ({ ...entry, path: entry.path.replace(taskId, id) })),
+    }
+  }
+  const detailFor = (id: string) => {
+    const detail = contextProposalDetail(forTask(id))
+    return { ...detail, task: { ...detail.task, id, title: id === taskId ? 'Card task' : 'Second card task' } }
+  }
+  const posts: string[] = []
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await page.route('**/v1/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/me')
+      return route.fulfill({
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }, request),
+      })
+    if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({ json: { items: [], attention: { total: 0, task_count: 0, pending_proposal_count: 0 } } })
+    const read = path.match(/^\/v1\/tasks\/([^/]+)\/(next-action|activity)$/)
+    if (read) return route.fulfill({ json: read[2] === 'next-action' ? forTask(read[1]) : detailFor(read[1]) })
+    if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
+    if (request.method() !== 'GET') {
+      posts.push(path)
+      await held
+      return route.fulfill({ json: {} }).catch(() => {})
+    }
+    return route.fulfill({ json: [] })
+  })
+  // Client-side navigation keeps both tasks' reads cached and the page mounted.
+  const open = async (id: string, title: string) => {
+    await page.evaluate((path) => {
+      window.history.pushState(window.history.state, '', path)
+      window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+    }, `/tasks/${id}/full`)
+    await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
+  }
+  const card = page.getByRole('region', { name: 'Next action' })
+  const apply = card.locator('[data-context-apply]')
+  const strategy = card.locator(`[data-context-check="system_design:${contextTargets[1].id}"]`)
+
+  await page.goto(`/tasks/${otherId}/full`)
+  await expect(apply).toHaveText('Attach all 3')
+  await open(taskId, 'Card task')
+  await expect(apply).toHaveText('Attach all 3')
+
+  // A -> B -> A without touching B: A starts all-checked again.
+  await strategy.uncheck()
+  await expect(apply).toHaveText('Attach 2 · dismiss 1')
+  await open(otherId, 'Second card task')
+  await expect(apply).toHaveText('Attach all 3')
+  await open(taskId, 'Card task')
+  await expect(apply).toHaveText('Attach all 3')
+
+  // A held send, then a switch: the next task starts idle and all-checked,
+  // and the first task's remainder is never sent.
+  await apply.click()
+  await expect.poll(() => posts.length).toBe(1)
+  expect(posts[0]).toBe(`/v1/tasks/${taskId}/context/proposals/requirement/${contextTargets[0].id}/confirm`)
+  await open(otherId, 'Second card task')
+  await expect(apply).toHaveText('Attach all 3')
+  await expect(apply).toBeEnabled()
+  await expect(strategy).toBeEnabled()
+  await expect(card.locator('[data-context-refusal]')).toHaveCount(0)
+  release()
+  await page.waitForTimeout(500)
+  expect(posts).toHaveLength(1)
+})

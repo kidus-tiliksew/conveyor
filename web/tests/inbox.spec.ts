@@ -655,6 +655,11 @@ test('a mixed selection posts each row’s selected choice in the server order',
   // Sources differ, so each row states its own.
   await expect(card.locator('[data-context-source]')).toHaveCount(0)
   await expect(card.locator('[data-context-row-meta]').nth(1)).toContainText('Suggested by planning')
+  // Equal relative ages still print on each row, with the absolute time on hover.
+  for (const meta of await card.locator('[data-context-row-meta]').all()) {
+    await expect(meta).toContainText('2 hours ago')
+    await expect(meta.locator('time')).toHaveAttribute('title', /\S/)
+  }
   await expect(applyButton(card)).toHaveText('Attach all 3')
 
   await rowCheck(card, design).uncheck()
