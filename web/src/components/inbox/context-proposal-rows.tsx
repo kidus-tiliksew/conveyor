@@ -1,6 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Eye } from 'lucide-react'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -10,6 +9,7 @@ import { absoluteTime, cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { choiceBody } from './choice-bodies'
+import { ContextDocumentPreview } from './context-document-preview'
 import { CONTEXT_APPLY_SHORTCUT, Kbd, useShortcutChoice } from './inbox-keyboard'
 import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 
@@ -199,7 +199,8 @@ function Age({ value }: { value: string }) {
 
 // The context_proposal checklist (NA-6; AC-1.8, AC-2.1): one row per pending
 // proposal in the server's order, each with a checkbox (checked by default),
-// the tier word, the linked title, and the justification. The source and age
+// the tier word, the title, a Preview control, and the justification. The
+// title and Preview open the document preview panel over the page. The source and age
 // print once under the question when every proposal shares them, and on each
 // row otherwise. No row prints a Confirm or Dismiss button: each checkbox
 // carries the server label of the choice its state selects as its name and
@@ -219,6 +220,10 @@ export function ContextProposalChecklist({
   compact?: boolean
 }) {
   const proposals = contextProposals(action)
+  // The proposal the preview panel shows, by key, or null while it is closed.
+  // A proposal that leaves the list closes the panel (NA-6).
+  const [previewKey, setPreviewKey] = useState<string | null>(null)
+  const previewIndex = previewKey == null ? -1 : proposals.findIndex((proposal) => proposalKey(proposal) === previewKey)
   if (proposals.length === 0) return null
   const sharedSource = proposals.every((proposal) => proposal.source === proposals[0].source)
   // The age is shared only when the creation times agree, never because two
@@ -249,9 +254,21 @@ export function ContextProposalChecklist({
             compact={compact}
             source={sharedSource ? undefined : sourceWord(proposal)}
             age={sharedSource && sharedAge ? undefined : proposal.created_at}
+            current={previewIndex >= 0 && proposalKey(proposal) === previewKey}
+            onPreview={() => setPreviewKey(proposalKey(proposal))}
           />
         ))}
       </ul>
+      {previewIndex >= 0 && (
+        <ContextDocumentPreview
+          proposals={proposals}
+          index={previewIndex}
+          onIndex={(index) => setPreviewKey(proposalKey(proposals[index]))}
+          onClose={() => setPreviewKey(null)}
+          selection={selection}
+          disabled={sends.busy}
+        />
+      )}
       {unmatched.length > 0 && (
         <ul data-context-unmatched className="space-y-1 text-xs text-muted">
           {unmatched.map((choice) => (
@@ -288,6 +305,8 @@ function ChecklistRow({
   compact,
   source,
   age,
+  current,
+  onPreview,
 }: {
   action: NextAction
   proposal: NextActionContextProposal
@@ -296,6 +315,8 @@ function ChecklistRow({
   compact: boolean
   source?: string
   age?: string
+  current: boolean
+  onPreview: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const clamped = useClamped(compact ? null : proposal.justification)
@@ -323,7 +344,9 @@ function ChecklistRow({
     <li
       data-context-proposal={proposal.kind}
       data-checked={checked ? 'true' : 'false'}
-      className={cn('min-w-0 px-3', compact ? 'py-2' : 'py-2.5')}
+      data-current={current ? 'true' : undefined}
+      aria-current={current ? 'true' : undefined}
+      className={cn('min-w-0 px-3', compact ? 'py-2' : 'py-2.5', current && 'bg-primary-soft/40')}
     >
       <div className={cn('flex min-w-0 gap-2.5', compact ? 'items-center' : 'items-start')}>
         <input
@@ -345,11 +368,32 @@ function ChecklistRow({
             <span className="shrink-0 text-[11px] font-medium uppercase tracking-[0.06em] text-muted">
               {proposal.tier_label}
             </span>
-            <ProposalTitle proposal={proposal} className={cn(faded, compact && 'truncate')} />
-            {compact && proposal.justification && (
+            <ProposalTitle proposal={proposal} className={cn(faded, compact && 'truncate')} onPreview={onPreview} />
+            {compact ? (
               <button
                 type="button"
                 className="ml-auto inline-flex shrink-0 items-center self-center rounded p-0.5 text-faint hover:text-foreground"
+                aria-label={`Preview ${proposal.target_title.trim() || proposal.tier_label}`}
+                data-context-preview-open
+                onClick={onPreview}
+              >
+                <Eye className="size-3.5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ml-auto shrink-0 text-xs font-medium text-primary hover:underline"
+                aria-label={`Preview ${proposal.target_title.trim() || proposal.tier_label}`}
+                data-context-preview-open
+                onClick={onPreview}
+              >
+                Preview
+              </button>
+            )}
+            {compact && proposal.justification && (
+              <button
+                type="button"
+                className="inline-flex shrink-0 items-center self-center rounded p-0.5 text-faint hover:text-foreground"
                 aria-expanded={expanded}
                 aria-controls={justificationId}
                 aria-label={expanded ? 'Hide why' : 'Show why'}
@@ -424,18 +468,28 @@ function useClamped(text: string | null) {
   return { ref, overflows }
 }
 
-function ProposalTitle({ proposal, className }: { proposal: NextActionContextProposal; className?: string }) {
+// The proposal's title opens the document preview panel in place; the
+// panel's "Open full page" link keeps the document page route (NA-6).
+function ProposalTitle({
+  proposal,
+  className,
+  onPreview,
+}: {
+  proposal: NextActionContextProposal
+  className?: string
+  onPreview: () => void
+}) {
   const title = proposal.target_title.trim()
   if (!title) return null
-  const style = cn('min-w-0 break-words font-medium text-foreground hover:underline', className)
-  return proposal.kind === 'requirement' ? (
-    <Link to="/requirements" search={{ requirement: proposal.target_id }} className={style}>
+  return (
+    <button
+      type="button"
+      data-context-title
+      className={cn('min-w-0 break-words text-left font-medium text-foreground hover:underline', className)}
+      onClick={onPreview}
+    >
       {title}
-    </Link>
-  ) : (
-    <Link to="/system-design" search={{ document: proposal.target_id }} className={style}>
-      {title}
-    </Link>
+    </button>
   )
 }
 
