@@ -384,6 +384,13 @@ function BoardMapView() {
   // A selected task's panel takes the insight panel's place; clearing the
   // task restores the tab the address still names (AC-1.4).
   const shownInsight = focused ? undefined : insight
+  // An insight row can name a serving task the repository filter keeps out
+  // of the map's read. Activating it clears that filter, so the next read
+  // carries the task and the map selects and centres it (AC-1.4).
+  const activateInsightTask = (id: string) => {
+    if (repo && !visible.has(id)) setRepo('')
+    setFocus(id)
+  }
   const insightDoc = shownInsight && scope ? docIndex?.docs.get(scope) : undefined
   const jump = () => {
     if (matches[0]) setFocus(matches[0])
@@ -611,7 +618,7 @@ function BoardMapView() {
             // Closing the panel keeps the requirement selected.
             onClose={() => go({ insight: undefined })}
             onHover={(taskIds) => setRowHover(taskIds ? { requirementId: scope, taskIds } : undefined)}
-            onActivateTask={setFocus}
+            onActivateTask={activateInsightTask}
           />
         )}
       </div>

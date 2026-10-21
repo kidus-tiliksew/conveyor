@@ -6,7 +6,7 @@
 import { type PointerEvent, type ReactNode, useRef, useState } from 'react'
 import type { RequirementInsightProgress } from '../../lib/types'
 import { cn } from '../../lib/utils'
-import { actorMeta, formatDate, formatDay, formatNumber } from './shared'
+import { actorMeta, formatDate, formatDay } from './shared'
 
 const DAY = 86_400_000
 
@@ -262,6 +262,10 @@ export function BurnLegend({ mode, forecast }: { mode: BurnMode; forecast: boole
   )
 }
 
+// Every recorded day, then the forecast row with the values the chart plots
+// at the forecast day: no open tasks in the burn-down and every task in
+// today's scope delivered in the burn-up, both marked projected. The served
+// rate is stated apart from the counts.
 export function BurnTable({ progress }: { progress: RequirementInsightProgress }) {
   const rows: ReactNode[][] = progress.daily.map((point) => [
     formatDate(point.day),
@@ -269,14 +273,25 @@ export function BurnTable({ progress }: { progress: RequirementInsightProgress }
     point.open,
     point.delivered,
   ])
-  if (progress.forecast)
+  const last = progress.daily.at(-1)
+  const { forecast } = progress
+  if (forecast && last)
     rows.push([
-      `Forecast: ${formatDate(progress.forecast.day)}`,
+      `Forecast · ${formatDate(forecast.day)}`,
       '—',
-      '0 (projected)',
-      `${formatNumber(progress.forecast.rate_per_day)} a day`,
+      '0 tasks (projected)',
+      `${last.scope} ${last.scope === 1 ? 'task' : 'tasks'} (projected)`,
     ])
-  return <DataTable head={['Day (UTC)', 'Scope', 'Open', 'Delivered']} rows={rows} />
+  return (
+    <>
+      <DataTable head={['Day (UTC)', 'Scope', 'Open', 'Delivered']} rows={rows} />
+      {forecast && (
+        <p data-forecast-rate className="border-t border-border px-2 py-1 text-faint">
+          Forecast rate: {forecast.rate_per_day.toFixed(2)} tasks a day, from deliveries in the last 14 days.
+        </p>
+      )}
+    </>
+  )
 }
 
 // The status mix (AC-3.3): delivered, closed, and open by next-action

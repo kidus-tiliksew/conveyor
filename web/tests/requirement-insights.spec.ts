@@ -43,12 +43,17 @@ function task(
   id: string,
   title: string,
   next: NextActionCompact,
-  { depends = [], blocking = [], reqs = [] }: { depends?: string[]; blocking?: string[]; reqs?: string[] } = {},
+  {
+    depends = [],
+    blocking = [],
+    reqs = [],
+    repo = 'conveyor',
+  }: { depends?: string[]; blocking?: string[]; reqs?: string[]; repo?: string } = {},
 ): TaskMapItem {
   return {
     id,
     title,
-    repo: 'conveyor',
+    repo,
     // Lifecycle states disagree with the stated actions on purpose.
     state: 'running',
     last_event_at: at,
@@ -240,6 +245,7 @@ interface Server {
   role?: string
   workspaces?: Array<{ id: string; name: string }>
   map?: (workspace: string) => TaskMapResponse
+  repos?: string[]
   summary?: (requirement: string, workspace: string) => RequirementInsightSummary
   generate?: (requirement: string, workspace: string, count: number) => Reply | Promise<Reply>
   progress?: () => RequirementInsightProgress
@@ -263,10 +269,19 @@ async function mockBoard(page: Page, server: Server = {}) {
       return route.fulfill({
         json: callerIdentity({ id: 'member', email: 'member@example.test', role: server.role ?? 'operator' }, request),
       })
-    if (path === '/v1/workspace') return route.fulfill({ json: { workspace, repos: [{ name: 'conveyor' }] } })
+    if (path === '/v1/workspace')
+      return route.fulfill({
+        json: { workspace, repos: (server.repos ?? ['conveyor']).map((name) => ({ name })) },
+      })
     if (path === '/v1/pending-proposals')
       return route.fulfill({ json: { items: [], attention: { total: 0, task_count: 0, pending_proposal_count: 0 } } })
-    if (path === '/v1/task-map') return route.fulfill({ json: (server.map ?? (() => mapRead()))(workspace) })
+    if (path === '/v1/task-map') {
+      // The server applies the repository filter (req-board-map AC-3.4).
+      const read = (server.map ?? (() => mapRead()))(workspace)
+      const repositories = url.searchParams.getAll('repository')
+      const tasks = read.tasks.filter((item) => repositories.length === 0 || repositories.includes(item.repo))
+      return route.fulfill({ json: { ...read, tasks } })
+    }
     const insight = path.match(/^\/v1\/requirements\/([^/]+)\/insights\/(summary|progress|documents)$/)
     if (insight) {
       const requirement = decodeURIComponent(insight[1])
@@ -757,12 +772,26 @@ test('charts toggle burn-down and burn-up and expose all values in tables', asyn
   const rows = burn.locator('tbody tr')
   await expect(rows).toHaveCount(days.length + 1)
   await expect(rows.first()).toHaveText(/Oct 12, 2026\s*4\s*4\s*0/)
-  await expect(rows.last()).toContainText('Forecast: Nov 4, 2026')
+  // The forecast row carries the plotted endpoints as projected task counts,
+  // and the served rate is stated apart with its unit.
+  await expect(rows.last().locator('td')).toHaveText([
+    'Forecast · Nov 4, 2026',
+    '—',
+    '0 tasks (projected)',
+    '7 tasks (projected)',
+  ])
+  await expect(burn.locator('[data-forecast-rate]')).toHaveText(
+    'Forecast rate: 0.14 tasks a day, from deliveries in the last 14 days.',
+  )
 
   await burn.getByRole('button', { name: 'Burn-up' }).click()
   const up = panel(page).getByRole('region', { name: 'Burn-up' })
   await expect(up.locator('[data-series="delivered"]')).toHaveCount(1)
   await expect(up).toContainText('2 delivered')
+  // The burn-up's plotted endpoint, every task in today's scope delivered,
+  // is the same table's projected Delivered cell.
+  await expect(up.locator('details')).toHaveAttribute('open', '')
+  await expect(up.locator('tbody tr').last().locator('td').nth(3)).toHaveText('7 tasks (projected)')
 
   const mix = panel(page).getByRole('region', { name: 'Status mix' })
   await expect(mix).toContainText('8 tasks')
@@ -1011,6 +1040,45 @@ test('workspace switching isolates insight requests and late generation results'
   const afterSwitch = seen.slice(seen.findIndex((entry) => entry.workspace === 'other'))
   expect(afterSwitch.every((entry) => entry.workspace === 'other')).toBe(true)
   expect(afterSwitch.some((entry) => entry.method === 'POST')).toBe(false)
+})
+
+test('activating a task the repository filter hides clears the filter, then selects and centres it', async ({
+  page,
+}) => {
+  // One requirement served by tasks in two repositories; the map's read
+  // honours the repository query, while the Summary lists every serving task.
+  const w1 = task('w1', 'Bundle the alpha web assets', queued, { reqs: ['req-alpha'], repo: 'web' })
+  await mockBoard(page, {
+    repos: ['conveyor', 'web'],
+    map: () => mapRead([...alphaTasks, w1, ...betaTasks]),
+    summary: () =>
+      summary({
+        groups: summary().groups.map((group) =>
+          group.actor === 'agent' ? { ...group, count: 3, tasks: [a2, a4, ref(w1)] } : group,
+        ),
+      }),
+  })
+  await page.goto('/?view=map&scope=req-alpha&insight=summary')
+  await expect(node(page, 'w1')).toBeVisible()
+  const filter = page.getByRole('combobox', { name: 'Repository' })
+  await filter.selectOption('conveyor')
+  await expect(node(page, 'w1')).toHaveCount(0)
+  await expect(node(page, 'a1')).toBeVisible()
+
+  await panel(page).getByRole('region', { name: 'Agent · 3' }).locator('[data-task-row="w1"]').click()
+  await expect(page).toHaveURL(/focus=w1/)
+  await expect(page).toHaveURL(/insight=summary/)
+  await expect(filter).toHaveValue('')
+  await expect(focusPanel(page).getByRole('heading', { name: 'Bundle the alpha web assets' })).toBeVisible()
+  await expect(panel(page)).toHaveCount(0)
+  await expect(card(page, 'w1')).toHaveClass(/ring-foreground/)
+  await waitForCamera(node(page, 'w1'))
+  await expect(node(page, 'w1')).toBeInViewport()
+
+  // Clearing the selection restores the insight panel on its tab.
+  await focusPanel(page).getByRole('button', { name: 'Close' }).click()
+  await expect(page).not.toHaveURL(/focus=/)
+  await expect(panel(page).getByRole('tab', { name: 'Summary' })).toHaveAttribute('aria-selected', 'true')
 })
 
 test('the insight panel and toolbar remain operable without overflow on a narrow viewport', async ({ page }) => {
