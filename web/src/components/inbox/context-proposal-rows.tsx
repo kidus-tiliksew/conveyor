@@ -221,9 +221,9 @@ export function ContextProposalChecklist({
   const proposals = contextProposals(action)
   if (proposals.length === 0) return null
   const sharedSource = proposals.every((proposal) => proposal.source === proposals[0].source)
-  const sharedAge = proposals.every(
-    (proposal) => relativeTime(proposal.created_at) === relativeTime(proposals[0].created_at),
-  )
+  // The age is shared only when the creation times agree, never because two
+  // times round to the same label, so each row keeps its own timestamp.
+  const sharedAge = proposals.every((proposal) => sameInstant(proposal.created_at, proposals[0].created_at))
   const unmatched = unmatchedChoices(action)
   return (
     <div data-context-checklist={compact ? 'compact' : 'full'} className="min-w-0 space-y-2">
@@ -263,6 +263,12 @@ export function ContextProposalChecklist({
       )}
     </div>
   )
+}
+
+function sameInstant(a: string, b: string) {
+  const left = Date.parse(a)
+  const right = Date.parse(b)
+  return Number.isNaN(left) || Number.isNaN(right) ? a === b : left === right
 }
 
 // A server choice that names no listed proposal stays visible with its

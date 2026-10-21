@@ -678,6 +678,33 @@ test('a mixed selection posts each row’s selected choice in the server order',
   await expect(decisionRows(page)).toHaveCount(0)
 })
 
+test('one source with distinct creation times that round to the same age keeps each row’s own time', async ({
+  page,
+}) => {
+  await page.clock.setFixedTime(new Date('2026-10-21T12:00:00Z'))
+  const fixture = contextFixture()
+  const action = fixture.actions['T-ctx'] as { details: { context_proposals: Record<string, unknown>[] } }
+  const times = ['2026-10-19T03:00:00Z', '2026-10-19T15:00:00Z']
+  action.details.context_proposals.forEach((proposal, index) => {
+    proposal.source = 'triage'
+    proposal.created_at = times[index]
+  })
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  const card = decisionDetail(page)
+  // The source is shared; the age is not, because the times differ.
+  await expect(card.locator('[data-context-source]')).toHaveText('Suggested by triage')
+  const metas = card.locator('[data-context-row-meta]')
+  await expect(metas).toHaveCount(2)
+  for (const [index, time] of times.entries()) {
+    await expect(metas.nth(index)).toHaveText('2 days ago')
+    await expect(metas.nth(index).locator('time')).toHaveAttribute('datetime', time)
+    await expect(metas.nth(index).locator('time')).toHaveAttribute('title', /\S/)
+  }
+  const titles = await metas.locator('time').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title')))
+  expect(new Set(titles).size).toBe(2)
+})
+
 test('Apply reads the effect of every selection, and one proposal reads Attach or Dismiss', async ({ page }) => {
   const [requirement, design] = contextTargets
   const fixture = contextFixture()
