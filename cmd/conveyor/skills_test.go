@@ -1469,7 +1469,13 @@ func TestExecutionPlaybooksShipOutOfBandGateRules(t *testing.T) {
 				"The operator can ask the coordinator to also post its escalations to an out-of-band decision channel",
 				"It never replaces the escalation in this conversation",
 				"Post only a question you frame yourself, for one task in the delegated set",
-				"Carry the same decision, evidence, replies, and recommendation as the escalation in this conversation (req-agent-coordination AC-2.2). Preselect nothing and set no default answer, so an unanswered question never decides",
+				// A gate or proposal copy is neutral, like a conveyor-work offer.
+				"A gate or proposal decision (plan approval, merge approval, pending merge act, plan-revision decision, or proposal) follows the `conveyor-work` offer rule",
+				"List the replies its Human gates table allows for that decision, including `Wait`. Set no recommendation, preselection, or default answer",
+				"The recommendation that req-agent-coordination AC-2.2 requires stays in the escalation in this conversation",
+				"When a channel requires a recommendation or a default answer, do not post the gate or proposal question there",
+				// Any other escalation keeps its AC-2.2 recommendation.
+				"Any other escalation carries the same decision, evidence, replies, and recommendation as the escalation in this conversation (AC-2.2). Preselect nothing and set no default answer, so an unanswered question never decides",
 				"When a channel requires a preselected or default answer, do not post the escalation there",
 				"counts as the operator's direct answer only when every condition below holds (req-agent-coordination AC-2.4; DEC-86)",
 				"You posted the question yourself, for a task in the delegated set, and have not withdrawn it",

@@ -251,8 +251,15 @@ never replaces the escalation in this conversation:
 - Post only a question you frame yourself, for one task in the delegated set.
   Name the decision kind and the plan version, reviewed head, or proposal ID
   and version that the question covers.
-- Carry the same decision, evidence, replies, and recommendation as the
-  escalation in this conversation (req-agent-coordination AC-2.2). Preselect
+- A gate or proposal decision (plan approval, merge approval, pending merge
+  act, plan-revision decision, or proposal) follows the `conveyor-work` offer
+  rule. List the replies its Human gates table allows for that decision,
+  including `Wait`. Set no recommendation, preselection, or default answer.
+  The recommendation that req-agent-coordination AC-2.2 requires stays in the
+  escalation in this conversation. When a channel requires a recommendation
+  or a default answer, do not post the gate or proposal question there.
+- Any other escalation carries the same decision, evidence, replies, and
+  recommendation as the escalation in this conversation (AC-2.2). Preselect
   nothing and set no default answer, so an unanswered question never decides.
   When a channel requires a preselected or default answer, do not post the
   escalation there.
