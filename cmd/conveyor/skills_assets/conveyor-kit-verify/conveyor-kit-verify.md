@@ -79,8 +79,14 @@ operation lists are explicit, even when empty.
 All declared requirement/design pins must match the authoritative context by
 kind, ID and immutable version; extra context pins are allowed. No pins or a
 mismatch excludes a valid kit. Invalid manifests or unavailable kit content
-block complete success. `no_manifest` and `no_selected_kits` describe discovery,
-not acceptance or a waiver of ordinary checks. The runner checks the local
+block complete success, and only success: the same context can still seal
+`feedback` or `operator_action_required`, as
+[When no kit is eligible](#when-no-kit-is-eligible) shows. `no_manifest` and
+`no_selected_kits` describe discovery, not acceptance or a waiver of ordinary
+checks. A malformed manifest's diagnostics appear in the selection receipt as
+`discovery.<repository>.<field path>` with the manifest path, kit and exercise
+in the message, for example
+`discovery.flux-saas-runtime.manifest.kits[0].exercises[2].supports[0]`. The runner checks the local
 kit digest against the server receipt before launching it
 (`component-verification-kit-contract`).
 
@@ -113,6 +119,12 @@ Write the coverage JSON outside the checkout. It contains:
 
 A `covered` mapping has one or more exact subjects copied from the server
 context. A `not_applicable` mapping has `subjects: []` and an explanation.
+`sources`, `obligation_ids` and each mapping's `subjects` are required lists:
+send `[]`, never `null` or an omitted field. Every source resolves like an
+obligation citation, so a governing pin's source names a `section_id`: a
+statement or acceptance criterion ID of the served requirement version, or a
+section heading of the served design version. When the task has an approved
+plan, include an `approved_plan` source at its version.
 Every selected kit subject and registered ordinary subject must be covered;
 every governing pin needs a source mapping. Map the approved plan's done
 criteria and verification instructions too. Ordinary subjects contain
@@ -448,6 +460,9 @@ submit them as the stage outcome (`component-verification-service`).
 | --- | --- |
 | Every required subject's latest attempt succeeded, coverage is complete and no operation is unresolved | `succeeded` |
 | A required subject's latest attempt `failed` and needs a code correction, with no unresolved operation | `feedback`, naming the failure |
+| Discovery is `malformed` with copied diagnostics, or a kit is `invalid` (a declaration defect) | `feedback`, naming the declaration to correct |
+| The approved plan or a served requirement is unmet in a way you can cite, with no unresolved operation | `feedback` with `findings` |
+| Discovery is `unavailable`, `permission`, `unknown_revision`, `truncated` or `transport` | `operator_action_required` |
 | A required subject's latest attempt is `blocked` or `waiting` | `operator_action_required` |
 | A latest attempt is `timed_out` or `cancelled` and no replay is admitted within the remaining deadline | `operator_action_required` |
 | A subject never started because admission was refused: a missing grant after the grant wait, or a missing local binding, credential handle or value, host prerequisite or sensitive input binding | `operator_action_required` |
@@ -478,6 +493,79 @@ context exists, submit the checkpoint instead of calling `release_work_order`.
 Before any context exists, release with reason `operator checkpoint reached`
 and a decision request. An unsupported outcome returns
 `verification_outcome_unsupported` with this mapping and changes nothing.
+
+### When no kit is eligible
+
+A repository without a manifest, with only ineligible kits, or with a broken
+declaration still has a sealable verify stage (`component-verification-service`).
+The examples use an approved plan v1 whose done criteria include `DC-2`, and a
+served requirement `req-example` v3 with `AC-1.1`.
+
+**Success.** Register each applicable ordinary obligation, wait for an
+operator grant, run it with `conveyor kit verify`, and submit the registered
+coverage. A justified empty set needs no run:
+
+```json
+{"context_id": "<context-id>", "outcome": "succeeded",
+ "coverage": {"obligation_ids": [], "justification": "No executable check applies to this documentation-only change.",
+  "sources": [
+   {"source": {"document_id": "approved_plan", "version": 1, "section_id": "DC-2"}, "disposition": "not_applicable", "explanation": "Reviewed by reading the diff.", "subjects": []},
+   {"source": {"document_id": "req-example", "version": 3, "section_id": "AC-1.1"}, "disposition": "not_applicable", "explanation": "No runtime behavior changed.", "subjects": []}]}}
+```
+
+Success is refused with `verification_discovery_not_valid` or
+`verification_selection_invalid` while discovery failed or a kit is invalid,
+and with `verification_subject_unstarted` while a registered obligation has no
+attempt.
+
+**Plan feedback.** A finding runs nothing and needs no grant. Each finding
+cites the approved plan or a served requirement, and the same source appears
+in `coverage.sources`. Registered obligations may stay unstarted; the seal
+records them as missing, never as passed:
+
+```json
+{"context_id": "<context-id>", "outcome": "feedback",
+ "feedback": "The approved plan omits the operator decision the change depends on.",
+ "findings": [{"source": {"document_id": "approved_plan", "version": 1, "section_id": "DC-2"},
+   "statement": "DC-2 requires an operator decision on retention that no plan step records."}],
+ "coverage": {"obligation_ids": [], "justification": "The finding is in the plan; no check ran.",
+  "sources": [
+   {"source": {"document_id": "approved_plan", "version": 1, "section_id": "DC-2"}, "disposition": "not_applicable", "explanation": "Plan finding.", "subjects": []},
+   {"source": {"document_id": "req-example", "version": 3, "section_id": "AC-1.1"}, "disposition": "not_applicable", "explanation": "Not exercised before the plan is corrected.", "subjects": []}]}}
+```
+
+The successor implement order receives the feedback, one line per finding
+(`approved_plan v1 DC-2: ...`) and one line per declaration diagnostic. A
+feedback with no failed attempt, no declaration defect and no finding is
+refused with `verification_feedback_ungrounded`.
+
+**Malformed declaration.** Submit `feedback` with the same coverage shape. The
+diagnostics travel to the implementer without a finding; add findings for
+anything else you observed. When the declaration lives outside the task's
+scope, say so in `feedback` so the implementer can report it.
+
+**Missing grant.** A start without a grant answers
+`verification_grant_missing at grant_id` with the two-phase grant remedy.
+After the grant wait, submit the checkpoint shown above with the registered,
+unstarted obligation in `coverage`; the server grounds it as `missing_grant`.
+
+**Unavailable discovery.** Submit `operator_action_required` with the coverage
+above; the server grounds it as `discovery_unavailable` even when no subject
+exists.
+
+### Reading a refusal
+
+After your claim is authenticated, a refused call names a stable `code`, the
+request `field`, the `rule` that failed and a `remedy`. MCP returns
+`<code> at <field>: <rule> <remedy>`; REST returns
+`{error, code, field, rule, remedy}` with status 400 for invalid input and 409
+for state, grant and conflict refusals. Correct that field and resubmit; a
+refused call wrote nothing. Examples: `verification_field_required at
+coverage.sources[1].subjects` (send `[]`), `verification_citation_unresolved at
+coverage.sources[0].source` (name a section ID the pinned document holds),
+`verification_coverage_plan_missing at coverage.sources` (add the
+`approved_plan` source). A foreign or stale claim keeps the generic
+`verification access refused` with no detail.
 
 Report reproducible code failures separately from infrastructure failures and
 blocked/waiting operator actions; use the delivered failure/release lifecycle

@@ -44,6 +44,7 @@ import (
 
 type fixture struct {
 	unavailable                                  bool
+	discoveryDenied                              bool
 	skipped                                      bool
 	t                                            *testing.T
 	b                                            store.Backend
@@ -121,6 +122,10 @@ func repository(t *testing.T, mode string) (string, string, string) {
 				if m.Kits[i].UI != nil {
 					m.Kits[i].UI.Port = port
 				}
+			}
+			if mode == "malformed" {
+				// component-verification-service: a support outside the kit's declared pins.
+				m.Kits[0].Exercises[0].Supports[0].DocumentID = "req-undeclared"
 			}
 			b, err = json.Marshal(m)
 			must(t, err)
@@ -305,6 +310,13 @@ func (f *fixture) serveForge(w http.ResponseWriter, r *http.Request) {
 		sha := strings.TrimPrefix(r.URL.Path, "/repos/fixture/conveyor/git/commits/")
 		value = map[string]any{"sha": sha, "tree": map[string]string{"sha": strings.TrimSpace(string(git(f.t, f.root, "rev-parse", sha+"^{tree}")))}}
 	case strings.HasPrefix(r.URL.Path, "/repos/fixture/conveyor/git/trees/"):
+		f.mu.Lock()
+		denied := f.discoveryDenied
+		f.mu.Unlock()
+		if denied {
+			http.Error(w, "fixture App lacks access", 403)
+			return
+		}
 		sha := strings.TrimPrefix(r.URL.Path, "/repos/fixture/conveyor/git/trees/")
 		entries := []map[string]string{}
 		for _, line := range strings.Split(strings.TrimSpace(string(git(f.t, f.root, "ls-tree", "-r", "-t", sha))), "\n") {
@@ -1097,6 +1109,119 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			f.review()
 		})
 	}
+	// component-verification-service v6: no-eligible-kit feedback and checkpoints.
+	notApplicable := func(f *fixture) store.VerificationCoverage {
+		c := store.VerificationCoverage{ObligationIDs: []string{}, Justification: "No eligible kit and no executable ordinary check apply.", Sources: []store.VerificationCoverageSource{}}
+		for _, p := range f.snapshot.Contexts[0].GoverningPins {
+			section := "VK-10"
+			if p.Kind == "requirement" {
+				section = "AC-3.1"
+			}
+			c.Sources = append(c.Sources, store.VerificationCoverageSource{Source: store.VerificationCoverageReference{DocumentID: p.DocumentID, Version: p.Version, SectionID: section}, Disposition: "not_applicable", Explanation: "Assessed without execution.", Subjects: []core.VerificationSubject{}})
+		}
+		return c
+	}
+	requirementVersion := func(f *fixture) int {
+		for _, p := range f.snapshot.Contexts[0].GoverningPins {
+			if p.DocumentID == "req-verification-kits" {
+				return p.Version
+			}
+		}
+		return 0
+	}
+	returnedToImplement := func(f *fixture, want string) {
+		t := f.t
+		task, err := f.b.GetTask(f.ctx, f.task.ID)
+		must(t, err)
+		if task.NextStage != core.StageImplement {
+			t.Fatalf("feedback did not return to implement: %s", task.NextStage)
+		}
+		interventions, err := f.b.ListInterventions(f.ctx, f.task.ID)
+		must(t, err)
+		if len(interventions) == 0 || !strings.Contains(interventions[len(interventions)-1].Comment, want) {
+			t.Fatalf("delivered feedback lacks %q: %+v", want, interventions)
+		}
+		// The successor implement order exists and is claimable.
+		f.claim(core.StageImplement)
+	}
+	for _, mode := range []string{"absent", "ineligible"} {
+		t.Run("PlanFeedback/"+mode, func(t *testing.T) {
+			f := newFixture(t, factory(t), mode)
+			f.claim(core.StageImplement)
+			must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
+			f.claim(core.StageVerify)
+			must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "plan-feedback"}, &f.snapshot))
+			coverage := notApplicable(f)
+			finding := store.VerificationFinding{Source: store.VerificationCoverageReference{DocumentID: "req-verification-kits", Version: requirementVersion(f), SectionID: "AC-3.1"}, Statement: "The API observation is not retained."}
+			must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "feedback", Coverage: coverage, Feedback: "AC-3.1 is unmet.", Findings: []store.VerificationFinding{finding}}, nil))
+			f.refresh()
+			if len(f.snapshot.Attempts) != 0 {
+				t.Fatal("a finding started an attempt")
+			}
+			returnedToImplement(f, "AC-3.1: The API observation is not retained.")
+		})
+	}
+	t.Run("MalformedDeclaration", func(t *testing.T) {
+		f := newFixture(t, factory(t), "malformed")
+		f.claim(core.StageImplement)
+		must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
+		f.claim(core.StageVerify)
+		must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "malformed"}, &f.snapshot))
+		found := false
+		for _, d := range f.snapshot.Selections[0].Receipt.Diagnostics {
+			if d.Path == "discovery.conveyor.manifest.kits[0].exercises[0].supports[0]" && strings.Contains(d.Message, ".conveyor/kits/manifest.yaml: kit vk10-script, exercise observe: ") && strings.Contains(d.Message, `"req-undeclared"`) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("declaration diagnostic lost its location: %+v", f.snapshot.Selections[0].Receipt.Diagnostics)
+		}
+		coverage := notApplicable(f)
+		before, err := f.b.ListEvents(f.ctx, f.task.ID)
+		must(t, err)
+		if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: coverage}, nil); err == nil || !strings.Contains(err.Error(), "verification_discovery_not_valid at outcome") {
+			t.Fatalf("malformed declaration passed: %v", err)
+		}
+		after, err := f.b.ListEvents(f.ctx, f.task.ID)
+		must(t, err)
+		if len(after) != len(before) {
+			t.Fatal("refused success wrote events")
+		}
+		must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "feedback", Coverage: coverage, Feedback: "Correct the kit declaration."}, nil))
+		returnedToImplement(f, "supports[0]")
+	})
+	t.Run("DiscoveryUnavailable", func(t *testing.T) {
+		f := newFixture(t, factory(t), "absent")
+		f.claim(core.StageImplement)
+		must(t, f.rpc("submit_for_review", map[string]string{"head_sha": f.head}, nil))
+		f.claim(core.StageVerify)
+		f.mu.Lock()
+		f.discoveryDenied = true
+		f.mu.Unlock()
+		must(t, f.rpc("prepare_verification", workorder.VerificationPrepareRequest{RequestKey: "denied"}, &f.snapshot))
+		coverage := notApplicable(f)
+		if err := f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "succeeded", Coverage: coverage}, nil); err == nil {
+			t.Fatal("unavailable discovery passed")
+		}
+		must(t, f.rpc("submit_verification", workorder.VerificationSubmitRequest{ContextID: f.snapshot.Contexts[0].ID, Outcome: "operator_action_required", Coverage: coverage, Feedback: "Discovery cannot read the repository.", RequiredAction: "Grant the GitHub App repository access, then recover the verify order."}, nil))
+		task, err := f.b.GetTask(f.ctx, f.task.ID)
+		must(t, err)
+		order, err := f.b.GetWorkOrder(f.ctx, f.order.ID)
+		must(t, err)
+		if task.NextStage != core.StageVerify || !order.RetrySuppressed || order.Checkpoint == nil || order.Checkpoint.Verification == nil || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundDiscoveryUnavailable {
+			t.Fatalf("unavailable discovery checkpoint = %+v", order.Checkpoint)
+		}
+		orders, err := f.b.ListTaskWorkOrders(f.ctx, f.task.ID)
+		must(t, err)
+		for _, o := range orders {
+			if o.Stage == core.StageReview {
+				t.Fatal("review started before recovery")
+			}
+		}
+		if err := f.rpc("claim_work_order", map[string]any{"lease_seconds": 3600}, nil); err == nil {
+			t.Fatal("checkpointed order reclaimed without recovery")
+		}
+	})
 	t.Run("ToggleOff", func(t *testing.T) {
 		f := newFixture(t, factory(t), "toggle-off")
 		f.claim(core.StageImplement)

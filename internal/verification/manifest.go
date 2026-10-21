@@ -771,8 +771,13 @@ func validateKit(k Kit, p string, check PathCheck) []Diagnostic {
 					found = true
 				}
 			}
-			if !found || !validAC(s.AcceptanceCriterionID) {
-				add(f, "support must name an AC within a declared requirement pin")
+			// Name each failed rule so the declaration can be corrected where it
+			// is wrong (req-verification-kits AC-1.3).
+			if !found {
+				add(f, fmt.Sprintf("support must name an AC within a declared requirement pin: document %q version %d matches no requirement pin this kit declares", s.DocumentID, s.Version))
+			}
+			if !validAC(s.AcceptanceCriterionID) {
+				add(f+".acceptance_criterion_id", fmt.Sprintf("support must name an AC within a declared requirement pin: %q is not an acceptance criterion ID of the form AC-n.m", s.AcceptanceCriterionID))
 			}
 		}
 	}

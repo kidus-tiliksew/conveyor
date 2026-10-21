@@ -34,6 +34,7 @@ func verificationHTTPFixture(t *testing.T) (*Server, context.Context, string) {
 	}
 	task := core.Task{ID: "verification-http", Workspace: "demo", Repo: "repo", Title: "verification", Branch: "conveyor/http", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC()}
 	task.SetupContract.VerifyStage = true
+	task.SetupContract.MaxBounces = 10
 	if err := b.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -511,5 +512,374 @@ func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	after, err = s.Store.ListEvents(ctx, "verification-http")
 	if err != nil || len(after) != len(events) {
 		t.Fatal("checkpoint replays wrote events")
+	}
+}
+
+// noEligibleKitFixture is a claimed verify order with an approved plan whose
+// done criterion DC-1 a verifier can cite (component-verification-service v6).
+type noEligibleKitFixture struct {
+	t     *testing.T
+	s     *Server
+	ctx   context.Context
+	id    string
+	order core.WorkOrder
+	plan  core.SpecVersion
+}
+
+func newNoEligibleKitFixture(t *testing.T) *noEligibleKitFixture {
+	t.Helper()
+	s, ctx, id := verificationHTTPFixture(t)
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := s.Store.(store.Backend)
+	plan, err := b.CreateSpecVersion(ctx, core.SpecVersion{TaskID: order.TaskID, Content: "## Done criteria\n\n1. **DC-1 — Fixture.** The fixture records the operator decision.\n", Acceptance: json.RawMessage(`[]`), Decomposition: json.RawMessage(`[]`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.ApproveSpecVersionAndMaterialize(ctx, order.TaskID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	return &noEligibleKitFixture{t: t, s: s, ctx: ctx, id: id, order: order, plan: plan}
+}
+
+func (f *noEligibleKitFixture) access() store.VerificationAccess {
+	return store.VerificationAccess{TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+}
+
+// context records discovery as the service would after GitHub App discovery.
+func (f *noEligibleKitFixture) context(key, state string, kits []verification.KitReceipt, diagnostics []verification.Diagnostic) string {
+	f.t.Helper()
+	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: f.order.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": f.order.HeadSHA, "state": state})}}
+	selected := &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: kits, Diagnostics: diagnostics}, Subjects: []store.VerificationSubjectContract{}}
+	created, err := f.s.Store.(store.VerificationStore).ApplyVerification(f.ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: key, Access: f.access(), Context: &vc, Selection: selected})
+	if err != nil {
+		f.t.Fatalf("context %s: %v", key, err)
+	}
+	return created.ID
+}
+
+// call invokes one tool over MCP and the same arguments over REST.
+func (f *noEligibleKitFixture) call(name string, input any, rest bool) (map[string]any, error, *httptest.ResponseRecorder) {
+	f.t.Helper()
+	args := map[string]any{}
+	if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+		f.t.Fatal(err)
+	}
+	args["workspace_id"], args["work_order_id"], args["session_id"], args["client_token"] = "demo", f.id, "session", "token"
+	_, err := f.s.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(f.ctx), name, args)
+	var response *httptest.ResponseRecorder
+	if rest {
+		response = verificationRESTCall(f.s, f.ctx, f.id, name, args)
+	}
+	return args, err, response
+}
+
+// refused requires the same correctable refusal over MCP and REST with no write.
+func (f *noEligibleKitFixture) refused(name string, input any, code, field string, status int) {
+	f.t.Helper()
+	before, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	_, err, response := f.call(name, input, true)
+	var refusal *store.VerificationRefusal
+	if !errors.As(err, &refusal) || refusal.Code != code || refusal.Field != field || refusal.Rule == "" || refusal.Remedy == "" || !strings.Contains(err.Error(), code+" at "+field+": ") {
+		f.t.Fatalf("%s MCP: %v, want %s at %s", name, err, code, field)
+	}
+	var body map[string]string
+	if response.Code != status || json.Unmarshal(response.Body.Bytes(), &body) != nil || body["code"] != code || body["field"] != field || body["rule"] != refusal.Rule || body["remedy"] != refusal.Remedy {
+		f.t.Fatalf("%s REST: %d %s, want %d %s", name, response.Code, response.Body, status, code)
+	}
+	after, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		f.t.Fatalf("%s refusal wrote events", code)
+	}
+}
+
+func (f *noEligibleKitFixture) planSource() store.VerificationCoverageReference {
+	return store.VerificationCoverageReference{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: "DC-1"}
+}
+
+// coverage maps the approved plan to subjects and marks the requirement not applicable.
+func (f *noEligibleKitFixture) coverage(subjects ...core.VerificationSubject) store.VerificationCoverage {
+	ids := []string{}
+	plan := store.VerificationCoverageSource{Source: f.planSource(), Disposition: "not_applicable", Explanation: "Plan finding", Subjects: []core.VerificationSubject{}}
+	for _, subject := range subjects {
+		ids = append(ids, subject.ObligationID)
+		plan.Disposition, plan.Explanation = "covered", "Plan check"
+		plan.Subjects = append(plan.Subjects, subject)
+	}
+	return store.VerificationCoverage{ObligationIDs: ids, Justification: "The approved plan's done criterion is assessed", Sources: []store.VerificationCoverageSource{plan, {Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "not_applicable", Explanation: "Not exercised", Subjects: []core.VerificationSubject{}}}}
+}
+
+func (f *noEligibleKitFixture) register(contextID, obligation string) core.VerificationSubject {
+	f.t.Helper()
+	contract := verification.Exercise{ID: obligation, Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required"}
+	if _, err, _ := f.call("register_verification_obligation", workorder.VerificationObligationRequest{ContextID: contextID, ObligationID: obligation, Description: "Plan check", Sources: []workorder.VerificationSource{{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: "DC-1"}}, Contract: contract}, false); err != nil {
+		f.t.Fatal(err)
+	}
+	snapshot, err := f.s.Store.(store.VerificationStore).ReadVerification(f.ctx, f.access(), contextID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return core.VerificationSubject{Kind: "ordinary", ObligationID: obligation, ContractDigest: snapshot.Obligations[0].Digest}
+}
+
+func (f *noEligibleKitFixture) start(contextID, key, grantID string, subject core.VerificationSubject, coverage store.VerificationCoverage) workorder.VerificationStartRequest {
+	return workorder.VerificationStartRequest{ContextID: contextID, StartKey: key, GrantID: grantID, Subject: subject, EffectiveActions: []core.VerificationPermission{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}, EffectivePermissions: []verification.Permission{}, SafeInputs: map[string]json.RawMessage{}, Coverage: coverage}
+}
+
+func (f *noEligibleKitFixture) intervention() string {
+	f.t.Helper()
+	task, err := f.s.Store.GetTask(f.ctx, f.order.TaskID)
+	if err != nil || task.NextStage != core.StageImplement {
+		f.t.Fatalf("feedback did not reopen implement: %+v %v", task.NextStage, err)
+	}
+	interventions, err := f.s.Store.ListInterventions(f.ctx, f.order.TaskID)
+	if err != nil || len(interventions) != 1 {
+		f.t.Fatalf("interventions = %+v %v", interventions, err)
+	}
+	return interventions[0].Comment
+}
+
+var malformedIntegrationsKit = []verification.KitReceipt{{KitID: "integrations", Pins: []verification.Pin{}, Eligibility: "invalid", Reasons: []verification.SelectionReason{{Code: "invalid_entry", Path: "manifest.kits[0].exercises[0].supports[0]", Message: `support must name an AC within a declared requirement pin: document "req-x" version 2 matches no requirement pin this kit declares`}}}}
+var malformedIntegrationsDiagnostics = []verification.Diagnostic{{Path: "discovery.repo", Message: "malformed"}, {Path: "discovery.repo.manifest.kits[0].exercises[0].supports[0]", Message: `.conveyor/kits/manifest.yaml: kit integrations, exercise go-test: support must name an AC within a declared requirement pin: document "req-x" version 2 matches no requirement pin this kit declares`}}
+
+// Task 261020-cadfba: the funnelflux-pro incident shapes of 2026-10-20 and
+// both no-kit paths (component-verification-service v6; req-verification-kits
+// AC-1.2, AC-1.3, AC-3.2, AC-8.3).
+func TestVerificationNoEligibleKitOutcomes(t *testing.T) {
+	t.Run("MalformedDeclarationFeedback", func(t *testing.T) {
+		f := newNoEligibleKitFixture(t)
+		contextID := f.context("malformed", "malformed", malformedIntegrationsKit, malformedIntegrationsDiagnostics)
+		subject := f.register(contextID, "plan-drift")
+		coverage := f.coverage(subject)
+		// The incident's attempt 1: a start without a grant names the grant rule.
+		f.refused("start_verification_attempt", f.start(contextID, "plan-drift-1", "", subject, coverage), store.VerificationCodeGrantMissing, "grant_id", http.StatusConflict)
+		// Success is never admitted over a malformed declaration (AC-1.3).
+		f.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeDiscoveryNotValid, "outcome", http.StatusConflict)
+		finding := store.VerificationFinding{Source: f.planSource(), Statement: "The approved plan omits the operator decision."}
+		args, err, response := f.call("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: coverage, Feedback: "Return to implementation.", Findings: []store.VerificationFinding{finding}}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response = verificationRESTCall(f.s, f.ctx, f.id, "submit_verification", args); response.Code != http.StatusOK {
+			t.Fatalf("REST replay: %d %s", response.Code, response.Body)
+		}
+		text := f.intervention()
+		for _, want := range []string{"Return to implementation.", "approved_plan v1 DC-1: The approved plan omits the operator decision.", "declaration defect in repo: .conveyor/kits/manifest.yaml: kit integrations, exercise go-test", "supports[0]"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("delivered feedback lacks %q: %s", want, text)
+			}
+		}
+		snapshot, err := f.s.Store.(store.VerificationStore).ReadVerification(f.ctx, f.access(), contextID)
+		if err != nil || len(snapshot.Attempts) != 0 || snapshot.Contexts[0].Result.Disposition != "discovery_failed" || len(snapshot.Contexts[0].Result.Feedback.MissingSubjects) != 1 {
+			t.Fatalf("feedback seal = %+v %v", snapshot.Contexts[0].Result, err)
+		}
+	})
+	t.Run("MalformedDeclarationCheckpoint", func(t *testing.T) {
+		f := newNoEligibleKitFixture(t)
+		contextID := f.context("malformed", "malformed", malformedIntegrationsKit, malformedIntegrationsDiagnostics)
+		subject := f.register(contextID, "plan-drift")
+		_, err, response := f.call("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "operator_action_required", Coverage: f.coverage(subject), Feedback: "The plan check needs an operator grant.", RequiredAction: "Grant ordinary obligation plan-drift."}, true)
+		if err != nil || response.Code != http.StatusOK {
+			t.Fatalf("checkpoint: %v %d %s", err, response.Code, response.Body)
+		}
+		order, err := f.s.Store.GetWorkOrder(f.ctx, f.id)
+		if err != nil || !order.RetrySuppressed || order.VerificationContextID != "" || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundMissingGrant {
+			t.Fatalf("checkpoint order = %+v %v", order.Checkpoint, err)
+		}
+	})
+	for _, discovery := range []struct {
+		name, state string
+		kits        []verification.KitReceipt
+	}{
+		{"no_manifest", "no_manifest", []verification.KitReceipt{}},
+		{"ineligible", "present", []verification.KitReceipt{{KitID: "other", Pins: []verification.Pin{{Kind: "requirement", DocumentID: "req-other", Version: 1}}, StageMatch: true, Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_not_authoritative"}}}}},
+	} {
+		t.Run("PlanFeedback/"+discovery.name, func(t *testing.T) {
+			f := newNoEligibleKitFixture(t)
+			contextID := f.context("plan-"+discovery.name, discovery.state, discovery.kits, []verification.Diagnostic{})
+			coverage := f.coverage()
+			f.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: coverage, Feedback: "No finding"}, store.VerificationCodeFeedbackUngrounded, "outcome", http.StatusConflict)
+			finding := store.VerificationFinding{Source: f.planSource(), Statement: "The operator decision is missing."}
+			if _, err, _ := f.call("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: coverage, Feedback: "DC-1 is unmet.", Findings: []store.VerificationFinding{finding}}, false); err != nil {
+				t.Fatal(err)
+			}
+			if text := f.intervention(); !strings.Contains(text, "approved_plan v1 DC-1: The operator decision is missing.") {
+				t.Fatalf("delivered feedback lost the finding: %s", text)
+			}
+		})
+		t.Run("Success/"+discovery.name, func(t *testing.T) {
+			f := newNoEligibleKitFixture(t)
+			contextID := f.context("success-"+discovery.name, discovery.state, discovery.kits, []verification.Diagnostic{})
+			subject := f.register(contextID, "plan-check")
+			coverage := f.coverage(subject)
+			grantID := storetest.GrantVerificationFixture(t, f.s.Store.(store.Backend), f.ctx, f.order.TaskID, f.id, contextID, "grant", subject, nil)
+			f.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeSubjectUnstarted, "outcome", http.StatusConflict)
+			if _, err, _ := f.call("start_verification_attempt", f.start(contextID, "plan-check-1", grantID, subject, coverage), false); err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := f.s.Store.(store.VerificationStore).ReadVerification(f.ctx, f.access(), contextID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, vc := snapshot.Attempts[0].ID, snapshot.Contexts[0]
+			f.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeAttemptRunning, "context_id", http.StatusConflict)
+			at := time.Now().UTC().Format(time.RFC3339Nano)
+			zero, no := 0, false
+			report := core.VerificationEvidence{ID: "report", Type: "execution_report", SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}
+			report.Payload = core.JSONPayload(core.ExecutionReportPayload{Argv: []string{"check"}, Tool: "check", ToolVersion: "1", Runtime: "fixture", StartedAt: at, EndedAt: at, ExitCode: &zero, TimedOut: &no, Cancelled: &no, StdoutSHA256: strings.Repeat("a", 64), StderrSHA256: strings.Repeat("b", 64), StdoutTruncated: &no, StderrTruncated: &no})
+			if _, err, _ = f.call("submit_verification_evidence", workorder.VerificationEvidenceRequest{ContextID: contextID, RunID: run, SubmissionKey: "evidence", Evidence: []json.RawMessage{core.JSONPayload(report)}}, false); err != nil {
+				t.Fatal(err)
+			}
+			if _, err, _ = f.call("report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: contextID, RunID: run, State: "succeeded", ExitCode: &zero}, false); err != nil {
+				t.Fatal(err)
+			}
+			_, err, response := f.call("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage}, true)
+			if err != nil || response.Code != http.StatusOK {
+				t.Fatalf("success: %v %d %s", err, response.Code, response.Body)
+			}
+			task, err := f.s.Store.GetTask(f.ctx, f.order.TaskID)
+			order, orderErr := f.s.Store.GetWorkOrder(f.ctx, f.id)
+			if err != nil || orderErr != nil || task.NextStage != core.StageReview || order.VerificationContextID != contextID || order.HeadSHA != f.order.HeadSHA {
+				t.Fatalf("success did not reach review: %s %+v", task.NextStage, order)
+			}
+		})
+	}
+	t.Run("DiscoveryUnavailableCheckpoint", func(t *testing.T) {
+		f := newNoEligibleKitFixture(t)
+		contextID := f.context("unavailable", "permission", []verification.KitReceipt{}, []verification.Diagnostic{{Path: "discovery.repo", Message: "permission"}})
+		coverage := f.coverage()
+		f.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeDiscoveryNotValid, "outcome", http.StatusConflict)
+		_, err, response := f.call("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "operator_action_required", Coverage: coverage, Feedback: "Discovery has no repository access.", RequiredAction: "Grant the GitHub App access, then recover the verify order."}, true)
+		if err != nil || response.Code != http.StatusOK {
+			t.Fatalf("checkpoint: %v %d %s", err, response.Code, response.Body)
+		}
+		order, err := f.s.Store.GetWorkOrder(f.ctx, f.id)
+		if err != nil || !order.RetrySuppressed || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundDiscoveryUnavailable {
+			t.Fatalf("checkpoint order = %+v %v", order.Checkpoint, err)
+		}
+		task, err := f.s.Store.GetTask(f.ctx, f.order.TaskID)
+		if err != nil || task.NextStage != core.StageVerify {
+			t.Fatal("checkpoint left verify")
+		}
+	})
+}
+
+// component-verification-service v6 "Correctable refusals": each family names
+// its code and field over MCP and REST, after scope authentication only.
+func TestVerificationCorrectableRefusals(t *testing.T) {
+	f := newNoEligibleKitFixture(t)
+	contextID := f.context("refusals", "no_manifest", []verification.KitReceipt{}, []verification.Diagnostic{})
+	subject := f.register(contextID, "plan-check")
+	valid := f.coverage(subject)
+	submit := func(mutate func(*store.VerificationCoverage)) workorder.VerificationSubmitRequest {
+		c := valid
+		c.Sources = append([]store.VerificationCoverageSource{}, valid.Sources...)
+		mutate(&c)
+		return workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: c, Feedback: "finding"}
+	}
+	cases := []struct {
+		name, code, field string
+		status            int
+		input             any
+	}{
+		{"sources null", store.VerificationCodeFieldRequired, "coverage.sources", 400, submit(func(c *store.VerificationCoverage) { c.Sources = nil })},
+		{"sources empty", store.VerificationCodePlanMissing, "coverage.sources", 400, submit(func(c *store.VerificationCoverage) { c.Sources = []store.VerificationCoverageSource{} })},
+		{"obligation ids null", store.VerificationCodeFieldRequired, "coverage.obligation_ids", 400, submit(func(c *store.VerificationCoverage) { c.ObligationIDs = nil })},
+		{"subjects null", store.VerificationCodeFieldRequired, "coverage.sources[1].subjects", 400, submit(func(c *store.VerificationCoverage) {
+			c.Sources[1] = store.VerificationCoverageSource{Source: c.Sources[1].Source, Disposition: "not_applicable", Explanation: "Not exercised"}
+		})},
+		{"pin without section", store.VerificationCodeCitationUnresolved, "coverage.sources[1].source", 400, submit(func(c *store.VerificationCoverage) {
+			c.Sources[1] = store.VerificationCoverageSource{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1}, Disposition: "not_applicable", Explanation: "Not exercised", Subjects: []core.VerificationSubject{}}
+		})},
+		{"approved plan omitted", store.VerificationCodePlanMissing, "coverage.sources", 400, submit(func(c *store.VerificationCoverage) { c.Sources = c.Sources[1:] })},
+		{"stale subject digest", store.VerificationCodeSubjectUnknown, "coverage.sources[0].subjects[0]", 400, submit(func(c *store.VerificationCoverage) {
+			stale := subject
+			stale.ContractDigest = strings.Repeat("0", 64)
+			c.Sources[0] = store.VerificationCoverageSource{Source: c.Sources[0].Source, Disposition: "covered", Explanation: "Plan check", Subjects: []core.VerificationSubject{stale}}
+		})},
+		{"obligation omitted", store.VerificationCodeObligationsMismatch, "coverage.obligation_ids", 409, submit(func(c *store.VerificationCoverage) { c.ObligationIDs = []string{} })},
+		{"feedback ungrounded", store.VerificationCodeFeedbackUngrounded, "outcome", 409, submit(func(*store.VerificationCoverage) {})},
+		{"finding on success", store.VerificationCodeFindingInvalid, "findings", 400, workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: valid, Findings: []store.VerificationFinding{{Source: f.planSource(), Statement: "x"}}}},
+		{"finding unmapped", store.VerificationCodeCitationUnresolved, "findings[0].source", 400, workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: valid, Feedback: "x", Findings: []store.VerificationFinding{{Source: store.VerificationCoverageReference{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: "DC-9"}, Statement: "x"}}}},
+		{"feedback too long", store.VerificationCodeFeedbackTooLong, "feedback", 400, workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: valid, Feedback: strings.Repeat("x", store.VerificationCheckpointTextLimit+1)}},
+		{"unstarted on success", store.VerificationCodeSubjectUnstarted, "outcome", 409, workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: valid}},
+		{"checkpoint ungrounded", store.VerificationCodeCheckpointUngrounded, "outcome", 409, workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "operator_action_required", Coverage: store.VerificationCoverage{}, Feedback: "x", RequiredAction: "y"}},
+		{"grant missing", store.VerificationCodeGrantMissing, "grant_id", 409, f.start(contextID, "start-1", "", subject, valid)},
+		{"start key missing", store.VerificationCodeFieldRequired, "start_key", 400, f.start(contextID, "", "", subject, valid)},
+	}
+	for _, tc := range cases {
+		if tc.name == "checkpoint ungrounded" {
+			// A checkpoint over the registered, unstarted obligation is grounded by
+			// missing_grant, so this case seals no subject: use a fresh context.
+			g := newNoEligibleKitFixture(t)
+			fresh := g.context("ungrounded", "no_manifest", []verification.KitReceipt{}, []verification.Diagnostic{})
+			g.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: fresh, Outcome: "operator_action_required", Coverage: g.coverage(), Feedback: "x", RequiredAction: "y"}, tc.code, tc.field, tc.status)
+			continue
+		}
+		name := "submit_verification"
+		if _, ok := tc.input.(workorder.VerificationStartRequest); ok {
+			name = "start_verification_attempt"
+		}
+		t.Run(tc.name, func(t *testing.T) { f.t = t; f.refused(name, tc.input, tc.code, tc.field, tc.status) })
+	}
+	f.t = t
+	// Foreign scope keeps the one generic refusal and no detail.
+	args, _, _ := f.call("submit_verification", submit(func(c *store.VerificationCoverage) { c.Sources = nil }), false)
+	args["session_id"] = "foreign"
+	if response := verificationRESTCall(f.s, f.ctx, f.id, "submit_verification", args); response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "verification_") || strings.Contains(response.Body.String(), "coverage") {
+		t.Fatalf("foreign scope received detail: %d %s", response.Code, response.Body)
+	}
+	// An unknown context of an authenticated claim is generic too, whatever is
+	// wrong with the coverage or outcome (component-verification-service v6).
+	unknown := "0123456789abcdef0123456789abcdef"
+	for name, input := range map[string]workorder.VerificationSubmitRequest{
+		"null sources":      submit(func(c *store.VerificationCoverage) { c.Sources = nil }),
+		"plan omitted":      submit(func(c *store.VerificationCoverage) { c.Sources = c.Sources[1:] }),
+		"unresolved source": submit(func(c *store.VerificationCoverage) { c.Sources[1].Source.SectionID = "missing" }),
+		"unsupported":       {Coverage: valid, Outcome: "blocked"},
+		"incomplete":        {Coverage: valid, Outcome: "operator_action_required"},
+	} {
+		input.ContextID = unknown
+		for _, obligation := range []bool{false, true} {
+			tool := "submit_verification"
+			var payload any = input
+			if obligation {
+				tool = "register_verification_obligation"
+				payload = workorder.VerificationObligationRequest{ContextID: unknown, ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "missing"}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}}
+			}
+			_, err, response := f.call(tool, payload, true)
+			var refusal *store.VerificationRefusal
+			if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) || response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "verification_") {
+				t.Fatalf("unknown context %s via %s: MCP %v, REST %d %s", name, tool, err, response.Code, response.Body)
+			}
+		}
+	}
+	// Refusal rules never echo caller text, so neither a recognized token nor a
+	// configured or arbitrary secret value can leave in a rule.
+	for _, secret := range []string{"sk-abcdefghijklmnopqrstuvwxyz012345", "configured-secret-value-6f1c"} {
+		inputs := map[string]struct {
+			tool  string
+			input any
+		}{
+			"coverage":   {"submit_verification", submit(func(c *store.VerificationCoverage) { c.Sources[1].Source.SectionID = secret })},
+			"finding":    {"submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: valid, Feedback: "x", Findings: []store.VerificationFinding{{Source: store.VerificationCoverageReference{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: secret}, Statement: "x"}}}},
+			"obligation": {"register_verification_obligation", workorder.VerificationObligationRequest{ContextID: contextID, ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: secret, Version: 1, SectionID: secret}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}}},
+			"subject": {"submit_verification", submit(func(c *store.VerificationCoverage) {
+				c.Sources[0].Subjects = []core.VerificationSubject{{Kind: "ordinary", ObligationID: secret, ContractDigest: strings.Repeat("0", 64)}}
+			})},
+			"obligation id": {"submit_verification", submit(func(c *store.VerificationCoverage) { c.ObligationIDs = []string{secret} })},
+		}
+		for name, tc := range inputs {
+			_, err, response := f.call(tc.tool, tc.input, true)
+			var refusal *store.VerificationRefusal
+			if !errors.As(err, &refusal) || strings.Contains(err.Error(), secret) || strings.Contains(response.Body.String(), secret) || response.Code == http.StatusOK {
+				t.Fatalf("%s refusal echoed caller text: MCP %v, REST %d %s", name, err, response.Code, response.Body)
+			}
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
@@ -24,6 +25,14 @@ type VerificationSubmission struct {
 	Coverage       VerificationCoverage `json:"coverage"`
 	Feedback       string               `json:"feedback,omitempty"`
 	RequiredAction string               `json:"required_action,omitempty"`
+	// Findings are sourced plan or requirement findings; only feedback accepts
+	// them, and they execute nothing (component-verification-service).
+	Findings []VerificationFinding `json:"findings,omitempty"`
+}
+
+type VerificationFinding struct {
+	Source    VerificationCoverageReference `json:"source"`
+	Statement string                        `json:"statement"`
 }
 
 type VerificationResult struct {
@@ -33,18 +42,49 @@ type VerificationResult struct {
 	Actor       string
 	SealedAt    time.Time
 	Checkpoint  *VerificationCheckpoint `json:"Checkpoint,omitempty"`
+	// Feedback records a feedback seal's server-computed grounds, unstarted
+	// subjects, and delivered text (component-verification-service).
+	Feedback *VerificationFeedbackRecord `json:"Feedback,omitempty"`
 }
+
+// Feedback grounds (component-verification-service).
+const (
+	VerificationFeedbackAttemptFailed     = "attempt_failed"
+	VerificationFeedbackDeclarationDefect = "declaration_defect"
+	VerificationFeedbackPlanFinding       = "plan_finding"
+)
+
+type VerificationFeedbackGround struct {
+	Kind       string                         `json:"kind"`
+	Subject    *core.VerificationSubject      `json:"subject,omitempty"`
+	AttemptID  string                         `json:"attempt_id,omitempty"`
+	Repository string                         `json:"repository,omitempty"`
+	Path       string                         `json:"path,omitempty"`
+	Message    string                         `json:"message,omitempty"`
+	Source     *VerificationCoverageReference `json:"source,omitempty"`
+}
+
+type VerificationFeedbackRecord struct {
+	Grounds         []VerificationFeedbackGround `json:"grounds"`
+	MissingSubjects []core.VerificationSubject   `json:"missing_subjects"`
+	// Text is the changes-requested feedback delivered to the implement order.
+	Text string `json:"text"`
+}
+
+// VerificationFeedbackDeliveryLimit bounds the delivered feedback text.
+const VerificationFeedbackDeliveryLimit = 8 * 1024
 
 // component-verification-service: server-computed grounds
 // for an operator checkpoint. Only admission_refused carries an unverified cause.
 const (
-	VerificationGroundAttemptBlocked      = "attempt_blocked"
-	VerificationGroundAttemptWaiting      = "attempt_waiting"
-	VerificationGroundAttemptTimedOut     = "attempt_timed_out"
-	VerificationGroundAttemptCancelled    = "attempt_cancelled"
-	VerificationGroundMissingGrant        = "missing_grant"
-	VerificationGroundAdmissionRefused    = "admission_refused"
-	VerificationGroundOperationUnresolved = "operation_unresolved"
+	VerificationGroundAttemptBlocked       = "attempt_blocked"
+	VerificationGroundAttemptWaiting       = "attempt_waiting"
+	VerificationGroundAttemptTimedOut      = "attempt_timed_out"
+	VerificationGroundAttemptCancelled     = "attempt_cancelled"
+	VerificationGroundMissingGrant         = "missing_grant"
+	VerificationGroundAdmissionRefused     = "admission_refused"
+	VerificationGroundOperationUnresolved  = "operation_unresolved"
+	VerificationGroundDiscoveryUnavailable = "discovery_unavailable"
 )
 
 type VerificationCheckpointGround struct {
@@ -100,6 +140,8 @@ type VerificationRetainedClaim struct {
 
 // ValidateVerificationSeal reuses the attempt evaluator inside the backend's
 // lifecycle transaction; no caller-supplied success callback is authoritative.
+// Discovery and selection validity gate succeeded only; a failed discovery can
+// still seal feedback or an operator checkpoint (component-verification-service v6).
 func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now time.Time, actor string) (*VerificationResult, error) {
 	if c.Submission == nil {
 		return nil, ErrVerificationInvalid
@@ -108,9 +150,6 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 		return nil, err
 	}
 	s := *c.Submission
-	if s.Coverage.ObligationIDs == nil || strings.TrimSpace(s.Coverage.Justification) == "" {
-		return nil, ErrVerificationInvalid
-	}
 	snapshot, err := VerificationSnapshotFromRows(rows, c.ContextID)
 	if err != nil {
 		return nil, err
@@ -124,11 +163,14 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 	}
 	vc := snapshot.Contexts[0]
 	if len(snapshot.Attempts) > 0 && (vc.Coverage == nil || !verificationEqual(*vc.Coverage, s.Coverage)) {
-		return nil, ErrVerificationState
+		return nil, verificationRefusal(ErrVerificationState, VerificationCodeCoverageChanged, "coverage", verificationRemedyCoverage, "once an attempt exists, the submitted coverage must equal the coverage registered by start_verification_attempt.")
 	}
 	if len(vc.Discovery) != len(vc.Revisions) || len(snapshot.Selections) != 1 {
 		return nil, ErrVerificationState
 	}
+	selection := snapshot.Selections[0]
+	type discovered struct{ repository, state string }
+	failedDiscovery := []discovered{}
 	seen := map[string]bool{}
 	for _, raw := range vc.Discovery {
 		var d struct {
@@ -136,7 +178,7 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 			SHA        string `json:"revision"`
 			State      string `json:"state"`
 		}
-		if json.Unmarshal(raw, &d) != nil || seen[d.Repository] || (d.State != "no_manifest" && d.State != "present") {
+		if json.Unmarshal(raw, &d) != nil || seen[d.Repository] {
 			return nil, ErrVerificationState
 		}
 		found := false
@@ -149,34 +191,54 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 			return nil, ErrVerificationState
 		}
 		seen[d.Repository] = true
+		if d.State != "no_manifest" && d.State != "present" {
+			failedDiscovery = append(failedDiscovery, discovered{d.Repository, d.State})
+		}
 	}
-	selection := snapshot.Selections[0]
-	if len(selection.Receipt.Diagnostics) != 0 {
-		return nil, ErrVerificationState
-	}
+	invalidKits := []string{}
 	for _, kit := range selection.Receipt.Kits {
 		if kit.Eligibility == "invalid" {
-			return nil, ErrVerificationState
+			invalidKits = append(invalidKits, kit.KitID)
+		}
+	}
+	// Declaration defects return to implement; other discovery failures ground
+	// an operator checkpoint.
+	declaration := []VerificationFeedbackGround{}
+	unavailable := []VerificationCheckpointGround{}
+	for _, d := range failedDiscovery {
+		copied := []verification.Diagnostic{}
+		for _, diagnostic := range selection.Receipt.Diagnostics {
+			if strings.HasPrefix(diagnostic.Path, "discovery."+d.repository+".") && diagnostic.Path != "discovery."+d.repository+".truncated" {
+				copied = append(copied, diagnostic)
+			}
+		}
+		if d.state == "malformed" && len(copied) > 0 {
+			for _, diagnostic := range copied {
+				declaration = append(declaration, VerificationFeedbackGround{Kind: VerificationFeedbackDeclarationDefect, Repository: d.repository, Path: diagnostic.Path, Message: diagnostic.Message})
+			}
+			continue
+		}
+		unavailable = append(unavailable, VerificationCheckpointGround{Kind: VerificationGroundDiscoveryUnavailable, Explanation: "repository " + d.repository + ": discovery " + d.state, ServerVerified: true})
+	}
+	for _, kit := range selection.Receipt.Kits {
+		if kit.Eligibility != "invalid" {
+			continue
+		}
+		for _, reason := range kit.Reasons {
+			declaration = append(declaration, VerificationFeedbackGround{Kind: VerificationFeedbackDeclarationDefect, Path: reason.Path, Message: "kit " + kit.KitID + ": " + verificationReasonText(reason)})
+		}
+	}
+	if s.Outcome == "succeeded" {
+		if len(failedDiscovery) > 0 {
+			d := failedDiscovery[0]
+			return nil, verificationRefusal(ErrVerificationState, VerificationCodeDiscoveryNotValid, "outcome", verificationRemedyOutcome, "succeeded needs present or no_manifest discovery; repository %s has discovery %s. Submit feedback for a declaration defect or operator_action_required for unavailable discovery.", d.repository, d.state)
+		}
+		if len(invalidKits) > 0 || len(selection.Receipt.Diagnostics) > 0 {
+			return nil, verificationRefusal(ErrVerificationState, VerificationCodeSelectionInvalid, "outcome", verificationRemedyOutcome, "succeeded needs a selection without diagnostics or invalid kits; invalid kits [%s], %d selection diagnostics. An invalid kit is never passed.", strings.Join(invalidKits, ", "), len(selection.Receipt.Diagnostics))
 		}
 	}
 	if len(s.Coverage.ObligationIDs) != len(snapshot.Obligations) {
 		return nil, ErrVerificationState
-	}
-	seen = map[string]bool{}
-	for _, id := range s.Coverage.ObligationIDs {
-		if id == "" || seen[id] {
-			return nil, ErrVerificationInvalid
-		}
-		seen[id] = true
-		found := false
-		for _, o := range snapshot.Obligations {
-			if o.ID == id {
-				found = true
-			}
-		}
-		if !found {
-			return nil, ErrVerificationState
-		}
 	}
 	subjects := []core.VerificationSubject{}
 	for _, subject := range selection.Subjects {
@@ -199,9 +261,11 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 		if record.HeadSHA == "" {
 			return nil, ErrVerificationState
 		}
+		record.Grounds = append(record.Grounds, unavailable...)
 	}
 	record.Claim = VerificationRetainedClaim{WorkerID: c.Access.Claim.WorkerID, ClaimantID: c.Access.Claim.ClaimantID, SessionID: c.Access.Claim.SessionID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID, ClientTokenHash: verificationHash([]byte(c.Access.ClientToken))}
-	failed, blocked := false, false
+	feedback := &VerificationFeedbackRecord{Grounds: []VerificationFeedbackGround{}, MissingSubjects: []core.VerificationSubject{}}
+	blocked := len(record.Grounds) > 0
 	for _, subject := range subjects {
 		var latest *VerificationAttempt
 		for i := range snapshot.Attempts {
@@ -210,7 +274,19 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 				latest = a
 			}
 		}
-		if latest == nil && checkpoint {
+		if latest != nil && latest.EndedAt == nil {
+			return nil, verificationRefusal(ErrVerificationState, VerificationCodeAttemptRunning, "context_id", verificationRemedyAttempt, "the latest attempt %s of %s is still %s.", latest.ID, verificationSubjectName(subject), latest.State)
+		}
+		if latest == nil {
+			switch s.Outcome {
+			case "succeeded":
+				return nil, verificationRefusal(ErrVerificationState, VerificationCodeSubjectUnstarted, "outcome", verificationRemedyOutcome, "%s has no attempt; run it, or submit operator_action_required when it cannot be admitted.", verificationSubjectName(subject))
+			case "feedback":
+				// component-verification-service: a finding executes nothing; an
+				// unstarted subject is recorded as missing, never as executed.
+				feedback.MissingSubjects = append(feedback.MissingSubjects, subject)
+				continue
+			}
 			// component-verification-service: an unstarted subject is recorded as missing evidence, never
 			// as an executed attempt. A missing grant is verified from records.
 			ground := VerificationCheckpointGround{Kind: VerificationGroundMissingGrant, Subject: subject, ServerVerified: true}
@@ -225,9 +301,6 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 			blocked = true
 			continue
 		}
-		if latest == nil || latest.EndedAt == nil {
-			return nil, ErrVerificationState
-		}
 		record.Subjects = append(record.Subjects, VerificationCheckpointSubject{Subject: subject, AttemptID: latest.ID, State: latest.State})
 		switch latest.State {
 		case "succeeded":
@@ -235,35 +308,50 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 				return nil, err
 			}
 		case "failed":
-			failed = true
+			subject := subject
+			feedback.Grounds = append(feedback.Grounds, VerificationFeedbackGround{Kind: VerificationFeedbackAttemptFailed, Subject: &subject, AttemptID: latest.ID})
+			if s.Outcome == "succeeded" {
+				return nil, verificationRefusal(ErrVerificationState, VerificationCodeSubjectNotSucceeded, "outcome", verificationRemedyOutcome, "the latest attempt %s of %s failed; submit feedback naming the failure.", latest.ID, verificationSubjectName(subject))
+			}
 		case "blocked", "waiting", "cancelled", "timed_out":
+			if s.Outcome == "succeeded" {
+				return nil, verificationRefusal(ErrVerificationState, VerificationCodeSubjectNotSucceeded, "outcome", verificationRemedyOutcome, "the latest attempt %s of %s ended %s; submit operator_action_required.", latest.ID, verificationSubjectName(subject), latest.State)
+			}
 			blocked = true
 			record.Grounds = append(record.Grounds, VerificationCheckpointGround{Kind: "attempt_" + latest.State, Subject: subject, AttemptID: latest.ID, Ordinal: latest.Ordinal, Explanation: latest.Explanation, EvidenceIDs: verificationAttemptEvidence(snapshot, latest.ID), ServerVerified: true})
 		default:
 			return nil, ErrVerificationState
 		}
 	}
-	unresolved := false
+	unresolved := []string{}
 	for _, row := range rows {
 		if row.Table == "verification_operations" && row.TaskID == c.Access.TaskID && !verificationOperationResolved(row.State) {
-			unresolved = true
+			unresolved = append(unresolved, row.ID)
 			op := verificationDecode[VerificationOperation](row)
 			record.OperationIDs = append(record.OperationIDs, row.ID)
 			record.Grounds = append(record.Grounds, VerificationCheckpointGround{Kind: VerificationGroundOperationUnresolved, Subject: verificationOperationSubject(snapshot, op), AttemptID: op.RunID, Explanation: row.State, OperationIDs: []string{row.ID}, ServerVerified: true})
 		}
 	}
+	if len(unresolved) > 0 && s.Outcome != "operator_action_required" {
+		return nil, verificationRefusal(ErrVerificationState, VerificationCodeOperationUnresolved, "outcome", verificationRemedyOperation, "operations [%s] of this task are unresolved.", strings.Join(unresolved, ", "))
+	}
+	feedback.Grounds = append(feedback.Grounds, declaration...)
+	for _, f := range s.Findings {
+		source := f.Source
+		feedback.Grounds = append(feedback.Grounds, VerificationFeedbackGround{Kind: VerificationFeedbackPlanFinding, Source: &source, Message: f.Statement})
+	}
 	switch s.Outcome {
 	case "succeeded":
-		if failed || blocked || unresolved {
-			return nil, ErrVerificationState
-		}
 	case "feedback":
-		if !failed || unresolved || strings.TrimSpace(s.Feedback) == "" {
-			return nil, ErrVerificationState
+		if strings.TrimSpace(s.Feedback) == "" {
+			return nil, verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "feedback", verificationRemedyFeedback, "feedback is required with outcome feedback.")
+		}
+		if len(feedback.Grounds) == 0 {
+			return nil, verificationRefusal(ErrVerificationState, VerificationCodeFeedbackUngrounded, "outcome", verificationRemedyFeedback, "this context has no failed latest attempt, no declaration defect, and the submission carries no finding.")
 		}
 	case "operator_action_required":
-		if !blocked && !unresolved {
-			return nil, ErrVerificationState
+		if !blocked && len(unresolved) == 0 {
+			return nil, verificationRefusal(ErrVerificationState, VerificationCodeCheckpointUngrounded, "outcome", verificationRemedyOutcome, "no checkpoint ground exists: no blocked, waiting, timed_out, or cancelled latest attempt, no unstarted subject, no unresolved operation, and no unavailable discovery.")
 		}
 	default:
 		return nil, ErrVerificationInvalid
@@ -271,6 +359,9 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 	disposition := "selected_kits"
 	if len(selection.Subjects) == 0 {
 		disposition = "no_selected_kits"
+	}
+	if len(failedDiscovery) > 0 {
+		disposition = "discovery_failed"
 	}
 	result := &VerificationResult{Submission: s, Binding: binding, Disposition: disposition, Actor: actor, SealedAt: now}
 	if checkpoint {
@@ -281,7 +372,54 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 		record.AttemptGrounds = verificationCheckpointAttemptGrounds(record.Grounds)
 		result.Checkpoint = record
 	}
+	if s.Outcome == "feedback" {
+		feedback.Text = verificationFeedbackText(s, feedback.Grounds)
+		result.Feedback = feedback
+	}
 	return result, nil
+}
+
+// verificationReasonText renders a selection reason with its manifest path.
+func verificationReasonText(r verification.SelectionReason) string {
+	text := r.Code
+	if r.Message != "" {
+		text = r.Message
+	}
+	if r.Path != "" {
+		text = r.Path + ": " + text
+	}
+	return text
+}
+
+// verificationFeedbackText is the changes-requested feedback delivered to the
+// implement order: the submitted feedback, then one line per finding, then
+// one line per declaration diagnostic, bounded with a truncation marker
+// (component-verification-service).
+func verificationFeedbackText(s VerificationSubmission, grounds []VerificationFeedbackGround) string {
+	lines := []string{s.Feedback}
+	for _, f := range s.Findings {
+		lines = append(lines, fmt.Sprintf("%s v%d %s: %s", f.Source.DocumentID, f.Source.Version, f.Source.SectionID, f.Statement))
+	}
+	for _, g := range grounds {
+		if g.Kind != VerificationFeedbackDeclarationDefect {
+			continue
+		}
+		line := "declaration defect"
+		if g.Repository != "" {
+			line += " in " + g.Repository
+		}
+		lines = append(lines, line+": "+g.Message+" ("+g.Path+")")
+	}
+	text := strings.Join(lines, "\n")
+	const marker = "\n[feedback truncated]"
+	if len(text) > VerificationFeedbackDeliveryLimit {
+		cut := VerificationFeedbackDeliveryLimit - len(marker)
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut--
+		}
+		text = text[:cut] + marker
+	}
+	return text
 }
 
 // ValidateVerificationOutcome publishes the stage outcome vocabulary
@@ -289,7 +427,12 @@ func ValidateVerificationSeal(c VerificationCommand, rows []VerificationRow, now
 // after scope authentication and before any staged write.
 func ValidateVerificationOutcome(s VerificationSubmission) error {
 	switch s.Outcome {
-	case "succeeded", "feedback":
+	case "succeeded":
+		return nil
+	case "feedback":
+		if len(s.Feedback) > VerificationCheckpointTextLimit {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFeedbackTooLong, "feedback", verificationRemedyFeedback, "feedback is at most %d bytes; put details in findings.", VerificationCheckpointTextLimit)
+		}
 		return nil
 	case "operator_action_required":
 		if strings.TrimSpace(s.Feedback) == "" || strings.TrimSpace(s.RequiredAction) == "" || len(s.Feedback) > VerificationCheckpointTextLimit || len(s.RequiredAction) > VerificationCheckpointTextLimit {
@@ -398,6 +541,7 @@ func VerificationSealedCommand(c VerificationCommand, mutation VerificationMutat
 			if vc.Result != nil {
 				c.Submission = &vc.Result.Submission
 				c.SealedCheckpoint = vc.Result.Checkpoint
+				c.SealedFeedback = vc.Result.Feedback
 			}
 		}
 	}

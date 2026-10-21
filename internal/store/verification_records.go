@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -210,6 +211,25 @@ func VerificationSnapshotFromRows(rows []VerificationRow, contextID string) (Ver
 // before validating or hashing and produces a complete transaction write set.
 // Adapters discard the write set on every failed check or write.
 func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
+	out, err := prepareVerificationMutation(ctx, source, c, rows, now)
+	var refusal *VerificationRefusal
+	if err != nil && errors.As(err, &refusal) {
+		// component-verification-service: refusal text passes the configured
+		// redaction policy, so no secret can leave in a rule or field.
+		redactor, rerr := redact.WithSecrets(ctx, source, nil)
+		if rerr != nil {
+			return out, refusal.Unwrap()
+		}
+		safe := *refusal
+		safe.Rule, _ = redactor.Redact(safe.Rule)
+		safe.Field, _ = redactor.Redact(safe.Field)
+		safe.Remedy, _ = redactor.Redact(safe.Remedy)
+		return out, &safe
+	}
+	return out, err
+}
+
+func prepareVerificationMutation(ctx context.Context, source redact.SecretSource, c VerificationCommand, rows []VerificationRow, now time.Time) (VerificationMutation, error) {
 	var out VerificationMutation
 	if encoded, err := json.Marshal(c); err != nil || len(encoded) > 8<<20 {
 		return out, ErrVerificationInvalid
@@ -315,7 +335,7 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		if c.Selection != nil {
 			selectionCommand := c
 			selectionCommand.Kind, selectionCommand.ContextID = VerificationRecordSelection, v.ID
-			selected, err := PrepareVerificationMutation(ctx, source, selectionCommand, append(append([]VerificationRow{}, rows...), out.Rows...), now)
+			selected, err := prepareVerificationMutation(ctx, source, selectionCommand, append(append([]VerificationRow{}, rows...), out.Rows...), now)
 			if err != nil {
 				return VerificationMutation{}, err
 			}
@@ -343,6 +363,13 @@ func PrepareVerificationMutation(ctx context.Context, source redact.SecretSource
 				return out, verificationRefuse(ErrVerificationState, VerificationRefusalContextStale)
 			}
 			return out, ErrVerificationState
+		}
+		// component-verification-service: the context is now authenticated as the
+		// claim's own, so citation detail may be returned.
+		if c.Kind == VerificationSeal || c.Kind == VerificationStartAttempt || c.Kind == VerificationRegisterObligation {
+			if err := verifyVerificationCitations(c); err != nil {
+				return out, err
+			}
 		}
 		if c.Access.UserID == "" && c.RunID != "" && (c.Kind == VerificationWriteEvidence || c.Kind == VerificationFinalizeArtifact || c.Kind == VerificationStageChunk || c.Kind == VerificationTerminateAttempt || c.Kind == VerificationPrepareOperation || c.Kind == VerificationObserveOperation) {
 			rr, exists := verificationFind(rows, "verification_attempts", c.RunID)

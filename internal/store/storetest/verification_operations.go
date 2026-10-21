@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -234,6 +235,118 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		if snapshot.Contexts[0].Result.Disposition != "no_selected_kits" {
 			t.Fatal("empty selection was represented as exercise success")
 		}
+	})
+	// component-verification-service v6: discovery and selection validity gate
+	// succeeded only; feedback and checkpoints stay reachable with no eligible kit.
+	t.Run("NoEligibleKitOutcomes", func(t *testing.T) {
+		prepare := func(t *testing.T, state string, kits []verification.KitReceipt, diagnostics []verification.Diagnostic) verificationFixture {
+			v := newVerificationFixture(t, x, true)
+			v.contextID, v.runID = "", ""
+			r := v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "no-eligible-" + state, Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "conveyor", "revision": v.revisions[0].SHA, "state": state})}}})
+			v.contextID = r.ID
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: kits, Diagnostics: diagnostics}, Subjects: []store.VerificationSubjectContract{}}})
+			return v
+		}
+		refuse := func(t *testing.T, v *verificationFixture, submission store.VerificationSubmission, code string) {
+			t.Helper()
+			before := verificationPublicState(t, v)
+			_, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationSeal, Submission: &submission}))
+			var refusal *store.VerificationRefusal
+			if !errors.As(err, &refusal) || refusal.Code != code || refusal.Field == "" || refusal.Rule == "" {
+				t.Fatalf("%s submission: %v, want %s", submission.Outcome, err, code)
+			}
+			if !reflect.DeepEqual(before, verificationPublicState(t, v)) {
+				t.Fatalf("%s refusal changed public state", code)
+			}
+		}
+		feedbackText := func(t *testing.T, v *verificationFixture) string {
+			t.Helper()
+			task, err := x.Backend.GetTask(v.ctx, v.access.TaskID)
+			requireOK(t, err)
+			if task.NextStage == core.StageVerify || task.NextStage == core.StageReview {
+				t.Fatalf("feedback left next stage %s", task.NextStage)
+			}
+			events, err := x.Backend.ListEvents(v.ctx, v.access.TaskID)
+			requireOK(t, err)
+			text := ""
+			for _, e := range events {
+				if strings.HasPrefix(e.Kind, "intervention.") {
+					text += string(e.Payload)
+				}
+			}
+			return text
+		}
+		t.Run("MalformedDeclaration", func(t *testing.T) {
+			invalid := []verification.KitReceipt{{KitID: "integrations", Pins: []verification.Pin{}, Eligibility: "invalid", Reasons: []verification.SelectionReason{{Code: "invalid_entry", Path: "manifest.kits[0].exercises[0].supports[0]", Message: "support must name an AC within a declared requirement pin"}}}}
+			v := prepare(t, "malformed", invalid, []verification.Diagnostic{{Path: "discovery.conveyor", Message: "malformed"}, {Path: "discovery.conveyor.manifest.kits[0].exercises[0].supports[0]", Message: ".conveyor/kits/manifest.yaml: kit integrations, exercise go-test: support must name an AC within a declared requirement pin"}})
+			coverage := verificationFixtureCoverage(v.snapshot(t))
+			refuse(t, &v, store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeDiscoveryNotValid)
+			refuse(t, &v, store.VerificationSubmission{Outcome: "operator_action_required", Coverage: coverage, Feedback: "declaration", RequiredAction: "fix"}, store.VerificationCodeCheckpointUngrounded)
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "feedback", Coverage: coverage, Feedback: "The kit declaration is invalid."}})
+			if text := feedbackText(t, &v); !strings.Contains(text, "exercise go-test") || !strings.Contains(text, "supports[0]") {
+				t.Fatalf("delivered feedback lost the declaration diagnostic: %s", text)
+			}
+			result := v.snapshot(t).Contexts[0].Result
+			if result.Disposition != "discovery_failed" || result.Feedback == nil || result.Feedback.Grounds[0].Kind != store.VerificationFeedbackDeclarationDefect {
+				t.Fatalf("feedback seal = %+v", result)
+			}
+		})
+		for _, discovery := range []struct {
+			state string
+			kits  []verification.KitReceipt
+		}{
+			{"no_manifest", []verification.KitReceipt{}},
+			{"present", []verification.KitReceipt{{KitID: "other", Pins: []verification.Pin{{Kind: "requirement", DocumentID: "req-other", Version: 1}}, StageMatch: true, Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_not_authoritative"}}}}},
+		} {
+			t.Run("PlanFinding/"+discovery.state, func(t *testing.T) {
+				v := prepare(t, discovery.state, discovery.kits, []verification.Diagnostic{})
+				coverage := verificationFixtureCoverage(v.snapshot(t))
+				refuse(t, &v, store.VerificationSubmission{Outcome: "feedback", Coverage: coverage, Feedback: "No failure"}, store.VerificationCodeFeedbackUngrounded)
+				finding := store.VerificationFinding{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}, Statement: "The observation is not retained."}
+				refuse(t, &v, store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage, Findings: []store.VerificationFinding{finding}}, store.VerificationCodeFindingInvalid)
+				v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "feedback", Coverage: coverage, Feedback: "AC-1.1 is unmet.", Findings: []store.VerificationFinding{finding}}})
+				if text := feedbackText(t, &v); !strings.Contains(text, "req-fixture v1 AC-1.1: The observation is not retained.") {
+					t.Fatalf("delivered feedback lost the finding: %s", text)
+				}
+				snapshot := v.snapshot(t)
+				if len(snapshot.Attempts) != 0 || snapshot.Contexts[0].Result.Disposition != "no_selected_kits" {
+					t.Fatal("a finding fabricated an attempt or a disposition")
+				}
+			})
+		}
+		t.Run("UnknownContextIsGeneric", func(t *testing.T) {
+			v := prepare(t, "no_manifest", []verification.KitReceipt{}, []verification.Diagnostic{})
+			coverage := verificationFixtureCoverage(v.snapshot(t))
+			own := v.contextID
+			v.contextID = "0123456789abcdef0123456789abcdef"
+			for _, submission := range []store.VerificationSubmission{
+				{Outcome: "succeeded", Coverage: store.VerificationCoverage{ObligationIDs: []string{}, Justification: "x"}},
+				{Outcome: "succeeded", Coverage: store.VerificationCoverage{ObligationIDs: []string{}, Justification: "x", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "missing"}, Disposition: "not_applicable", Explanation: "x", Subjects: []core.VerificationSubject{}}}}},
+				{Outcome: "blocked", Coverage: coverage},
+			} {
+				submission := submission
+				_, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationSeal, Submission: &submission}))
+				var refusal *store.VerificationRefusal
+				if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) {
+					t.Fatalf("unknown context returned detail: %v", err)
+				}
+			}
+			v.contextID = own
+		})
+		t.Run("DiscoveryUnavailable", func(t *testing.T) {
+			v := prepare(t, "permission", []verification.KitReceipt{}, []verification.Diagnostic{{Path: "discovery.conveyor", Message: "permission"}})
+			coverage := verificationFixtureCoverage(v.snapshot(t))
+			refuse(t, &v, store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeDiscoveryNotValid)
+			refuse(t, &v, store.VerificationSubmission{Outcome: "feedback", Coverage: coverage, Feedback: "unavailable"}, store.VerificationCodeFeedbackUngrounded)
+			v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "operator_action_required", Coverage: coverage, Feedback: "Discovery has no access.", RequiredAction: "Grant the GitHub App access, then recover the verify order."}})
+			order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+			requireOK(t, err)
+			task, err := x.Backend.GetTask(v.ctx, v.access.TaskID)
+			requireOK(t, err)
+			if task.NextStage != core.StageVerify || !order.RetrySuppressed || order.VerificationContextID != "" || order.Checkpoint == nil || order.Checkpoint.Verification == nil || len(order.Checkpoint.Verification.Grounds) != 1 || order.Checkpoint.Verification.Grounds[0].Kind != store.VerificationGroundDiscoveryUnavailable || !strings.Contains(order.Checkpoint.Verification.Grounds[0].Explanation, "permission") {
+				t.Fatalf("unavailable discovery checkpoint = %+v", order.Checkpoint)
+			}
+		})
 	})
 	t.Run("SupersededClaimIsRevoked", func(t *testing.T) {
 		v := newVerificationFixture(t, x)

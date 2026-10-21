@@ -38,24 +38,24 @@ var verificationRefusalText = map[string][2]string{
 	VerificationRefusalGrantRevoked:        {"The grant issued under this request key has been revoked.", "Issue a new grant with a new request key."},
 }
 
-// VerificationRefusal keeps its sentinel for errors.Is while carrying a stable
+// VerificationGrantRefusal keeps its sentinel for errors.Is while carrying a stable
 // operator-facing reason.
-type VerificationRefusal struct {
+type VerificationGrantRefusal struct {
 	Reason string
 	err    error
 }
 
-func (r VerificationRefusal) Error() string { return r.err.Error() + ": " + r.Reason }
-func (r VerificationRefusal) Unwrap() error { return r.err }
+func (r VerificationGrantRefusal) Error() string { return r.err.Error() + ": " + r.Reason }
+func (r VerificationGrantRefusal) Unwrap() error { return r.err }
 
 func verificationRefuse(err error, reason string) error {
-	return VerificationRefusal{Reason: reason, err: err}
+	return VerificationGrantRefusal{Reason: reason, err: err}
 }
 
 // VerificationRefusalDetail returns the stable reason with its fixed message
 // and recovery text when err carries one.
 func VerificationRefusalDetail(err error) (reason, message, recovery string, ok bool) {
-	var r VerificationRefusal
+	var r VerificationGrantRefusal
 	if !errors.As(err, &r) {
 		return "", "", "", false
 	}

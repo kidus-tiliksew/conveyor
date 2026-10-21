@@ -50,15 +50,20 @@ and unresolved operations before submit_verification. Submit the context,
 truthful outcome and completed coverage through that tool. The stage outcome
 is succeeded, feedback or operator_action_required; blocked, waiting, failed,
 timed_out and cancelled are report_verification_outcome states only. Map a
-failed attempt needing a code fix to feedback. Map blocked or waiting attempts,
+failed attempt needing a code fix, an invalid kit declaration, or a finding
+against the approved plan or a served requirement to feedback; send a finding
+in findings with its source, which also appears in coverage.sources. A finding
+runs nothing. Map blocked or waiting attempts,
 unreplayable timed_out or cancelled attempts, subjects never admitted
 (a missing grant after the wait, or a missing local binding, credential or
-host prerequisite) and unresolved operations to
+host prerequisite), unavailable discovery and unresolved operations to
 operator_action_required, with feedback stating the reason and
 required_action stating the exact operator act
 (component-verification-service). Once a context exists, submit that checkpoint rather than calling
 release_work_order; an identical retry from the same claim returns the
-original receipt. Check publication
+original receipt. A refused call names its code, field, rule and remedy;
+correct that field and resubmit. Success is never admitted while discovery
+failed or a kit is invalid. Check publication
 status separately from exercise results. If required capabilities are
 unavailable, report them and release the order with a truthful reason.
 Never fabricate a completed verification result.

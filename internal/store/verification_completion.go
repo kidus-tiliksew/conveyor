@@ -68,7 +68,12 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 				window = 1
 			}
 		}
-		plan := PlanChangesRequested(ChangesRequestedInput{TaskID: task.ID, JobID: job.ID, ActorID: actor.ID, ActorRole: actor.Role, ReasonCode: "verification-failed", Feedback: c.Submission.Feedback, Source: "verification", Count: count, Window: window, MaxBounces: task.SetupContract.MaxBounces, Requeue: core.TaskStageAdvance, EnforceLimit: true, At: now})
+		delivered := c.Submission.Feedback
+		if c.SealedFeedback != nil && c.SealedFeedback.Text != "" {
+			// component-verification-service: feedback, findings, and declaration diagnostics.
+			delivered = c.SealedFeedback.Text
+		}
+		plan := PlanChangesRequested(ChangesRequestedInput{TaskID: task.ID, JobID: job.ID, ActorID: actor.ID, ActorRole: actor.Role, ReasonCode: "verification-failed", Feedback: delivered, Source: "verification", Count: count, Window: window, MaxBounces: task.SetupContract.MaxBounces, Requeue: core.TaskStageAdvance, EnforceLimit: true, At: now})
 		command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
 		out.Events = append(out.Events, plan.Events...)
 		out.Intervention = &plan.Intervention

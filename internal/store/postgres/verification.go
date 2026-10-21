@@ -118,6 +118,7 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 		if err = store.VerifyVerificationAuthority(c, authority, order); err != nil {
 			return err
 		}
+		store.BindVerificationAuthority(&c, authority, order)
 		records, err := q.ListVerificationRecords(ctx, workspace(ctx), c.Access.TaskID)
 		if err != nil {
 			return err

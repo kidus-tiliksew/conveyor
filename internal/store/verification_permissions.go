@@ -139,9 +139,13 @@ func verificationPermissionMutation(c VerificationCommand, rows []VerificationRo
 }
 
 func verificationLiveGrant(rows []VerificationRow, vc VerificationContext, id string, subject core.VerificationSubject) (VerificationPermissionGrant, error) {
+	// component-verification-service: scope is authenticated before this
+	// check, so a refusal names the grant rule. An absent grant and a grant of
+	// another context, attempt, subject, digest, or revision set answer alike.
+	missing := verificationRefusal(ErrVerificationAccess, VerificationCodeGrantMissing, "grant_id", VerificationMissingGrantRemedy(vc.WorkOrderID, vc.ID), "no unrevoked grant of context %s matches %s.", vc.ID, verificationSubjectName(subject))
 	r, ok := verificationFind(rows, "verification_permission_grants", id)
 	if !ok || r.ContextID != vc.ID || r.TaskID != vc.TaskID {
-		return VerificationPermissionGrant{}, fmt.Errorf("%w: missing work-order permission grant", ErrVerificationAccess)
+		return VerificationPermissionGrant{}, missing
 	}
 	g := verificationDecode[VerificationPermissionGrant](r)
 	contract, err := verificationContract(rows, vc.ID, subject)
@@ -149,10 +153,10 @@ func verificationLiveGrant(rows []VerificationRow, vc VerificationContext, id st
 		return g, err
 	}
 	if g.WorkspaceID != vc.WorkspaceID || g.WorkOrderID != vc.WorkOrderID || g.WorkOrderAttemptID != vc.WorkOrderAttemptID || !verificationEqual(g.Revisions, vc.Revisions) || !verificationEqual(g.Subject, subject) || g.ContractDigest != verificationHash(verificationJSON(contract)) {
-		return g, ErrVerificationAccess
+		return g, missing
 	}
 	if verificationGrantRevoked(rows, id) {
-		return g, fmt.Errorf("%w: permission grant revoked", ErrVerificationAccess)
+		return g, verificationRefusal(ErrVerificationAccess, VerificationCodeGrantRevoked, "grant_id", VerificationMissingGrantRemedy(vc.WorkOrderID, vc.ID), "grant %s was revoked.", id)
 	}
 	return g, nil
 }

@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -128,6 +131,9 @@ type VerificationSubmitRequest struct {
 	Coverage       store.VerificationCoverage `json:"coverage"`
 	Feedback       string                     `json:"feedback,omitempty"`
 	RequiredAction string                     `json:"required_action,omitempty"`
+	// Findings are sourced plan or requirement findings for outcome feedback
+	// (component-verification-service).
+	Findings []store.VerificationFinding `json:"findings,omitempty"`
 }
 
 // VerificationRequestType is the shared wire contract for REST, MCP and worker
@@ -245,16 +251,13 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	}
 	write := operation != "get_verification_context" && operation != "get_verification_publication" && operation != "read_verification_evidence"
 	var backend store.VerificationStore
-	var replay bool
 	var a store.VerificationAccess
 	var o core.WorkOrder
 	var err error
 	if operation != "get_evidence_schemas" {
 		backend, a, o, err = s.verificationAccess(ctx, id, session, token, write && operation != "submit_verification")
 		if err != nil && operation == "submit_verification" {
-			if backend, a, o, err = s.verificationCheckpointReplayAccess(ctx, id, session, token); err == nil {
-				replay = true
-			}
+			backend, a, o, err = s.verificationCheckpointReplayAccess(ctx, id, session, token)
 		}
 		if err != nil {
 			return nil, err
@@ -290,15 +293,9 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 		command.Observation = &store.VerificationOperationObservation{State: r.Outcome, Source: r.Source, CapturedAt: r.CapturedAt, ProviderReference: r.ProviderReference}
 	case *VerificationSubmitRequest:
 		command.Kind, command.ContextID = store.VerificationSeal, r.ContextID
-		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback, RequiredAction: r.RequiredAction}
-		// component-verification-service: scope is already authenticated; refuse before any staged write.
-		if err := store.ValidateVerificationOutcome(*command.Submission); err != nil {
-			if replay {
-				// A retained-claim replay is not yet authenticated: no remedy detail.
-				return nil, store.ErrVerificationAccess
-			}
-			return nil, err
-		}
+		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback, RequiredAction: r.RequiredAction, Findings: r.Findings}
+		// component-verification-service: the store validates the outcome after it
+		// authenticates the claim and the context, before any staged write.
 
 	case *VerificationPrepareRequest:
 		return s.prepareVerification(ctx, backend, a, o, *r)
@@ -459,6 +456,9 @@ func (s *Service) prepareVerification(ctx context.Context, b store.VerificationS
 		receipt := verification.Evaluate(manifest, verification.SelectionContext{Pins: selectionPins, Stage: "verify", ManifestRevision: source.SHA, SourceRevision: source.SHA}, d.Trees)
 		if d.State != "present" && d.State != "no_manifest" {
 			receipt.Diagnostics = append(receipt.Diagnostics, verification.Diagnostic{Path: "discovery." + source.Repository, Message: d.State})
+			if d.State == "malformed" && d.Manifest != nil {
+				receipt.Diagnostics = append(receipt.Diagnostics, verificationDeclarationDiagnostics(source.Repository, d.Manifest)...)
+			}
 		}
 		for _, selected := range receipt.Kits {
 			if seenKits[selected.KitID] {
@@ -551,4 +551,64 @@ func (s *Service) ExpireVerificationChunks(ctx context.Context, limit int) (int,
 		return 0, nil
 	}
 	return b.ExpireVerificationChunks(store.WithActor(ctx, store.SystemActor("verification-reconciler")), limit)
+}
+
+// Bounds for copied declaration diagnostics (component-verification-service).
+const (
+	verificationDeclarationDiagnosticLimit = 100
+	verificationDeclarationMessageLimit    = 512
+)
+
+var verificationDiagnosticIndex = regexp.MustCompile(`^manifest\.kits\[(\d+)\](?:\.exercises\[(\d+)\])?`)
+
+// verificationDeclarationDiagnostics copies a malformed manifest's parser
+// diagnostics with repository, manifest path, kit, exercise, and field path, so
+// a verifier can report what is wrong and where (component-verification-service;
+// req-verification-kits AC-1.3).
+func verificationDeclarationDiagnostics(repository string, m *verification.Manifest) []verification.Diagnostic {
+	all := append([]verification.Diagnostic{}, m.Diagnostics...)
+	for _, kit := range m.Kits {
+		all = append(all, kit.Diagnostics...)
+	}
+	out := []verification.Diagnostic{}
+	seen := map[verification.Diagnostic]bool{}
+	for _, d := range all {
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		if len(out) == verificationDeclarationDiagnosticLimit {
+			omitted := 0
+			for _, rest := range all {
+				if !seen[rest] {
+					omitted++
+					seen[rest] = true
+				}
+			}
+			out = append(out, verification.Diagnostic{Path: "discovery." + repository + ".truncated", Message: strconv.Itoa(omitted+1) + " further diagnostics omitted"})
+			break
+		}
+		identity := ""
+		if match := verificationDiagnosticIndex.FindStringSubmatch(d.Path); match != nil {
+			if k, err := strconv.Atoi(match[1]); err == nil && k < len(m.Kits) && m.Kits[k].ID != "" {
+				identity = "kit " + m.Kits[k].ID
+				if match[2] != "" {
+					if e, err := strconv.Atoi(match[2]); err == nil && e < len(m.Kits[k].Exercises) && m.Kits[k].Exercises[e].ID != "" {
+						identity += ", exercise " + m.Kits[k].Exercises[e].ID
+					}
+				}
+				identity += ": "
+			}
+		}
+		message := ".conveyor/kits/manifest.yaml: " + identity + d.Message
+		if len(message) > verificationDeclarationMessageLimit {
+			cut := verificationDeclarationMessageLimit - 3
+			for cut > 0 && !utf8.RuneStart(message[cut]) {
+				cut--
+			}
+			message = message[:cut] + "..."
+		}
+		out = append(out, verification.Diagnostic{Path: "discovery." + repository + "." + d.Path, Message: message})
+	}
+	return out
 }

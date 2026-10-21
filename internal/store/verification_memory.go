@@ -64,6 +64,7 @@ func (m *volatileMemory) applyVerification(ctx context.Context, lease taskops.Ta
 	if err = VerifyVerificationAuthority(c, authority, m.workOrders[c.Access.WorkOrderID]); err != nil {
 		return VerificationReceipt{}, err
 	}
+	BindVerificationAuthority(&c, authority, m.workOrders[c.Access.WorkOrderID])
 	ws, _ := WorkspaceFromContext(ctx)
 	rows := m.verificationRowsLocked(ws, c.Access.TaskID)
 	c.SubmittedHeadSHA = m.workOrders[c.Access.WorkOrderID].HeadSHA
