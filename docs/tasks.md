@@ -349,6 +349,11 @@ bands, paging headers, `document_proposal` items, and an `acts` log. Each
 `proposed_at` at read time (zero for a future time, omitted without one), and
 the server's `label`, `question`, and `if_ignored` text. `if_ignored` reads
 "The claim stays withheld." only for a version a task's claim waits on.
+Each task item's `pull_request` is the task's recorded pull request (`url`,
+`number`, `repository` from its latest `pull_request.opened`), omitted when
+none is recorded; the task's GitHub issue stays on `task.github`. The bounded
+task detail's `summaries.park_reason` states what triage recorded when it
+parked the task, and `summaries.dispatch_failure` the latest dispatch failure.
 Pending proposals expose `attention.task_count` and
 `attention.operator_decisions` from that same projection.
 

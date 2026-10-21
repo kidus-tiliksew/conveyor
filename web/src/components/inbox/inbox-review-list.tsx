@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { InboxItem } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
+import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
 import type { InboxSearch } from './inbox-search'
 import { inboxItemKey } from './inbox-selection'
@@ -109,8 +110,7 @@ function describeRow(item: InboxItem) {
       age: proposalAge(proposal),
     }
   }
-  const pullRequest = item.pull_request
-  const meta = pullRequest?.issue_number != null ? `${pullRequest.repository}#${pullRequest.issue_number}` : 'No PR yet'
+  const meta = item.pull_request ? pullRequestLabel(item.pull_request) : 'No PR yet'
   return {
     kind: item.next_action?.label ?? 'Decision',
     title: item.task?.title ?? '',

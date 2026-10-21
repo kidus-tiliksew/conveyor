@@ -11,28 +11,36 @@ import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
 import { Input, Textarea } from '../ui/input'
 
+// The one restart dialog: the task header's Start over and a `start_over`
+// next-action choice open it (component-web-task-surfaces, Task header).
+// Without `onRestarted` a success opens the successor task; with it the
+// caller stays where it is, as the Inbox does (feature-operator-next-action NA-6).
 export function TaskRestartControl({
   item,
   variant,
   onClose,
+  onRestarted,
 }: {
   item: ActivityItem
   variant: TaskRouteVariant
   onClose: () => void
+  onRestarted?: (successorId: string) => void
 }) {
   const canOperate = useWorkspaceCapability('operate_gates')
   if (!canOperate || item.task.state === 'merged' || item.task.state === 'closed') return null
-  return <TaskRestartDialog item={item} variant={variant} onClose={onClose} />
+  return <TaskRestartDialog item={item} variant={variant} onClose={onClose} onRestarted={onRestarted} />
 }
 
 function TaskRestartDialog({
   item,
   variant,
   onClose,
+  onRestarted,
 }: {
   item: ActivityItem
   variant: TaskRouteVariant
   onClose: () => void
+  onRestarted?: (successorId: string) => void
 }) {
   const id = useId()
   const [reason, setReason] = useState('')
@@ -58,6 +66,11 @@ function TaskRestartDialog({
     onSuccess: async (result) => {
       for (const key of ['task', 'activity', 'pending-proposals', 'task-operations', 'tasks', 'workspace']) {
         void queryClient.invalidateQueries({ queryKey: [key, workspace] })
+      }
+      if (onRestarted) {
+        onClose()
+        onRestarted(result.successor.id)
+        return
       }
       queryClient.setQueryData(['task-restart-notice', workspace, result.successor.id], Date.now())
       await navigate({ to: relatedTaskRoute(variant), params: { taskId: result.successor.id } })

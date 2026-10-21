@@ -9,7 +9,7 @@ import type {
   SpecVersion,
   SystemDesignView,
 } from '../../lib/types'
-import { absoluteTime } from '../../lib/utils'
+import { absoluteTime, relativeTime } from '../../lib/utils'
 import { usePendingProposals, useWorkspaceSelection } from '../app-shell'
 import { SpecCard } from '../task/spec-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
@@ -58,6 +58,8 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
     )
   if (kind === 'agent_question') return <CheckpointContext item={item} />
   if (kind === 'context_proposal') return <ProposedContext item={item} />
+  if (kind === 'parked') return <ParkReason item={item} />
+  if (kind === 'dispatch_exhausted') return <DispatchFailure item={item} />
   // Newest first, so `find` reads the latest run of a stage.
   const jobs = buildTimeline(item)
     .filter((entry): entry is JobEntry => entry.type === 'job')
@@ -92,6 +94,67 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
     )
   }
   return <p className="text-sm text-muted">Open the task for its full history.</p>
+}
+
+// What triage recorded when it parked the task, read from the bounded
+// detail's complete-ledger summary, never the event page
+// (feature-operator-next-action NA-6; component-http-api, Bounded detail view).
+function ParkReason({ item }: { item: ActivityItem }) {
+  const reason = item.summaries?.park_reason
+  if (!reason) return <p className="text-sm text-muted">Triage recorded no reason.</p>
+  const lists = [
+    { label: 'Open questions', entries: reason.questions ?? [] },
+    { label: 'Risks', entries: reason.risks ?? [] },
+  ].filter((list) => list.entries.length > 0)
+  return (
+    <div className="space-y-2" data-park-reason>
+      <section aria-label="Triage summary" className="rounded-lg border border-border px-3 py-3">
+        <h4 className="text-xs font-medium text-muted">Triage summary</h4>
+        <p className="mt-1 whitespace-pre-wrap break-words text-sm">{reason.summary || 'Triage stated no summary.'}</p>
+      </section>
+      {lists.map((list) => (
+        <section key={list.label} aria-label={list.label} className="rounded-lg border border-border px-3 py-3">
+          <h4 className="text-xs font-medium text-muted">{list.label}</h4>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm">
+            {list.entries.map((entry, index) => (
+              <li key={`${index}:${entry}`} className="break-words">
+                {entry}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+      <p className="text-xs text-faint">
+        Recorded by triage <time dateTime={reason.at}>{relativeTime(reason.at)}</time>
+        {reason.truncated ? ' · shortened; open the task for the full text' : ''}
+      </p>
+    </div>
+  )
+}
+
+// The dispatch failure that exhausted dispatch: the latest recorded one.
+function DispatchFailure({ item }: { item: ActivityItem }) {
+  const failure = item.summaries?.dispatch_failure
+  if (!failure) return <p className="text-sm text-muted">Dispatch recorded no failure.</p>
+  return (
+    <div className="space-y-2" data-dispatch-failure>
+      <section aria-label="Last dispatch failure" className="rounded-lg border border-border px-3 py-3">
+        <h4 className="text-xs font-medium text-muted">
+          Last dispatch failure
+          {failure.attempt != null && failure.max_attempts != null
+            ? ` · Attempt ${failure.attempt} of ${failure.max_attempts}`
+            : ''}
+        </h4>
+        <p className="mt-1 whitespace-pre-wrap break-words rounded-md bg-failure-soft px-2.5 py-2 font-mono text-xs text-failure">
+          {failure.error}
+        </p>
+      </section>
+      <p className="text-xs text-faint">
+        Recorded by dispatch <time dateTime={failure.at}>{relativeTime(failure.at)}</time>
+        {failure.truncated ? ' · shortened; open the task for the full text' : ''}
+      </p>
+    </div>
+  )
 }
 
 function CheckpointContext({ item }: { item: ActivityItem }) {
