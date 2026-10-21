@@ -500,6 +500,34 @@ func TestRequirementInsightAuthorizationAndWorkspaceIsolation(t *testing.T) {
 	if response := h.call(http.MethodPost, "viewer", "demo", insightPath(insightRequirementID, "summary")); response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
 		t.Fatalf("viewer POST status=%d body=%s", response.Code, response.Body.String())
 	}
+	// The workspace header selects the workspace as the query does, and a
+	// header that disagrees with the query is refused before any read.
+	for _, route := range routes {
+		headerOnly := httptest.NewRequest(route.method, insightPath(insightRequirementID, route.view), nil)
+		headerOnly.Header.Set("Authorization", "Bearer viewer")
+		headerOnly.Header.Set("X-Workspace-ID", "other")
+		response := httptest.NewRecorder()
+		h.server.Handler().ServeHTTP(response, headerOnly)
+		if response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
+			t.Fatalf("header-selected unbound %s %s status=%d body=%s", route.method, route.view, response.Code, response.Body.String())
+		}
+		conflicting := httptest.NewRequest(route.method, insightPath(insightRequirementID, route.view)+"?workspace_id=demo", nil)
+		conflicting.Header.Set("Authorization", "Bearer creator")
+		conflicting.Header.Set("X-Workspace-ID", "other")
+		response = httptest.NewRecorder()
+		h.server.Handler().ServeHTTP(response, conflicting)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "workspace_conflict") {
+			t.Fatalf("conflicting workspace %s %s status=%d body=%s", route.method, route.view, response.Code, response.Body.String())
+		}
+	}
+	headerRead := httptest.NewRequest(http.MethodGet, insightPath(insightRequirementID, "progress"), nil)
+	headerRead.Header.Set("Authorization", "Bearer creator")
+	headerRead.Header.Set("X-Workspace-ID", "other")
+	headerResponse := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(headerResponse, headerRead)
+	if headerResponse.Code != http.StatusOK || headerResponse.Body.String() != h.call(http.MethodGet, "creator", "other", insightPath(insightRequirementID, "progress")).Body.String() {
+		t.Fatalf("header-selected read status=%d body=%s", headerResponse.Code, headerResponse.Body.String())
+	}
 	request := httptest.NewRequest(http.MethodPost, insightPath(insightRequirementID, "summary")+"?workspace_id=demo", nil)
 	request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: "session-secret"})
 	refused := httptest.NewRecorder()
