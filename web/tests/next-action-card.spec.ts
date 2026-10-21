@@ -844,10 +844,8 @@ test('the next-action card decides task-context proposals through its compact ch
     await expect(
       card.getByRole('checkbox', { name: `Confirm ${target.title} (${tierWords[target.kind]})` }),
     ).toBeChecked()
-  await expect(rows.nth(0).getByRole('link', { name: contextTargets[0].title })).toHaveAttribute(
-    'href',
-    `/requirements?requirement=${contextTargets[0].id}`,
-  )
+  await expect(rows.nth(0).getByRole('button', { name: contextTargets[0].title, exact: true })).toBeVisible()
+  await expect(rows.nth(0).getByRole('button', { name: `Preview ${contextTargets[0].title}` })).toBeVisible()
   await expect(rows.nth(0)).not.toContainText('Triage suggests')
   await rows.nth(0).getByRole('button', { name: 'Show why' }).click()
   await expect(rows.nth(0)).toContainText('Triage suggests Task-centric operations view')
@@ -942,7 +940,7 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
       expect(box.x + box.width).toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5)
     }
     // The longest title stays on one line, truncated.
-    const longest = card.getByRole('link', { name: contextTargets[2].title })
+    const longest = card.getByRole('button', { name: contextTargets[2].title, exact: true })
     const lines = await longest.evaluate(
       (node) => node.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(node).lineHeight),
     )
@@ -1085,4 +1083,54 @@ test('a parked next action shows one choice row and Start over opens the success
   await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
   await expect(page).toHaveURL(/\/tasks\/T-successor\/full/)
   expect(restart).toMatchObject({ reason: 'Scope changed' })
+})
+
+// The compact rows open the shared document preview panel over the task
+// sheet; Escape closes only the panel and returns focus to the opener
+// (feature-operator-next-action NA-6; component-web-task-surfaces).
+test('a compact row opens the document preview over the task sheet, and Escape closes only the panel', async ({
+  page,
+}) => {
+  const action = contextProposalAction()
+  const posts = await mockAPI(
+    page,
+    () => contextProposalDetail(action),
+    () => action,
+  )
+  await page.route(`**/v1/system-designs/${contextTargets[1].id}*`, (route) =>
+    route.fulfill({
+      json: {
+        document: { id: contextTargets[1].id, title: contextTargets[1].title },
+        current_version: {
+          version: 33,
+          content: '# Testing strategy\n\n## Scope\n\nScope text.\n\n## Evidence\n\nEvidence text.',
+          confirmed_at: timestamp,
+        },
+        pending_versions: [],
+        versions: [],
+      },
+    }),
+  )
+  await page.goto(`/tasks/${taskId}`)
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  const card = sheet.getByRole('region', { name: 'Next action' })
+  const opener = card.getByRole('button', { name: `Preview ${contextTargets[1].title}` })
+  await opener.click()
+  const panel = page.getByRole('dialog', { name: `Preview: ${contextTargets[1].title}` })
+  await expect(panel.locator('[data-preview-version]')).toContainText('v33')
+  await expect(panel.locator('[data-outline-entry]')).toHaveText(['Testing strategy', 'Scope', 'Evidence'])
+  await expect(panel.locator('[data-preview-position]')).toHaveText('2 of 3 proposed')
+  await expect(card.locator('[data-context-proposal]').nth(1)).toHaveAttribute('data-current', 'true')
+  await panel.locator('[data-preview-attach]').uncheck()
+  await expect(card.locator('[data-context-apply]')).toHaveText('Attach 2 · dismiss 1')
+
+  await page.keyboard.press('Escape')
+  await expect(panel).toHaveCount(0)
+  await expect(sheet).toBeVisible()
+  await expect(opener).toBeFocused()
+
+  // The compact title opens the same panel.
+  await card.getByRole('button', { name: contextTargets[1].title, exact: true }).click()
+  await expect(page.getByRole('dialog', { name: `Preview: ${contextTargets[1].title}` })).toBeVisible()
+  expect(posts).toEqual([])
 })
