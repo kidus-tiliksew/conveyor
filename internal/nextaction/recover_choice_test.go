@@ -82,3 +82,57 @@ func refusedWith(refusals []Refusal, id, text string) bool {
 	}
 	return false
 }
+
+// A triage-parked task offers Recover on the task-scoped redispatch route
+// with no current order, first and allowed only under recover_work, while the
+// order-scoped recover of the stalled and agent-question sets still refuses
+// without an order (feature-operator-next-action NA-3; req-operator-next-action
+// AC-1.4; task 261021-cd3bf8).
+func TestParkedRecoverNeedsNoOrder(t *testing.T) {
+	now := time.Date(2026, 10, 21, 7, 0, 0, 0, time.UTC)
+	parked := Input{Task: core.Task{ID: "t", State: core.TaskParked}, Markers: Markers{ParkCommand: "triage.park"}, Capabilities: allCaps(), Now: now}
+	got := Project(parked)
+	if got.Kind != KindParked {
+		t.Fatalf("kind = %s, want parked", got.Kind)
+	}
+	ids := make([]string, 0, len(got.Choices))
+	for _, choice := range got.Choices {
+		ids = append(ids, choice.ID)
+	}
+	if len(ids) != 3 || ids[0] != "recover" || ids[1] != "close" || ids[2] != "start_over" {
+		t.Fatalf("choices = %q, want recover, close, start_over (refusals %+v)", ids, got.Details.Refusals)
+	}
+	recover := got.Choices[0]
+	if recover.Method != "POST" || recover.Path != "/v1/tasks/t/redispatch" || recover.Capability != string(core.CapabilityRecoverWork) || !recover.Allowed {
+		t.Fatalf("recover = %+v, want an allowed POST /v1/tasks/t/redispatch under recover_work", recover)
+	}
+	for _, refusal := range got.Details.Refusals {
+		if refusal.Choice == "recover" {
+			t.Fatalf("parked recover refused: %+v", refusal)
+		}
+	}
+
+	withoutRecover := parked
+	withoutRecover.Capabilities = map[core.Capability]bool{core.CapabilityOperateGates: true}
+	denied := Project(withoutRecover)
+	if len(denied.Choices) == 0 || denied.Choices[0].ID != "recover" || denied.Choices[0].Allowed {
+		t.Fatalf("without recover_work: choices = %+v, want recover listed and not allowed", denied.Choices)
+	}
+
+	in := Input{Task: core.Task{ID: "t", State: core.TaskRunning}, Capabilities: allCaps(), Now: now}
+	for name, specs := range map[string][]ChoiceSpec{"stalled": stalledChoices(), "agent question": answerChoices()} {
+		choices, refusals := selectChoices(in, specs, nil)
+		for _, choice := range choices {
+			if choice.ID == "recover" || choice.ID == "answer" {
+				t.Fatalf("%s: order-scoped %s offered without an order", name, choice.ID)
+			}
+		}
+		id := "recover"
+		if name == "agent question" {
+			id = "answer"
+		}
+		if !refusedWith(refusals, id, "no order to recover") {
+			t.Fatalf("%s: refusals = %+v, want %s refused with no order to recover", name, refusals, id)
+		}
+	}
+}

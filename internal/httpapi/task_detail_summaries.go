@@ -261,6 +261,8 @@ type taskDetailSummaries struct {
 	PlanRevisionRequest          *taskPlanRevisionRequest  `json:"plan_revision_request,omitempty"`
 	LatestReviewCompletedEventID string                    `json:"latest_review_completed_event_id,omitempty"`
 	TriageFailure                *taskTriageFailure        `json:"triage_failure,omitempty"`
+	ParkReason                   *taskParkReason           `json:"park_reason,omitempty"`
+	DispatchFailure              *taskDispatchFailure      `json:"dispatch_failure,omitempty"`
 	JobResults                   map[string]*taskJobResult `json:"job_results"`
 	ReviewResults                taskReviewResults         `json:"review_results"`
 	ReviewRounds                 taskReviewRounds          `json:"review_rounds"`
@@ -331,6 +333,31 @@ type taskTriageFailure struct {
 	At         string                `json:"at,omitempty"`
 	Truncated  bool                  `json:"truncated,omitempty"`
 }
+
+// taskParkReason is what the latest triage recorded when it parked the task
+// (component-http-api, Bounded detail view; feature-operator-next-action NA-6).
+type taskParkReason struct {
+	Summary   string   `json:"summary"`
+	Questions []string `json:"questions"`
+	Risks     []string `json:"risks"`
+	EventID   string   `json:"event_id"`
+	At        string   `json:"at"`
+	Truncated bool     `json:"truncated,omitempty"`
+}
+
+// taskDispatchFailure is the latest recorded dispatch failure, the one that
+// exhausted dispatch when the task parked by dispatch.fail_final.
+type taskDispatchFailure struct {
+	Error       string    `json:"error"`
+	Attempt     *jsNumber `json:"attempt,omitempty"`
+	MaxAttempts *jsNumber `json:"max_attempts,omitempty"`
+	EventID     string    `json:"event_id"`
+	At          string    `json:"at"`
+	Truncated   bool      `json:"truncated,omitempty"`
+}
+
+// parkReasonListMax bounds the questions and risks a park reason carries.
+const parkReasonListMax = 20
 
 type taskSummaryText struct {
 	Text      string `json:"text"`
@@ -567,7 +594,7 @@ var summaryKinds = map[string]bool{
 	"pipeline.bounced": true, "work_order.claimed": true, "work_order.plan_revision_requested": true,
 	"review.completed": true, "job.failed": true, "job.summary": true, "triage.completed": true,
 	"triage.output_invalid": true, "spec.output_invalid": true, "review.output_invalid": true,
-	store.ReviewSummaryRecordedEvent: true,
+	store.ReviewSummaryRecordedEvent: true, "dispatch.failed": true,
 }
 
 // deriveTaskDetailSummaries reproduces the dashboard's selection rules in
@@ -667,6 +694,24 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 			}
 		case "work_order.plan_revision_requested":
 			lastPlanRevision, lastPlanRevisionPayload = &ordered[i], payload
+		case "triage.completed":
+			// The latest triage decides: a later run that proceeds clears an
+			// earlier park reason.
+			summaries.ParkReason = parkReasonFrom(payload, eventID, at)
+		case "dispatch.failed":
+			if text, _ := payload.str("error"); text != "" {
+				failure := &taskDispatchFailure{EventID: eventID, At: at}
+				failure.Error, failure.Truncated = truncateSummaryText(text)
+				if number, ok := payload.num("attempt"); ok {
+					value := jsNumber(number)
+					failure.Attempt = &value
+				}
+				if number, ok := payload.num("max_attempts"); ok {
+					value := jsNumber(number)
+					failure.MaxAttempts = &value
+				}
+				summaries.DispatchFailure = failure
+			}
 		case "review.completed":
 			summaries.LatestReviewCompletedEventID = eventID
 			review := taskReviewResult{Verdict: reviewVerdict(payload), At: at, EventID: eventID}
@@ -722,6 +767,41 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 	summaries.TriageFailure = deriveTriageFailure(ordered, jobs, orders)
 	summaries.ReviewRoundSummaries = deriveReviewRoundSummaries(ordered)
 	return summaries
+}
+
+// parkReasonFrom reads a triage.completed payload. It returns nil unless the
+// route is parked. The summary, questions, and risks keep their recorded
+// order; empty and non-string entries are dropped, each list keeps at most
+// parkReasonListMax entries, and every text follows truncateSummaryText.
+func parkReasonFrom(payload summaryPayload, eventID, at string) *taskParkReason {
+	if route, _ := payload.str("route"); route != "parked" {
+		return nil
+	}
+	reason := &taskParkReason{EventID: eventID, At: at, Questions: []string{}, Risks: []string{}}
+	text, _ := payload.str("summary")
+	reason.Summary, reason.Truncated = truncateSummaryText(jsTrim(text))
+	brief, _ := payload["brief"].(map[string]any)
+	list := func(key string) []string {
+		entries, _ := brief[key].([]any)
+		out := []string{}
+		for _, entry := range entries {
+			value, ok := entry.(string)
+			if value = jsTrim(value); !ok || value == "" {
+				continue
+			}
+			if len(out) == parkReasonListMax {
+				reason.Truncated = true
+				break
+			}
+			cut, truncated := truncateSummaryText(value)
+			reason.Truncated = reason.Truncated || truncated
+			out = append(out, cut)
+		}
+		return out
+	}
+	reason.Questions = list("questions")
+	reason.Risks = list("risks")
+	return reason
 }
 
 // userRequestChangesSource is the bounce source the merge-gate

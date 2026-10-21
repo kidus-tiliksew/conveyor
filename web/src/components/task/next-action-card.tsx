@@ -66,7 +66,7 @@ export function NextActionCard({
           {execution && <ExecutionTitle state={execution} />}
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
-          {!gateOpen && <GateChoices taskId={item.task.id} action={action} />}
+          {!gateOpen && <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />}
           {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
           <NextActionDeadline deadline={action.deadline} />
           {execution?.order.state === 'claimed' && execution.order.activity_snapshot && (

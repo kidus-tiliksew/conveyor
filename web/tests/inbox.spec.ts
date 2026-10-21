@@ -155,10 +155,9 @@ function decisionsFixture(): Fixture {
           deadline: soon,
         },
         pull_request: {
-          task_id: 'T-zeta',
+          url: 'https://github.com/acme/conveyor/pull/77',
+          number: 77,
           repository: 'acme/conveyor',
-          issue_number: 77,
-          issue_url: 'https://github.com/acme/conveyor/pull/77',
         },
         serves: ['REQ-2', 'REQ-6'],
         recommendation: 'Approve: the plan covers every criterion.',
@@ -268,6 +267,8 @@ function decisionsFixture(): Fixture {
 // The decision list's rows, in the server's order, and the selected item's
 // detail view (req-operator-next-action AC-2.8; DEC-82).
 const decisionRows = (page: Page) => page.getByRole('region', { name: 'Decisions' }).locator('[data-inbox-row]')
+// The whole row item: the selection link plus the meta line beside it.
+const rowItems = (page: Page) => page.getByRole('region', { name: 'Decisions' }).locator('[data-inbox-row-item]')
 const decisionDetail = (page: Page) => page.locator('[data-inbox-detail] [data-inbox-item]')
 
 // Selects the row whose text matches and waits for its detail view.
@@ -290,8 +291,8 @@ test('bands render in server order with the decision detail the server states', 
   // A row carries no choice control (DEC-82(1)); the first item is selected.
   await expect(decisionRows(page).getByRole('button')).toHaveCount(0)
   await expect(decisionRows(page).first()).toHaveAttribute('aria-current', 'true')
-  await expect(decisionRows(page).nth(1)).toContainText('No PR yet')
-  await expect(decisionRows(page).first()).toContainText('acme/conveyor#77')
+  await expect(rowItems(page).nth(1)).toContainText('No PR yet')
+  await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveText('acme/conveyor PR #77')
   const bands = page.locator(
     'section[aria-label="Decisions"], section[aria-label="Blocked"], section[aria-label="Automatic"]',
   )
@@ -304,7 +305,7 @@ test('bands render in server order with the decision detail the server states', 
 
   const card = decisionDetail(page)
   await expect(card.getByText('Approve the plan', { exact: true })).toBeVisible()
-  await expect(card.getByRole('link', { name: 'acme/conveyor#77' })).toHaveAttribute(
+  await expect(card.getByRole('link', { name: 'acme/conveyor PR #77' })).toHaveAttribute(
     'href',
     'https://github.com/acme/conveyor/pull/77',
   )
@@ -2184,8 +2185,12 @@ test('c on a merge approval opens the merge confirmation and never merges by its
   }
   const harness = await serve(page, fixture)
   await page.goto('/inbox')
-  await expect(decisionDetail(page).locator('[data-merge-hint]')).toContainText('opens Merge')
-  await expect(decisionDetail(page).locator('[data-shortcut="c"]')).toHaveCount(0)
+  // The merge button carries the c hint beside it, like every bound control.
+  const merge = decisionDetail(page).locator('[data-merge-at-gate]')
+  await expect(merge).toHaveAttribute('data-shortcut', 'c')
+  await expect(merge.locator('xpath=..').locator('[data-kbd-hint]')).toHaveText('c')
+  await expect(decisionDetail(page).locator('[data-merge-hint]')).toHaveCount(0)
+  await expect(decisionDetail(page).locator('[data-shortcut="c"]')).toHaveCount(1)
   await page.keyboard.press('c')
   await expect(page.getByRole('dialog', { name: 'Confirm merge' })).toBeVisible()
   expect(harness.posts).toHaveLength(0)
@@ -2210,4 +2215,279 @@ test('below md the list and the detail show one at a time, and Back keeps the ot
   await expect(page.locator('[data-inbox-detail]')).toBeHidden()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
+})
+
+// A parked decision, a dispatch-exhausted decision and an ordinary plan gate,
+// for the choice-row, context and Start over cases (task 261021-cd3bf8).
+function parkedFixture(): Fixture {
+  const parkedChoices = [
+    { ...choice('recover', 'Recover', '/v1/tasks/T-parked/redispatch'), capability: 'recover_work' },
+    { ...choice('close', 'Close', '/v1/tasks/T-parked/close'), capability: 'operate_gates' },
+    { ...choice('start_over', 'Start over', '/v1/tasks/T-parked/restart'), capability: 'operate_gates' },
+  ]
+  const compact = (kind: string, label: string) => ({ kind, label, actor: 'operator', judgment: true, summary: '' })
+  return {
+    items: [
+      {
+        band: 'decisions',
+        task: task('T-parked', 'Parked billing task', 'parked'),
+        next_action: compact('parked', 'Decide on a parked task'),
+      },
+      {
+        band: 'decisions',
+        task: task('T-exhausted', 'Exhausted dispatch task', 'parked'),
+        next_action: compact('dispatch_exhausted', 'Dispatch exhausted'),
+      },
+      {
+        band: 'decisions',
+        task: task('T-plan', 'Plan after the parked task'),
+        next_action: compact('plan_approval', 'Approve plan'),
+      },
+    ],
+    actions: {
+      'T-parked': {
+        kind: 'parked',
+        label: 'Decide on a parked task',
+        actor: 'operator',
+        judgment: true,
+        summary: 'This task is parked.',
+        question: 'Put it back, or close it?',
+        if_ignored: 'It stays parked.',
+        choices: parkedChoices,
+        deadline: null,
+        details: {},
+      },
+      'T-exhausted': {
+        kind: 'dispatch_exhausted',
+        label: 'Dispatch exhausted',
+        actor: 'operator',
+        judgment: true,
+        summary: 'Dispatch stopped after repeated failures.',
+        if_ignored: 'It stays parked until someone recovers it.',
+        choices: [
+          { ...choice('redispatch', 'Redispatch', '/v1/tasks/T-exhausted/redispatch'), capability: 'recover_work' },
+          { ...choice('start_over', 'Start over', '/v1/tasks/T-exhausted/restart'), capability: 'operate_gates' },
+        ],
+        deadline: null,
+        details: {},
+      },
+      'T-plan': {
+        kind: 'plan_approval',
+        label: 'Approve plan',
+        actor: 'operator',
+        judgment: true,
+        summary: 'The plan is ready.',
+        choices: [choice('approve', 'Approve plan', '/v1/tasks/T-plan/review')],
+        deadline: null,
+        details: {},
+      },
+    },
+    activity: {
+      'T-parked': {
+        task: task('T-parked', 'Parked billing task', 'parked'),
+        events: [
+          {
+            id: 1,
+            kind: 'triage.completed',
+            job_id: 'T-parked-triage-1',
+            at: '2026-10-18T09:00:00Z',
+            payload: {
+              class: 'feature',
+              route: 'parked',
+              summary: 'The billing service has no seat-count field to sync from.',
+              brief: {
+                questions: ['Is the seat floor per organization?', ''],
+                risks: ['Syncing early could lock out members.'],
+                affected_areas: [],
+              },
+            },
+          },
+        ],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+      },
+      'T-exhausted': {
+        task: task('T-exhausted', 'Exhausted dispatch task', 'parked'),
+        events: [
+          {
+            id: 1,
+            kind: 'dispatch.failed',
+            at: '2026-10-18T09:00:00Z',
+            payload: { attempt: 5, max_attempts: 5, error: 'git fetch: authentication failed' },
+          },
+        ],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+      },
+      'T-plan': {
+        task: task('T-plan', 'Plan after the parked task'),
+        events: [],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+      },
+    },
+  }
+}
+
+test('a parked decision states why it parked and offers Recover first on the c key', async ({ page }) => {
+  const harness = await serve(page, parkedFixture())
+  await page.goto('/inbox?selected=T-parked')
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-context-heading]')).toHaveText('Why it is parked')
+  const reason = card.locator('[data-park-reason]')
+  await expect(reason.getByRole('region', { name: 'Triage summary' })).toContainText(
+    'The billing service has no seat-count field to sync from.',
+  )
+  await expect(reason.getByRole('region', { name: 'Open questions' }).getByRole('listitem')).toHaveText([
+    'Is the seat floor per organization?',
+  ])
+  await expect(reason.getByRole('region', { name: 'Risks' }).getByRole('listitem')).toHaveText([
+    'Syncing early could lock out members.',
+  ])
+  await expect(reason).toContainText('Recorded by triage')
+
+  // One row, one primary: Recover leads and carries c; Close and Start over
+  // are secondary and enabled.
+  const footer = card.locator('[data-decision-footer]')
+  const row = footer.locator('[data-next-action-choices] > div').first()
+  await expect(row.getByRole('button')).toHaveText(['Recover', 'Close', 'Start over'])
+  await expect(row.getByRole('button', { name: 'Recover' })).toHaveClass(/bg-primary/)
+  for (const name of ['Close', 'Start over']) {
+    await expect(row.getByRole('button', { name, exact: true })).toBeEnabled()
+    await expect(row.getByRole('button', { name, exact: true })).not.toHaveClass(/bg-primary/)
+  }
+  await expect(footer.locator('[data-shortcut="c"]')).toHaveText('Recover')
+  await expect(footer).not.toContainText('This page cannot send this choice.')
+
+  await page.keyboard.press('c')
+  await expect
+    .poll(() => harness.posts.map((post) => new URL(post.url()).pathname))
+    .toEqual(['/v1/tasks/T-parked/redispatch'])
+})
+
+test('a parked decision without a recorded reason says so', async ({ page }) => {
+  const fixture = parkedFixture()
+  const activity = fixture.activity?.['T-parked'] as { events: unknown[] }
+  activity.events = []
+  await serve(page, fixture)
+  await page.goto('/inbox?selected=T-parked')
+  await expect(decisionDetail(page).locator('[data-decision-context]')).toHaveText('Triage recorded no reason.')
+})
+
+test('a dispatch-exhausted decision states the failure that exhausted dispatch', async ({ page }) => {
+  await serve(page, parkedFixture())
+  await page.goto('/inbox?selected=T-exhausted')
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-context-heading]')).toHaveText('Why dispatch stopped')
+  const failure = card.locator('[data-dispatch-failure]')
+  await expect(failure).toContainText('Attempt 5 of 5')
+  await expect(failure).toContainText('git fetch: authentication failed')
+})
+
+test('Start over opens the restart dialog in place and the inbox moves on after it', async ({ page }) => {
+  const fixture = parkedFixture()
+  let restart: Record<string, unknown> | undefined
+  const harness = await serve(page, fixture, (request, path) => {
+    if (path !== '/v1/tasks/T-parked/restart') return undefined
+    restart = request.postDataJSON()
+    fixture.items = fixture.items.filter((item) => item.task?.id !== 'T-parked')
+    return { successor: { id: 'T-successor' }, cancelled_task: { id: 'T-parked' } }
+  })
+  await page.goto('/inbox?selected=T-parked')
+  const footer = decisionDetail(page).locator('[data-decision-footer]')
+  await footer.getByRole('button', { name: 'Start over', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Start over', exact: true })
+  await expect(dialog).toContainText('This task will be cancelled.')
+  const submit = dialog.getByRole('button', { name: 'Start over', exact: true })
+  await expect(submit).toBeDisabled()
+  await dialog.getByLabel(/Reason/).fill('Triage parked it on stale scope')
+  await submit.click()
+  await expect(dialog).toBeHidden()
+  expect(restart).toMatchObject({ reason: 'Triage parked it on stale scope' })
+  expect(typeof restart?.request_id).toBe('string')
+  expect(harness.posts.map((post) => new URL(post.url()).pathname)).toEqual(['/v1/tasks/T-parked/restart'])
+  // The inbox stays put, refetches, and selects the next decision.
+  await expect(page).toHaveURL(/\/inbox/)
+  await expect(decisionRows(page)).toHaveCount(2)
+  await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Exhausted dispatch task')
+})
+
+test('a merge decision names the recorded pull request, keeps the issue apart, and puts every choice in one row', async ({
+  page,
+}) => {
+  const runtimeTask = { ...task('T-merge', 'Enforce fail-closed auth', 'awaiting_human') }
+  const withIssue = {
+    ...runtimeTask,
+    github: {
+      task_id: 'T-merge',
+      repository: 'acme/runtime',
+      issue_number: 1671,
+      issue_url: 'https://github.com/acme/runtime/issues/1671',
+    },
+  }
+  const fixture: Fixture = {
+    items: [
+      {
+        band: 'decisions',
+        task: withIssue,
+        next_action: { kind: 'merge_approval', label: 'Approve merge', actor: 'operator', judgment: true, summary: '' },
+        pull_request: { url: 'https://github.com/acme/runtime/pull/1709', number: 1709, repository: 'acme/runtime' },
+      },
+    ],
+    actions: {
+      'T-merge': {
+        kind: 'merge_approval',
+        label: 'Approve merge',
+        actor: 'operator',
+        judgment: true,
+        summary: 'Waiting for merge approval.',
+        question: 'Review approved pull request #1709. Merge it?',
+        choices: [
+          choice('merge', 'Merge', '/v1/tasks/T-merge/merge'),
+          choice('approve', 'Approve only', '/v1/tasks/T-merge/review'),
+          choice('request_changes', 'Request changes…', '/v1/tasks/T-merge/request-changes'),
+        ],
+        deadline: null,
+        details: { gate_kind: 'merge_approval' },
+      },
+    },
+    activity: {
+      'T-merge': {
+        task: withIssue,
+        events: [],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+        merge_readiness: { state: 'MERGEABLE', head_sha: 'feedface1234567', number: 1709 },
+      },
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/inbox')
+  // The row links the recorded pull request above its selection link, so the
+  // link opens the pull request and never selects the row or the issue.
+  const rowLink = rowItems(page).first().locator('[data-row-pull-request]')
+  await expect(rowLink).toHaveText('acme/runtime PR #1709')
+  await expect(rowLink).toHaveAttribute('href', 'https://github.com/acme/runtime/pull/1709')
+  await expect(rowItems(page).first()).not.toContainText('1671')
+  await expect(decisionRows(page).first().locator('a')).toHaveCount(0)
+  await page.context().route('https://github.com/**', (route) => route.fulfill({ body: 'pull request' }))
+  const inboxURL = page.url()
+  const [opened] = await Promise.all([page.waitForEvent('popup'), rowLink.click()])
+  expect(opened.url()).toBe('https://github.com/acme/runtime/pull/1709')
+  await opened.close()
+  expect(page.url()).toBe(inboxURL)
+  const card = decisionDetail(page)
+  await expect(card.locator('[data-pull-request]')).toHaveText('acme/runtime PR #1709')
+  await expect(card.locator('[data-pull-request]')).toHaveAttribute('href', 'https://github.com/acme/runtime/pull/1709')
+  await expect(card.locator('[data-issue]')).toHaveText('Issue #1671')
+  await expect(card.locator('[data-issue]')).toHaveAttribute('href', 'https://github.com/acme/runtime/issues/1671')
+
+  const row = card.locator('[data-decision-footer] [data-next-action-choices] > div').first()
+  await expect(row.getByRole('button')).toHaveText(['Merge', 'Approve only', 'Request changes…'])
+  await expect(row.locator('button.bg-primary')).toHaveCount(1)
+  await expect(row.getByRole('button', { name: 'Merge' })).toHaveClass(/bg-primary/)
 })

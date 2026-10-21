@@ -1,10 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState } from 'react'
+import { type ReactNode, useRef, useState } from 'react'
 import { GateMutationError, postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
+import type { TaskRouteVariant } from '../../lib/task-route'
 import type { NextActionChoice, NextActionDetails } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
+import { TaskRestartControl } from '../task/task-restart-dialog'
+import { useTaskDetail } from '../task/use-task-detail'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 import { choiceBody } from './choice-bodies'
@@ -16,21 +19,34 @@ import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 // Every server choice renders (DEC-61): its label, its effect and its endpoint.
 // A choice the caller may not take, or whose input this client cannot build,
 // renders disabled with the reason beside it rather than disappearing.
+// Every choice shares one wrapping row with exactly one primary button
+// (feature-operator-next-action NA-6): `primaryId` names it when the caller
+// knows the decision's primary, as GateChoices does, and otherwise the first
+// choice that renders enabled takes it. `leading` renders first in the row.
 export function NextActionChoices({
   taskId,
   choices,
   details,
   onActed,
+  primaryId,
+  leading,
+  routeVariant = 'sheet',
+  onRestarted,
 }: {
   taskId: string
   choices: NextActionChoice[]
   details?: NextActionDetails
   onActed?: (choice: NextActionChoice) => void
+  primaryId?: string | null
+  leading?: ReactNode
+  routeVariant?: TaskRouteVariant
+  onRestarted?: () => void
 }) {
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const [composing, setComposing] = useState<NextActionChoice | null>(null)
   const [input, setInput] = useState('')
+  const [restarting, setRestarting] = useState(false)
   // isPending lands a render after the click, so a double click would send
   // twice; the ref closes that window.
   const inFlight = useRef(false)
@@ -80,18 +96,24 @@ export function NextActionChoices({
     mutation.mutate({ choice, text })
   }
 
-  if (choices.length === 0) return null
+  if (choices.length === 0 && !leading) return null
   const contract = composing ? choiceBody(composing.id) : undefined
+  const reasons = choices.map((choice) => {
+    const body = choiceBody(choice.id)
+    return !choice.allowed
+      ? `Needs the ${choice.capability.replaceAll('_', ' ')} capability.`
+      : !body
+        ? 'This page cannot send this choice.'
+        : (body.unavailable?.(details) ?? '')
+  })
+  const primary = primaryId !== undefined ? primaryId : (choices.find((_, index) => reasons[index] === '')?.id ?? null)
   return (
     <div data-next-action-choices className="min-w-0 space-y-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {leading}
         {choices.map((choice, index) => {
           const body = choiceBody(choice.id)
-          const reason = !choice.allowed
-            ? `Needs the ${choice.capability.replaceAll('_', ' ')} capability.`
-            : !body
-              ? 'This page cannot send this choice.'
-              : (body.unavailable?.(details) ?? '')
+          const reason = reasons[index]
           const keyed = shortcut === choice.id && reason === ''
           return (
             // A long server label (a task-context choice names its target)
@@ -102,7 +124,9 @@ export function NextActionChoices({
                 <Button
                   size="sm"
                   className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
-                  variant={choice.id === 'reject' ? 'ghost' : index === 0 && reason === '' ? 'default' : 'secondary'}
+                  variant={
+                    choice.id === 'reject' ? 'ghost' : choice.id === primary && reason === '' ? 'default' : 'secondary'
+                  }
                   title={`${choice.effect} (${choice.method} ${choice.path})`}
                   data-choice={choice.id}
                   data-shortcut={keyed ? 'c' : undefined}
@@ -111,6 +135,11 @@ export function NextActionChoices({
                   disabled={mutation.isPending || reason !== ''}
                   onClick={() => {
                     mutation.reset()
+                    if (body?.dialog === 'restart') {
+                      setComposing(null)
+                      setRestarting(true)
+                      return
+                    }
                     if (body?.input) {
                       setComposing((current) => (current?.id === choice.id ? null : choice))
                       setInput('')
@@ -156,6 +185,70 @@ export function NextActionChoices({
       {mutation.error != null && (
         <p className="text-xs text-failure">{errorMessage(mutation.error, 'Could not record this choice.')}</p>
       )}
+      {restarting && (
+        <RestartChoice
+          taskId={taskId}
+          routeVariant={routeVariant}
+          onClose={() => setRestarting(false)}
+          onRestarted={
+            onRestarted &&
+            (async () => {
+              const acted = workspace
+              await Promise.all([
+                client.invalidateQueries({ queryKey: nextActionsQueryKey(acted) }),
+                client.invalidateQueries({ queryKey: nextActionQueryKey(acted, taskId) }),
+              ])
+              onRestarted()
+            })
+          }
+        />
+      )}
     </div>
+  )
+}
+
+// A `start_over` choice opens the task's restart dialog over the task detail
+// read, so the act keeps the dialog's preview, validation and request ID
+// (component-web-task-surfaces, Task header). Without `onRestarted` a success
+// opens the successor task, as the task header does.
+function RestartChoice({
+  taskId,
+  routeVariant,
+  onClose,
+  onRestarted,
+}: {
+  taskId: string
+  routeVariant: TaskRouteVariant
+  onClose: () => void
+  onRestarted?: () => void
+}) {
+  const { data: item, error, refetch, isFetching } = useTaskDetail(taskId)
+  if (item) {
+    return (
+      <TaskRestartControl
+        item={item}
+        variant={routeVariant}
+        onClose={onClose}
+        onRestarted={onRestarted && (() => onRestarted())}
+      />
+    )
+  }
+  if (error != null) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-failure">{errorMessage(error, 'Could not load this task.')}</span>
+        <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
+          Retry
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+      </div>
+    )
+  }
+  return (
+    <p role="status" className="text-xs text-muted">
+      Loading the task…
+    </p>
   )
 }

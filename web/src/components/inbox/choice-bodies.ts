@@ -16,6 +16,9 @@ export interface ChoiceBody {
   body: (input: string, requestId: string, details?: NextActionDetails) => Record<string, unknown> | undefined
   // Why the act cannot be sent from the state the server stated, or undefined when it can.
   unavailable?: (details?: NextActionDetails) => string | undefined
+  // An act whose request a dedicated dialog builds: the choice opens that
+  // dialog instead of posting `body`.
+  dialog?: 'restart'
 }
 
 // A verification disposition posts the server's row-10 binding with the
@@ -66,6 +69,10 @@ export const choiceBodies: Record<string, ChoiceBody> = {
   merge: { body: () => undefined },
   fix_merge_conflict: { body: () => undefined },
   redispatch: { body: () => undefined },
+  // Start over opens the task's restart dialog, which builds the request with
+  // its reason, note, request ID and pending-proposal preview
+  // (component-web-task-surfaces, Task header).
+  start_over: { dialog: 'restart', body: () => undefined },
   close: { input: { label: 'Reason', required: true }, body: (input) => ({ reason: input.trim() }) },
   answer: {
     input: { label: 'Direction', required: true },
