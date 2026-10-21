@@ -314,6 +314,25 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 				}
 			})
 		}
+		t.Run("UnknownContextIsGeneric", func(t *testing.T) {
+			v := prepare(t, "no_manifest", []verification.KitReceipt{}, []verification.Diagnostic{})
+			coverage := verificationFixtureCoverage(v.snapshot(t))
+			own := v.contextID
+			v.contextID = "0123456789abcdef0123456789abcdef"
+			for _, submission := range []store.VerificationSubmission{
+				{Outcome: "succeeded", Coverage: store.VerificationCoverage{ObligationIDs: []string{}, Justification: "x"}},
+				{Outcome: "succeeded", Coverage: store.VerificationCoverage{ObligationIDs: []string{}, Justification: "x", Sources: []store.VerificationCoverageSource{{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "missing"}, Disposition: "not_applicable", Explanation: "x", Subjects: []core.VerificationSubject{}}}}},
+				{Outcome: "blocked", Coverage: coverage},
+			} {
+				submission := submission
+				_, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationSeal, Submission: &submission}))
+				var refusal *store.VerificationRefusal
+				if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) {
+					t.Fatalf("unknown context returned detail: %v", err)
+				}
+			}
+			v.contextID = own
+		})
 		t.Run("DiscoveryUnavailable", func(t *testing.T) {
 			v := prepare(t, "permission", []verification.KitReceipt{}, []verification.Diagnostic{{Path: "discovery.conveyor", Message: "permission"}})
 			coverage := verificationFixtureCoverage(v.snapshot(t))

@@ -251,16 +251,13 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	}
 	write := operation != "get_verification_context" && operation != "get_verification_publication" && operation != "read_verification_evidence"
 	var backend store.VerificationStore
-	var replay bool
 	var a store.VerificationAccess
 	var o core.WorkOrder
 	var err error
 	if operation != "get_evidence_schemas" {
 		backend, a, o, err = s.verificationAccess(ctx, id, session, token, write && operation != "submit_verification")
 		if err != nil && operation == "submit_verification" {
-			if backend, a, o, err = s.verificationCheckpointReplayAccess(ctx, id, session, token); err == nil {
-				replay = true
-			}
+			backend, a, o, err = s.verificationCheckpointReplayAccess(ctx, id, session, token)
 		}
 		if err != nil {
 			return nil, err
@@ -297,14 +294,8 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	case *VerificationSubmitRequest:
 		command.Kind, command.ContextID = store.VerificationSeal, r.ContextID
 		command.Submission = &store.VerificationSubmission{Outcome: r.Outcome, Coverage: r.Coverage, Feedback: r.Feedback, RequiredAction: r.RequiredAction, Findings: r.Findings}
-		// component-verification-service: scope is already authenticated; refuse before any staged write.
-		if err := store.ValidateVerificationOutcome(*command.Submission); err != nil {
-			if replay {
-				// A retained-claim replay is not yet authenticated: no remedy detail.
-				return nil, store.ErrVerificationAccess
-			}
-			return nil, err
-		}
+		// component-verification-service: the store validates the outcome after it
+		// authenticates the claim and the context, before any staged write.
 
 	case *VerificationPrepareRequest:
 		return s.prepareVerification(ctx, backend, a, o, *r)

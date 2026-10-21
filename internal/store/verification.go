@@ -234,6 +234,10 @@ type VerificationCommand struct {
 	// SealedFeedback is copied from a feedback seal; its text is the delivered
 	// changes-requested feedback (component-verification-service).
 	SealedFeedback *VerificationFeedbackRecord
+	// Authority is bound by the backend after claim authentication; citation
+	// checks run against it only after the context is authenticated as the
+	// order's own (component-verification-service "Correctable refusals").
+	BoundAuthority *VerificationBoundAuthority `json:"-"`
 	// SubmittedHeadSHA is the locked work order's task-repository head, bound
 	// by the backend adapter inside its transaction (component-verification-service). It is never
 	// decoded from a request.

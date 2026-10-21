@@ -834,8 +834,52 @@ func TestVerificationCorrectableRefusals(t *testing.T) {
 	if response := verificationRESTCall(f.s, f.ctx, f.id, "submit_verification", args); response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "verification_") || strings.Contains(response.Body.String(), "coverage") {
 		t.Fatalf("foreign scope received detail: %d %s", response.Code, response.Body)
 	}
-	args["session_id"], args["context_id"] = "session", "0123456789abcdef0123456789abcdef"
-	if response := verificationRESTCall(f.s, f.ctx, f.id, "submit_verification", args); response.Code == http.StatusOK || strings.Contains(response.Body.String(), contextID) {
-		t.Fatalf("unknown context: %d %s", response.Code, response.Body)
+	// An unknown context of an authenticated claim is generic too, whatever is
+	// wrong with the coverage or outcome (component-verification-service v6).
+	unknown := "0123456789abcdef0123456789abcdef"
+	for name, input := range map[string]workorder.VerificationSubmitRequest{
+		"null sources":      submit(func(c *store.VerificationCoverage) { c.Sources = nil }),
+		"plan omitted":      submit(func(c *store.VerificationCoverage) { c.Sources = c.Sources[1:] }),
+		"unresolved source": submit(func(c *store.VerificationCoverage) { c.Sources[1].Source.SectionID = "missing" }),
+		"unsupported":       {Coverage: valid, Outcome: "blocked"},
+		"incomplete":        {Coverage: valid, Outcome: "operator_action_required"},
+	} {
+		input.ContextID = unknown
+		for _, obligation := range []bool{false, true} {
+			tool := "submit_verification"
+			var payload any = input
+			if obligation {
+				tool = "register_verification_obligation"
+				payload = workorder.VerificationObligationRequest{ContextID: unknown, ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "missing"}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}}
+			}
+			_, err, response := f.call(tool, payload, true)
+			var refusal *store.VerificationRefusal
+			if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) || response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "verification_") {
+				t.Fatalf("unknown context %s via %s: MCP %v, REST %d %s", name, tool, err, response.Code, response.Body)
+			}
+		}
+	}
+	// Refusal rules never echo caller text, so neither a recognized token nor a
+	// configured or arbitrary secret value can leave in a rule.
+	for _, secret := range []string{"sk-abcdefghijklmnopqrstuvwxyz012345", "configured-secret-value-6f1c"} {
+		inputs := map[string]struct {
+			tool  string
+			input any
+		}{
+			"coverage": {"submit_verification", submit(func(c *store.VerificationCoverage) { c.Sources[1].Source.SectionID = secret })},
+			"finding": {"submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: valid, Feedback: "x", Findings: []store.VerificationFinding{{Source: store.VerificationCoverageReference{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: secret}, Statement: "x"}}}},
+			"obligation": {"register_verification_obligation", workorder.VerificationObligationRequest{ContextID: contextID, ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: secret, Version: 1, SectionID: secret}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}}},
+			"subject": {"submit_verification", submit(func(c *store.VerificationCoverage) {
+				c.Sources[0].Subjects = []core.VerificationSubject{{Kind: "ordinary", ObligationID: secret, ContractDigest: strings.Repeat("0", 64)}}
+			})},
+			"obligation id": {"submit_verification", submit(func(c *store.VerificationCoverage) { c.ObligationIDs = []string{secret} })},
+		}
+		for name, tc := range inputs {
+			_, err, response := f.call(tc.tool, tc.input, true)
+			var refusal *store.VerificationRefusal
+			if !errors.As(err, &refusal) || strings.Contains(err.Error(), secret) || strings.Contains(response.Body.String(), secret) || response.Code == http.StatusOK {
+				t.Fatalf("%s refusal echoed caller text: MCP %v, REST %d %s", name, err, response.Code, response.Body)
+			}
+		}
 	}
 }

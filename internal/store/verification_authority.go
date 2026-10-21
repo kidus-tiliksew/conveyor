@@ -82,6 +82,32 @@ func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthorityS
 			return ErrVerificationAccess
 		}
 	}
+	return nil
+}
+
+// VerificationBoundAuthority is the authority snapshot and locked order a
+// backend binds after claim authentication.
+type VerificationBoundAuthority struct {
+	Snapshot VerificationAuthoritySnapshot
+	Order    core.WorkOrder
+}
+
+// BindVerificationAuthority attaches the transaction-bound authority so the
+// mutation can check citations after it authenticates the context.
+func BindVerificationAuthority(c *VerificationCommand, a VerificationAuthoritySnapshot, o core.WorkOrder) {
+	c.BoundAuthority = &VerificationBoundAuthority{Snapshot: a, Order: o}
+}
+
+// verifyVerificationCitations checks coverage, finding, and obligation
+// citations. PrepareVerificationMutation calls it only after the context is
+// authenticated as the claim's own, so its detail never reaches an unknown,
+// foreign, or stale scope. Rules name field indices and authority values, never
+// caller text (component-verification-service "Correctable refusals").
+func verifyVerificationCitations(c VerificationCommand) error {
+	if c.BoundAuthority == nil {
+		return ErrVerificationInvalid
+	}
+	a, o := c.BoundAuthority.Snapshot, c.BoundAuthority.Order
 	coverage := c.Coverage
 	if c.Submission != nil {
 		coverage = &c.Submission.Coverage
@@ -96,7 +122,7 @@ func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthorityS
 				planCovered = true
 			}
 			if !verificationCitationResolves(VerificationCitation(mapping.Source), a, o, true) {
-				return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, fmt.Sprintf("coverage.sources[%d].source", i), verificationRemedyCitation, "%s v%d section %q resolves to no approved-plan section, served requirement statement or acceptance criterion, or served design section.", mapping.Source.DocumentID, mapping.Source.Version, mapping.Source.SectionID)
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, fmt.Sprintf("coverage.sources[%d].source", i), verificationRemedyCitation, "the citation resolves to no approved-plan section, served requirement statement or acceptance criterion, or served design section.")
 			}
 		}
 		if !planCovered {
@@ -114,7 +140,7 @@ func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthorityS
 		}
 		for i, citation := range c.Obligation.Sources {
 			if !verificationCitationResolves(citation, a, o, true) {
-				return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, fmt.Sprintf("sources[%d]", i), verificationRemedyCitation, "%s v%d section %q resolves to no approved-plan section, served requirement statement or acceptance criterion, or served design section.", citation.DocumentID, citation.Version, citation.SectionID)
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, fmt.Sprintf("sources[%d]", i), verificationRemedyCitation, "the citation resolves to no approved-plan section, served requirement statement or acceptance criterion, or served design section.")
 			}
 		}
 	}
@@ -184,7 +210,7 @@ func verificationValidateFindings(s VerificationSubmission, a VerificationAuthor
 		}
 		seen[f.Source] = true
 		if !verificationCitationResolves(VerificationCitation(f.Source), a, o, false) {
-			return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, field+".source", verificationRemedyCitation, "%s v%d section %q resolves to no approved-plan section or served requirement statement or acceptance criterion.", f.Source.DocumentID, f.Source.Version, f.Source.SectionID)
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeCitationUnresolved, field+".source", verificationRemedyCitation, "the finding source resolves to no approved-plan section or served requirement statement or acceptance criterion.")
 		}
 		mapped := false
 		for _, m := range s.Coverage.Sources {

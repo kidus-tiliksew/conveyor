@@ -54,7 +54,7 @@ func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot Verifi
 		}
 		listed[id] = true
 		if !obligations[id] {
-			return verificationRefusal(ErrVerificationState, VerificationCodeObligationsMismatch, fmt.Sprintf("coverage.obligation_ids[%d]", i), verificationRemedyCoverage, "%q is not a registered obligation; the registered obligations are [%s].", id, strings.Join(registered, ", "))
+			return verificationRefusal(ErrVerificationState, VerificationCodeObligationsMismatch, fmt.Sprintf("coverage.obligation_ids[%d]", i), verificationRemedyCoverage, "the listed ID is not a registered obligation; the registered obligations are [%s].", strings.Join(registered, ", "))
 		}
 	}
 	if len(listed) != len(obligations) {
@@ -65,7 +65,7 @@ func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot Verifi
 	for i, mapping := range coverage.Sources {
 		field := fmt.Sprintf("coverage.sources[%d]", i)
 		if seen[mapping.Source] {
-			return verificationRefusal(ErrVerificationInvalid, VerificationCodeSourceDuplicate, field+".source", verificationRemedyCoverage, "each source citation appears once; %s v%d %s repeats.", mapping.Source.DocumentID, mapping.Source.Version, mapping.Source.SectionID)
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeSourceDuplicate, field+".source", verificationRemedyCoverage, "each source citation appears once; this one repeats an earlier source.")
 		}
 		if mapping.Subjects == nil {
 			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, field+".subjects", verificationRemedyList, "subjects is required; send [] for a not_applicable source.")
@@ -90,7 +90,7 @@ func ValidateVerificationCoverage(coverage VerificationCoverage, snapshot Verifi
 		local := map[core.VerificationSubject]bool{}
 		for j, subject := range mapping.Subjects {
 			if _, ok := subjects[subject]; !ok || local[subject] {
-				return verificationRefusal(ErrVerificationInvalid, VerificationCodeSubjectUnknown, fmt.Sprintf("%s.subjects[%d]", field, j), verificationRemedySubject, "%s must equal a selected kit subject or a registered obligation subject of this context, including its digest, and appear once per source.", verificationSubjectName(subject))
+				return verificationRefusal(ErrVerificationInvalid, VerificationCodeSubjectUnknown, fmt.Sprintf("%s.subjects[%d]", field, j), verificationRemedySubject, "the subject must equal a selected kit subject or a registered obligation subject of this context, including its digest, and appear once per source.")
 			}
 			local[subject], subjects[subject] = true, true
 		}

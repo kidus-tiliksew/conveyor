@@ -151,7 +151,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		}
 		contract, err := verificationContract(rows, c.ContextID, v.Subject)
 		if err != nil {
-			return verificationRefusal(ErrVerificationState, VerificationCodeSubjectUnregistered, "subject", verificationRemedySubject, "%s matches no selected kit subject or registered obligation of this context.", verificationSubjectName(v.Subject))
+			return verificationRefusal(ErrVerificationState, VerificationCodeSubjectUnregistered, "subject", verificationRemedySubject, "the subject matches no selected kit subject or registered obligation of this context, including its digest.")
 		}
 		v.EffectivePermissions = contract.Permissions // A manifest declaration is not execution authority.
 		grant, err := verificationLiveGrant(rows, vc, v.GrantID, v.Subject)
