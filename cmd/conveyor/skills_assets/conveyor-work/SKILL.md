@@ -14,7 +14,10 @@ Non-negotiables, restated: never edit or push for a task without holding its
 live claim; never bypass a failed, declined, expired, or lost claim by working
 bare. Fetch the delivered work-order contract before repository work, use
 `conveyor checkout <task-id>` only for implementation and review orders, and
-keep spec work read-only in its launched checkout. Keep the lease alive for
+keep spec work read-only in its launched checkout. Work only in the path
+`conveyor checkout` prints inside the configured worktree location; never work
+from a checkout path outside it, and never create a separate clone to get
+around a primary checkout that has uncommitted changes. Keep the lease alive for
 the life of each claim and finish through the registered stage lifecycle tool
 or an explicit truthful release. Executor claims confer proposal capability
 only; operator confirmations, gates, assignment, drift resolution, and merge

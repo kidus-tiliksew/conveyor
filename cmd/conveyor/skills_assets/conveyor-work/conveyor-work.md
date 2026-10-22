@@ -55,7 +55,16 @@ after a self-claim does not make the session launched.
    and use the returned dedicated worktree. Perform every repository read
    needed for implementation and every edit, test, commit, and push there.
    Preserve the assigned branch history and obey the delivered contract's
-   validation and delivery instructions. A spec order instead executes
+   validation and delivery instructions. Checkout places new worktrees in the
+   machine's configured worktree location, in the repository or machine-wide
+   (`component-git-delivery`):
+   - Never work from a checkout path outside that location, and never pass
+     `--path` to move the worktree elsewhere.
+   - Never create a separate clone to get around a primary checkout that has
+     uncommitted changes. Report checkout's refusal as a blocker.
+   - When checkout reports that no worktree location is configured, stop and
+     report the command it names. Choosing the location belongs to the
+     operator. A spec order instead executes
    read-only in the checkout where its session was launched: never run
    `conveyor checkout` for a spec order and never alter that checkout's Git
    state.

@@ -168,7 +168,13 @@ conveyor config list
 
 Add the `CONVEYOR_CONFIG` line to your shell startup file. The wizard detects
 and probes installed agent CLIs and lets you choose stage models, effort, and
-review seats. Select models your agent account can use. `config list` shows
+review seats, and where task worktrees go: in the repository at
+`<primary checkout>/_worktrees` (visible beside the code and to IDE worktree
+pickers; Conveyor adds it to `.git/info/exclude`; tools that ignore Git
+excludes, such as Docker build contexts, see it) or machine-wide at
+`~/.conveyor/worktrees` (one place for every repository, outside the project
+folder). Without a terminal, run
+`conveyor config init-execution --defaults --worktree-location <repository|machine>`. Select models your agent account can use. `config list` shows
 the effective server, workspace, and execution config path.
 
 For a machine with Claude Code installed, the generated file looks like this:
@@ -251,8 +257,10 @@ repos:
 
 Use the exact registered name and a clone with the matching remote. Running
 from inside that repository also permits discovery, but the explicit checkout
-mapping lets a worker find it when launched elsewhere. `worktree_root` controls
-where task worktrees are created; it does not provide the primary clone.
+mapping lets a worker find it when launched elsewhere. `worktree_location`
+controls where task worktrees are created; it does not provide the primary
+clone. `conveyor run` and the worker print it at startup and refuse to start
+while it is unset.
 
 Named alternatives are managed with `conveyor setup create <name>`,
 `conveyor setup edit <name>`, and `conveyor setup default <name>`, and
@@ -436,7 +444,7 @@ rerun `conveyor skills install` and restart agent sessions that use them.
 | CLI credentials and per-server defaults | `<user-config-dir>/conveyor/credentials.json` |
 | Default per-user execution config | `<user-config-dir>/conveyor/conveyor.yaml` |
 | Worker enrollment credentials | `<user-config-dir>/conveyor/workers/<workspace>.json` |
-| Task worktrees | `~/.conveyor/worktrees` (override with `worktree_root`) |
+| Task worktrees | Your `worktree_location`: `<primary checkout>/_worktrees` (repository) or `~/.conveyor/worktrees` (machine); no default |
 
 `<user-config-dir>` is `~/Library/Application Support` on macOS and
 `~/.config` on Linux. Credential files are created with mode 0600 in 0700

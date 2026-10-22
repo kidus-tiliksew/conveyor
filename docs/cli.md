@@ -345,9 +345,23 @@ conveyor checkout <task-id>
 ```
 
 Create or reuse the task's dedicated worktree and print its absolute path
-(designed for `cd "$(conveyor checkout <id>)"`). The destination is
-`<worktree_root>/<repo>-task-<id>`; the root resolves from an explicit
-`--path`, then the `worktree_root` config key, then `~/.conveyor/worktrees`.
+(designed for `cd "$(conveyor checkout <id>)"`). An explicit `--path` wins.
+Otherwise a new worktree goes to `<container>/<repo>-task-<id>`, where the
+container comes from a dispatch's `CONVEYOR_WORKTREE_ROOT`, else the
+`worktree_location` your local execution config records:
+
+- `repository`: `<primary checkout>/_worktrees` (or the configured `dir`).
+  Checkout adds `_worktrees/` to `.git/info/exclude` before it checks the
+  primary checkout, refuses a `dir` with tracked files, and refuses a `dir`
+  that resolves outside the repository. It never edits `.gitignore`.
+- `machine`: the configured `root` (`~/.conveyor/worktrees` by default).
+
+There is no silent default. With no location, an interactive checkout (both
+stdin and stdout are terminals) asks once, shows the exact path each choice
+gives, and saves the answer; any other checkout creates nothing and exits
+naming both choices and `conveyor config set worktree_location
+<repository|machine>`. Reusing a task's registered worktree needs no
+location.
 
 Checkout is deliberately conservative. It must run inside the target
 repository, verifies the repository's identity before fetching, refuses a
@@ -388,7 +402,8 @@ and reused across restarts.
 
 | Command | What it does |
 |---|---|
-| `conveyor config init-execution` | Interactive wizard: detect installed agent CLIs, probe them, write the local execution config. |
+| `conveyor config init-execution` | Interactive wizard: detect installed agent CLIs, probe them, choose the worktree location, write the local execution config. `--defaults --worktree-location <repository\|machine>` writes the detected defaults without a terminal; `--defaults` alone refuses. |
+| `conveyor config set worktree_location <value>` | Record where new task worktrees go: `repository`, `repository:<dir>`, `machine`, or `machine:<root>`. |
 | `conveyor config set execution.<stage>.<field> <value>` | Set one field without the wizard. Stage is `spec`, `implement`, or `review`; field is `harness`, `model`, `effort`, or `timeout`. Harnesses are probed before being written. |
 | `conveyor config set workspace <id>` | Set the default workspace for the effective server. |
 | `conveyor config list` | Show every effective setting and which source supplied it. |
