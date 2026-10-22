@@ -406,13 +406,19 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 	if workspace == "" {
 		workspace = "local"
 	}
-	if err := writeNamedExecutionSetup(path, local, workspace, name, state.choices, selected, edit); err != nil {
+	if err := validateWorktreeChoice(path, state.choices.WorktreeLocation); err != nil {
 		return err
 	}
-	if err := persistWorktreeChoice(path, workspace, state.choices.WorktreeLocation); err != nil {
+	err := stageLocalExecutionConfig(path, func(staged string) error {
+		if err := writeNamedExecutionSetup(staged, local, workspace, name, state.choices, selected, edit); err != nil {
+			return err
+		}
+		return persistWorktreeChoice(staged, workspace, state.choices.WorktreeLocation)
+	})
+	if err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(output, "Saved local execution setup %s to %s\n", name, path)
+	_, err = fmt.Fprintf(output, "Saved local execution setup %s to %s\n", name, path)
 	return err
 }
 

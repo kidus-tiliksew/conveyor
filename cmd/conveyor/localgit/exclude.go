@@ -17,6 +17,9 @@ import (
 // info/exclude only when Git does not already ignore the dir; it never edits a
 // tracked .gitignore (component-git-delivery). It reports whether it appended.
 func EnsureExcluded(ctx context.Context, primary, dir string) (bool, error) {
+	if !LiteralGitPath(dir) {
+		return false, fmt.Errorf("in-repository worktree directory %q must use only ASCII letters, digits, '.', '_', and '-' in each path component, so Git reads it as a literal path", dir)
+	}
 	tracked, err := TrackedUnder(ctx, primary, dir)
 	if err != nil {
 		return false, err
@@ -58,9 +61,31 @@ func EnsureExcluded(ctx context.Context, primary, dir string) (bool, error) {
 	return true, nil
 }
 
-// TrackedUnder reports whether the index tracks any path under dir.
+// LiteralGitPath reports whether every component of a slash-separated relative
+// path uses only ASCII letters, digits, '.', '_', and '-' and none starts with
+// '-' or is '.' or '..'. Such a path written to info/exclude is never a
+// comment, negation, or glob, and is never pathspec magic (component-git-delivery).
+func LiteralGitPath(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") {
+		return false
+	}
+	for _, component := range strings.Split(path, "/") {
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, "-") {
+			return false
+		}
+		for _, character := range component {
+			if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// TrackedUnder reports whether the index tracks any path under dir, reading
+// dir as a literal pathspec.
 func TrackedUnder(ctx context.Context, primary, dir string) (bool, error) {
-	out, err := commandOutput(ctx, primary, "git", "ls-files", "-z", "--", dir)
+	out, err := commandOutput(ctx, primary, "git", "--literal-pathspecs", "ls-files", "-z", "--", dir)
 	if err != nil {
 		return false, err
 	}

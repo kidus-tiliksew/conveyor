@@ -63,7 +63,7 @@ func (l WorktreeLocation) Normalized(home string) (WorktreeLocation, error) {
 			l.Dir = DefaultRepositoryWorktreeDir
 		}
 		if !safeWorktreeDir(l.Dir) {
-			return WorktreeLocation{}, fmt.Errorf("worktree_location.dir %q must be one relative path component other than ., .., and .git", l.Dir)
+			return WorktreeLocation{}, fmt.Errorf("worktree_location.dir %q must be one relative path component of ASCII letters, digits, '.', '_', and '-', not starting with '-', and other than ., .., and .git", l.Dir)
 		}
 		return l, nil
 	case WorktreeLocationMachine:
@@ -82,8 +82,18 @@ func (l WorktreeLocation) Normalized(home string) (WorktreeLocation, error) {
 	return WorktreeLocation{}, fmt.Errorf("worktree_location.mode %q must be repository or machine", l.Mode)
 }
 
+// safeWorktreeDir keeps dir a literal Git path: no ignore-pattern comment,
+// negation, or glob character and no pathspec magic (component-harness-execution).
 func safeWorktreeDir(value string) bool {
-	return safePathSegment(value) && value != ".git" && strings.TrimSpace(value) == value
+	if !safePathSegment(value) || value == ".git" || strings.HasPrefix(value, "-") {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // ConfiguredWorktreeLocation reports the normalized location the document

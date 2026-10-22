@@ -166,3 +166,52 @@ func TestForwardedWorktreeContainerFollowsTheChildCheckout(t *testing.T) {
 		t.Fatalf("unconfigured container = %q, %v", got, err)
 	}
 }
+
+// An invalid location never modifies an existing file or creates a missing
+// one, whichever setup entry point receives it (component-harness-execution).
+func TestInvalidWorktreeLocationLeavesSetupFilesUntouched(t *testing.T) {
+	directory := t.TempDir()
+	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
+	t.Setenv("PATH", directory)
+	t.Setenv("HOME", t.TempDir())
+	for _, value := range []string{"machine:relative", "repository:a/b", "repository:#trees", "repository:!trees", "repository:[trees]", "repository:tr*es", "home"} {
+		existing := worktreeLocationTestConfig(t, "  mode: machine\n")
+		before, err := os.ReadFile(existing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = runExecutionSetupDefaults(t.Context(), io.Discard, existing, "demo", value); err == nil {
+			t.Fatalf("--defaults accepted %q", value)
+		}
+		if err = persistExecutionSetup(io.Discard, existing, "demo", localExecutionChoices{
+			Spec:             localStageChoice{Harness: "codex", Model: "changed", Effort: "high", Timeout: "30m"},
+			Implement:        localStageChoice{Harness: "codex", Model: "changed", Effort: "high", Timeout: "4h"},
+			Review:           localStageChoice{Harness: "codex", Model: "changed", Effort: "high", Timeout: "1h"},
+			ReviewSeats:      []localStageChoice{{Harness: "codex", Model: "changed", Effort: "high"}},
+			WorktreeLocation: value,
+		}, healthyDetectedHarnesses(detectLocalHarnessHealth(t.Context()))); err == nil {
+			t.Fatalf("persistExecutionSetup accepted %q", value)
+		}
+		after, err := os.ReadFile(existing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("%q changed the existing file", value)
+		}
+		missing := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err = runExecutionSetupDefaults(t.Context(), io.Discard, missing, "demo", value); err == nil {
+			t.Fatalf("--defaults accepted %q for a missing file", value)
+		}
+		if _, statErr := os.Stat(missing); !os.IsNotExist(statErr) {
+			t.Fatalf("%q created %s: %v", value, missing, statErr)
+		}
+		entries, err := os.ReadDir(filepath.Dir(existing))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("%q left staged files beside the config: %v", value, entries)
+		}
+	}
+}

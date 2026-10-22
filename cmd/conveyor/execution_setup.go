@@ -452,6 +452,11 @@ func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Wri
 	if !wizardTerminal(input) {
 		return fmt.Errorf("execution setup requires a terminal; use `conveyor config set execution.<stage>.<field> <value> --config %s`", configPath)
 	}
+	if strings.TrimSpace(worktreeLocation) != "" {
+		if err := validateWorktreeChoice(configPath, worktreeLocation); err != nil {
+			return err
+		}
+	}
 	detected := detectLocalHarnessHealth(ctx)
 	healthy := healthyDetectedHarnesses(detected)
 	if len(healthy) == 0 {
@@ -495,7 +500,7 @@ func runExecutionSetupDefaults(ctx context.Context, output io.Writer, configPath
 	if location == "" {
 		return fmt.Errorf("--defaults requires --worktree-location: %w", missingWorktreeLocationError(configPath))
 	}
-	if _, err := config.ParseWorktreeLocation(location); err != nil {
+	if err := validateWorktreeChoice(configPath, location); err != nil {
 		return err
 	}
 	detected := detectLocalHarnessHealth(ctx)
@@ -527,22 +532,30 @@ func persistExecutionSetup(output io.Writer, configPath, workspace string, choic
 	if workspace == "" {
 		workspace = "local"
 	}
-	existing, loadErr := config.Load(configPath)
-	if loadErr == nil {
-		if err := writeUpdatedLocalExecutionConfig(configPath, existing, choices, mergeLocalHarnesses(existing.Harnesses, selected)); err != nil {
-			return err
-		}
-	} else if errors.Is(loadErr, os.ErrNotExist) {
-		if err := writeLocalExecutionConfig(configPath, workspace, choices, selected); err != nil {
-			return err
-		}
-	} else {
-		return fmt.Errorf("load existing local execution config: %w", loadErr)
-	}
-	if err := persistWorktreeChoice(configPath, workspace, choices.WorktreeLocation); err != nil {
+	// The location is validated against the real file before anything is
+	// written, and the setup and location publish together.
+	if err := validateWorktreeChoice(configPath, choices.WorktreeLocation); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(output, "Saved local execution setup to %s\n", configPath)
+	err := stageLocalExecutionConfig(configPath, func(staged string) error {
+		existing, loadErr := config.Load(staged)
+		if loadErr == nil {
+			if err := writeUpdatedLocalExecutionConfig(staged, existing, choices, mergeLocalHarnesses(existing.Harnesses, selected)); err != nil {
+				return err
+			}
+		} else if errors.Is(loadErr, os.ErrNotExist) {
+			if err := writeLocalExecutionConfig(staged, workspace, choices, selected); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("load existing local execution config: %w", loadErr)
+		}
+		return persistWorktreeChoice(staged, workspace, choices.WorktreeLocation)
+	})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(output, "Saved local execution setup to %s\n", configPath)
 	return err
 }
 

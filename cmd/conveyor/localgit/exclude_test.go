@@ -117,3 +117,40 @@ func TestUntrackedOnlyUnderNamesOnlyAnUnignoredContainer(t *testing.T) {
 		t.Fatalf("mixed status = %v, %v", only, err)
 	}
 }
+
+func TestEnsureExcludedRefusesNonLiteralDirectories(t *testing.T) {
+	primary := excludeFixture(t)
+	for _, dir := range []string{"#trees", "!trees", "[trees]", "tr*es", "tr?es", ":(glob)trees", "tr\nees", "../trees", "-trees"} {
+		if _, err := EnsureExcluded(context.Background(), primary, dir); err == nil || !strings.Contains(err.Error(), "literal path") {
+			t.Fatalf("dir %q error = %v", dir, err)
+		}
+	}
+	if exclude := readExclude(t, primary); strings.Contains(exclude, "trees") {
+		t.Fatalf("exclude edited for a non-literal dir: %q", exclude)
+	}
+	if !LiteralGitPath("_worktrees") || !LiteralGitPath("nested/.trees") {
+		t.Fatal("literal paths refused")
+	}
+}
+
+func TestTrackedUnderReadsTheDirectoryLiterally(t *testing.T) {
+	primary := excludeFixture(t)
+	if err := os.MkdirAll(filepath.Join(primary, "tracked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(primary, "tracked", "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "tracked/file")
+	cmd.Dir = primary
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	// As a glob pathspec, "track*" would match tracked/file.
+	if tracked, err := TrackedUnder(context.Background(), primary, "track*"); err != nil || tracked {
+		t.Fatalf("TrackedUnder(track*) = %v, %v", tracked, err)
+	}
+	if tracked, err := TrackedUnder(context.Background(), primary, "tracked"); err != nil || !tracked {
+		t.Fatalf("TrackedUnder(tracked) = %v, %v", tracked, err)
+	}
+}

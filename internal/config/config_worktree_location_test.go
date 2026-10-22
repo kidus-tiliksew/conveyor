@@ -118,3 +118,21 @@ func TestWorktreeLocationValueSyntaxRoundTrips(t *testing.T) {
 		t.Fatalf("unknown value error = %v", err)
 	}
 }
+
+func TestWorktreeLocationDirMustBeALiteralGitPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, dir := range []string{"#trees", "!trees", "[trees]", "tr*es", "tr?es", "tr ees", "-trees", "tr\\\\ees", ":trees"} {
+		document := "worktree_location:\n  mode: repository\n  dir: \"" + dir + "\"\n"
+		if _, err := loadWorktreeLocationDocument(t, document); err == nil || !strings.Contains(err.Error(), "ASCII letters, digits") {
+			t.Fatalf("dir %q error = %v", dir, err)
+		}
+	}
+	if _, err := loadWorktreeLocationDocument(t, "worktree_location:\n  mode: repository\n  dir: \"tr\\nees\"\n"); err == nil {
+		t.Fatal("dir with a newline loaded")
+	}
+	for _, dir := range []string{"_worktrees", ".trees", "task-trees", "Trees2"} {
+		if _, err := loadWorktreeLocationDocument(t, "worktree_location:\n  mode: repository\n  dir: "+dir+"\n"); err != nil {
+			t.Fatalf("dir %q refused: %v", dir, err)
+		}
+	}
+}

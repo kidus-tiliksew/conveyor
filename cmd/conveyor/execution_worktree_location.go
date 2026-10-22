@@ -421,3 +421,75 @@ func worktreeLocationGroup(choice *string) *huh.Group {
 		).
 		Value(choice)).Title("Worktree location")
 }
+
+// validateWorktreeChoice checks a setup flow's location choice against the
+// real document before anything is written: a value must normalize, and an
+// empty choice needs a recorded location (component-harness-execution).
+func validateWorktreeChoice(path, choice string) error {
+	if strings.TrimSpace(choice) == "" {
+		local, err := config.Load(path)
+		if err == nil {
+			if _, ok := local.ConfiguredWorktreeLocation(); ok {
+				return nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return missingWorktreeLocationError(path)
+	}
+	location, err := config.ParseWorktreeLocation(choice)
+	if err != nil {
+		return err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	_, err = authoredWorktreeLocation(location).Normalized(home)
+	return err
+}
+
+// stageLocalExecutionConfig applies every write of one setup act to a staged
+// copy of path and publishes it with a single rename, so a failure leaves an
+// existing file byte for byte unchanged and creates no missing file
+// (component-harness-execution).
+func stageLocalExecutionConfig(path string, apply func(staged string) error) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create local execution config directory: %w", err)
+	}
+	temp, err := os.CreateTemp(directory, ".conveyor-setup-*.yaml")
+	if err != nil {
+		return fmt.Errorf("stage local execution config: %w", err)
+	}
+	staged := temp.Name()
+	defer os.Remove(staged)
+	original, readErr := os.ReadFile(path)
+	switch {
+	case readErr == nil:
+		if err = temp.Chmod(0o600); err == nil {
+			_, err = temp.Write(original)
+		}
+		if closeErr := temp.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return fmt.Errorf("stage local execution config: %w", err)
+		}
+	case errors.Is(readErr, os.ErrNotExist):
+		_ = temp.Close()
+		if err = os.Remove(staged); err != nil {
+			return fmt.Errorf("stage local execution config: %w", err)
+		}
+	default:
+		_ = temp.Close()
+		return readErr
+	}
+	if err = apply(staged); err != nil {
+		return err
+	}
+	if err = os.Rename(staged, path); err != nil {
+		return fmt.Errorf("publish local execution config: %w", err)
+	}
+	return os.Chmod(path, 0o600)
+}
