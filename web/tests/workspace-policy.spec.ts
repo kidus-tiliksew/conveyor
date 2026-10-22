@@ -76,6 +76,22 @@ test('workspace edits policy only and sends no retired execution detail', async 
   expect(body).not.toMatch(/setup|harness|model|argv/)
 })
 
+// case: FF-001
+test('fail-fast review is off by default and survives a seat change when enabled', async ({ page }) => {
+  const submitted = await mockAPIs(page)
+  await page.goto('/workspace')
+
+  const failFast = page.getByRole('switch', { name: 'Fail-fast review' })
+  await expect(failFast).not.toBeChecked()
+  await failFast.click()
+  await page.getByLabel('Review seats').fill('3')
+  await expect(failFast).toBeChecked()
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], fail_fast: true } })
+})
+
 test('workspace surfaces named policy rejections verbatim', async ({ page }) => {
   await mockAPIs(page, true)
   await page.goto('/workspace')

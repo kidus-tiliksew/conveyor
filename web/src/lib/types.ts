@@ -1088,7 +1088,7 @@ export interface TaskPolicyContract {
   verify_stage?: boolean
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats?: WorkspaceReviewSeat[] }
+  review: { seats?: WorkspaceReviewSeat[]; fail_fast?: boolean }
   refresh_review: 'delta' | 'full' | 'none'
 }
 
@@ -1097,7 +1097,7 @@ export interface WorkspaceConfigDocument {
   max_bounces: number
   work_order_queue_timeout: string
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats: WorkspaceReviewSeat[] }
+  review: { seats: WorkspaceReviewSeat[]; fail_fast?: boolean }
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
   monitor?: {

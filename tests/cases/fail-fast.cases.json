@@ -1,0 +1,615 @@
+{
+  "area": "fail-fast",
+  "machines": {
+    "review-round": {
+      "states": [
+        {
+          "id": "open",
+          "label": "Round open; some required seats have no verdict"
+        },
+        {
+          "id": "settled-changes",
+          "label": "Round settled with changes requested; one bounce counted"
+        },
+        {
+          "id": "settled-approved",
+          "label": "Round settled with every required seat approved"
+        }
+      ],
+      "transitions": [
+        {
+          "from": "open",
+          "to": "open",
+          "event": "approve-partial",
+          "label": "A seat approves while other required seats are still pending"
+        },
+        {
+          "from": "open",
+          "to": "open",
+          "event": "changes-requested-disabled",
+          "label": "A seat requests changes with fail_fast=false and other seats still pending"
+        },
+        {
+          "from": "open",
+          "to": "settled-changes",
+          "event": "all-verdicts-with-changes",
+          "label": "Every seat has a verdict and at least one requests changes"
+        },
+        {
+          "from": "open",
+          "to": "settled-changes",
+          "event": "first-changes-requested-enabled",
+          "label": "With fail_fast=true, the first accepted changes-requested verdict settles the round in one atomic step"
+        },
+        {
+          "from": "open",
+          "to": "settled-approved",
+          "event": "all-approved",
+          "label": "Every required seat approves"
+        },
+        {
+          "from": "settled-changes",
+          "to": "settled-changes",
+          "event": "late-or-duplicate",
+          "label": "A late, duplicate, recovered, or stale-head verdict is rejected and changes nothing"
+        },
+        {
+          "from": "open",
+          "to": "open",
+          "event": "stale-head-verdict",
+          "label": "A verdict that cites a stale head is rejected"
+        },
+        {
+          "from": "open",
+          "to": "open",
+          "event": "operator-add-seats",
+          "label": "An operator adds seats to an open round"
+        },
+        {
+          "from": "settled-changes",
+          "to": "settled-changes",
+          "event": "operator-add-seats-refused",
+          "label": "Adding seats to a settled round is refused"
+        }
+      ]
+    },
+    "seat": {
+      "states": [
+        {
+          "id": "pending",
+          "label": "Seat claimed or queued with no verdict"
+        },
+        {
+          "id": "verdict",
+          "label": "Seat verdict accepted"
+        },
+        {
+          "id": "canceled",
+          "label": "Seat canceled or superseded by fail-fast settlement; never approved"
+        }
+      ],
+      "transitions": [
+        {
+          "from": "pending",
+          "to": "verdict",
+          "event": "submit-verdict",
+          "label": "The seat submits a verdict before settlement"
+        },
+        {
+          "from": "pending",
+          "to": "canceled",
+          "event": "fail-fast-settle",
+          "label": "A sibling seat's changes-requested verdict settled the round"
+        },
+        {
+          "from": "canceled",
+          "to": "canceled",
+          "event": "late-claim-or-verdict",
+          "label": "A late claim, renewal, or verdict is refused"
+        },
+        {
+          "from": "verdict",
+          "to": "verdict",
+          "event": "sibling-fail-fast-settle",
+          "label": "A sibling's changes-requested verdict settled the round; this accepted verdict is kept"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "FF-001",
+      "title": "Default is off",
+      "tier": "medium",
+      "given": "task created without fail_fast setting",
+      "when": "round opens",
+      "then": "pinned policy review.fail_fast=false; config exposes exactly one boolean",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "approve-partial",
+        "expect_state": "open",
+        "asserts": [
+          {
+            "text": "pinned policy review.fail_fast=false; config exposes exactly one boolean",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-002",
+      "title": "Disabled preserves all-seat settlement (AC-2.1)",
+      "tier": "medium",
+      "given": "fail_fast=false, 3 seats",
+      "when": "seat 1 changes_requested, others pending",
+      "then": "round stays open, no bounce, siblings live; after all verdicts, one merged round, one bounce",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "changes-requested-disabled",
+        "expect_state": "open",
+        "asserts": [
+          {
+            "text": "round stays open, no bounce, siblings live; after all verdicts, one merged round, one bounce",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-003",
+      "title": "Policy pinned in task policy snapshot, not read live",
+      "tier": "medium",
+      "given": "task policy snapshot has fail_fast=true",
+      "when": "current settings flip to false (and inverse) before verdicts, across multiple rounds of the same task",
+      "then": "every round of the task settles per the snapshot value, carried unchanged",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "first-changes-requested-enabled",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "every round of the task settles per the snapshot value, carried unchanged",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-004",
+      "title": "First changes_requested settles enabled round",
+      "tier": "medium",
+      "given": "fail_fast=true, 3 seats, none settled",
+      "when": "one accepted changes_requested",
+      "then": "in one atomic transaction: round settled, feedback retained, unfinished sibling claims/orders invalidated, bounce count +1, exactly one implementation successor created",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "first-changes-requested-enabled",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "in one atomic transaction: round settled, feedback retained, unfinished sibling claims/orders invalidated, bounce count +1, exactly one implementation successor created",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-005",
+      "title": "Unfinished seats canceled, never approved",
+      "tier": "medium",
+      "given": "FF-004 settled round",
+      "when": "read model/timeline/review card read",
+      "then": "unfinished seats shown canceled/superseded; no approved verdict fabricated; retained feedback unchanged",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "seat",
+        "at": "pending",
+        "event": "fail-fast-settle",
+        "expect_state": "canceled",
+        "asserts": [
+          {
+            "text": "unfinished seats shown canceled/superseded; no approved verdict fabricated; retained feedback unchanged",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-006",
+      "title": "Already-submitted sibling verdicts retained",
+      "tier": "medium",
+      "given": "fail_fast=true; seat A approved earlier",
+      "when": "seat B changes_requested",
+      "then": "A's approval and B's feedback both retained in merged round; only unfinished seats canceled",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "seat",
+        "at": "verdict",
+        "event": "sibling-fail-fast-settle",
+        "expect_state": "verdict",
+        "asserts": [
+          {
+            "text": "A's approval and B's feedback both retained in merged round; only unfinished seats canceled",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-007",
+      "title": "Late verdict rejected",
+      "tier": "medium",
+      "given": "fail-fast-settled round",
+      "when": "canceled sibling submits approve or changes_requested after settlement",
+      "then": "rejected; no bounce, successor, or round change; verdicts accepted before settlement remain retained",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "seat",
+        "at": "canceled",
+        "event": "late-claim-or-verdict",
+        "expect_state": "canceled",
+        "asserts": [
+          {
+            "text": "rejected; no bounce, successor, or round change; verdicts accepted before settlement remain retained",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-008",
+      "title": "Late claim rejected",
+      "tier": "medium",
+      "given": "fail-fast-settled round",
+      "when": "invalidated sibling order claimed or renewed",
+      "then": "refused; order not reactivated",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "seat",
+        "at": "canceled",
+        "event": "late-claim-or-verdict",
+        "expect_state": "canceled",
+        "asserts": [
+          {
+            "text": "refused; order not reactivated",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-009",
+      "title": "Stale-head evidence rejected",
+      "tier": "medium",
+      "given": "fail_fast=true round at head H1",
+      "when": "changes_requested cites head H0",
+      "then": "rejected; round does not settle",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "stale-head-verdict",
+        "expect_state": "open",
+        "asserts": [
+          {
+            "text": "rejected; round does not settle",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-010",
+      "title": "Duplicate delivery idempotent",
+      "tier": "medium",
+      "given": "FF-004 settled",
+      "when": "same changes_requested re-delivered",
+      "then": "no second bounce or successor; bounce count and successor count unchanged",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "settled-changes",
+        "event": "late-or-duplicate",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "no second bounce or successor; bounce count and successor count unchanged",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-011",
+      "title": "Concurrent contradictory verdicts",
+      "tier": "medium",
+      "given": "fail_fast=true, 3 seats",
+      "when": "two changes_requested (and changes_requested vs approve) race",
+      "then": "exactly one settlement, one bounce, at most one successor; any verdict accepted before settlement retained; any verdict arriving after settlement (including losing approve) rejected; run on every supported store backend",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "first-changes-requested-enabled",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "exactly one settlement, one bounce, at most one successor; any verdict accepted before settlement retained; any verdict arriving after settlement (including losing approve) rejected; run on every supported store backend",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-012",
+      "title": "Crash recovery after settlement",
+      "tier": "medium",
+      "given": "settlement committed, process restarts / recovery sweep runs",
+      "when": "recovery reprocesses round",
+      "then": "no additional bounce or successor; canceled seats stay canceled",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "settled-changes",
+        "event": "late-or-duplicate",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "no additional bounce or successor; canceled seats stay canceled",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-013",
+      "title": "Approval needs every required seat when enabled",
+      "tier": "medium",
+      "given": "fail_fast=true, 3 seats",
+      "when": "2 approve, 1 pending",
+      "then": "round not approved; approves only after all required seats approve",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "approve-partial",
+        "expect_state": "open",
+        "asserts": [
+          {
+            "text": "round not approved; approves only after all required seats approve",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-014",
+      "title": "Bounce cap unchanged",
+      "tier": "medium",
+      "given": "fail_fast=true, task one bounce below cap",
+      "when": "fail-fast settlement occurs",
+      "then": "counts one bounce; at cap behavior identical to disabled-policy cap behavior (no successor beyond existing rule)",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "first-changes-requested-enabled",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "counts one bounce; at cap behavior identical to disabled-policy cap behavior (no successor beyond existing rule)",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-015",
+      "title": "Seat floor and carried panel size preserved (AC-2.3/2.4/2.6/2.7)",
+      "tier": "low",
+      "given": "fail_fast=true",
+      "when": "submission declares count below floor / next round opens after fail-fast bounce",
+      "then": "refused below floor; canceled seats do not reduce required/frontier floors or carried declared panel size; next round opens the same count as a disabled-policy round would; source recorded",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: low tier",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "settled-changes",
+        "event": "late-or-duplicate",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "refused below floor; canceled seats do not reduce required/frontier floors or carried declared panel size; next round opens the same count as a disabled-policy round would; source recorded",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-016",
+      "title": "Operator seat additions (AC-2.5/2.6)",
+      "tier": "low",
+      "given": "fail_fast=true round",
+      "when": "operator adds seats while open, then attempts after fail-fast settlement",
+      "then": "open-round addition behaves as today (audited, round waits for added seats unless fail-fast settles); addition after settlement refused, round unchanged",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: low tier",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "settled-changes",
+        "event": "operator-add-seats-refused",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "open-round addition behaves as today (audited, round waits for added seats unless fail-fast settles); addition after settlement refused, round unchanged",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-017",
+      "title": "Gates/verify ordering/independence unchanged",
+      "tier": "low",
+      "given": "fail_fast=true",
+      "when": "implementer session attempts a seat; verify ordering/gates exercised",
+      "then": "same refusals and ordering as with fail_fast=false",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: low tier",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "approve-partial",
+        "expect_state": "open",
+        "asserts": [
+          {
+            "text": "same refusals and ordering as with fail_fast=false",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-018",
+      "title": "Summary eligibility (REQ-10)",
+      "tier": "low",
+      "given": "fail-fast-settled round",
+      "when": "summary submitted",
+      "then": "normal eligibility checks apply; summary changes no verdict/bounce/order (AC-10.7); successor context includes summary (AC-10.6)",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: low tier",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "settled-changes",
+        "event": "late-or-duplicate",
+        "expect_state": "settled-changes",
+        "asserts": [
+          {
+            "text": "normal eligibility checks apply; summary changes no verdict/bounce/order (AC-10.7); successor context includes summary (AC-10.6)",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "FF-019",
+      "title": "Changes_requested from disabled round unaffected by sibling invalidation",
+      "tier": "low",
+      "given": "fail_fast=false",
+      "when": "changes_requested arrives",
+      "then": "no sibling order invalidated",
+      "why": "Fail-fast must only shorten an enabled round's changes-requested path without extra bounces/successors, fabricated approvals, or weakened default/floor/gate rules",
+      "source": "Task 261022-15e673 body (Required behavior) + served REQ-2 AC-2.1,2.3-2.8, REQ-10; parent clarifications 2026-10-22. Proposed opt-in contract; confirmed default unchanged.",
+      "status": "approved",
+      "approved_at": "2026-10-22",
+      "comment": "auto: low tier",
+      "visual": {
+        "kind": "state",
+        "machine": "review-round",
+        "at": "open",
+        "event": "changes-requested-disabled",
+        "expect_state": "open",
+        "asserts": [
+          {
+            "text": "no sibling order invalidated",
+            "polarity": "must"
+          }
+        ]
+      }
+    }
+  ]
+}

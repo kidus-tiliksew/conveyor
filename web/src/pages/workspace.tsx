@@ -569,6 +569,19 @@ function PolicyTab({
                 <p className="text-xs text-faint">Require operator approval before the reviewed change lands</p>
               </div>
             </div>
+            <div className="flex items-center gap-3">
+              <Switch
+                aria-label="Fail-fast review"
+                checked={draft.review.fail_fast ?? false}
+                onChange={(checked) => update({ review: { ...draft.review, fail_fast: checked } })}
+              />
+              <div>
+                <p className="text-sm font-medium">Fail-fast review</p>
+                <p className="text-xs text-faint">
+                  End a review round on its first changes-requested verdict and cancel the seats still reviewing
+                </p>
+              </div>
+            </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field
@@ -590,7 +603,7 @@ function PolicyTab({
                 value={seatCount}
                 onChange={(event) => {
                   const count = Math.max(1, Number(event.target.value) || 1)
-                  update({ review: { seats: Array.from({ length: count }, () => ({})) } })
+                  update({ review: { ...draft.review, seats: Array.from({ length: count }, () => ({})) } })
                 }}
               />
             </Field>

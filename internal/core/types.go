@@ -895,6 +895,9 @@ const (
 	WorkOrderDecisionRequestLimit                   = 1024
 	WorkOrderCheckpointClassAuthorityConflict       = "authority_conflict"
 	TaskTerminalSuppressionReason                   = "task_terminal"
+	// ReviewRoundSettledSuppressionReason retires an unfinished review seat
+	// whose round a fail-fast changes-requested verdict already settled.
+	ReviewRoundSettledSuppressionReason = "review_round_settled"
 )
 
 // WorkOrderCheckpoint is operator-facing context recorded by a deliberate
