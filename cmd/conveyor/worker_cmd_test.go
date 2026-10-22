@@ -72,6 +72,9 @@ func writeWorkerLocalExecutionConfig(t *testing.T, command, probe []string) stri
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An executing machine records a worktree location; the workspace
+	// projection never carries it (component-harness-execution).
+	data = append(data, []byte("worktree_location:\n  mode: machine\n")...)
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	if err = os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -4554,5 +4557,84 @@ func TestJSONMCPReceiptUnterminatedOverflowThroughRedactor(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(fmt.Sprint(result.report["config_path"]))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("attempt directory survived the overflow: %v", err)
+	}
+}
+
+// A setup file that relied on the retired worktree default stops the worker
+// before enrollment or heartbeat, and a run before any claim
+// (component-local-launchers).
+func TestWorkerAndRunRefuseAnUnconfiguredWorktreeLocationBeforeServerWork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "worker-credential")
+	unconfigured := worktreeLocationTestConfig(t, "")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "must not contact server", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	err := runWorkerWithPolicyAndConfig(t.Context(), &client{base: server.URL, workspace: "demo"}, "", "test", true, defaultWorkerReconnectPolicy, unconfigured)
+	if err == nil || !strings.Contains(err.Error(), "no worktree location is configured in "+unconfigured) || !strings.Contains(err.Error(), "conveyor config set worktree_location") {
+		t.Fatalf("worker err=%v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("worker contacted the server %d times", requests)
+	}
+
+	claimCalls := 0
+	runServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/target/run-order":
+			_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
+				Order: core.WorkOrder{ID: "target-implement-1", TaskID: "target", Stage: core.StageImplement, State: core.WorkOrderQueued},
+				Task:  core.Task{ID: "target", Title: "Ship target", State: core.TaskRunning},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claim"):
+			claimCalls++
+			http.Error(w, "must not claim", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runServer.Close()
+	var output bytes.Buffer
+	err = runTask(t.Context(), &client{base: runServer.URL, token: "user-credential", workspace: "demo"}, "target", unconfigured, strings.NewReader(""), &output, false, false)
+	if err == nil || !strings.Contains(err.Error(), "no worktree location is configured") {
+		t.Fatalf("run err=%v", err)
+	}
+	if claimCalls != 0 {
+		t.Fatalf("run claimed %d times", claimCalls)
+	}
+	if !strings.Contains(output.String(), "Next: implement work order target-implement-1") {
+		t.Fatalf("run did not present the pending order: %q", output.String())
+	}
+}
+
+func TestRunWorkerPrintsTheWorktreeLocationAtStartup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CONVEYOR_WORKER_TOKEN", "revoked")
+	configPath := worktreeLocationTestConfig(t, "  mode: repository\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := os.Stderr
+	os.Stderr = writer
+	runErr := runWorkerWithPolicyAndConfig(t.Context(), &client{base: server.URL, workspace: "demo"}, "", "test", true, defaultWorkerReconnectPolicy, configPath)
+	os.Stderr = previous
+	_ = writer.Close()
+	captured, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr == nil || !strings.Contains(runErr.Error(), "401 Unauthorized") {
+		t.Fatalf("worker err=%v", runErr)
+	}
+	if !strings.Contains(string(captured), "worktree location: repository (_worktrees under each primary checkout)") {
+		t.Fatalf("worker startup output = %q", captured)
 	}
 }

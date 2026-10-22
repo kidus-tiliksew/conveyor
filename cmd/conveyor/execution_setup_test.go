@@ -62,7 +62,7 @@ func TestExecutionWizardDeclineWritesNothing(t *testing.T) {
 
 	var output bytes.Buffer
 	// Huh aborts forms on Ctrl+C; Escape is not a form-abort binding.
-	err := runExecutionSetupWizard(t.Context(), strings.NewReader("\x03"), &output, path, "demo")
+	err := runExecutionSetupWizard(t.Context(), strings.NewReader("\x03"), &output, path, "demo", "machine")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,9 @@ func TestExecutionWizardModelRoundTripWritesRunValidConfig(t *testing.T) {
 	state := newExecutionWizardState(healthyDetections(harness), nil)
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	if err := writeLocalExecutionConfig(path, "demo", state.choices, []config.Harness{harness}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWorktreeLocation(path, "demo", config.WorktreeLocation{Mode: config.WorktreeLocationMachine}); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.Load(path)
@@ -119,8 +122,14 @@ func TestExecutionWizardDefaultsFastPathCompletesFromOneConfirmation(t *testing.
 	harness := config.HarnessTemplates()[0].Harness
 	detected := healthyDetections(harness)
 	model := newExecutionWizardModel(nil, detected)
+	// One confirmation accepts the stage defaults (AC-9.5); the required
+	// worktree-location step follows it.
 	model = driveExecutionWizard(t, model, tea.KeyMsg{Type: tea.KeyEnter})
-	if !model.completed || !model.state.acceptDefaults || len(model.state.choices.ReviewSeats) != 1 {
+	if model.completed {
+		t.Fatal("defaults completed without the worktree-location step")
+	}
+	model = driveExecutionWizard(t, model, tea.KeyMsg{Type: tea.KeyEnter})
+	if !model.completed || !model.state.acceptDefaults || len(model.state.choices.ReviewSeats) != 1 || model.state.choices.WorktreeLocation != config.WorktreeLocationRepository {
 		t.Fatalf("completed=%v defaults=%v choices=%+v", model.completed, model.state.acceptDefaults, model.state.choices)
 	}
 }
@@ -267,6 +276,9 @@ func TestRunAndWorkerShareLocalSetupLoaderAndResolution(t *testing.T) {
 	if err := writeLocalExecutionConfig(path, "demo", state.choices, []config.Harness{harness}); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeWorktreeLocation(path, "demo", config.WorktreeLocation{Mode: config.WorktreeLocationMachine}); err != nil {
+		t.Fatal(err)
+	}
 	setup, err := loadLocalExecutionSetup(path)
 	if err != nil {
 		t.Fatal(err)
@@ -296,6 +308,9 @@ func TestSharedLocalSetupLoaderRejectsInvalidResumeCommand(t *testing.T) {
 	state := newExecutionWizardState(healthyDetections(harness), nil)
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
 	if err := writeLocalExecutionConfig(path, "demo", state.choices, []config.Harness{harness}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeWorktreeLocation(path, "demo", config.WorktreeLocation{Mode: config.WorktreeLocationMachine}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -367,7 +382,7 @@ func TestExecutionWizardPreservesExistingLocalConfiguration(t *testing.T) {
 	})
 
 	var output bytes.Buffer
-	if err = runExecutionSetupWizard(t.Context(), strings.NewReader(""), &output, path, "ignored-workspace"); err != nil {
+	if err = runExecutionSetupWizard(t.Context(), strings.NewReader(""), &output, path, "ignored-workspace", "machine"); err != nil {
 		t.Fatal(err)
 	}
 	after, err := config.Load(path)
@@ -403,7 +418,7 @@ func TestExecutionWizardUsesDetectionProbeWithoutDiscardingAnswers(t *testing.T)
 		runExecutionWizardUI = previousUI
 	})
 
-	if err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), &bytes.Buffer{}, path, "demo"); err != nil {
+	if err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), &bytes.Buffer{}, path, "demo", "machine"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.Load(path)
@@ -420,7 +435,7 @@ func TestExecutionSetupDefaultsWritesWithoutTerminal(t *testing.T) {
 	writeProbeFixture(t, directory, "codex", "codex 1.2.3", true)
 	t.Setenv("PATH", directory)
 	path := filepath.Join(directory, "conveyor.yaml")
-	if err := runExecutionSetupDefaults(t.Context(), io.Discard, path, "demo"); err != nil {
+	if err := runExecutionSetupDefaults(t.Context(), io.Discard, path, "demo", "machine"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.Load(path)
@@ -453,7 +468,7 @@ func TestExecutionWizardSummaryDeclineReturnsWithValuesIntact(t *testing.T) {
 		wizardTerminal = previousTerminal
 		runExecutionWizardUI = previousUI
 	})
-	if err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), io.Discard, path, "demo"); err != nil {
+	if err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), io.Discard, path, "demo", "machine"); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := config.Load(path)
@@ -477,7 +492,7 @@ func TestExecutionWizardUnhealthyHarnessValidationPreservesChoices(t *testing.T)
 
 func TestExecutionWizardNonTerminalPointsAtConfigTwin(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conveyor.yaml")
-	err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), &bytes.Buffer{}, path, "demo")
+	err := runExecutionSetupWizard(t.Context(), strings.NewReader(""), &bytes.Buffer{}, path, "demo", "machine")
 	if err == nil || !strings.Contains(err.Error(), "requires a terminal") || !strings.Contains(err.Error(), "config set execution.<stage>.<field>") || !strings.Contains(err.Error(), path) {
 		t.Fatalf("error = %v", err)
 	}
@@ -570,7 +585,7 @@ func TestWizardPathHasNoNetworkClient(t *testing.T) {
 	// The signature and imports lock the wizard to local inputs. A future server
 	// dependency must be an explicit contract change rather than an unnoticed
 	// upload of setup content.
-	type localWizard func(context.Context, io.Reader, io.Writer, string, string) error
+	type localWizard func(context.Context, io.Reader, io.Writer, string, string, string) error
 	var wizard localWizard = runExecutionSetupWizard
 	if wizard == nil {
 		t.Fatal("local wizard unavailable")

@@ -856,31 +856,34 @@ type UpdateReceipt struct {
 }
 
 // Config combines immutable deployment settings with the current workspace
-// snapshot. WorktreeRoot is a client-local filesystem setting;
-// it does not cross the workspace API boundary.
+// snapshot. WorktreeLocation and the legacy WorktreeRoot are client-local
+// filesystem settings; they do not cross the workspace API boundary.
 type Config struct {
-	KitPermissions            []KitPermissionGrant         `yaml:"kit_permissions,omitempty" json:"-"`
-	VerificationToolchains    []VerificationToolchain      `yaml:"verification_toolchains,omitempty" json:"-"`
-	Workspace                 string                       `yaml:"workspace"`
-	PackDir                   string                       `yaml:"pack_dir,omitempty"`
-	packDirSet                bool                         `yaml:"-"`
-	MaxBounces                int                          `yaml:"max_bounces"`
-	Recovery                  RecoveryPolicy               `yaml:"recovery,omitempty" json:"recovery,omitempty"`
-	WorkOrderQueueTimeout     time.Duration                `yaml:"-"`
-	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout"`
-	PlanningSnapshotMaxBytes  int64                        `yaml:"planning_snapshot_max_bytes,omitempty"`
-	WorktreeRoot              string                       `yaml:"worktree_root,omitempty" json:"-"`
-	Database                  Database                     `yaml:"database"`
-	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
-	Routing                   Routing                      `yaml:"routing"`
-	Harnesses                 []Harness                    `yaml:"harnesses,omitempty"`
-	Review                    ReviewPanel                  `yaml:"review"`
-	Setups                    []ExecutionSetup             `yaml:"setups,omitempty"`
-	DefaultSetup              string                       `yaml:"default_setup,omitempty"`
-	Execution                 ExecutionPolicy              `yaml:"execution"`
-	Repos                     []Repo                       `yaml:"repos"`
-	Monitor                   MonitorConfig                `yaml:"monitor"`
-	PlanningModels            []string                     `yaml:"planning_models,omitempty"`
+	KitPermissions            []KitPermissionGrant    `yaml:"kit_permissions,omitempty" json:"-"`
+	VerificationToolchains    []VerificationToolchain `yaml:"verification_toolchains,omitempty" json:"-"`
+	Workspace                 string                  `yaml:"workspace"`
+	PackDir                   string                  `yaml:"pack_dir,omitempty"`
+	packDirSet                bool                    `yaml:"-"`
+	MaxBounces                int                     `yaml:"max_bounces"`
+	Recovery                  RecoveryPolicy          `yaml:"recovery,omitempty" json:"recovery,omitempty"`
+	WorkOrderQueueTimeout     time.Duration           `yaml:"-"`
+	WorkOrderQueueTimeoutText string                  `yaml:"work_order_queue_timeout"`
+	PlanningSnapshotMaxBytes  int64                   `yaml:"planning_snapshot_max_bytes,omitempty"`
+	WorktreeLocation          *WorktreeLocation       `yaml:"worktree_location,omitempty" json:"-"`
+	// WorktreeRoot is the legacy machine-mode spelling, read as
+	// worktree_location mode machine; it is never defaulted.
+	WorktreeRoot      string                       `yaml:"worktree_root,omitempty" json:"-"`
+	Database          Database                     `yaml:"database"`
+	ExecutionSettings *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
+	Routing           Routing                      `yaml:"routing"`
+	Harnesses         []Harness                    `yaml:"harnesses,omitempty"`
+	Review            ReviewPanel                  `yaml:"review"`
+	Setups            []ExecutionSetup             `yaml:"setups,omitempty"`
+	DefaultSetup      string                       `yaml:"default_setup,omitempty"`
+	Execution         ExecutionPolicy              `yaml:"execution"`
+	Repos             []Repo                       `yaml:"repos"`
+	Monitor           MonitorConfig                `yaml:"monitor"`
+	PlanningModels    []string                     `yaml:"planning_models,omitempty"`
 }
 
 func Load(path string) (*Config, error) {
@@ -1721,11 +1724,9 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 	if c.PlanningSnapshotMaxBytes < 0 {
 		return fmt.Errorf("planning_snapshot_max_bytes must be positive")
 	}
-	c.WorktreeRoot = expandDefault(c.WorktreeRoot, home, DefaultWorktreeRoot(home))
-	if !filepath.IsAbs(c.WorktreeRoot) {
-		return fmt.Errorf("worktree_root must be absolute after home expansion")
+	if err := c.normalizeWorktreeLocation(home); err != nil {
+		return err
 	}
-	c.WorktreeRoot = filepath.Clean(c.WorktreeRoot)
 	if c.Database.URL == "" {
 		c.Database.URL = os.Getenv("CONVEYOR_DATABASE_URL")
 	}
@@ -2324,9 +2325,9 @@ func expandDefault(value, home, fallback string) string {
 	return value
 }
 
-// DefaultWorktreeRoot returns the machine-local container used for new
-// implicit task worktrees. Existing registered worktrees remain discoverable
-// through Git regardless of their location (component-harness-execution).
+// DefaultWorktreeRoot returns the suggested root for machine-mode worktree
+// locations. It applies only after a user chooses machine mode; an
+// unconfigured location is never defaulted (component-harness-execution).
 func DefaultWorktreeRoot(home string) string {
 	return filepath.Join(home, ".conveyor", "worktrees")
 }

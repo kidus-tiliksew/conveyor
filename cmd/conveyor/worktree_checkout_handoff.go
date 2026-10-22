@@ -13,6 +13,10 @@ import (
 )
 
 func checkoutWithWriter(ctx context.Context, c *client, taskID, branch, base, repo, repoURL, destination, worktreeRoot string) (string, error) {
+	return checkoutWithWriterPlacement(ctx, c, taskID, branch, base, repo, repoURL, destination, fixedWorktreePlacement(worktreeRoot))
+}
+
+func checkoutWithWriterPlacement(ctx context.Context, c *client, taskID, branch, base, repo, repoURL, destination string, placement worktreePlacement) (string, error) {
 	root, err := repositoryRoot(ctx)
 	if err != nil {
 		return "", err
@@ -68,7 +72,7 @@ func checkoutWithWriter(ctx context.Context, c *client, taskID, branch, base, re
 			return err
 		}}
 	}
-	path, preserved, err := checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, worktreeRoot, checkpoint)
+	path, preserved, err := checkoutTaskWithPlacement(ctx, branch, base, repo, repoURL, taskID, destination, placement, checkpoint)
 	if err != nil {
 		return "", err
 	}

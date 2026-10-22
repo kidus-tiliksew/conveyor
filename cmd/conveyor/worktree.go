@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/cmd/conveyor/localgit"
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 )
@@ -44,38 +43,19 @@ type attemptCheckpointResult struct {
 	TerminationReason string
 }
 
-type worktreeRootContextKey struct{}
-
-func contextWithWorktreeRoot(ctx context.Context, root string) context.Context {
-	return context.WithValue(ctx, worktreeRootContextKey{}, root)
-}
-
-func worktreeRootFromContext(ctx context.Context) string {
-	root, _ := ctx.Value(worktreeRootContextKey{}).(string)
-	return root
-}
-
-// checkoutTask resolves one safe, task-dedicated checkout without switching or
-// rewriting the operator's primary checkout (component-git-delivery; DEC-10).
-func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, destination string) (string, error) {
-	path, _, err := checkoutTaskWithCheckpoint(ctx, branch, base, repo, repoURL, taskID, destination, nil)
-	return path, err
-}
-
 func checkoutTaskAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string) (string, error) {
 	path, _, err := checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, worktreeRoot, nil)
 	return path, err
 }
 
-func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
-	root, err := defaultImplicitWorktreeRoot()
-	if err != nil {
-		return "", nil, err
-	}
-	return checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, root, checkpoint)
+func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
+	return checkoutTaskWithPlacement(ctx, branch, base, repo, repoURL, taskID, destination, fixedWorktreePlacement(worktreeRoot), checkpoint)
 }
 
-func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
+// checkoutTaskWithPlacement resolves one safe, task-dedicated checkout without
+// switching or rewriting the operator's primary checkout (component-git-delivery;
+// DEC-10). The placement is read only when a new worktree is created.
+func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, placement worktreePlacement, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
 	root, err := repositoryRoot(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("checkout must run from inside the target repository; change into its primary checkout (dispatched launches may configure repos[].checkout): %w", err)
@@ -111,9 +91,19 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 	} else if operation != "" {
 		return "", nil, fmt.Errorf("primary checkout is unsafe: Git operation %s is in progress", operation)
 	}
+	// The implicit container is resolved only for a new worktree. An
+	// in-repository container gets its exclude entry before the cleanliness
+	// check, since its nested worktrees would otherwise read as untracked.
+	implicitDestination := destination == ""
+	var worktreeRoot string
+	if implicitDestination && assigned == nil {
+		if worktreeRoot, err = placement.prepare(ctx, primary, repo, taskID, branch); err != nil {
+			return "", nil, err
+		}
+	}
 	if !reusingAssigned {
 		if _, err := requireSafeWorktree(ctx, primary); err != nil {
-			return "", nil, fmt.Errorf("primary checkout is unsafe: %w", err)
+			return "", nil, unsafePrimaryError(ctx, primary, taskID, inRepositoryWorktreeCandidates(primary, placement, worktrees), err)
 		}
 	}
 	var currentCheckoutErr error
@@ -121,11 +111,12 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 		_, currentCheckoutErr = requireSafeWorktree(ctx, root)
 	}
 
-	implicitDestination := destination == ""
 	if implicitDestination {
-		destination, err = implicitCheckoutDestination(worktreeRoot, repo, taskID, branch)
-		if err != nil {
-			return "", nil, err
+		if assigned == nil {
+			destination, err = implicitCheckoutDestination(worktreeRoot, repo, taskID, branch)
+			if err != nil {
+				return "", nil, err
+			}
 		}
 	} else {
 		if !filepath.IsAbs(destination) {
@@ -247,7 +238,7 @@ func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, r
 	} else if !os.IsNotExist(err) {
 		return "", nil, fmt.Errorf("inspect destination %s: %w", destination, err)
 	}
-	if implicitDestination {
+	if implicitDestination && assigned == nil {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 			return "", nil, fmt.Errorf("create implicit worktree container: %w", err)
 		}
@@ -670,17 +661,9 @@ func canonicalWorktreePath(path string) (string, error) {
 	return filepath.Join(parent, filepath.Base(cleaned)), nil
 }
 
-func defaultImplicitWorktreeRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home for implicit worktree root: %w", err)
-	}
-	return config.DefaultWorktreeRoot(home), nil
-}
-
 // implicitCheckoutDestination keeps the deterministic worktree name beneath
-// one fixed canonical client-local root, independently of the primary
-// checkout location (component-git-delivery). Default conveyor/task-<id>
+// one canonical container resolved from the configured worktree location
+// (component-git-delivery). Default conveyor/task-<id>
 // assignments keep <root>/<repo>-task-<task-id>; a custom assignment appends
 // a sanitized branch component so a leftover previous-name tree is not reused.
 func implicitCheckoutDestination(worktreeRoot, repo, taskID, branch string) (string, error) {
@@ -693,13 +676,9 @@ func implicitCheckoutDestination(worktreeRoot, repo, taskID, branch string) (str
 	if !filepath.IsAbs(worktreeRoot) {
 		return "", fmt.Errorf("refusing implicit checkout destination: worktree root %q is not absolute", worktreeRoot)
 	}
-	name := repo + "-task-" + taskID
-	if strings.TrimSpace(branch) != gitx.BranchName(taskID) {
-		component := safeAssignmentPathComponent(branch)
-		if !safeImplicitCheckoutComponent(component) {
-			return "", fmt.Errorf("refusing implicit checkout destination: assignment %q is not one safe path component", branch)
-		}
-		name = name + "-" + component
+	name := implicitWorktreeName(repo, taskID, branch)
+	if strings.TrimSpace(branch) != gitx.BranchName(taskID) && !safeImplicitCheckoutComponent(safeAssignmentPathComponent(branch)) {
+		return "", fmt.Errorf("refusing implicit checkout destination: assignment %q is not one safe path component", branch)
 	}
 	container := filepath.Clean(worktreeRoot)
 	canonicalContainer, err := canonicalPathThroughExistingParent(container)
@@ -718,6 +697,16 @@ func implicitCheckoutDestination(worktreeRoot, repo, taskID, branch string) (str
 		return "", fmt.Errorf("refusing implicit checkout destination %s: resolved path is not inside canonical container %s", destination, container)
 	}
 	return canonicalDestination, nil
+}
+
+// implicitWorktreeName is <repo>-task-<task-id>, with a sanitized branch
+// component appended after a custom assignment.
+func implicitWorktreeName(repo, taskID, branch string) string {
+	name := repo + "-task-" + taskID
+	if strings.TrimSpace(branch) != gitx.BranchName(taskID) {
+		name = name + "-" + safeAssignmentPathComponent(branch)
+	}
+	return name
 }
 
 func safeAssignmentPathComponent(branch string) string {

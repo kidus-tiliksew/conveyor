@@ -280,6 +280,14 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 				return err
 			}
 			setupLoaded = true
+			// Show where new task worktrees go before the first claim
+			// (component-local-launchers).
+			notice := "Worktree location: " + describeWorktreeLocation(setup.WorktreeLocation)
+			if app != nil {
+				app.Notice(notice)
+			} else {
+				_, _ = fmt.Fprintln(output, notice)
+			}
 		}
 		local := setup.Config
 		selected, selectErr := selectLocalRunDispatch(*item, local)
@@ -364,7 +372,11 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 		}
 		started := time.Now()
 		lastTUIStage = runTUIStage{task: selected.Task, stage: selected.Order.Stage, harness: selected.Harness.Name, model: selected.Model, started: started}
-		stageCtx, cancelStage := context.WithCancel(contextWithLocalExecutionConfig(contextWithWorktreeRoot(ctx, local.WorktreeRoot), local))
+		locationCtx := ctx
+		if location, ok := local.ConfiguredWorktreeLocation(); ok {
+			locationCtx = contextWithWorktreeLocation(ctx, location)
+		}
+		stageCtx, cancelStage := context.WithCancel(contextWithLocalExecutionConfig(locationCtx, local))
 		presentation := &runOutputPresentation{output: output}
 		var childStderr io.Writer
 		if interactiveTUI {

@@ -22,6 +22,16 @@ max_bounces: 10
 work_order_queue_timeout: 24h
 # planning_snapshot_max_bytes: 536870912  # cap compressed and extracted snapshot bytes
 
+# Where conveyor checkout, conveyor run, and the worker create new task
+# worktrees (component-harness-execution). An executing machine must choose:
+# with no location, checkout creates no worktree and run and the worker refuse
+# to start. mode: repository places them at <primary checkout>/<dir> (dir
+# defaults to _worktrees, added to .git/info/exclude); mode: machine places
+# them under root (defaults to ~/.conveyor/worktrees). The daemon ignores it.
+worktree_location:
+  mode: machine
+  root: ~/.conveyor/worktrees
+
 database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable

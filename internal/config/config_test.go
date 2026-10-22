@@ -230,10 +230,7 @@ func TestWorkspaceDocumentEmitsEmptyCollectionsAsArrays(t *testing.T) {
 func TestWorktreeRootIsNormalizedAndRemainsClientLocal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	example := exampleWithoutWorktreeLocation(t)
 
 	writeAndLoad := func(t *testing.T, suffix string) (*Config, error) {
 		t.Helper()
@@ -244,12 +241,12 @@ func TestWorktreeRootIsNormalizedAndRemainsClientLocal(t *testing.T) {
 		return Load(path)
 	}
 
-	defaulted, err := writeAndLoad(t, "")
+	unconfigured, err := writeAndLoad(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, ".conveyor", "worktrees"); defaulted.WorktreeRoot != want {
-		t.Fatalf("default worktree root = %q, want %q", defaulted.WorktreeRoot, want)
+	if location, ok := unconfigured.ConfiguredWorktreeLocation(); ok || unconfigured.WorktreeRoot != "" {
+		t.Fatalf("omitted location loaded as %+v (root %q), want unconfigured", location, unconfigured.WorktreeRoot)
 	}
 
 	configured, err := writeAndLoad(t, "\nworktree_root: ~/task-worktrees\n")
@@ -258,6 +255,9 @@ func TestWorktreeRootIsNormalizedAndRemainsClientLocal(t *testing.T) {
 	}
 	if want := filepath.Join(home, "task-worktrees"); configured.WorktreeRoot != want {
 		t.Fatalf("configured worktree root = %q, want %q", configured.WorktreeRoot, want)
+	}
+	if location, ok := configured.ConfiguredWorktreeLocation(); !ok || location != (WorktreeLocation{Mode: WorktreeLocationMachine, Root: filepath.Join(home, "task-worktrees")}) {
+		t.Fatalf("legacy worktree_root location = %+v, %v", location, ok)
 	}
 	workspaceJSON, err := json.Marshal(configured.WorkspaceDocument())
 	if err != nil {

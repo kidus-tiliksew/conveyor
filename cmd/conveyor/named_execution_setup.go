@@ -375,6 +375,7 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 	if local != nil {
 		state.choices.VerifyConcurrency = strconv.Itoa(local.Execution.VerifyConcurrency)
 	}
+	state.choices.WorktreeLocation = initialWorktreeChoice(path, "")
 	for {
 		completed, err := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
 		if err != nil {
@@ -406,6 +407,9 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 		workspace = "local"
 	}
 	if err := writeNamedExecutionSetup(path, local, workspace, name, state.choices, selected, edit); err != nil {
+		return err
+	}
+	if err := persistWorktreeChoice(path, workspace, state.choices.WorktreeLocation); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintf(output, "Saved local execution setup %s to %s\n", name, path)

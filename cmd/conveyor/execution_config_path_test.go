@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
 
 func TestLocalExecutionConfigPathPrecedence(t *testing.T) {
@@ -117,6 +119,9 @@ func TestUserDefaultExecutionConfigIsFoundFromAnotherWorkingDirectory(t *testing
 	t.Chdir(firstCWD)
 	initial, err := resolveLocalExecutionConfigPath(nil, "")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = writeWorktreeLocation(initial.Path, "demo", config.WorktreeLocation{Mode: config.WorktreeLocationMachine}); err != nil {
 		t.Fatal(err)
 	}
 	if err = setLocalExecutionField(initial.Path, "demo", "execution.spec.model", "cross-directory-model"); err != nil {
