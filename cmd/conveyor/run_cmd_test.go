@@ -1315,7 +1315,9 @@ func TestRunTaskReviewSeatOverflowPresentsShortfallWithoutClaiming(t *testing.T)
 	if claimCalls != 0 {
 		t.Fatalf("claim calls=%d", claimCalls)
 	}
-	for _, want := range []string{"Task target: Ship target (state running)", "Next: review work order target-review-1", "requires seat 3", "configures 2 seat(s)", "left queued", "nothing was claimed"} {
+	// The resolved worktree location is shown before any claim
+	// (component-local-launchers).
+	for _, want := range []string{"Worktree location: machine (", "Task target: Ship target (state running)", "Next: review work order target-review-1", "requires seat 3", "configures 2 seat(s)", "left queued", "nothing was claimed"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q: %q", want, output)
 		}

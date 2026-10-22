@@ -529,10 +529,11 @@ func runWorkerWithPolicy(ctx context.Context, c *client, pairing, name string, o
 func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name string, once bool, reconnect workerReconnectPolicy, configPath string) error {
 	// Validate before enrollment, heartbeat, listing, or claiming so an enabled
 	// worker never advertises serviceability it cannot execute locally.
-	if _, err := loadLocalExecutionSetup(configPath); err != nil {
+	initial, err := loadLocalExecutionSetup(configPath)
+	if err != nil {
 		return err
 	}
-	var err error
+	fmt.Fprintf(os.Stderr, "worktree location: %s\n", describeWorktreeLocation(initial.WorktreeLocation))
 	c, err = c.withLocalGitCredential()
 	if err != nil {
 		return err
@@ -693,7 +694,10 @@ func runWorkerWithPolicyAndConfig(ctx context.Context, c *client, pairing, name 
 			children.Add(1)
 			go func(order workerservice.DispatchOrder, firstActivityTimeout time.Duration, local *config.Config) {
 				defer children.Done()
-				childCtx := contextWithWorktreeRoot(ctx, local.WorktreeRoot)
+				childCtx := ctx
+				if location, ok := local.ConfiguredWorktreeLocation(); ok {
+					childCtx = contextWithWorktreeLocation(ctx, location)
+				}
 				childCtx = contextWithLocalExecutionConfig(childCtx, local)
 				err := runHarnessChildWithFirstActivityTimeout(childCtx, c, credential, order, firstActivityTimeout)
 				completions <- childResult{stage: order.Order.Stage, err: err}
@@ -1394,7 +1398,6 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 		"CONVEYOR_WORK_ORDER_ID": item.Order.ID,
 		"CONVEYOR_SESSION_ID":    sessionID,
 		"CONVEYOR_CLIENT_TOKEN":  clientToken,
-		"CONVEYOR_WORKTREE_ROOT": worktreeRootFromContext(ctx),
 		// The branch assignment travels with the dispatch so `conveyor
 		// checkout` resolves it locally; worker credentials are valid on the
 		// worker and MCP planes only, never on workspace REST reads, so a
@@ -1449,6 +1452,14 @@ func runHarnessChildWithFirstActivityTimeoutAndOutputAndRunModeAndPresentation(c
 			_ = release(core.WorkOrderOutcomeReleased, err.Error(), nil)
 			return err
 		}
+	}
+	// The forwarded container follows the verified working directory, so
+	// repository mode names <primary>/<dir> for this child's repository
+	// (component-local-launchers).
+	childValues["CONVEYOR_WORKTREE_ROOT"], err = forwardedWorktreeContainer(setupCtx, workingDirectory, item.Order.Stage == core.StageSpec)
+	if err != nil {
+		_ = release(core.WorkOrderOutcomeReleased, err.Error(), nil)
+		return err
 	}
 	if item.Order.Stage == core.StageImplement && item.Task.Branch != "" && item.Repository.URL != "" {
 		lockPath, lockErr := worktreeWriterPath(setupCtx, workingDirectory, item.Task.Branch, item.Task.Repo, item.Repository.URL)

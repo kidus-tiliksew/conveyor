@@ -121,8 +121,21 @@ stage runs:
   created per seat.
 - `setups`: named bundles of the above, switchable per run with
   `conveyor run --setup <name>`.
-- `worktree_root`: where task worktrees are created (default
-  `~/.conveyor/worktrees`).
+- `worktree_location`: where new task worktrees are created. Required on a
+  machine that runs `conveyor checkout`, `conveyor run`, or the worker:
+  `mode: repository` places them at `<primary checkout>/<dir>` (`dir`
+  defaults to `_worktrees`, which checkout adds to `.git/info/exclude`);
+  `mode: machine` places them under `root` (default `~/.conveyor/worktrees`).
+  Record it with `conveyor config set worktree_location <value>` (`repository`,
+  `repository:<dir>`, `machine`, or `machine:<root>`) or the
+  `conveyor config init-execution` step. The legacy `worktree_root: <path>`
+  still reads as `mode: machine`.
+
+  Upgrading: earlier releases silently used `~/.conveyor/worktrees` when
+  neither key was set. Such a file is now unconfigured, so `conveyor run` and
+  the worker refuse to start and checkout creates nothing until you choose.
+  `conveyor config set worktree_location machine` keeps the old placement.
+  Existing worktrees are never moved.
 
 Setup contents never leave the machine. The server learns whether a
 serviceable harness is present, not what it is.
@@ -168,7 +181,7 @@ Client (read by `conveyor`):
 | `CONVEYOR_API_TOKEN` | Bearer token for the environment server (normalized `CONVEYOR_ADDR`, else `http://localhost:8080`); ignored for any other resolved server, which uses its stored credential. |
 | `CONVEYOR_WORKSPACE` | Workspace id; overrides the stored default. |
 | `CONVEYOR_CONFIG` | Local execution config path. |
-| `CONVEYOR_WORKTREE_ROOT` | Overrides the worktree root for `checkout`. |
+| `CONVEYOR_WORKTREE_ROOT` | Overrides the worktree container for `checkout`; run and the worker set it for their children to the resolved container. |
 | `CONVEYOR_WORKER_TOKEN` | Pre-supplied worker enrollment credential (bypasses the saved file). |
 | `CONVEYOR_ENV_FILE` | Dotenv path (default `./.env`). |
 

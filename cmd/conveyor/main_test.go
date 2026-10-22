@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
@@ -1051,6 +1053,21 @@ func TestDoneRefusesDirtyWorktreeAndHandlesMissingDirectory(t *testing.T) {
 	}
 }
 
+// checkoutTask checks out under the fixture's machine-mode worktree location,
+// $HOME/.conveyor/worktrees; newGitFixture redirects HOME.
+func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, destination string) (string, error) {
+	path, _, err := checkoutTaskWithCheckpoint(ctx, branch, base, repo, repoURL, taskID, destination, nil)
+	return path, err
+}
+
+func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil, err
+	}
+	return checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, config.DefaultWorktreeRoot(home), checkpoint)
+}
+
 func newGitFixture(t *testing.T) gitFixture {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -1165,4 +1182,275 @@ func mustGitOutput(t *testing.T, dir string, args ...string) string {
 func mustGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	_ = mustGitOutput(t, dir, args...)
+}
+
+// worktreeLocationTestConfig writes a valid local execution document from the
+// example with its worktree_location block replaced by location (or removed
+// when location is empty).
+func worktreeLocationTestConfig(t *testing.T, location string) string {
+	t.Helper()
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	example, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	skipping := false
+	for _, line := range strings.Split(string(example), "\n") {
+		if strings.HasPrefix(line, "worktree_location:") {
+			skipping = true
+			continue
+		}
+		if skipping && (strings.HasPrefix(line, " ") || line == "") {
+			continue
+		}
+		skipping = false
+		kept = append(kept, line)
+	}
+	document := strings.Join(kept, "\n")
+	if location != "" {
+		document += "\nworktree_location:\n" + location
+	}
+	path := filepath.Join(t.TempDir(), "conveyor.yaml")
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func stubCheckoutTerminals(t *testing.T, stdin, stdout bool) {
+	t.Helper()
+	previous := streamIsTerminal
+	streamIsTerminal = func(file *os.File) bool {
+		switch file {
+		case os.Stdin:
+			return stdin
+		case os.Stdout:
+			return stdout
+		}
+		return false
+	}
+	t.Cleanup(func() { streamIsTerminal = previous })
+}
+
+func stubWorktreeLocationPrompt(t *testing.T, prompt func(repositoryPath, machinePath string) (config.WorktreeLocation, error)) {
+	t.Helper()
+	previous := promptWorktreeLocation
+	promptWorktreeLocation = func(_ io.Reader, _ io.Writer, repositoryPath, machinePath string) (config.WorktreeLocation, error) {
+		return prompt(repositoryPath, machinePath)
+	}
+	t.Cleanup(func() { promptWorktreeLocation = previous })
+}
+
+func checkoutWithLocationConfig(t *testing.T, fixture gitFixture, configPath, taskID, destination string) (string, error) {
+	t.Helper()
+	t.Setenv("CONVEYOR_WORKTREE_ROOT", "")
+	placement, err := checkoutWorktreePlacement(configPath, "demo")
+	if err != nil {
+		return "", err
+	}
+	path, _, err := checkoutTaskWithPlacement(context.Background(), "conveyor/task-"+taskID, "main", "conveyor", fixture.origin, taskID, destination, placement, nil)
+	return path, err
+}
+
+func TestCheckoutWorktreeLocationNonInteractiveRefusesAndCreatesNothing(t *testing.T) {
+	fixture := newGitFixture(t)
+	stubCheckoutTerminals(t, false, false)
+	stubWorktreeLocationPrompt(t, func(string, string) (config.WorktreeLocation, error) {
+		t.Fatal("non-interactive checkout prompted")
+		return config.WorktreeLocation{}, nil
+	})
+	configPath := filepath.Join(fixture.tmp, "missing", "conveyor.yaml")
+	_, err := checkoutWithLocationConfig(t, fixture, configPath, "unconfigured", "")
+	if err == nil {
+		t.Fatal("checkout without a worktree location succeeded")
+	}
+	for _, want := range []string{"no worktree location is configured", "repository (", "machine (", "conveyor config set worktree_location repository --config " + configPath, "conveyor config set worktree_location machine --config " + configPath, "conveyor config init-execution --worktree-location"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q lacks %q", err, want)
+		}
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-unconfigured") {
+		t.Fatal("task branch created without a worktree location")
+	}
+	for _, path := range []string{filepath.Join(fixture.tmp, ".conveyor", "worktrees"), filepath.Join(fixture.primary, "_worktrees"), configPath} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("%s exists after refused checkout: %v", path, statErr)
+		}
+	}
+}
+
+func TestCheckoutWorktreeLocationOneTerminalStreamDoesNotPrompt(t *testing.T) {
+	for _, streams := range [][2]bool{{true, false}, {false, true}} {
+		fixture := newGitFixture(t)
+		stubCheckoutTerminals(t, streams[0], streams[1])
+		stubWorktreeLocationPrompt(t, func(string, string) (config.WorktreeLocation, error) {
+			t.Fatalf("checkout prompted with stdin terminal=%v stdout terminal=%v", streams[0], streams[1])
+			return config.WorktreeLocation{}, nil
+		})
+		_, err := checkoutWithLocationConfig(t, fixture, worktreeLocationTestConfig(t, ""), "one-stream", "")
+		if err == nil || !strings.Contains(err.Error(), "no worktree location is configured") {
+			t.Fatalf("stdin=%v stdout=%v error = %v", streams[0], streams[1], err)
+		}
+	}
+}
+
+func TestCheckoutWorktreeLocationInteractivePromptPersistsChoice(t *testing.T) {
+	fixture := newGitFixture(t)
+	stubCheckoutTerminals(t, true, true)
+	var shownRepository, shownMachine string
+	prompts := 0
+	stubWorktreeLocationPrompt(t, func(repositoryPath, machinePath string) (config.WorktreeLocation, error) {
+		prompts++
+		shownRepository, shownMachine = repositoryPath, machinePath
+		return config.WorktreeLocation{Mode: config.WorktreeLocationRepository}, nil
+	})
+	configPath := worktreeLocationTestConfig(t, "")
+	got, err := checkoutWithLocationConfig(t, fixture, configPath, "interactive", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(fixture.primary, "_worktrees", "conveyor-task-interactive")
+	if got != want || shownRepository != want || shownMachine != filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-interactive") {
+		t.Fatalf("path=%q shown repository=%q machine=%q, want %q", got, shownRepository, shownMachine, want)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location, ok := loaded.ConfiguredWorktreeLocation(); !ok || location != (config.WorktreeLocation{Mode: config.WorktreeLocationRepository, Dir: "_worktrees"}) {
+		t.Fatalf("persisted location = %+v, %v", location, ok)
+	}
+	if _, err = checkoutWithLocationConfig(t, fixture, configPath, "second", ""); err != nil {
+		t.Fatal(err)
+	}
+	if prompts != 1 {
+		t.Fatalf("prompted %d times, want once", prompts)
+	}
+}
+
+func TestCheckoutWorktreeLocationRepositoryModeExcludesBeforeCleanlinessCheck(t *testing.T) {
+	fixture := newGitFixture(t)
+	configPath := worktreeLocationTestConfig(t, "  mode: repository\n")
+	// A leftover, unignored container would make the primary read as dirty;
+	// checkout adds the exclude entry before its cleanliness check.
+	if err := os.MkdirAll(filepath.Join(fixture.primary, "_worktrees", "leftover"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(fixture.primary, "_worktrees", "leftover", "notes.txt"), "left\n")
+	got, err := checkoutWithLocationConfig(t, fixture, configPath, "repo-mode", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(fixture.primary, "_worktrees", "conveyor-task-repo-mode"); got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	if _, err = checkoutWithLocationConfig(t, fixture, configPath, "repo-mode-two", ""); err != nil {
+		t.Fatal(err)
+	}
+	exclude, err := os.ReadFile(filepath.Join(fixture.primary, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(exclude), "_worktrees/\n"); count != 1 {
+		t.Fatalf("exclude entry count = %d in %q", count, exclude)
+	}
+	if status := mustGitOutput(t, fixture.primary, "status", "--porcelain", "--untracked-files=normal"); status != "" {
+		t.Fatalf("primary status after in-repository checkouts = %q", status)
+	}
+}
+
+func TestCheckoutWorktreeLocationNamesMissingExcludeEntry(t *testing.T) {
+	fixture := newGitFixture(t)
+	configPath := worktreeLocationTestConfig(t, "  mode: repository\n")
+	if _, err := checkoutWithLocationConfig(t, fixture, configPath, "named-first", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.primary, ".git", "info", "exclude"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := checkoutWithLocationConfig(t, fixture, configPath, "named-second", filepath.Join(fixture.tmp, "explicit"))
+	if err == nil || !strings.Contains(err.Error(), "in-repository worktree directory _worktrees/ is not excluded") || !strings.Contains(err.Error(), "conveyor checkout named-second") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCheckoutWorktreeLocationRefusesTrackedDirectory(t *testing.T) {
+	fixture := newGitFixture(t)
+	if err := os.MkdirAll(filepath.Join(fixture.primary, "_worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(fixture.primary, "_worktrees", "tracked.txt"), "tracked\n")
+	mustGit(t, fixture.primary, "add", "_worktrees/tracked.txt")
+	mustGit(t, fixture.primary, "commit", "-m", "track the container")
+	_, err := checkoutWithLocationConfig(t, fixture, worktreeLocationTestConfig(t, "  mode: repository\n"), "tracked", "")
+	if err == nil || !strings.Contains(err.Error(), "holds tracked files") {
+		t.Fatalf("error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-tracked") {
+		t.Fatal("task branch created for a tracked container")
+	}
+}
+
+func TestCheckoutWorktreeLocationRefusesEscapingSymlink(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := filepath.Join(fixture.tmp, "outside")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(fixture.primary, "_worktrees")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := checkoutWithLocationConfig(t, fixture, worktreeLocationTestConfig(t, "  mode: repository\n"), "escape", "")
+	if err == nil || !strings.Contains(err.Error(), "outside the repository") {
+		t.Fatalf("error = %v", err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/conveyor/task-escape") {
+		t.Fatal("task branch created through an escaping container")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Fatalf("worktree created outside the repository: %v", entries)
+	}
+}
+
+func TestCheckoutWorktreeLocationMachineRootAndPathPrecedence(t *testing.T) {
+	fixture := newGitFixture(t)
+	root := filepath.Join(fixture.tmp, "machine-trees")
+	configPath := worktreeLocationTestConfig(t, "  mode: machine\n  root: "+root+"\n")
+	got, err := checkoutWithLocationConfig(t, fixture, configPath, "machine", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, "conveyor-task-machine"); got != want {
+		t.Fatalf("machine path = %q, want %q", got, want)
+	}
+	explicit := filepath.Join(fixture.tmp, "explicit-path")
+	if got, err = checkoutWithLocationConfig(t, fixture, configPath, "explicit", explicit); err != nil || got != explicit {
+		t.Fatalf("--path = %q, %v; want %q", got, err, explicit)
+	}
+	forwarded := filepath.Join(fixture.tmp, "forwarded")
+	t.Setenv("CONVEYOR_WORKTREE_ROOT", forwarded)
+	placement, err := checkoutWorktreePlacement(configPath, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err = checkoutTaskWithPlacement(context.Background(), "conveyor/task-forwarded", "main", "conveyor", fixture.origin, "forwarded", "", placement, nil); err != nil || got != filepath.Join(forwarded, "conveyor-task-forwarded") {
+		t.Fatalf("forwarded path = %q, %v", got, err)
+	}
+}
+
+func TestCheckoutWorktreeLocationReusesRegisteredWorktreeWithoutLocation(t *testing.T) {
+	fixture := newGitFixture(t)
+	first, err := checkoutTaskAtRoot(context.Background(), "conveyor/task-reuse-unconfigured", "main", "conveyor", fixture.origin, "reuse-unconfigured", "", filepath.Join(fixture.tmp, "earlier-root"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubCheckoutTerminals(t, false, false)
+	got, err := checkoutWithLocationConfig(t, fixture, worktreeLocationTestConfig(t, ""), "reuse-unconfigured", "")
+	if err != nil || got != first {
+		t.Fatalf("reuse = %q, %v; want %q", got, err, first)
+	}
 }

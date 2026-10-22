@@ -34,6 +34,7 @@ type localExecutionSetup struct {
 	Config               *config.Config
 	WorkerDocument       workerservice.WorkerConfig
 	FirstActivityTimeout time.Duration
+	WorktreeLocation     config.WorktreeLocation
 }
 
 // loadLocalExecutionSetup is the one local launch-configuration boundary used
@@ -63,7 +64,14 @@ func loadNamedLocalExecutionSetup(path, name string) (localExecutionSetup, error
 	if err != nil {
 		return localExecutionSetup{}, localExecutionSetupRemedy(path, err)
 	}
-	return localExecutionSetup{Config: local, WorkerDocument: document, FirstActivityTimeout: firstActivityTimeout}, nil
+	// A document that relied on the retired worktree default is not runnable:
+	// run and the worker stop here, before any enrollment, heartbeat, or claim
+	// (component-local-launchers; req-local-task-runs AC-1.4).
+	location, err := requireConfiguredWorktreeLocation(local, path)
+	if err != nil {
+		return localExecutionSetup{}, err
+	}
+	return localExecutionSetup{Config: local, WorkerDocument: document, FirstActivityTimeout: firstActivityTimeout, WorktreeLocation: location}, nil
 }
 
 var wizardTerminal = inputIsTerminal
@@ -91,6 +99,8 @@ type localExecutionChoices struct {
 	Spec, Implement, Verify, Review localStageChoice
 	ReviewSeats                     []localStageChoice
 	VerifyConcurrency               string
+	// WorktreeLocation holds the worktree-location step's value syntax.
+	WorktreeLocation string
 }
 
 type executionWizardModel struct {
@@ -146,6 +156,9 @@ func newExecutionWizardModel(state *executionWizardState, harnesses []detectedHa
 	options := harnessOptions(harnesses)
 	groups := []*huh.Group{
 		huh.NewGroup(huh.NewConfirm().Title("Use detected defaults?").Description(defaultsSummary(state.choices)).Affirmative("Use defaults").Negative("Customize").Value(&state.acceptDefaults)).Title("Local execution setup").WithHideFunc(func() bool { return state.skipDefaults }),
+		// The location step follows the single opening confirmation (AC-9.5)
+		// and is shown even when defaults are accepted.
+		worktreeLocationGroup(&state.choices.WorktreeLocation).WithHideFunc(func() bool { return state.skipDefaults }),
 		stageGroup("Spec", "spec", &state.choices.Spec, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
 		stageGroup("Implement", "implement", &state.choices.Implement, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
 		stageGroup("Verify", "verify", &state.choices.Verify, options, harnesses).WithHideFunc(func() bool { return state.acceptDefaults || state.focusSeats }),
@@ -293,6 +306,9 @@ func choicesSummary(choices localExecutionChoices) string {
 		fmt.Fprintf(&summary, "%s: harness=%s model=%s effort=%s timeout=%s\n", stage.name, stage.choice.Harness, stage.choice.Model, stage.choice.Effort, stage.choice.Timeout)
 	}
 	fmt.Fprintf(&summary, "verify concurrency: %d\n", verifyConcurrency(choices))
+	if choices.WorktreeLocation != "" {
+		fmt.Fprintf(&summary, "worktree location: %s\n", choices.WorktreeLocation)
+	}
 	fmt.Fprintf(&summary, "review: timeout=%s\n", choices.Review.Timeout)
 	for index, seat := range choices.ReviewSeats {
 		fmt.Fprintf(&summary, "  seat %d: harness=%s model=%s effort=%s\n", index+1, seat.Harness, seat.Model, seat.Effort)
@@ -432,9 +448,14 @@ func healthyDetectedHarnesses(detected []detectedHarness) []config.Harness {
 	return healthy
 }
 
-func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Writer, configPath, workspace string) error {
+func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Writer, configPath, workspace, worktreeLocation string) error {
 	if !wizardTerminal(input) {
 		return fmt.Errorf("execution setup requires a terminal; use `conveyor config set execution.<stage>.<field> <value> --config %s`", configPath)
+	}
+	if strings.TrimSpace(worktreeLocation) != "" {
+		if err := validateWorktreeChoice(configPath, worktreeLocation); err != nil {
+			return err
+		}
 	}
 	detected := detectLocalHarnessHealth(ctx)
 	healthy := healthyDetectedHarnesses(detected)
@@ -442,6 +463,7 @@ func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Wri
 		return noHealthyHarnessError(detected)
 	}
 	state := newExecutionWizardState(detected, nil)
+	state.choices.WorktreeLocation = initialWorktreeChoice(configPath, worktreeLocation)
 	for {
 		completed, err := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
 		if err != nil {
@@ -471,13 +493,23 @@ func runExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Wri
 	return persistExecutionSetup(output, configPath, workspace, state.choices, healthy)
 }
 
-func runExecutionSetupDefaults(ctx context.Context, output io.Writer, configPath, workspace string) error {
+func runExecutionSetupDefaults(ctx context.Context, output io.Writer, configPath, workspace, worktreeLocation string) error {
+	// --defaults never picks a worktree location; the flag is required
+	// (component-harness-execution).
+	location := strings.TrimSpace(worktreeLocation)
+	if location == "" {
+		return fmt.Errorf("--defaults requires --worktree-location: %w", missingWorktreeLocationError(configPath))
+	}
+	if err := validateWorktreeChoice(configPath, location); err != nil {
+		return err
+	}
 	detected := detectLocalHarnessHealth(ctx)
 	healthy := healthyDetectedHarnesses(detected)
 	if len(healthy) == 0 {
 		return noHealthyHarnessError(detected)
 	}
 	state := newExecutionWizardState(detected, nil)
+	state.choices.WorktreeLocation = location
 	return persistExecutionSetup(output, configPath, workspace, state.choices, healthy)
 }
 
@@ -500,19 +532,30 @@ func persistExecutionSetup(output io.Writer, configPath, workspace string, choic
 	if workspace == "" {
 		workspace = "local"
 	}
-	existing, loadErr := config.Load(configPath)
-	if loadErr == nil {
-		if err := writeUpdatedLocalExecutionConfig(configPath, existing, choices, mergeLocalHarnesses(existing.Harnesses, selected)); err != nil {
-			return err
-		}
-	} else if errors.Is(loadErr, os.ErrNotExist) {
-		if err := writeLocalExecutionConfig(configPath, workspace, choices, selected); err != nil {
-			return err
-		}
-	} else {
-		return fmt.Errorf("load existing local execution config: %w", loadErr)
+	// The location is validated against the real file before anything is
+	// written, and the setup and location publish together.
+	if err := validateWorktreeChoice(configPath, choices.WorktreeLocation); err != nil {
+		return err
 	}
-	_, err := fmt.Fprintf(output, "Saved local execution setup to %s\n", configPath)
+	err := stageLocalExecutionConfig(configPath, func(staged string) error {
+		existing, loadErr := config.Load(staged)
+		if loadErr == nil {
+			if err := writeUpdatedLocalExecutionConfig(staged, existing, choices, mergeLocalHarnesses(existing.Harnesses, selected)); err != nil {
+				return err
+			}
+		} else if errors.Is(loadErr, os.ErrNotExist) {
+			if err := writeLocalExecutionConfig(staged, workspace, choices, selected); err != nil {
+				return err
+			}
+		} else {
+			return fmt.Errorf("load existing local execution config: %w", loadErr)
+		}
+		return persistWorktreeChoice(staged, workspace, choices.WorktreeLocation)
+	})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(output, "Saved local execution setup to %s\n", configPath)
 	return err
 }
 
@@ -932,13 +975,7 @@ func setLocalExecutionFieldContext(ctx context.Context, path, workspace, key, va
 		return err
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		defaultHarness := config.HarnessTemplates()[0].Harness
-		harnesses = []config.Harness{defaultHarness}
-		choices = localExecutionChoices{
-			Spec:      localStageChoice{Harness: defaultHarness.Name, Model: "gpt-5.6", Effort: "high", Timeout: "30m"},
-			Implement: localStageChoice{Harness: defaultHarness.Name, Model: "gpt-5.6", Effort: "high", Timeout: "4h"},
-			Review:    localStageChoice{Harness: defaultHarness.Name, Model: "gpt-5.6", Effort: "high", Timeout: "1h"},
-		}
+		choices, harnesses = configSetDefaultDocument()
 	} else {
 		return setNamedLocalExecutionFieldContext(ctx, path, "", key, value, requireProbe)
 	}

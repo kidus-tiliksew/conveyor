@@ -149,7 +149,7 @@ func TestRepoInitSectionContract(t *testing.T) {
 		"On connection failure, report the failed endpoint and missing context. Do not infer a replacement host from localhost defaults, SSH configuration, or release instructions.\n\n" +
 		"The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.\n" +
 		"Changes are filed as tasks through Conveyor.\n" +
-		"An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>`, never on the base branch.\n" +
+		"An agent edits only under a live claim in a task worktree resolved by `conveyor checkout <task-id>` inside the machine's configured worktree location, never on the base branch, and never in a separate clone made to get around uncommitted changes in the primary checkout.\n" +
 		"Follow the `conveyor-plan` skill for planning, `conveyor-file-tasks` for filing tasks, and `conveyor-work` for task work.\n" +
 		"This section and the project-scoped skills are versioned with the CLI. Re-run `conveyor repo init` after an upgrade to refresh both, or use `conveyor repo init --guidance-only` to preserve maintained source skill wrappers.\n" +
 		"<!-- /conveyor:repo-init -->\n"

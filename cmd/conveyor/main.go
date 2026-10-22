@@ -171,7 +171,7 @@ func configCmd() *cobra.Command {
 	configPath := defaultLocalExecutionConfigPath()
 	var executionSetupName string
 	set := &cobra.Command{
-		Use: "set execution.<stage>.<field> <value>", Short: "Set a local default or execution field", Args: cobra.ExactArgs(2),
+		Use: "set execution.<stage>.<field>|worktree_location <value>", Short: "Set a local default, execution field, or worktree location", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
@@ -180,6 +180,19 @@ func configCmd() *cobra.Command {
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
+			}
+			if args[0] == "worktree_location" {
+				// Document-wide: where new task worktrees go
+				// (component-harness-execution).
+				location, parseErr := config.ParseWorktreeLocation(args[1])
+				if parseErr != nil {
+					return parseErr
+				}
+				if err = writeWorktreeLocation(resolvedConfig.Path, resolved.Workspace.Value, location); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Set %s in %s\n", args[0], resolvedConfig.Path)
+				return nil
 			}
 			if strings.TrimSpace(executionSetupName) != "" {
 				err = setNamedLocalExecutionFieldContext(cmd.Context(), resolvedConfig.Path, executionSetupName, args[0], args[1], true)
@@ -247,7 +260,7 @@ func configCmd() *cobra.Command {
 	}
 	initExecution := &cobra.Command{
 		Use: "init-execution", Short: "Create local execution settings", Args: cobra.NoArgs,
-		Long: "Create local execution settings interactively, or pass --defaults for the non-interactive detected defaults. Execution settings stay on this machine; `conveyor run --setup` and the worker select a named setup when they claim work.",
+		Long: "Create local execution settings interactively, or pass --defaults with --worktree-location for the non-interactive detected defaults. Execution settings stay on this machine; `conveyor run --setup` and the worker select a named setup when they claim work.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			resolvedConfig, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
@@ -261,13 +274,18 @@ func configCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if defaults {
-				return runExecutionSetupDefaults(cmd.Context(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value)
+			worktreeLocation, err := cmd.Flags().GetString("worktree-location")
+			if err != nil {
+				return err
 			}
-			return runExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value)
+			if defaults {
+				return runExecutionSetupDefaults(cmd.Context(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value, worktreeLocation)
+			}
+			return runExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolvedConfig.Path, resolved.Workspace.Value, worktreeLocation)
 		},
 	}
-	initExecution.Flags().Bool("defaults", false, "write the first healthy detected harness defaults without prompting")
+	initExecution.Flags().Bool("defaults", false, "write the first healthy detected harness defaults without prompting; requires --worktree-location")
+	initExecution.Flags().String("worktree-location", "", "where new task worktrees go: repository, repository:<dir>, machine, or machine:<root>")
 	export := &cobra.Command{
 		Use: "export", Short: "Write the current workspace config as YAML",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -632,7 +650,7 @@ func checkoutCmd() *cobra.Command {
 		Short: "Create or reuse the task's dedicated local worktree (component-runtime)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			worktreeRoot, err := checkoutWorktreeRoot(cmd, configPath)
+			placement, err := checkoutPlacementForCommand(cmd, configPath)
 			if err != nil {
 				return err
 			}
@@ -667,7 +685,7 @@ func checkoutCmd() *cobra.Command {
 			}
 
 			if os.Getenv("CONVEYOR_WRITER_GENERATION") != "" {
-				path, err := checkoutWithWriter(cmd.Context(), newClient(), args[0], branch, base, repo, repoURL, destination, worktreeRoot)
+				path, err := checkoutWithWriterPlacement(cmd.Context(), newClient(), args[0], branch, base, repo, repoURL, destination, placement)
 				if err != nil {
 					return err
 				}
@@ -688,7 +706,7 @@ func checkoutCmd() *cobra.Command {
 			}
 			defer exclusive.close()
 			checkpoint := assignedPredecessorCheckpointFromEnvironment(args[0])
-			path, checkpointed, err := checkoutTaskWithCheckpointAtRoot(cmd.Context(), branch, base, repo, repoURL, args[0], destination, worktreeRoot, checkpoint)
+			path, checkpointed, err := checkoutTaskWithPlacement(cmd.Context(), branch, base, repo, repoURL, args[0], destination, placement, checkpoint)
 			if err != nil {
 				return err
 			}
@@ -706,27 +724,24 @@ func checkoutCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: <worktree_root>/<repo>-task-<id>)")
+	cmd.Flags().StringVar(&destination, "path", "", "destination path (default: <worktree location container>/<repo>-task-<id>)")
 	cmd.Flags().StringVar(&configPath, "config", configPath, "local execution configuration")
 	return cmd
 }
 
-func checkoutWorktreeRoot(cmd *cobra.Command, configPath string) (string, error) {
-	if forwarded := strings.TrimSpace(os.Getenv("CONVEYOR_WORKTREE_ROOT")); forwarded != "" {
-		return forwarded, nil
-	}
+// checkoutPlacementForCommand resolves the local execution document lazily
+// for `conveyor checkout`; --path is applied before any placement is read
+// (component-git-delivery).
+func checkoutPlacementForCommand(cmd *cobra.Command, configPath string) (worktreePlacement, error) {
 	resolved, err := resolveLocalExecutionConfigPath(cmd, configPath)
 	if err != nil {
-		return "", err
+		return worktreePlacement{}, err
 	}
-	local, err := config.Load(resolved.Path)
-	if err == nil {
-		return local.WorktreeRoot, nil
+	workspace := ""
+	if client, clientErr := resolveClientConfig(); clientErr == nil {
+		workspace = client.Workspace.Value
 	}
-	if !os.IsNotExist(err) {
-		return "", fmt.Errorf("load local execution config for worktree root: %w", err)
-	}
-	return defaultImplicitWorktreeRoot()
+	return checkoutWorktreePlacement(resolved.Path, workspace)
 }
 
 func assignedPredecessorCheckpointFromEnvironment(taskID string) *attemptCheckpoint {

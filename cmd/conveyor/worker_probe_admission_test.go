@@ -80,6 +80,7 @@ func writeWorkerVerifyConfig(t *testing.T, probe string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	data = append(data, []byte("worktree_location:\n  mode: machine\n")...)
 	if err = os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
