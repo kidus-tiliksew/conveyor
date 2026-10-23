@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestFrozenPolicyJSONContainsNoExecutionDetail(t *testing.T) {
@@ -98,5 +100,73 @@ func TestVerifyPolicyFreezesAndRoundTrips(t *testing.T) {
 	}
 	if got := (&Config{}).FreezePolicy().ExecutionSettings.Verify.TimeoutText; got != "1h" {
 		t.Fatalf("default timeout = %q", got)
+	}
+}
+
+// case: FF-001
+// case: FF-003
+// The workspace fail-fast setting freezes onto the task contract at intake;
+// a later workspace change in either direction never alters the projection
+// a task's lifecycle reads, and a legacy contract never fails fast.
+func TestReviewFailFastFreezesAndRoundTrips(t *testing.T) {
+	if (&Config{}).FreezePolicy().Review.FailFast {
+		t.Fatal("fail_fast must default off")
+	}
+	for _, frozenValue := range []bool{true, false} {
+		cfg := &Config{Review: ReviewPanel{Seats: []ReviewSeat{{}, {}}, FailFast: frozenValue}}
+		data, err := json.Marshal(cfg.FreezePolicy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored ExecutionSetup
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored.Review.FailFast != frozenValue || len(restored.Review.Seats) != 2 {
+			t.Fatalf("frozen review policy %s restored as %+v", data, restored.Review)
+		}
+		cfg.Review.FailFast = !frozenValue
+		if got := cfg.WithPolicy(restored).Review.FailFast; got != frozenValue {
+			t.Fatalf("workspace change to %t overrode frozen fail_fast %t", !frozenValue, frozenValue)
+		}
+	}
+	legacy := &Config{Review: ReviewPanel{FailFast: true}}
+	if legacy.WithPolicy(ExecutionSetup{}).Review.FailFast {
+		t.Fatal("legacy contract inherited workspace fail_fast")
+	}
+}
+
+// case: FF-001
+// case: FF-003
+// The operator's workspace toggle survives the stored-document round trip,
+// including configurations whose review seats come from execution setups,
+// and is what the next task freezes.
+func TestReviewFailFastSurvivesWorkspaceDocument(t *testing.T) {
+	base := validConfig()
+	normalized, err := normalize(base, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := normalized.WorkspaceDocument()
+	if len(document.Setups) == 0 {
+		t.Fatal("fixture must exercise setup-owned review seats")
+	}
+	document.Review.FailFast = true
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(raw, base, "fail-fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Review.FailFast || !parsed.FreezePolicy().Review.FailFast {
+		t.Fatalf("parsed fail_fast=%t frozen=%t", parsed.Review.FailFast, parsed.FreezePolicy().Review.FailFast)
+	}
+	if !parsed.WorkspaceDocument().Review.FailFast || !parsed.PolicyDocument().Review.FailFast {
+		t.Fatal("re-emitted workspace document dropped fail_fast")
+	}
+	if !parsed.WithSetup(parsed.Setups[0]).FreezePolicy().Review.FailFast {
+		t.Fatal("selecting an execution setup dropped workspace fail_fast")
 	}
 }

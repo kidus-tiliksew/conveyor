@@ -414,8 +414,14 @@ type ReviewSeat struct {
 	Effort  string `yaml:"effort,omitempty" json:"effort,omitempty"`
 }
 
+// ReviewPanel is the workspace review policy. FailFast opts a task into
+// settling each review round on its first accepted changes-requested
+// verdict instead of waiting for every seat; it defaults to false and freezes
+// with the task's pipeline policy at intake (feature-review-seat-minimum;
+// component-work-orders).
 type ReviewPanel struct {
-	Seats []ReviewSeat `yaml:"seats,omitempty" json:"seats"`
+	Seats    []ReviewSeat `yaml:"seats,omitempty" json:"seats"`
+	FailFast bool         `yaml:"fail_fast,omitempty" json:"fail_fast,omitempty"`
 }
 
 type ExecutionPolicy struct {
@@ -721,7 +727,8 @@ func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
-			Seats *[]struct{} `json:"seats,omitempty"`
+			Seats    *[]struct{} `json:"seats,omitempty"`
+			FailFast bool        `json:"fail_fast,omitempty"`
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review,omitempty"`
 	}{
@@ -734,8 +741,9 @@ func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
 			"review":    s.ExecutionSettings.Review.TimeoutText,
 		},
 		Review: struct {
-			Seats *[]struct{} `json:"seats,omitempty"`
-		}{Seats: seats},
+			Seats    *[]struct{} `json:"seats,omitempty"`
+			FailFast bool        `json:"fail_fast,omitempty"`
+		}{Seats: seats, FailFast: s.Review.FailFast},
 		RefreshReview: s.RefreshReview,
 	})
 }
@@ -759,7 +767,8 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
-			Seats []struct{} `json:"seats"`
+			Seats    []struct{} `json:"seats"`
+			FailFast bool       `json:"fail_fast"`
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review"`
 	}
@@ -776,6 +785,7 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 		seats = make([]ReviewSeat, len(policy.Review.Seats))
 	}
 	s.Review.Seats = seats
+	s.Review.FailFast = policy.Review.FailFast
 	s.MaxBounces = policy.MaxBounces
 	s.RefreshReview = policy.RefreshReview
 	return nil
@@ -1446,7 +1456,8 @@ func normalize(c *Config, path string) (*Config, error) {
 	for i := range normalizedSetups {
 		if normalizedSetups[i].Name == defaultSetup {
 			result.ExecutionSettings = &normalizedSetups[i].ExecutionSettings
-			result.Review = normalizedSetups[i].Review
+			// Fail-fast is workspace review policy; setups own seats only.
+			result.Review = ReviewPanel{Seats: normalizedSetups[i].Review.Seats, FailFast: c.Review.FailFast}
 			break
 		}
 	}
@@ -1950,7 +1961,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
 		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
-		Review:                    ReviewPanel{Seats: reviewSeats},
+		Review:                    ReviewPanel{Seats: reviewSeats, FailFast: c.Review.FailFast},
 		Setups:                    append([]ExecutionSetup(nil), c.Setups...),
 		DefaultSetup:              c.DefaultSetup,
 		Execution:                 execution,
@@ -2022,7 +2033,8 @@ func (c *Config) FreezePolicy() ExecutionSetup {
 			Implementation: ImplementationSettings{TimeoutText: setup.ExecutionSettings.Implementation.TimeoutText},
 			Review:         ReviewExecutionSettings{TimeoutText: setup.ExecutionSettings.Review.TimeoutText},
 		},
-		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(setup.Review.Seats))},
+		// Fail-fast is workspace review policy, never setup execution detail.
+		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(setup.Review.Seats)), FailFast: c.Review.FailFast},
 		RefreshReview: setup.RefreshReview,
 	}
 }
@@ -2065,7 +2077,7 @@ func (c *Config) WithSetup(setup ExecutionSetup) *Config {
 	next.Setups = []ExecutionSetup{setup}
 	next.DefaultSetup = setup.Name
 	next.ExecutionSettings = &next.Setups[0].ExecutionSettings
-	next.Review = setup.Review
+	next.Review = ReviewPanel{Seats: setup.Review.Seats, FailFast: c.Review.FailFast}
 	next.Routing = Routing{Stages: make(map[string]StageRoute, 4)}
 	applyContextualExecutionSettings(&next)
 	for stage, route := range next.Routing.Stages {
@@ -2114,6 +2126,8 @@ func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
 		next.Review = c.Review
 		next.Review.Seats = seats
 	}
+	// The frozen value always wins over the workspace's current setting.
+	next.Review.FailFast = policy.Review.FailFast
 	return &next
 }
 

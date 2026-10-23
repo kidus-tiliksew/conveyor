@@ -253,6 +253,8 @@ type reviewRoundResultRecord struct {
 	Feedback        string                  `json:"feedback,omitempty"`
 	Reviews         []completedReviewRecord `json:"reviews"`
 	ApprovedHeadSHA string                  `json:"approved_head_sha,omitempty"`
+	Settlement      string                  `json:"settlement,omitempty"`
+	CancelledSeats  []int                   `json:"cancelled_seats,omitempty"`
 }
 
 func aggregateReviewRoundResult(round int, reviews []completedReviewRecord) reviewRoundResultRecord {
@@ -387,6 +389,18 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 			}
 			return nil
 		}
+		// A verdict not yet accepted for a fail-fast round that already
+		// settled is late; it changes no round, bounce, or order. The task
+		// transaction lock serializes racing verdicts.
+		if store.FailFastReviewRound(before, decision.ReviewRound) {
+			var settled bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='review.round_completed' AND JSON_EXTRACT_STRING(payload_json,'review_round')=?)`, documentWorkspace(ctx), decision.TaskID, fmt.Sprint(decision.ReviewRound)).Scan(&settled); err != nil {
+				return err
+			}
+			if err := store.ValidateFailFastReviewDecision(before, decision, settled); err != nil {
+				return err
+			}
+		}
 		if decision.ClaimSession != "" {
 			if order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
 				return store.ErrWorkOrderClaimLost
@@ -422,10 +436,24 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 		if err != nil {
 			return err
 		}
-		if len(reviews) < required {
+		failFast := store.FailFastSettles(before, decision)
+		if len(reviews) < required && !failFast {
 			return taskEvent(ctx, tx, core.Event{TaskID: decision.TaskID, Kind: "review.round_pending", Payload: core.JSONPayload(map[string]any{"review_round": decision.ReviewRound, "completed": len(reviews), "required": required})})
 		}
 		aggregate := aggregateReviewRoundResult(decision.ReviewRound, reviews)
+		if failFast {
+			// Fail-fast settlement retires every unfinished sibling seat in the
+			// verdict transaction that settles the round (component-work-orders).
+			round, settledBy := decision.ReviewRound, decision.ReviewWorkOrderID
+			_, seats, cancelErr := cancelWorkOrdersTx(ctx, tx, decision.TaskID, round, settledBy, core.ReviewRoundSettledSuppressionReason, func(id, attemptID, sessionID string, from core.WorkOrderState) json.RawMessage {
+				return store.SettledReviewSeatPayload(id, attemptID, sessionID, from, round, settledBy)
+			}, store.ReviewRoundActorID(round), core.ActorAgent, time.Now().UTC())
+			if cancelErr != nil {
+				return cancelErr
+			}
+			sort.Ints(seats)
+			aggregate.Settlement, aggregate.CancelledSeats = store.ReviewFailFastSettlement, seats
+		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)}); err != nil {
 			return err
 		}

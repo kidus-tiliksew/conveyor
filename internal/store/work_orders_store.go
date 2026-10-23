@@ -1095,6 +1095,27 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	if !ok || job.TaskID != decision.TaskID {
 		return fmt.Errorf("job %s does not belong to task %s", decision.JobID, decision.TaskID)
 	}
+	completed := false
+	accepted := false
+	for _, event := range m.events[decision.TaskID] {
+		var prior struct {
+			ReviewWorkOrderID string `json:"review_work_order_id"`
+		}
+		if json.Unmarshal(event.Payload, &prior) != nil || prior.ReviewWorkOrderID != decision.ReviewWorkOrderID {
+			continue
+		}
+		if event.Kind == "review.accepted" {
+			accepted = true
+		}
+		completed = completed || event.Kind == "review.completed"
+	}
+	// A verdict not yet accepted for a fail-fast round that already settled
+	// is late; it changes no round, bounce, or order (component-work-orders).
+	if !accepted {
+		if err := ValidateFailFastReviewDecision(task, decision, reviewRoundSettled(m.events[decision.TaskID], decision.ReviewRound)); err != nil {
+			return err
+		}
+	}
 	order := m.workOrders[decision.ReviewWorkOrderID]
 	if decision.ClaimSession != "" {
 		if order.ID == "" || order.TaskID != decision.TaskID || order.JobID != decision.JobID || order.Stage != core.StageReview {
@@ -1110,20 +1131,6 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 				return err
 			}
 		}
-	}
-	completed := false
-	accepted := false
-	for _, event := range m.events[decision.TaskID] {
-		var prior struct {
-			ReviewWorkOrderID string `json:"review_work_order_id"`
-		}
-		if json.Unmarshal(event.Payload, &prior) != nil || prior.ReviewWorkOrderID != decision.ReviewWorkOrderID {
-			continue
-		}
-		if event.Kind == "review.accepted" {
-			accepted = true
-		}
-		completed = completed || event.Kind == "review.completed"
 	}
 	if accepted {
 		if decision.ClaimSession != "" {
@@ -1166,7 +1173,8 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	}
 
 	reviews, required := m.completedReviewRoundLocked(decision.TaskID, decision.ReviewRound, decision.ReviewWorkOrderID)
-	if len(reviews) < required {
+	failFast := FailFastSettles(task, decision)
+	if len(reviews) < required && !failFast {
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.round_pending", Payload: core.JSONPayload(map[string]any{"review_round": decision.ReviewRound, "completed": len(reviews), "required": required})})
 		return nil
 	}
@@ -1179,6 +1187,21 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 	}
 	aggregate := aggregateReviewRound(decision.ReviewRound, reviews)
+	if failFast {
+		// Fail-fast settlement retires every unfinished sibling seat in the
+		// same critical section that settles the round (component-work-orders).
+		round, settledBy := decision.ReviewRound, decision.ReviewWorkOrderID
+		cancelled := m.cancelWorkOrdersLocked(ctx, task.ID, func(order core.WorkOrder) bool {
+			return order.Stage == core.StageReview && order.ReviewRound == round && order.ID != settledBy
+		}, core.ReviewRoundSettledSuppressionReason, func(id, attemptID, sessionID string, from core.WorkOrderState) json.RawMessage {
+			return SettledReviewSeatPayload(id, attemptID, sessionID, from, round, settledBy)
+		}, ReviewRoundActorID(round), core.ActorAgent, time.Now().UTC())
+		aggregate.Settlement = ReviewFailFastSettlement
+		for _, id := range cancelled {
+			aggregate.CancelledSeats = append(aggregate.CancelledSeats, m.workOrders[id].ReviewSeat)
+		}
+		sort.Ints(aggregate.CancelledSeats)
+	}
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: decision.JobID, Kind: "review.round_completed", Payload: core.JSONPayload(aggregate)})
 
 	command, next, recovery := core.TaskGateMerge, core.Stage(""), core.StageImplement
@@ -1310,6 +1333,10 @@ type reviewRoundResult struct {
 	Feedback        string            `json:"feedback,omitempty"`
 	Reviews         []completedReview `json:"reviews"`
 	ApprovedHeadSHA string            `json:"approved_head_sha,omitempty"`
+	// Settlement is "fail_fast" when a changes-requested verdict settled the
+	// round before every seat answered; CancelledSeats lists the seats retired.
+	Settlement     string `json:"settlement,omitempty"`
+	CancelledSeats []int  `json:"cancelled_seats,omitempty"`
 }
 
 func (m *memory) completedReviewRoundLocked(taskID string, round int, workOrderID string) ([]completedReview, int) {

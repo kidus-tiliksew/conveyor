@@ -1542,7 +1542,10 @@ export function fetchWorkspaceConfig() {
           poll_interval: '1m',
           startup_window: '24h',
         },
-        review: { seats: result.document.review?.seats ?? [{}] },
+        review: {
+          seats: result.document.review?.seats ?? [{}],
+          fail_fast: result.document.review?.fail_fast ?? false,
+        },
         stage_timeouts: {
           spec: result.document.stage_timeouts?.spec ?? '30m',
           implement: result.document.stage_timeouts?.implement ?? '4h',

@@ -1574,33 +1574,46 @@ func (s *Store) cancelTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, inte
 // closed share it (component-task-lifecycle "Terminal retirement of work
 // orders"; req-task-lifecycle-and-queue AC-8.1).
 func cancelTaskWorkOrdersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, taskCommand core.TaskCommand, actorID string, actorRole core.ActorRole, at time.Time) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT id,job_id,state,attempt_id,session_id FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state NOT IN ('completed','cancelled') ORDER BY id FOR UPDATE`, workspace(ctx), taskID)
+	ids, _, err := cancelWorkOrdersTx(ctx, tx, q, taskID, 0, "", core.TaskTerminalSuppressionReason, func(id, attemptID, sessionID string, from core.WorkOrderState) json.RawMessage {
+		return store.TerminalSweepPayload(id, attemptID, sessionID, from, taskCommand)
+	}, actorID, actorRole, at)
+	return ids, err
+}
+
+// cancelWorkOrdersTx retires the task's unfinished orders. reviewRound zero
+// selects every order (the terminal sweep); a positive round selects that
+// review round's unfinished seats except keepID (a fail-fast settlement). It
+// returns the cancelled ids and their review seats.
+func cancelWorkOrdersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, reviewRound int, keepID, reason string, payload func(id, attemptID, sessionID string, from core.WorkOrderState) json.RawMessage, actorID string, actorRole core.ActorRole, at time.Time) ([]string, []int, error) {
+	rows, err := tx.Query(ctx, `SELECT id,job_id,state,attempt_id,session_id,review_seat FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND state NOT IN ('completed','cancelled')
+		AND ($3=0 OR (stage='review' AND review_round=$3 AND id<>$4)) ORDER BY id FOR UPDATE`, workspace(ctx), taskID, reviewRound, keepID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	type cancelledOrder struct {
 		id, jobID, attemptID, sessionID string
 		state                           core.WorkOrderState
+		seat                            int
 	}
 	var orders []cancelledOrder
 	for rows.Next() {
 		var order cancelledOrder
-		if err = rows.Scan(&order.id, &order.jobID, &order.state, &order.attemptID, &order.sessionID); err != nil {
+		if err = rows.Scan(&order.id, &order.jobID, &order.state, &order.attemptID, &order.sessionID, &order.seat); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err = core.TransitionWorkOrder(order.state, core.WorkOrderCmdCancel); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		orders = append(orders, order)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	rows.Close()
-	cancelled, jobIDs := []string{}, []string{}
+	cancelled, seats, jobIDs := []string{}, []int{}, []string{}
 	for _, order := range orders {
 		tag, updateErr := tx.Exec(ctx, `UPDATE work_orders SET state='cancelled',
 			last_attempt_outcome=CASE WHEN state='claimed' THEN 'cancelled' ELSE last_attempt_outcome END,
@@ -1617,24 +1630,24 @@ func cancelTaskWorkOrdersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskI
 			execution_started_at=CASE WHEN attempt_id<>'' THEN NULL ELSE execution_started_at END,
 			execution_deadline=CASE WHEN attempt_id<>'' THEN NULL ELSE execution_deadline END,
 			retry_suppressed=true,retry_suppression_reason=$5,next_retry_at=NULL,
-			updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state=$4`, at, workspace(ctx), order.id, order.state, core.TaskTerminalSuppressionReason)
+			updated_at=$1 WHERE workspace_id=$2 AND id=$3 AND state=$4`, at, workspace(ctx), order.id, order.state, reason)
 		if updateErr != nil {
-			return nil, updateErr
+			return nil, nil, updateErr
 		}
 		if tag.RowsAffected() != 1 {
-			return nil, fmt.Errorf("work order %s changed during terminal retirement", order.id)
+			return nil, nil, fmt.Errorf("work order %s changed during retirement", order.id)
 		}
-		cancelled, jobIDs = append(cancelled, order.id), append(jobIDs, order.jobID)
-		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: order.jobID, Kind: "work_order.cancelled", ActorID: actorID, ActorRole: actorRole, Payload: store.TerminalSweepPayload(order.id, order.attemptID, order.sessionID, order.state, taskCommand), At: at}); err != nil {
-			return nil, err
+		cancelled, seats, jobIDs = append(cancelled, order.id), append(seats, order.seat), append(jobIDs, order.jobID)
+		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: order.jobID, Kind: "work_order.cancelled", ActorID: actorID, ActorRole: actorRole, Payload: payload(order.id, order.attemptID, order.sessionID, order.state), At: at}); err != nil {
+			return nil, nil, err
 		}
 	}
 	if len(jobIDs) != 0 {
 		if _, err = tx.Exec(ctx, `UPDATE jobs SET state='failed',ended_at=$1,updated_at=$1 WHERE task_id=$2 AND id=ANY($3) AND state<>'done'`, at, taskID, jobIDs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return cancelled, nil
+	return cancelled, seats, nil
 }
 
 func (s *Store) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
