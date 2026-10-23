@@ -346,6 +346,59 @@ func TestValidationEvidenceDocumentKeepsScratchDiscipline(t *testing.T) {
 // The installed execution-loop skill separates launched exit from the
 // self-claimed delivery loop and its gate handling (req-agent-skills REQ-2,
 // REQ-3; DEC-44; DEC-84).
+// TestConveyorWorkSkillShipsSealedReviewAssessment pins the reviewer's
+// verification_assessment guidance in the installed playbook and the review
+// role (component-cli-onboarding; component-verification-service;
+// req-verification-kits AC-4.2, AC-8.3, AC-8.4).
+func TestConveyorWorkSkillShipsSealedReviewAssessment(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+	playbookRequired := []string{
+		"### Assess a sealed verification result",
+		"Read the context ID from `work_order.verification_context_id` in the `get_work_order` response",
+		"Read the context with `get_verification_context`, passing that `context_id`, the workspace, the review order, and the claim's `session_id` and `client_token`",
+		"List in `run_ids` every latest attempt of the context",
+		"Send `run_ids: []` when no attempt ran, for example with no manifest or no selected kits",
+		"Map every governing pin of the context at least once",
+		"A requirement mapping names an acceptance criterion of the served version",
+		"A design mapping sends an empty `acceptance_criterion_id`",
+		"A refused assessment returns `<code> at <field>: <rule> <remedy>` and writes nothing",
+		"Kit success never grants acceptance or approval",
+	}
+	for _, destination := range destinations {
+		playbook, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized := strings.Join(strings.Fields(string(playbook)), " ")
+		for _, fragment := range playbookRequired {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work playbook missing %q", destination.tool.name, fragment)
+			}
+		}
+	}
+	role, err := os.ReadFile(filepath.Join("..", "..", "pack", "roles", "review.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(role)), " ")
+	for _, fragment := range []string{
+		"Its context ID is this review order's `verification_context_id` in `get_work_order`",
+		"passing that `context_id` and this claim's `session_id` and `client_token`",
+		"`run_ids` lists every latest attempt of the context, and is `[]` when no attempt ran",
+		"a design mapping sends an empty `acceptance_criterion_id`",
+		"Kit success does not accept a criterion or grant operator approval",
+	} {
+		if !strings.Contains(normalized, fragment) {
+			t.Errorf("review role missing %q", fragment)
+		}
+	}
+}
+
 func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()

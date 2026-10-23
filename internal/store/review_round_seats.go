@@ -571,8 +571,11 @@ func PlanReviewSeatAddition(in ReviewSeatAdditionInputs) (ReviewSeatAdditionPlan
 			State: core.WorkOrderQueued, Claimable: true,
 			ReviewRound: round, ReviewSeat: seat, ReviewKind: template.ReviewKind,
 			ReviewScope: template.ReviewScope, BaselineSHA: template.BaselineSHA, HeadSHA: template.HeadSHA,
-			ExecutionTimeoutText: template.ExecutionTimeoutText,
-			QueueEnteredAt:       now, QueueDeadline: now.Add(timeout), CreatedAt: now,
+			// The added seat reviews the same sealed context as seat 1
+			// (component-verification-service).
+			VerificationContextID: template.VerificationContextID,
+			ExecutionTimeoutText:  template.ExecutionTimeoutText,
+			QueueEnteredAt:        now, QueueDeadline: now.Add(timeout), CreatedAt: now,
 		})
 		ids = append(ids, id)
 	}

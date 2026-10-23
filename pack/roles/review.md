@@ -18,16 +18,27 @@ Method:
   treat missing context as a successful empty comparison.
 - When the frozen policy enables `verify_stage`, inspect the sealed
   verification result bound to the submitted head, repository scope and
-  governing pins (DEC-43; component-verification-service).
+  governing pins (DEC-43; component-verification-service). Its context ID is
+  this review order's `verification_context_id` in `get_work_order`. Read it
+  with `get_verification_context`, passing that `context_id` and this claim's
+  `session_id` and `client_token`; a claim-bound read needs both.
   Read its coverage, discovery reasons, latest attempts, required and optional
   assertions, operation history and relied-on evidence/artifacts. No-manifest
   or no-selected-kits dispositions still require ordinary-obligation coverage.
   Historical evidence stays contextual and cannot prove the current attempt.
 - Assess the sealed result's adequacy under DEC-53. Return a
-  `verification_assessment` naming context IDs, relied-on run/evidence IDs,
-  and criterion mappings with document ID, version, AC ID, evidence IDs and
-  assessment. Keep tool observations, agent assertions and authenticated
-  operator observations distinct (req-verification-kits REQ-8/AC-8.4).
+  `verification_assessment` naming exactly that one context in
+  `context_ids`. `run_ids` lists every latest attempt of the context, and is
+  `[]` when no attempt ran (no manifest or no selected kits). `evidence_ids`
+  lists only accepted evidence of those runs. Each governing pin needs at
+  least one mapping with document ID, version, evidence IDs and a non-blank
+  assessment: a requirement mapping names an AC of the served version, and a
+  design mapping sends an empty `acceptance_criterion_id`. A refusal names its
+  code, field, rule and remedy; correct that field and resubmit. If
+  `verification_context_id` is empty, the order predates context naming:
+  release it with a truthful reason instead of guessing a context. Keep tool
+  observations, agent assertions and authenticated operator observations
+  distinct (req-verification-kits REQ-8/AC-8.4).
   Kit success does not accept a criterion or grant operator approval.
   Publication failure is separate from exercise failure. Request another
   verification cycle when evidence is inadequate; never rewrite a sealed

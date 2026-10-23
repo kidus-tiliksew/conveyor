@@ -305,6 +305,36 @@ release. `release_work_order` is an explicit abandonment or checkpoint handoff,
 not a way to declare success. Do not simply exit while leaving a claim to
 expire.
 
+### Assess a sealed verification result
+
+When the task's frozen policy enables `verify_stage`, `submit_review_verdict`
+requires a `verification_assessment` built from the sealed verification
+context that the review order names (`component-verification-service`):
+
+1. Read the context ID from `work_order.verification_context_id` in the
+   `get_work_order` response. The claim response carries the same field.
+2. Read the context with `get_verification_context`, passing that
+   `context_id`, the workspace, the review order, and the claim's `session_id`
+   and `client_token`. A claim-bound read without the client token is refused.
+3. Name that one context in `context_ids`.
+4. List in `run_ids` every latest attempt of the context, one per attempted
+   subject. Send `run_ids: []` when no attempt ran, for example with no
+   manifest or no selected kits.
+5. List in `evidence_ids` only accepted evidence of those runs, and cite in a
+   mapping only evidence listed there. Send `[]` when there is none.
+6. Map every governing pin of the context at least once. A requirement mapping
+   names an acceptance criterion of the served version. A design mapping sends
+   an empty `acceptance_criterion_id`. Give each mapping a non-blank
+   `assessment`, and never repeat a pin and criterion pair.
+
+A refused assessment returns `<code> at <field>: <rule> <remedy>` and writes
+nothing; correct the named field and submit again under the same claim. When
+`verification_context_id` is empty on a verify-stage review order, the order
+was created before review orders named their context: release it with a
+truthful reason instead of guessing a context. Kit success never grants
+acceptance or approval. The reviewer judges whether the sealed coverage and
+evidence are adequate (DEC-53; req-verification-kits AC-8.4).
+
 ### CLI environment
 
 `conveyor submit` refuses to run unless `CONVEYOR_WORK_ORDER_ID` and

@@ -793,7 +793,14 @@ func (f *fixture) review(changes ...bool) {
 	if contract.Order.HeadSHA != f.head {
 		t.Fatal("review did not bind verified head")
 	}
-	f.refresh()
+	// The review claim learns the sealed context from its own contract and
+	// reads it through its own claim (component-verification-service;
+	// req-verification-kits AC-4.2, AC-8.3). After a bounce the new review
+	// order names the new head's context.
+	if contract.Order.VerificationContextID == "" || contract.Order.VerificationContextID != f.snapshot.Contexts[0].ID {
+		t.Fatalf("review contract names context %q, want the sealed context %q", contract.Order.VerificationContextID, f.snapshot.Contexts[0].ID)
+	}
+	must(t, f.rpc("get_verification_context", workorder.VerificationContextRequest{ContextID: contract.Order.VerificationContextID}, &f.snapshot))
 	vc := f.snapshot.Contexts[0]
 	if vc.SealedAt == nil || vc.Result == nil {
 		t.Fatal("review lacks sealed result")

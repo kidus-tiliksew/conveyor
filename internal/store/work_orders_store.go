@@ -1486,6 +1486,8 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 	if !core.VerifyReviewReady(task, verifyOrders) {
 		return fmt.Errorf("review requires completed verification for the submitted head")
 	}
+	// Every seat names the sealed context it reviews (component-verification-service).
+	contextID := ReviewVerificationContextID(task, verifyOrders)
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return fmt.Errorf("review round requires one job per work order")
 	}
@@ -1542,6 +1544,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 		}
 		order.State, order.Claimable, order.UpdatedAt = created, true, now
 		order.DeclaredReviewSeats = nil
+		order.VerificationContextID = contextID
 		m.workOrders[order.ID] = order
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
 	}
@@ -1716,6 +1719,12 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	if err != nil {
 		return ReviewRoundRetryResult{}, err
 	}
+	// The retried round reviews the same sealed context (component-verification-service).
+	var allOrders []core.WorkOrder
+	for _, order := range m.workOrders {
+		allOrders = append(allOrders, order)
+	}
+	contextID := ReviewVerificationContextID(task, allOrders)
 	created := make([]core.WorkOrder, 0, len(orders))
 	for i, job := range jobs {
 		m.jobs[request.TaskID] = append(m.jobs[request.TaskID], job)
@@ -1732,6 +1741,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 		}
 		order.State, order.Claimable, order.UpdatedAt = createdState, true, now
 		order.DeclaredReviewSeats = nil
+		order.VerificationContextID = contextID
 		m.workOrders[order.ID] = order
 		created = append(created, order)
 		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})

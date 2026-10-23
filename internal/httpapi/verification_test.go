@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/pack"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
@@ -24,6 +28,13 @@ import (
 )
 
 func verificationHTTPFixture(t *testing.T) (*Server, context.Context, string) {
+	t.Helper()
+	return verificationHTTPFixtureWith(t, nil)
+}
+
+// verificationHTTPFixtureWith claims the verify order with the given
+// governance snapshot, whose designs become governing pins.
+func verificationHTTPFixtureWith(t *testing.T, governance *core.GovernanceSnapshot) (*Server, context.Context, string) {
 	t.Helper()
 	b := store.NewVolatileBackend()
 	t.Cleanup(b.Close)
@@ -43,7 +54,7 @@ func verificationHTTPFixture(t *testing.T) (*Server, context.Context, string) {
 	if _, err := storetest.CreateStageWorkOrder(ctx, b, job, o); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.ClaimWorkOrder(ctx, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(ctx, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, Governance: governance, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	ctx = store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker})
@@ -198,6 +209,22 @@ func TestVerificationToolSchemasMatchRequestTypes(t *testing.T) {
 		}
 		if schema["additionalProperties"] != false {
 			t.Fatalf("%s accepts unknown fields", name)
+		}
+		// Reads keep session_id and client_token optional for member reads,
+		// and their descriptions state that a claim read needs both
+		// (component-verification-service).
+		if verificationRead(name) && name != "get_evidence_schemas" {
+			if !strings.Contains(tool["description"].(string), verificationClaimReadCredentials) {
+				t.Fatalf("%s description omits the claim-read credential rule", name)
+			}
+			for _, field := range []string{"session_id", "client_token"} {
+				if slices.Contains(schema["required"].([]string), field) {
+					t.Fatalf("%s requires %s, which refuses member reads", name, field)
+				}
+				if description, _ := props[field].(map[string]any)["description"].(string); !strings.Contains(description, "claim-bound read") {
+					t.Fatalf("%s field %s lacks the claim-read description", name, field)
+				}
+			}
 		}
 	}
 }
@@ -882,4 +909,381 @@ func TestVerificationCorrectableRefusals(t *testing.T) {
 			}
 		}
 	}
+}
+
+// reviewClaimFixture seals an empty context at the verify head, creates a
+// review round through the store, and claims its seat as a distinct reviewer.
+// It returns the server, the reviewer request, the review order, the sealed
+// context ID, and the ID of an older unsealed context of the same task
+// (component-verification-service).
+func reviewClaimFixture(t *testing.T) (*Server, *http.Request, core.WorkOrder, string, string) {
+	t.Helper()
+	s, ctx, id := verificationHTTPFixture(t)
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
+	result, err := s.callMCPTool(request, "prepare_verification", map[string]any{"workspace_id": "demo", "work_order_id": id, "session_id": "session", "client_token": "token", "request_key": "review-claim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	sealed := storetest.SealEmptyVerificationFixture(t, ctx, s.Store.(store.VerificationStore), access, result.(store.VerificationSnapshot).Contexts[0], "REQ-1")
+	request, review := claimReviewSeat(t, s, ctx, order, &core.GovernanceSnapshot{})
+	return s, request, review, sealed.ID, result.(store.VerificationSnapshot).Contexts[0].ID
+}
+
+// claimReviewSeat creates review round 1 through the store, claims its seat
+// as a distinct reviewer with the given governance snapshot, and wires the
+// server for verdicts (component-verification-service).
+func claimReviewSeat(t *testing.T, s *Server, ctx context.Context, order core.WorkOrder, governance *core.GovernanceSnapshot) (*http.Request, core.WorkOrder) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	job := core.Job{ID: order.TaskID + "-review-1-seat-1", TaskID: order.TaskID, Stage: core.StageReview, State: core.JobPending}
+	review := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: order.TaskID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, HeadSHA: order.HeadSHA, State: core.WorkOrderQueued, CreatedAt: time.Now().UTC()}
+	if err := storetest.CreateReviewRound(ctx, s.Store, order.TaskID, []core.Job{job}, []core.WorkOrder{review}); err != nil {
+		t.Fatal(err)
+	}
+	// get_work_order renders the review comparison from the recorded pull request.
+	if err := s.Store.AppendEvent(ctx, core.Event{TaskID: order.TaskID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"base_sha": strings.Repeat("b", 40), "head_sha": order.HeadSHA})}); err != nil {
+		t.Fatal(err)
+	}
+	served := []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
+	review, err := storetest.ClaimWorkOrder(ctx, s.Store, review.ID, core.WorkOrderClaim{Requirements: served, Governance: governance, WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = store.WithActor(ctx, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
+	ctx = withWorkerActor(ctx, core.Worker{ID: "reviewer", Workspace: "demo"})
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Workspace = "demo"
+	s.WorkOrders.Pack = bundle
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+	dispatcher := dispatch.New(s.Store.(store.Store), cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	s.WorkOrders.Dispatcher = dispatcher
+	return request.WithContext(ctx), review
+}
+
+func reviewClaimVerdict(contextID string) map[string]any {
+	no := false
+	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "The sealed empty context was assessed.",
+		VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "No attempt ran; ordinary coverage is not applicable to this fixture."}}},
+		RequirementCitations:   &core.RequirementCitationAssessment{Applicable: true, CitedIDs: []string{"REQ-1", "AC-1.1"}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
+		DoneCriteriaCoverage:   &core.DoneCriteriaAssessment{Applicable: false, Summary: "The fixture has no execution plan.", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
+		GovernanceAssessment:   &core.GovernanceAssessment{DesignApplicable: &no, DecisionCitable: &no, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}}}
+	args := map[string]any{}
+	_ = json.Unmarshal(core.JSONPayload(review), &args)
+	return args
+}
+
+// TestVerificationReviewClaimReadsSealedContext walks a review agent that has
+// only its claim and MCP: the review order names the sealed context, the claim
+// reads it, and a verdict citing it is accepted (req-verification-kits AC-4.2,
+// AC-8.3; component-verification-service).
+func TestVerificationReviewClaimReadsSealedContext(t *testing.T) {
+	s, request, review, sealedID, _ := reviewClaimFixture(t)
+	claim := map[string]any{"workspace_id": "demo", "work_order_id": review.ID, "session_id": "review-session", "client_token": "review-token"}
+	// get_work_order returns this stored order as work_order; its review diff
+	// needs a forge, so the vk10 scenario covers that read end to end.
+	stored, err := s.Store.GetWorkOrder(request.Context(), review.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextID := stored.VerificationContextID
+	if contextID == "" || contextID != sealedID || review.VerificationContextID != sealedID {
+		t.Fatalf("review order names context %q (claim %q), want the sealed context %q", contextID, review.VerificationContextID, sealedID)
+	}
+	read := map[string]any{"context_id": contextID}
+	for k, v := range claim {
+		read[k] = v
+	}
+	out, err := s.callMCPTool(request, "get_verification_context", read)
+	if err != nil {
+		t.Fatalf("review claim read of the named context: %v", err)
+	}
+	snapshot := out.(store.VerificationSnapshot)
+	if len(snapshot.Contexts) != 1 || snapshot.Contexts[0].ID != contextID || snapshot.Contexts[0].SealedAt == nil {
+		t.Fatalf("review claim read the wrong context: %+v", snapshot.Contexts)
+	}
+	delete(read, "client_token")
+	if _, err = s.callMCPTool(request, "get_verification_context", read); !errors.Is(err, store.ErrVerificationAccess) {
+		t.Fatalf("claim read without client_token: %v, want the generic access refusal", err)
+	}
+	verdict := reviewClaimVerdict(contextID)
+	verdict["workspace_id"], verdict["work_order_id"], verdict["session_id"] = "demo", review.ID, "review-session"
+	if _, err = s.callMCPTool(request, "submit_review_verdict", verdict); err != nil {
+		t.Fatalf("verdict citing the named context: %v", err)
+	}
+	events, err := s.Store.ListEvents(request.Context(), review.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := false
+	for _, e := range events {
+		if e.Kind == "review.completed" && strings.Contains(string(e.Payload), contextID) {
+			accepted = true
+		}
+	}
+	if !accepted {
+		t.Fatal("accepted verdict did not record the cited context")
+	}
+}
+
+// TestVerificationReviewAssessmentRefusals sends one refused assessment per
+// case over MCP. Each refusal names its code and field, an unknown context
+// keeps the generic refusal, and no refusal writes (component-verification-service
+// "Correctable refusals").
+func TestVerificationReviewAssessmentRefusals(t *testing.T) {
+	s, request, review, sealedID, staleID := reviewClaimFixture(t)
+	type assessment = map[string]any
+	mapping := func(edit func(map[string]any)) assessment {
+		m := map[string]any{"document_id": "req-fixture", "version": 1, "acceptance_criterion_id": "AC-1.1", "evidence_ids": []any{}, "assessment": "Assessed."}
+		if edit != nil {
+			edit(m)
+		}
+		return m
+	}
+	base := func(edit func(assessment)) assessment {
+		a := assessment{"context_ids": []any{sealedID}, "run_ids": []any{}, "evidence_ids": []any{}, "mappings": []any{mapping(nil)}}
+		if edit != nil {
+			edit(a)
+		}
+		return a
+	}
+	cases := []struct {
+		name, code, field string
+		assessment        any
+	}{
+		{"Absent", store.VerificationCodeFieldRequired, "verification_assessment", nil},
+		{"NullRuns", store.VerificationCodeFieldRequired, "verification_assessment.run_ids", base(func(a assessment) { a["run_ids"] = nil })},
+		{"NullMappings", store.VerificationCodeFieldRequired, "verification_assessment.mappings", base(func(a assessment) { a["mappings"] = nil })},
+		{"NullMappingEvidence", store.VerificationCodeFieldRequired, "verification_assessment.mappings[0].evidence_ids", base(func(a assessment) {
+			a["mappings"] = []any{mapping(func(m map[string]any) { m["evidence_ids"] = nil })}
+		})},
+		{"BlankAssessment", store.VerificationCodeFieldRequired, "verification_assessment.mappings[0].assessment", base(func(a assessment) {
+			a["mappings"] = []any{mapping(func(m map[string]any) { m["assessment"] = "  " })}
+		})},
+		{"TwoContexts", store.VerificationCodeReviewContextCount, "verification_assessment.context_ids", base(func(a assessment) { a["context_ids"] = []any{sealedID, sealedID} })},
+		{"UnsealedContext", store.VerificationCodeReviewContextNotCurrent, "verification_assessment.context_ids[0]", base(func(a assessment) { a["context_ids"] = []any{staleID} })},
+		{"UnknownRun", store.VerificationCodeReviewRunUnknown, "verification_assessment.run_ids[0]", base(func(a assessment) { a["run_ids"] = []any{"sk-run-secret"} })},
+		{"UnknownEvidence", store.VerificationCodeReviewEvidenceUnknown, "verification_assessment.evidence_ids[0]", base(func(a assessment) { a["evidence_ids"] = []any{"sk-evidence-secret"} })},
+		{"UndeclaredMappingEvidence", store.VerificationCodeReviewEvidenceUnknown, "verification_assessment.mappings[0].evidence_ids[0]", base(func(a assessment) {
+			a["mappings"] = []any{mapping(func(m map[string]any) { m["evidence_ids"] = []any{"sk-evidence-secret"} })}
+		})},
+		{"UnpinnedVersion", store.VerificationCodeReviewMappingUnpinned, "verification_assessment.mappings[0]", base(func(a assessment) {
+			a["mappings"] = []any{mapping(func(m map[string]any) { m["version"] = 2 })}
+		})},
+		{"UnpinnedDocument", store.VerificationCodeReviewMappingUnpinned, "verification_assessment.mappings[0]", base(func(a assessment) {
+			a["mappings"] = []any{mapping(func(m map[string]any) { m["document_id"] = "sk-document-secret" })}
+		})},
+		{"DuplicateMapping", store.VerificationCodeReviewMappingDuplicate, "verification_assessment.mappings[1]", base(func(a assessment) { a["mappings"] = []any{mapping(nil), mapping(nil)} })},
+		{"CriterionOutsideServedVersion", store.VerificationCodeReviewCriterionUnknown, "verification_assessment.mappings[0].acceptance_criterion_id", base(func(a assessment) {
+			a["mappings"] = []any{mapping(func(m map[string]any) { m["acceptance_criterion_id"] = "sk-criterion-secret" })}
+		})},
+		{"PinUnmapped", store.VerificationCodeReviewPinUnmapped, "verification_assessment.mappings", base(func(a assessment) { a["mappings"] = []any{} })},
+	}
+	state := func(t *testing.T) string {
+		t.Helper()
+		events, err := s.Store.ListEvents(request.Context(), review.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order, err := s.Store.GetWorkOrder(request.Context(), review.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%d %s %s", len(events), order.State, order.UpdatedAt)
+	}
+	submit := func(t *testing.T, a any) error {
+		t.Helper()
+		verdict := reviewClaimVerdict(sealedID)
+		if a == nil {
+			delete(verdict, "verification_assessment")
+		} else {
+			verdict["verification_assessment"] = a
+		}
+		verdict["workspace_id"], verdict["work_order_id"], verdict["session_id"] = "demo", review.ID, "review-session"
+		before := state(t)
+		_, err := s.callMCPTool(request, "submit_review_verdict", verdict)
+		if after := state(t); after != before {
+			t.Fatalf("refused verdict wrote state: %s -> %s", before, after)
+		}
+		return err
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := submit(t, tc.assessment)
+			var refusal *store.VerificationRefusal
+			if !errors.As(err, &refusal) || refusal.Code != tc.code || refusal.Field != tc.field {
+				t.Fatalf("refusal = %v, want code %s at %s", err, tc.code, tc.field)
+			}
+			if !strings.HasPrefix(err.Error(), tc.code+" at "+tc.field+": ") || refusal.Remedy == "" || strings.Contains(err.Error(), "sk-") {
+				t.Fatalf("refusal text %q lacks code, field and remedy or echoes caller input", err.Error())
+			}
+		})
+	}
+	t.Run("UnknownContextStaysGeneric", func(t *testing.T) {
+		err := submit(t, base(func(a assessment) { a["context_ids"] = []any{"sk-unknown-context"} }))
+		var refusal *store.VerificationRefusal
+		if errors.As(err, &refusal) || !errors.Is(err, store.ErrVerificationState) || err.Error() != store.ErrVerificationState.Error() {
+			t.Fatalf("unknown context refusal = %v, want the generic state refusal", err)
+		}
+	})
+}
+
+// attemptedReviewClaimFixture seals, over MCP, a context with a governing
+// design pin and an ordinary obligation whose latest attempt succeeded with
+// accepted execution evidence, then claims review seat 1. It returns the
+// context, run and evidence IDs (component-verification-service).
+func attemptedReviewClaimFixture(t *testing.T) (*Server, *http.Request, core.WorkOrder, string, string, string) {
+	t.Helper()
+	design := core.GovernanceDesignContext{ID: "component-fixture", Title: "Fixture", Category: "component", Version: 3, Content: "# Fixture\n\n## Fixture section\n\nThe fixture reads state.\n"}
+	governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{design}}
+	s, ctx, id := verificationHTTPFixtureWith(t, governance)
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(name string, input any) any {
+		t.Helper()
+		args := map[string]any{}
+		if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+			t.Fatal(err)
+		}
+		args["workspace_id"], args["work_order_id"], args["session_id"], args["client_token"] = "demo", id, "session", "token"
+		out, err := s.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx), name, args)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return out
+	}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	pins := []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}, {Kind: "system_design", DocumentID: design.ID, Version: design.Version}}
+	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: order.HeadSHA}}, GoverningPins: pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": order.HeadSHA, "state": "no_manifest"})}}
+	selection := &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}, {Kind: "system_design", DocumentID: design.ID, Version: design.Version}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}
+	created, err := s.Store.(store.VerificationStore).ApplyVerification(ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "attempted", Access: access, Context: &vc, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextID := created.ID
+	contract := verification.Exercise{ID: "observe", Kind: "script", Argv: []string{"check"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required"}
+	call("register_verification_obligation", workorder.VerificationObligationRequest{ContextID: contextID, ObligationID: "observe", Description: "Observe the fixture state", Sources: []workorder.VerificationSource{{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}}, Contract: contract})
+	snapshot, err := s.Store.(store.VerificationStore).ReadVerification(ctx, access, contextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := core.VerificationSubject{Kind: "ordinary", ObligationID: "observe", ContractDigest: snapshot.Obligations[0].Digest}
+	coverage := store.VerificationCoverage{ObligationIDs: []string{"observe"}, Justification: "The obligation observes the requirement; the design section needs no separate check.", Sources: []store.VerificationCoverageSource{
+		{Source: store.VerificationCoverageReference{DocumentID: "req-fixture", Version: 1, SectionID: "REQ-1"}, Disposition: "covered", Explanation: "The obligation reads the state", Subjects: []core.VerificationSubject{subject}},
+		{Source: store.VerificationCoverageReference{DocumentID: design.ID, Version: design.Version, SectionID: "Fixture section"}, Disposition: "not_applicable", Explanation: "Covered by the requirement check", Subjects: []core.VerificationSubject{}},
+	}}
+	grantID := storetest.GrantVerificationFixture(t, s.Store.(store.Backend), ctx, order.TaskID, id, contextID, "grant", subject, nil)
+	environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}
+	run := call("start_verification_attempt", workorder.VerificationStartRequest{ContextID: contextID, StartKey: "observe-1", GrantID: grantID, Subject: subject, EffectiveActions: []core.VerificationPermission{}, Environment: environment, EffectivePermissions: []verification.Permission{}, SafeInputs: map[string]json.RawMessage{}, Coverage: coverage}).(store.VerificationReceipt).ID
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	zero, no := 0, false
+	report := core.VerificationEvidence{ID: "observe-report", Type: "execution_report", SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: pins, SafeInputs: map[string]json.RawMessage{}, Environment: environment}
+	report.Payload = core.JSONPayload(core.ExecutionReportPayload{Argv: []string{"check"}, Tool: "check", ToolVersion: "1", Runtime: "fixture", StartedAt: at, EndedAt: at, ExitCode: &zero, TimedOut: &no, Cancelled: &no, StdoutSHA256: strings.Repeat("a", 64), StderrSHA256: strings.Repeat("b", 64), StdoutTruncated: &no, StderrTruncated: &no})
+	call("submit_verification_evidence", workorder.VerificationEvidenceRequest{ContextID: contextID, RunID: run, SubmissionKey: "evidence", Evidence: []json.RawMessage{core.JSONPayload(report)}})
+	call("report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: contextID, RunID: run, State: "succeeded", ExitCode: &zero})
+	call("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage})
+	order, err = s.Store.GetWorkOrder(ctx, id)
+	if err != nil || order.VerificationContextID != contextID {
+		t.Fatalf("seal did not complete the verify order with its context: %+v %v", order, err)
+	}
+	request, review := claimReviewSeat(t, s, ctx, order, governance)
+	if review.VerificationContextID != contextID {
+		t.Fatalf("review order names context %q, want %q", review.VerificationContextID, contextID)
+	}
+	return s, request, review, contextID, run, report.ID
+}
+
+// TestVerificationReviewAssessmentOnAttemptedContext submits, over MCP, the
+// two refusal cases that need a latest attempt and a governing design pin,
+// then the complete assessment (component-verification-service "Correctable
+// refusals"; req-verification-kits AC-4.2, AC-8.3).
+func TestVerificationReviewAssessmentOnAttemptedContext(t *testing.T) {
+	s, request, review, contextID, run, evidence := attemptedReviewClaimFixture(t)
+	requirement := map[string]any{"document_id": "req-fixture", "version": 1, "acceptance_criterion_id": "AC-1.1", "evidence_ids": []any{evidence}, "assessment": "The succeeded run's execution report supports the criterion."}
+	design := map[string]any{"document_id": "component-fixture", "version": 3, "acceptance_criterion_id": "", "evidence_ids": []any{}, "assessment": "The design section needs no separate observation."}
+	complete := func() map[string]any {
+		return map[string]any{"context_ids": []any{contextID}, "run_ids": []any{run}, "evidence_ids": []any{evidence}, "mappings": []any{requirement, design}}
+	}
+	state := func(t *testing.T) string {
+		t.Helper()
+		events, err := s.Store.ListEvents(request.Context(), review.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order, err := s.Store.GetWorkOrder(request.Context(), review.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%d %s %s", len(events), order.State, order.UpdatedAt)
+	}
+	submit := func(t *testing.T, assessment map[string]any) error {
+		t.Helper()
+		verdict := reviewClaimVerdict(contextID)
+		verdict["verification_assessment"] = assessment
+		// The fixture pins a governing design, so the governance assessment cites it.
+		verdict["governance_assessment"] = map[string]any{"design_applicable": true, "decision_citable": false, "cited_ids": []any{"component-fixture"}, "unknown_ids": []any{}, "ungoverned_ids": []any{}, "superseded_ids": []any{}, "conflicts": []any{}}
+		verdict["workspace_id"], verdict["work_order_id"], verdict["session_id"] = "demo", review.ID, "review-session"
+		_, err := s.callMCPTool(request, "submit_review_verdict", verdict)
+		return err
+	}
+	for _, tc := range []struct {
+		name, code, field string
+		edit              func(map[string]any)
+	}{
+		{"LatestRunMissing", store.VerificationCodeReviewRunMissing, "verification_assessment.run_ids", func(a map[string]any) {
+			a["run_ids"], a["evidence_ids"] = []any{}, []any{}
+			a["mappings"] = []any{map[string]any{"document_id": "req-fixture", "version": 1, "acceptance_criterion_id": "AC-1.1", "evidence_ids": []any{}, "assessment": "Assessed without the run."}, design}
+		}},
+		{"DesignMappingCriterion", store.VerificationCodeReviewCriterionUnexpected, "verification_assessment.mappings[1].acceptance_criterion_id", func(a map[string]any) {
+			withCriterion := map[string]any{}
+			for k, v := range design {
+				withCriterion[k] = v
+			}
+			withCriterion["acceptance_criterion_id"] = "AC-1.1"
+			a["mappings"] = []any{requirement, withCriterion}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assessment := complete()
+			tc.edit(assessment)
+			before := state(t)
+			err := submit(t, assessment)
+			if after := state(t); after != before {
+				t.Fatalf("refused verdict wrote state: %s -> %s", before, after)
+			}
+			var refusal *store.VerificationRefusal
+			if !errors.As(err, &refusal) || refusal.Code != tc.code || refusal.Field != tc.field || !errors.Is(err, store.ErrVerificationInvalid) {
+				t.Fatalf("refusal = %v, want code %s at %s", err, tc.code, tc.field)
+			}
+			if !strings.HasPrefix(err.Error(), tc.code+" at "+tc.field+": ") || refusal.Rule == "" || refusal.Remedy == "" || !strings.HasSuffix(err.Error(), refusal.Remedy) {
+				t.Fatalf("refusal text %q lacks code, field, rule and remedy", err.Error())
+			}
+		})
+	}
+	t.Run("CompleteAssessmentAccepted", func(t *testing.T) {
+		if err := submit(t, complete()); err != nil {
+			t.Fatalf("complete assessment: %v", err)
+		}
+		events, err := s.Store.ListEvents(request.Context(), review.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range events {
+			if e.Kind == "review.completed" && strings.Contains(string(e.Payload), contextID) && strings.Contains(string(e.Payload), run) {
+				return
+			}
+		}
+		t.Fatal("accepted verdict did not record the cited context and run")
+	})
 }
