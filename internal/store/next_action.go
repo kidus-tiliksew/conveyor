@@ -284,10 +284,6 @@ func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders
 	return view, nil
 }
 
-// readAssemblerHistory batches the history the assembler folds: the
-// NextActionEventKinds events of parked, approved, and awaiting tasks, and
-// the latest plan version of awaiting tasks. Other tasks read neither, as
-// before batching (feature-operator-next-action, Input loading).
 // readCitedDocuments reads, for one task whose row-9 checkpoint has class
 // authority_conflict, each cited document's current confirmed version and,
 // for a System Design attached to the task, its pinned version folded from
@@ -330,6 +326,10 @@ func readCitedDocuments(ctx context.Context, st Store, taskID string, citations 
 	return out, nil
 }
 
+// readAssemblerHistory batches the history the assembler folds: the
+// NextActionEventKinds events of parked, approved, and awaiting tasks, and
+// the latest plan version of awaiting tasks. Other tasks read neither, as
+// before batching (feature-operator-next-action, Input loading).
 func readAssemblerHistory(ctx context.Context, st Store, tasks []core.Task) (map[string][]core.Event, map[string]int, error) {
 	var eventIDs, specIDs []string
 	for _, task := range tasks {
