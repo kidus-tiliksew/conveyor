@@ -175,8 +175,10 @@ func agentQuestion(in Input) bool {
 
 // agentQuestionBuild presents the latest queued order's checkpoint. An
 // authority_conflict class selects the catalogue variant by whether any cited
-// document has a pending proposal; other classes keep the base entry
-// (req-operator-next-action AC-1.6; req-260820-394cac AC-3.2).
+// document has a pending proposal and, when none has, by whether every cited
+// document is confirmed past its citations; other classes keep the base entry
+// (req-operator-next-action AC-1.6; req-260820-394cac AC-3.2;
+// feature-operator-next-action NA-4).
 func agentQuestionBuild(in Input) built {
 	row := built{
 		actor: ActorOperator, kind: KindAgentQuestion, judgment: true, release: ReleaseCheckpoint,
@@ -188,9 +190,13 @@ func agentQuestionBuild(in Input) built {
 		return row
 	}
 	row.proposals = CitedProposals(in.Markers.Citations, in.PendingProposals)
-	row.variant = AgentQuestionRevisionNeeded
-	if len(row.proposals) > 0 {
+	switch {
+	case len(row.proposals) > 0:
 		row.variant = AgentQuestionCitedRevisions
+	case CitedRevisionsConfirmed(row.citations, in.CitedDocuments):
+		row.variant = AgentQuestionCitedConfirmed
+	default:
+		row.variant = AgentQuestionRevisionNeeded
 	}
 	return row
 }
@@ -245,8 +251,8 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 		specs = withheldProposalChoices(row.proposals)
 	case row.kind == KindContextProposal:
 		specs = contextProposalChoices(in.Task.ID, in.ContextProposals)
-	case row.kind == KindAgentQuestion && len(row.proposals) > 0:
-		specs = append(citedProposalChoices(row.proposals), entry.Choices...)
+	case row.kind == KindAgentQuestion && row.class == core.WorkOrderCheckpointClassAuthorityConflict:
+		specs = append(citedProposalChoices(row.proposals), authorityAnswerChoices(entry.Choices, row, in.CitedDocuments)...)
 	}
 	choices, refusals := selectChoices(in, specs, row.order)
 	if in.Task.GateKind == core.GateKindPlanRevision {

@@ -167,6 +167,124 @@ func TestMCPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
 	}
 }
 
+// A proposal made at an approved authority-conflict checkpoint returns
+// guidance that directs the checkpoint release; without the flag, or with it
+// false, the fire-and-forget guidance is unchanged; a non-boolean flag is
+// refused before anything is written (component-mcp-protocol, Governance
+// proposal tools; req-260820-6a468a AC-1.3; req-260820-394cac REQ-3).
+func TestMCPProposalGuidanceFollowsCheckpointFlag(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "task-checkpoint-guidance", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now()}
+	job := core.Job{ID: "order-checkpoint-guidance", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-checkpoint", ClientToken: "secret", ClaimantID: "implementer", WorkerID: "implementer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-checkpoint", Title: "Checkpoint", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Checkpoint\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint requirements"}, core.RequirementVersion{
+		Content:    "# Checkpoint\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Every session calls the service.\n```",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Every session calls the service."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(withWorkerActor(request.Context(), core.Worker{ID: "implementer", Workspace: "demo"}))
+	identity := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session-checkpoint"}
+	designArgs := func(content string, flag any) map[string]any {
+		args := maps.Clone(identity)
+		args["document_id"], args["content"] = document.ID, "# Checkpoint "+content+"\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"
+		if flag != nil {
+			args["authority_conflict_checkpoint"] = flag
+		}
+		return args
+	}
+
+	result, err := server.callMCPTool(request, "propose_system_design_revision", designArgs("v2", true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guidance := result.(systemDesignProposalResult).Guidance
+	if guidance != checkpointProposalGuidance("System Design") || guidance == systemDesignProposalGuidance {
+		t.Fatalf("checkpoint guidance = %q", guidance)
+	}
+	for _, phrase := range []string{"release_work_order", "operator checkpoint reached", "authority_conflict", "checkpoint.decision_request", "do not wait for operator confirmation", "confirmed versions in conflict"} {
+		if !strings.Contains(guidance, phrase) {
+			t.Fatalf("checkpoint guidance lacks %q: %q", phrase, guidance)
+		}
+	}
+	if strings.Contains(guidance, "Proceed now to commit") || strings.Contains(guidance, "Do not checkpoint") {
+		t.Fatalf("checkpoint guidance directs submission: %q", guidance)
+	}
+	assertProposalResultJSON(t, result.(systemDesignProposalResult), map[string]any{"guidance": guidance})
+
+	for name, flag := range map[string]any{"absent": nil, "false": false} {
+		result, err = server.callMCPTool(request, "propose_system_design_revision", designArgs("v3 "+name, flag))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := result.(systemDesignProposalResult).Guidance; got != systemDesignProposalGuidance {
+			t.Fatalf("%s flag guidance = %q", name, got)
+		}
+	}
+
+	before, err := st.GetSystemDesign(ctx, document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeVersions, err := st.ListSystemDesignVersions(ctx, document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.callMCPTool(request, "propose_system_design_revision", designArgs("v4", "yes")); err == nil || !strings.Contains(err.Error(), "authority_conflict_checkpoint must be a boolean") {
+		t.Fatalf("string flag error = %v", err)
+	}
+	afterVersions, err := st.ListSystemDesignVersions(ctx, document.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := st.GetSystemDesign(ctx, document.ID); after.CurrentVersion != before.CurrentVersion || len(afterVersions) != len(beforeVersions) {
+		t.Fatalf("refused flag wrote a version: %d -> %d versions", len(beforeVersions), len(afterVersions))
+	}
+
+	requirementArgs := maps.Clone(identity)
+	requirementArgs["document_id"] = requirement.ID
+	requirementArgs["content"] = "# Checkpoint\n\n```conveyor:requirements\n- id: REQ-1\n  statement: A child session reports through its parent.\n```"
+	requirementArgs["authority_conflict_checkpoint"] = true
+	result, err = server.callMCPTool(request, "propose_requirement_revision", requirementArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.(requirementProposalResult).Guidance; got != checkpointProposalGuidance("requirement") {
+		t.Fatalf("requirement checkpoint guidance = %q", got)
+	}
+	decisionArgs := maps.Clone(identity)
+	decisionArgs["statement"], decisionArgs["context"], decisionArgs["alternatives_rejected"] = "Child sessions report through the parent.", "Checkpoint test.", "Direct calls."
+	decisionArgs["authority_conflict_checkpoint"] = true
+	result, err = server.callMCPTool(request, "propose_decision", decisionArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.(decisionProposalResult).Guidance; got != checkpointProposalGuidance("decision") {
+		t.Fatalf("decision checkpoint guidance = %q", got)
+	}
+}
+
 func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
@@ -3164,5 +3282,50 @@ func TestMCPExactReviewSeatsArgument(t *testing.T) {
 	}
 	if value, present := null["review_seats"]; !present || value != nil {
 		t.Fatalf("null=%#v", null)
+	}
+}
+
+// The release schema states the decision request's rune limit and asks for
+// confirmed citation versions; each proposal tool declares the optional
+// checkpoint flag (component-mcp-protocol; req-260820-394cac REQ-1, AC-2.6).
+func TestMCPReleaseAndProposalSchemasStateCheckpointContract(t *testing.T) {
+	properties := func(tool map[string]any) map[string]any {
+		return tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	}
+	seen := map[string]bool{}
+	for _, tool := range mcpTools() {
+		name := tool["name"].(string)
+		switch name {
+		case "release_work_order":
+			checkpoint := properties(tool)["checkpoint"].(map[string]any)["properties"].(map[string]any)
+			request := checkpoint["decision_request"].(map[string]any)
+			description, _ := request["description"].(string)
+			if request["type"] != "string" || request["maxLength"] != core.WorkOrderDecisionRequestLimit || core.WorkOrderDecisionRequestLimit != 1024 || !strings.Contains(description, "1024") {
+				t.Fatalf("decision_request schema = %+v", request)
+			}
+			citation := checkpoint["citations"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+			version := citation["cited_version"].(map[string]any)
+			if version["type"] != "number" || !strings.Contains(version["description"].(string), "confirmed version") {
+				t.Fatalf("cited_version schema = %+v", version)
+			}
+			if data, err := json.Marshal(tool); err != nil || !json.Valid(data) {
+				t.Fatalf("release schema does not marshal: %v", err)
+			}
+			seen[name] = true
+		case "propose_system_design_revision", "propose_requirement_revision", "propose_decision":
+			flag, ok := properties(tool)["authority_conflict_checkpoint"].(map[string]any)
+			if !ok || flag["type"] != "boolean" || !strings.Contains(flag["description"].(string), "authority-conflict checkpoint") {
+				t.Fatalf("%s checkpoint flag schema = %+v", name, properties(tool)["authority_conflict_checkpoint"])
+			}
+			for _, required := range tool["inputSchema"].(map[string]any)["required"].([]string) {
+				if required == "authority_conflict_checkpoint" {
+					t.Fatalf("%s requires the optional checkpoint flag", name)
+				}
+			}
+			seen[name] = true
+		}
+	}
+	if len(seen) != 4 {
+		t.Fatalf("schemas checked = %v", seen)
 	}
 }

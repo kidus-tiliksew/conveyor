@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -122,6 +123,11 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		input.ContextProposals = contexts[task.ID]
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
+		}
+		if input.Markers.CheckpointDecision && input.Markers.CheckpointClass == core.WorkOrderCheckpointClassAuthorityConflict {
+			if input.CitedDocuments, err = readCitedDocuments(ctx, st, task.ID, input.Markers.Citations); err != nil {
+				return nil, err
+			}
 		}
 		action := nextaction.Project(input)
 		// Row 10 reads its selected order's sealed checkpoint only when it
@@ -276,6 +282,48 @@ func readDependencyView(ctx context.Context, st Store, tasks []core.Task, orders
 		view.forward[id] = refs
 	}
 	return view, nil
+}
+
+// readCitedDocuments reads, for one task whose row-9 checkpoint has class
+// authority_conflict, each cited document's current confirmed version and,
+// for a System Design attached to the task, its pinned version folded from
+// the task's context events. A missing, archived, or unconfirmed document is
+// left out; any other read error fails the projection (component-work-orders,
+// Next action; feature-operator-next-action NA-3).
+func readCitedDocuments(ctx context.Context, st Store, taskID string, citations []core.WorkOrderAuthorityConflictCitation) (map[string]nextaction.CitedDocument, error) {
+	ids := nextaction.CitedDocumentIDs(citations)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	_, pins := ActiveTaskContextReferences(events)
+	out := make(map[string]nextaction.CitedDocument, len(ids))
+	for _, id := range ids {
+		requirement, err := st.GetRequirement(ctx, id)
+		if err == nil {
+			if !requirement.Archived && requirement.CurrentVersion > 0 {
+				out[id] = nextaction.CitedDocument{CurrentVersion: requirement.CurrentVersion}
+			}
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		design, err := st.GetSystemDesign(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !design.Archived && design.CurrentVersion > 0 {
+			out[id] = nextaction.CitedDocument{CurrentVersion: design.CurrentVersion, PinnedVersion: pins[id]}
+		}
+	}
+	return out, nil
 }
 
 // readAssemblerHistory batches the history the assembler folds: the

@@ -257,6 +257,70 @@ func TestReleaseCheckpointDecisionValidationAndCitations(t *testing.T) {
 	}
 }
 
+// A System Design citation that names a code-formatted heading keeps its
+// clause, with or without the backticks or as the heading's anchor; an
+// unknown clause is still dropped to a document-level citation, and an
+// over-limit decision request names the rune limit (component-mcp-protocol,
+// Checkpoint decision requests on release; req-260820-394cac REQ-1, AC-2.1).
+func TestReleaseCheckpointKeepsCodeFormattedHeadingCitations(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	seedWorkerOwners(t, st)
+	service := &Service{Store: st}
+	now := time.Now().UTC()
+	task := core.Task{ID: "checkpoint-code-heading", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	claim := core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: "code-heading-session"}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID, ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "component-installer", Title: "Installer", Category: "Component design"}, core.SystemDesignVersion{
+		Content: "# Installer\n\n## `agentdesk context`\n\nPrints guidance.\n\n## Skill file\n\nShips the skill.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - packages/installer/**\n```\n", Origin: core.SystemDesignOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	release := core.WorkOrderRelease{SessionID: claim.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: strings.Repeat("é", core.WorkOrderDecisionRequestLimit+1)}}
+	if _, err = service.ReleaseClaim(ctx, claim, job.ID, release); err == nil || err.Error() != "checkpoint.decision_request exceeds 1024 Unicode characters (runes)" {
+		t.Fatalf("over-limit decision request error=%v", err)
+	}
+	release.Checkpoint = &core.WorkOrderCheckpoint{DecisionRequest: strings.Repeat("é", core.WorkOrderDecisionRequestLimit), Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{
+		{DocumentID: design.ID, CitedVersion: version.Version, StatementOrSectionID: "agentdesk context"},
+		{DocumentID: design.ID, CitedVersion: version.Version, StatementOrSectionID: "`agentdesk context`"},
+		{DocumentID: design.ID, CitedVersion: version.Version, StatementOrSectionID: "agentdesk-context"},
+		{DocumentID: design.ID, CitedVersion: version.Version, StatementOrSectionID: "skill file"},
+		{DocumentID: design.ID, CitedVersion: version.Version, StatementOrSectionID: "Standing guidance"},
+		{DocumentID: design.ID, CitedVersion: version.Version, StatementOrSectionID: "``"},
+	}}
+	released, err := service.ReleaseClaim(ctx, claim, job.ID, release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"agentdesk context", "`agentdesk context`", "agentdesk-context", "skill file", "", ""}
+	if released.Checkpoint == nil || len(released.Checkpoint.Citations) != len(want) {
+		t.Fatalf("checkpoint=%+v", released.Checkpoint)
+	}
+	for i, clause := range want {
+		if got := released.Checkpoint.Citations[i].StatementOrSectionID; got != clause {
+			t.Fatalf("citation %d clause=%q, want %q", i, got, clause)
+		}
+	}
+}
+
 func TestWorkerClaimUsesEnrollmentOwnerForAssignmentEligibility(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")

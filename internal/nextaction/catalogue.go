@@ -42,6 +42,7 @@ type ChoiceSpec struct {
 	Method     string
 	Path       string
 	Capability core.Capability
+	Direction  string
 }
 
 type RunGate struct {
@@ -54,11 +55,12 @@ type catalogueKey struct {
 }
 
 // Agent-question catalogue variants for an authority_conflict checkpoint: the
-// operator is asked to decide cited pending revisions, or to author a
-// revision when no cited document has one (req-260820-394cac AC-3.2;
-// feature-operator-next-action NA-4).
+// operator is asked to decide cited pending revisions, to recover once every
+// cited document has a newer confirmed version, or to author a revision
+// otherwise (req-260820-394cac AC-3.2; feature-operator-next-action NA-4).
 const (
 	AgentQuestionCitedRevisions = "cited_revisions"
+	AgentQuestionCitedConfirmed = "cited_revisions_confirmed"
 	AgentQuestionRevisionNeeded = "revision_needed"
 )
 
@@ -117,6 +119,9 @@ func init() {
 		{AgentQuestionCitedRevisions, "Cited revisions need a decision",
 			"The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",
 			"Will you confirm or dismiss the cited revisions, then recover the order with direction?"},
+		{AgentQuestionCitedConfirmed, "Cited revisions are confirmed",
+			"The cited documents have newer confirmed versions. Recover the order with direction to continue.",
+			"Recover the order with direction to continue under the confirmed versions?"},
 		{AgentQuestionRevisionNeeded, "Cited documents need a revision",
 			"The agent asks you to author a revision of the cited documents, then recover the order with direction.",
 			"Will you author a revision of the cited documents, then recover the order with direction?"},
@@ -188,7 +193,7 @@ func LookupVariant(kind, stall, release, gate, variant string) (Entry, bool) {
 
 // AgentQuestionVariants are the agent-question variants the catalogue must cover.
 func AgentQuestionVariants() []string {
-	return []string{AgentQuestionCitedRevisions, AgentQuestionRevisionNeeded}
+	return []string{AgentQuestionCitedRevisions, AgentQuestionCitedConfirmed, AgentQuestionRevisionNeeded}
 }
 
 // Kinds, StallReasons, ReleaseOutcomes, and GateKinds are the constants the

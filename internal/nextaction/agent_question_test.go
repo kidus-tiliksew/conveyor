@@ -2,6 +2,7 @@ package nextaction
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,5 +209,131 @@ func checkpointInput(now time.Time, class string, citations []core.WorkOrderAuth
 		Markers:          Markers{CheckpointDecision: true, Checkpoint: "Confirm component-http-api v44.", CheckpointClass: class, Citations: citations},
 		PendingProposals: pending,
 		Now:              now,
+	}
+}
+
+// The 261020-f4e5e6 shape after the operator confirmed every cited proposal:
+// the checkpoint cited both the confirmed versions in conflict and the
+// proposed versions, and one cited design's task pin lags. The question asks
+// for recovery only, the answer choice suggests the direction naming the
+// confirmed versions, and its effect names the re-pin recovery performs
+// (req-260820-394cac AC-2.4, AC-2.5; feature-operator-next-action NA-4).
+func TestAgentQuestionConfirmedCitedRevisionsAsksForRecovery(t *testing.T) {
+	now := time.Date(2026, 10, 22, 14, 22, 0, 0, time.UTC)
+	citations := []core.WorkOrderAuthorityConflictCitation{
+		{DocumentID: "req-installation-and-agent-guidance", CitedVersion: 7, StatementOrSectionID: "REQ-8"},
+		{DocumentID: "req-installation-and-agent-guidance", CitedVersion: 8, StatementOrSectionID: "AC-10.5"},
+		{DocumentID: "component-installer", CitedVersion: 9},
+		{DocumentID: "component-installer", CitedVersion: 10},
+		{DocumentID: "component-agent-skill", CitedVersion: 5, StatementOrSectionID: "Standing guidance"},
+		{DocumentID: "component-agent-skill", CitedVersion: 9, StatementOrSectionID: "Skill file"},
+	}
+	in := checkpointInput(now, core.WorkOrderCheckpointClassAuthorityConflict, citations, []ProposalRef{{Tier: "system_design", ID: "component-unrelated", Version: 2}})
+	in.Capabilities = allCaps()
+	in.CitedDocuments = map[string]CitedDocument{
+		"req-installation-and-agent-guidance": {CurrentVersion: 8},
+		"component-installer":                 {CurrentVersion: 10, PinnedVersion: 10},
+		"component-agent-skill":               {CurrentVersion: 9, PinnedVersion: 5},
+	}
+	got := Project(in)
+	if got.Kind != KindAgentQuestion || got.Actor != ActorOperator || !got.Judgment || got.Label != "Cited revisions are confirmed" ||
+		got.Summary != "The cited documents have newer confirmed versions. Recover the order with direction to continue." ||
+		got.Question != "Recover the order with direction to continue under the confirmed versions?" {
+		t.Fatalf("next action = %s/%s %q / %q / %q", got.Actor, got.Kind, got.Label, got.Summary, got.Question)
+	}
+	if strings.Contains(got.Question, "author") || len(got.Details.PendingProposals) != 0 || !reflect.DeepEqual(got.Details.Citations, citations) {
+		t.Fatalf("question %q proposals %+v citations %+v", got.Question, got.Details.PendingProposals, got.Details.Citations)
+	}
+	direction := "Continue under the newly confirmed authority: req-installation-and-agent-guidance v8, component-installer v10, component-agent-skill v9."
+	want := []Choice{{
+		ID: "answer", Label: "Recover with direction…",
+		Effect: "Recovers the order. Suggested direction: " + direction + " Recovery also re-pins component-agent-skill from v5 to v9.",
+		Method: "POST", Path: "/v1/work-orders/question/recover", Capability: string(core.CapabilityRecoverWork), Allowed: true, Direction: direction,
+	}}
+	if !reflect.DeepEqual(got.Choices, want) {
+		t.Fatalf("choices = %+v\nwant %+v", got.Choices, want)
+	}
+
+	// The suggestion is presentation only: an order the recover route would
+	// refuse omits the choice with the route's text, as for every answer.
+	refused := in
+	refused.Orders = append([]core.WorkOrder(nil), in.Orders...)
+	refused.Orders[0].LastAttemptOutcome = ""
+	if hasChoice(Project(refused), "answer") {
+		t.Fatal("a resumed order offered the recovery choice")
+	}
+}
+
+// A partial confirmation, a missing cited document, or a cited document whose
+// confirmed version is not newer than its lowest citation keeps the
+// authorship question; a lagging pin still names its re-pin
+// (req-260820-394cac AC-2.7; feature-operator-next-action NA-4).
+func TestAgentQuestionPartialConfirmationKeepsAuthorshipQuestion(t *testing.T) {
+	now := time.Date(2026, 10, 22, 14, 22, 0, 0, time.UTC)
+	citations := []core.WorkOrderAuthorityConflictCitation{
+		{DocumentID: "req-checkpoints", CitedVersion: 2},
+		{DocumentID: "component-http-api", CitedVersion: 43},
+	}
+	for name, documents := range map[string]map[string]CitedDocument{
+		"one unconfirmed": {"req-checkpoints": {CurrentVersion: 3}, "component-http-api": {CurrentVersion: 43, PinnedVersion: 41}},
+		"one missing":     {"req-checkpoints": {CurrentVersion: 3}},
+		"none read":       nil,
+	} {
+		in := checkpointInput(now, core.WorkOrderCheckpointClassAuthorityConflict, citations, nil)
+		in.Capabilities = allCaps()
+		in.CitedDocuments = documents
+		got := Project(in)
+		if got.Label != "Cited documents need a revision" || len(got.Choices) != 1 || got.Choices[0].ID != "answer" ||
+			got.Choices[0].Label != "Answer…" || got.Choices[0].Direction != "" {
+			t.Fatalf("%s: %q choices %+v", name, got.Label, got.Choices)
+		}
+		wantEffect := "Recovers the order with direction."
+		if name == "one unconfirmed" {
+			wantEffect += " Recovery also re-pins component-http-api from v41 to v43."
+		}
+		if got.Choices[0].Effect != wantEffect {
+			t.Fatalf("%s: effect %q, want %q", name, got.Choices[0].Effect, wantEffect)
+		}
+	}
+}
+
+// A pending proposal on a cited document keeps the decision question even
+// when the cited documents already carry newer confirmed versions, and the
+// answer choice still names a lagging pin.
+func TestAgentQuestionPendingProposalOutranksConfirmedCase(t *testing.T) {
+	now := time.Date(2026, 10, 22, 14, 22, 0, 0, time.UTC)
+	citations := []core.WorkOrderAuthorityConflictCitation{{DocumentID: "component-agent-skill", CitedVersion: 5}}
+	in := checkpointInput(now, core.WorkOrderCheckpointClassAuthorityConflict, citations, []ProposalRef{{Tier: "system_design", ID: "component-agent-skill", Version: 9}})
+	in.Capabilities = allCaps()
+	in.CitedDocuments = map[string]CitedDocument{"component-agent-skill": {CurrentVersion: 8, PinnedVersion: 5}}
+	got := Project(in)
+	if got.Label != "Cited revisions need a decision" || len(got.Choices) != 3 {
+		t.Fatalf("%q choices %+v", got.Label, got.Choices)
+	}
+	answer := got.Choices[2]
+	if answer.ID != "answer" || answer.Direction != "" || answer.Effect != "Recovers the order with direction. Recovery also re-pins component-agent-skill from v5 to v8." {
+		t.Fatalf("answer = %+v", answer)
+	}
+}
+
+// The suggested direction is the sentence an authority-confirmed recovery
+// records (feature-bounded-automatic-recovery AR-3a).
+func TestConfirmedAuthorityDirectionNamesEachDocumentOnce(t *testing.T) {
+	citations := []core.WorkOrderAuthorityConflictCitation{{DocumentID: "b", CitedVersion: 1}, {DocumentID: "a", CitedVersion: 2}, {DocumentID: "b", CitedVersion: 3}}
+	ids := CitedDocumentIDs(citations)
+	if !reflect.DeepEqual(ids, []string{"b", "a"}) {
+		t.Fatalf("ids = %v", ids)
+	}
+	if got := ConfirmedAuthorityDirection(ids, map[string]int{"a": 3, "b": 4}); got != "Continue under the newly confirmed authority: b v4, a v3." {
+		t.Fatalf("direction = %q", got)
+	}
+	if !CitedRevisionsConfirmed(citations, map[string]CitedDocument{"a": {CurrentVersion: 3}, "b": {CurrentVersion: 2}}) {
+		t.Fatal("every document is newer than its lowest citation, want confirmed")
+	}
+	if CitedRevisionsConfirmed(citations, map[string]CitedDocument{"a": {CurrentVersion: 3}, "b": {CurrentVersion: 1}}) {
+		t.Fatal("b v1 is not newer than its lowest citation v1, want unconfirmed")
+	}
+	if CitedRevisionsConfirmed(nil, map[string]CitedDocument{"a": {CurrentVersion: 3}}) {
+		t.Fatal("a checkpoint without citations is never confirmed")
 	}
 }

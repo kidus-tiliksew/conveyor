@@ -1040,7 +1040,7 @@ func (s *Service) normalizeCheckpoint(ctx context.Context, reason string, checkp
 		Class:           strings.TrimSpace(checkpoint.Class),
 	}
 	if utf8.RuneCountInString(normalized.DecisionRequest) > core.WorkOrderDecisionRequestLimit {
-		return nil, fmt.Errorf("checkpoint.decision_request exceeds %d characters", core.WorkOrderDecisionRequestLimit)
+		return nil, fmt.Errorf("checkpoint.decision_request exceeds %d Unicode characters (runes)", core.WorkOrderDecisionRequestLimit)
 	}
 	if reason == core.WorkOrderReleaseReasonOperatorCheckpointReached && normalized.DecisionRequest == "" {
 		return nil, fmt.Errorf("checkpoint.decision_request is required when reason is %q", core.WorkOrderReleaseReasonOperatorCheckpointReached)
@@ -1122,34 +1122,52 @@ func (s *Service) checkpointCitation(ctx context.Context, citation core.WorkOrde
 	return false, false, nil
 }
 
+// markdownClauseExists reports whether a System Design clause names one of
+// the content's headings, by text or by anchor. Inline code markup is removed
+// from both sides first, so a clause naming a code-formatted heading such as
+// `agentdesk context` is kept rather than dropped (component-mcp-protocol,
+// Checkpoint decision requests on release; req-260820-394cac AC-2.1).
 func markdownClauseExists(content, clause string) bool {
-	clause = strings.TrimSpace(clause)
-	if clause == "" {
+	if strings.TrimSpace(clause) == "" {
 		return true
 	}
-	needle := strings.ToLower(clause)
+	clause = strings.TrimSpace(stripInlineCode(clause))
+	if clause == "" {
+		return false
+	}
+	needle := headingAnchor(clause)
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "#") {
-			heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
-			anchor := strings.Trim(strings.Map(func(r rune) rune {
-				if r >= 'A' && r <= 'Z' {
-					return r + ('a' - 'A')
-				}
-				if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-					return r
-				}
-				if r == ' ' {
-					return '-'
-				}
-				return -1
-			}, heading), "-")
-			if strings.EqualFold(heading, clause) || anchor == needle {
+			heading := strings.TrimSpace(stripInlineCode(strings.TrimLeft(line, "#")))
+			if strings.EqualFold(heading, clause) || headingAnchor(heading) == needle {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// stripInlineCode removes the backticks of Markdown inline code spans.
+func stripInlineCode(text string) string {
+	return strings.ReplaceAll(text, "`", "")
+}
+
+// headingAnchor is the heading's GitHub-style anchor: lower-case letters,
+// digits, hyphens, and underscores, with spaces as hyphens.
+func headingAnchor(heading string) string {
+	return strings.Trim(strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		if r == ' ' {
+			return '-'
+		}
+		return -1
+	}, heading), "-")
 }
 
 // RequestPlanRevision atomically releases one exact implement attempt and

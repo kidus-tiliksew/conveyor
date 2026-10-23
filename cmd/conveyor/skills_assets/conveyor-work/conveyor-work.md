@@ -279,6 +279,27 @@ After the stage's submission tool succeeds:
   the [self-claimed delivery loop](#self-claimed-delivery-loop) instead of
   exiting (req-agent-skills AC-3.1).
 
+### Release at an authority-conflict checkpoint
+
+When the approved plan or work-order contract directs an authority-conflict
+checkpoint, the delivered implement role states the release. In brief
+(`req-260820-394cac` REQ-1–REQ-3):
+
+- Author each complete proposal with `propose_requirement_revision`,
+  `propose_system_design_revision`, or `propose_decision`, and pass
+  `authority_conflict_checkpoint: true`. The tool's guidance then directs the
+  checkpoint release instead of `submit_for_review`.
+- Release with `release_work_order`, reason `operator checkpoint reached`, and
+  a checkpoint of class `authority_conflict`. Its `decision_request` is at most
+  1024 Unicode characters (runes) and cites every pending proposal
+  identifier.
+- In each citation, cite the confirmed version in conflict, never the
+  proposed version. When every cited document then gains a newer confirmed
+  version and none has a pending proposal, the factory recovers the order once
+  by itself (AC-2.6).
+- A System Design clause may name a heading with or without its code
+  formatting, or by its anchor.
+
 The launched report-and-exit rule also applies after an explicit truthful
 release. `release_work_order` is an explicit abandonment or checkpoint handoff,
 not a way to declare success. Do not simply exit while leaving a claim to
@@ -593,8 +614,9 @@ run the fast-forward.
 
 ### Human gates
 
-A plan approval, merge approval, pending merge act, plan-revision decision, or
-pending proposal can block the task's next order. Read the gate from
+A plan approval, merge approval, pending merge act, plan-revision decision,
+authority-conflict checkpoint, or pending proposal can block the task's next
+order. Read the gate from
 `get_task` (state `awaiting_human`, or state `approved` with
 `merge_approval: true` for the pending merge act), from `get_task_context` for
 pending proposals, from the `pending_gate` field of `conveyor task wait --json`
@@ -616,6 +638,7 @@ and offer to record the decision (req-agent-skills AC-3.7):
 2. What the decision would change.
 3. A dashboard link built from the server origin:
    - plan, merge, or plan-revision gate: `<origin>/tasks/<task-id>`;
+   - authority-conflict checkpoint: `<origin>/tasks/<task-id>`;
    - requirement proposal: `<origin>/requirements?requirement=<id>`;
    - System Design proposal: `<origin>/system-design?document=<id>`;
    - decision proposal: `<origin>/pending-proposals?task=<task-id>`.
@@ -641,6 +664,7 @@ AC-3.11).
   | Merge approval | Approve and merge · Approve only · Request changes · Wait |
   | Pending merge act | Merge · Wait |
   | Plan-revision decision | Approve · Decline · Reject · Wait |
+  | Authority-conflict checkpoint | Confirm or dismiss each cited proposal · Recover with direction · Wait |
   | Proposal | Confirm · Dismiss · Wait |
 
 - Never preselect, rank, or mark a reply as recommended. The decision
@@ -706,6 +730,8 @@ with the operator's own credential. Then continue from the task's next order.
 | Plan-revision decision | approve | `conveyor task redirect <task-id> --reason plan-revision-approved -m <comment>` |
 | Plan-revision decision | decline with direction | `conveyor task redirect <task-id> --reason plan-revision-declined -m <direction>` |
 | Plan-revision decision | reject | `conveyor task reject <task-id> --reason plan-revision-rejected` |
+| Authority-conflict checkpoint | confirm or dismiss a cited proposal | the requirement or System Design proposal row below |
+| Authority-conflict checkpoint | recover with direction | `conveyor order recover <order-id> --direction <direction>` |
 | Requirement proposal | confirm or dismiss | `POST /v1/requirements/{id}/versions/{version}/confirm` or `.../dismiss` |
 | System Design proposal | confirm or dismiss | `POST /v1/system-designs/{id}/versions/{version}/confirm` or `.../dismiss` |
 | Decision proposal | confirm or dismiss | `POST /v1/decisions/{id}/confirm` or `POST /v1/decisions/{id}/dismiss` |
@@ -734,6 +760,25 @@ recorded reason or comment, for example
 `-m "Plan v2 approved through <channel> at <answer time>."`. A proposal
 endpoint takes no reason, so report the channel and the answer time to the
 operator with the result. Then continue from the task's next order.
+
+**Authority-conflict checkpoint.** The task's next action is `agent_question`
+with checkpoint class `authority_conflict`, and the released implement order
+is its current order. `conveyor task status <task-id>` prints the decision
+request, each citation, and a confirm and dismiss choice for each pending
+proposal on a cited document. Once every cited document has a newer confirmed
+version and no pending proposal, the statement asks only for recovery and
+prints `conveyor order recover <order-id> --direction '<suggested direction>'`,
+where the suggested direction names the confirmed versions. Its effect names
+each cited design pin that recovery advances, because recovering the order
+re-pins the task's System Designs in the same act; no separate re-pin act is
+needed. When the factory's own recovery applies (AC-2.6), the task moves on
+without an operator act, so read the task again before recording a reply:
+
+- The direction is the operator's own text, or the suggested direction when
+  the operator says to use it. Never write one for the operator.
+- Recovery is the operator's act. Run `conveyor order recover` only on the
+  operator's direct instruction, with the operator's own CLI credential, and
+  never under an agent claim (DEC-84).
 
 **Merge is a separate act.** With the merge gate on, `conveyor task approve`
 binds the reviewed head and moves the task to `approved`. It never merges, and

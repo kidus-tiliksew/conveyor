@@ -216,6 +216,99 @@ func CitedProposals(citations []core.WorkOrderAuthorityConflictCitation, pending
 	return out
 }
 
+// CitedDocumentIDs lists each cited document once, in first-citation order.
+func CitedDocumentIDs(citations []core.WorkOrderAuthorityConflictCitation) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, citation := range citations {
+		if seen[citation.DocumentID] {
+			continue
+		}
+		seen[citation.DocumentID] = true
+		ids = append(ids, citation.DocumentID)
+	}
+	return ids
+}
+
+// ConfirmedAuthorityDirection is the one sentence that names each cited
+// document and its newly confirmed version: the direction an
+// authority-confirmed recovery records and the direction the answer choice
+// suggests (feature-bounded-automatic-recovery AR-3a;
+// feature-operator-next-action NA-4).
+func ConfirmedAuthorityDirection(ids []string, versions map[string]int) string {
+	named := make([]string, 0, len(ids))
+	for _, id := range ids {
+		named = append(named, fmt.Sprintf("%s v%d", id, versions[id]))
+	}
+	return "Continue under the newly confirmed authority: " + strings.Join(named, ", ") + "."
+}
+
+// CitedRevisionsConfirmed reports whether every cited document has a
+// confirmed version newer than the lowest version its citations name. The
+// lowest version is the one compared because a checkpoint may also cite the
+// version it proposed. It selects presentation only and never recovers the
+// order (req-260820-394cac AC-2.4, AC-2.5; feature-operator-next-action NA-4).
+func CitedRevisionsConfirmed(citations []core.WorkOrderAuthorityConflictCitation, documents map[string]CitedDocument) bool {
+	if len(citations) == 0 {
+		return false
+	}
+	lowest := map[string]int{}
+	for _, citation := range citations {
+		if cited, ok := lowest[citation.DocumentID]; !ok || citation.CitedVersion < cited {
+			lowest[citation.DocumentID] = citation.CitedVersion
+		}
+	}
+	for id, cited := range lowest {
+		document, ok := documents[id]
+		if !ok || document.CurrentVersion <= cited {
+			return false
+		}
+	}
+	return true
+}
+
+// authorityAnswerChoices adapts an authority_conflict checkpoint's answer
+// choice. When every cited document is confirmed past its citations, the
+// choice suggests the direction naming the confirmed versions; in every case
+// its effect names each cited design pin that recovery advances, because
+// recovering an implement order re-pins the task's designs in the same
+// transaction (feature-operator-next-action NA-4; component-task-lifecycle).
+func authorityAnswerChoices(base []ChoiceSpec, row built, documents map[string]CitedDocument) []ChoiceSpec {
+	out := append([]ChoiceSpec(nil), base...)
+	ids := CitedDocumentIDs(row.citations)
+	for i := range out {
+		if out[i].ID != "answer" {
+			continue
+		}
+		if row.variant == AgentQuestionCitedConfirmed {
+			versions := make(map[string]int, len(ids))
+			for _, id := range ids {
+				versions[id] = documents[id].CurrentVersion
+			}
+			out[i].Direction = ConfirmedAuthorityDirection(ids, versions)
+			out[i].Label = "Recover with direction…"
+			out[i].Effect = "Recovers the order. Suggested direction: " + out[i].Direction
+		}
+		out[i].Effect += repinSentences(ids, documents)
+	}
+	return out
+}
+
+// repinSentences names each cited System Design whose task pin lags its
+// current confirmed version, ordered by document ID.
+func repinSentences(ids []string, documents map[string]CitedDocument) string {
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
+	out := ""
+	for _, id := range sorted {
+		document := documents[id]
+		if document.PinnedVersion > 0 && document.CurrentVersion > document.PinnedVersion {
+			out += fmt.Sprintf(" Recovery also re-pins %s from v%d to v%d.", id, document.PinnedVersion, document.CurrentVersion)
+		}
+	}
+	return out
+}
+
 func parkedChoices() []ChoiceSpec {
 	return []ChoiceSpec{
 		{ID: "recover", Label: "Recover", Effect: "Puts the task back in the queue.", Method: "POST", Path: "/v1/tasks/{id}/redispatch", Capability: core.CapabilityRecoverWork},
@@ -263,7 +356,7 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 		}
 		choices = append(choices, Choice{
 			ID: spec.ID, Label: spec.Label, Effect: spec.Effect, Method: spec.Method, Path: path,
-			Capability: string(spec.Capability), Allowed: in.Capabilities[spec.Capability],
+			Capability: string(spec.Capability), Allowed: in.Capabilities[spec.Capability], Direction: spec.Direction,
 		})
 	}
 	if choices == nil {
