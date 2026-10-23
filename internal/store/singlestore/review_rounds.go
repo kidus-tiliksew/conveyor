@@ -18,6 +18,23 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+// reviewVerificationContextIDTx reads the sealed context a review round
+// reviews, as store.ReviewVerificationContextID selects it: the completed
+// verify order at the verify head carrying a context, updated last. It is
+// empty with verify_stage off or when no such order exists
+// (component-verification-service; req-verification-kits AC-4.2, AC-8.3).
+func reviewVerificationContextIDTx(ctx context.Context, tx *sql.Tx, task core.Task) (string, error) {
+	if !task.SetupContract.VerifyStage {
+		return "", nil
+	}
+	var contextID string
+	err := tx.QueryRowContext(ctx, `SELECT verification_context_id FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='verify' AND state='completed' AND head_sha=? AND head_sha<>'' AND verification_context_id<>'' ORDER BY updated_at DESC, id DESC LIMIT 1`, documentWorkspace(ctx), task.ID, core.VerifyStageHead(task)).Scan(&contextID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return contextID, err
+}
+
 func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, id string, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
 	if !lease.ValidForCommand(id, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
@@ -30,17 +47,16 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
-		if task.SetupContract.VerifyStage {
-			// The same predicate as core.VerifyReviewReady and PostgreSQL: only a
-			// successful seal sets verification_context_id
-			// (component-verification-service; req-verification-kits AC-4.3).
-			var ready bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND stage='verify' AND state='completed' AND head_sha=? AND head_sha<>'' AND verification_context_id<>'')`, documentWorkspace(ctx), id, core.VerifyStageHead(task)).Scan(&ready); err != nil {
-				return err
-			}
-			if !ready {
-				return fmt.Errorf("review requires completed verification for the submitted head")
-			}
+		// The same predicate as core.VerifyReviewReady and PostgreSQL: only a
+		// successful seal sets verification_context_id
+		// (component-verification-service; req-verification-kits AC-4.3).
+		// The read also names the sealed context every seat reviews.
+		contextID, err := reviewVerificationContextIDTx(ctx, tx, task)
+		if err != nil {
+			return err
+		}
+		if task.SetupContract.VerifyStage && contextID == "" {
+			return fmt.Errorf("review requires completed verification for the submitted head")
 		}
 		round := orders[0].ReviewRound
 		// A recorded round replays as a no-op (feature-review-seat-minimum RS-2).
@@ -68,7 +84,9 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			return err
 		}
 		for i, j := range jobs {
-			if err := s.insertReviewMemberTx(ctx, tx, j, orders[i]); err != nil {
+			member := orders[i]
+			member.VerificationContextID = contextID
+			if err := s.insertReviewMemberTx(ctx, tx, j, member); err != nil {
 				return err
 			}
 		}
@@ -85,7 +103,7 @@ func (s *Store) insertReviewMemberTx(ctx context.Context, tx *sql.Tx, j core.Job
 	if err := taskEvent(ctx, tx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.created", Payload: core.JSONPayload(j)}); err != nil {
 		return err
 	}
-	clean := core.WorkOrder{ID: o.ID, TaskID: o.TaskID, JobID: o.JobID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: o.ReviewRound, ReviewSeat: o.ReviewSeat, RequiredModel: o.RequiredModel, RequiredHarness: o.RequiredHarness, RequiredHarnessConfig: o.RequiredHarnessConfig, ExecutionTimeoutText: o.ExecutionTimeoutText, ReasonCode: o.ReasonCode, ReviewKind: o.ReviewKind, ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, HeadSHA: o.HeadSHA, CreatedAt: o.CreatedAt, QueueEnteredAt: o.QueueEnteredAt, QueueDeadline: o.QueueDeadline, ServedRequirementSnapshot: o.ServedRequirementSnapshot, GovernanceSnapshot: o.GovernanceSnapshot}
+	clean := core.WorkOrder{ID: o.ID, TaskID: o.TaskID, JobID: o.JobID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: o.ReviewRound, ReviewSeat: o.ReviewSeat, RequiredModel: o.RequiredModel, RequiredHarness: o.RequiredHarness, RequiredHarnessConfig: o.RequiredHarnessConfig, ExecutionTimeoutText: o.ExecutionTimeoutText, ReasonCode: o.ReasonCode, ReviewKind: o.ReviewKind, ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, HeadSHA: o.HeadSHA, CreatedAt: o.CreatedAt, QueueEnteredAt: o.QueueEnteredAt, QueueDeadline: o.QueueDeadline, VerificationContextID: o.VerificationContextID, ServedRequirementSnapshot: o.ServedRequirementSnapshot, GovernanceSnapshot: o.GovernanceSnapshot}
 	return s.insertOrderTx(ctx, tx, orderDefaults(clean), false)
 }
 func supersededReviewWorkOrdersTx(ctx context.Context, tx *sql.Tx, id string) (map[string]bool, error) {
@@ -651,8 +669,15 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		if err = checkReviewRoundSeatsTx(ctx, tx, t, seats, len(orders)); err != nil {
 			return fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, err)
 		}
+		// The retried round reviews the same sealed context (component-verification-service).
+		contextID, err := reviewVerificationContextIDTx(ctx, tx, t)
+		if err != nil {
+			return err
+		}
 		for i, j := range jobs {
-			if err = s.insertReviewMemberTx(ctx, tx, j, orders[i]); err != nil {
+			member := orders[i]
+			member.VerificationContextID = contextID
+			if err = s.insertReviewMemberTx(ctx, tx, j, member); err != nil {
 				return err
 			}
 		}

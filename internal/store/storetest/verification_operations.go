@@ -429,25 +429,42 @@ func runSealedVerificationReview(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	ctx := store.WithActor(x.Context, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
 	valid := core.ReviewDecision{TaskID: order.TaskID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ClaimSession: "reviewer", ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "verified", Summary: "Sealed empty fixture assessed", ReviewedCommitSHA: verify.HeadSHA, HeadSHA: verify.HeadSHA, Reviewer: "forged actor", MaxBounces: 3, VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "Explicit empty assessment is appropriate for this fixture"}}, Actor: "forged actor"}}
-	for _, mutate := range []func(*core.ReviewDecision){
-		func(d *core.ReviewDecision) { d.VerificationAssessment = nil },
-		func(d *core.ReviewDecision) { d.HeadSHA = strings.Repeat("b", 40) },
-		func(d *core.ReviewDecision) { d.ReviewScope = "delta" },
-		func(d *core.ReviewDecision) { d.BaselineSHA = "wrong" },
-		func(d *core.ReviewDecision) { d.VerificationAssessment.ContextIDs = []string{"unknown"} },
-		func(d *core.ReviewDecision) {
+	// Each backend's acceptance transaction returns the same correctable
+	// refusal as the preflight; a stale binding or an unknown context keeps
+	// the generic refusal (component-verification-service "Correctable refusals").
+	for _, tc := range []struct {
+		code   string
+		mutate func(*core.ReviewDecision)
+	}{
+		{store.VerificationCodeFieldRequired, func(d *core.ReviewDecision) { d.VerificationAssessment = nil }},
+		{"", func(d *core.ReviewDecision) { d.HeadSHA = strings.Repeat("b", 40) }},
+		{"", func(d *core.ReviewDecision) { d.ReviewScope = "delta" }},
+		{"", func(d *core.ReviewDecision) { d.BaselineSHA = "wrong" }},
+		{"", func(d *core.ReviewDecision) { d.VerificationAssessment.ContextIDs = []string{"unknown"} }},
+		{store.VerificationCodeReviewContextCount, func(d *core.ReviewDecision) { d.VerificationAssessment.ContextIDs = []string{} }},
+		{store.VerificationCodeReviewPinUnmapped, func(d *core.ReviewDecision) {
 			d.VerificationAssessment.Mappings = []core.VerificationAssessmentMapping{}
-		},
-		func(d *core.ReviewDecision) { d.VerificationAssessment.Mappings[0].Version = 2 },
-		func(d *core.ReviewDecision) { d.VerificationAssessment.Mappings[0].AcceptanceCriterionID = "AC-99.1" },
-		func(d *core.ReviewDecision) { d.VerificationAssessment.Mappings[0].EvidenceIDs = []string{"foreign"} },
+		}},
+		{store.VerificationCodeReviewMappingUnpinned, func(d *core.ReviewDecision) { d.VerificationAssessment.Mappings[0].Version = 2 }},
+		{store.VerificationCodeReviewCriterionUnknown, func(d *core.ReviewDecision) { d.VerificationAssessment.Mappings[0].AcceptanceCriterionID = "AC-99.1" }},
+		{store.VerificationCodeReviewEvidenceUnknown, func(d *core.ReviewDecision) { d.VerificationAssessment.Mappings[0].EvidenceIDs = []string{"foreign"} }},
+		{store.VerificationCodeReviewRunUnknown, func(d *core.ReviewDecision) { d.VerificationAssessment.RunIDs = []string{"foreign"} }},
 	} {
 		var bad core.ReviewDecision
 		requireOK(t, json.Unmarshal(core.JSONPayload(valid), &bad))
-		mutate(&bad)
+		tc.mutate(&bad)
 		before := verificationPublicState(t, &v)
-		if err := taskops.New(x.Backend).AcceptReviewDecision(ctx, bad); err == nil {
+		err := taskops.New(x.Backend).AcceptReviewDecision(ctx, bad)
+		if err == nil {
 			t.Fatal("invalid sealed assessment accepted")
+		}
+		var refusal *store.VerificationRefusal
+		if tc.code == "" {
+			if errors.As(err, &refusal) {
+				t.Fatalf("stale or unknown binding carried refusal detail: %v", err)
+			}
+		} else if !errors.As(err, &refusal) || refusal.Code != tc.code {
+			t.Fatalf("acceptance refusal = %v, want code %s", err, tc.code)
 		}
 		if !reflect.DeepEqual(before, verificationPublicState(t, &v)) {
 			t.Fatal("review refusal changed aggregate")

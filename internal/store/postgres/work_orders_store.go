@@ -272,6 +272,23 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 	})
 }
 
+// reviewVerificationContextIDTx reads the sealed context a review round
+// reviews, as store.ReviewVerificationContextID selects it: the completed
+// verify order at the verify head carrying a context, updated last. It is
+// empty with verify_stage off or when no such order exists
+// (component-verification-service; req-verification-kits AC-4.2, AC-8.3).
+func reviewVerificationContextIDTx(ctx context.Context, tx pgx.Tx, workspaceID string, task core.Task) (string, error) {
+	if !task.SetupContract.VerifyStage {
+		return "", nil
+	}
+	var contextID string
+	err := tx.QueryRow(ctx, `SELECT verification_context_id FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'' AND verification_context_id<>'' ORDER BY updated_at DESC, id DESC LIMIT 1`, workspaceID, task.ID, core.VerifyStageHead(task)).Scan(&contextID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return contextID, err
+}
+
 func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
 	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
@@ -291,14 +308,13 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			return notFound(err, "task %s", taskID)
 		}
 		task := taskFromDB(taskRow)
-		if task.SetupContract.VerifyStage {
-			var ready bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=$1 AND task_id=$2 AND stage='verify' AND state='completed' AND head_sha=$3 AND head_sha<>'' AND verification_context_id<>'')`, workspace(ctx), taskID, core.VerifyStageHead(task)).Scan(&ready); err != nil {
-				return err
-			}
-			if !ready {
-				return fmt.Errorf("review requires completed verification for the submitted head")
-			}
+		// The admission read also names the sealed context every seat reviews.
+		contextID, err := reviewVerificationContextIDTx(ctx, tx, workspace(ctx), task)
+		if err != nil {
+			return err
+		}
+		if task.SetupContract.VerifyStage && contextID == "" {
+			return fmt.Errorf("review requires completed verification for the submitted head")
 		}
 		round := orders[0].ReviewRound
 		// A recorded round replays as a no-op (feature-review-seat-minimum RS-2).
@@ -348,22 +364,23 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				return transitionErr
 			}
 			order.State, order.Claimable = state, true
+			order.VerificationContextID = contextID
 			_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 				id, workspace_id, task_id, job_id, stage, state, claimant_id,
 				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
-				reason_code, review_kind, review_scope, baseline_sha, head_sha,
+				reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 				queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 				last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 				automatic_retry_count, next_retry_at, retry_suppressed,
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 				usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
+			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$23,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, order.State,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 				harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 				order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.VerificationContextID)
 			if err != nil {
 				return err
 			}
@@ -585,6 +602,11 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	if err = checkReviewRoundSeatsTx(ctx, tx, workspaceID, taskFromDB(before), seats, len(orders)); err != nil {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", store.ErrReviewRetryConflict, err)
 	}
+	// The retried round reviews the same sealed context (component-verification-service).
+	contextID, err := reviewVerificationContextIDTx(ctx, tx, workspaceID, taskFromDB(before))
+	if err != nil {
+		return store.ReviewRoundRetryResult{}, err
+	}
 	now := time.Now().UTC()
 	created := make([]core.WorkOrder, 0, len(orders))
 	for i, job := range jobs {
@@ -609,22 +631,23 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 			return store.ReviewRoundRetryResult{}, transitionErr
 		}
 		order.State, order.Claimable, order.UpdatedAt = state, true, now
+		order.VerificationContextID = contextID
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 			review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
-			reason_code, review_kind, review_scope, baseline_sha, head_sha,
+			reason_code, review_kind, review_scope, baseline_sha, head_sha, verification_context_id,
 			queue_entered_at, queue_deadline, execution_started_at, execution_deadline,
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
 			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
-		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$23,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 			order.ID, workspaceID, request.TaskID, job.ID, core.StageReview, core.WorkOrderQueued,
 			order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 			harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.VerificationContextID)
 		if err != nil {
 			return store.ReviewRoundRetryResult{}, err
 		}

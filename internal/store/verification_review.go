@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -18,27 +19,110 @@ type VerificationReviewReader interface {
 	ReadVerificationReview(context.Context, string, string) (VerificationReviewState, error)
 }
 
+// ReviewVerificationContextID names the sealed context a review round reviews:
+// among the task's completed verify orders at the verify head that carry a
+// verification_context_id, the one updated last, ties broken on the larger
+// order ID. Only a successful seal sets the field on a verify order, so the
+// result is the newest context sealed succeeded at the head. It is empty when
+// verify_stage is off or no such order exists. PostgreSQL and SingleStore read
+// the same order with ORDER BY updated_at DESC, id DESC
+// (component-verification-service; req-verification-kits AC-4.2, AC-8.3).
+func ReviewVerificationContextID(task core.Task, orders []core.WorkOrder) string {
+	if !task.SetupContract.VerifyStage {
+		return ""
+	}
+	head := core.VerifyStageHead(task)
+	if head == "" {
+		return ""
+	}
+	var selected *core.WorkOrder
+	for i := range orders {
+		order := &orders[i]
+		if order.TaskID != task.ID || order.Stage != core.StageVerify || order.State != core.WorkOrderCompleted || order.HeadSHA != head || order.VerificationContextID == "" {
+			continue
+		}
+		if selected == nil || order.UpdatedAt.After(selected.UpdatedAt) || (order.UpdatedAt.Equal(selected.UpdatedAt) && order.ID > selected.ID) {
+			selected = order
+		}
+	}
+	if selected == nil {
+		return ""
+	}
+	return selected.VerificationContextID
+}
+
+// Sealed review assessment refusal codes (component-verification-service
+// "Correctable refusals"). Each unwraps to the sentinel its case returned
+// before the family existed, so the acceptance predicate is unchanged.
+const (
+	VerificationCodeReviewContextCount        = "verification_review_context_count"
+	VerificationCodeReviewContextNotCurrent   = "verification_review_context_not_current"
+	VerificationCodeReviewRunUnknown          = "verification_review_run_unknown"
+	VerificationCodeReviewRunMissing          = "verification_review_run_missing"
+	VerificationCodeReviewEvidenceUnknown     = "verification_review_evidence_unknown"
+	VerificationCodeReviewMappingUnpinned     = "verification_review_mapping_unpinned"
+	VerificationCodeReviewMappingDuplicate    = "verification_review_mapping_duplicate"
+	VerificationCodeReviewCriterionUnknown    = "verification_review_criterion_unknown"
+	VerificationCodeReviewCriterionUnexpected = "verification_review_criterion_unexpected"
+	VerificationCodeReviewPinUnmapped         = "verification_review_pin_unmapped"
+)
+
+// Fixed remedies of the sealed review assessment family. They carry no record data.
+const (
+	verificationRemedyReviewList     = "Send verification_assessment with context_ids, run_ids, evidence_ids and mappings, using [] for an empty list, and a non-blank assessment on every mapping."
+	verificationRemedyReviewContext  = "Cite exactly the context named by the review order's verification_context_id in get_work_order, read with get_verification_context."
+	verificationRemedyReviewRuns     = "Copy run_ids from get_verification_context: list the latest attempt of every subject once, or send [] when no attempt ran."
+	verificationRemedyReviewEvidence = "List in evidence_ids only accepted evidence of the listed runs, each once, and cite in a mapping only evidence listed in evidence_ids."
+	verificationRemedyReviewMapping  = "Map each governing pin of the context at least once: a requirement mapping names an acceptance criterion of the served version, and a design mapping sends an empty acceptance_criterion_id."
+)
+
+func reviewRefusal(class error, code, field, remedy, rule string, args ...any) error {
+	return verificationRefusal(class, code, field, remedy, rule, args...)
+}
+
 // ValidateSealedVerificationReview is shared by MCP/in-process preflight and
 // every acceptance transaction. Only transaction-bound rows are authoritative.
+// Callers run it after the review claim is authenticated; a refusal then names
+// its field, rule and remedy, interpolating only field indices, counts and the
+// sealed context's own pins. A context absent from the task's records and a
+// stale review order keep the generic refusal (component-verification-service).
 func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecision, state VerificationReviewState) error {
 	if !task.SetupContract.VerifyStage {
 		return nil
 	}
 	assessment := decision.VerificationAssessment
-	if assessment == nil || len(assessment.ContextIDs) != 1 || assessment.RunIDs == nil || assessment.EvidenceIDs == nil || assessment.Mappings == nil {
-		return ErrVerificationInvalid
+	if assessment == nil {
+		return reviewRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "verification_assessment", verificationRemedyReviewList, "verification_assessment is required while the task's verify_stage is on.")
+	}
+	for _, list := range []struct {
+		name  string
+		isNil bool
+	}{{"context_ids", assessment.ContextIDs == nil}, {"run_ids", assessment.RunIDs == nil}, {"evidence_ids", assessment.EvidenceIDs == nil}, {"mappings", assessment.Mappings == nil}} {
+		if list.isNil {
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "verification_assessment."+list.name, verificationRemedyReviewList, "verification_assessment.%s is required; send [] for an empty list.", list.name)
+		}
+	}
+	if len(assessment.ContextIDs) != 1 {
+		return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewContextCount, "verification_assessment.context_ids", verificationRemedyReviewContext, "context_ids must name exactly one sealed context; it names %d.", len(assessment.ContextIDs))
 	}
 	row, ok := verificationFind(state.Rows, "verification_contexts", assessment.ContextIDs[0])
-	if !ok || row.TaskID != task.ID || row.State != "sealed" {
+	if !ok || row.TaskID != task.ID {
+		// Unknown and foreign contexts stay indistinguishable (AC-7.2).
 		return ErrVerificationState
+	}
+	notCurrent := func() error {
+		return reviewRefusal(ErrVerificationState, VerificationCodeReviewContextNotCurrent, "verification_assessment.context_ids[0]", verificationRemedyReviewContext, "The cited context is not the task's newest context sealed succeeded at the verify head.")
+	}
+	if row.State != "sealed" {
+		return notCurrent()
 	}
 	vc := verificationDecode[VerificationContext](row)
 	if vc.SealedAt == nil || vc.Result == nil || vc.Result.Submission.Outcome != "succeeded" || vc.Result.Binding.ContextID != vc.ID || vc.Result.Binding.ReviewScope != vc.ReviewScope || vc.Result.Binding.BaselineSHA != vc.BaselineSHA || !verificationEqual(vc.Result.Binding.Revisions, vc.Revisions) || !verificationEqual(vc.Result.Binding.GoverningPins, vc.GoverningPins) {
-		return ErrVerificationState
+		return notCurrent()
 	}
 	for _, other := range state.Rows {
 		if other.Table == "verification_contexts" && other.TaskID == task.ID && verificationDecode[VerificationContext](other).CreatedAt.After(vc.CreatedAt) {
-			return ErrVerificationState
+			return notCurrent()
 		}
 	}
 	head := core.VerifyStageHead(task)
@@ -51,8 +135,11 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 			bound = true
 		}
 	}
-	if vc.ReviewScope != state.Order.ReviewScope || vc.BaselineSHA != state.Order.BaselineSHA || decision.ReviewScope != state.Order.ReviewScope || decision.BaselineSHA != state.Order.BaselineSHA || !bound || state.Order.TaskID != task.ID || state.Order.Stage != core.StageReview || state.Order.HeadSHA != head {
+	if decision.ReviewScope != state.Order.ReviewScope || decision.BaselineSHA != state.Order.BaselineSHA || state.Order.TaskID != task.ID || state.Order.Stage != core.StageReview || state.Order.HeadSHA != head {
 		return ErrVerificationState
+	}
+	if vc.ReviewScope != state.Order.ReviewScope || vc.BaselineSHA != state.Order.BaselineSHA || !bound {
+		return notCurrent()
 	}
 	if err := VerifyVerificationAuthority(VerificationCommand{Kind: VerificationCreateContext, Context: &vc}, VerificationAuthoritySnapshot{Task: task}, state.Order); err != nil {
 		return err
@@ -73,9 +160,9 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 		}
 	}
 	seen := map[string]bool{}
-	for _, id := range assessment.RunIDs {
+	for i, id := range assessment.RunIDs {
 		if !runs[id] || seen[id] {
-			return ErrVerificationInvalid
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewRunUnknown, fmt.Sprintf("verification_assessment.run_ids[%d]", i), verificationRemedyReviewRuns, "run_ids[%d] is not an attempt of the cited context, or repeats an earlier entry.", i)
 		}
 		seen[id] = true
 	}
@@ -91,23 +178,31 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 			latest[attempt.Subject] = attempt
 		}
 	}
+	missing := 0
 	for _, attempt := range latest {
 		if !declaredRuns[attempt.ID] {
-			return ErrVerificationInvalid
+			missing++
 		}
 	}
+	if missing > 0 {
+		return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewRunMissing, "verification_assessment.run_ids", verificationRemedyReviewRuns, "run_ids omits the latest attempt of %d of the cited context's %d attempted subjects.", missing, len(latest))
+	}
 	seen = map[string]bool{}
-	for _, id := range assessment.EvidenceIDs {
+	for i, id := range assessment.EvidenceIDs {
 		if e, ok := evidence[id]; !ok || seen[id] || !declaredRuns[e.RunID] {
-			return ErrVerificationInvalid
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewEvidenceUnknown, fmt.Sprintf("verification_assessment.evidence_ids[%d]", i), verificationRemedyReviewEvidence, "evidence_ids[%d] is not accepted evidence of a listed run, or repeats an earlier entry.", i)
 		}
 		seen[id] = true
 	}
 	covered := map[string]bool{}
 	mapped := map[string]bool{}
-	for _, mapping := range assessment.Mappings {
-		if strings.TrimSpace(mapping.Assessment) == "" || mapping.EvidenceIDs == nil {
-			return ErrVerificationInvalid
+	for i, mapping := range assessment.Mappings {
+		field := fmt.Sprintf("verification_assessment.mappings[%d]", i)
+		if mapping.EvidenceIDs == nil {
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, field+".evidence_ids", verificationRemedyReviewList, "mappings[%d].evidence_ids is required; send [] for an empty list.", i)
+		}
+		if strings.TrimSpace(mapping.Assessment) == "" {
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, field+".assessment", verificationRemedyReviewList, "mappings[%d].assessment must be non-blank.", i)
 		}
 		pin := core.VerificationPin{}
 		for _, p := range vc.GoverningPins {
@@ -116,12 +211,12 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 			}
 		}
 		if pin.DocumentID == "" {
-			return ErrVerificationInvalid
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewMappingUnpinned, field, verificationRemedyReviewMapping, "mappings[%d] names a document and version that is not a governing pin of the cited context.", i)
 		}
 		key := pin.Kind + ":" + pin.DocumentID
 		mappingKey := key + ":" + mapping.AcceptanceCriterionID
 		if mapped[mappingKey] {
-			return ErrVerificationInvalid
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewMappingDuplicate, field, verificationRemedyReviewMapping, "mappings[%d] repeats the pin %s %s v%d and criterion of an earlier mapping.", i, pin.Kind, pin.DocumentID, pin.Version)
 		}
 		mapped[mappingKey] = true
 		covered[key] = true
@@ -139,20 +234,20 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 				}
 			}
 			if !found {
-				return ErrVerificationInvalid
+				return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewCriterionUnknown, field+".acceptance_criterion_id", verificationRemedyReviewMapping, "mappings[%d].acceptance_criterion_id is not an acceptance criterion of the served requirement %s v%d.", i, pin.DocumentID, pin.Version)
 			}
 		} else if mapping.AcceptanceCriterionID != "" {
-			return ErrVerificationInvalid
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewCriterionUnexpected, field+".acceptance_criterion_id", verificationRemedyReviewMapping, "mappings[%d] maps the %s pin %s v%d, which takes an empty acceptance_criterion_id.", i, pin.Kind, pin.DocumentID, pin.Version)
 		}
-		for _, id := range mapping.EvidenceIDs {
+		for j, id := range mapping.EvidenceIDs {
 			if _, ok := evidence[id]; !ok || !seen[id] {
-				return ErrVerificationInvalid
+				return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewEvidenceUnknown, fmt.Sprintf("%s.evidence_ids[%d]", field, j), verificationRemedyReviewEvidence, "mappings[%d].evidence_ids[%d] is not listed in evidence_ids.", i, j)
 			}
 		}
 	}
 	for _, pin := range vc.GoverningPins {
 		if !covered[pin.Kind+":"+pin.DocumentID] {
-			return ErrVerificationInvalid
+			return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewPinUnmapped, "verification_assessment.mappings", verificationRemedyReviewMapping, "The governing %s pin %s v%d of the cited context has no mapping.", pin.Kind, pin.DocumentID, pin.Version)
 		}
 	}
 	return nil

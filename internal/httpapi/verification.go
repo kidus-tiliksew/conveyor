@@ -17,6 +17,9 @@ import (
 
 var verificationTools = []string{"prepare_verification_operation", "reconcile_verification_operation", "submit_verification", "get_verification_context", "prepare_verification", "register_verification_obligation", "start_verification_attempt", "report_verification_outcome", "get_evidence_schemas", "submit_verification_evidence", "upload_verification_artifact", "read_verification_evidence", "get_verification_publication"}
 
+// verificationClaimReadCredentials states the read-tool credential rule.
+const verificationClaimReadCredentials = "A verify or review claim reads with its session_id and the client_token it passed to claim_work_order; both are required for a claim-bound read. A workspace member reads with neither."
+
 func verificationRead(operation string) bool {
 	return operation == "get_verification_context" || operation == "get_evidence_schemas" || operation == "read_verification_evidence" || operation == "get_verification_publication"
 }
@@ -38,6 +41,16 @@ func verificationMCPTools() []map[string]any {
 		}
 		schema["required"] = required
 		description := "Claim-bound verification evidence. Results support independent review and never confer acceptance or operator approval."
+		if verificationRead(name) && name != "get_evidence_schemas" {
+			// component-verification-service: the fields stay optional because a
+			// workspace member reads with neither; a claim read needs both.
+			description += " " + verificationClaimReadCredentials
+			props["session_id"] = map[string]any{"type": "string", "description": "Required for a claim-bound read: the verify or review claim's session_id. Omit for a workspace member read."}
+			props["client_token"] = map[string]any{"type": "string", "description": "Required for a claim-bound read: the client_token passed to claim_work_order. Omit for a workspace member read."}
+		}
+		if name == "get_verification_context" {
+			description += " A review claim reads the sealed context named by its review order's verification_context_id from get_work_order."
+		}
 		if name == "submit_verification" {
 			// component-verification-service: one published mapping;
 			// outcome validation stays in the shared service after scope checks.
