@@ -101,6 +101,30 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 			return "", nil, err
 		}
 	}
+	// Dirty-primary refusal: creating a new worktree, at any destination,
+	// requires a primary checkout on a named branch with no uncommitted or
+	// untracked changes (component-git-delivery; req-delegated-execution
+	// REQ-3). AC-3.7 exempts reuse of a registered non-primary worktree. The
+	// hazards near this refusal, and what guards each:
+	//   - Git operation in progress in the primary: applies to any
+	//     destination; refused above for creation and reuse (AC-3.7).
+	//   - Task branch checked out in the primary: applies; refused below as
+	//     the shared primary checkout (AC-3.6; req-task-branch-assignment
+	//     AC-2.6), and by Git itself. A dirty primary is refused here first.
+	//   - Primary as the destination: applies; refused below (AC-3.6).
+	//   - In-repository worktree directory missing its exclude entry, which
+	//     exposes nested task worktrees to `git add -A` in the primary:
+	//     applies; only this check detects it, and unsafePrimaryError names
+	//     it (component-git-delivery).
+	//   - Fetches or ref updates moving the primary's branch: does not apply.
+	//     Fetches write only refs/remotes/origin/*, and `worktree add -b`
+	//     refuses an existing name (AC-3.2; DEC-10).
+	//   - Loss of the primary's uncommitted files: does not apply. No command
+	//     below writes the primary's index or working tree.
+	// Other dirt, and a detached primary HEAD, guard no Git hazard for a
+	// separate destination; the refusal stays as a tripwire for edits made in
+	// the primary before checkout (REQ-3). Narrowing it needs a confirmed
+	// decision.
 	if !reusingAssigned {
 		if _, err := requireSafeWorktree(ctx, primary); err != nil {
 			return "", nil, unsafePrimaryError(ctx, primary, taskID, inRepositoryWorktreeCandidates(primary, placement, worktrees), err)
