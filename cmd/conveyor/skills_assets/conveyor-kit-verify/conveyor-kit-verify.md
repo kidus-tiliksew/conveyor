@@ -37,10 +37,15 @@ revocations").
    operator-issued grants through the grant wait below and inspect the local
    execution configuration.
 
-The runner needs launcher-provided `CONVEYOR_WORK_ORDER_ID`,
-`CONVEYOR_SESSION_ID`, `CONVEYOR_CLIENT_TOKEN` and explicit workspace context.
-Keep the token out of argv, logs and children. Use the configured server; a
-connection failure does not authorize guessing another endpoint.
+The runner needs `CONVEYOR_WORK_ORDER_ID`, `CONVEYOR_SESSION_ID`,
+`CONVEYOR_CLIENT_TOKEN` and explicit workspace context. A launcher provides
+them. A self-claimed verifier has no launcher: it supplies the work order ID,
+session ID and client token it passed to `claim_work_order` as environment
+assignments on the single command that runs `conveyor kit verify`, never as
+flags or exported shell state. That command is the only one that carries the
+token. Keep the token out of argv, logs, files and children. Use the
+configured server; a connection failure does not authorize guessing another
+endpoint.
 
 ## Claim identity and usage
 
