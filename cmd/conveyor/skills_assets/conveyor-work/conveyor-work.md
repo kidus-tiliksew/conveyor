@@ -42,7 +42,9 @@ after a self-claim does not make the session launched.
    [Claim identity](#claim-identity) describes. A self-claimed session sets
    `lease_seconds` as described in [Keep the lease alive](#keep-the-lease-alive).
    Keep the client token out of chat, logs, transcripts, command lines, files,
-   source, commits, and child-agent prompts. A failed or declined claim is a
+   source, commits, and child-agent prompts. The one exception is the single
+   `conveyor kit verify` command a self-claimed verifier runs, as the
+   `conveyor-kit-verify` skill describes. A failed or declined claim is a
    stop condition.
 3. Immediately call `get_work_order` with the claimed order and session. Follow
    its approved plan, acceptance criteria, assigned repository, base, exact
