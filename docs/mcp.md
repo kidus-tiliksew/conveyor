@@ -223,7 +223,7 @@ for how to turn the evidence into a separately authorized follow-up.
 | `read_artifact` | Fetch one artifact's content, base64-encoded. Scoped to the claim and to the bounded lineage selection that served the reference; an artifact ID alone is not enough. |
 | `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. Requires `claim_work`. |
 | `report_progress` | Report progress text for the operator's timeline. Requires `claim_work`. |
-| `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request, `class: authority_conflict`, and document citations. Requires `claim_work`. |
+| `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request (at most 1024 Unicode characters), `class: authority_conflict`, and document citations of the confirmed versions in conflict. A System Design clause may name a code-formatted heading. Requires `claim_work`. |
 
 Every claim-bound tool requires `claim_work`, so a live claim never outlasts
 its holder's binding: a user demoted to viewer keeps the claim (demotion
@@ -248,6 +248,13 @@ pending ID, keep working. A viewer is refused even while it holds a live claim.
 The operator alone confirms, and confirmation never blocks implementation.
 Proposals outside a claim go through the REST routes, which require
 `propose_documents`.
+
+At an authority-conflict checkpoint that the approved plan or work-order
+contract directs, pass the optional boolean `authority_conflict_checkpoint:
+true`. The result's guidance then directs the checkpoint release: cite the
+pending ID in `checkpoint.decision_request` and call `release_work_order`
+instead of `submit_for_review`. Without the flag the guidance stays
+fire-and-forget. The server records nothing from the flag.
 
 | Tool | What it does |
 |---|---|

@@ -71,6 +71,12 @@ type Input struct {
 	// selects the document_proposal row or changes claim eligibility
 	// (component-work-orders, Next action).
 	PendingProposals []ProposalRef
+	// CitedDocuments is filled for an authority_conflict checkpoint only:
+	// each cited document's current confirmed version and, for a System
+	// Design attached to the task, its pinned version. A missing, archived,
+	// or unconfirmed document is absent (feature-operator-next-action NA-3,
+	// Agent-question presentation).
+	CitedDocuments map[string]CitedDocument
 	// ContextProposals is the task's pending task-context proposals. It
 	// selects only the context_proposal row and never enters ClaimWaiting or
 	// PendingProposals (req-intake-and-triage AC-7.3; req-260810-70ce2f
@@ -154,6 +160,14 @@ type AutomaticRecovery struct {
 	NextAt    *time.Time
 	Exhausted bool
 	Attempt   int
+}
+
+// CitedDocument is one cited document's authority as the assembler read it.
+// PinnedVersion is zero unless the document is a System Design attached to
+// the task.
+type CitedDocument struct {
+	CurrentVersion int
+	PinnedVersion  int
 }
 
 type SpecRef struct {
@@ -256,6 +270,11 @@ type Choice struct {
 	Path       string `json:"path"`
 	Capability string `json:"capability"`
 	Allowed    bool   `json:"allowed"`
+	// Direction is the suggested recovery direction a client may offer as
+	// the editable default. Only the answer choice of a checkpoint whose
+	// cited revisions are all confirmed carries it (req-260820-394cac AC-2.4;
+	// feature-operator-next-action NA-4).
+	Direction string `json:"direction,omitempty"`
 }
 
 type OrderView struct {

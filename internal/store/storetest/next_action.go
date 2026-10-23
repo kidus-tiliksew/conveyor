@@ -92,6 +92,7 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	}
 	runNextActionReadFixtures(t, st, ctx, workspace)
 	runAgentQuestionCheckpoint(t, st, ctx, workspace)
+	runAgentQuestionConfirmedCitations(t, st, ctx, workspace)
 	runClaimWaitRow8(t, st, ctx, workspace)
 	runContextProposalRow(t, st, ctx, workspace)
 	runDependencyEdges(t, st, ctx, workspace)
@@ -293,6 +294,100 @@ func runAgentQuestionCheckpoint(t *testing.T, st store.Store, ctx context.Contex
 	if authorship.Label != "Cited documents need a revision" || len(authorship.Details.PendingProposals) != 0 || len(authorship.Choices) != 1 || authorship.Choices[0].ID != "answer" || !authorship.Choices[0].Allowed {
 		t.Fatalf("authorship agent question = label %q proposals %+v choices %+v", authorship.Label, authorship.Details.PendingProposals, authorship.Choices)
 	}
+}
+
+// runAgentQuestionConfirmedCitations reproduces task 261020-f4e5e6: a
+// checkpoint that cites the confirmed versions in conflict and the versions it
+// proposed, on a task whose design pin lags. While the proposals are pending
+// the question asks for their decision; once both are confirmed it asks for
+// recovery only, suggests the direction naming the confirmed versions, and
+// names the re-pin that the recovery then performs (component-work-orders,
+// Next action; feature-operator-next-action NA-3, NA-4; req-260820-394cac
+// AC-2.4, AC-2.5).
+func runAgentQuestionConfirmedCitations(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	suffix := core.NewTaskID()[:8]
+	created, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "aq-confirmed-" + suffix, Title: "Confirmed citations", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("initial"), Origin: core.SystemDesignOriginOperator})
+	requireOK(t, err)
+	_, _, err = st.ConfirmSystemDesignVersion(ctx, created.ID, initial.Version)
+	requireOK(t, err)
+	designID := created.ID
+	requirementVersion := func(statement string) core.RequirementVersion {
+		return core.RequirementVersion{Content: "# Confirmed citations\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
+	}
+	base := requirementVersion("Every session calls the service directly.")
+	base.Origin = core.RequirementOriginOperator
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-aq-confirmed-" + suffix, Title: "Confirmed citations"}, base)
+	requireOK(t, err)
+	_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version)
+	requireOK(t, err)
+
+	taskID := core.NewTaskID()
+	task := core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, CreatedAt: now}
+	requireOK(t, st.CreateTaskWithDependenciesAndContext(ctx, task, nil, store.TaskContextInput{DesignIDs: []string{designID}}))
+	proposedDesign, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: designID, Content: designContent("child mode"), Origin: core.SystemDesignOriginImplementation, OriginTaskID: taskID})
+	requireOK(t, err)
+	revision := requirementVersion("A child session reports through its parent.")
+	revision.RequirementID, revision.Origin, revision.OriginTaskID = requirement.ID, core.RequirementOriginImplementation, taskID
+	proposedRequirement, err := st.ProposeRequirementVersion(ctx, revision)
+	requireOK(t, err)
+
+	orderID := taskID + "-implement-1"
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
+	worker, session := "worker-confirmed-"+taskID, "session-confirmed-"+taskID
+	_, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	_, err = ReleaseWorkerClaim(ctx, st, orderID, worker, core.WorkOrderRelease{
+		SessionID: session, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the requirement and design proposals.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{
+			{DocumentID: requirement.ID, CitedVersion: first.Version, StatementOrSectionID: "REQ-1"},
+			{DocumentID: requirement.ID, CitedVersion: proposedRequirement.Version},
+			{DocumentID: designID, CitedVersion: initial.Version},
+			{DocumentID: designID, CitedVersion: proposedDesign.Version},
+		}},
+	})
+	requireOK(t, err)
+	caps := map[core.Capability]bool{core.CapabilityRecoverWork: true, core.CapabilityConfirmDocuments: true}
+	read := func() nextaction.NextAction {
+		t.Helper()
+		action, err := store.ReadNextAction(ctx, st, taskID, store.NextActionOptions{Now: now, Capabilities: caps})
+		requireOK(t, err)
+		if action.Kind != nextaction.KindAgentQuestion || action.Actor != nextaction.ActorOperator {
+			t.Fatalf("next action = %s/%s, want operator agent_question", action.Actor, action.Kind)
+		}
+		return action
+	}
+	if pending := read(); pending.Label != "Cited revisions need a decision" || len(pending.Details.PendingProposals) != 2 {
+		t.Fatalf("pending question = %q proposals %+v", pending.Label, pending.Details.PendingProposals)
+	}
+
+	_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposedRequirement.Version)
+	requireOK(t, err)
+	_, _, err = st.ConfirmSystemDesignVersion(ctx, designID, proposedDesign.Version)
+	requireOK(t, err)
+	confirmed := read()
+	direction := fmt.Sprintf("Continue under the newly confirmed authority: %s v%d, %s v%d.", requirement.ID, proposedRequirement.Version, designID, proposedDesign.Version)
+	repin := fmt.Sprintf(" Recovery also re-pins %s from v%d to v%d.", designID, initial.Version, proposedDesign.Version)
+	if confirmed.Label != "Cited revisions are confirmed" || confirmed.Question != "Recover the order with direction to continue under the confirmed versions?" || len(confirmed.Details.PendingProposals) != 0 {
+		t.Fatalf("confirmed question = %q / %q proposals %+v", confirmed.Label, confirmed.Question, confirmed.Details.PendingProposals)
+	}
+	if len(confirmed.Choices) != 1 || confirmed.Choices[0].ID != "answer" || !confirmed.Choices[0].Allowed || confirmed.Choices[0].Direction != direction ||
+		confirmed.Choices[0].Effect != "Recovers the order. Suggested direction: "+direction+repin {
+		t.Fatalf("confirmed choices = %+v, want the suggested direction %q and re-pin %q", confirmed.Choices, direction, repin)
+	}
+
+	// Recovering with the suggested direction advances the lagging pin, as
+	// the effect says (component-task-lifecycle).
+	_, err = RecoverWorkOrderWithDirection(ctx, st, orderID, "recover-confirmed-"+taskID, confirmed.Choices[0].Direction, time.Hour)
+	requireOK(t, err)
+	taskContext, err := store.TaskContextForTask(ctx, st, taskID)
+	requireOK(t, err)
+	if len(taskContext.Designs) != 1 || taskContext.Designs[0].ID != designID || taskContext.Designs[0].Version != proposedDesign.Version {
+		t.Fatalf("design pins after recovery = %+v, want %s v%d", taskContext.Designs, designID, proposedDesign.Version)
+	}
+	requireResumedQueuedAction(t, st, ctx, taskID, orderID)
 }
 
 // requireResumedQueuedAction asserts the state after an operator or

@@ -373,3 +373,38 @@ func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
 		at += index + len(line)
 	}
 }
+
+// An answer choice that suggests a direction prints the recovery command with
+// that direction shell-quoted, so the operator recovers with the confirmed
+// versions as stated (feature-operator-next-action NA-4, NA-8;
+// req-260820-394cac AC-2.4).
+func TestTaskStatusPrintsSuggestedRecoveryDirection(t *testing.T) {
+	const order = "261020-f4e5e6-implement-1"
+	body := `{"label": "Cited revisions are confirmed", "actor": "operator", "kind": "agent_question", "judgment": true,
+  "summary": "The cited documents have newer confirmed versions. Recover the order with direction to continue.",
+  "question": "Recover the order with direction to continue under the confirmed versions?",
+  "choices": [{"id": "answer", "label": "Recover with direction…",
+    "effect": "Recovers the order. Suggested direction: Continue under the newly confirmed authority: req-installation-and-agent-guidance v8, component-agent-skill v9. Recovery also re-pins component-agent-skill from v5 to v9.",
+    "method": "POST", "path": "/v1/work-orders/` + order + `/recover", "capability": "recover_work", "allowed": true,
+    "direction": "Continue under the newly confirmed authority: req-installation-and-agent-guidance v8, component-agent-skill v9."}],
+  "deadline": null, "blocks": [], "details": {"checkpoint_class": "authority_conflict"}}`
+	var action nextActionView
+	if err := json.Unmarshal([]byte(body), &action); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := writeTaskStatus(&out, taskStatusTestTask, action); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"  - Recover with direction…: Recovers the order. Suggested direction: Continue under the newly confirmed authority: req-installation-and-agent-guidance v8, component-agent-skill v9. Recovery also re-pins component-agent-skill from v5 to v9.",
+		"      cli: conveyor order recover " + order + " --direction 'Continue under the newly confirmed authority: req-installation-and-agent-guidance v8, component-agent-skill v9.'",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "<answer>") {
+		t.Fatalf("suggested direction still prints the placeholder:\n%s", out.String())
+	}
+}

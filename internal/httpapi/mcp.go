@@ -56,6 +56,33 @@ const (
 	decisionProposalGuidance     = "This decision proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
 )
 
+// checkpointProposalGuidance is the guidance a proposal tool returns when the
+// session declares authority_conflict_checkpoint: it directs the checkpoint
+// release instead of submission, still without waiting for confirmation
+// (component-mcp-protocol, Governance proposal tools; req-260820-6a468a
+// AC-1.3; req-260820-394cac REQ-3).
+func checkpointProposalGuidance(tier string) string {
+	return "This " + tier + " proposal confers no authority. Your approved plan or work-order contract calls for an authority-conflict checkpoint at this step, so do not wait for operator confirmation and do not commit, push, or call `submit_for_review` against the unconfirmed text. Author any remaining proposals, then cite every pending proposal identifier in `checkpoint.decision_request` and call `release_work_order` with reason `operator checkpoint reached`, class `authority_conflict`, and citations of the confirmed versions in conflict, not the proposed versions."
+}
+
+// proposalGuidance selects a proposal tool's guidance from the optional
+// authority_conflict_checkpoint flag. A non-boolean value is refused before
+// anything is written; the flag is never recorded.
+func proposalGuidance(args map[string]any, tier, fireAndForget string) (string, error) {
+	value, supplied := args["authority_conflict_checkpoint"]
+	if !supplied || value == nil {
+		return fireAndForget, nil
+	}
+	checkpoint, ok := value.(bool)
+	if !ok {
+		return "", fmt.Errorf("authority_conflict_checkpoint must be a boolean")
+	}
+	if checkpoint {
+		return checkpointProposalGuidance(tier), nil
+	}
+	return fireAndForget, nil
+}
+
 type systemDesignProposalResult struct {
 	core.SystemDesignVersion
 	Guidance string `json:"guidance"`
@@ -478,6 +505,10 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
+		guidance, err := proposalGuidance(args, "System Design", systemDesignProposalGuidance)
+		if err != nil {
+			return nil, err
+		}
 		version, err := s.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
 			DocumentID: stringArg("document_id"), Content: stringArg("content"),
 			Origin: core.SystemDesignOriginImplementation, OriginTaskID: order.TaskID,
@@ -485,9 +516,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return systemDesignProposalResult{SystemDesignVersion: version, Guidance: systemDesignProposalGuidance}, nil
+		return systemDesignProposalResult{SystemDesignVersion: version, Guidance: guidance}, nil
 	case "propose_requirement_revision":
 		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		if err != nil {
+			return nil, err
+		}
+		guidance, err := proposalGuidance(args, "requirement", requirementProposalGuidance)
 		if err != nil {
 			return nil, err
 		}
@@ -502,9 +537,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return requirementProposalResult{RequirementVersion: version, Guidance: requirementProposalGuidance}, nil
+		return requirementProposalResult{RequirementVersion: version, Guidance: guidance}, nil
 	case "propose_decision":
 		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		if err != nil {
+			return nil, err
+		}
+		guidance, err := proposalGuidance(args, "decision", decisionProposalGuidance)
 		if err != nil {
 			return nil, err
 		}
@@ -515,7 +554,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return decisionProposalResult{Decision: decision, Guidance: decisionProposalGuidance}, nil
+		return decisionProposalResult{Decision: decision, Guidance: guidance}, nil
 	case "upload_transcript":
 		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
 	case "submit_plan":
@@ -952,6 +991,27 @@ func boolArg(args map[string]any, key string) *bool {
 	return &value
 }
 
+// decisionRequestSchema states the checkpoint decision request's bound, which
+// JSON Schema counts in Unicode characters, the same unit as the release's
+// rune limit (component-mcp-protocol, Checkpoint decision requests on
+// release; req-260820-394cac REQ-1).
+var decisionRequestSchema = map[string]any{
+	"type": "string", "maxLength": core.WorkOrderDecisionRequestLimit,
+	"description": fmt.Sprintf("The operator-facing decision or act needed, at most %d Unicode characters (runes). Required when reason is `operator checkpoint reached`.", core.WorkOrderDecisionRequestLimit),
+}
+
+// citedVersionSchema asks for the confirmed version in conflict, so that
+// confirming the proposals answers the citation (req-260820-394cac AC-2.6).
+var citedVersionSchema = map[string]any{
+	"type": "number", "description": "The confirmed version whose clause is in conflict. Cite a confirmed version, never a pending proposal's version.",
+}
+
+// checkpointFlagSchema is the proposal tools' optional checkpoint declaration
+// (component-mcp-protocol, Governance proposal tools).
+var checkpointFlagSchema = map[string]any{
+	"type": "boolean", "description": "Set true only when your approved plan or work-order contract directs an authority-conflict checkpoint at this step. The guidance then directs the checkpoint release instead of submit_for_review. Nothing is recorded from it.",
+}
+
 // reviewSeatsSchema is submit_for_review's optional declared review seat
 // count (feature-review-seat-minimum RS-4).
 var reviewSeatsSchema = map[string]any{"type": "integer", "minimum": 1}
@@ -1111,7 +1171,7 @@ func mcpTools() []map[string]any {
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "renew_work_order", "description": "Renew the exact execution child session lease without extending its fixed attempt deadline. Pass the claim's lease_seconds on every renewal to keep that lease; an absent value, or one outside 1-3600, renews for the five-minute default. Worker renewals always use the default. The renewed lease never passes the execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "lease_seconds": map[string]string{"type": "integer"}}, "work_order_id", "session_id")},
-		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": str, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": num, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
+		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": decisionRequestSchema, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": citedVersionSchema, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
 		{"name": "request_plan_revision", "description": "Request operator-gated revision of the approved execution plan for the exact claimed implement session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "rationale": str}, "work_order_id", "session_id", "rationale")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff. The authority_source response field is live for a provisional queued-review peek and pinned for claim-time snapshot authority.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "refresh_work_order_context", "description": "Refresh bounded artifact context for the exact live claim. Returns nonblocking delivery diagnostics; does not acknowledge understanding or change authority pins.", "inputSchema": object(map[string]any{"workspace_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "work_order_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "session_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "prior_revision": map[string]any{"type": "string", "pattern": "^([0-9a-f]{64})?$"}}, "workspace_id", "work_order_id", "session_id")},
@@ -1119,9 +1179,9 @@ func mcpTools() []map[string]any {
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out")},
 		{"name": "report_continuation", "description": "Record best-effort advisory harness-native continuation metadata for the exact active attempt. Only the launching worker or conveyor run client may report it; failure or absence never changes lifecycle outcome.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "continuation_session_id": str, "attempt_id": str, "harness": str, "launch_environment": str}, "work_order_id", "session_id", "continuation_session_id", "attempt_id", "harness", "launch_environment")},
-		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
-		{"name": "propose_requirement_revision", "description": "Propose a complete immutable requirement revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str}, "work_order_id", "session_id", "document_id", "content")},
-		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
+		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "document_id", "content")},
+		{"name": "propose_requirement_revision", "description": "Propose a complete immutable requirement revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "document_id", "content")},
+		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Optional review_seats states the planned review seat count; a count below the task's minimum is refused with review_seats_below_minimum. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "review_seats": map[string]any{"type": "integer", "minimum": 1, "description": "Optional planned review seat count, at least the task's minimum review seat count. Omit it to plan no count."}, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan persists the task execution plan."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
 		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review. Optional review_seats declares the next round's review seat count; a count below the task's seat floor is refused with review_seats_below_floor and the order stays claimed.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str, "review_seats": reviewSeatsSchema}, "work_order_id", "session_id", "head_sha")},

@@ -2,10 +2,10 @@ package store
 
 import (
 	"encoding/json"
-	"strconv"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 )
 
 // AuthorityConfirmedRecoveryReason is the event reason of the answered
@@ -70,16 +70,7 @@ func AnsweredAuthorityDocumentIDs(order core.WorkOrder) []string {
 	if order.Checkpoint == nil {
 		return nil
 	}
-	seen := map[string]bool{}
-	var ids []string
-	for _, citation := range order.Checkpoint.Citations {
-		if seen[citation.DocumentID] {
-			continue
-		}
-		seen[citation.DocumentID] = true
-		ids = append(ids, citation.DocumentID)
-	}
-	return ids
+	return nextaction.CitedDocumentIDs(order.Checkpoint.Citations)
 }
 
 // DecideAnsweredAuthorityRecovery recovers only when every citation's document
@@ -99,14 +90,14 @@ func DecideAnsweredAuthorityRecovery(task core.Task, order core.WorkOrder, docum
 		citations = append(citations, AnsweredAuthorityCitation{DocumentID: citation.DocumentID, CitedVersion: citation.CitedVersion, ConfirmedVersion: document.CurrentVersion})
 	}
 	ids := AnsweredAuthorityDocumentIDs(order)
-	versions := make([]string, 0, len(ids))
+	versions := make(map[string]int, len(ids))
 	for _, id := range ids {
-		versions = append(versions, id+" v"+strconv.Itoa(documents[id].CurrentVersion))
+		versions[id] = documents[id].CurrentVersion
 	}
 	return AnsweredAuthorityRecovery{
 		Recover:   true,
 		RequestID: AuthorityConfirmedRequestID(order.ID, order.LastAttemptID),
-		Direction: "Continue under the newly confirmed authority: " + strings.Join(versions, ", ") + ".",
+		Direction: nextaction.ConfirmedAuthorityDirection(ids, versions),
 		Citations: citations,
 	}
 }

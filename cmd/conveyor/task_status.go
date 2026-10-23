@@ -31,6 +31,7 @@ type nextActionChoice struct {
 	Path       string `json:"path"`
 	Capability string `json:"capability"`
 	Allowed    bool   `json:"allowed"`
+	Direction  string `json:"direction,omitempty"`
 }
 
 type nextActionOrder struct {
@@ -268,7 +269,12 @@ func choiceCommand(taskID string, action nextActionView, choice nextActionChoice
 			return "conveyor order recover " + order, true
 		}
 	case onOrder && choice.ID == "answer":
-		if order := pathSegmentAfter(choice.Path, "work-orders"); order != "" {
+		// A choice that suggests a direction prints it shell-quoted, so the
+		// command recovers with the confirmed versions as stated
+		// (feature-operator-next-action NA-4, NA-8).
+		if order := pathSegmentAfter(choice.Path, "work-orders"); order != "" && choice.Direction != "" {
+			return "conveyor order recover " + order + " --direction " + shellWord(choice.Direction), true
+		} else if order != "" {
 			return "conveyor order recover " + order + ` --direction "<answer>"`, true
 		}
 	case onTask && strings.HasSuffix(choice.Path, "/redispatch") && (choice.ID == "recover" || choice.ID == "redispatch"):
