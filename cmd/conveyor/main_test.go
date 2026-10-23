@@ -671,6 +671,78 @@ func TestCheckoutRejectsAssignedBranchInSharedPrimaryCheckout(t *testing.T) {
 	}
 }
 
+// A dirty primary that holds the task branch is refused before any fetch or
+// worktree creation, and its branch, HEAD, and files stay as they were.
+func TestCheckoutRefusesTaskBranchHeldByDirtyPrimary(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-dirty-primary-branch"
+	mustGit(t, fixture.primary, "checkout", "-b", branch, "origin/main")
+	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(fixture.primary, "README.md"), "operator edit\n")
+	writeFile(t, filepath.Join(fixture.primary, "notes.txt"), "operator notes\n")
+	status := mustGitOutput(t, fixture.primary, "status", "--porcelain", "--untracked-files=normal")
+	destination := filepath.Join(fixture.tmp, "dirty-primary-branch")
+
+	_, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "dirty-primary-branch", destination)
+	if err == nil || !strings.Contains(err.Error(), "primary checkout") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	assertBranch(t, fixture.primary, branch)
+	if head := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD"); head != primaryHead {
+		t.Fatalf("primary HEAD changed: got %s want %s", head, primaryHead)
+	}
+	if got := mustGitOutput(t, fixture.primary, "status", "--porcelain", "--untracked-files=normal"); got != status {
+		t.Fatalf("primary status changed: got %q want %q", got, status)
+	}
+	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
+		t.Fatalf("destination created for a branch held by the primary: %v", statErr)
+	}
+	if worktrees := mustGitOutput(t, fixture.primary, "worktree", "list", "--porcelain"); strings.Count(worktrees, "worktree ") != 1 {
+		t.Fatalf("worktree registered for a branch held by the primary:\n%s", worktrees)
+	}
+}
+
+// A conflicted merge leaves the primary both dirty and mid-operation. The
+// in-progress refusal is checked first and names the operation, so it does
+// not depend on the dirty-primary refusal.
+func TestCheckoutNamesInProgressMergeInDirtyPrimary(t *testing.T) {
+	fixture := newGitFixture(t)
+	mustGit(t, fixture.primary, "checkout", "-b", "side")
+	writeFile(t, filepath.Join(fixture.primary, "README.md"), "side\n")
+	mustGit(t, fixture.primary, "commit", "-am", "side")
+	mustGit(t, fixture.primary, "checkout", "main")
+	writeFile(t, filepath.Join(fixture.primary, "README.md"), "main edit\n")
+	mustGit(t, fixture.primary, "commit", "-am", "main edit")
+	merge := exec.Command("git", "merge", "side")
+	merge.Dir = fixture.primary
+	if out, err := merge.CombinedOutput(); err == nil {
+		t.Fatalf("merge unexpectedly succeeded: %s", out)
+	}
+	conflicted, err := os.ReadFile(filepath.Join(fixture.primary, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "conveyor/task-merge-in-progress"
+	destination := filepath.Join(fixture.tmp, "merge-in-progress")
+
+	_, err = checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "merge-in-progress", destination)
+	if err == nil || !strings.Contains(err.Error(), "Git operation MERGE_HEAD is in progress") {
+		t.Fatalf("checkout error = %v", err)
+	}
+	if !gitRefExists(context.Background(), fixture.primary, "MERGE_HEAD") {
+		t.Fatal("primary merge state was cleared")
+	}
+	if after, err := os.ReadFile(filepath.Join(fixture.primary, "README.md")); err != nil || string(after) != string(conflicted) {
+		t.Fatalf("primary conflicted file changed: %q (%v)", after, err)
+	}
+	if gitRefExists(context.Background(), fixture.primary, "refs/heads/"+branch) {
+		t.Fatal("task branch created during an in-progress primary merge")
+	}
+	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
+		t.Fatalf("destination created during an in-progress primary merge: %v", statErr)
+	}
+}
+
 func TestCheckoutAdoptsExplicitDedicatedClone(t *testing.T) {
 	fixture := newGitFixture(t)
 	branch := "conveyor/task-dedicated-clone"
