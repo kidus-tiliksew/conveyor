@@ -154,17 +154,6 @@ type TaskStore interface {
 	// Implementations must apply caller and attention predicates before paging.
 	ListCallerAttentionTaskPage(ctx context.Context, query CallerAttentionQuery) (TaskPage, error)
 	ListTaskOperations(ctx context.Context, query TaskOperationsQuery) (TaskOperationsPage, error)
-	// ListTaskOperationsCandidates returns every workspace task the shared
-	// filter selects, unpaged, as the scalar TaskOperationsCandidate record,
-	// newest created first with ties by ascending ID. It reads no body,
-	// relation, attached context, plan, or history (component-persistence,
-	// Task-operations candidate and detail reads).
-	ListTaskOperationsCandidates(ctx context.Context, filter TaskFilter) ([]core.Task, error)
-	// ListTaskOperationsForIDs returns the named workspace tasks as
-	// ListTaskOperations rows with their operations events and latest plans,
-	// in the same order. More than MaxTaskOperationsLimit IDs is refused;
-	// missing and foreign IDs are absent; Total is the returned count.
-	ListTaskOperationsForIDs(ctx context.Context, taskIDs []string) (TaskOperationsPage, error)
 	// ListTaskMap reads the workspace task map in a fixed number of
 	// set-based queries: the selected task nodes without their bodies, their
 	// dependency edges and served requirements, every open workspace task,

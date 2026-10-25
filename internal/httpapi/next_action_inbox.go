@@ -192,10 +192,9 @@ func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.Next
 }
 
 // attachInboxPullRequests reads every listed task item's pull_request.opened
-// events in one batched read, as the task-operations rows do, and sets each
-// item's recorded pull request (component-http-api, Task-operations pull
-// request; feature-operator-next-action NA-5). An inbox without task items
-// issues no read.
+// events in one batched read and sets each item's recorded pull request
+// through the bounded detail's summary fold (feature-operator-next-action
+// NA-5). An inbox without task items issues no read.
 func (s *Server) attachInboxPullRequests(ctx context.Context, items []inboxItem) error {
 	ids := make([]string, 0, len(items))
 	for _, item := range items {

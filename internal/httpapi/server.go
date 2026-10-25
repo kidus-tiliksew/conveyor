@@ -1825,32 +1825,6 @@ type taskOperationsItem struct {
 	UnsatisfiableTaskIDs []string            `json:"unsatisfiable_task_ids,omitempty"`
 	ChildRollup          *taskChildRollup    `json:"child_rollup,omitempty"`
 	Plan                 taskPlanStatus      `json:"plan"`
-	// PullRequest is the task's latest pull_request.opened, read through the
-	// same fold as the bounded detail's summaries.pull_request, so the Board
-	// list links the same pull request the task page names
-	// (req-operator-next-action AC-6.8; component-http-api, Task-operations
-	// pull request). It is absent when no opened event states a URL.
-	PullRequest *taskOperationsPullRequest `json:"pull_request,omitempty"`
-}
-
-// taskOperationsPullRequest is the row-scoped pull request: the URL, and the
-// number only when the event states one. It is never parsed from the URL.
-type taskOperationsPullRequest struct {
-	URL    string    `json:"url"`
-	Number *jsNumber `json:"number,omitempty"`
-}
-
-// taskOperationsPullRequestFor folds one task's pull_request.opened events,
-// already restricted to that kind, through the detail summary rule.
-func taskOperationsPullRequestFor(events []core.Event) *taskOperationsPullRequest {
-	if len(events) == 0 {
-		return nil
-	}
-	summary := deriveTaskDetailSummaries(events, nil, nil).PullRequest
-	if summary == nil || summary.URL == "" {
-		return nil
-	}
-	return &taskOperationsPullRequest{URL: summary.URL, Number: summary.Number}
 }
 
 // taskStalledSummary is the list-scoped view of store.StalledState. The detail
@@ -1875,23 +1849,14 @@ func taskStalledSummaryFor(stalled *store.StalledState) *taskStalledSummary {
 // Dependencies, blocking edges, and children come from a bounded store page;
 // attached context and plan status fold only the event kinds and latest plan
 // records the projection batches for those returned tasks. The historical
-// blueprint read path is not a scale precedent for this daily surface.
+// blueprint read path is not a scale precedent for this daily surface. Only
+// the shared filter family, limit, and offset are read, so any other query
+// parameter, including the retired group selector, is ignored.
 func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	query, paginated, err := parseTaskOperationsQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	// The group selector is read here only, so /v1/activity and the
-	// document-events read keep accepting exactly what they accepted.
-	group, grouped, err := parseTaskOperationsGroup(r.URL.Query())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if grouped {
-		s.listGroupedTaskOperations(w, r, query, paginated, group)
 		return
 	}
 	page, err := s.Store.ListTaskOperations(ctx, query)
@@ -1949,26 +1914,13 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// taskOperationsItems assembles task-operations rows. The ungrouped and
-// grouped reads share it, so a row means the same on both (component-http-api,
-// Grouped task-operations read).
+// taskOperationsItems assembles task-operations rows. A row carries no pull
+// request; the bounded detail's summaries.pull_request and the inbox item
+// state it (component-http-api, Activity and attention reads).
 func (s *Server) taskOperationsItems(ctx context.Context, tasks []core.Task, events map[string][]core.Event, plans map[string]core.SpecVersion, markerByTask map[string]store.ActivityMarker, projected map[string]nextaction.NextAction, blockers map[string]store.DependencyBlockers) ([]taskOperationsItem, error) {
 	// Attached documents repeat across rows; memoizing only the document reads
 	// keeps the authoritative fold in store.TaskContextFromEvents.
 	documents := &taskContextDocumentCache{Store: s.Store, requirements: map[string]core.Requirement{}, designs: map[string]core.SystemDesign{}}
-	// One batched read of the rows' pull_request.opened events; an empty page
-	// reads nothing.
-	pullRequests := map[string][]core.Event{}
-	if len(tasks) > 0 {
-		ids := make([]string, 0, len(tasks))
-		for _, task := range tasks {
-			ids = append(ids, task.ID)
-		}
-		var err error
-		if pullRequests, err = s.Store.ListMonitorPullRequestEventsForTasks(ctx, ids); err != nil {
-			return nil, err
-		}
-	}
 	items := make([]taskOperationsItem, 0, len(tasks))
 	for _, task := range tasks {
 		taskEvents := events[task.ID]
@@ -1993,7 +1945,6 @@ func (s *Server) taskOperationsItems(ctx context.Context, tasks []core.Task, eve
 			UnsatisfiableTaskIDs: blockers[task.ID].UnsatisfiableTaskIDs,
 			ChildRollup:          taskChildRollupFor(task.Children),
 			Plan:                 taskPlanStatusFor(task, latest, hasPlan, taskEvents),
-			PullRequest:          taskOperationsPullRequestFor(pullRequests[task.ID]),
 		})
 	}
 	return items, nil
