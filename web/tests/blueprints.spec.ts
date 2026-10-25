@@ -345,7 +345,7 @@ test('the blueprints surface is parked out of navigation and reads as history', 
   await expect(page).toHaveURL(/\/blueprints$/)
   await expect(page.getByText('Read-only records of legacy blueprints')).toBeVisible()
   await page.getByRole('main').getByRole('link', { name: 'the Board', exact: true }).click()
-  await expect(page).toHaveURL(/\/\?view=list$/)
+  await expect(page).toHaveURL(/\/$/)
 })
 
 // AC-1 (list half): the planning-side list speaks blueprint vocabulary, keeps

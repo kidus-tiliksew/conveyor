@@ -202,7 +202,7 @@ export function pendingUserRequestChanges(summaries: TaskSummaries | undefined):
   return { feedback: typeof returned.feedback === 'string' ? returned.feedback.trim() : '', at: returned.at }
 }
 
-// req-intake-and-triage REQ-3; req-task-centric-operations-view REQ-2:
+// req-intake-and-triage REQ-3; req-operator-next-action REQ-6:
 // summary projections carry stages, not execution evidence. Only detail
 // evidence below may suppress a human gate.
 export function failedTriageSummary(item: {
@@ -1480,7 +1480,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
 // ended and follows the events the job produced; a running job sits where it
 // started. A finished job without an end time keeps its start. A verify job
 // renders as its own entry stamped with its start, so it stays there
-// (req-task-centric-operations-view AC-2.2; component-web-task-surfaces).
+// (req-operator-next-action AC-6.10; component-web-task-surfaces).
 export function jobTimelineAt(job: Job): string | undefined {
   if (job.stage === 'verify' || job.state === 'running' || job.state === 'pending') return job.started_at
   return job.ended_at ?? job.started_at

@@ -339,8 +339,8 @@ test('the Graph switch writes view=map, and the address restores arrangement, re
   // An unknown arrangement is dropped, and leaving the map clears its fields.
   await page.goto('/?view=map&arrangement=designs')
   await expect(page.getByRole('button', { name: 'Requirements' })).toHaveAttribute('aria-pressed', 'true')
-  await page.getByRole('button', { name: 'List' }).click()
-  await expect(page).toHaveURL(/view=list/)
+  await page.getByRole('button', { name: 'Kanban' }).click()
+  await expect(page).not.toHaveURL(/view=/)
   await expect(page).not.toHaveURL(/arrangement|scope|focus/)
 })
 
@@ -875,7 +875,7 @@ test('the view switch closes one shared toolbar at the same position in every vi
     return { right: Math.round(box.x + box.width), top: Math.round(box.y) }
   }
   const expectPressed = async (pressed: string) => {
-    for (const name of ['Kanban', 'List', 'Graph']) {
+    for (const name of ['Kanban', 'Graph']) {
       await expect(button(name)).toHaveAttribute('title', name)
       await expect(button(name)).toHaveText('')
       await expect(button(name)).toHaveAttribute('aria-pressed', String(name === pressed))
@@ -888,12 +888,6 @@ test('the view switch closes one shared toolbar at the same position in every vi
   await expect(toolbar).toHaveCount(1)
   await expectPressed('Kanban')
   const kanban = await place()
-
-  await button('List').click()
-  await expect(page).toHaveURL(/view=list/)
-  await expect(toolbar).toHaveCount(1)
-  await expectPressed('List')
-  expect(await place()).toEqual(kanban)
 
   await button('Graph').click()
   await expect(page).toHaveURL(/view=map/)
@@ -918,16 +912,66 @@ test('the view switch stays reachable when the map read fails', async ({ page })
   await expect(page.getByText(/unavailable/)).toBeVisible()
   const views = page.getByTestId('board-toolbar').getByRole('group', { name: 'Board view' })
   await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'true')
-  await views.getByRole('button', { name: 'List', exact: true }).click()
-  await expect(page).toHaveURL(/view=list/)
+  await views.getByRole('button', { name: 'Kanban', exact: true }).click()
+  await expect(page).not.toHaveURL(/view=/)
+  await expect(page.getByRole('region', { name: 'Task board' })).toBeVisible()
+})
+
+// The Board offers kanban and the map only. A retired list address and the
+// former Tasks page both land on kanban, and a Tasks filter link keeps its
+// filter (req-operator-next-action AC-6.1, AC-6.3; component-web-task-surfaces,
+// Board).
+test('the view switch offers only Kanban and Graph, and list addresses open the kanban view', async ({ page }) => {
+  const seen = await mockMap(page)
+  const activityReads: URL[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/v1/activity') activityReads.push(url)
+  })
+  const views = page.getByTestId('board-toolbar').getByRole('group', { name: 'Board view' })
+  const kanban = page.getByRole('region', { name: 'Task board' })
+
+  await page.goto('/')
+  await expect(views.getByRole('button')).toHaveCount(2)
+  await expect(views.getByRole('button', { name: 'Kanban', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await expect(views.getByRole('button', { name: 'List', exact: true })).toHaveCount(0)
+
+  for (const path of ['/?view=list', '/tasks']) {
+    await page.goto(path)
+    await expect(kanban, path).toBeVisible()
+    await expect(page, path).not.toHaveURL(/view=/)
+    await expect(views.getByRole('button', { name: 'Kanban', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  }
+
+  // A former Tasks filter link lands on kanban, and the kanban filter adopts
+  // what it names before reading, then leaves the address.
+  activityReads.length = 0
+  await page.goto('/tasks?view=list&q=alpha&state=running&repository=web')
+  await expect(kanban).toBeVisible()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('searchbox', { name: 'Search tasks' })).toHaveValue('alpha')
+  await expect.poll(() => activityReads.length).toBeGreaterThan(0)
+  for (const url of activityReads) {
+    expect(url.searchParams.get('q')).toBe('alpha')
+    expect(url.searchParams.getAll('state')).toEqual(['running'])
+    expect(url.searchParams.getAll('repository')).toEqual(['web'])
+  }
+
+  // A legacy panel permalink opens that task's sheet over the kanban view.
+  await page.goto('/tasks?task=a1')
+  await expect(page).toHaveURL(/\/tasks\/a1$/)
+  await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
+  await expect(kanban).toBeVisible()
+  expect(seen.taskOperations).toBe(0)
 })
 
 // At phone width the title row and the toolbar wrap inside the viewport and
-// every control stays reachable, in all three views.
+// every control stays reachable, in both views.
 test('at 390 px the Board header and toolbar wrap without overflow in every view', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockMap(page)
-  for (const path of ['/', '/?view=list', '/?view=map']) {
+  for (const path of ['/', '/?view=map']) {
     await page.goto(path)
     const header = page.locator('header').filter({ has: page.getByRole('heading', { name: 'Board', exact: true }) })
     const toolbar = page.getByTestId('board-toolbar')

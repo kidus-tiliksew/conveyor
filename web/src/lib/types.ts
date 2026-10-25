@@ -676,66 +676,6 @@ export interface ActivityPage {
   etag?: string
 }
 
-// The four durable plan outcomes the Tasks view renders (AC-1.4). "none" is a
-// task with no persisted plan version; the version is absent with it.
-export type TaskPlanState = 'none' | 'pending_gate' | 'approved' | 'redirected'
-
-export interface TaskPlanStatus {
-  state: TaskPlanState
-  version?: number
-  legacy?: boolean
-}
-
-export interface TaskChildRollup {
-  total: number
-  merged: number
-  closed: number
-  open: number
-}
-
-// TaskOperationsItem is the list-first Tasks view's row.
-// It carries no priority or declared-phase field. Assignment is part of the
-// task projection because it constrains claim eligibility, never ordering.
-export interface TaskOperationsItem {
-  task: Task
-  latest_stage?: Stage
-  last_event_at: string
-  stalled?: TaskStalledSummary
-  needs_attention: boolean
-  unsatisfiable_task_ids?: string[]
-  child_rollup?: TaskChildRollup
-  plan: TaskPlanStatus
-  next_action?: NextActionCompact
-  // The task's latest opened pull request, present only when the server
-  // states one (component-http-api, Task-operations pull request).
-  pull_request?: TaskOperationsPullRequest
-}
-
-// The number is present only when the opening event stated one; it is never
-// parsed from the URL.
-export interface TaskOperationsPullRequest {
-  url: string
-  number?: number
-}
-
-// TaskOperationsGroup selects one Board list group of GET /v1/task-operations:
-// the tasks whose stated next action names that actor family
-// (req-operator-next-action AC-6.5; component-http-api, Grouped
-// task-operations read).
-export type TaskOperationsGroup = 'operator' | 'agent' | 'waiting' | 'terminal'
-
-// TaskOperationsGroupCounts holds every group's filtered count from one grouped read.
-export type TaskOperationsGroupCounts = Record<TaskOperationsGroup, number>
-
-export interface TaskOperationsPage {
-  items: TaskOperationsItem[]
-  total: number
-  limit: number
-  offset: number
-  // Present only on a grouped read.
-  groupCounts?: TaskOperationsGroupCounts
-}
-
 // GET /v1/task-map: the Board map's one workspace-wide read (req-board-map
 // AC-3.1; component-http-api, Task map read). It carries no task body.
 export interface TaskMapResponse {
@@ -882,14 +822,6 @@ export interface RequirementInsightDocuments {
   acceptance_criteria: RequirementInsightCriterion[]
   cited_count: number
   total: number
-}
-
-// The list-scoped stalled projection: the reason a row cannot move, without
-// the work order the detail surfaces render.
-export interface TaskStalledSummary {
-  needed: boolean
-  reason: string
-  last_failure?: string
 }
 
 export interface StalledState {

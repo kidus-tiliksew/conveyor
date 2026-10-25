@@ -410,7 +410,7 @@ test('task-context decisions read as Context confirmed and Context dismissed not
 
 // A plan stage shaped like task 261015-3721c6's: claimed at 06:31:37Z, lease
 // renewed at 06:32:22Z, and the plan drafted and the job ended at 06:34:18Z
-// (req-task-centric-operations-view AC-2.2; component-web-task-surfaces).
+// (req-operator-next-action AC-6.10; component-web-task-surfaces).
 const planStart = '2026-10-15T06:31:37Z'
 const planRenewed = '2026-10-15T06:32:22Z'
 const planEnd = '2026-10-15T06:34:18Z'

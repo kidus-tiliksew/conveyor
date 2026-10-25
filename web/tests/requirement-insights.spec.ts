@@ -457,7 +457,7 @@ test('invalid insight values and non-requirement scopes are discarded', async ({
   await expect(hub(page)).toBeVisible()
   await expect(page).not.toHaveURL(/insight=/)
   // Outside the map view, and in the dependency arrangement.
-  await page.goto('/?view=list&scope=req-alpha&insight=summary')
+  await page.goto('/?scope=req-alpha&insight=summary')
   await expect(page).not.toHaveURL(/insight=/)
   await page.goto('/?view=map&arrangement=dependencies&scope=req-alpha&insight=summary')
   await expect(node(page, 'a1')).toBeVisible()
@@ -477,8 +477,8 @@ test('switching view or arrangement clears insight', async ({ page }) => {
 
   await page.goto('/?view=map&scope=req-alpha&insight=documents')
   await expect(panel(page)).toBeVisible()
-  await page.getByRole('button', { name: 'List' }).click()
-  await expect(page).toHaveURL(/view=list/)
+  await page.getByRole('button', { name: 'Kanban' }).click()
+  await expect(page).not.toHaveURL(/view=/)
   await expect(page).not.toHaveURL(/insight=|scope=/)
 
   // Selecting another requirement's group closes the panel.

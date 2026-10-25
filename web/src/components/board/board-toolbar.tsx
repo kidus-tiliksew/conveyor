@@ -3,13 +3,13 @@ import type { ReactNode } from 'react'
 import type { BoardSearch } from './board-search'
 import { BoardViewSwitch } from './board-view-switch'
 
-// The Board's second row, shared by Kanban, List, and Graph
+// The Board's second row, shared by Kanban and Graph
 // (component-web-task-surfaces). Each view fills the left side with its own
 // controls; the optional pager and the view switch close the row at the same
 // right edge in every view, so switching views never moves the switch.
 export function BoardToolbar({ children, pager }: { children?: ReactNode; pager?: ReactNode }) {
   const search = useSearch({ strict: false }) as BoardSearch
-  const view = search.view === 'map' ? 'map' : search.view === 'list' ? 'list' : 'kanban'
+  const view = search.view === 'map' ? 'map' : 'kanban'
   return (
     <div
       data-testid="board-toolbar"

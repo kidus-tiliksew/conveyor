@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, useParams, useSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
@@ -12,6 +12,7 @@ import { MCPSetup } from '../mcp/mcp-setup-dialog'
 import { TaskCreateSheet } from '../task/task-create-sheet'
 import {
   boardDefaultTaskFilter,
+  type TaskFilterState,
   TaskFilters,
   taskFilterParams,
   taskFilterRangeError,
@@ -21,24 +22,22 @@ import { Button } from '../ui/button'
 import { Skeleton } from '../ui/skeleton'
 import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
-import { BoardList } from './board-list'
-import type { BoardSearch } from './board-search'
+import { type BoardSearch, boardSearchFilter } from './board-search'
 import { BoardToolbar } from './board-toolbar'
 
 // The map's graph libraries load with the view, never with the Board (DEC-76).
 const BoardMap = lazy(() => import('./map/board-map').then((module) => ({ default: module.BoardMap })))
 
-// The Board: kanban columns, the list view, or the map of the same workspace
-// (REQ-6; req-board-map),
-// with task intake over either. The view, intake and any arriving list filter
-// live in the address so a reload or a shared link lands on the same view.
+// The Board: kanban columns or the map of the same workspace, and no list
+// view (REQ-6, AC-6.1; req-board-map), with task intake over either. The view,
+// intake, and any arriving kanban filter live in the address so a reload or a
+// shared link lands on the same view.
 export function Board() {
   const { workspace } = useWorkspaceSelection()
   const search = useSearch({ strict: false }) as BoardSearch
   // Intake follows its own capability (DEC-60); the server checks it again.
   const canCreateTasks = useWorkspaceCapability('create_tasks')
   if (!workspace) return <Onboarding />
-  const list = search.view === 'list'
   const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
@@ -70,8 +69,6 @@ export function Board() {
         >
           <BoardMap />
         </Suspense>
-      ) : list ? (
-        <BoardList />
       ) : (
         <Kanban />
       )}
@@ -85,15 +82,31 @@ export function Board() {
 // the pipeline, never by hand.
 function Kanban() {
   // The board opens on the last month of activity and remembers whatever the
-  // operator changes it to, per workspace (AC-2.4).
+  // operator changes it to, per workspace (AC-6.13).
   const [filter, setFilter] = useTaskFilters('board', boardDefaultTaskFilter)
+  // A filter named in the address, such as a redirected /tasks link carries,
+  // wins on arrival and then leaves the address, so the saved filter stays the
+  // one source of truth (AC-6.3). No read is sent for the replaced filter.
+  const navigate = useNavigate()
+  const search = useSearch({ strict: false }) as BoardSearch
+  const arrival = boardSearchFilter(search)
+  const arrivalKey = arrival ? JSON.stringify(arrival) : ''
+  useEffect(() => {
+    if (!arrivalKey) return
+    setFilter(JSON.parse(arrivalKey) as TaskFilterState)
+    void navigate({
+      to: '.',
+      replace: true,
+      search: (prev: BoardSearch) => ({ view: prev.view, create: prev.create }),
+    })
+  }, [arrivalKey, setFilter, navigate])
   const params = taskFilterParams(filter)
   const [offset, setOffset] = useState(0)
   const filterKey = JSON.stringify(params)
   // A range no task can satisfy is a half-typed date; the filter says so in
   // place rather than emptying the board behind a request the server refuses.
   const rangeError = taskFilterRangeError(filter)
-  const { data, isLoading, isFetching, error } = useActivity(params, !rangeError, offset)
+  const { data, isLoading, isFetching, error } = useActivity(params, !rangeError && !arrivalKey, offset)
   // Highlight the card whose sheet is open (child route /tasks/$taskId).
   const { taskId: selectedId } = useParams({ strict: false }) as { taskId?: string }
 

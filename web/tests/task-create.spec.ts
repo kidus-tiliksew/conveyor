@@ -208,20 +208,6 @@ async function mockTaskCreateAPIs(
       })
       return
     }
-    if (url.pathname === '/v1/task-operations') {
-      // An empty grouped read of the Board list states its four zero counts
-      // (component-http-api, Grouped task-operations read).
-      await route.fulfill({
-        json: [],
-        headers: {
-          'X-Conveyor-Group-Operator-Total': '0',
-          'X-Conveyor-Group-Agent-Total': '0',
-          'X-Conveyor-Group-Waiting-Total': '0',
-          'X-Conveyor-Group-Terminal-Total': '0',
-        },
-      })
-      return
-    }
     await route.fulfill({ json: [] })
   })
   return {
@@ -246,11 +232,11 @@ for (const [role, allowed] of [
     const count = allowed ? 1 : 0
 
     await page.goto('/tasks')
-    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(count)
 
     await page.goto('/tasks?create=true')
-    await expect(page.getByRole('heading', { name: 'Tasks' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(count)
 
     await page.goto('/')
@@ -278,7 +264,7 @@ test('new task removes title input and submits description for AI title generati
 
   await expect.poll(submitted).toContain('Generate this title from context')
   expect(submitted()).not.toContain('setup')
-  await expect(page).toHaveURL(/\/tasks\/generated\?view=list$/)
+  await expect(page).toHaveURL(/\/tasks\/generated$/)
   expect(submitted()).not.toContain('"title"')
   // DEC-74(2), DEC-74(3): no execution-mode selector, and no hold is sent.
   expect(submitted()).not.toContain('"mode"')
@@ -405,8 +391,8 @@ test('dependency candidates load lazily and selected cross-repository chips surv
   await expect(page.getByText('Already merged')).toHaveCount(0)
   await page.getByText('Finish persistence first').click()
   await page.getByText('Publish API contract').click()
-  // Exact, because intake now opens over the Tasks list and that surface has a
-  // repository filter of its own behind the sheet.
+  // Exact, so the intake select never matches another Repository control behind
+  // the sheet.
   await page.getByLabel('Repository', { exact: true }).selectOption('api')
   await expect(page.getByRole('button', { name: 'Remove dependency Finish persistence first' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Remove dependency Publish API contract' })).toBeVisible()

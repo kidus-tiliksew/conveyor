@@ -625,10 +625,8 @@ function NavItem({
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const { closeDrawer } = useContext(ShellNavContext)
   // The board stays highlighted while any of its overlays (task sheet, full
-  // page, workspace modal) is open. A trailing slash keeps the Tasks list
-  // itself out of that set — it is its own surface, and the sheets it now hosts
-  // (intake, the detail panel) are search params on `/tasks`, so they stay
-  // highlighted as the Tasks view they open over (AC-2.1, AC-2.2).
+  // page, workspace modal) is open (req-operator-next-action AC-6.10). `/tasks`
+  // itself only redirects to the Board (AC-6.3).
   const active =
     to === '/'
       ? pathname === '/' || pathname.startsWith('/tasks/') || pathname === '/workspaces/new'
@@ -639,7 +637,7 @@ function NavItem({
     <Link
       to={to}
       // The router's own aria-current must agree with the highlight above:
-      // without this, "/tasks/<id>" would announce the Tasks list as the
+      // without this, a prefix match could announce another entry as the
       // current page while the Board is the surface actually showing.
       activeOptions={exact ? { exact: true } : undefined}
       onClick={closeDrawer}

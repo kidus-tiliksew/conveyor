@@ -103,7 +103,7 @@ export function useTaskAudit(taskId: string, kind: TaskAuditKind, recordId: stri
 
 // Prev/next follow the board's visual order: columns left to right, cards
 // by recency within each column. Navigation is deliberately limited to the
-// current bounded Board page (AC-2.3).
+// current bounded Board page (req-operator-next-action AC-6.12).
 export function useTaskOrder(taskId: string) {
   const { data: activity } = useActivity()
   return useMemo(() => {

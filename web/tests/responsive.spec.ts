@@ -430,23 +430,6 @@ test.describe('phone', () => {
     await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
   })
 
-  test('the tasks list stacks each row and keeps the page inside the viewport', async ({ page }) => {
-    await mockShell(page)
-    await page.goto('/tasks')
-
-    const table = page.getByRole('region', { name: 'Tasks table' })
-    await expect(table.getByRole('link', { name: 'Stack the tasks table below the md breakpoint' })).toBeVisible()
-    // The column header has nothing to head once the cells stack.
-    await expect(table.getByText('Updated', { exact: true })).toBeHidden()
-    await expectNoHorizontalOverflow(page)
-    const scroller = await table.locator('.overflow-x-auto').evaluate((node) => ({
-      scrollWidth: node.scrollWidth,
-      clientWidth: node.clientWidth,
-    }))
-    expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth)
-    await page.screenshot({ path: 'test-results/shots/responsive-phone-tasks.png', animations: 'disabled' })
-  })
-
   test('the document tree opens as a drawer above the canvas', async ({ page }) => {
     await mockShell(page)
     await page.goto('/system-design')
@@ -470,8 +453,8 @@ test.describe('phone', () => {
     await mockShell(page)
     const lineageReads = await mockRecordDetail(page)
 
-    // The Board list panel carries the most controls.
-    await page.goto('/tasks/task-layout?view=list')
+    // The Board sheet carries the most controls.
+    await page.goto('/tasks/task-layout')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
@@ -709,7 +692,7 @@ test.describe('desktop', () => {
     await mockShell(page)
     const lineageReads = await mockRecordDetail(page)
 
-    await page.goto('/tasks/task-layout?view=list')
+    await page.goto('/tasks/task-layout')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
