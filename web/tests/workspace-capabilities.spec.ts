@@ -101,7 +101,6 @@ async function mockShell(page: Page, options: ShellOptions) {
       return route.fulfill({ status: 201, json: { email: body.email, role: body.role, delivery: 'sent' } })
     }
     if (/^\/v1\/workspaces\/[^/]+\/invitations$/.test(path)) return route.fulfill({ json: [] })
-    if (path === '/v1/task-operations') return route.fulfill({ json: { items: [], total: 0, limit: 50, offset: 0 } })
     return route.fulfill({ json: [] })
   })
 }

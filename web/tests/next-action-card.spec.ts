@@ -113,7 +113,7 @@ async function mockAPI(page: Page, detail: () => object, action: () => NextActio
     if (path === `/v1/tasks/${taskId}/next-action`) return route.fulfill({ json: action() })
     if (path === `/v1/tasks/${taskId}/activity`) return route.fulfill({ json: detail() })
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/activity' || path === '/v1/task-operations')
+    if (path === '/v1/activity')
       return route.fulfill({
         json: [detail()],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '50', 'X-Conveyor-Offset': '0' },

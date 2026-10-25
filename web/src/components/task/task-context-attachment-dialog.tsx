@@ -51,7 +51,6 @@ export function TaskContextAttachmentDialog({ task, onClose }: { task: Task; onC
       await Promise.all([
         client.invalidateQueries({ queryKey: ['task', workspace, task.id] }),
         client.invalidateQueries({ queryKey: ['activity'] }),
-        client.invalidateQueries({ queryKey: ['task-operations'] }),
       ])
       onClose()
     },

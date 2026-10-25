@@ -228,7 +228,7 @@ async function mockAPI(
         json: { head_sha: '', current_context_id: '', contexts: { items: [], next_cursor: '' }, overview: {} },
       })
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/activity' || path === '/v1/task-operations')
+    if (path === '/v1/activity')
       return route.fulfill({
         json: items.map((item) => ({ ...item, next_action: { ...action, choices: undefined } })),
         headers: { 'X-Conveyor-Total': '2', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },

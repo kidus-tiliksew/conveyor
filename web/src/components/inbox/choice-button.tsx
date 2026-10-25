@@ -83,7 +83,6 @@ export function NextActionChoices({
         client.invalidateQueries({ queryKey: nextActionsQueryKey(acted) }),
         client.invalidateQueries({ queryKey: nextActionQueryKey(acted, taskId) }),
         client.invalidateQueries({ queryKey: ['activity'] }),
-        client.invalidateQueries({ queryKey: ['task-operations', acted] }),
         client.invalidateQueries({ queryKey: ['pending-proposals', acted] }),
         client.invalidateQueries({ queryKey: taskDetailQueryKey(acted, taskId) }),
       ])

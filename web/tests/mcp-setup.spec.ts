@@ -40,7 +40,7 @@ async function routeDashboard(page: Page) {
         json: { workers: [], worker_expected: false, worker_available: false, setup_serviceability: {} },
       })
     }
-    if (path === '/v1/activity' || path === '/v1/task-operations') {
+    if (path === '/v1/activity') {
       return route.fulfill({
         json: [],
         headers: { 'X-Conveyor-Total': '0', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },

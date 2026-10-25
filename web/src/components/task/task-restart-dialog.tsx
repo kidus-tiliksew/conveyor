@@ -64,7 +64,7 @@ function TaskRestartDialog({
     // Fetch rejects with TypeError on network failure. Server refusals stay visible.
     retry: (count, error) => error instanceof TypeError && count < 1,
     onSuccess: async (result) => {
-      for (const key of ['task', 'activity', 'pending-proposals', 'task-operations', 'tasks', 'workspace']) {
+      for (const key of ['task', 'activity', 'pending-proposals', 'tasks', 'workspace']) {
         void queryClient.invalidateQueries({ queryKey: [key, workspace] })
       }
       if (onRestarted) {

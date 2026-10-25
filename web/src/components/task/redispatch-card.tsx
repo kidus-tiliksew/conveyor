@@ -31,10 +31,7 @@ export function FailedTriageCard({ item }: { item: ActivityItem }) {
       }
       // Refresh summaries before detail: the live card remains pending until
       // all mounted task surfaces have refreshed. Never synthesize task state.
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['activity', workspace] }, { throwOnError: true }),
-        queryClient.invalidateQueries({ queryKey: ['task-operations', workspace] }, { throwOnError: true }),
-      ])
+      await queryClient.invalidateQueries({ queryKey: ['activity', workspace] }, { throwOnError: true })
       await queryClient.invalidateQueries(
         { queryKey: taskDetailQueryKey(workspace, item.task.id) },
         { throwOnError: true },

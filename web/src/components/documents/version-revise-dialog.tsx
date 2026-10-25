@@ -103,7 +103,6 @@ function ReviseEditor({
           'pending-proposals',
           'activity',
           'task',
-          'task-operations',
           'document-events',
           'workspace',
           'requirements',
