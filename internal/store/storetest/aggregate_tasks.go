@@ -35,21 +35,6 @@ func runTaskPagination(t *testing.T, x Fixture) {
 		requireOK(t, x.Backend.CreateTask(x.Context, task))
 	}
 	RunTaskOperationsPaginationConformance(t, TaskOperationsFixture{Store: x.Backend, Context: x.Context, WantTotal: 4, WantOrder: []string{ids[3], ids[2], ids[1], ids[0]}, Filter: store.TaskFilter{Repositories: []string{"conveyor"}}})
-
-	// The grouped read's store halves: a dependent with a body, an operations
-	// event, a plan, and a task in another workspace.
-	dependent := core.Task{ID: "dependent-" + core.NewTaskID(), Workspace: x.Workspace, Title: "dependent", Body: "operations body", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-dependent", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created.Add(2 * time.Hour)}
-	requireOK(t, x.Backend.CreateTaskWithDependencies(x.Context, dependent, []string{ids[0]}))
-	requireOK(t, x.Backend.AppendEvent(x.Context, core.Event{TaskID: ids[1], Kind: "task.state_changed", ActorRole: core.ActorSystem, Payload: core.JSONPayload(map[string]any{"command": "conformance.probe"})}))
-	_, err := x.Backend.CreateSpecVersion(x.Context, core.SpecVersion{TaskID: ids[2], Content: "plan", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{})})
-	requireOK(t, err)
-	foreign := x.Workspace + "-ops-" + core.NewTaskID()[:6]
-	foreignCtx := store.WithWorkspace(x.Context, foreign)
-	_, err = x.Backend.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
-	requireOK(t, err)
-	foreignTask := core.Task{ID: "foreign-" + core.NewTaskID(), Workspace: foreign, Title: "foreign", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-foreign", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created}
-	requireOK(t, x.Backend.CreateTask(foreignCtx, foreignTask))
-	RunTaskOperationsGroupReadConformance(t, TaskOperationsGroupReadFixture{Store: x.Backend, Context: x.Context, ForeignContext: foreignCtx, ForeignTaskID: foreignTask.ID, Filter: store.TaskFilter{Query: "dependent"}})
 }
 
 func runTaskFilter(t *testing.T, x Fixture) {

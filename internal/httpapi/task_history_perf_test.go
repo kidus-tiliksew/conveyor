@@ -19,7 +19,7 @@ import (
 
 // Server request durations for the bounded detail view and task history pages
 // (task 261015-3721c6; component-http-api "Bounded detail view", "Task history
-// pages"; req-task-centric-operations-view AC-1.2, AC-2.2). The boundary is the
+// pages"; req-operator-next-action AC-6.10, AC-6.11). The boundary is the
 // real router and handlers over the memory store behind an httptest server:
 // each duration runs from the request's start to the last body byte read,
 // with identity encoding, and excludes browser rendering. Opt-in only.

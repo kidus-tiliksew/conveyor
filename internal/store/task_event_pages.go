@@ -13,7 +13,7 @@ import (
 
 // Task event windows let investigation reads traverse a long task history in
 // bounded immutable steps instead of materializing the whole ledger.
-// component-mcp-investigation-reads; req-task-centric-operations-view REQ-2.
+// component-mcp-investigation-reads; req-operator-next-action REQ-6.
 const (
 	// TaskEventWindowMaxEvents bounds the events one window returns. Backends
 	// select at most one more candidate as lookahead.

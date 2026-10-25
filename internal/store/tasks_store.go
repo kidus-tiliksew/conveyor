@@ -1043,9 +1043,7 @@ func (m *memory) ListTaskOperations(ctx context.Context, query TaskOperationsQue
 }
 
 // taskOperationsDetailsLocked fills the operations events and latest plans of
-// the page's tasks. ListTaskOperations and ListTaskOperationsForIDs share it,
-// so a selected row's events and plan never differ from the paged read's
-// (component-task-lifecycle, Task-operations reads).
+// the page's tasks for ListTaskOperations.
 func (m *memory) taskOperationsDetailsLocked(page *TaskOperationsPage) {
 	for _, task := range page.Tasks {
 		for _, event := range m.events[task.ID] {
@@ -1057,103 +1055,6 @@ func (m *memory) taskOperationsDetailsLocked(page *TaskOperationsPage) {
 			page.Plans[task.ID] = versions[len(versions)-1]
 		}
 	}
-}
-
-// ListTaskOperationsCandidates returns every workspace task the shared filter
-// selects as a scalar record, newest created first (component-persistence,
-// Task-operations candidate and detail reads). The lock covers only the read;
-// the caller projects next actions after it is released.
-func (m *memory) ListTaskOperationsCandidates(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
-	if err := filter.Validate(); err != nil {
-		return nil, err
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	out := make([]core.Task, 0, len(m.tasks))
-	for _, task := range m.tasks {
-		if task.Workspace != workspace || !m.taskMatchesFilterLocked(task, filter) {
-			continue
-		}
-		out = append(out, TaskOperationsCandidate(task))
-	}
-	SortTaskOperationsTasks(out)
-	return out, nil
-}
-
-// ListTaskOperationsForIDs returns the named workspace tasks as
-// ListTaskOperations rows with their operations events and latest plans.
-func (m *memory) ListTaskOperationsForIDs(ctx context.Context, taskIDs []string) (TaskOperationsPage, error) {
-	ids, err := NormalizeTaskOperationsIDs(taskIDs)
-	if err != nil {
-		return TaskOperationsPage{}, err
-	}
-	page := TaskOperationsPage{Tasks: []core.Task{}, Events: map[string][]core.Event{}, Plans: map[string]core.SpecVersion{}}
-	if len(ids) == 0 {
-		return page, nil
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	for _, id := range ids {
-		task, ok := m.tasks[id]
-		if !ok || task.Workspace != workspace {
-			continue
-		}
-		if lifecycle, exists := m.github[task.ID]; exists {
-			copy := lifecycle
-			task.GitHub = &copy
-		}
-		page.Tasks = append(page.Tasks, m.hydrateTaskLocked(task))
-	}
-	SortTaskOperationsTasks(page.Tasks)
-	m.taskOperationsDetailsLocked(&page)
-	page.Total = len(page.Tasks)
-	return page, nil
-}
-
-// TaskOperationsCandidate is the scalar record of the task-operations
-// candidate read: the task row with its body emptied and its dependency
-// relations, blocking task IDs, children, attached context, pull-request close
-// projection, and forge lifecycle cleared. Every field the next-action
-// projection reads stays (component-task-lifecycle, Task-operations reads).
-func TaskOperationsCandidate(task core.Task) core.Task {
-	task.Body = ""
-	task.Dependencies, task.BlockingTaskIDs, task.Children = nil, nil, nil
-	task.Context = core.TaskContext{}
-	task.PullRequestClose, task.PullRequestCloseState = nil, ""
-	task.GitHub = nil
-	return task
-}
-
-// NormalizeTaskOperationsIDs applies the detail read's input rules: more than
-// MaxTaskOperationsLimit IDs, counted as supplied, is refused; empty strings
-// are dropped; a repeated ID keeps its first occurrence.
-func NormalizeTaskOperationsIDs(taskIDs []string) ([]string, error) {
-	if len(taskIDs) > MaxTaskOperationsLimit {
-		return nil, fmt.Errorf("task operations ids must number at most %d", MaxTaskOperationsLimit)
-	}
-	out := make([]string, 0, len(taskIDs))
-	seen := make(map[string]bool, len(taskIDs))
-	for _, id := range taskIDs {
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
-	}
-	return out, nil
-}
-
-// SortTaskOperationsTasks orders tasks newest created first, with ties by
-// ascending ID: the order every task-operations read returns.
-func SortTaskOperationsTasks(tasks []core.Task) {
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].CreatedAt.Equal(tasks[j].CreatedAt) {
-			return tasks[i].ID < tasks[j].ID
-		}
-		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
-	})
 }
 
 func (m *memory) ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error) {

@@ -9,7 +9,7 @@ import (
 
 // taskDetailProjection changes only the dashboard serialization boundary.
 // All operational derivations and execution reads retain complete records
-// (component-http-api; req-task-centric-operations-view AC-1.2, AC-2.2).
+// (component-http-api; req-operator-next-action AC-6.10, AC-6.11).
 type taskDetailProjection struct{ reviewItem }
 
 func (detail taskDetailProjection) MarshalJSON() ([]byte, error) {
