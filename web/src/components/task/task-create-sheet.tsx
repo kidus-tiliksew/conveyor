@@ -96,7 +96,6 @@ export function TaskCreateSheet() {
     },
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
-      void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
       // The new task opens in the Board's sheet over the view intake came from.
       void navigate({
         to: '/tasks/$taskId',

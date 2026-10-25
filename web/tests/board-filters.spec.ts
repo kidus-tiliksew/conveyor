@@ -210,7 +210,6 @@ async function routeBoard(page: Page, seen: string[]) {
       },
     }),
   )
-  await page.route('**/v1/task-operations?**', (route) => route.fulfill({ json: [] }))
   await page.route('**/v1/activity?**', (route) => {
     const url = route.request().url()
     seen.push(url)

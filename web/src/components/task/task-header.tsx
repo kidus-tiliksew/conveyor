@@ -779,9 +779,6 @@ function AssigneeControl({ item, onClose }: { item: ActivityItem; onClose: () =>
       onClose()
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       void queryClient.invalidateQueries({ queryKey: ['task', item.task.workspace, item.task.id] })
-      // The Tasks rows read their own projection, so they must be told too or
-      // the chip there disagrees with the header that just changed it.
-      void queryClient.invalidateQueries({ queryKey: ['task-operations'] })
     },
   })
   const onCloseRef = useRef(onClose)

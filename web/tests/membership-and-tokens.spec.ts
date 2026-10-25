@@ -96,7 +96,6 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
     }
     if (path === '/v1/activity') return route.fulfill({ json: [] })
     if (path === '/v1/pending-proposals') return route.fulfill({ json: { items: [], attention: { total: 0 } } })
-    if (path === '/v1/task-operations') return route.fulfill({ json: { items: [], total: 0, limit: 50, offset: 0 } })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
     if (path === '/v1/workspace/config') return route.fulfill({ json: { document: workspaceConfig, version: 1 } })

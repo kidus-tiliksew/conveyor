@@ -47,7 +47,6 @@ export function TaskContextCard({
       await Promise.all([
         client.invalidateQueries({ queryKey: ['task', workspace, taskId] }),
         client.invalidateQueries({ queryKey: ['activity'] }),
-        client.invalidateQueries({ queryKey: ['task-operations'] }),
       ])
       setSelected(null)
     },

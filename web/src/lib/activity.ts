@@ -185,23 +185,6 @@ export function mergeGateReview(item: ActivityItem): MergeGateReview {
 // them; it never writes them, and neither string is ever shown to a person.
 export const userRequestChangesReason = 'user-request-changes'
 
-export interface ReturnedForChanges {
-  feedback: string
-  at: string
-}
-
-// The server's user-request-changes attention marker (store.UserRequestChangesPending),
-// folded from the complete ledger into `summaries.returned_for_changes`: a
-// bounce a person asked for stays outstanding until an implementation run
-// claims the work it created. The marker itself reaches the dashboard only
-// folded into needs_attention, so this is what tells that signal apart from the
-// other reasons a task wants a human — and it carries the feedback with it.
-export function pendingUserRequestChanges(summaries: TaskSummaries | undefined): ReturnedForChanges | null {
-  const returned = summaries?.returned_for_changes
-  if (!returned) return null
-  return { feedback: typeof returned.feedback === 'string' ? returned.feedback.trim() : '', at: returned.at }
-}
-
 // req-intake-and-triage REQ-3; req-operator-next-action REQ-6:
 // summary projections carry stages, not execution evidence. Only detail
 // evidence below may suppress a human gate.

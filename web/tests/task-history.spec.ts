@@ -149,18 +149,6 @@ async function serveLedgers(page: Page, served: GeneratedLedger[]) {
     const workspace = new URL(route.request().url()).searchParams.get('workspace_id') ?? 'demo'
     return route.fulfill({ json: served.map((entry) => feedItem(entry.item, workspace)) })
   })
-  await page.route('**/v1/task-operations?**', (route) => {
-    const items = served.map((entry) => ({ ...feedItem(entry.item), plan: { state: 'approved', version: 1 } }))
-    return route.fulfill({
-      body: JSON.stringify(items),
-      headers: {
-        'content-type': 'application/json',
-        'X-Conveyor-Total': String(items.length),
-        'X-Conveyor-Limit': '25',
-        'X-Conveyor-Offset': '0',
-      },
-    })
-  })
   await page.route(/\/v1\/tasks\/[^/]+\/activity/, (route) => {
     const url = new URL(route.request().url())
     detailCalls.push(url.pathname + url.search)
