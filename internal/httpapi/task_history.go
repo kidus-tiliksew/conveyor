@@ -17,8 +17,8 @@ import (
 // GET /v1/tasks/{id}/history serves the task's stored events a page at a
 // time under a captured boundary, and the bounded detail view presents its
 // newest human events the same way (task 261015-3721c6; component-http-api
-// "Task history pages", "Bounded detail view"; req-task-centric-operations-view
-// AC-1.2, AC-2.2).
+// "Task history pages", "Bounded detail view"; req-operator-next-action
+// AC-6.10, AC-6.11).
 const (
 	boundedDetailEventLimit = 100
 	taskHistoryErrorRestart = "history_restart"

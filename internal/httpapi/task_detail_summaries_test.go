@@ -20,7 +20,7 @@ import (
 )
 
 // Task 261015-3721c6; component-http-api "Bounded detail view";
-// req-task-centric-operations-view AC-1.2, AC-2.2.
+// req-operator-next-action AC-6.10, AC-6.11.
 
 func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 	source, err := os.ReadFile("../../web/src/lib/activity.ts")

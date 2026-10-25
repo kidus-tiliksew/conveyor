@@ -18,7 +18,7 @@ import (
 // Bounded task detail and history pages present events in a bounded wire
 // form, and current facts come from summaries folded over the complete ledger
 // by (at, id) order (task 261015-3721c6; component-http-api "Bounded detail
-// view"; req-task-centric-operations-view AC-1.2, AC-2.2).
+// view"; req-operator-next-action AC-6.10, AC-6.11).
 
 // humanTimelineEventKinds is the effective dashboard timeline rule: every kind
 // noteFor can render, minus attemptEventKinds and the kinds noteFor always
