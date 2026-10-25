@@ -16,8 +16,8 @@ import { useTaskDetail, useTaskOrder } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
-// reviewer never loses list context. The Board's list view opens it the same
-// way, and closing returns to whichever view the Board was showing.
+// reviewer never loses Board context. The kanban and map views open it the
+// same way, and closing returns to whichever view the Board was showing.
 export function TaskSheet({ taskId }: { taskId: string }) {
   const navigate = useNavigate()
   const { data: item, isLoading, error } = useTaskDetail(taskId)

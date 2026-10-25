@@ -51,8 +51,8 @@ import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
 //
-// The header's sections, each usable on its own: the sheet and the Tasks panel
-// stack them through TaskHeader, and the full route places them in its
+// The header's sections, each usable on its own: the sheet stacks them
+// through TaskHeader, and the full route places them in its
 // reading column and inspector (component-web-task-surfaces, Task detail
 // composition).
 function useTaskHeaderState(item: ActivityItem, variant: 'sheet' | 'full') {

@@ -90,12 +90,12 @@ interface HistoryCall {
   limit: string | null
 }
 
-type Surface = 'board sheet' | 'tasks panel' | 'full route'
-const surfaces: Surface[] = ['board sheet', 'tasks panel', 'full route']
+type Surface = 'board sheet' | 'tasks permalink' | 'full route'
+const surfaces: Surface[] = ['board sheet', 'tasks permalink', 'full route']
 
 function surfaceURL(surface: Surface, taskId: string) {
   if (surface === 'board sheet') return `/tasks/${taskId}`
-  if (surface === 'tasks panel') return `/tasks/${taskId}?view=list`
+  if (surface === 'tasks permalink') return `/tasks?task=${taskId}`
   return `/tasks/${taskId}/full`
 }
 

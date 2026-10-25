@@ -2,12 +2,13 @@ import type { RequirementInsightTab } from '../../lib/types'
 import { emptyTaskFilter, type TaskFilterState } from '../task/task-filters'
 
 // The Board's address (req-operator-next-action REQ-6): the view, task intake,
-// and the filter parameters the list view accepts on arrival. Kanban is the
-// default and is never written to the address (AC-6.1). The map view adds its
+// and the filter parameters the kanban view adopts on arrival (AC-6.3). Kanban
+// is the default and is never written to the address, and there is no list
+// view, so any other view value is dropped (AC-6.1). The map view adds its
 // arrangement, requirement, and task (req-board-map AC-1.1), and the open
 // requirement insight tab (req-requirement-insights AC-1.2).
 export interface BoardSearch {
-  view?: 'list' | 'map'
+  view?: 'map'
   // The map's arrangement; requirements when absent.
   arrangement?: 'requirements' | 'dependencies'
   // The map's selected task.
@@ -48,7 +49,7 @@ const UNATTACHED_SCOPE = '__none'
 // scope that can name a requirement (req-requirement-insights AC-1.2); the
 // map drops it once its read shows the scope names no requirement group.
 export function validateBoardSearch(search: Record<string, unknown>): BoardSearch {
-  const view = search.view === 'list' || search.view === 'map' ? search.view : undefined
+  const view = search.view === 'map' ? search.view : undefined
   const arrangement =
     search.arrangement === 'requirements' || search.arrangement === 'dependencies' ? search.arrangement : undefined
   const scope = text(search.scope)

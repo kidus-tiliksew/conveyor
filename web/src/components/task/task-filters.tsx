@@ -23,13 +23,14 @@ export type UpdatedWindow = 'any' | '7d' | '30d' | '90d' | 'custom'
 
 // Status, repository, requirement, and design are lists: each is a disjunction
 // the server evaluates — a task matches on any checked value — while distinct
-// members intersect (AC-2.4). An empty list leaves that member inactive.
+// members intersect (req-operator-next-action AC-6.13). An empty list leaves
+// that member inactive.
 export interface TaskFilterState {
   query: string
   states: string[]
   repositories: string[]
   // Updated is last activity: the task's newest event time, or its creation
-  // time before any event — the instant the Tasks row labels Updated (AC-2.4).
+  // time before any event, the server's `last_event_at` (AC-6.13).
   updated: UpdatedWindow
   updatedFrom: string
   updatedTo: string
@@ -119,9 +120,6 @@ export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
   }
   return params
 }
-export function taskFilterActive(filter: TaskFilterState): boolean {
-  return Object.keys(taskFilterParams(filter)).length > 0
-}
 export function taskFilterRangeError(filter: TaskFilterState): string {
   if (filter.updated !== 'custom') return ''
   const params = taskFilterParams(filter)
@@ -169,7 +167,7 @@ function readStoredFilter(key: string, fallback: TaskFilterState): TaskFilterSta
     return fallback
   }
 }
-export function useTaskFilters(surface: 'tasks' | 'board', fallback: TaskFilterState = emptyTaskFilter) {
+export function useTaskFilters(surface: 'board', fallback: TaskFilterState = emptyTaskFilter) {
   const { workspace } = useWorkspaceSelection()
   const key = storageKey(surface, workspace)
   const [filter, setFilter] = useState(() => readStoredFilter(key, fallback))
@@ -411,9 +409,8 @@ function FilterMenu({
   const [open, setOpen] = useState(false)
   const [category, setCategory] = useState<FilterCategory>('state')
   const [search, setSearch] = useState('')
-  // The panel opens toward whichever side has room: the Board mounts this at
-  // the right edge, the Tasks header near the left, and an edge-anchored panel
-  // must not slide under the navigation rail.
+  // The panel opens toward whichever side has room, so an edge-anchored panel
+  // never slides under the navigation rail or past the viewport.
   const [align, setAlign] = useState<'left' | 'right'>('right')
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {

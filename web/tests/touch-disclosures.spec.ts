@@ -97,23 +97,6 @@ async function mockAPI(page: Page) {
         json: [activity],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '50', 'X-Conveyor-Offset': '0' },
       })
-    if (path === '/v1/task-operations') {
-      // The Board list reads one next-action group per request with all four
-      // group counts; the stalled fixture waits on the operator.
-      const member = new URL(route.request().url()).searchParams.get('group') === 'operator'
-      return route.fulfill({
-        json: member ? [activity] : [],
-        headers: {
-          'X-Conveyor-Total': member ? '1' : '0',
-          'X-Conveyor-Limit': '50',
-          'X-Conveyor-Offset': '0',
-          'X-Conveyor-Group-Operator-Total': '1',
-          'X-Conveyor-Group-Agent-Total': '0',
-          'X-Conveyor-Group-Waiting-Total': '0',
-          'X-Conveyor-Group-Terminal-Total': '0',
-        },
-      })
-    }
     if (path === '/v1/system-designs') return route.fulfill({ json: [design] })
     if (path === '/v1/system-designs/design-old') return route.fulfill({ json: design })
     if (path === '/v1/workers')
@@ -135,7 +118,7 @@ async function expectTouchTarget(trigger: Locator) {
 }
 
 const surfaces = [
-  { name: 'assignee detail', route: '/tasks', trigger: 'Viewer User', index: 0, detail: 'usr-viewer' },
+  { name: 'assignee detail', route: '/', trigger: 'Viewer User', index: 0, detail: 'usr-viewer' },
   { name: 'archived outcome', route: '/tasks/touch-task/full', trigger: 'Archived', index: 0, detail: 'req-new' },
   { name: 'archived guidance', route: '/tasks/touch-task/full', trigger: 'Archived', index: 1, detail: 'design-new' },
   {
@@ -145,7 +128,6 @@ const surfaces = [
     index: 0,
     detail: reason,
   },
-  { name: 'updated timestamp', route: '/tasks', trigger: /^Updated /, index: 0, detail: '9/14/2026, 11:00:00 AM' },
 ]
 
 test.describe('touch disclosures', () => {
@@ -179,7 +161,7 @@ test.describe('touch disclosures', () => {
       await page.keyboard.press('Escape')
       await expect(content).toBeHidden()
       await trigger.tap()
-      await page.getByRole('heading', { name: surface.route === '/tasks' ? 'Board' : task.title, exact: true }).tap()
+      await page.getByRole('heading', { name: surface.route === '/' ? 'Board' : task.title, exact: true }).tap()
       await expect(content).toBeHidden()
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
     })

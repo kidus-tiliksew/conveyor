@@ -1,18 +1,17 @@
 import { useNavigate } from '@tanstack/react-router'
-import { Columns3, List, Network } from 'lucide-react'
+import { Columns3, Network } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/button'
 import type { BoardSearch } from './board-search'
 
-type BoardView = 'kanban' | 'list' | 'map'
+type BoardView = 'kanban' | 'map'
 
 const views = [
   { id: 'kanban', label: 'Kanban', Icon: Columns3 },
-  { id: 'list', label: 'List', Icon: List },
   { id: 'map', label: 'Graph', Icon: Network },
 ] as const
 
-// Kanban, list, or map (AC-6.1; req-board-map AC-1.1). The view is written
+// Kanban or map, and no list view (AC-6.1; req-board-map AC-1.1). The view is written
 // to the address with replace, so a reload keeps it and switching does not
 // pile up history entries. Icon-only buttons keep their view names as
 // accessible names and tooltips; the selection takes the soft treatment so

@@ -82,7 +82,7 @@ export function ReturnedForChangesAttention() {
         </>
       ),
       action: (
-        <Link to="/tasks/$taskId" params={{ taskId: item.task.id }} search={{ view: 'list' }}>
+        <Link to="/tasks/$taskId" params={{ taskId: item.task.id }}>
           <Button size="sm" variant="secondary" tabIndex={-1}>
             Open task
           </Button>

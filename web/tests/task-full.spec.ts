@@ -7648,23 +7648,10 @@ function failedTriageFixture(reason = 'Responses API request failed: upstream se
   }
 }
 
-for (const surface of ['full', 'sheet', 'list']) {
+for (const surface of ['full', 'sheet', 'permalink']) {
   test(`failed triage ${surface} shows the recorded image failure without approval`, async ({ page }, testInfo) => {
     const item = failedTriageFixture(failedTriageReason)
     await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
-    await page.route('**/v1/task-operations*', (route) =>
-      route.fulfill({
-        json: [
-          {
-            task: item.task,
-            latest_stage: 'triage',
-            needs_attention: true,
-            last_event_at: createdAt,
-            plan: { state: 'none' },
-          },
-        ],
-      }),
-    )
     await page.goto(
       surface === 'full'
         ? '/tasks/failed-triage/full'
@@ -7746,38 +7733,6 @@ test('failed triage retry waits for response and every projection refresh and pr
       ],
     })
   })
-  await page.route('**/v1/task-operations*', async (route) => {
-    if (accepted) {
-      refreshed.add('list')
-      await refreshGate
-    }
-    // The Board list reads one next-action group per request and requires all
-    // four group counts (component-http-api, Grouped task-operations read): the
-    // failed task waits on the operator until the retry is accepted.
-    const member = accepted ? 'waiting' : 'operator'
-    const group = new URL(route.request().url()).searchParams.get('group')
-    const rows =
-      group === null || group === member
-        ? [
-            {
-              task: accepted ? { ...item.task, state: 'queued', next_stage: 'triage' } : item.task,
-              latest_stage: 'triage',
-              needs_attention: !accepted,
-              last_event_at: createdAt,
-              plan: { state: 'none' },
-            },
-          ]
-        : []
-    await route.fulfill({
-      json: rows,
-      headers: {
-        'X-Conveyor-Group-Operator-Total': member === 'operator' ? '1' : '0',
-        'X-Conveyor-Group-Agent-Total': '0',
-        'X-Conveyor-Group-Waiting-Total': member === 'waiting' ? '1' : '0',
-        'X-Conveyor-Group-Terminal-Total': '0',
-      },
-    })
-  })
   await page.route('**/v1/tasks/failed-triage/review*', async (route) => {
     requests++
     expect(route.request().method()).toBe('POST')
@@ -7802,7 +7757,7 @@ test('failed triage retry waits for response and every projection refresh and pr
   await expect.poll(() => requests).toBe(1)
   await expect(retry).toBeDisabled()
   releaseRequest()
-  await expect.poll(() => refreshed.has('list')).toBe(true)
+  await expect.poll(() => refreshed.has('activity')).toBe(true)
   await expect(recovery).toBeVisible()
   await expect(retry).toHaveText('Checking recovery…')
   await expect(retry).toBeDisabled()

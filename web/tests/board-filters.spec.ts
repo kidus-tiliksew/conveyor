@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'timeline'))
 })
 
-// The Board half of the shared Tasks/Board filter family (AC-2.4). What each
+// The Board's kanban filter family (req-operator-next-action AC-6.13). What each
 // member means is asserted against the server in Go; what this covers is that
 // the Board sends that family through one workspace activity cache, opens on
 // the last month of activity, and remembers the operator's own adjustment.
@@ -537,7 +537,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
 
   // Checking a second value keeps the first: the member travels as one
-  // repeated parameter, and the server reads it as a disjunction (AC-2.4).
+  // repeated parameter, and the server reads it as a disjunction (AC-6.13).
   await page.getByRole('option', { name: 'conveyor' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
 
@@ -561,7 +561,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   expect(seen.some((url) => url.includes('assignee=usr_bo'))).toBe(true)
   expect(seen.some((url) => url.includes('assignee=unassigned'))).toBe(true)
 
-  // AC-1.5 stands on this surface too: no barred field is offered as a filter.
+  // AC-6.14 stands on this surface too: no barred field is offered as a filter.
   await expect(page.getByRole('tab', { name: 'Priority' })).toHaveCount(0)
   await expect(page.getByRole('tab', { name: 'Phase' })).toHaveCount(0)
 })

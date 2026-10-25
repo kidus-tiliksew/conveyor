@@ -54,13 +54,13 @@ const taskSheetRoute = createRoute({
   path: '/tasks/$taskId',
   component: TaskSheetRoute,
 })
-// Task intake lives on the Board's list view; the old address stays a
-// redirect so existing links and bookmarks still land on intake.
+// Task intake opens over the Board (AC-6.9); the old address stays a redirect
+// so existing links and bookmarks still land on intake.
 const newTaskRedirectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/new',
   beforeLoad: () => {
-    throw redirect({ to: '/', search: { view: 'list', create: true } })
+    throw redirect({ to: '/', search: { create: true } })
   },
   component: () => null,
 })
@@ -74,18 +74,29 @@ const taskFullRoute = createRoute({
   path: '/tasks/$taskId/full',
   component: TaskFullPage,
 })
-// The Tasks page became the Board's list view (AC-6.3). Its address redirects
-// there, keeping intake and any filter it names; anything else is dropped. A
-// legacy panel permalink (`?task=`) opens that task's sheet over the list.
+// The Tasks page retired into the Board, which offers no list view. Its address
+// redirects to the kanban view, keeping intake and any filter it names; the
+// view and the map's own fields are dropped (AC-6.3). A legacy panel permalink
+// (`?task=`) opens that task's sheet over the Board (AC-6.10).
 const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tasks',
   beforeLoad: ({ search }) => {
     const task = (search as Record<string, unknown>).task
     if (typeof task === 'string' && task) {
-      throw redirect({ to: '/tasks/$taskId', params: { taskId: task }, search: { view: 'list' } })
+      throw redirect({ to: '/tasks/$taskId', params: { taskId: task } })
     }
-    throw redirect({ to: '/', search: { ...validateBoardSearch(search as Record<string, unknown>), view: 'list' } })
+    throw redirect({
+      to: '/',
+      search: {
+        ...validateBoardSearch(search as Record<string, unknown>),
+        view: undefined,
+        arrangement: undefined,
+        scope: undefined,
+        focus: undefined,
+        insight: undefined,
+      },
+    })
   },
   component: () => null,
 })

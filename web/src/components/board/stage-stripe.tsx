@@ -61,10 +61,7 @@ function Segments({ taskId }: { taskId: string }) {
               aria-label={stageSegmentName(stage, label)}
               data-stage={stage.id}
               data-status={stage.status}
-              className={cn(
-                'relative block h-1.5 min-w-0 flex-1 rounded-full',
-                stageSegmentClass(stage.status, 'card'),
-              )}
+              className={cn('relative block h-1.5 min-w-0 flex-1 rounded-full', stageSegmentClass(stage.status))}
             >
               {stage.status === 'in_progress' && <InProgress />}
             </span>
