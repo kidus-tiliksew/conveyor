@@ -355,6 +355,17 @@ directory. The directory must be private and outside both task and primary
 checkout inputs. Keep task caches on disk-backed storage and remove disposable
 data only after preserving required evidence and completing the claim.
 
+Each control-plane call the runner makes is bounded by a transport ceiling,
+30 s by default. Server processing alone can take several seconds, and a
+remote deployment adds network time, so a slow server lengthens a call instead
+of failing it. Raise the ceiling for a slow or distant server with
+`--rpc-timeout`, for example `--rpc-timeout 60s`; accepted values run from
+`1s` to `10m`, and any other value refuses before the runner calls the server.
+The claim still bounds every call: renewals and context reads end at the
+lease or the execution deadline, whichever comes first. When the runner itself
+is interrupted, its remaining outcome report gets a short 5 s bound so child
+teardown never waits on the server (`component-verification-runner`).
+
 Without `--context-id`, the CLI prepares the current claim's context. Without
 `--coverage`, it prints that context and exits with a request to register
 obligations and grants; this is preparation, not a completed run. Reuse that
@@ -415,10 +426,17 @@ per screenshot. Binary media requires sanitation and masking attestations.
 The runner creates execution reports and retains bounded sanitized output.
 Children send other supported payloads through the nonce-protected loopback
 channel in `CONVEYOR_KIT_OPERATIONS`; child signals cannot submit operator
-observations or execution reports. A successful local write or spool file is
-not durable server evidence. On upload failure, retain the reported spool and
-inspect server receipts before retrying. Claim loss forbids further writes.
-Never upload an old spool as observations of a successor attempt.
+observations or execution reports. The runner answers an evidence signal with
+`{"state":"recorded"}` once the item is durably written to the attempt spool,
+so the child never waits on the server. An uploader then sends the items in
+relay order, retrying transient failures, and the attempt reports its outcome
+only after the spool is empty. A full spool (8 MiB) answers 409. A spool file
+is still not durable server evidence: when an upload stays unavailable or the
+claim is lost before the spool drains, the command fails naming the retained
+spool, reports no outcome, and the attempt never counts as `succeeded`. On
+upload failure, retain the reported spool and inspect server receipts before
+retrying. Claim loss forbids further writes. Never upload an old spool as
+observations of a successor attempt.
 
 Success requires valid output cardinalities and exactly one passing result
 for every frozen required assertion ID, with support from the same subject
@@ -456,7 +474,12 @@ Repeating a CLI invocation with the original start key retries retained spool
 uploads under the live claim but refuses to relaunch an existing attempt.
 After replay admission, use an explicit new `--retry-key`; pass
 `--replay-authorization` when operator recovery requires it. Safe replay needs
-the declared safety basis. Timeout or successful process teardown is not proof
+the declared safety basis. A relayed upload failure in a passing exercise is
+one such case: when the child's own assertions passed but an attempt ended
+`failed` because a relay was refused, and the contract's retry policy is
+`safe_to_replay`, rerun in the same claim with a new `--retry-key`. The server
+starts a new attempt once the earlier one has ended, and the earlier attempt
+stays visible. Timeout or successful process teardown is not proof
 that the external mutation failed. Earlier attempts remain visible; only a
 fresh successful attempt for the same contract/context resolves prior failure.
 

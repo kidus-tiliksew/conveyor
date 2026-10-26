@@ -220,6 +220,42 @@ func (s *EvidenceSpool) Flush(ctx context.Context, upload func(context.Context, 
 	return nil
 }
 
+// Upload sends one retained entry. It holds the spool lock only to read and
+// to remove the entry, so Put can acknowledge new relays while a slow upload
+// is in flight. The barrier runs before reading and again before removal; an
+// entry is removed only after its upload succeeds (component-verification-runner).
+func (s *EvidenceSpool) Upload(ctx context.Context, key string, upload func(context.Context, []byte) error) error {
+	if !VerificationBindingName(key) {
+		return fmt.Errorf("invalid spool identity")
+	}
+	path := filepath.Join(s.Directory, key+".json")
+	s.mu.Lock()
+	if err := s.checkDirectory(); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if err := s.Check(ctx); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	b, err := s.read(path)
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err = upload(ctx, b); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err = s.Check(ctx); err != nil {
+		return err
+	}
+	// Put refuses changed content under an existing key, so the retained
+	// entry is still the uploaded one.
+	return os.Remove(path)
+}
+
 func (s *EvidenceSpool) read(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {

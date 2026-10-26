@@ -143,11 +143,7 @@ func (v *kitVerifier) resumeSpool(ctx context.Context, root string, attempt stor
 		if batch.ContextID != attempt.ContextID || batch.RunID != attempt.ID {
 			return fmt.Errorf("spool ownership differs from attempt")
 		}
-		clean, _, err := v.redactor.RedactJSON(b)
-		if err != nil {
-			return err
-		}
-		return v.rpc.call(ctx, "submit_verification_evidence", json.RawMessage(clean), nil)
+		return v.uploadEvidence(ctx, b)
 	})
 }
 
@@ -190,7 +186,7 @@ func (v *kitVerifier) observe(ctx context.Context, e verification.Exercise, runI
 			break
 		}
 	}
-	finishCtx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	finishCtx, finishCancel := v.finishContext(ctx)
 	defer finishCancel()
 	if err := v.live(finishCtx, grantID); err != nil {
 		return err

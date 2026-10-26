@@ -157,32 +157,32 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	if err := os.Mkdir(spoolDir, 0700); err != nil {
 		return err
 	}
-	barrier := func(ctx context.Context) error {
-		v.mu.Lock()
-		defer v.mu.Unlock()
-		if v.lost || !v.order.LeaseExpiresAt.After(time.Now()) || (!v.order.ExecutionDeadline.IsZero() && !v.order.ExecutionDeadline.After(time.Now())) {
+	// The barrier is the cached claim state, so a spool write never waits on
+	// a control-plane call (component-verification-runner).
+	barrier := func(context.Context) error {
+		if err := v.cachedLive(); err != nil {
 			return fmt.Errorf("verification authority lost")
 		}
 		return nil
 	}
-	spool := verification.EvidenceSpool{Directory: spoolDir, Limit: 8 << 20, Check: barrier}
-	upload := func(ctx context.Context, data []byte) error {
-		if err := v.live(ctx, grantID); err != nil {
-			return err
-		}
-		var receipt store.VerificationReceipt
-		clean, _, err := v.redactor.RedactJSON(data)
-		if err != nil {
-			return err
-		}
-		return v.rpc.call(ctx, "submit_verification_evidence", json.RawMessage(clean), &receipt)
-	}
+	spool := &verification.EvidenceSpool{Directory: spoolDir, Limit: kitEvidenceSpoolLimit, Check: barrier}
 	deadline := time.Now().Add(time.Duration(e.TimeoutSeconds) * time.Second)
 	if !v.order.ExecutionDeadline.IsZero() && v.order.ExecutionDeadline.Before(deadline) {
 		deadline = v.order.ExecutionDeadline
 	}
 	launchCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	// Relayed evidence keeps uploading after the exercise deadline so a timed
+	// out attempt still retains its evidence; the execution deadline and the
+	// runner's own context bound it.
+	uploadDeadline := v.order.ExecutionDeadline
+	if uploadDeadline.IsZero() {
+		uploadDeadline = v.claimDeadline()
+	}
+	uploadCtx, uploadCancel := context.WithDeadline(ctx, uploadDeadline)
+	defer uploadCancel()
+	uploader := startKitEvidenceUploader(uploadCtx, spool, v.uploadEvidence)
+	defer func() { uploadCancel(); _ = uploader.drain() }()
 	var relayMu sync.Mutex
 	accepting := true
 	operations := map[string]string{}
@@ -201,10 +201,6 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			cancel()
 			return nil, err
 		}
-		if err := v.live(requestCtx, grantID); err != nil {
-			cancel()
-			return nil, err
-		}
 		var signal struct {
 			Type              string          `json:"type"`
 			StepID            string          `json:"step_id"`
@@ -218,6 +214,13 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			return nil, err
 		}
 		if signal.Type == "evidence" {
+			// The durable spool write acknowledges evidence; the uploader sends
+			// it in relay order and the attempt drains it before reporting
+			// (component-verification-runner).
+			if err := v.cachedLive(); err != nil {
+				cancel()
+				return nil, err
+			}
 			if signal.CapturedAt.IsZero() || signal.EvidenceType == "operator_observation" || signal.EvidenceType == "execution_report" || !verification.VerificationBindingName(signal.Key) {
 				return nil, fmt.Errorf("evidence attribution refused")
 			}
@@ -228,13 +231,15 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			if err = spool.Put(requestCtx, signal.Key, batch); err != nil {
 				return nil, err
 			}
-			if err = spool.Flush(requestCtx, upload); err != nil {
-				return nil, err
-			}
+			uploader.enqueue(signal.Key)
 			return map[string]string{"state": "recorded"}, nil
 		}
 		if signal.Type != "operation.dispatching" && signal.Type != "operation.completed" {
 			return nil, fmt.Errorf("unknown operation signal")
+		}
+		if err := v.live(requestCtx, grantID); err != nil {
+			cancel()
+			return nil, err
 		}
 		var declared *verification.Operation
 		for i := range e.Operations {
@@ -365,27 +370,36 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		}
 	}
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	var waitErr error
-	var finished bool
-	for !finished {
-		select {
-		case waitErr = <-done:
-			waitErr = group.terminate(&waitErr)
-			finished = true
-		case <-launchCtx.Done():
-			waitErr = group.terminate(nil)
-			finished = true
-		case <-ticker.C:
-			if err = v.checkCheckout(launchCtx); err != nil {
-				cancel()
-			}
-			if err = v.live(launchCtx, grantID); err != nil {
-				cancel()
-			}
-		}
+	// The monitor outlives the child so the claim stays renewed while relayed
+	// evidence drains; the execution deadline and the runner's own context
+	// still bound it. Stopping it aborts its in-flight call without recording
+	// authority loss (component-verification-runner).
+	monitorCtx, stopMonitor := context.WithCancel(uploadCtx)
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		v.monitor(monitorCtx, grantID, cancel)
+	}()
+	var monitorOnce sync.Once
+	stopMonitoring := func() {
+		monitorOnce.Do(func() {
+			stopMonitor()
+			<-monitorDone
+		})
 	}
+	defer stopMonitoring()
+	var waitErr error
+	select {
+	case waitErr = <-done:
+		waitErr = group.terminate(&waitErr)
+	case <-launchCtx.Done():
+		waitErr = group.terminate(nil)
+	}
+	// The outcome classification is fixed when the child ends; a monitor
+	// cancellation during the drain cannot turn it into cancelled.
+	ended := time.Now().UTC()
+	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
+	cancelled := launchCtx.Err() != nil && !timedOut
 	var uiReport *core.ExecutionReportPayload
 	if ui != nil {
 		report := ui.stop(v.redactor)
@@ -395,8 +409,15 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	relayMu.Lock()
 	accepting = false
 	relayMu.Unlock()
-	ctx, finishCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	ctx, finishCancel := v.finishContext(ctx)
 	defer finishCancel()
+	// Relayed evidence uploads before the execution report and before any
+	// outcome; an entry the uploader could not send stays spooled for the
+	// flush below.
+	if v.onDrain != nil {
+		v.onDrain()
+	}
+	_ = uploader.drain()
 	after, hashErr := kitToolDigest(tool)
 	environment.Attributes["tool_sha256_after"] = after
 	if hashErr != nil {
@@ -414,9 +435,6 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			environment.Attributes["toolchain_after"] = "changed"
 		}
 	}
-	ended := time.Now().UTC()
-	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
-	cancelled := launchCtx.Err() != nil && !timedOut
 	exit := command.ProcessState.ExitCode()
 	cleanOut, _ := v.redactor.Redact(kitSanitizeText(stdout.String()))
 	cleanErr, _ := v.redactor.Redact(kitSanitizeText(stderr.String()))
@@ -458,9 +476,10 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			return e
 		}
 	}
-	if err = spool.Flush(ctx, upload); err != nil {
+	if err = spool.Flush(ctx, v.uploadEvidence); err != nil {
 		return fmt.Errorf("evidence retained in %s; upload unavailable: %w", spoolDir, err)
 	}
+	stopMonitoring()
 	if err = v.live(ctx, grantID); err != nil {
 		return err
 	}
