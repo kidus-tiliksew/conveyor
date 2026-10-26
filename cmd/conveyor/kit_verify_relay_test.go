@@ -135,6 +135,38 @@ func TestKitRunnerSpooledRelayClaimLossFailsAttempt(t *testing.T) {
 	}
 }
 
+// The monitor keeps renewing the claim while relayed evidence drains, so a
+// drain that outlasts the lease held at child exit still succeeds
+// (component-verification-runner).
+func TestKitRunnerDrainKeepsClaimRenewed(t *testing.T) {
+	t.Parallel()
+	e := kitRelayExercise(t, "relay", "3", "2", "16", "0")
+	e.EvidenceOutputs = []verification.EvidenceOutput{{Type: "state_observation", SchemaVersion: 1, MinimumItems: 3}}
+	f := newKitExecutionFixture(t, e)
+	f.mu.Lock()
+	f.renewExtends = 3 * time.Second
+	f.order.LeaseExpiresAt = time.Now().Add(3 * time.Second)
+	f.v.order = f.order
+	f.mu.Unlock()
+	f.evidenceDelay.Store(int64(2 * time.Second))
+	attemptRoot := t.TempDir()
+	started := time.Now()
+	err := f.v.launch(t.Context(), e, f.v.root, attemptRoot, "run", "grant", f.snapshot.Attempts[0].Subject, kitRelayEnvironment(), nil)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err != nil || f.outcome != "succeeded" {
+		t.Fatalf("drain beyond the exit-time lease: outcome=%q err=%v", f.outcome, err)
+	}
+	// Three relayed uploads and the execution report take at least 8 s, well
+	// past the 3 s lease held when the child exited.
+	if elapsed := time.Since(started); elapsed < 8*time.Second {
+		t.Fatalf("drain did not outlast the lease: %s", elapsed)
+	}
+	if f.uploads != 4 {
+		t.Fatalf("uploads %d, want three relayed items and the execution report", f.uploads)
+	}
+}
+
 // A relay beyond the spool bound answers 409, so the child sees back-pressure
 // instead of an acknowledgement for unrecorded evidence.
 func TestKitRunnerSpoolFullRefusesRelay(t *testing.T) {

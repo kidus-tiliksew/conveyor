@@ -370,12 +370,24 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		}
 	}
 
-	monitorCtx, stopMonitor := context.WithCancel(launchCtx)
+	// The monitor outlives the child so the claim stays renewed while relayed
+	// evidence drains; the execution deadline and the runner's own context
+	// still bound it. Stopping it aborts its in-flight call without recording
+	// authority loss (component-verification-runner).
+	monitorCtx, stopMonitor := context.WithCancel(uploadCtx)
 	monitorDone := make(chan struct{})
 	go func() {
 		defer close(monitorDone)
 		v.monitor(monitorCtx, grantID, cancel)
 	}()
+	var monitorOnce sync.Once
+	stopMonitoring := func() {
+		monitorOnce.Do(func() {
+			stopMonitor()
+			<-monitorDone
+		})
+	}
+	defer stopMonitoring()
 	var waitErr error
 	select {
 	case waitErr = <-done:
@@ -383,10 +395,11 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	case <-launchCtx.Done():
 		waitErr = group.terminate(nil)
 	}
-	// Stopping the monitor aborts its in-flight call without recording
-	// authority loss.
-	stopMonitor()
-	<-monitorDone
+	// The outcome classification is fixed when the child ends; a monitor
+	// cancellation during the drain cannot turn it into cancelled.
+	ended := time.Now().UTC()
+	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
+	cancelled := launchCtx.Err() != nil && !timedOut
 	var uiReport *core.ExecutionReportPayload
 	if ui != nil {
 		report := ui.stop(v.redactor)
@@ -419,9 +432,6 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			environment.Attributes["toolchain_after"] = "changed"
 		}
 	}
-	ended := time.Now().UTC()
-	timedOut := errors.Is(launchCtx.Err(), context.DeadlineExceeded)
-	cancelled := launchCtx.Err() != nil && !timedOut
 	exit := command.ProcessState.ExitCode()
 	cleanOut, _ := v.redactor.Redact(kitSanitizeText(stdout.String()))
 	cleanErr, _ := v.redactor.Redact(kitSanitizeText(stderr.String()))
@@ -466,6 +476,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	if err = spool.Flush(ctx, v.uploadEvidence); err != nil {
 		return fmt.Errorf("evidence retained in %s; upload unavailable: %w", spoolDir, err)
 	}
+	stopMonitoring()
 	if err = v.live(ctx, grantID); err != nil {
 		return err
 	}

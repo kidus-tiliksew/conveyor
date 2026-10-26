@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,10 @@ type kitExecutionFixture struct {
 	// onEvidence runs under the fixture lock before each evidence answer.
 	evidenceUnavailable bool
 	onEvidence          func()
+	// evidenceDelay delays only submit_verification_evidence, before the
+	// fixture lock; renewExtends makes each renewal extend the lease.
+	evidenceDelay atomic.Int64
+	renewExtends  time.Duration
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -68,14 +73,25 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 	vc := store.VerificationContext{ID: "context", WorkspaceID: "demo", TaskID: "task", WorkOrderID: "order", WorkOrderAttemptID: "claim", Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://example.test/repo", SHA: order.HeadSHA}}, GoverningPins: []core.VerificationPin{}}
 	f := &kitExecutionFixture{order: order, snapshot: store.VerificationSnapshot{Contexts: []store.VerificationContext{vc}, Obligations: []store.VerificationObligation{{ID: e.ID, Digest: subject.ContractDigest, Contract: e}}, Attempts: []store.VerificationAttempt{{ID: "run", ContextID: "context", Subject: subject, State: "running", GrantID: "grant"}}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if delay := time.Duration(f.responseDelay.Load()); delay > 0 && r.URL.Path != "/provider" {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		if r.URL.Path != "/provider" {
+			delay := time.Duration(f.responseDelay.Load())
 			if jitter := f.responseJitter.Load(); jitter > 0 {
 				delay += time.Duration(rand.Int64N(jitter))
 			}
-			select {
-			case <-time.After(delay):
-			case <-r.Context().Done():
-				return
+			if bytes.Contains(body, []byte(`"name":"submit_verification_evidence"`)) {
+				delay += time.Duration(f.evidenceDelay.Load())
+			}
+			if delay > 0 {
+				select {
+				case <-time.After(delay):
+				case <-r.Context().Done():
+					return
+				}
 			}
 		}
 		f.mu.Lock()
@@ -94,7 +110,7 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 				Arguments json.RawMessage `json:"arguments"`
 			} `json:"params"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		if err := json.Unmarshal(body, &request); err != nil {
 			t.Error(err)
 			w.WriteHeader(400)
 			return
@@ -110,6 +126,9 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 			f.renewCalls++
 			if f.renewDelayAfter > 0 && f.renewCalls > f.renewDelayAfter {
 				time.Sleep(1500 * time.Millisecond)
+			}
+			if f.renewExtends > 0 {
+				f.order.LeaseExpiresAt = time.Now().Add(f.renewExtends)
 			}
 			result = f.order
 			failed = f.loseClaim
