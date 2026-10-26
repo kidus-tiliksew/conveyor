@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,6 +44,13 @@ type kitExecutionFixture struct {
 	renewCalls      int
 	output          bytes.Buffer
 	started         []workorder.VerificationStartRequest
+	// responseDelay delays every MCP response before the fixture lock;
+	// responseJitter adds up to that much more (kit_verify_relay_test.go).
+	responseDelay, responseJitter atomic.Int64
+	// evidenceUnavailable answers submit_verification_evidence with 503;
+	// onEvidence runs under the fixture lock before each evidence answer.
+	evidenceUnavailable bool
+	onEvidence          func()
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -59,6 +68,16 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 	vc := store.VerificationContext{ID: "context", WorkspaceID: "demo", TaskID: "task", WorkOrderID: "order", WorkOrderAttemptID: "claim", Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://example.test/repo", SHA: order.HeadSHA}}, GoverningPins: []core.VerificationPin{}}
 	f := &kitExecutionFixture{order: order, snapshot: store.VerificationSnapshot{Contexts: []store.VerificationContext{vc}, Obligations: []store.VerificationObligation{{ID: e.ID, Digest: subject.ContractDigest, Contract: e}}, Attempts: []store.VerificationAttempt{{ID: "run", ContextID: "context", Subject: subject, State: "running", GrantID: "grant"}}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if delay := time.Duration(f.responseDelay.Load()); delay > 0 && r.URL.Path != "/provider" {
+			if jitter := f.responseJitter.Load(); jitter > 0 {
+				delay += time.Duration(rand.Int64N(jitter))
+			}
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if r.URL.Path == "/provider" {
@@ -110,6 +129,13 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 		case "get_verification_context":
 			result = f.snapshot
 		case "submit_verification_evidence":
+			if f.onEvidence != nil {
+				f.onEvidence()
+			}
+			if f.evidenceUnavailable {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			var args struct {
 				Evidence []core.VerificationEvidence `json:"evidence"`
 			}

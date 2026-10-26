@@ -13,12 +13,36 @@ import (
 type kitRPC struct {
 	client                     *client
 	order, session, claimToken string
+	// timeout is the transport ceiling for one call; zero selects
+	// kitDefaultRPCTimeout (component-verification-runner).
+	timeout time.Duration
+}
+
+// Remote server processing alone can take several seconds, so the transport
+// ceiling is sized for a remote round trip. Child teardown keeps its own short
+// bound and never shares this one (component-verification-runner).
+const (
+	kitDefaultRPCTimeout = 30 * time.Second
+	kitMinRPCTimeout     = time.Second
+	kitMaxRPCTimeout     = 10 * time.Minute
+	kitTeardownTimeout   = 5 * time.Second
+)
+
+func validateKitRPCTimeout(d time.Duration) error {
+	if d < kitMinRPCTimeout || d > kitMaxRPCTimeout {
+		return fmt.Errorf("--rpc-timeout must be between %s and %s", kitMinRPCTimeout, kitMaxRPCTimeout)
+	}
+	return nil
 }
 
 func (k kitRPC) call(ctx context.Context, name string, input any, result any) error {
-	// Bound every control-plane request by the current lease at the caller and
-	// by a short transport deadline so child teardown cannot wait indefinitely.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// The caller bounds a claim-bound call by the lease or execution deadline;
+	// the transport ceiling bounds it when the caller's bound is later.
+	timeout := k.timeout
+	if timeout == 0 {
+		timeout = kitDefaultRPCTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	args := map[string]any{}
 	if input != nil {

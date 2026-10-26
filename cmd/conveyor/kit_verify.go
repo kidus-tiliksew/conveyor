@@ -30,11 +30,15 @@ type kitVerifyOptions struct {
 	// sources may supply verification_toolchains records.
 	configSource string
 	withUI       bool
+	rpcTimeout   time.Duration
 }
 
 func kitVerifyCmd() *cobra.Command {
 	o := kitVerifyOptions{}
 	c := &cobra.Command{Use: "verify <task-id>", Short: "Run exact-revision verification under the current claim", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateKitRPCTimeout(o.rpcTimeout); err != nil {
+			return err
+		}
 		root, err := os.Getwd()
 		if err != nil {
 			return err
@@ -44,7 +48,7 @@ func kitVerifyCmd() *cobra.Command {
 			return err
 		}
 		o.configPath, o.configSource = selected.Path, selected.Source
-		return verifyKits(cmd.Context(), kitRPC{newClient(), os.Getenv("CONVEYOR_WORK_ORDER_ID"), os.Getenv("CONVEYOR_SESSION_ID"), os.Getenv("CONVEYOR_CLIENT_TOKEN")}, root, args[0], o, cmd.OutOrStdout())
+		return verifyKits(cmd.Context(), kitRPC{client: newClient(), order: os.Getenv("CONVEYOR_WORK_ORDER_ID"), session: os.Getenv("CONVEYOR_SESSION_ID"), claimToken: os.Getenv("CONVEYOR_CLIENT_TOKEN"), timeout: o.rpcTimeout}, root, args[0], o, cmd.OutOrStdout())
 	}}
 	c.Flags().StringVar(&o.inputsPath, "inputs", "", "JSON safe input maps keyed by kit:<id>:<exercise> or ordinary:<id>")
 	c.Flags().StringVar(&o.retryKey, "retry-key", "", "explicit new attempt key after replay admission")
@@ -54,6 +58,7 @@ func kitVerifyCmd() *cobra.Command {
 	c.Flags().StringVar(&o.contextID, "context-id", "", "prepared verification context (otherwise prepare the current claim)")
 	c.Flags().StringVar(&o.coveragePath, "coverage", "", "JSON coverage mapping for registered ordinary obligations and selected kits")
 	c.Flags().StringVar(&o.attemptRoot, "attempt-root", "", "private output directory outside the checkout (defaults to the task cache)")
+	c.Flags().DurationVar(&o.rpcTimeout, "rpc-timeout", kitDefaultRPCTimeout, "transport ceiling for each control-plane call (1s to 10m)")
 	return c
 }
 
@@ -77,8 +82,11 @@ type kitVerifier struct {
 	coverage                      store.VerificationCoverage
 	output                        io.Writer
 	redactor                      *redact.Redactor
-	mu                            sync.Mutex
-	lost                          bool
+	// mu guards order bounds and lost; liveMu serializes live checks so a
+	// slow control-plane call never holds mu (component-verification-runner).
+	mu     sync.Mutex
+	liveMu sync.Mutex
+	lost   bool
 }
 
 func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerifyOptions, output io.Writer) error {
@@ -305,44 +313,89 @@ func normalizeKitRemote(s string) string {
 }
 
 func (v *kitVerifier) live(ctx context.Context, grantID string) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.lost || !v.order.LeaseExpiresAt.After(time.Now()) || (!v.order.ExecutionDeadline.IsZero() && !v.order.ExecutionDeadline.After(time.Now())) {
-		v.lost = true
-		return fmt.Errorf("verification claim lost or expired")
+	v.liveMu.Lock()
+	defer v.liveMu.Unlock()
+	if err := v.cachedLive(); err != nil {
+		return err
 	}
-	deadline := v.order.LeaseExpiresAt
-	if !v.order.ExecutionDeadline.IsZero() && v.order.ExecutionDeadline.Before(deadline) {
-		deadline = v.order.ExecutionDeadline
-	}
-	ctx, cancel := context.WithDeadline(ctx, deadline)
+	ctx, cancel := context.WithDeadline(ctx, v.claimDeadline())
 	defer cancel()
 	var order core.WorkOrder
 	if err := v.rpc.call(ctx, "renew_work_order", nil, &order); err != nil {
 		if ctx.Err() == nil && !transientWorkerError(err) {
-			v.lost = true
+			v.markLost()
 		}
 		return err
 	}
 	if order.State != core.WorkOrderClaimed || order.SessionID != v.rpc.session || order.AttemptID != v.order.AttemptID || !order.LeaseExpiresAt.After(time.Now()) {
-		v.lost = true
+		v.markLost()
 		return fmt.Errorf("verification claim changed")
 	}
+	v.mu.Lock()
 	v.order.LeaseExpiresAt = order.LeaseExpiresAt
+	v.mu.Unlock()
 	var snapshot store.VerificationSnapshot
 	if err := v.rpc.call(ctx, "get_verification_context", workorder.VerificationContextRequest{ContextID: v.snapshot.Contexts[0].ID}, &snapshot); err != nil {
 		if ctx.Err() == nil && !transientWorkerError(err) {
-			v.lost = true
+			v.markLost()
 		}
 		return err
 	}
 	for _, r := range snapshot.PermissionRevocations {
 		if r.GrantID == grantID {
-			v.lost = true
+			v.markLost()
 			return fmt.Errorf("verification permission grant revoked")
 		}
 	}
 	return nil
+}
+
+// cachedLive is the claim state known without a server call: no recorded
+// authority loss, an unexpired lease and an unpassed execution deadline. It
+// is the spool barrier and the evidence relay's liveness check
+// (component-verification-runner).
+func (v *kitVerifier) cachedLive() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	now := time.Now()
+	if v.lost || !v.order.LeaseExpiresAt.After(now) || (!v.order.ExecutionDeadline.IsZero() && !v.order.ExecutionDeadline.After(now)) {
+		v.lost = true
+		return fmt.Errorf("verification claim lost or expired")
+	}
+	return nil
+}
+
+func (v *kitVerifier) markLost() {
+	v.mu.Lock()
+	v.lost = true
+	v.mu.Unlock()
+}
+
+// claimDeadline is the earlier of the lease and the execution deadline.
+func (v *kitVerifier) claimDeadline() time.Time {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	deadline := v.order.LeaseExpiresAt
+	if !v.order.ExecutionDeadline.IsZero() && v.order.ExecutionDeadline.Before(deadline) {
+		deadline = v.order.ExecutionDeadline
+	}
+	return deadline
+}
+
+// finishContext bounds the calls that follow a child's exit. After the
+// runner's own context is cancelled they are teardown and keep the short
+// teardown bound; otherwise they run until the execution deadline, with each
+// call under the transport ceiling (component-verification-runner).
+func (v *kitVerifier) finishContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if ctx.Err() != nil {
+		return context.WithTimeout(detached, kitTeardownTimeout)
+	}
+	deadline := v.order.ExecutionDeadline
+	if deadline.IsZero() {
+		deadline = v.claimDeadline()
+	}
+	return context.WithDeadline(detached, deadline)
 }
 
 // run uses the same process-group teardown as the worker launcher. A replayed

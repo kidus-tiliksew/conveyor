@@ -102,3 +102,71 @@ func TestKitSpoolRejectsSymlinkDirectory(t *testing.T) {
 		t.Fatal("spool read symlink directory")
 	}
 }
+
+// Upload holds the spool lock only around its file reads and removal, so a
+// relay is acknowledged while a slow upload is in flight
+// (component-verification-runner).
+func TestKitEvidenceSpoolUploadIsConcurrentAndBarriered(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spool")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var lost atomic.Bool
+	s := &EvidenceSpool{Directory: dir, Limit: 1024, Check: func(context.Context) error {
+		if lost.Load() {
+			return errors.New("authority lost")
+		}
+		return nil
+	}}
+	if err := s.Put(t.Context(), "first", []byte(`{"n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	inFlight, release := make(chan []byte, 1), make(chan error)
+	result := make(chan error, 1)
+	go func() {
+		result <- s.Upload(t.Context(), "first", func(_ context.Context, b []byte) error {
+			inFlight <- b
+			return <-release
+		})
+	}()
+	if got := <-inFlight; string(got) != `{"n":1}` {
+		t.Fatalf("uploaded %q", got)
+	}
+	if err := s.Put(t.Context(), "second", []byte(`{"n":2}`)); err != nil {
+		t.Fatalf("Put blocked or refused during an in-flight upload: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "first.json")); err != nil {
+		t.Fatal("entry removed before its upload succeeded")
+	}
+	release <- nil
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "first.json")); !os.IsNotExist(err) {
+		t.Fatal("uploaded entry retained")
+	}
+	if err := s.Upload(t.Context(), "second", func(context.Context, []byte) error { return errors.New("unavailable") }); err == nil {
+		t.Fatal("failed upload reported success")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "second.json")); err != nil {
+		t.Fatal("entry removed after a failed upload")
+	}
+	lost.Store(true)
+	uploaded := false
+	if err := s.Upload(t.Context(), "second", func(context.Context, []byte) error { uploaded = true; return nil }); err == nil || uploaded {
+		t.Fatalf("upload after authority loss: err=%v uploaded=%v", err, uploaded)
+	}
+	lost.Store(false)
+	go func() {
+		result <- s.Upload(t.Context(), "second", func(context.Context, []byte) error {
+			lost.Store(true)
+			return nil
+		})
+	}()
+	if err := <-result; err == nil {
+		t.Fatal("removal after authority loss reported success")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "second.json")); err != nil {
+		t.Fatal("entry removed after authority loss")
+	}
+}
