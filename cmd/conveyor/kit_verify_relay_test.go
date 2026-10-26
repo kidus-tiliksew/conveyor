@@ -167,6 +167,54 @@ func TestKitRunnerDrainKeepsClaimRenewed(t *testing.T) {
 	}
 }
 
+// A cancellation that arrives after the child exited, while a relayed upload
+// is in flight against an unresponsive server, moves every remaining call
+// into the teardown budget even with a 10 min transport ceiling
+// (component-verification-runner).
+func TestKitRunnerCancelDuringDrainKeepsTeardownBound(t *testing.T) {
+	e := kitRelayExercise(t, "relay", "1", "2", "16", "0")
+	f := newKitExecutionFixture(t, e)
+	f.v.rpc.timeout = kitMaxRPCTimeout
+	f.evidenceDelay.Store(int64(time.Hour))
+	arrived := make(chan struct{})
+	var once sync.Once
+	f.onEvidenceArrival = func() { once.Do(func() { close(arrived) }) }
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cancelled := make(chan time.Time, 1)
+	f.v.onDrain = func() {
+		// The child has exited; cancel once an upload is in flight.
+		go func() {
+			<-arrived
+			cancelled <- time.Now()
+			cancel()
+		}()
+	}
+	attemptRoot := t.TempDir()
+	err := f.v.launch(ctx, e, f.v.root, attemptRoot, "run", "grant", f.snapshot.Attempts[0].Subject, kitRelayEnvironment(), nil)
+	returned := time.Now()
+	var at time.Time
+	select {
+	case at = <-cancelled:
+	default:
+		t.Fatal("cancellation was not delivered during the drain")
+	}
+	if elapsed := returned.Sub(at); err == nil || elapsed > kitTeardownTimeout+2*time.Second {
+		t.Fatalf("teardown after cancellation: err=%v after %s", err, elapsed)
+	}
+	if !strings.Contains(err.Error(), "retained") {
+		t.Fatalf("unsent evidence not reported as retained: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.outcome != "" || len(f.snapshot.Evidence) != 0 {
+		t.Fatalf("outcome or evidence recorded without an upload receipt: outcome=%q", f.outcome)
+	}
+	if _, err := os.Stat(filepath.Join(attemptRoot, "run", "spool", "item-1.json")); err != nil {
+		t.Fatalf("evidence not retained after cancellation: %v", err)
+	}
+}
+
 // A relay beyond the spool bound answers 409, so the child sees back-pressure
 // instead of an acknowledgement for unrecorded evidence.
 func TestKitRunnerSpoolFullRefusesRelay(t *testing.T) {

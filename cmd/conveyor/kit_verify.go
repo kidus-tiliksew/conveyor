@@ -82,6 +82,8 @@ type kitVerifier struct {
 	coverage                      store.VerificationCoverage
 	output                        io.Writer
 	redactor                      *redact.Redactor
+	// onDrain, when set by a test, runs as the post-exit drain starts.
+	onDrain func()
 	// mu guards order bounds and lost; liveMu serializes live checks so a
 	// slow control-plane call never holds mu (component-verification-runner).
 	mu     sync.Mutex
@@ -382,10 +384,11 @@ func (v *kitVerifier) claimDeadline() time.Time {
 	return deadline
 }
 
-// finishContext bounds the calls that follow a child's exit. After the
-// runner's own context is cancelled they are teardown and keep the short
-// teardown bound; otherwise they run until the execution deadline, with each
-// call under the transport ceiling (component-verification-runner).
+// finishContext bounds the calls that follow a child's exit. They run until
+// the execution deadline, with each call under the transport ceiling. When
+// the runner's own context is cancelled, before or after this call, every
+// remaining call shares one teardown budget that starts at the cancellation
+// (component-verification-runner).
 func (v *kitVerifier) finishContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	detached := context.WithoutCancel(ctx)
 	if ctx.Err() != nil {
@@ -395,7 +398,23 @@ func (v *kitVerifier) finishContext(ctx context.Context) (context.Context, conte
 	if deadline.IsZero() {
 		deadline = v.claimDeadline()
 	}
-	return context.WithDeadline(detached, deadline)
+	finish, cancel := context.WithDeadline(detached, deadline)
+	var mu sync.Mutex
+	var budget *time.Timer
+	stopWatching := context.AfterFunc(ctx, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		budget = time.AfterFunc(kitTeardownTimeout, cancel)
+	})
+	return finish, func() {
+		stopWatching()
+		mu.Lock()
+		if budget != nil {
+			budget.Stop()
+		}
+		mu.Unlock()
+		cancel()
+	}
 }
 
 // run uses the same process-group teardown as the worker launcher. A replayed

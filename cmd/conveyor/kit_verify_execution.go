@@ -414,6 +414,9 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	// Relayed evidence uploads before the execution report and before any
 	// outcome; an entry the uploader could not send stays spooled for the
 	// flush below.
+	if v.onDrain != nil {
+		v.onDrain()
+	}
 	_ = uploader.drain()
 	after, hashErr := kitToolDigest(tool)
 	environment.Attributes["tool_sha256_after"] = after

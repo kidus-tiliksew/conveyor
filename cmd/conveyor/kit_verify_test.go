@@ -56,6 +56,9 @@ type kitExecutionFixture struct {
 	// fixture lock; renewExtends makes each renewal extend the lease.
 	evidenceDelay atomic.Int64
 	renewExtends  time.Duration
+	// onEvidenceArrival runs when an evidence request arrives, before any
+	// delay and outside the fixture lock.
+	onEvidenceArrival func()
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -84,6 +87,9 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 				delay += time.Duration(rand.Int64N(jitter))
 			}
 			if bytes.Contains(body, []byte(`"name":"submit_verification_evidence"`)) {
+				if f.onEvidenceArrival != nil {
+					f.onEvidenceArrival()
+				}
 				delay += time.Duration(f.evidenceDelay.Load())
 			}
 			if delay > 0 {
