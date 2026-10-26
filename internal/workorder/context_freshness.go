@@ -60,10 +60,10 @@ func (s *Service) recordContext(ctx context.Context, order core.WorkOrder, o cor
 		return backend.RecordContextObservation(ctx, lease, o)
 	})
 }
-func (s *Service) observeContext(ctx context.Context, order core.WorkOrder, snapshot core.ContextSnapshot, prior, kind string) core.ContextFreshness {
+func (s *Service) observeContext(ctx context.Context, order core.WorkOrder, snapshot core.ContextSnapshot, prior, kind string, divergence []core.ContextAuthorityDivergence) core.ContextFreshness {
 	events, err := s.Store.ListEvents(ctx, order.TaskID)
 	history := store.ContextHistory(events, order)
-	f := store.ProjectContext(snapshot, history, prior)
+	f := core.WithAuthorityDivergence(store.ProjectContext(snapshot, history, prior), divergence)
 	f.ObservedAt = time.Now().UTC()
 	if err != nil {
 		f.Diagnostic = "observation_unavailable"
@@ -93,7 +93,42 @@ func (s *Service) refreshContext(ctx context.Context, order core.WorkOrder, prio
 	if err != nil {
 		return core.ContextFreshness{SelectionSchema: 1, ComparisonStatus: "unavailable", Diagnostic: "refresh_unavailable"}
 	}
-	return s.observeContext(ctx, order, snapshot, prior, kind)
+	var divergence []core.ContextAuthorityDivergence
+	var comparisonErr error
+	if order.Stage == core.StageVerify {
+		divergence, comparisonErr = s.authorityDivergence(ctx, order)
+	}
+	f := s.observeContext(ctx, order, snapshot, prior, kind, divergence)
+	if comparisonErr != nil && f.Diagnostic == "" {
+		f.Diagnostic = "authority_comparison_unavailable"
+	}
+	return f
+}
+
+// authorityDivergence compares a claimed verify order's pinned snapshots with
+// the task's live served requirements and governance. It only reads: the pins
+// stay fixed for the claim, and only a later claim re-pins them
+// (component-context-freshness, Pinned verify authority).
+func (s *Service) authorityDivergence(ctx context.Context, order core.WorkOrder) ([]core.ContextAuthorityDivergence, error) {
+	task, err := s.Store.GetTask(ctx, order.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	var cfg *config.Config
+	if s.ConfigProvider != nil {
+		if cfg, err = s.config(ctx); err != nil {
+			return nil, err
+		}
+	}
+	live, err := store.ServedRequirementsForTask(ctx, s.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
+	if err != nil {
+		return nil, err
+	}
+	governance, err := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
+	if err != nil {
+		return nil, err
+	}
+	return core.CompareContextAuthority(order.ServedRequirementSnapshot, live.Requirements, order.GovernanceSnapshot, &governance), nil
 }
 func (s *Service) RefreshContext(ctx context.Context, id, session, prior string) (core.ContextFreshness, error) {
 	if prior != "" && !core.ValidContextRevision(prior) {

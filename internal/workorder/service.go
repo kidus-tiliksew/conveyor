@@ -314,7 +314,11 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 	if err = s.enforce(ctx, order); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if (order.Stage == core.StageReview || order.Stage == core.StageVerify) && order.ServedRequirementSnapshot == nil {
+	// A verify claim always carries live authority; the store re-pins with it
+	// unless a verification record binds the order's existing pins
+	// (store.VerifyClaimRepinsAuthority; component-work-orders, Claim admission).
+	liveVerify := order.Stage == core.StageVerify
+	if (order.Stage == core.StageReview || order.Stage == core.StageVerify) && (order.ServedRequirementSnapshot == nil || liveVerify) {
 		servedAuthority, resolveErr := store.ServedRequirementsForTask(ctx, s.Store, order.TaskID, config.ServedRequirementAuthorityNodes(cfg))
 		if resolveErr != nil {
 			return core.WorkOrder{}, fmt.Errorf("pin served requirements for review claim: %w", resolveErr)
@@ -326,7 +330,7 @@ func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClai
 		if getErr != nil {
 			return core.WorkOrder{}, getErr
 		}
-		if order.GovernanceSnapshot == nil {
+		if order.GovernanceSnapshot == nil || liveVerify {
 			governance, resolveErr := store.GovernanceForTask(ctx, s.Store, task.ID, task.Repo)
 			if resolveErr != nil {
 				return core.WorkOrder{}, fmt.Errorf("pin governance authority for review claim: %w", resolveErr)
@@ -1007,7 +1011,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	}
 	result.LineageContext = lineage
 	snapshot := core.WithContextAuthority(lineage.Snapshot, authoritySource, servedRequirements, governance)
-	result.ContextFreshness = s.observeContext(ctx, order, snapshot, "", "context.baseline_observed")
+	result.ContextFreshness = s.observeContext(ctx, order, snapshot, "", "context.baseline_observed", nil)
 	artifacts := artifactReferences(order.ID, lineage.Artifacts)
 	result.Artifacts = artifacts
 	result.ContextTruncated = lineage.Traversal.Truncated || lineage.OmittedCount > 0

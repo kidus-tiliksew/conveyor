@@ -1252,11 +1252,19 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		o.WorkerID = claim.WorkerID
 		o.LeaseExpiresAt = now.Add(duration)
 		o.UpdatedAt = now
-		if o.ServedRequirementSnapshot == nil {
+		repin := false
+		if o.Stage == core.StageVerify {
+			verificationRows, rowsErr := verificationRowsTx(ctx, tx, documentWorkspace(ctx), o.TaskID)
+			if rowsErr != nil {
+				return rowsErr
+			}
+			repin = store.VerifyClaimRepinsAuthority(o, verificationRows)
+		}
+		if o.ServedRequirementSnapshot == nil || (repin && claim.Requirements != nil) {
 			o.ServedRequirementSnapshot = claim.Requirements
 		}
 		if claim.Governance != nil {
-			if o.GovernanceSnapshot == nil {
+			if o.GovernanceSnapshot == nil || repin {
 				o.GovernanceSnapshot = claim.Governance
 			} else {
 				o.GovernanceSnapshot.PendingDesignProposals = claim.Governance.PendingDesignProposals

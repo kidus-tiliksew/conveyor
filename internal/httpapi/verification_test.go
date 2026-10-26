@@ -3,8 +3,12 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -23,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -1286,4 +1291,148 @@ func TestVerificationReviewAssessmentOnAttemptedContext(t *testing.T) {
 		}
 		t.Fatal("accepted verdict did not record the cited context and run")
 	})
+}
+
+// TestVerificationLateRequirementReachesRecoveredVerifyOrder replays the
+// late task-context case: a verify order claimed before the operator attaches
+// a requirement pins no requirement, so a kit pinning it is ineligible. The
+// refresh reports the divergence, and after release, operator recovery, and
+// a new claim, prepare_verification pins the requirement at its current
+// version and selects the kit (component-work-orders, Verify authority at
+// claim; component-verification-service; req-verification-kits AC-2.1).
+func TestVerificationLateRequirementReachesRecoveredVerifyOrder(t *testing.T) {
+	b := store.NewVolatileBackend()
+	t.Cleanup(b.Close)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	head := fixtureSHA("late-requirement-head")
+	forge := newKitForge(t, private, map[string]*kitForgeRepo{"org/repo": {head: head, manifests: map[string]string{head: kitManifest(2, [2]string{"k-late", pinsYAML("{document_id: req-late, version: 2}", "")})}, roots: map[string][]string{head: {".conveyor/kits/k-late"}}}})
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"verify": {Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour}}}}
+	if _, err = b.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	b.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{41}, 32))
+	if _, err = b.StoreWorkspaceGitHubApp(ctx, "demo", core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{AppID: 41, AppSlug: "conveyor-demo", ClientID: "client"}, PrivateKey: private}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.RecordWorkspaceGitHubAppInstallation(ctx, "demo", 41, 12, "org"); err != nil {
+		t.Fatal(err)
+	}
+	requirement := func(statement string) core.RequirementVersion {
+		return core.RequirementVersion{RequirementID: "req-late", Content: "# req-late\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}, Origin: core.RequirementOriginOperator}
+	}
+	if _, _, err = b.CreateRequirement(ctx, core.Requirement{ID: "req-late", Title: "Late"}, requirement("Observe the integration.")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = b.ConfirmRequirementVersion(ctx, "req-late", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.ProposeRequirementVersion(ctx, requirement("Observe the integration end to end.")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = b.ConfirmRequirementVersion(ctx, "req-late", 2); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "late-requirement", Workspace: "demo", Repo: "repo", Title: "late requirement", Branch: "conveyor/late", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: head, CreatedAt: time.Now().UTC()}
+	task.SetupContract.VerifyStage = true
+	task.SetupContract.MaxBounces = 10
+	if err = b.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	if _, err = storetest.CreateStageWorkOrder(ctx, b, job, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: head, CreatedAt: task.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = storetest.EnsureWorkerEnrollment(ctx, b, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &workorder.Service{Store: b, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, GitHubApps: github.NewAppClient(forge.server.Client(), forge.server.URL), WorkspaceGitHubApps: b}
+	s := NewServer(b)
+	s.WorkOrders = service
+	workerCtx := withWorkerActor(store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker}), core.Worker{ID: "fixture", Workspace: "demo"})
+	claim := func(session string) core.WorkOrder {
+		t.Helper()
+		order, claimErr := service.Claim(workerCtx, job.ID, core.WorkOrderClaim{WorkerID: "fixture", ClaimantID: "fixture", SessionID: session, ClientToken: session + "-token", Lease: time.Hour})
+		if claimErr != nil {
+			t.Fatal(claimErr)
+		}
+		return order
+	}
+	prepare := func(session, requestKey string) store.VerificationSnapshot {
+		t.Helper()
+		w := verificationRESTCall(s, workerCtx, job.ID, "prepare_verification", map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": session, "client_token": session + "-token", "request_key": requestKey})
+		if w.Code != http.StatusOK {
+			t.Fatalf("prepare_verification %s: %d %s", requestKey, w.Code, w.Body.String())
+		}
+		var snapshot store.VerificationSnapshot
+		if decodeErr := json.Unmarshal(w.Body.Bytes(), &snapshot); decodeErr != nil || len(snapshot.Contexts) != 1 || len(snapshot.Selections) != 1 {
+			t.Fatalf("prepare_verification %s: %v %s", requestKey, decodeErr, w.Body.String())
+		}
+		return snapshot
+	}
+	kit := func(snapshot store.VerificationSnapshot) verification.KitReceipt {
+		t.Helper()
+		kits := snapshot.Selections[0].Receipt.Kits
+		if len(kits) != 1 || kits[0].KitID != "k-late" {
+			t.Fatalf("selection kits = %+v", kits)
+		}
+		return kits[0]
+	}
+
+	first := claim("first")
+	if first.ServedRequirementSnapshot == nil || len(first.ServedRequirementSnapshot) != 0 {
+		t.Fatalf("first claim pinned %+v", first.ServedRequirementSnapshot)
+	}
+	before := kit(prepare("first", "before-attach"))
+	if before.Eligibility != "ineligible" || len(before.Reasons) == 0 || before.Reasons[0].Code != "pin_not_authoritative" {
+		t.Fatalf("kit before attachment = %+v", before)
+	}
+	if _, err = service.Get(workerCtx, job.ID, "first"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator confirms triage's task-context proposal while the claim is live.
+	if _, _, err = b.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: task.ID, TargetKind: core.TaskContextProposalRequirement, TargetID: "req-late", Source: core.TaskContextProposalTriage, Justification: "The task fixes the integration exercise."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.ConfirmTaskContextProposal(ctx, task.ID, core.TaskContextProposalRequirement, "req-late"); err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := service.RefreshContext(workerCtx, job.ID, "first", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refresh.ComparisonStatus != core.ContextAuthorityDiverged || !slices.Contains(refresh.AuthorityDivergence, core.ContextAuthorityDivergence{Kind: "requirement", DocumentID: "req-late", PinnedVersion: 0, LiveVersion: 2}) {
+		t.Fatalf("refresh = %q %+v", refresh.ComparisonStatus, refresh.AuthorityDivergence)
+	}
+
+	if _, err = storetest.ReleaseWorkerClaim(ctx, b, job.ID, "fixture", core.WorkOrderRelease{SessionID: "first", Reason: "pinned authority diverged", Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
+		t.Fatal(err)
+	}
+	operator := store.WithActor(ctx, store.Actor{ID: store.UserActorID("operator"), Role: core.ActorUser})
+	if _, err = storetest.RecoverWorkOrder(operator, b, job.ID, "recover-late-requirement", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	second := claim("second")
+	if len(second.ServedRequirementSnapshot) != 1 || second.ServedRequirementSnapshot[0].ID != "req-late" || second.ServedRequirementSnapshot[0].Version != 2 {
+		t.Fatalf("recovered claim pinned %+v", second.ServedRequirementSnapshot)
+	}
+	after := prepare("second", "after-recovery")
+	if !slices.Contains(after.Contexts[0].GoverningPins, core.VerificationPin{Kind: "requirement", DocumentID: "req-late", Version: 2}) {
+		t.Fatalf("governing pins = %+v", after.Contexts[0].GoverningPins)
+	}
+	if selected := kit(after); selected.Eligibility != "eligible" {
+		t.Fatalf("kit after recovery = %+v", selected)
+	}
+	if len(after.Selections[0].Subjects) != 1 || after.Selections[0].Subjects[0].Subject.KitID != "k-late" {
+		t.Fatalf("selected subjects = %+v", after.Selections[0].Subjects)
+	}
 }
