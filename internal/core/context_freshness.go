@@ -118,8 +118,97 @@ type ContextFreshness struct {
 	PriorAuthoritySource      string             `json:"prior_authority_source,omitempty"`
 	PriorAuthorityReferences  []string           `json:"prior_authority_references,omitempty"`
 	PriorAuthorityDigest      string             `json:"prior_authority_digest,omitempty"`
-	Diagnostic                string             `json:"diagnostic,omitempty"`
-	Truncated                 bool               `json:"truncated"`
+	// AuthorityDivergence lists the documents whose pinned version on a
+	// claimed verify order differs from the task's live authority
+	// (component-context-freshness, Pinned verify authority).
+	AuthorityDivergence       []ContextAuthorityDivergence `json:"authority_divergence,omitempty"`
+	AuthorityDivergenceCount  int                          `json:"authority_divergence_count,omitempty"`
+	AuthorityDivergenceRemedy string                       `json:"authority_divergence_remedy,omitempty"`
+	Diagnostic                string                       `json:"diagnostic,omitempty"`
+	Truncated                 bool                         `json:"truncated"`
+}
+
+// ContextAuthorityDivergence is one requirement or System Design whose pinned
+// version differs from the live one. A version of 0 means the document is
+// absent on that side.
+type ContextAuthorityDivergence struct {
+	Kind          string `json:"kind"`
+	DocumentID    string `json:"document_id"`
+	PinnedVersion int    `json:"pinned_version"`
+	LiveVersion   int    `json:"live_version"`
+}
+
+// ContextAuthorityDivergenceLimit bounds the divergence list; the count keeps
+// the full total.
+const ContextAuthorityDivergenceLimit = 64
+
+// ContextAuthorityDiverged is the comparison status of a verify refresh whose
+// pins differ from the task's live authority.
+const ContextAuthorityDiverged = "authority_diverged"
+
+// ContextAuthorityDivergenceRemedy points a verifier at the re-pinning path:
+// a verify claim pins current authority unless a verification record binds
+// the order's pins (component-work-orders, Claim admission).
+const ContextAuthorityDivergenceRemedy = "Release this verify order with release_work_order before sealing, even after a context exists; any sealed context, a checkpoint included, binds the current pins. After an operator recovers the order, the next claim pins the task's current authority unless an unresolved operation or an unconsumed recovery authorization of this order binds the current pins."
+
+// CompareContextAuthority compares pinned and live authority by document ID
+// and version, sorted by kind and document ID. It reads only its arguments.
+func CompareContextAuthority(pinnedRequirements, liveRequirements []ServedRequirementContext, pinnedGovernance, liveGovernance *GovernanceSnapshot) []ContextAuthorityDivergence {
+	out := []ContextAuthorityDivergence{}
+	compare := func(kind string, pinned, live map[string]int) {
+		ids := make([]string, 0, len(pinned)+len(live))
+		for id := range pinned {
+			ids = append(ids, id)
+		}
+		for id := range live {
+			if _, ok := pinned[id]; !ok {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if pinned[id] != live[id] {
+				out = append(out, ContextAuthorityDivergence{Kind: kind, DocumentID: id, PinnedVersion: pinned[id], LiveVersion: live[id]})
+			}
+		}
+	}
+	requirements := func(v []ServedRequirementContext) map[string]int {
+		m := map[string]int{}
+		for _, r := range v {
+			m[r.ID] = r.Version
+		}
+		return m
+	}
+	designs := func(g *GovernanceSnapshot) map[string]int {
+		m := map[string]int{}
+		if g != nil {
+			for _, d := range g.Designs {
+				m[d.ID] = d.Version
+			}
+		}
+		return m
+	}
+	compare("requirement", requirements(pinnedRequirements), requirements(liveRequirements))
+	compare("system_design", designs(pinnedGovernance), designs(liveGovernance))
+	return out
+}
+
+// WithAuthorityDivergence records a non-empty divergence on the envelope:
+// the bounded list, its full count, the remedy, and the authority_diverged
+// status in place of the selection comparison result.
+func WithAuthorityDivergence(f ContextFreshness, divergence []ContextAuthorityDivergence) ContextFreshness {
+	if len(divergence) == 0 {
+		return f
+	}
+	f.AuthorityDivergenceCount = len(divergence)
+	if len(divergence) > ContextAuthorityDivergenceLimit {
+		divergence = divergence[:ContextAuthorityDivergenceLimit]
+		f.Truncated = true
+	}
+	f.AuthorityDivergence = append([]ContextAuthorityDivergence{}, divergence...)
+	f.AuthorityDivergenceRemedy = ContextAuthorityDivergenceRemedy
+	f.ComparisonStatus = ContextAuthorityDiverged
+	return f
 }
 
 func CompareContext(current ContextSnapshot, prior *ContextSnapshot) ContextFreshness {

@@ -1368,9 +1368,17 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		}
 	}
 	attemptID := core.NewWorkOrderAttemptID()
-	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, attempt_id=$3, client_token_hash=$4, agent=$5, model=$6, worker_id=$7, lease_expires_at=$8, execution_started_at=$9, execution_deadline=$10, model_enforcement=$11, updated_at=$12, served_requirement_snapshot=COALESCE(served_requirement_snapshot,$13), governance_snapshot=CASE WHEN $14::jsonb IS NULL THEN governance_snapshot WHEN governance_snapshot IS NULL THEN $14::jsonb ELSE jsonb_set(jsonb_set(governance_snapshot, '{pending_design_proposals}', COALESCE($14::jsonb->'pending_design_proposals','[]'::jsonb), true), '{resolution_notes}', COALESCE($14::jsonb->'resolution_notes','[]'::jsonb), true) END WHERE workspace_id=$15 AND id=$16 RETURNING "+workOrderColumns,
+	repin := false
+	if order.Stage == core.StageVerify {
+		records, recordsErr := s.queries.WithTx(tx).ListVerificationRecords(ctx, workspace(ctx), order.TaskID)
+		if recordsErr != nil {
+			return core.WorkOrder{}, recordsErr
+		}
+		repin = store.VerifyClaimRepinsAuthority(order, verificationRows(records))
+	}
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, attempt_id=$3, client_token_hash=$4, agent=$5, model=$6, worker_id=$7, lease_expires_at=$8, execution_started_at=$9, execution_deadline=$10, model_enforcement=$11, updated_at=$12, served_requirement_snapshot=CASE WHEN $17 AND $13::jsonb IS NOT NULL THEN $13::jsonb ELSE COALESCE(served_requirement_snapshot,$13::jsonb) END, governance_snapshot=CASE WHEN $14::jsonb IS NULL THEN governance_snapshot WHEN $17 OR governance_snapshot IS NULL THEN $14::jsonb ELSE jsonb_set(jsonb_set(governance_snapshot, '{pending_design_proposals}', COALESCE($14::jsonb->'pending_design_proposals','[]'::jsonb), true), '{resolution_notes}', COALESCE($14::jsonb->'resolution_notes','[]'::jsonb), true) END WHERE workspace_id=$15 AND id=$16 RETURNING "+workOrderColumns,
 		claim.ClaimantID, claim.SessionID, attemptID, hash, claim.Agent, claim.Model, claim.WorkerID, expires,
-		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, servedRequirementSnapshotJSON(claim.Requirements), governanceSnapshotJSON(claim.Governance), workspace(ctx), id)
+		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, servedRequirementSnapshotJSON(claim.Requirements), governanceSnapshotJSON(claim.Governance), workspace(ctx), id, repin)
 	order, err = scanWorkOrder(row)
 	if err != nil {
 		return core.WorkOrder{}, err

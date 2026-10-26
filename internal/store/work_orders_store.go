@@ -2280,11 +2280,12 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		}
 	}
 	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		if order.ServedRequirementSnapshot == nil && claim.Requirements != nil {
+		repin := VerifyClaimRepinsAuthority(order, m.verificationRowsLocked(m.tasks[order.TaskID].Workspace, order.TaskID))
+		if (order.ServedRequirementSnapshot == nil || repin) && claim.Requirements != nil {
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
 		if claim.Governance != nil {
-			if order.GovernanceSnapshot == nil {
+			if order.GovernanceSnapshot == nil || repin {
 				copy := *claim.Governance
 				copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
 				copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)

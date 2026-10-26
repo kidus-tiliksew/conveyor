@@ -36,6 +36,9 @@ revocations").
    Register ordinary obligations and build coverage before execution. Obtain
    operator-issued grants through the grant wait below and inspect the local
    execution configuration.
+5. Call `refresh_work_order_context` before you execute anything and again
+   before you seal. Follow [Late task context](#late-task-context) when it
+   reports `comparison_status: authority_diverged`.
 
 The runner needs `CONVEYOR_WORK_ORDER_ID`, `CONVEYOR_SESSION_ID`,
 `CONVEYOR_CLIENT_TOKEN` and explicit workspace context. A launcher provides
@@ -46,6 +49,31 @@ flags or exported shell state. That command is the only one that carries the
 token. Keep the token out of argv, logs, files and children. Use the
 configured server; a connection failure does not authorize guessing another
 endpoint.
+
+### Late task context
+
+The claim pins the task's served requirements and System Designs. A
+requirement that the operator attaches after the claim stays outside those
+pins until a later claim. The refresh then reports
+`comparison_status: authority_diverged`, and each differing document appears
+in `authority_divergence` with its pinned and live versions
+(`component-context-freshness`).
+
+When a diverged document decides kit selection, re-pin before you seal. One
+example is a kit excluded with `pin_not_authoritative` on a requirement the
+task now serves.
+
+1. Do not seal `feedback` or `operator_action_required` for it. Any sealed
+   context, a checkpoint included, binds the order's current pins.
+2. Release the order with `release_work_order`, even after a context exists.
+   Use reason `operator checkpoint reached` and a decision request that names
+   each diverged document and both versions.
+3. After an operator recovers the order, the next claim pins the task's
+   current authority and prepares a new context (`component-work-orders`).
+   That re-pin does not happen while an unresolved operation or an unconsumed
+   recovery authorization of the order binds the current pins.
+
+A divergence that changes no kit's eligibility needs no release.
 
 ## Claim identity and usage
 
@@ -494,10 +522,11 @@ attempt, grant or evidence, so absent evidence stays visibly absent. It
 releases the order with retry suppression, keeps the task on verify, and never
 admits review. If a lost response leaves the result unknown, repeat the
 identical call from the same claim; it returns the original receipt. Once a
-context exists, submit the checkpoint instead of calling `release_work_order`.
-Before any context exists, release with reason `operator checkpoint reached`
-and a decision request. An unsupported outcome returns
-`verification_outcome_unsupported` with this mapping and changes nothing.
+context exists, submit the checkpoint instead of calling `release_work_order`,
+except for [Late task context](#late-task-context). Before any context exists,
+release with reason `operator checkpoint reached` and a decision request. An
+unsupported outcome returns `verification_outcome_unsupported` with this
+mapping and changes nothing.
 
 ### When no kit is eligible
 

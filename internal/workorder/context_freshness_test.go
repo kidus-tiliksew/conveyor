@@ -2,11 +2,14 @@ package workorder
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -230,4 +233,105 @@ func TestContextRefreshPreservesPinnedAuthorityAndReportsReferenceChanges(t *tes
 		t.Fatal("authority drift changed pins")
 	}
 	_ = st
+}
+
+// TestVerifyRefreshReportsLiveAuthorityDivergence proves that a refresh of a
+// claimed verify order compares its pins with the task's live authority and
+// reports each difference without repinning (component-context-freshness,
+// Pinned verify authority).
+func TestVerifyRefreshReportsLiveAuthorityDivergence(t *testing.T) {
+	ctx := store.WithActor(store.WithWorkspace(t.Context(), "demo"), store.Actor{ID: store.UserActorID("owner"), Role: core.ActorUser})
+	st := store.NewMemory()
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "app", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"verify": {Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour}}}}
+	designContent := func(note string) string {
+		return "# Design\n\n" + note + "\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```"
+	}
+	if _, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-live", Title: "Live design", Category: "Architecture"}, core.SystemDesignVersion{Content: designContent("First."), Origin: core.SystemDesignOriginOperator}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ConfirmSystemDesignVersion(ctx, "design-live", 1); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "verify-divergence", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: strings.Repeat("a", 40), CreatedAt: time.Now().UTC()}
+	task.SetupContract.VerifyStage = true
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	if _, err := storetest.CreateStageWorkOrder(ctx, st, job, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, CreatedAt: task.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := pack.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{Store: st, Pack: p, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	order, err := s.Claim(ctx, job.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("owner"), SessionID: "verify-session", ClientToken: "verify-token", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Get(ctx, order.ID, "verify-session"); err != nil {
+		t.Fatal(err)
+	}
+	same, err := s.RefreshContext(ctx, order.ID, "verify-session", "")
+	if err != nil || same.ComparisonStatus != "unchanged" || len(same.AuthorityDivergence) != 0 || same.AuthorityDivergenceRemedy != "" {
+		t.Fatalf("refresh with equal authority = %+v, %v", same, err)
+	}
+
+	// The operator attaches a requirement and a newer design version is
+	// confirmed while the claim is live.
+	requirement := core.RequirementVersion{Content: "# req-late\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Observe the late requirement.\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the late requirement."}}, Origin: core.RequirementOriginOperator}
+	if _, _, err = st.CreateRequirement(ctx, core.Requirement{ID: "req-late", Title: "Late"}, requirement); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-late", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: task.ID, TargetKind: core.TaskContextProposalRequirement, TargetID: "req-late", Source: core.TaskContextProposalTriage, Justification: "The task changes the late behavior."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmTaskContextProposal(ctx, task.ID, core.TaskContextProposalRequirement, "req-late"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: "design-live", Content: designContent("Second."), Origin: core.SystemDesignOriginOperator}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, "design-live", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	diverged, err := s.RefreshContext(ctx, order.ID, "verify-session", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []core.ContextAuthorityDivergence{{Kind: "requirement", DocumentID: "req-late", PinnedVersion: 0, LiveVersion: 1}, {Kind: "system_design", DocumentID: "design-live", PinnedVersion: 1, LiveVersion: 2}}
+	if diverged.ComparisonStatus != core.ContextAuthorityDiverged || diverged.AuthorityDivergenceCount != 2 || diverged.AuthorityDivergenceRemedy != core.ContextAuthorityDivergenceRemedy || !reflect.DeepEqual(diverged.AuthorityDivergence, want) {
+		t.Fatalf("diverged refresh = status %q count %d remedy %q entries %+v", diverged.ComparisonStatus, diverged.AuthorityDivergenceCount, diverged.AuthorityDivergenceRemedy, diverged.AuthorityDivergence)
+	}
+	stored, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.ServedRequirementSnapshot) != 0 || stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.Designs) != 1 || stored.GovernanceSnapshot.Designs[0].Version != 1 {
+		t.Fatalf("refresh repinned the claim: requirements=%+v governance=%+v", stored.ServedRequirementSnapshot, stored.GovernanceSnapshot)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := ""
+	for _, e := range events {
+		if e.Kind == "context.refresh_observed" {
+			var payload struct {
+				ComparisonStatus string `json:"comparison_status"`
+			}
+			if err = json.Unmarshal(e.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			recorded = payload.ComparisonStatus
+		}
+	}
+	if recorded != core.ContextAuthorityDiverged {
+		t.Fatalf("recorded refresh status = %q", recorded)
+	}
 }
