@@ -336,10 +336,15 @@ forward: it is the
 source of the bounded lineage context served into future work orders, so
 related work arrives already knowing its neighbors.
 
-Traversal is always budgeted (depth, nodes, links) and reports what it left
-out, because an unbounded graph walk is how context windows and API latencies
-die. The dashboard's knowledge explorer is the same bounded traversal,
-rendered.
+Traversal is always budgeted (depth, nodes, links, and per-node fan-out) and
+reports what it left out, axis by axis, because an unbounded graph walk is how
+context windows and API latencies die. A popular node, such as a requirement
+that serves many tasks, contributes at most its fan-out, so a task's own work
+orders, verdicts, pull requests, and ranges arrive ahead of the siblings
+reached through it. The store reads only the links the walk examines, so a
+walk costs the same whatever the workspace's size. A review or verify order
+shows each served requirement at the version its claim pinned. The
+dashboard's knowledge explorer is the same bounded traversal, rendered.
 
 ## Observability
 
