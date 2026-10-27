@@ -279,29 +279,58 @@ instructions and a refresh review afterward.
 ## The knowledge graph
 
 Every step above leaves edges. Lineage is projected from the append-only
-event log, never asserted directly: a `task.created` event, a
-`pull_request.opened` event, a `review.completed` event each project their
-edges, and the whole graph can be rebuilt from events at any time
-(`conveyor lineage rebuild`).
+event log, never asserted directly: the writer of each event, such as
+`task.created`, `pull_request.opened`, or `review.completed`, projects that
+event's edges in the same transaction. `conveyor lineage rebuild` replays the
+log to regenerate every edge kind the projector owns. Rebuild keeps rows it
+cannot regenerate and reports them as `preserved_unregenerable`, and it leaves
+rows of other kinds, such as retained historical feature assignments, in
+place.
 
-The node types span the factory: requirements and their versions, System
-Designs and their versions, decisions, reference documents, repository
-paths, tasks, work orders, pull requests, commit ranges, evidence, and
+The node types span the factory: planning sessions and bundles, requirements
+and their versions, System Designs and their versions, reference documents
+and their versions, decisions, repository paths, blueprints and their plan
+versions, tasks, work orders, pull requests, commit ranges, evidence, and
 verdicts. The edges say what happened:
 
 ```
-requirement       --serves-->          task
-system_design_version --governs-->     task, repository_path
-task              --depends_on-->      task
-task              --dispatches-->      work_order
-work_order        --produced_verdict--> verdict  <--supports-- evidence
-task              --submitted_as-->    pull_request
-task              --merged_range-->    commit_range
-system_design_version / decision --proposed_by--> task
+requirement           --serves-->           task, blueprint
+requirement_version   --serves-->           task
+requirement           --versions-->         requirement_version
+system_design         --versions-->         system_design_version
+reference_document    --versions-->         reference_document_version
+requirement_version / system_design_version / reference_document_version / decision
+                      --supersedes-->       its predecessor
+requirement_version   --derived_from-->     reference_document_version
+system_design_version --governs-->          task, repository_path
+system_design_version / decision --proposed_by--> task, planning_session
+planning_session      --produced_requirement / produced_design / produced_bundle / produced_blueprint--> what it produced
+planning_bundle       --proposes-->         requirement_version, system_design_version, decision
+planning_bundle       --creates-->          task
+blueprint             --plans-->            task
+blueprint             --versions-->         blueprint_version
+blueprint_version     --materializes-->     task
+task                  --depends_on-->       task
+task                  --succeeded_by-->     task
+task                  --dispatches-->       work_order
+work_order / task / planning_session --consulted--> system_design_version
+planning_session      --consulted-->        reference_document_version
+work_order            --produced_verdict--> verdict  <--supports-- evidence
+task                  --submitted_as-->     pull_request
+task                  --submitted_range / merged_range--> commit_range
 ```
 
+A requirement attachment records the confirmed version current when it is
+attached, so `requirement_version --serves--> task` names the version a
+delivery served. Attachments recorded before that field existed carry only
+`requirement --serves--> task`. `blueprint --plans--> task` joins a task's
+plan side (its planning session and plan versions) to its delivery side (its
+work orders, pull requests, and ranges). `task --succeeded_by--> task` links a
+task that was started over to its replacement.
+
 So a merged change answers, from the graph alone: which requirement versions
-it served, which designs governed it and whether it consulted them, and who
+it served (for attachments that recorded one), which designs governed it and
+whether it consulted them, which planning session produced it, and who
 reviewed it and what evidence supported the verdict. The same graph feeds
 forward: it is the
 source of the bounded lineage context served into future work orders, so

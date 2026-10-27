@@ -51,13 +51,20 @@ A factory that cannot trace its parts is just a fast way to make defects.
 Conveyor's answer is that every meaningful act appends an event, and lineage
 edges are projected from those events. 
 
-The graph is a projection: you can delete it and rebuild it from the ledger.
+The graph is a projection: a rebuild replays the ledger and regenerates every
+edge kind the projector owns. It keeps the rows it cannot regenerate and
+reports them, and it leaves retained history of other kinds in place.
 
-The result is one connected graph from intent to delivery. A requirement
-serves tasks; design versions govern tasks and repository paths; tasks
-depend on tasks, dispatch work orders, and are submitted as pull requests;
-work orders produce verdicts supported by evidence; proposals point back at
-the task that authored them. Ask it in either direction:
+The result is one connected graph from intent to delivery. A planning session
+produces requirements, designs, bundles, and task blueprints; each document
+reaches its versions, and each version supersedes its predecessor. A
+requirement and the requirement version current at attachment serve tasks;
+design versions govern tasks and repository paths; a blueprint plans its task;
+tasks depend on tasks, dispatch work orders, are submitted as pull requests,
+and merge as commit ranges; a task that is started over is succeeded by its
+replacement; work orders produce verdicts supported by evidence; proposals
+point back at the task or session that authored them. Ask it in either
+direction:
 "what delivered this requirement, who reviewed it, against which design
 version?" or "if I change this document, which merged work was built on the
 old version?"
