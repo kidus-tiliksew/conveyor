@@ -249,6 +249,13 @@ const layoutRequirementSummary = {
 // explorer still reads only once its trigger is pressed.
 async function mockRecordDetail(page: Page) {
   const lineageReads: string[] = []
+  // Walks that delivered a response. The explorer's read consumes its abort
+  // signal, so StrictMode's discarded first mount aborts a read the page never
+  // receives.
+  page.on('requestfinished', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/v1/lineage/')) lineageReads.push(path)
+  })
   await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', (route) => {
     const path = new URL(route.request().url()).pathname
@@ -261,7 +268,6 @@ async function mockRecordDetail(page: Page) {
       return route.fulfill({ json: { head_sha: '', current_context_id: '', contexts: { items: [] }, overview: {} } })
     }
     if (path.startsWith('/v1/lineage/')) {
-      lineageReads.push(path)
       const [, , , type, id] = path.split('/')
       const root = { type, id: decodeURIComponent(id) }
       return route.fulfill({ json: { roots: [root], nodes: [root], links: [], truncated: false } })
@@ -447,7 +453,7 @@ test.describe('phone', () => {
     expect(lineageReads).toEqual([])
     await explorer.click()
     await expect(page.getByRole('dialog', { name: 'Knowledge explorer' })).toBeVisible()
-    expect(lineageReads).toEqual(['/v1/lineage/task/task-layout'])
+    await expect.poll(() => lineageReads).toEqual(['/v1/lineage/task/task-layout'])
   })
 
   test('the board task sheet moves its window note under the controls', async ({ page }) => {

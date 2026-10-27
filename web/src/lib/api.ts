@@ -7,6 +7,7 @@ import type {
   InboxBand,
   InterventionAction,
   LineageGraph,
+  LineageImpact,
   LineageNodeType,
   MonitorDriftOutcome,
   MonitorStatus,
@@ -1127,9 +1128,34 @@ export function fetchLifecycleDiagram() {
 // The canonical bounded lineage walk. It is the only source the
 // related-records panel reads (AC-3.2): the panel groups what this returns and
 // never derives a relationship of its own, so it inherits the server's
-// traversal budget and its truncation report unchanged.
-export function fetchLineage(type: LineageNodeType, id: string) {
-  return getJSON<LineageGraph>(workspaceURL(`/v1/lineage/${encodeURIComponent(type)}/${encodeURIComponent(id)}`))
+// traversal budget and its truncation report unchanged. The walk includes each
+// node's depth, edge path, and status (component-lineage). The workspace is
+// the caller's explicit context, the one its query key names, never the
+// stored selection.
+export function fetchLineage(workspace: string, type: LineageNodeType, id: string, signal?: AbortSignal) {
+  return getJSON<LineageGraph>(
+    workspaceURL(
+      `/v1/lineage/${encodeURIComponent(type)}/${encodeURIComponent(id)}?include=depth,path,status`,
+      workspace,
+    ),
+    signal,
+  )
+}
+// The impact read lists merged work built on a superseded version of a
+// requirement or System Design (component-lineage).
+export function fetchLineageImpact(
+  workspace: string,
+  type: 'requirement' | 'system_design',
+  id: string,
+  signal?: AbortSignal,
+) {
+  return getJSON<LineageImpact>(
+    workspaceURL(
+      `/v1/lineage/${encodeURIComponent(type)}/${encodeURIComponent(id)}/impact?outdated=true&limit=100`,
+      workspace,
+    ),
+    signal,
+  )
 }
 export function fetchMonitorStatus() {
   return getJSON<MonitorStatus>(workspaceURL('/v1/monitor'))
