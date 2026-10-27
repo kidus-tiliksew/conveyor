@@ -305,7 +305,11 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 				return err
 			}
 		}
-		if err = insertWorkspaceEvent(ctx, tx, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": documentWorkspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})}); err != nil {
+		cited, citedErr := citedDecisionIDsTx(ctx, tx, confirmed.Content)
+		if citedErr != nil {
+			return citedErr
+		}
+		if err = insertWorkspaceEvent(ctx, tx, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": documentWorkspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs, "cited_decision_ids": cited})}); err != nil {
 			return err
 		}
 		if renamed {

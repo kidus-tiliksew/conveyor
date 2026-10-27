@@ -1,6 +1,7 @@
 package core
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -108,5 +109,33 @@ func TestGovernanceAssessmentSplitsDesignAndDecisionAuthority(t *testing.T) {
 	onlyDesign := true
 	if err := NormalizeGovernanceAssessment(&GovernanceAssessment{DesignApplicable: &onlyDesign}); err == nil || !strings.Contains(err.Error(), "both design_applicable and decision_citable") {
 		t.Fatalf("partial split error=%v", err)
+	}
+}
+
+// TestDecisionTokensApplyTheWholeTokenRule pins the extraction the
+// confirmation writers record as cited_decision_ids (component-document-corpus;
+// DEC-90(2); req-260802-72fc68 AC-6.3).
+func TestDecisionTokensApplyTheWholeTokenRule(t *testing.T) {
+	content := "Cites DEC-40 and DEC-9, then DEC-10 (DEC-9 again). Not DEC-04, xDEC-3, DEC-5x, DEC-6_a, or DEC-. Ends with DEC-2."
+	want := []string{"DEC-2", "DEC-9", "DEC-10", "DEC-40"}
+	got := DecisionTokens(content)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DecisionTokens=%v want %v", got, want)
+	}
+	for _, token := range got {
+		if !ContainsDecisionToken(content, token) {
+			t.Fatalf("token %s fails ContainsDecisionToken", token)
+		}
+	}
+	for _, absent := range []string{"DEC-4", "DEC-1", "DEC-3", "DEC-5", "DEC-6"} {
+		if ContainsDecisionToken(content, absent) {
+			t.Fatalf("ContainsDecisionToken matched %s inside a longer token", absent)
+		}
+	}
+	if got := DecisionTokens("no decisions here"); got == nil || len(got) != 0 {
+		t.Fatalf("DecisionTokens without tokens=%#v, want an empty list", got)
+	}
+	if !IsDecisionID("DEC-90") || IsDecisionID("DEC-0") || IsDecisionID("component-lineage") || IsDecisionID(" DEC-1") {
+		t.Fatal("IsDecisionID accepts only DEC-n")
 	}
 }

@@ -272,6 +272,7 @@ func (m *memory) ConfirmSystemDesignVersion(ctx context.Context, documentID stri
 		"workspace_id": workspace, "document_id": documentID, "version": version, "supersedes_version": predecessor,
 		"confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID,
 		"origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs,
+		"cited_decision_ids": m.citedDecisionIDsLocked(workspace, confirmed.Content),
 	})})
 	if renamed {
 		m.appendEventLocked(ctx, core.Event{Kind: SystemDesignTitleChangedEvent, Payload: core.JSONPayload(SystemDesignTitleChangedPayload(workspace, documentID, previousTitle, title, version, actor.ID))})
@@ -691,6 +692,21 @@ func (m *memory) recomputeDecisionSupersessionSweepLocked(ctx context.Context, d
 			m.recomputeDecisionSweepEntryLocked(ctx, decision, core.DecisionSweepTierReferenceDocument, document.ID, content)
 		}
 	}
+}
+
+// citedDecisionIDsLocked returns the workspace decisions that confirmed
+// content names as whole tokens, in numeric order, for the confirmation
+// event's cited_decision_ids (component-document-corpus; DEC-90(2);
+// req-260802-72fc68 AC-6.3).
+func (m *memory) citedDecisionIDsLocked(workspace, content string) []string {
+	tokens := core.DecisionTokens(content)
+	cited := make([]string, 0, len(tokens))
+	for _, id := range tokens {
+		if _, ok := m.decisions[memoryScopedKey{workspace: workspace, id: id}]; ok {
+			cited = append(cited, id)
+		}
+	}
+	return cited
 }
 
 func (m *memory) recomputeDecisionSweepsForDocumentLocked(ctx context.Context, tier, documentID, content string) {

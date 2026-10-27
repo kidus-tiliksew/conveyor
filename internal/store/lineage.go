@@ -62,6 +62,18 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		result.Links = append(result.Links, valid(items...)...)
 		return result
 	}
+	// A confirmation records the decisions its content names; the projector
+	// reads that field, never the content, and a confirmation recorded before
+	// the field projects no citation (component-lineage; DEC-90(2);
+	// req-260802-72fc68 AC-6.3).
+	versionDecisionCitations := func(versionType core.LineageNodeType, versionID string) []core.LineageLink {
+		ids := recordedDecisionIDs(payload["cited_decision_ids"])
+		links := make([]core.LineageLink, 0, len(ids))
+		for _, id := range ids {
+			links = append(links, link(versionType, versionID, core.LineageDecision, id, "cites"))
+		}
+		return links
+	}
 
 	switch event.Kind {
 	case "task.created":
@@ -230,11 +242,11 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 			if !predecessorRecorded {
 				predecessor = version - 1
 			}
-			if predecessor <= 0 {
-				return emit(links...)
+			if predecessor > 0 {
+				links = append(links, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 			}
-			links = append(links, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageRequirementVersion, core.RequirementVersionLineageID(id, predecessor), "supersedes"))
 		}
+		links = append(links, versionDecisionCitations(core.LineageRequirementVersion, core.RequirementVersionLineageID(text("requirement_id"), number("version")))...)
 		return emit(links...)
 	case "reference_document.superseded":
 		id, version, predecessor := text("document_id"), number("version"), number("supersedes_version")
@@ -285,6 +297,7 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		if sessionID := text("origin_session_id"); sessionID != "" {
 			links = append(links, link(core.LineageSystemDesignVersion, versionID, core.LineagePlanningSession, sessionID, "proposed_by"))
 		}
+		links = append(links, versionDecisionCitations(core.LineageSystemDesignVersion, versionID)...)
 		return emit(links...)
 	case "decision.proposed":
 		id := text("decision_id")
@@ -337,9 +350,41 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 				}
 			}
 		}
+		// The verdict's validated governance assessment is the one record of
+		// which decisions a delivery relied on; the pinned snapshot names every
+		// confirmed decision and projects nothing (component-lineage; DEC-90(1);
+		// req-260802-72fc68 AC-6.1, AC-6.2). An event without a review work
+		// order already counts its produced_verdict link as unsupported.
+		if assessment, ok := payload["governance_assessment"].(map[string]any); ok && workOrderID != "" {
+			for _, id := range recordedDecisionIDs(assessment["cited_ids"]) {
+				links = append(links, link(core.LineageVerdict, verdictID, core.LineageDecision, id, "cites"))
+			}
+			for _, id := range recordedDecisionIDs(assessment["superseded_ids"]) {
+				links = append(links, link(core.LineageVerdict, verdictID, core.LineageDecision, id, "flags_superseded"))
+			}
+		}
 		return emit(links...)
 	}
 	return result
+}
+
+// recordedDecisionIDs reads a recorded ID list and keeps its DEC-n entries,
+// trimmed, deduplicated, and in numeric order, so one verdict or version
+// yields one key per decision. Other entries, such as System Design IDs in a
+// verdict's cited_ids, project nothing.
+func recordedDecisionIDs(raw any) []string {
+	values, _ := raw.([]any)
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		id, _ := value.(string)
+		if id = strings.TrimSpace(id); core.IsDecisionID(id) && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	core.SortDecisionIDs(ids)
+	return ids
 }
 
 // recordedRequirementVersions reads the versions a requirement removal
@@ -491,6 +536,7 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"governs": {}, "proposed_by": {}, "produced_design": {},
 	"produced_bundle": {}, "proposes": {}, "creates": {},
 	"plans": {}, "succeeded_by": {},
+	"cites": {}, "flags_superseded": {},
 }
 
 // Direction is part of the vocabulary contract even though ownership is keyed
@@ -501,6 +547,8 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 // requirement/requirement_version -serves-> blueprint/task,
 // requirement -versions-> requirement_version, blueprint -plans-> task,
 // task -succeeded_by-> task,
+// verdict/requirement_version/system_design_version -cites-> decision,
+// verdict -flags_superseded-> decision,
 // system_design_version -proposed_by-> task/planning_session, and
 // planning_session -produced_design-> system_design,
 // planning_session -produced_bundle-> planning_bundle,

@@ -431,6 +431,7 @@ func (m *memory) ConfirmRequirementVersion(ctx context.Context, requirementID st
 	payload := map[string]any{
 		"workspace_id": workspace, "requirement_id": requirementID, "version": version,
 		"origin": confirmed.Origin, "confirmed_by": actor.ID, "supersedes_version": previousConfirmedVersion,
+		"cited_decision_ids": m.citedDecisionIDsLocked(workspace, confirmed.Content),
 	}
 	if confirmed.DerivedFrom != nil {
 		payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = confirmed.DerivedFrom.DocumentID, confirmed.DerivedFrom.Version, confirmed.DerivedFrom.SectionAnchor, confirmed.DerivedFrom.TargetID
