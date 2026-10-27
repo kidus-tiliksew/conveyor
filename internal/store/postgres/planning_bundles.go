@@ -115,6 +115,9 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 }
 
 type bundleContextVersions struct {
+	// requirements holds the confirmed version a non-pending requirement
+	// attachment records for lineage (component-lineage).
+	requirements        map[string]int
 	designs             map[string]int
 	pendingRequirements map[string]int
 	pendingDesigns      map[string]int
@@ -154,7 +157,7 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle cor
 	}
 	result := map[string]bundleContextVersions{}
 	for _, member := range bundle.Tasks {
-		versions := bundleContextVersions{designs: map[string]int{}, pendingRequirements: map[string]int{}, pendingDesigns: map[string]int{}, activeRequirements: map[string]int{}, activeDesigns: map[string]int{}}
+		versions := bundleContextVersions{requirements: map[string]int{}, designs: map[string]int{}, pendingRequirements: map[string]int{}, pendingDesigns: map[string]int{}, activeRequirements: map[string]int{}, activeDesigns: map[string]int{}}
 		for _, id := range member.Context.RequirementIDs {
 			if version := pendingRequirements[id]; version > 0 {
 				versions.pendingRequirements[id] = version
@@ -167,9 +170,11 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle cor
 				}
 				continue
 			}
-			if _, err := validateTaskContextTx(ctx, tx, bundle.Workspace, store.TaskContextInput{RequirementIDs: []string{id}}); err != nil {
+			confirmed, err := validateTaskContextTx(ctx, tx, bundle.Workspace, store.TaskContextInput{RequirementIDs: []string{id}})
+			if err != nil {
 				return nil, err
 			}
+			versions.requirements[id] = confirmed.Requirements[id]
 		}
 		for _, id := range member.Context.DesignIDs {
 			if version := pendingDesigns[id]; version > 0 {
@@ -187,7 +192,7 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx pgx.Tx, bundle cor
 			if err != nil {
 				return nil, err
 			}
-			versions.designs[id] = confirmed[id]
+			versions.designs[id] = confirmed.Designs[id]
 		}
 		result[member.MemberID] = versions
 	}
@@ -294,7 +299,7 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 				}
 			}
 			for _, reqID := range member.Context.RequirementIDs {
-				payload := map[string]any{"id": reqID}
+				payload := store.RequirementAttachmentPayload(reqID, contextVersions[member.MemberID].requirements[reqID])
 				if pending := contextVersions[member.MemberID].pendingRequirements[reqID]; pending > 0 {
 					payload["pending_version"], payload["unconfirmed"] = pending, true
 				}

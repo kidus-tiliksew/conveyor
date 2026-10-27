@@ -132,8 +132,9 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 		if proposal.State != core.TaskContextProposalProposed {
 			return fmt.Errorf("%w: cannot transition %s proposal to %s", store.ErrTaskContextProposalTransition, proposal.State, target)
 		}
+		var confirmedVersions store.TaskContextVersions
 		if target == core.TaskContextProposalConfirmed {
-			if _, err := validateTaskContextTx(ctx, tx, workspace(ctx), store.TaskContextProposalInput(kind, targetID)); err != nil {
+			if confirmedVersions, err = validateTaskContextTx(ctx, tx, workspace(ctx), store.TaskContextProposalInput(kind, targetID)); err != nil {
 				return err
 			}
 		}
@@ -167,7 +168,7 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 			activeRequirements, activeDesigns := store.ActiveTaskContextReferences(events)
 			if kind == core.TaskContextProposalRequirement {
 				if !activeRequirements[targetID] {
-					if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: store.TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": targetID})}); err != nil {
+					if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: store.TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(store.RequirementAttachmentPayload(targetID, confirmedVersions.Requirements[targetID]))}); err != nil {
 						return err
 					}
 				}

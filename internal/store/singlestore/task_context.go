@@ -49,28 +49,31 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 		}
 		now := time.Now().UTC()
 		appendEvent := func(kind string, payload map[string]any) error {
-			return taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: kind, At: now, Payload: core.JSONPayload(payload)})
+			event := core.Event{TaskID: taskID, Kind: kind, At: now, Payload: core.JSONPayload(payload)}
+			events = append(events, event)
+			return taskEvent(ctx, tx, event)
 		}
 		for _, id := range add.RequirementIDs {
-			if err := appendEvent(store.TaskContextRequirementAdded, map[string]any{"id": id}); err != nil {
+			if err := appendEvent(store.TaskContextRequirementAdded, store.RequirementAttachmentPayload(id, versions.Requirements[id])); err != nil {
 				return err
 			}
 		}
+		recordedVersions := store.ActiveTaskContextRequirementVersions(events)
 		for _, id := range remove.RequirementIDs {
-			if err := appendEvent(store.TaskContextRequirementRemoved, map[string]any{"id": id}); err != nil {
+			if err := appendEvent(store.TaskContextRequirementRemoved, store.RequirementRemovalPayload(id, recordedVersions[id])); err != nil {
 				return err
 			}
 		}
 		for _, id := range add.DesignIDs {
-			if err := appendEvent(store.TaskContextDesignAdded, map[string]any{"id": id, "version": versions[id]}); err != nil {
+			if err := appendEvent(store.TaskContextDesignAdded, map[string]any{"id": id, "version": versions.Designs[id]}); err != nil {
 				return err
 			}
-			activeDesigns[id] = versions[id]
+			activeDesigns[id] = versions.Designs[id]
 		}
 		for _, id := range remove.DesignIDs {
 			version := activeDesigns[id]
 			if version == 0 {
-				version = versions[id]
+				version = versions.Designs[id]
 			}
 			if err := appendEvent(store.TaskContextDesignRemoved, map[string]any{"id": id, "version": version}); err != nil {
 				return err

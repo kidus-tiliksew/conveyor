@@ -26,6 +26,9 @@ type PlanningBundleConflictError struct{ Message string }
 func (e *PlanningBundleConflictError) Error() string { return e.Message }
 
 type bundleContextVersions struct {
+	// Requirements holds the confirmed version a non-pending requirement
+	// attachment records for lineage (component-lineage).
+	Requirements        map[string]int
 	Designs             map[string]int
 	PendingRequirements map[string]int
 	PendingDesigns      map[string]int
@@ -275,7 +278,7 @@ func (m *memory) validatePlanningBundleContextsLocked(bundle core.PlanningBundle
 	pendingRequirements, pendingDesigns := pendingBundleDocuments(bundle)
 	result := map[string]bundleContextVersions{}
 	for _, member := range bundle.Tasks {
-		versions := bundleContextVersions{Designs: map[string]int{}, PendingRequirements: map[string]int{}, PendingDesigns: map[string]int{}, ActiveRequirements: map[string]int{}, ActiveDesigns: map[string]int{}}
+		versions := bundleContextVersions{Requirements: map[string]int{}, Designs: map[string]int{}, PendingRequirements: map[string]int{}, PendingDesigns: map[string]int{}, ActiveRequirements: map[string]int{}, ActiveDesigns: map[string]int{}}
 		for _, id := range member.Context.RequirementIDs {
 			if version := pendingRequirements[id]; version > 0 {
 				versions.PendingRequirements[id] = version
@@ -285,9 +288,11 @@ func (m *memory) validatePlanningBundleContextsLocked(bundle core.PlanningBundle
 				}
 				continue
 			}
-			if _, err := m.validateTaskContextLocked(bundle.Workspace, TaskContextInput{RequirementIDs: []string{id}}); err != nil {
+			confirmed, err := m.validateTaskContextLocked(bundle.Workspace, TaskContextInput{RequirementIDs: []string{id}})
+			if err != nil {
 				return nil, err
 			}
+			versions.Requirements[id] = confirmed.Requirements[id]
 		}
 		for _, id := range member.Context.DesignIDs {
 			if version := pendingDesigns[id]; version > 0 {
@@ -302,7 +307,7 @@ func (m *memory) validatePlanningBundleContextsLocked(bundle core.PlanningBundle
 			if err != nil {
 				return nil, err
 			}
-			versions.Designs[id] = confirmed[id]
+			versions.Designs[id] = confirmed.Designs[id]
 		}
 		result[member.MemberID] = versions
 	}
@@ -376,7 +381,7 @@ func (m *memory) ApprovePlanningBundle(ctx context.Context, id string) (core.Pla
 			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.dependency_added", At: now, Payload: core.JSONPayload(map[string]string{"task_id": task.ID, "depends_on_task_id": dependencyID})})
 		}
 		for _, reqID := range member.Context.RequirementIDs {
-			payload := map[string]any{"id": reqID}
+			payload := RequirementAttachmentPayload(reqID, versions.Requirements[reqID])
 			if pending := versions.PendingRequirements[reqID]; pending > 0 {
 				payload["pending_version"], payload["unconfirmed"] = pending, true
 			}

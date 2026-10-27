@@ -666,10 +666,11 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 			return NewTaskDependencyError(dependencyID, "is not open")
 		}
 	}
-	designVersions, err := m.validateTaskContextLocked(t.Workspace, attached)
+	versions, err := m.validateTaskContextLocked(t.Workspace, attached)
 	if err != nil {
 		return err
 	}
+	designVersions := versions.Designs
 	if pinned != nil {
 		designVersions = pinned
 	}
@@ -711,7 +712,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	}
 	for _, id := range attached.RequirementIDs {
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: TaskContextRequirementAdded, At: t.CreatedAt,
-			Payload: core.JSONPayload(map[string]any{"id": id})})
+			Payload: core.JSONPayload(RequirementAttachmentPayload(id, versions.Requirements[id]))})
 	}
 	for _, id := range attached.DesignIDs {
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: TaskContextDesignAdded, At: t.CreatedAt,
@@ -720,26 +721,27 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	return nil
 }
 
-func (m *memory) validateTaskContextLocked(workspace string, input TaskContextInput) (map[string]int, error) {
+func (m *memory) validateTaskContextLocked(workspace string, input TaskContextInput) (TaskContextVersions, error) {
+	versions := TaskContextVersions{Requirements: map[string]int{}, Designs: map[string]int{}}
 	for _, id := range input.RequirementIDs {
 		document, ok := m.requirements[memoryScopedKey{workspace: workspace, id: id}]
 		if !ok {
-			return nil, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: ContextReasonNotFound}
+			return TaskContextVersions{}, &TaskContextReferenceError{Kind: "requirement", ID: id, Reason: ContextReasonNotFound}
 		}
 		if err := ValidateContextDocument("requirement", id, document.CurrentVersion, document.Archived); err != nil {
-			return nil, err
+			return TaskContextVersions{}, err
 		}
+		versions.Requirements[id] = document.CurrentVersion
 	}
-	versions := map[string]int{}
 	for _, id := range input.DesignIDs {
 		document, ok := m.systemDesigns[memoryScopedKey{workspace: workspace, id: id}]
 		if !ok {
-			return nil, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: ContextReasonNotFound}
+			return TaskContextVersions{}, &TaskContextReferenceError{Kind: "system design", ID: id, Reason: ContextReasonNotFound}
 		}
 		if err := ValidateContextDocument("system design", id, document.CurrentVersion, document.Archived); err != nil {
-			return nil, err
+			return TaskContextVersions{}, err
 		}
-		versions[id] = document.CurrentVersion
+		versions.Designs[id] = document.CurrentVersion
 	}
 	return versions, nil
 }
@@ -786,19 +788,20 @@ func (m *memory) UpdateTaskContext(ctx context.Context, taskID string, change Ta
 	}
 	now := time.Now().UTC()
 	for _, id := range add.RequirementIDs {
-		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(RequirementAttachmentPayload(id, versions.Requirements[id]))})
 	}
+	recordedVersions := ActiveTaskContextRequirementVersions(m.events[taskID])
 	for _, id := range remove.RequirementIDs {
-		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementRemoved, At: now, Payload: core.JSONPayload(map[string]any{"id": id})})
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementRemoved, At: now, Payload: core.JSONPayload(RequirementRemovalPayload(id, recordedVersions[id]))})
 	}
 	for _, id := range add.DesignIDs {
-		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions[id]})})
-		activeDesigns[id] = versions[id]
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions.Designs[id]})})
+		activeDesigns[id] = versions.Designs[id]
 	}
 	for _, id := range remove.DesignIDs {
 		version := activeDesigns[id]
 		if version == 0 {
-			version = versions[id]
+			version = versions.Designs[id]
 		}
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignRemoved, At: now, Payload: core.JSONPayload(map[string]any{"id": id, "version": version})})
 	}

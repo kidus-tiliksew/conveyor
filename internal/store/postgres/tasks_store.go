@@ -74,10 +74,11 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 			return store.NewTaskDependencyError(dependencyID, "is not open")
 		}
 	}
-	designVersions, err := validateTaskContextTx(ctx, tx, task.Workspace, attached)
+	versions, err := validateTaskContextTx(ctx, tx, task.Workspace, attached)
 	if err != nil {
 		return err
 	}
+	designVersions := versions.Designs
 	if pinned != nil {
 		designVersions = pinned
 	}
@@ -126,7 +127,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	}
 	for _, id := range attached.RequirementIDs {
 		if err := insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, At: task.CreatedAt,
-			Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
+			Payload: core.JSONPayload(store.RequirementAttachmentPayload(id, versions.Requirements[id]))}); err != nil {
 			return err
 		}
 	}

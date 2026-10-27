@@ -137,8 +137,9 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	if err != nil {
 		return err
 	}
+	designVersions := versions.Designs
 	if pinned != nil {
-		versions = pinned
+		designVersions = pinned
 	}
 	if err = insertTaskRow(ctx, tx, t); err != nil {
 		return err
@@ -168,12 +169,12 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 		}
 	}
 	for _, id := range attached.RequirementIDs {
-		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextRequirementAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id})}); err != nil {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextRequirementAdded, At: t.CreatedAt, Payload: core.JSONPayload(store.RequirementAttachmentPayload(id, versions.Requirements[id]))}); err != nil {
 			return err
 		}
 	}
 	for _, id := range attached.DesignIDs {
-		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextDesignAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id, "version": versions[id]})}); err != nil {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: store.TaskContextDesignAdded, At: t.CreatedAt, Payload: core.JSONPayload(map[string]any{"id": id, "version": designVersions[id]})}); err != nil {
 			return err
 		}
 	}
