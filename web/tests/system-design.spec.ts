@@ -912,6 +912,12 @@ test('System Design pages older delivery activity and loads its explorer on open
   const item = { ...design, lineage: events.slice(0, 50), lineage_total: 51, lineage_snapshot_id: 100 }
   let eventReads = 0
   let graphReads = 0
+  // Walks that delivered a response. The explorer's read consumes its abort
+  // signal, so StrictMode's discarded first mount aborts a read the page never
+  // receives.
+  page.on('requestfinished', (request) => {
+    if (new URL(request.url()).pathname === '/v1/lineage/system_design/design-dispatch') graphReads++
+  })
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
     if (handled) return await handled
@@ -927,7 +933,6 @@ test('System Design pages older delivery activity and loads its explorer on open
       return route.fulfill({ json: { events: events.slice(50), total: 51, limit: 50, offset: 50, snapshot_id: 100 } })
     }
     if (url.pathname === '/v1/lineage/system_design/design-dispatch') {
-      graphReads++
       expect(url.searchParams.get('workspace_id')).toBe('demo')
       return route.fulfill({
         json: {
