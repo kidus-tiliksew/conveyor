@@ -657,6 +657,8 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 	// beyond it.
 	walk := func(t *testing.T, ctx context.Context, budget core.LineageTraversalBudget) core.LineageTraversal {
 		t.Helper()
+		// Normalize first so the wider fetch keeps the traversal's fan-out.
+		budget = budget.Normalized()
 		fetch := budget
 		fetch.MaxDepth, fetch.MaxNodes = budget.MaxDepth+1, budget.MaxNodes+1
 		if budget.MaxLinks > 0 {

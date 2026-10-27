@@ -209,49 +209,53 @@ func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, erro
 	return links, nil
 }
 
+// LineageNodeExists scans the link map for the node without copying or
+// sorting the workspace graph (component-lineage).
 func (m *memory) LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error) {
 	if !node.Valid() {
 		return false, nil
 	}
-	links, err := m.ListLineageLinks(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, link := range links {
-		if (link.SrcType == node.Type && link.SrcID == node.ID) || (link.DstType == node.Type && link.DstID == node.ID) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	for _, link := range m.lineage {
+		if link.Workspace == workspace && ((link.SrcType == node.Type && link.SrcID == node.ID) || (link.DstType == node.Type && link.DstID == node.ID)) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
+// ListLineageNeighborhood runs the shared bounded walk, reading each depth's
+// ranked link prefixes from the link map (component-lineage).
 func (m *memory) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
-	links, err := m.ListLineageLinks(ctx)
-	if err != nil {
-		return nil, err
-	}
-	selected := map[string]core.LineageLink{}
-	for _, root := range roots {
-		walk, walkErr := core.TraverseLineage(links, []core.LineageNode{root}, core.LineageTraversalBudget{MaxDepth: budget.MaxDepth, MaxNodes: budget.MaxNodes, Workspace: workspaceOrDefault(ctx, "")})
-		if walkErr != nil {
-			return nil, walkErr
+	workspace := workspaceOrDefault(ctx, "")
+	budget.Workspace = workspace
+	return core.FetchLineageNeighborhood(ctx, roots, budget, func(_ context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		wanted := make(map[core.LineageNode]bool, len(nodes))
+		for _, node := range nodes {
+			wanted[node] = true
 		}
-		nodes := make(map[core.LineageNode]bool, len(walk.Nodes))
-		for _, node := range walk.Nodes {
-			nodes[node] = true
-		}
-		for _, link := range links {
-			if nodes[core.LineageNode{Type: link.SrcType, ID: link.SrcID}] || nodes[core.LineageNode{Type: link.DstType, ID: link.DstID}] {
-				selected[lineageLinkKey(link)] = link
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		m.mu.RLock()
+		for _, link := range m.lineage {
+			if link.Workspace != workspace || link.Validate() != nil {
+				continue
+			}
+			src, dst := core.LineageNode{Type: link.SrcType, ID: link.SrcID}, core.LineageNode{Type: link.DstType, ID: link.DstID}
+			if wanted[src] {
+				out[src] = append(out[src], link)
+			}
+			if wanted[dst] {
+				out[dst] = append(out[dst], link)
 			}
 		}
-	}
-	result := make([]core.LineageLink, 0, len(selected))
-	for _, link := range selected {
-		result = append(result, link)
-	}
-	sort.Slice(result, func(i, j int) bool { return lineageLinkKey(result[i]) < lineageLinkKey(result[j]) })
-	return result, nil
+		m.mu.RUnlock()
+		for node, links := range out {
+			out[node] = core.RankLineageLinks(node, links, limit)
+		}
+		return out, nil
+	})
 }
 
 func (m *memory) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {

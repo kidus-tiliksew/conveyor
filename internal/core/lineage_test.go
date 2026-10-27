@@ -1,8 +1,11 @@
 package core
 
 import (
+	"context"
 	"fmt"
+	"math/rand"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,6 +66,188 @@ func TestTraverseLineageUsesRelationPriorityAndIsPermutationStable(t *testing.T)
 		}
 		if !reflect.DeepEqual(got.Nodes, want) || len(got.Links) != 2 || got.OmittedLinks != 1 || !got.Truncated || !reflect.DeepEqual(got.ExhaustionReasons, []string{"links"}) {
 			t.Fatalf("priority traversal=%+v", got)
+		}
+	}
+}
+
+// A requirement serving 40 tasks must not spend the node budget before the
+// root's own work orders admit their verdict: the hub admits at most its
+// fan-out, and each depth admits in rounds (component-lineage;
+// req-260802-72fc68 AC-2.3, AC-2.4).
+func TestTraverseLineageCapsHubFanoutAndAdmitsByRound(t *testing.T) {
+	root := LineageNode{Type: LineageTask, ID: "root"}
+	links := []LineageLink{lineageTestLink(1, LineageRequirement, "req", LineageTask, "root", "serves")}
+	for index := 0; index < 40; index++ {
+		links = append(links, lineageTestLink(int64(2+index), LineageRequirement, "req", LineageTask, fmt.Sprintf("sibling-%02d", index), "serves"))
+	}
+	links = append(links,
+		lineageTestLink(50, LineageTask, "root", LineageWorkOrder, "root-implement", "dispatches"),
+		lineageTestLink(51, LineageTask, "root", LineageWorkOrder, "root-review", "dispatches"),
+		lineageTestLink(52, LineageWorkOrder, "root-review", LineageVerdict, "review:root-review", "produced_verdict"),
+		lineageTestLink(53, LineageTask, "root", LineagePullRequest, "conveyor#7", "submitted_as"),
+		lineageTestLink(54, LineageTask, "root", LineageCommitRange, "conveyor@a..b", "submitted_range"),
+	)
+	own := []LineageNode{
+		{Type: LineageWorkOrder, ID: "root-implement"}, {Type: LineageWorkOrder, ID: "root-review"},
+		{Type: LineageVerdict, ID: "review:root-review"}, {Type: LineagePullRequest, ID: "conveyor#7"},
+		{Type: LineageCommitRange, ID: "conveyor@a..b"},
+	}
+	permuted := append([]LineageLink(nil), links...)
+	rand.New(rand.NewSource(7)).Shuffle(len(permuted), func(i, j int) { permuted[i], permuted[j] = permuted[j], permuted[i] })
+	for _, budget := range []LineageTraversalBudget{{MaxDepth: 5, MaxNodes: 32, MaxLinks: 128}, {MaxDepth: 5, MaxNodes: 10, MaxLinks: 40, MaxFanout: 100}} {
+		got, err := TraverseLineage(links, []LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := TraverseLineage(permuted, []LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got.Nodes, again.Nodes) || !reflect.DeepEqual(got.Links, again.Links) || got.Omissions != again.Omissions {
+			t.Fatalf("permuted walk differs: %+v vs %+v", got, again)
+		}
+		reached := map[LineageNode]bool{}
+		siblings := 0
+		for _, node := range got.Nodes {
+			reached[node] = true
+			if node.Type == LineageTask && node.ID != "root" {
+				siblings++
+			}
+		}
+		for _, node := range own {
+			if !reached[node] {
+				t.Fatalf("budget %+v lost the root's own %v: nodes=%v", budget, node, got.Nodes)
+			}
+		}
+		if !got.Truncated {
+			t.Fatalf("budget %+v walk not truncated: %+v", budget, got)
+		}
+		if budget.MaxFanout == 0 {
+			// Default fan-out 8: the hub's first link returns to the root, so
+			// it admits seven siblings and reports the cap.
+			if siblings != 7 || got.Budget.MaxFanout != 8 || got.Omissions.FanoutNodes != 1 || !reflect.DeepEqual(got.ExhaustionReasons, []string{"fanout"}) {
+				t.Fatalf("default fan-out walk siblings=%d budget=%+v omissions=%+v reasons=%v", siblings, got.Budget, got.Omissions, got.ExhaustionReasons)
+			}
+			continue
+		}
+		// Without an effective fan-out cap the node cap binds, and round
+		// admission still admits the verdict before the hub's siblings.
+		if len(got.Nodes) != 10 || got.Omissions.FanoutNodes != 0 || got.Omissions.NodeCapNodes == 0 || got.OmittedNodes != got.Omissions.NodeCapNodes || !reflect.DeepEqual(got.ExhaustionReasons, []string{"nodes"}) {
+			t.Fatalf("node-capped walk nodes=%v omissions=%+v reasons=%v", got.Nodes, got.Omissions, got.ExhaustionReasons)
+		}
+	}
+}
+
+// FetchLineageNeighborhood must return a link set that traverses exactly as
+// the whole graph does, within the documented row bound (component-lineage).
+func TestFetchLineageNeighborhoodMatchesFullTraversal(t *testing.T) {
+	random := rand.New(rand.NewSource(42))
+	types := []LineageNodeType{LineageTask, LineageRequirement, LineageWorkOrder, LineageVerdict, LineageSystemDesignVersion, LineageRepositoryPath}
+	kinds := []string{"serves", "depends_on", "dispatches", "produced_verdict", "consulted", "governs", "supports", "materializes"}
+	nodes := make([]LineageNode, 120)
+	for index := range nodes {
+		nodes[index] = LineageNode{Type: types[index%len(types)], ID: fmt.Sprintf("n%03d", index)}
+	}
+	seenKeys := map[string]bool{}
+	var links []LineageLink
+	add := func(id int64, src, dst LineageNode, kind string) {
+		link := lineageTestLink(id, src.Type, src.ID, dst.Type, dst.ID, kind)
+		// Shared timestamps exercise the event-ID and node-key tie-breaks.
+		link.CreatedAt = time.Unix(id/5, 0).UTC()
+		if key := lineageTraversalLinkKey(link); src != dst && !seenKeys[key] {
+			seenKeys[key] = true
+			links = append(links, link)
+		}
+	}
+	for id := int64(1); id <= 600; id++ {
+		src, dst := nodes[random.Intn(len(nodes))], nodes[random.Intn(len(nodes))]
+		// Three hubs collect most edges.
+		if id%3 == 0 {
+			src = nodes[int(id/3)%3]
+		}
+		add(id, src, dst, kinds[random.Intn(len(kinds))])
+	}
+	adjacent := map[LineageNode][]lineageNeighbor{}
+	for _, link := range links {
+		src, dst := LineageNode{Type: link.SrcType, ID: link.SrcID}, LineageNode{Type: link.DstType, ID: link.DstID}
+		adjacent[src] = append(adjacent[src], lineageNeighbor{node: dst, link: link})
+		adjacent[dst] = append(adjacent[dst], lineageNeighbor{node: src, link: link})
+	}
+	for node := range adjacent {
+		sortLineageNeighbors(adjacent[node])
+	}
+	rows, calls := 0, 0
+	fetch := func(_ context.Context, level []LineageNode, limit int) (map[LineageNode][]LineageLink, error) {
+		calls++
+		out := map[LineageNode][]LineageLink{}
+		for _, node := range level {
+			for index, neighbor := range adjacent[node] {
+				if index == limit {
+					break
+				}
+				out[node] = append(out[node], neighbor.link)
+				rows++
+			}
+		}
+		return out, nil
+	}
+	for _, budget := range []LineageTraversalBudget{
+		{MaxDepth: 5, MaxNodes: 32, MaxLinks: 128},
+		{MaxDepth: 2, MaxNodes: 64, MaxLinks: 64},
+		{MaxDepth: 4, MaxNodes: 16, MaxLinks: 48, MaxFanout: 3},
+		{MaxDepth: 0, MaxNodes: 4},
+	} {
+		for _, roots := range [][]LineageNode{{nodes[0]}, {nodes[7], nodes[1]}, {nodes[50]}} {
+			budget = budget.Normalized()
+			want, err := TraverseLineage(links, roots, budget)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, calls = 0, 0
+			fetched, err := FetchLineageNeighborhood(t.Context(), roots, budget, fetch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bound := len(roots)*(max(budget.MaxNodes, budget.MaxFanout)+1) + budget.MaxNodes*(budget.MaxFanout+1); rows > bound || calls > budget.MaxDepth+1 {
+				t.Fatalf("budget %+v fetched %d rows in %d calls, bound %d rows in %d calls", budget, rows, calls, bound, budget.MaxDepth+1)
+			}
+			// A fetch with a larger depth and node cap and the same fan-out
+			// traverses identically, so callers may fetch with headroom.
+			wider := budget
+			wider.MaxDepth++
+			wider.MaxNodes++
+			widerLinks, err := FetchLineageNeighborhood(t.Context(), roots, wider, fetch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, input := range [][]LineageLink{fetched, widerLinks} {
+				got, err := TraverseLineage(input, roots, budget)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got.Nodes, want.Nodes) || !reflect.DeepEqual(got.Links, want.Links) || !reflect.DeepEqual(got.Depths, want.Depths) ||
+					!reflect.DeepEqual(got.Paths, want.Paths) || got.Omissions != want.Omissions || got.OmittedNodes != want.OmittedNodes ||
+					got.Truncated != want.Truncated || !reflect.DeepEqual(got.ExhaustionReasons, want.ExhaustionReasons) {
+					t.Fatalf("budget %+v roots %v: fetched walk differs\ngot  %+v\nwant %+v", budget, roots, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestLineageRelationRankSQLRendersCoreRanking(t *testing.T) {
+	rendered := LineageRelationRankSQL("l.kind")
+	if !strings.HasPrefix(rendered, "CASE l.kind WHEN ") || !strings.HasSuffix(rendered, fmt.Sprintf(" ELSE %d END", LineageRelationDefaultPriority)) {
+		t.Fatalf("rendered CASE=%s", rendered)
+	}
+	for _, kind := range LineageRankedRelationKinds() {
+		if !strings.Contains(rendered, fmt.Sprintf("WHEN '%s' THEN %d", kind, LineageRelationPriority(kind))) {
+			t.Fatalf("rendered CASE misses %s: %s", kind, rendered)
+		}
+	}
+	for _, nodeType := range LineageNodeTypes() {
+		if !nodeType.Valid() {
+			t.Fatalf("listed node type %q is invalid", nodeType)
 		}
 	}
 }
