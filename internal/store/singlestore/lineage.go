@@ -235,33 +235,81 @@ func (s *Store) queryLineageOrderRecords(ctx context.Context, nodes map[string][
 	return rows.Err()
 }
 
+// lineageRelationRankSQL is core.LineageRelationPriority rendered for the
+// neighbor query (component-lineage).
+var lineageRelationRankSQL = core.LineageRelationRankSQL("x.kind")
+
+// lineageNeighborPrefixQuery selects, for every requested node, its first
+// limit valid incident links in the walk's ranking (component-lineage).
+func lineageNeighborPrefixQuery(ws string, nodes []core.LineageNode, limit int) (string, []any) {
+	typeMarks := make([]string, 0, len(core.LineageNodeTypes()))
+	var typeArgs []any
+	for _, nodeType := range core.LineageNodeTypes() {
+		typeMarks = append(typeMarks, "?")
+		typeArgs = append(typeArgs, string(nodeType))
+	}
+	typeList := strings.Join(typeMarks, ",")
+	requested := make([]string, len(nodes))
+	var requestArgs []any
+	for index, node := range nodes {
+		requested[index] = "SELECT ? AS ord, ? AS node_type, ? AS node_id"
+		requestArgs = append(requestArgs, index+1, string(node.Type), node.ID)
+	}
+	request := strings.Join(requested, " UNION ALL ")
+	args := append([]any{}, requestArgs...)
+	args = append(args, ws)
+	args = append(args, requestArgs...)
+	args = append(args, ws)
+	args = append(args, typeArgs...)
+	args = append(args, typeArgs...)
+	args = append(args, limit)
+	return `SELECT y.ord,y.workspace_id,y.src_type,y.src_id,y.dst_type,y.dst_id,y.kind,y.legacy,y.created_at,y.event_id FROM (
+		SELECT x.*,ROW_NUMBER() OVER (PARTITION BY x.ord ORDER BY ` + lineageRelationRankSQL + `,x.created_at,x.event_id,x.far_type,x.far_id,x.kind) AS rn FROM (
+			SELECT q.ord,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,COALESCE(l.legacy_created_by_event,'') AS legacy,l.created_at,COALESCE(l.created_by_event_id,0) AS event_id,l.dst_type AS far_type,l.dst_id AS far_id
+			FROM (` + request + `) q JOIN links l ON l.workspace_id=? AND l.src_type=q.node_type AND l.src_id=q.node_id
+			UNION ALL
+			SELECT q.ord,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,COALESCE(l.legacy_created_by_event,''),l.created_at,COALESCE(l.created_by_event_id,0),l.src_type,l.src_id
+			FROM (` + request + `) q JOIN links l ON l.workspace_id=? AND l.dst_type=q.node_type AND l.dst_id=q.node_id
+		) x
+		WHERE TRIM(x.src_id)<>'' AND TRIM(x.dst_id)<>'' AND TRIM(x.kind)<>''
+			AND x.src_type IN (` + typeList + `) AND x.dst_type IN (` + typeList + `)
+			AND NOT (x.src_type=x.dst_type AND x.src_id=x.dst_id)
+			AND (x.event_id>0 OR (x.kind='historical_feature_assignment' AND TRIM(x.legacy)<>''))
+	) y WHERE y.rn<=?`, args
+}
+
+// ListLineageNeighborhood runs the shared bounded walk and reads each depth's
+// ranked link prefixes with one query. The source side probes the primary key
+// and the destination side links_destination_idx; ROW_NUMBER keeps each
+// node's first limit links in the walk's ranking under the table's binary
+// collation, so returned rows follow the budget (component-lineage).
 func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
-	links, err := s.ListLineageLinks(ctx)
-	if err != nil {
-		return nil, err
+	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 {
+		return nil, fmt.Errorf("lineage neighborhood requires bounded depth and nodes")
 	}
-	selected := map[string]core.LineageLink{}
-	for _, root := range roots {
-		walk, walkErr := core.TraverseLineage(links, []core.LineageNode{root}, core.LineageTraversalBudget{MaxDepth: budget.MaxDepth, MaxNodes: budget.MaxNodes, Workspace: documentWorkspace(ctx)})
-		if walkErr != nil {
-			return nil, walkErr
+	budget.Workspace = documentWorkspace(ctx)
+	return core.FetchLineageNeighborhood(ctx, roots, budget, func(ctx context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		query, args := lineageNeighborPrefixQuery(documentWorkspace(ctx), nodes, limit)
+		rows, err := documentRows(ctx, s.db, query, args...)
+		if err != nil {
+			return nil, err
 		}
-		nodes := make(map[core.LineageNode]bool, len(walk.Nodes))
-		for _, node := range walk.Nodes {
-			nodes[node] = true
-		}
-		for _, link := range links {
-			if nodes[core.LineageNode{Type: link.SrcType, ID: link.SrcID}] || nodes[core.LineageNode{Type: link.DstType, ID: link.DstID}] {
-				selected[lineageLinkKey(link)] = link
+		defer rows.Close()
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for rows.Next() {
+			var ordinal int
+			var link core.LineageLink
+			if err = rows.Scan(&ordinal, &link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &link.LegacyCreatedByEvent, &link.CreatedAt, &link.CreatedByEventID); err != nil {
+				return nil, err
 			}
+			if ordinal < 1 || ordinal > len(nodes) {
+				return nil, fmt.Errorf("lineage neighbor row names request %d of %d", ordinal, len(nodes))
+			}
+			node := nodes[ordinal-1]
+			out[node] = append(out[node], link)
 		}
-	}
-	result := make([]core.LineageLink, 0, len(selected))
-	for _, link := range selected {
-		result = append(result, link)
-	}
-	sort.Slice(result, func(i, j int) bool { return lineageLinkKey(result[i]) < lineageLinkKey(result[j]) })
-	return result, nil
+		return out, rows.Err()
+	})
 }
 
 func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
@@ -608,7 +656,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range requirementIDs {
 			ids = append(ids, id)
 		}
-		rows, err := documentBatchRows(ctx, s.db, `SELECT r.id,r.title,v.version,v.content,v.statements_json
+		rows, err := documentBatchRows(ctx, s.db, `SELECT r.id,r.title,v.version,v.content,v.statements_json,r.archived_at IS NOT NULL
 			FROM requirements r
 			JOIN requirement_versions v ON v.workspace_id=r.workspace_id
 				AND v.requirement_id=r.id AND v.version=r.current_version AND v.confirmed
@@ -620,7 +668,8 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 			var id, title, content string
 			var version int
 			var statementsJSON []byte
-			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON); err != nil {
+			var archived bool
+			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON, &archived); err != nil {
 				rows.Close()
 				return store.LineageContextRecords{}, err
 			}
@@ -630,7 +679,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 				return store.LineageContextRecords{}, fmt.Errorf("decode requirement %s v%d statements: %w", id, version, err)
 			}
 			result.Requirements[id] = store.LineageContextRequirementRecord{
-				Title: title, Version: version, Content: content, Statements: statements,
+				Title: title, Version: version, Content: content, Statements: statements, Archived: archived,
 			}
 		}
 		if err = rows.Err(); err != nil {

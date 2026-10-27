@@ -179,7 +179,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range requirementIDs {
 			ids = append(ids, id)
 		}
-		rows, err := s.boundary.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json
+		rows, err := s.boundary.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json,r.archived_at IS NOT NULL
 			FROM requirements r
 			JOIN requirement_versions v ON v.workspace_id=r.workspace_id
 				AND v.requirement_id=r.id AND v.version=r.current_version AND v.confirmed
@@ -191,7 +191,8 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 			var id, title, content string
 			var version int
 			var statementsJSON []byte
-			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON); err != nil {
+			var archived bool
+			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON, &archived); err != nil {
 				rows.Close()
 				return store.LineageContextRecords{}, err
 			}
@@ -201,7 +202,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 				return store.LineageContextRecords{}, fmt.Errorf("decode requirement %s v%d statements: %w", id, version, err)
 			}
 			result.Requirements[id] = store.LineageContextRequirementRecord{
-				Title: title, Version: version, Content: content, Statements: statements,
+				Title: title, Version: version, Content: content, Statements: statements, Archived: archived,
 			}
 		}
 		if err = rows.Err(); err != nil {
@@ -375,97 +376,76 @@ func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (b
 	return exists, err
 }
 
-// lineageRelationRankSQL mirrors core.LineageRelationPriority for the
-// neighborhood CTE, which cannot call Go. TestLineageRelationRankSQLMatchesCore
+// lineageRelationRankSQL is core.LineageRelationPriority rendered for the
+// neighbor query, which cannot call Go. TestLineageRelationRankSQLMatchesCore
 // fails when the two disagree (component-lineage).
-const lineageRelationRankSQL = `CASE p.kind
-				WHEN 'serves' THEN 0
-				WHEN 'materializes' THEN 1 WHEN 'supersedes' THEN 1
-				WHEN 'depends_on' THEN 2
-				WHEN 'produced_verdict' THEN 3 WHEN 'merged_range' THEN 3 WHEN 'submitted_range' THEN 3 WHEN 'submitted_as' THEN 3
-				WHEN 'supports' THEN 4
-				ELSE 5 END`
+var lineageRelationRankSQL = core.LineageRelationRankSQL("n.kind")
 
+// lineageNeighborPrefixSQL returns, for every requested node, its first $4
+// valid incident links in the walk's ranking: relation, link time, event ID,
+// then the far endpoint and kind in byte order. The source side probes the
+// primary key and the destination side links_destination_idx, so a hub costs
+// at most the limit in returned rows (component-lineage).
+var lineageNeighborPrefixSQL = `SELECT f.ord::int,l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+	FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS f(node_type,node_id,ord)
+	CROSS JOIN LATERAL (
+		SELECT n.workspace_id,n.src_type,n.src_id,n.dst_type,n.dst_id,n.kind,n.legacy_created_by_event,n.created_at,n.created_by_event_id
+		FROM (
+			SELECT s.workspace_id,s.src_type,s.src_id,s.dst_type,s.dst_id,s.kind,s.legacy_created_by_event,s.created_at,s.created_by_event_id,s.dst_type AS far_type,s.dst_id AS far_id
+			FROM links s WHERE s.workspace_id=$1 AND s.src_type=f.node_type AND s.src_id=f.node_id
+			UNION ALL
+			SELECT d.workspace_id,d.src_type,d.src_id,d.dst_type,d.dst_id,d.kind,d.legacy_created_by_event,d.created_at,d.created_by_event_id,d.src_type,d.src_id
+			FROM links d WHERE d.workspace_id=$1 AND d.dst_type=f.node_type AND d.dst_id=f.node_id
+		) n
+		WHERE btrim(n.src_id,E' \t\n\r\v\f')<>'' AND btrim(n.dst_id,E' \t\n\r\v\f')<>'' AND btrim(n.kind,E' \t\n\r\v\f')<>''
+			AND n.src_type=ANY($5::text[]) AND n.dst_type=ANY($5::text[])
+			AND NOT (n.src_type=n.dst_type AND n.src_id=n.dst_id)
+			AND (COALESCE(n.created_by_event_id,0)>0 OR (n.kind='historical_feature_assignment' AND btrim(COALESCE(n.legacy_created_by_event,''),E' \t\n\r\v\f')<>''))
+		ORDER BY ` + lineageRelationRankSQL + `,n.created_at,COALESCE(n.created_by_event_id,0),n.far_type COLLATE "C",n.far_id COLLATE "C",n.kind COLLATE "C"
+		LIMIT $4
+	) l`
+
+// ListLineageNeighborhood runs the shared bounded walk and reads each depth's
+// ranked link prefixes with one query, so returned rows follow the budget
+// rather than the workspace graph (component-lineage).
 func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
 	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 {
 		return nil, fmt.Errorf("lineage neighborhood requires bounded depth and nodes")
 	}
-	types, ids := make([]string, 0, len(roots)), make([]string, 0, len(roots))
-	for _, root := range roots {
-		if root.Valid() {
-			types = append(types, string(root.Type))
-			ids = append(ids, root.ID)
+	budget.Workspace = workspace(ctx)
+	nodeTypes := make([]string, 0, len(core.LineageNodeTypes()))
+	for _, nodeType := range core.LineageNodeTypes() {
+		nodeTypes = append(nodeTypes, string(nodeType))
+	}
+	return core.FetchLineageNeighborhood(ctx, roots, budget, func(ctx context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		types, ids := make([]string, len(nodes)), make([]string, len(nodes))
+		for index, node := range nodes {
+			types[index], ids[index] = string(node.Type), node.ID
 		}
-	}
-	if len(types) == 0 {
-		return []core.LineageLink{}, nil
-	}
-	rows, err := s.boundary.Query(ctx, `WITH RECURSIVE seeds(root_no,node_type,node_id) AS (
-		SELECT ord::int, node_type, node_id FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS r(node_type,node_id,ord)
-	), walk(root_no,node_type,node_id,depth) AS (
-		SELECT root_no,node_type,node_id,0 FROM seeds
-		UNION
-		SELECT w.root_no,
-			CASE WHEN l.src_type=w.node_type AND l.src_id=w.node_id THEN l.dst_type ELSE l.src_type END,
-			CASE WHEN l.src_type=w.node_type AND l.src_id=w.node_id THEN l.dst_id ELSE l.src_id END,
-			w.depth+1
-		FROM walk w JOIN links l ON l.workspace_id=$1 AND
-			((l.src_type=w.node_type AND l.src_id=w.node_id) OR (l.dst_type=w.node_type AND l.dst_id=w.node_id))
-		WHERE w.depth < $4
-	), nearest AS MATERIALIZED (
-		SELECT root_no,node_type,node_id,min(depth) AS depth FROM walk GROUP BY root_no,node_type,node_id
-	), adjacent AS MATERIALIZED (
-		-- Adjacency first: one index probe per reached node, emitting the far
-		-- endpoint so the parent match below is a plain equality hash join.
-		-- Pairing nearest×nearest before touching links is quadratic in the
-		-- neighborhood size (component-persistence).
-		SELECT n.root_no,n.node_type,n.node_id,n.depth,
-			CASE WHEN l.src_type=n.node_type AND l.src_id=n.node_id THEN l.dst_type ELSE l.src_type END AS other_type,
-			CASE WHEN l.src_type=n.node_type AND l.src_id=n.node_id THEN l.dst_id ELSE l.src_id END AS other_id,
-			l.kind,l.created_at,l.created_by_event_id
-		FROM nearest n
-		JOIN links l ON l.workspace_id=$1 AND
-			((l.src_type=n.node_type AND l.src_id=n.node_id) OR (l.dst_type=n.node_type AND l.dst_id=n.node_id))
-		WHERE n.depth > 0
-	), parent_edges AS (
-		SELECT a.root_no,a.node_type,a.node_id,a.depth,a.kind,a.created_at,a.created_by_event_id
-		FROM adjacent a
-		JOIN nearest p ON p.root_no=a.root_no AND p.node_type=a.other_type AND p.node_id=a.other_id AND p.depth=a.depth-1
-	), prioritized AS (
-		SELECT n.root_no,n.node_type,n.node_id,n.depth,
-			COALESCE(min(`+lineageRelationRankSQL+`),99) AS relation_rank,
-			min(p.created_at) AS relation_at,min(p.created_by_event_id) AS relation_event
-		FROM nearest n
-		LEFT JOIN parent_edges p ON p.root_no=n.root_no AND p.node_type=n.node_type AND p.node_id=n.node_id AND p.depth=n.depth
-		GROUP BY n.root_no,n.node_type,n.node_id,n.depth
-	), bounded AS (
-		SELECT root_no,node_type,node_id FROM (
-			SELECT prioritized.*,row_number() OVER (PARTITION BY root_no ORDER BY depth,relation_rank,relation_at NULLS FIRST,relation_event NULLS FIRST,node_type,node_id) AS n FROM prioritized
-		) ranked WHERE n <= $5
-	), chosen AS (
-		SELECT DISTINCT l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
-		FROM links l JOIN bounded b ON l.workspace_id=$1 AND
-			((l.src_type=b.node_type AND l.src_id=b.node_id) OR (l.dst_type=b.node_type AND l.dst_id=b.node_id))
-	)
-	SELECT workspace_id,src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_at,created_by_event_id
-	FROM chosen ORDER BY src_type,src_id,dst_type,dst_id,kind`, workspace(ctx), types, ids, budget.MaxDepth, budget.MaxNodes)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []core.LineageLink
-	for rows.Next() {
-		var link core.LineageLink
-		var legacy pgtype.Text
-		var createdAt pgtype.Timestamptz
-		var eventID pgtype.Int8
-		if err = rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+		rows, err := s.boundary.Query(ctx, lineageNeighborPrefixSQL, workspace(ctx), types, ids, limit, nodeTypes)
+		if err != nil {
 			return nil, err
 		}
-		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
-		result = append(result, link)
-	}
-	return result, rows.Err()
+		defer rows.Close()
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for rows.Next() {
+			var ordinal int
+			var link core.LineageLink
+			var legacy pgtype.Text
+			var createdAt pgtype.Timestamptz
+			var eventID pgtype.Int8
+			if err = rows.Scan(&ordinal, &link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+				return nil, err
+			}
+			if ordinal < 1 || ordinal > len(nodes) {
+				return nil, fmt.Errorf("lineage neighbor row names request %d of %d", ordinal, len(nodes))
+			}
+			link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
+			node := nodes[ordinal-1]
+			out[node] = append(out[node], link)
+		}
+		return out, rows.Err()
+	})
 }
 
 func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {

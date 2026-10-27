@@ -7,6 +7,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -125,9 +126,12 @@ func TestListLineageNeighborhoodRanksAdjacentParentsAcrossDepths(t *testing.T) {
 	}{
 		{id: "ranking-depth2-serves", kind: "serves", createdAt: now.Add(10 * time.Second), eventID: highEventID, selected: true},
 		{id: "ranking-depth2-earlier", kind: "materializes", createdAt: now.Add(20 * time.Second), eventID: highEventID, selected: true},
-		{id: "ranking-depth2-null-event", kind: "materializes", createdAt: now.Add(30 * time.Second), selected: true},
+		// A materializes link without event provenance fails
+		// LineageLink.Validate, so the walk never reaches this candidate and
+		// the next valid candidate takes its slot (component-lineage).
+		{id: "ranking-depth2-null-event", kind: "materializes", createdAt: now.Add(30 * time.Second)},
 		{id: "ranking-depth2-low-event", kind: "materializes", createdAt: now.Add(30 * time.Second), eventID: lowEventID, selected: true},
-		{id: "ranking-depth2-high-event", kind: "materializes", createdAt: now.Add(30 * time.Second), eventID: highEventID},
+		{id: "ranking-depth2-high-event", kind: "materializes", createdAt: now.Add(30 * time.Second), eventID: highEventID, selected: true},
 		{id: "ranking-depth2-depends", kind: "depends_on", createdAt: now, eventID: lowEventID},
 	}
 	for _, candidate := range candidates {
@@ -154,6 +158,79 @@ func TestListLineageNeighborhoodRanksAdjacentParentsAcrossDepths(t *testing.T) {
 	for _, candidate := range candidates {
 		if markers[candidate.id] != candidate.selected {
 			t.Fatalf("marker selection for %s = %v, want %v; markers=%v", candidate.id, markers[candidate.id], candidate.selected, markers)
+		}
+	}
+	assertFetchedWalkMatchesFullWalk(t, st, ctx, []core.LineageNode{{Type: core.LineageTask, ID: rootID}}, links, budget)
+}
+
+// assertFetchedWalkMatchesFullWalk proves that the bounded neighborhood
+// traverses exactly as every workspace link does (component-lineage).
+func assertFetchedWalkMatchesFullWalk(t *testing.T, st *Store, ctx context.Context, roots []core.LineageNode, fetched []core.LineageLink, budget core.LineageTraversalBudget) {
+	t.Helper()
+	all, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := core.TraverseLineage(all, roots, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := core.TraverseLineage(fetched, roots, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Nodes, want.Nodes) || !reflect.DeepEqual(got.Links, want.Links) || got.Omissions != want.Omissions ||
+		got.OmittedNodes != want.OmittedNodes || !reflect.DeepEqual(got.ExhaustionReasons, want.ExhaustionReasons) {
+		t.Fatalf("fetched walk differs from full walk\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// TestListLineageNeighborhoodBoundsRowsAgainstHub reads a requirement that
+// serves 2,000 tasks. The returned rows stay within the fetch bound
+// roots × (max(MaxNodes, MaxFanout) + 1) + MaxNodes × (MaxFanout + 1),
+// whatever the hub's degree, and the fetched walk equals the full walk
+// (component-lineage; req-260802-72fc68 REQ-2).
+func TestListLineageNeighborhoodBoundsRowsAgainstHub(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rootID := core.NewTaskID()
+	if err := st.CreateTask(ctx, core.Task{ID: rootID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main",
+		Branch: "conveyor/task-" + rootID, State: core.TaskRunning, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	var eventID int64
+	if err := st.pool.QueryRow(ctx, `INSERT INTO events (workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
+		VALUES ($1,$2,'lineage.hub_fixture','test','system','{}',$3) RETURNING id`, workspace, rootID, now).Scan(&eventID); err != nil {
+		t.Fatal(err)
+	}
+	const hubDegree = 2000
+	if _, err := st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_at,created_by_event_id)
+		SELECT $1,'requirement','req-hub','task','hub-task-'||lpad(g::text,4,'0'),'serves',$2::timestamptz + g * interval '1 millisecond',$3
+		FROM generate_series(1,$4::int) g`, workspace, now, eventID, hubDegree); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_at,created_by_event_id)
+		VALUES ($1,'requirement','req-hub','task',$2,'serves',$3,$4)`, workspace, rootID, now, eventID); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []core.LineageNode{{Type: core.LineageTask, ID: rootID}, {Type: core.LineageRequirement, ID: "req-hub"}} {
+		budget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, MaxLinks: 128, Workspace: workspace}.Normalized()
+		links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bound := (max(budget.MaxNodes, budget.MaxFanout) + 1) + budget.MaxNodes*(budget.MaxFanout+1)
+		if len(links) > bound || len(links) >= hubDegree {
+			t.Fatalf("root %v fetched %d rows, bound %d against a %d-edge hub", root, len(links), bound, hubDegree)
+		}
+		assertFetchedWalkMatchesFullWalk(t, st, ctx, []core.LineageNode{root}, links, budget)
+		graph, err := core.TraverseLineage(links, []core.LineageNode{root}, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !graph.Truncated || len(graph.Nodes) > budget.MaxNodes {
+			t.Fatalf("root %v hub walk=%+v", root, graph)
 		}
 	}
 }

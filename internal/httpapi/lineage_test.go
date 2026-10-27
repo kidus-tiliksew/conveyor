@@ -164,6 +164,65 @@ func TestLineageHTTPHidesConfigurationProviderDetails(t *testing.T) {
 	}
 }
 
+// scanCountingLineageStore counts workspace-wide link reads.
+type scanCountingLineageStore struct {
+	store.Store
+	linkScans, neighborhoods, existence int
+}
+
+func (s *scanCountingLineageStore) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error) {
+	s.linkScans++
+	return s.Store.ListLineageLinks(ctx)
+}
+
+func (s *scanCountingLineageStore) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	s.neighborhoods++
+	return s.Store.ListLineageNeighborhood(ctx, roots, budget)
+}
+
+func (s *scanCountingLineageStore) LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error) {
+	s.existence++
+	return s.Store.LineageNodeExists(ctx, node)
+}
+
+// An unknown root answers 404 through one bounded existence probe and never
+// reads the workspace's links (component-lineage).
+func TestLineageHTTPUnknownRootReadsNoWorkspaceLinks(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	memory := store.NewMemory()
+	root := core.Task{ID: "scan-root", Workspace: "demo", Title: "Scan root", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := memory.CreateTask(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 50; index++ {
+		if err := memory.AppendEvent(ctx, core.Event{TaskID: root.ID, Kind: "task.dependency_added", Payload: core.JSONPayload(map[string]any{"task_id": root.ID, "depends_on_task_id": fmt.Sprintf("scan-neighbor-%02d", index)})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := &scanCountingLineageStore{Store: memory}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	call := func(path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path, nil)))
+		return response
+	}
+	for _, path := range []string{"/v1/lineage/task/made-up", "/v1/lineage/pull_request/conveyor%23999", "/v1/lineage/requirement_version/req-made-up:v3"} {
+		st.linkScans, st.neighborhoods, st.existence = 0, 0, 0
+		if response := call(path); response.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		if st.linkScans != 0 || st.neighborhoods != 0 || st.existence != 1 {
+			t.Fatalf("%s link scans=%d neighborhoods=%d existence probes=%d, want 0, 0, 1", path, st.linkScans, st.neighborhoods, st.existence)
+		}
+	}
+	// A linked node without a record still resolves through the probe.
+	st.linkScans, st.neighborhoods, st.existence = 0, 0, 0
+	if response := call("/v1/lineage/task/scan-neighbor-07"); response.Code != http.StatusOK || st.linkScans != 0 || st.neighborhoods != 1 {
+		t.Fatalf("linked-only node status=%d scans=%d neighborhoods=%d body=%s", response.Code, st.linkScans, st.neighborhoods, response.Body.String())
+	}
+}
+
 func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()

@@ -6,9 +6,122 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
+
+// memoryLineage is the memory backend's link map with a per-endpoint index.
+// Each endpoint keeps its incident links sorted in the walk's ranking, so a
+// neighbor prefix is the head of one list and an existence check is one
+// lookup; neither reads another node's links. Every write goes through put
+// and remove, which keep the map and the index together (component-lineage).
+type memoryLineage struct {
+	links  map[string]core.LineageLink
+	byNode map[memoryLineageEndpoint][]core.LineageLink
+	// lookups and examined count endpoint lookups and index entries read by
+	// prefix and existence reads, so tests can bound per-request cost.
+	lookups, examined atomic.Int64
+}
+
+type memoryLineageEndpoint struct {
+	workspace string
+	node      core.LineageNode
+}
+
+func newMemoryLineage() *memoryLineage {
+	return &memoryLineage{links: map[string]core.LineageLink{}, byNode: map[memoryLineageEndpoint][]core.LineageLink{}}
+}
+
+func (l *memoryLineage) len() int { return len(l.links) }
+
+func (l *memoryLineage) get(key string) (core.LineageLink, bool) {
+	link, ok := l.links[key]
+	return link, ok
+}
+
+// put stores link, replacing any link with the same key.
+func (l *memoryLineage) put(link core.LineageLink) {
+	key := lineageLinkKey(link)
+	if _, exists := l.links[key]; exists {
+		l.remove(key)
+	}
+	l.links[key] = link
+	for _, endpoint := range l.endpoints(link) {
+		list := l.byNode[endpoint]
+		index := sort.Search(len(list), func(i int) bool { return !core.LineageLinkRanksBefore(endpoint.node, list[i], link) })
+		list = append(list, core.LineageLink{})
+		copy(list[index+1:], list[index:])
+		list[index] = link
+		l.byNode[endpoint] = list
+	}
+}
+
+func (l *memoryLineage) remove(key string) {
+	link, exists := l.links[key]
+	if !exists {
+		return
+	}
+	delete(l.links, key)
+	for _, endpoint := range l.endpoints(link) {
+		list := l.byNode[endpoint]
+		index := sort.Search(len(list), func(i int) bool { return !core.LineageLinkRanksBefore(endpoint.node, list[i], link) })
+		for ; index < len(list); index++ {
+			if lineageLinkKey(list[index]) == key {
+				list = append(list[:index], list[index+1:]...)
+				break
+			}
+		}
+		if len(list) == 0 {
+			delete(l.byNode, endpoint)
+		} else {
+			l.byNode[endpoint] = list
+		}
+	}
+}
+
+func (l *memoryLineage) endpoints(link core.LineageLink) []memoryLineageEndpoint {
+	src := memoryLineageEndpoint{workspace: link.Workspace, node: core.LineageNode{Type: link.SrcType, ID: link.SrcID}}
+	dst := memoryLineageEndpoint{workspace: link.Workspace, node: core.LineageNode{Type: link.DstType, ID: link.DstID}}
+	if src == dst {
+		return []memoryLineageEndpoint{src}
+	}
+	return []memoryLineageEndpoint{src, dst}
+}
+
+// clone deep-copies the map and the index for a staged transaction.
+func (l *memoryLineage) clone() *memoryLineage {
+	out := &memoryLineage{links: make(map[string]core.LineageLink, len(l.links)), byNode: make(map[memoryLineageEndpoint][]core.LineageLink, len(l.byNode))}
+	for key, link := range l.links {
+		out.links[key] = link
+	}
+	for endpoint, list := range l.byNode {
+		out.byNode[endpoint] = append([]core.LineageLink(nil), list...)
+	}
+	return out
+}
+
+func (l *memoryLineage) exists(workspace string, node core.LineageNode) bool {
+	l.lookups.Add(1)
+	return len(l.byNode[memoryLineageEndpoint{workspace: workspace, node: node}]) > 0
+}
+
+// prefix returns node's first limit valid incident links in ranked order.
+func (l *memoryLineage) prefix(workspace string, node core.LineageNode, limit int) []core.LineageLink {
+	l.lookups.Add(1)
+	list := l.byNode[memoryLineageEndpoint{workspace: workspace, node: node}]
+	out := make([]core.LineageLink, 0, min(limit, len(list)))
+	for _, link := range list {
+		if len(out) == limit {
+			break
+		}
+		l.examined.Add(1)
+		if link.Validate() == nil {
+			out = append(out, link)
+		}
+	}
+	return out
+}
 
 // LineageNodeRecord is the minimal entity projection needed to label a
 // lineage graph without loading unrelated workspace records.
@@ -40,6 +153,8 @@ type LineageContextRequirementRecord struct {
 	Version    int
 	Content    string
 	Statements []core.RequirementStatement
+	// Archived flags the rendered label (component-lineage).
+	Archived bool
 }
 
 func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error) {
@@ -133,7 +248,7 @@ func (m *memory) ListLineageContextRecords(ctx context.Context, nodes []core.Lin
 			}
 			result.Requirements[node.ID] = LineageContextRequirementRecord{
 				Title: requirement.Title, Version: version.Version, Content: version.Content,
-				Statements: append([]core.RequirementStatement(nil), version.Statements...),
+				Statements: append([]core.RequirementStatement(nil), version.Statements...), Archived: requirement.Archived,
 			}
 		}
 	}
@@ -194,8 +309,8 @@ func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, erro
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace := workspaceOrDefault(ctx, "")
-	links := make([]core.LineageLink, 0, len(m.lineage))
-	for _, link := range m.lineage {
+	links := make([]core.LineageLink, 0, m.lineage.len())
+	for _, link := range m.lineage.links {
 		if link.Workspace == workspace {
 			links = append(links, link)
 		}
@@ -209,49 +324,30 @@ func (m *memory) ListLineageLinks(ctx context.Context) ([]core.LineageLink, erro
 	return links, nil
 }
 
+// LineageNodeExists is one endpoint-index lookup (component-lineage).
 func (m *memory) LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error) {
 	if !node.Valid() {
 		return false, nil
 	}
-	links, err := m.ListLineageLinks(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, link := range links {
-		if (link.SrcType == node.Type && link.SrcID == node.ID) || (link.DstType == node.Type && link.DstID == node.ID) {
-			return true, nil
-		}
-	}
-	return false, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lineage.exists(workspaceOrDefault(ctx, ""), node), nil
 }
 
+// ListLineageNeighborhood runs the shared bounded walk, reading each depth's
+// ranked link prefixes from the endpoint index (component-lineage).
 func (m *memory) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
-	links, err := m.ListLineageLinks(ctx)
-	if err != nil {
-		return nil, err
-	}
-	selected := map[string]core.LineageLink{}
-	for _, root := range roots {
-		walk, walkErr := core.TraverseLineage(links, []core.LineageNode{root}, core.LineageTraversalBudget{MaxDepth: budget.MaxDepth, MaxNodes: budget.MaxNodes, Workspace: workspaceOrDefault(ctx, "")})
-		if walkErr != nil {
-			return nil, walkErr
+	workspace := workspaceOrDefault(ctx, "")
+	budget.Workspace = workspace
+	return core.FetchLineageNeighborhood(ctx, roots, budget, func(_ context.Context, nodes []core.LineageNode, limit int) (map[core.LineageNode][]core.LineageLink, error) {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		out := make(map[core.LineageNode][]core.LineageLink, len(nodes))
+		for _, node := range nodes {
+			out[node] = m.lineage.prefix(workspace, node, limit)
 		}
-		nodes := make(map[core.LineageNode]bool, len(walk.Nodes))
-		for _, node := range walk.Nodes {
-			nodes[node] = true
-		}
-		for _, link := range links {
-			if nodes[core.LineageNode{Type: link.SrcType, ID: link.SrcID}] || nodes[core.LineageNode{Type: link.DstType, ID: link.DstID}] {
-				selected[lineageLinkKey(link)] = link
-			}
-		}
-	}
-	result := make([]core.LineageLink, 0, len(selected))
-	for _, link := range selected {
-		result = append(result, link)
-	}
-	sort.Slice(result, func(i, j int) bool { return lineageLinkKey(result[i]) < lineageLinkKey(result[j]) })
-	return result, nil
+		return out, nil
+	})
 }
 
 func (m *memory) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
@@ -413,24 +509,28 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 		}
 	}
 	preserved := map[string]core.LineageLink{}
-	for key, link := range m.lineage {
+	stored := make(map[string]core.LineageLink, m.lineage.len())
+	for key, link := range m.lineage.links {
+		stored[key] = link
+	}
+	for key, link := range stored {
 		if link.Workspace == workspace && link.CreatedByEventID != 0 && projectorOwnsLineageKind(link.Kind) {
 			_, isSuppressed := suppressed[key]
 			if _, regenerable := replayable[key]; !regenerable && !isSuppressed {
 				preserved[key] = link
 			}
-			delete(m.lineage, key)
+			m.lineage.remove(key)
 		} else if link.Workspace == workspace {
 			if _, regenerated := replayable[key]; !regenerated {
 				result.Existing++
 			}
 		}
 	}
-	for key, link := range replayable {
-		m.lineage[key] = link
+	for _, link := range replayable {
+		m.lineage.put(link)
 	}
-	for key, link := range preserved {
-		m.lineage[key] = link
+	for _, link := range preserved {
+		m.lineage.put(link)
 	}
 	result.Projected = len(replayable)
 	result.PreservedUnregenerable = len(preserved)

@@ -52,7 +52,10 @@ func TestSystemDesignEventLookupIndexIntegration(t *testing.T) {
 	}
 }
 
-func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testing.T) {
+// TestLineageNeighborhoodBatchesManyRootsPerDepthIntegration reads 50 roots
+// with one workspace-scoped query per depth the walk reaches, never one per
+// root (component-lineage).
+func TestLineageNeighborhoodBatchesManyRootsPerDepthIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -85,7 +88,9 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 	}
 	recorder.reset()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
-	links, err := st.ListLineageNeighborhood(ctx, roots, core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes, Workspace: workspace})
+	// The node cap holds every root and its task, so the walk reaches depth
+	// 1 and stops: one query for the 50 roots, one for their 50 tasks.
+	links, err := st.ListLineageNeighborhood(ctx, roots, core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: 100, Workspace: workspace})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,10 +101,10 @@ func TestLineageNeighborhoodBatchesManyRootsInOneScopedQueryIntegration(t *testi
 		t.Fatal(err)
 	}
 	queries := recorder.snapshot()
-	if len(queries) != 2 {
-		t.Fatalf("scoped query count=%d want 2: %v", len(queries), queries)
+	if len(queries) != 3 {
+		t.Fatalf("scoped query count=%d want 3: %v", len(queries), queries)
 	}
-	if !strings.Contains(queries[0], "WITH RECURSIVE seeds") || !strings.Contains(queries[1], "WITH wanted") {
+	if !strings.Contains(queries[0], "CROSS JOIN LATERAL") || !strings.Contains(queries[1], "CROSS JOIN LATERAL") || !strings.Contains(queries[2], "WITH wanted") {
 		t.Fatalf("unexpected scoped queries: %v", queries)
 	}
 }

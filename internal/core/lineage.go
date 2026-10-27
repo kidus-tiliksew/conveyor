@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -104,9 +105,44 @@ type LineageTraversalBudget struct {
 	MaxDepth int `json:"max_depth"`
 	MaxNodes int `json:"max_nodes"`
 	MaxLinks int `json:"max_links,omitempty"`
+	// MaxFanout caps the ranked links each non-root node examines; a root
+	// examines up to the larger of MaxNodes and MaxFanout. Zero takes the
+	// Normalized default.
+	MaxFanout int `json:"max_fanout,omitempty"`
 	// Workspace makes the trust boundary explicit even when a caller supplies
 	// mixed link input. Empty preserves compatibility for pure in-memory walks.
 	Workspace string `json:"-"`
+}
+
+// LineageFanoutFloor is the smallest default per-node fan-out.
+const LineageFanoutFloor = 4
+
+// Normalized fills the default fan-out: a quarter of MaxNodes, never less
+// than LineageFanoutFloor. A hub therefore admits at most its fan-out instead
+// of the whole node budget (component-lineage).
+func (budget LineageTraversalBudget) Normalized() LineageTraversalBudget {
+	if budget.MaxFanout <= 0 {
+		budget.MaxFanout = budget.MaxNodes / 4
+		if budget.MaxFanout < LineageFanoutFloor {
+			budget.MaxFanout = LineageFanoutFloor
+		}
+	}
+	return budget
+}
+
+// LineageOmissions reports each traversal budget axis on its own. Node counts
+// cover the links the walk examined, so they are lower bounds on what lies
+// beyond the budget (component-lineage).
+type LineageOmissions struct {
+	// DepthNodes counts distinct unseen nodes examined at the depth cap.
+	DepthNodes int `json:"depth_nodes"`
+	// NodeCapNodes counts distinct unseen nodes examined after the node cap filled.
+	NodeCapNodes int `json:"node_cap_nodes"`
+	// FanoutNodes counts nodes, at any depth, whose ranked links exceeded
+	// their examined prefix.
+	FanoutNodes int `json:"fanout_nodes"`
+	// Links counts reached links dropped by the link cap.
+	Links int `json:"links"`
 }
 
 // LineageTraversal is deterministic for the same roots, links, and budget.
@@ -120,6 +156,7 @@ type LineageTraversal struct {
 	OmittedNodes                 int                           `json:"omitted_nodes,omitempty"`
 	OmittedLinks                 int                           `json:"omitted_links,omitempty"`
 	ExhaustionReasons            []string                      `json:"exhaustion_reasons,omitempty"`
+	Omissions                    LineageOmissions              `json:"omissions"`
 	ForeignWorkspaceLinksIgnored int                           `json:"foreign_workspace_links_ignored,omitempty"`
 	Depths                       map[LineageNode]int           `json:"-"`
 	Paths                        map[LineageNode][]LineageLink `json:"-"`
@@ -152,6 +189,8 @@ type contextArtifactCandidate struct {
 	depth    int
 }
 
+// SelectContextArtifacts walks links once and selects from that walk. Callers
+// that already hold the traversal use SelectContextArtifactsFromTraversal.
 func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts []Artifact, options ...ContextArtifactSelectionOptions) (ContextArtifactSelection, error) {
 	var opts ContextArtifactSelectionOptions
 	if len(options) > 0 {
@@ -166,6 +205,13 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	if err != nil {
 		return ContextArtifactSelection{}, err
 	}
+	return SelectContextArtifactsFromTraversal(traversal, artifacts, opts), nil
+}
+
+// SelectContextArtifactsFromTraversal selects artifacts reachable in an
+// already computed traversal, so one context assembly walks the graph once
+// (component-lineage).
+func SelectContextArtifactsFromTraversal(traversal LineageTraversal, artifacts []Artifact, opts ContextArtifactSelectionOptions) ContextArtifactSelection {
 	reachable := make(map[LineageNode]bool, len(traversal.Nodes))
 	for _, node := range traversal.Nodes {
 		reachable[node] = true
@@ -238,7 +284,7 @@ func SelectContextArtifacts(links []LineageLink, roots []LineageNode, artifacts 
 	}
 	selection.Omitted = len(ordered) - len(selection.Artifacts)
 	selection.Truncated = selection.Truncated || selection.Omitted > 0
-	return selection, nil
+	return selection
 }
 
 func contextArtifactCandidateLess(left, right contextArtifactCandidate) bool {
@@ -291,11 +337,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks < 0 {
 		return LineageTraversal{}, fmt.Errorf("lineage traversal requires max depth >= 0 and max nodes > 0")
 	}
-	type neighbor struct {
-		node LineageNode
-		link LineageLink
-	}
-	adjacent := map[LineageNode][]neighbor{}
+	adjacent := map[LineageNode][]lineageNeighbor{}
 	for _, link := range links {
 		if budget.Workspace != "" && link.Workspace != budget.Workspace {
 			continue
@@ -305,34 +347,181 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		}
 		src := LineageNode{Type: link.SrcType, ID: link.SrcID}
 		dst := LineageNode{Type: link.DstType, ID: link.DstID}
-		adjacent[src] = append(adjacent[src], neighbor{node: dst, link: link})
-		adjacent[dst] = append(adjacent[dst], neighbor{node: src, link: link})
+		adjacent[src] = append(adjacent[src], lineageNeighbor{node: dst, link: link})
+		adjacent[dst] = append(adjacent[dst], lineageNeighbor{node: src, link: link})
 	}
 	for node := range adjacent {
-		sort.Slice(adjacent[node], func(i, j int) bool {
-			left, right := adjacent[node][i], adjacent[node][j]
-			if LineageRelationPriority(left.link.Kind) != LineageRelationPriority(right.link.Kind) {
-				return LineageRelationPriority(left.link.Kind) < LineageRelationPriority(right.link.Kind)
-			}
-			if !left.link.CreatedAt.Equal(right.link.CreatedAt) {
-				return left.link.CreatedAt.Before(right.link.CreatedAt)
-			}
-			if left.link.CreatedByEventID != right.link.CreatedByEventID {
-				return left.link.CreatedByEventID < right.link.CreatedByEventID
-			}
-			return lineageTraversalNodeKey(left.node) < lineageTraversalNodeKey(right.node)
-		})
+		sortLineageNeighbors(adjacent[node])
 	}
+	result, err := walkLineage(roots, budget, func(level []LineageNode, limit int) (map[LineageNode][]lineageNeighbor, error) {
+		out := make(map[LineageNode][]lineageNeighbor, len(level))
+		for _, node := range level {
+			list := adjacent[node]
+			if len(list) > limit {
+				list = list[:limit]
+			}
+			out[node] = list
+		}
+		return out, nil
+	})
+	if err != nil {
+		return LineageTraversal{}, err
+	}
+	if budget.Workspace != "" {
+		for _, link := range links {
+			if link.Workspace != budget.Workspace {
+				result.ForeignWorkspaceLinksIgnored++
+			}
+		}
+	}
+	return result, nil
+}
 
+// LineageNeighborFetch returns, for each requested node, its first limit
+// incident links of the workspace in LineageRelationPriority order, then link
+// time, event ID, and the far endpoint's node key in byte order. A node with
+// fewer links returns all of them. Rows LineageLink.Validate refuses are never
+// returned (component-lineage).
+type LineageNeighborFetch func(ctx context.Context, nodes []LineageNode, limit int) (map[LineageNode][]LineageLink, error)
+
+// FetchLineageNeighborhood runs the TraverseLineage walk against a store,
+// asking fetch once per depth for the ranked link prefixes the walk examines.
+// The returned links traverse exactly as every workspace link would under the
+// same normalized budget, so store cost follows the budget rather than the
+// workspace graph or a hub's degree (component-lineage;
+// req-260802-72fc68 AC-2.5).
+func FetchLineageNeighborhood(ctx context.Context, roots []LineageNode, budget LineageTraversalBudget, fetch LineageNeighborFetch) ([]LineageLink, error) {
+	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks < 0 {
+		return nil, fmt.Errorf("lineage neighborhood requires bounded depth and nodes")
+	}
+	fetched := map[string]LineageLink{}
+	_, err := walkLineage(roots, budget, func(level []LineageNode, limit int) (map[LineageNode][]lineageNeighbor, error) {
+		rows, err := fetch(ctx, level, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[LineageNode][]lineageNeighbor, len(level))
+		for _, node := range level {
+			var list []lineageNeighbor
+			for _, link := range rows[node] {
+				if (budget.Workspace != "" && link.Workspace != budget.Workspace) || link.Validate() != nil {
+					continue
+				}
+				src := LineageNode{Type: link.SrcType, ID: link.SrcID}
+				dst := LineageNode{Type: link.DstType, ID: link.DstID}
+				far := dst
+				if dst == node {
+					far = src
+				} else if src != node {
+					continue
+				}
+				list = append(list, lineageNeighbor{node: far, link: link})
+				fetched[lineageTraversalLinkKey(link)] = link
+			}
+			sortLineageNeighbors(list)
+			if len(list) > limit {
+				list = list[:limit]
+			}
+			out[node] = list
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	links := make([]LineageLink, 0, len(fetched))
+	for _, link := range fetched {
+		links = append(links, link)
+	}
+	sortLineageLinks(links)
+	return links, nil
+}
+
+// RankLineageLinks orders node's incident links as the walk ranks them and
+// keeps the first limit. Stores without a SQL ranking use it to answer a
+// LineageNeighborFetch.
+func RankLineageLinks(node LineageNode, links []LineageLink, limit int) []LineageLink {
+	neighbors := make([]lineageNeighbor, 0, len(links))
+	for _, link := range links {
+		neighbors = append(neighbors, lineageNeighbor{node: lineageFarEndpoint(node, link), link: link})
+	}
+	sortLineageNeighbors(neighbors)
+	if limit >= 0 && len(neighbors) > limit {
+		neighbors = neighbors[:limit]
+	}
+	out := make([]LineageLink, len(neighbors))
+	for index, neighbor := range neighbors {
+		out[index] = neighbor.link
+	}
+	return out
+}
+
+type lineageNeighbor struct {
+	node LineageNode
+	link LineageLink
+}
+
+func lineageNeighborLess(left, right lineageNeighbor) bool {
+	if LineageRelationPriority(left.link.Kind) != LineageRelationPriority(right.link.Kind) {
+		return LineageRelationPriority(left.link.Kind) < LineageRelationPriority(right.link.Kind)
+	}
+	if !left.link.CreatedAt.Equal(right.link.CreatedAt) {
+		return left.link.CreatedAt.Before(right.link.CreatedAt)
+	}
+	if left.link.CreatedByEventID != right.link.CreatedByEventID {
+		return left.link.CreatedByEventID < right.link.CreatedByEventID
+	}
+	if leftKey, rightKey := lineageTraversalNodeKey(left.node), lineageTraversalNodeKey(right.node); leftKey != rightKey {
+		return leftKey < rightKey
+	}
+	return left.link.Kind < right.link.Kind
+}
+
+// LineageLinkRanksBefore reports whether left ranks before right among
+// node's incident links, in the order the walk examines them. Stores that
+// keep ranked per-node lists use it to insert in place.
+func LineageLinkRanksBefore(node LineageNode, left, right LineageLink) bool {
+	return lineageNeighborLess(lineageNeighbor{node: lineageFarEndpoint(node, left), link: left}, lineageNeighbor{node: lineageFarEndpoint(node, right), link: right})
+}
+
+func lineageFarEndpoint(node LineageNode, link LineageLink) LineageNode {
+	if far := (LineageNode{Type: link.DstType, ID: link.DstID}); far != node {
+		return far
+	}
+	return LineageNode{Type: link.SrcType, ID: link.SrcID}
+}
+
+func sortLineageNeighbors(neighbors []lineageNeighbor) {
+	sort.Slice(neighbors, func(i, j int) bool { return lineageNeighborLess(neighbors[i], neighbors[j]) })
+}
+
+func sortLineageLinks(links []LineageLink) {
+	sort.Slice(links, func(i, j int) bool {
+		left, right := links[i], links[j]
+		if left.CreatedByEventID != right.CreatedByEventID {
+			return left.CreatedByEventID < right.CreatedByEventID
+		}
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.Before(right.CreatedAt)
+		}
+		return lineageTraversalLinkKey(left) < lineageTraversalLinkKey(right)
+	})
+}
+
+// walkLineage is the one bounded walk behind TraverseLineage and
+// FetchLineageNeighborhood. neighbors returns, for every node at one depth,
+// at most limit ranked neighbors; the walk asks for one beyond each node's
+// prefix to detect fan-out truncation. A root examines up to the larger of
+// MaxNodes and MaxFanout links and every other node up to MaxFanout. Each depth admits in rounds: round r
+// examines the r-th ranked link of every node at that depth in the order the
+// walk reached them, so a hub cannot spend the node budget before its peers
+// admit their first neighbors (component-lineage).
+func walkLineage(roots []LineageNode, budget LineageTraversalBudget, neighbors func(level []LineageNode, limit int) (map[LineageNode][]lineageNeighbor, error)) (LineageTraversal, error) {
+	budget = budget.Normalized()
 	sortedRoots := append([]LineageNode(nil), roots...)
 	sort.Slice(sortedRoots, func(i, j int) bool {
 		return lineageTraversalNodeKey(sortedRoots[i]) < lineageTraversalNodeKey(sortedRoots[j])
 	})
-	type queuedNode struct {
-		node  LineageNode
-		depth int
-	}
-	queue := make([]queuedNode, 0, budget.MaxNodes)
 	seen := map[LineageNode]bool{}
 	result := LineageTraversal{
 		Roots:  []LineageNode{},
@@ -343,15 +532,9 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		Budget: budget,
 	}
 	result.Budget.Workspace = ""
-	omittedNodes := map[LineageNode]bool{}
+	omittedNodes, omittedByDepth, omittedByCap := map[LineageNode]bool{}, map[LineageNode]bool{}, map[LineageNode]bool{}
 	reasons := map[string]bool{}
-	if budget.Workspace != "" {
-		for _, link := range links {
-			if link.Workspace != budget.Workspace {
-				result.ForeignWorkspaceLinksIgnored++
-			}
-		}
-	}
+	level := []LineageNode{}
 	for _, root := range sortedRoots {
 		if !root.Valid() || seen[root] {
 			continue
@@ -359,6 +542,7 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		if len(result.Nodes) == budget.MaxNodes {
 			result.Truncated = true
 			omittedNodes[root] = true
+			omittedByCap[root] = true
 			reasons["nodes"] = true
 			break
 		}
@@ -366,60 +550,79 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		result.Roots = append(result.Roots, root)
 		result.Nodes = append(result.Nodes, root)
 		result.Depths[root] = 0
-		queue = append(queue, queuedNode{node: root})
+		level = append(level, root)
 	}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		neighbors := adjacent[current.node]
-		if current.depth == budget.MaxDepth {
-			for _, next := range neighbors {
-				if !seen[next.node] {
-					result.Truncated = true
-					omittedNodes[next.node] = true
-					reasons["depth"] = true
-				}
-			}
-			continue
+	examined := map[string]LineageLink{}
+	for depth := 0; len(level) > 0; depth++ {
+		limit := budget.MaxFanout
+		if depth == 0 && budget.MaxNodes > limit {
+			limit = budget.MaxNodes
 		}
-		for _, next := range neighbors {
-			if seen[next.node] {
-				continue
-			}
-			if len(result.Nodes) == budget.MaxNodes {
+		adjacent, err := neighbors(level, limit+1)
+		if err != nil {
+			return LineageTraversal{}, err
+		}
+		prefixes := make([][]lineageNeighbor, len(level))
+		rounds := 0
+		for index, node := range level {
+			prefix := adjacent[node]
+			if len(prefix) > limit {
+				// A cut prefix may hide a neighbor the walk never examined,
+				// at the depth cap as anywhere else, so it always reports
+				// fan-out rather than claim a complete neighborhood
+				// (component-lineage).
+				prefix = prefix[:limit]
 				result.Truncated = true
-				omittedNodes[next.node] = true
-				reasons["nodes"] = true
-				continue
+				result.Omissions.FanoutNodes++
+				reasons["fanout"] = true
 			}
-			seen[next.node] = true
-			result.Nodes = append(result.Nodes, next.node)
-			result.Depths[next.node] = current.depth + 1
-			result.Paths[next.node] = append(append([]LineageLink(nil), result.Paths[current.node]...), next.link)
-			queue = append(queue, queuedNode{node: next.node, depth: current.depth + 1})
+			for _, candidate := range prefix {
+				examined[lineageTraversalLinkKey(candidate.link)] = candidate.link
+			}
+			prefixes[index] = prefix
+			if len(prefix) > rounds {
+				rounds = len(prefix)
+			}
+		}
+		next := []LineageNode{}
+		for round := 0; round < rounds; round++ {
+			for index, node := range level {
+				if round >= len(prefixes[index]) {
+					continue
+				}
+				neighbor := prefixes[index][round]
+				if seen[neighbor.node] {
+					continue
+				}
+				if depth == budget.MaxDepth {
+					result.Truncated = true
+					omittedNodes[neighbor.node] = true
+					omittedByDepth[neighbor.node] = true
+					reasons["depth"] = true
+					continue
+				}
+				if len(result.Nodes) == budget.MaxNodes {
+					result.Truncated = true
+					omittedNodes[neighbor.node] = true
+					omittedByCap[neighbor.node] = true
+					reasons["nodes"] = true
+					continue
+				}
+				seen[neighbor.node] = true
+				result.Nodes = append(result.Nodes, neighbor.node)
+				result.Depths[neighbor.node] = depth + 1
+				result.Paths[neighbor.node] = append(append([]LineageLink(nil), result.Paths[node]...), neighbor.link)
+				next = append(next, neighbor.node)
+			}
+		}
+		level = next
+	}
+	for _, link := range examined {
+		if seen[LineageNode{Type: link.SrcType, ID: link.SrcID}] && seen[LineageNode{Type: link.DstType, ID: link.DstID}] {
+			result.Links = append(result.Links, link)
 		}
 	}
-	reachable := make(map[LineageNode]bool, len(result.Nodes))
-	for _, node := range result.Nodes {
-		reachable[node] = true
-	}
-	for _, link := range links {
-		if (budget.Workspace != "" && link.Workspace != budget.Workspace) || link.Validate() != nil || !reachable[LineageNode{Type: link.SrcType, ID: link.SrcID}] ||
-			!reachable[LineageNode{Type: link.DstType, ID: link.DstID}] {
-			continue
-		}
-		result.Links = append(result.Links, link)
-	}
-	sort.Slice(result.Links, func(i, j int) bool {
-		left, right := result.Links[i], result.Links[j]
-		if left.CreatedByEventID != right.CreatedByEventID {
-			return left.CreatedByEventID < right.CreatedByEventID
-		}
-		if !left.CreatedAt.Equal(right.CreatedAt) {
-			return left.CreatedAt.Before(right.CreatedAt)
-		}
-		return lineageTraversalLinkKey(left) < lineageTraversalLinkKey(right)
-	})
+	sortLineageLinks(result.Links)
 	if budget.MaxLinks > 0 && len(result.Links) > budget.MaxLinks {
 		result.OmittedLinks = len(result.Links) - budget.MaxLinks
 		result.Links = result.Links[:budget.MaxLinks]
@@ -427,7 +630,10 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 		reasons["links"] = true
 	}
 	result.OmittedNodes = len(omittedNodes)
-	for _, reason := range []string{"depth", "nodes", "links"} {
+	result.Omissions.DepthNodes = len(omittedByDepth)
+	result.Omissions.NodeCapNodes = len(omittedByCap)
+	result.Omissions.Links = result.OmittedLinks
+	for _, reason := range []string{"depth", "nodes", "fanout", "links"} {
 		if reasons[reason] {
 			result.ExhaustionReasons = append(result.ExhaustionReasons, reason)
 		}
@@ -470,6 +676,30 @@ func LineageRankedRelationKinds() []string {
 	}
 	sort.Strings(kinds)
 	return kinds
+}
+
+// LineageRelationRankSQL renders LineageRelationPriority as a SQL CASE over
+// column for the store neighbor queries, which cannot call Go. Kinds are
+// fixed projector identifiers, never caller input (component-lineage).
+func LineageRelationRankSQL(column string) string {
+	var out strings.Builder
+	out.WriteString("CASE " + column)
+	for _, kind := range LineageRankedRelationKinds() {
+		fmt.Fprintf(&out, " WHEN '%s' THEN %d", kind, lineageRelationPriorities[kind])
+	}
+	fmt.Fprintf(&out, " ELSE %d END", LineageRelationDefaultPriority)
+	return out.String()
+}
+
+// LineageNodeTypes lists every valid node type, sorted, for store queries
+// that mirror LineageLink.Validate.
+func LineageNodeTypes() []LineageNodeType {
+	return []LineageNodeType{
+		LineageBlueprint, LineageBlueprintVersion, LineageCommitRange, LineageDecision, LineageEvidence,
+		LineagePlanningBundle, LineagePlanningSession, LineagePullRequest, LineageReferenceDocument,
+		LineageReferenceDocumentVersion, LineageRepositoryPath, LineageRequirement, LineageRequirementVersion,
+		LineageSystemDesign, LineageSystemDesignVersion, LineageTask, LineageVerdict, LineageWorkOrder,
+	}
 }
 
 func lineageTraversalNodeKey(node LineageNode) string {

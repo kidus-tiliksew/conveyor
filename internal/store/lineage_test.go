@@ -125,12 +125,12 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	// (component-lineage).
 	assertMemoryLineage(t, st, ctx, 4)
 	memoryStore := st.(*memory)
-	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note"})] = core.LineageLink{
+	memoryStore.lineage.put(core.LineageLink{
 		Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note", CreatedByEventID: 1,
-	}
-	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment"})] = core.LineageLink{
+	})
+	memoryStore.lineage.put(core.LineageLink{
 		Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment",
-	}
+	})
 	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 4 {
 		t.Fatalf("rebuild result=%+v err=%v", result, err)
 	} else if result.Existing != 2 {
@@ -156,7 +156,7 @@ func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) 
 		link := core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: task.ID,
 			DstType: core.LineagePullRequest, DstID: strconv.Itoa(number), Kind: "submitted_as",
 			CreatedByEventID: event.ID, CreatedAt: event.At}
-		st.lineage[lineageLinkKey(link)] = link
+		st.lineage.put(link)
 	}
 	request := core.LineageRebuildRequest{Reason: "live-shaped repair", RequestID: "preserve-53"}
 	result, err := st.RebuildLineage(ctx, request)
@@ -196,7 +196,7 @@ func TestMemoryLineageRebuildDropsStaleRemovedDependencyRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stale core.LineageLink
-	for _, link := range st.lineage {
+	for _, link := range st.lineage.links {
 		if link.Kind == "depends_on" {
 			stale = link
 		}
@@ -207,7 +207,7 @@ func TestMemoryLineageRebuildDropsStaleRemovedDependencyRow(t *testing.T) {
 	if _, err := st.RemoveTaskDependency(ctx, DependencyRemovalRequest{TaskID: "dependent", DependsOnTaskID: "dependency", Reason: "unordered", RequestID: "remove"}); err != nil {
 		t.Fatal(err)
 	}
-	st.lineage[lineageLinkKey(stale)] = stale
+	st.lineage.put(stale)
 	result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "drop stale dependency", RequestID: "stale-dependency"})
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestMemoryLineageRebuildDropsStaleRemovedDependencyRow(t *testing.T) {
 	if result.PreservedUnregenerable != 0 || result.Ambiguous != 0 || result.Projected != 2 {
 		t.Fatalf("rebuild result=%+v, want the stale row dropped", result)
 	}
-	if _, exists := st.lineage[lineageLinkKey(stale)]; exists {
+	if _, exists := st.lineage.get(lineageLinkKey(stale)); exists {
 		t.Fatalf("rebuild kept stale dependency row %+v", stale)
 	}
 }
@@ -234,10 +234,10 @@ func TestMemoryLineageRebuildClassifiesRegeneratedLegacyKeyOnlyAsProjected(t *te
 	}
 	key := lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: task.ID,
 		DstType: core.LineageWorkOrder, DstID: "overlap-order", Kind: "dispatches"})
-	legacy := st.lineage[key]
+	legacy, _ := st.lineage.get(key)
 	legacy.CreatedByEventID = 0
 	legacy.LegacyCreatedByEvent = "legacy.dispatch"
-	st.lineage[key] = legacy
+	st.lineage.put(legacy)
 
 	result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "overlap classification", RequestID: core.NewTaskID()})
 	if err != nil {
@@ -377,4 +377,141 @@ func TestLineageReplaySuppressesHistoricalVersionlessRemoval(t *testing.T) {
 	if got := suppressed(other); !reflect.DeepEqual(got, []string{"req-a->task-2", "req-a:v2->task-2"}) {
 		t.Fatalf("another task's removal suppressed %v", got)
 	}
+}
+
+// The memory index answers existence and neighbor-prefix reads from the
+// requested node's own links: an unknown root examines nothing and a hub
+// prefix examines at most its limit, however many unrelated links and hub
+// edges the workspace holds. The index matches the link map after insert,
+// suppression, serves dismissal, a staged transaction, and rebuild
+// (component-lineage; review round 1 finding 2).
+func TestMemoryLineageIndexReadsOnlyRequestedNodes(t *testing.T) {
+	const workspace = "lineage-index"
+	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}}).(*memory)
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), workspace)
+	human := WithActor(ctx, Actor{ID: "operator", Role: core.ActorHuman})
+	assertIndex := func(t *testing.T, stage string) {
+		t.Helper()
+		st.mu.RLock()
+		defer st.mu.RUnlock()
+		want := map[memoryLineageEndpoint][]core.LineageLink{}
+		for _, link := range st.lineage.links {
+			for _, endpoint := range st.lineage.endpoints(link) {
+				want[endpoint] = append(want[endpoint], link)
+			}
+		}
+		for endpoint, links := range want {
+			want[endpoint] = core.RankLineageLinks(endpoint.node, links, -1)
+		}
+		if !reflect.DeepEqual(st.lineage.byNode, want) {
+			t.Fatalf("%s: endpoint index diverged from the link map", stage)
+		}
+	}
+	for _, id := range []string{"index-root", "index-dependency"} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Unrelated workspace growth and a 2,000-edge hub serving the root.
+	for index := 0; index < 5000; index++ {
+		st.lineage.put(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: "unrelated-" + strconv.Itoa(index), DstType: core.LineageTask,
+			DstID: "unrelated-dependency-" + strconv.Itoa(index), Kind: "depends_on", CreatedByEventID: int64(100000 + index), CreatedAt: time.Unix(int64(index), 0).UTC()})
+	}
+	for index := 0; index < 2000; index++ {
+		st.lineage.put(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "req-index-hub", DstType: core.LineageTask,
+			DstID: "hub-task-" + strconv.Itoa(index), Kind: "serves", CreatedByEventID: int64(200000 + index), CreatedAt: time.Unix(int64(index), 0).UTC()})
+	}
+	st.lineage.put(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "req-index-hub", DstType: core.LineageTask,
+		DstID: "index-root", Kind: "serves", CreatedByEventID: 300000, CreatedAt: time.Unix(3000, 0).UTC()})
+	assertIndex(t, "insert")
+
+	st.lineage.lookups.Store(0)
+	st.lineage.examined.Store(0)
+	if exists, err := st.LineageNodeExists(ctx, core.LineageNode{Type: core.LineageTask, ID: "made-up"}); err != nil || exists {
+		t.Fatalf("unknown root exists=%v err=%v", exists, err)
+	}
+	if lookups, examined := st.lineage.lookups.Load(), st.lineage.examined.Load(); lookups != 1 || examined != 0 {
+		t.Fatalf("unknown root lookups=%d examined=%d, want one lookup and no entries", lookups, examined)
+	}
+
+	budget := core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, MaxLinks: 128, Workspace: workspace}.Normalized()
+	roots := []core.LineageNode{{Type: core.LineageTask, ID: "index-root"}}
+	st.lineage.lookups.Store(0)
+	st.lineage.examined.Store(0)
+	fetched, err := st.ListLineageNeighborhood(ctx, roots, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := int64(len(roots)*(max(budget.MaxNodes, budget.MaxFanout)+1) + budget.MaxNodes*(budget.MaxFanout+1))
+	if examined := st.lineage.examined.Load(); examined > bound || st.lineage.lookups.Load() > int64(budget.MaxNodes+len(roots)) {
+		t.Fatalf("hub walk examined %d entries in %d lookups, bound %d entries", examined, st.lineage.lookups.Load(), bound)
+	}
+	full, err := core.TraverseLineage(mustMemoryLineageLinks(t, st, ctx), roots, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := core.TraverseLineage(fetched, roots, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Nodes, full.Nodes) || !reflect.DeepEqual(got.Links, full.Links) || got.Omissions != full.Omissions {
+		t.Fatalf("indexed walk differs from the full walk: %+v vs %+v", got, full)
+	}
+
+	// Insert and suppression through the projector.
+	if _, err = st.AddTaskDependency(ctx, DependencyAdditionRequest{TaskID: "index-root", DependsOnTaskID: "index-dependency", Reason: "order", RequestID: "index-add"}); err != nil {
+		t.Fatal(err)
+	}
+	assertIndex(t, "dependency added")
+	if _, err = st.RemoveTaskDependency(ctx, DependencyRemovalRequest{TaskID: "index-root", DependsOnTaskID: "index-dependency", Reason: "unordered", RequestID: "index-remove"}); err != nil {
+		t.Fatal(err)
+	}
+	assertIndex(t, "dependency suppressed")
+	// Serves confirmation and dismissal.
+	requirement, version, err := st.CreateRequirement(human, core.Requirement{ID: "req-index-serves", Title: "Index serves"}, core.RequirementVersion{
+		Content: "# Index serves", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Serve."}}, Origin: core.RequirementOriginOperator,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ProposeRequirementServes(ctx, "index-root", requirement.ID, core.RequirementServesPlanning, false); err != nil {
+		t.Fatal(err)
+	}
+	// DismissRequirementServes removes the blueprint serves key through the
+	// index; seed that key so the removal path has a row to drop.
+	servesKey := core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: requirement.ID, DstType: core.LineageBlueprint, DstID: "index-root", Kind: "serves", CreatedByEventID: 500000, CreatedAt: time.Unix(5000, 0).UTC()}
+	st.mu.Lock()
+	st.lineage.put(servesKey)
+	st.mu.Unlock()
+	assertIndex(t, "serves seeded")
+	if _, err = st.DismissRequirementServes(human, "index-root", requirement.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertIndex(t, "serves dismissed")
+	// Only the blueprint's plans link to its task remains on that endpoint.
+	if _, kept := st.lineage.get(lineageLinkKey(servesKey)); kept || len(st.lineage.prefix(workspace, core.LineageNode{Type: core.LineageBlueprint, ID: "index-root"}, 100)) != 1 {
+		t.Fatal("dismissed serves edge still stored or indexed")
+	}
+	// A staged transaction (start-over) clones and swaps the index.
+	staged := st.lineage.clone()
+	staged.put(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: "staged-a", DstType: core.LineageTask, DstID: "staged-b", Kind: "depends_on", CreatedByEventID: 400000, CreatedAt: time.Unix(4000, 0).UTC()})
+	if st.lineage.exists(workspace, core.LineageNode{Type: core.LineageTask, ID: "staged-a"}) {
+		t.Fatal("a staged clone's write reached the live index")
+	}
+	if _, err = st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "index rebuild", RequestID: "index-rebuild"}); err != nil {
+		t.Fatal(err)
+	}
+	assertIndex(t, "rebuild")
+}
+
+func mustMemoryLineageLinks(t *testing.T, st *memory, ctx context.Context) []core.LineageLink {
+	t.Helper()
+	links, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return links
 }

@@ -1258,7 +1258,17 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if err != nil {
 		return ArtifactContent{}, err
 	}
-	lineage, err := s.lineageForOrder(ctx, order)
+	_, content, readErr := s.Store.GetArtifact(ctx, artifactID)
+	// Recheck the exact claim after storage I/O, then assemble the lineage
+	// selection once. Eligibility is decided on state read after the content
+	// read, so an attachment removed during the read cannot retain authority
+	// because its ID was selected earlier (component-work-orders;
+	// component-lineage).
+	latest, authErr := s.authorizedForObservation(ctx, id, session)
+	if authErr != nil || latest.AttemptID != order.AttemptID || (latest.State == core.WorkOrderClaimed && !latest.ExecutionDeadline.IsZero() && !latest.ExecutionDeadline.After(time.Now())) {
+		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
+	}
+	lineage, err := s.lineageForOrder(ctx, latest)
 	if err != nil {
 		return ArtifactContent{}, err
 	}
@@ -1273,35 +1283,14 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	if authorized == nil {
 		return ArtifactContent{}, fmt.Errorf("artifact not found for work order")
 	}
-	snapshot, err := s.freshnessSnapshot(ctx, order, lineage.Snapshot)
+	snapshot, err := s.freshnessSnapshot(ctx, latest, lineage.Snapshot)
 	if err != nil {
 		return ArtifactContent{}, fmt.Errorf("refresh_unavailable")
 	}
 	result := ArtifactContent{Artifact: *authorized, Encoding: "base64"}
-	_, content, readErr := s.Store.GetArtifact(ctx, artifactID)
 	outcome := "fetched"
 	if readErr != nil || int64(len(content)) != authorized.SizeBytes || core.ContextBytesDigest(content) != artifactID {
 		outcome = "fetch_failed"
-	}
-	// Recheck exact claim and current eligibility after storage I/O; a removed
-	// attachment cannot retain authority just because its ID was selected earlier.
-	latest, authErr := s.authorizedForObservation(ctx, id, session)
-	if authErr != nil || latest.AttemptID != order.AttemptID || (latest.State == core.WorkOrderClaimed && !latest.ExecutionDeadline.IsZero() && !latest.ExecutionDeadline.After(time.Now())) {
-		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
-	}
-	current, err := s.artifactsForOrder(ctx, order)
-	if err != nil {
-		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
-	}
-	eligible := false
-	for _, a := range current {
-		if a.ID == artifactID {
-			eligible = true
-			break
-		}
-	}
-	if !eligible {
-		return ArtifactContent{}, store.ErrWorkOrderClaimUnauthorized
 	}
 	boundedSnapshot := core.BoundContextFreshness(core.ContextFreshness{Snapshot: snapshot}).Snapshot
 	observation := core.ContextObservation{Snapshot: &boundedSnapshot, Kind: "context.artifact_fetch_observed", SelectionRevision: snapshot.Revision, ArtifactID: artifactID, Outcome: outcome}
@@ -1333,14 +1322,6 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 	return result, nil
 }
 
-func (s *Service) artifactsForOrder(ctx context.Context, order core.WorkOrder) ([]ArtifactReference, error) {
-	lineage, err := s.lineageForOrder(ctx, order)
-	if err != nil {
-		return nil, err
-	}
-	return artifactReferences(order.ID, lineage.Artifacts), nil
-}
-
 func (s *Service) lineageForOrder(ctx context.Context, order core.WorkOrder) (lineagecontext.Result, error) {
 	var cfg *config.Config
 	if s.ConfigProvider != nil {
@@ -1350,10 +1331,16 @@ func (s *Service) lineageForOrder(ctx context.Context, order core.WorkOrder) (li
 			return lineagecontext.Result{}, err
 		}
 	}
-	result, err := lineagecontext.Assemble(ctx, s.Store, cfg, []core.LineageNode{
+	// A claimed review or verify order renders its pinned served-requirement
+	// versions, the same versions its authority names (component-work-orders).
+	var options lineagecontext.Options
+	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
+		options.PinnedRequirements = order.ServedRequirementSnapshot
+	}
+	result, err := lineagecontext.AssembleWithOptions(ctx, s.Store, lineagecontext.BudgetFromConfig(cfg), []core.LineageNode{
 		{Type: core.LineageTask, ID: order.TaskID},
 		{Type: core.LineageWorkOrder, ID: order.ID},
-	}, order.TaskID, true)
+	}, order.TaskID, true, options)
 	if err != nil {
 		return lineagecontext.Result{}, fmt.Errorf("assemble lineage context for work order %s: %w", order.ID, err)
 	}

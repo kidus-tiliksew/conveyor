@@ -73,7 +73,7 @@ func SeedLineageLinkForTest(t *testing.T, st Backend, link core.LineageLink) {
 	m := st.(*volatileMemory).memory
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lineage[lineageLinkKey(link)] = link
+	m.lineage.put(link)
 }
 
 // SeedStoredTaskHoldForTest sets one task's stored historical hold to true,

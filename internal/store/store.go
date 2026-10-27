@@ -462,9 +462,9 @@ type PlanningStore interface {
 type LineageStore interface {
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
 	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
-	// ListLineageNeighborhood returns one bounded, workspace-scoped link set
-	// for all roots. Callers may derive several per-root traversals from it
-	// without repeating a workspace-wide scan.
+	// ListLineageNeighborhood returns the bounded, workspace-scoped links the
+	// shared walk from all roots examines under budget, so a traversal of them
+	// equals a traversal of every workspace link (component-lineage).
 	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
 	// ListRequirementDeliveryLineage returns a bounded, workspace-scoped,
 	// directed delivery closure. Only requirement -> task|blueprint `serves`,
@@ -562,7 +562,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		dependencies:                map[string]map[string]struct{}{},
 		jobs:                        map[string][]core.Job{},
 		events:                      map[string][]core.Event{},
-		lineage:                     map[string]core.LineageLink{},
+		lineage:                     newMemoryLineage(),
 		interventions:               map[string][]core.Intervention{},
 		transcripts:                 map[string]core.Transcript{},
 		specs:                       map[string][]core.SpecVersion{},
@@ -631,7 +631,7 @@ type memory struct {
 	dependencies                map[string]map[string]struct{}
 	jobs                        map[string][]core.Job
 	events                      map[string][]core.Event
-	lineage                     map[string]core.LineageLink
+	lineage                     *memoryLineage
 	interventions               map[string][]core.Intervention
 	transcripts                 map[string]core.Transcript
 	specs                       map[string][]core.SpecVersion
@@ -930,12 +930,11 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 	}
 	projection := projectLineageEvent(workspace, event)
 	for _, link := range projection.Suppresses {
-		delete(m.lineage, lineageLinkKey(link))
+		m.lineage.remove(lineageLinkKey(link))
 	}
 	for _, link := range projection.Links {
-		key := lineageLinkKey(link)
-		if _, exists := m.lineage[key]; !exists {
-			m.lineage[key] = link
+		if _, exists := m.lineage.get(lineageLinkKey(link)); !exists {
+			m.lineage.put(link)
 		}
 	}
 }

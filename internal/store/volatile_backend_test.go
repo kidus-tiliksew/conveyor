@@ -138,7 +138,7 @@ func TestAppendEventRequiresActor(t *testing.T) {
 		for _, items := range memory.events {
 			events += len(items)
 		}
-		return events, len(memory.lineage), len(memory.tasks)
+		return events, memory.lineage.len(), len(memory.tasks)
 	}
 	beforeEvents, beforeLineage, beforeTasks := snapshot()
 	bare := WithWorkspace(t.Context(), "one")
@@ -411,8 +411,8 @@ func snapshotVolatile(t *testing.T, st Store) volatileSnapshot {
 		}
 		return string(data)
 	}
-	lineage := make([]string, 0, len(m.lineage))
-	for key := range m.lineage {
+	lineage := make([]string, 0, m.lineage.len())
+	for key := range m.lineage.links {
 		lineage = append(lineage, fmt.Sprint(key))
 	}
 	sort.Strings(lineage)

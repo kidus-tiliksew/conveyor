@@ -112,11 +112,10 @@ func boundedLineageQueryValue(r *http.Request, name string, fallback int) (int, 
 func (s *Server) lineageGraph(r *http.Request, root core.LineageNode, budget core.LineageTraversalBudget) (core.LineageTraversal, error) {
 	workspace, _ := store.WorkspaceFromContext(r.Context())
 	budget.Workspace = workspace
-	fetchBudget := budget
-	fetchBudget.MaxDepth++
-	fetchBudget.MaxNodes++
-	fetchBudget.MaxLinks++
-	links, err := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, fetchBudget)
+	// The store runs the same walk, so fetching with the traversal budget
+	// returns every link the traversal examines (component-lineage).
+	budget = budget.Normalized()
+	links, err := s.Store.ListLineageNeighborhood(r.Context(), []core.LineageNode{root}, budget)
 	if err != nil {
 		return core.LineageTraversal{}, err
 	}
@@ -208,16 +207,10 @@ func (s *Server) lineageNodeExists(r *http.Request, node core.LineageNode) (bool
 	if found {
 		return true, nil
 	}
-	links, err := s.Store.ListLineageLinks(r.Context())
-	if err != nil {
-		return false, err
-	}
-	for _, link := range links {
-		if (link.SrcType == node.Type && link.SrcID == node.ID) || (link.DstType == node.Type && link.DstID == node.ID) {
-			return true, nil
-		}
-	}
-	return false, nil
+	// A root without a record exists only on a link. One indexed probe of
+	// the root's source and destination sides answers that, so a made-up ID
+	// never reads the workspace's links (component-lineage).
+	return s.Store.LineageNodeExists(r.Context(), node)
 }
 
 // lineageNodeLabels resolves every label with a fixed set of workspace-scoped
