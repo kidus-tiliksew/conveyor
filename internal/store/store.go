@@ -462,9 +462,9 @@ type PlanningStore interface {
 type LineageStore interface {
 	ListLineageLinks(ctx context.Context) ([]core.LineageLink, error)
 	LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error)
-	// ListLineageNeighborhood returns one bounded, workspace-scoped link set
-	// for all roots. Callers may derive several per-root traversals from it
-	// without repeating a workspace-wide scan.
+	// ListLineageNeighborhood returns the bounded, workspace-scoped links the
+	// shared walk from all roots examines under budget, so a traversal of them
+	// equals a traversal of every workspace link (component-lineage).
 	ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error)
 	// ListRequirementDeliveryLineage returns a bounded, workspace-scoped,
 	// directed delivery closure. Only requirement -> task|blueprint `serves`,
