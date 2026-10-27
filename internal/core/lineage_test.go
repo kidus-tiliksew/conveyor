@@ -255,6 +255,11 @@ func TestFetchLineageNeighborhoodMatchesFullTraversal(t *testing.T) {
 		{MaxDepth: 2, MaxNodes: 64, MaxLinks: 64},
 		{MaxDepth: 4, MaxNodes: 16, MaxLinks: 48, MaxFanout: 3},
 		{MaxDepth: 0, MaxNodes: 4},
+		// Filters select within the same ranked prefixes, so a filtered
+		// fetch still traverses exactly as the filtered full walk.
+		{MaxDepth: 5, MaxNodes: 32, MaxLinks: 128, Filter: &LineageTraversalFilter{Direction: LineageDirectionOut}},
+		{MaxDepth: 4, MaxNodes: 24, MaxLinks: 96, Filter: &LineageTraversalFilter{Direction: LineageDirectionIn, Kinds: []string{"serves", "dispatches", "governs"}}},
+		{MaxDepth: 5, MaxNodes: 32, MaxLinks: 128, Filter: &LineageTraversalFilter{NodeTypes: []LineageNodeType{LineageTask, LineageWorkOrder}}},
 	} {
 		for _, roots := range [][]LineageNode{{nodes[0]}, {nodes[7], nodes[1]}, {nodes[50]}} {
 			budget = budget.Normalized()
@@ -290,6 +295,7 @@ func TestFetchLineageNeighborhoodMatchesFullTraversal(t *testing.T) {
 					t.Fatalf("budget %+v roots %v: fetched walk differs\ngot  %+v\nwant %+v", budget, roots, got, want)
 				}
 			}
+			assertLineageFilterHolds(t, want, roots, budget.Filter)
 		}
 	}
 }
@@ -486,5 +492,38 @@ func lineageTestLink(id int64, srcType LineageNodeType, srcID string, dstType Li
 		Workspace: "demo", SrcType: srcType, SrcID: srcID,
 		DstType: dstType, DstID: dstID, Kind: kind,
 		CreatedByEventID: id, CreatedAt: time.Unix(id, 0).UTC(),
+	}
+}
+
+// assertLineageFilterHolds checks that every admitted node left its parent
+// in the filter's direction, along an admitted kind, to an admitted type,
+// and that every returned link has an admitted kind (component-lineage).
+func assertLineageFilterHolds(t *testing.T, graph LineageTraversal, roots []LineageNode, filter *LineageTraversalFilter) {
+	t.Helper()
+	if filter == nil {
+		return
+	}
+	isRoot := map[LineageNode]bool{}
+	for _, root := range roots {
+		isRoot[root] = true
+	}
+	for _, node := range graph.Nodes {
+		path := graph.Paths[node]
+		if isRoot[node] || len(path) == 0 {
+			continue
+		}
+		last := path[len(path)-1]
+		parent := LineageNode{Type: last.SrcType, ID: last.SrcID}
+		if parent == node {
+			parent = LineageNode{Type: last.DstType, ID: last.DstID}
+		}
+		if !filter.admits(parent, node, last) {
+			t.Fatalf("filter %+v admitted %v from %v along %+v", filter, node, parent, last)
+		}
+	}
+	for _, link := range graph.Links {
+		if !filter.admitsKind(link.Kind) {
+			t.Fatalf("filter %+v returned link kind %s", filter, link.Kind)
+		}
 	}
 }

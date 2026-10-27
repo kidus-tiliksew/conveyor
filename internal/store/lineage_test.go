@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strconv"
@@ -594,6 +595,38 @@ func TestLineageProjectorLinksVerdictsAndConfirmedVersionsToDecisions(t *testing
 	for _, kind := range []string{"cites", "flags_superseded"} {
 		if !projectorOwnsLineageKind(kind) {
 			t.Fatalf("projector does not own %q, so rebuild would not regenerate it", kind)
+		}
+	}
+}
+
+// TestMemoryLineageKindLinksRetainLimitCandidates proves the memory
+// kind-link read retains at most its limit while it scans a 3000-link
+// history, for the first and the newest window alike (component-lineage).
+func TestMemoryLineageKindLinksRetainLimitCandidates(t *testing.T) {
+	m := NewMemory().(*memory)
+	ctx := WithWorkspace(t.Context(), "demo")
+	hub := core.LineageNode{Type: core.LineageRequirement, ID: "req-wide"}
+	const history = 3000
+	for index := 1; index <= history; index++ {
+		m.lineage.put(core.LineageLink{Workspace: "demo", SrcType: hub.Type, SrcID: hub.ID, DstType: core.LineageTask, DstID: fmt.Sprintf("task-%04d", index), Kind: "serves", CreatedByEventID: int64(index), CreatedAt: time.Unix(int64(index), 0).UTC()})
+	}
+	for _, newest := range []bool{false, true} {
+		m.lineage.kindLinkPeak.Store(0)
+		links, err := m.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{hub}, Kind: "serves", FarType: core.LineageTask, Limit: 10, Newest: newest})
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := 1
+		if newest {
+			first = history - 9
+		}
+		for index, link := range links {
+			if want := fmt.Sprintf("task-%04d", first+index); link.DstID != want {
+				t.Fatalf("newest=%v link %d=%s want %s", newest, index, link.DstID, want)
+			}
+		}
+		if len(links) != 10 || m.lineage.kindLinkPeak.Load() > 10 {
+			t.Fatalf("newest=%v returned %d links with a peak of %d retained candidates", newest, len(links), m.lineage.kindLinkPeak.Load())
 		}
 	}
 }

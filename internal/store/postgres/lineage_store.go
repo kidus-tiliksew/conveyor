@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,7 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 	decisionNodes := map[string][]core.LineageNode{}
 	sessionNodes := map[string][]core.LineageNode{}
 	orderNodes := map[string][]core.LineageNode{}
+	bundleNodes := map[string][]core.LineageNode{}
 	for _, node := range nodes {
 		baseID := lineageRecordBaseID(node)
 		switch node.Type {
@@ -43,6 +45,8 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 			sessionNodes[baseID] = append(sessionNodes[baseID], node)
 		case core.LineageWorkOrder:
 			orderNodes[baseID] = append(orderNodes[baseID], node)
+		case core.LineagePlanningBundle:
+			bundleNodes[baseID] = append(bundleNodes[baseID], node)
 		}
 	}
 	records := make(map[core.LineageNode]store.LineageNodeRecord, len(nodes))
@@ -120,7 +124,233 @@ func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineage
 	if err := s.queryLineageOrderRecords(ctx, orderNodes, records); err != nil {
 		return nil, err
 	}
+	if len(bundleNodes) > 0 {
+		err := s.lineageStatusQuery(ctx, `SELECT id,title FROM planning_bundles WHERE workspace_id=$1 AND id=ANY($2)`, lineageRecordIDs(bundleNodes), func(rows pgx.Rows) error {
+			var id, title string
+			if err := rows.Scan(&id, &title); err != nil {
+				return err
+			}
+			for _, node := range bundleNodes[id] {
+				records[node] = store.LineageNodeRecord{Title: title}
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	return records, nil
+}
+
+// lineageStatusQuery runs one workspace-scoped batch read over ids.
+func (s *Store) lineageStatusQuery(ctx context.Context, query string, ids []string, scan func(pgx.Rows) error) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := s.boundary.Query(ctx, query, workspace(ctx), ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err = scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// ListLineageNodeStatuses reads one batch per node class, only for the
+// supplied nodes (component-lineage).
+func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]core.LineageNodeStatus, error) {
+	request := store.LineageStatusIDs(nodes)
+	ids := request.IDs
+	rows := store.LineageStatusRows{
+		TaskStates: map[string]string{}, OrderStates: map[string]string{}, DecisionState: map[string]string{},
+		SessionState: map[string]string{}, BundleState: map[string]string{},
+		Documents: map[core.LineageNodeType]map[string]store.LineageStatusDocument{},
+		Versions:  map[core.LineageNodeType]map[string]map[int]store.LineageStatusVersion{},
+		Verdicts:  map[string]core.LineageNodeStatus{},
+	}
+	states := []struct {
+		class core.LineageNodeType
+		query string
+		into  map[string]string
+	}{
+		{core.LineageTask, `SELECT id,state FROM tasks WHERE workspace_id=$1 AND id=ANY($2)`, rows.TaskStates},
+		{core.LineageWorkOrder, `SELECT id,state FROM work_orders WHERE workspace_id=$1 AND id=ANY($2)`, rows.OrderStates},
+		{core.LineageDecision, `SELECT id,status FROM decisions WHERE workspace_id=$1 AND id=ANY($2)`, rows.DecisionState},
+		{core.LineagePlanningSession, `SELECT id,status FROM planning_sessions WHERE workspace_id=$1 AND id=ANY($2)`, rows.SessionState},
+		{core.LineagePlanningBundle, `SELECT id,status FROM planning_bundles WHERE workspace_id=$1 AND id=ANY($2)`, rows.BundleState},
+	}
+	for _, state := range states {
+		into := state.into
+		if err := s.lineageStatusQuery(ctx, state.query, ids[state.class], func(r pgx.Rows) error {
+			var id, value string
+			if err := r.Scan(&id, &value); err != nil {
+				return err
+			}
+			into[id] = value
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	documents := []struct {
+		class    core.LineageNodeType
+		document string
+		versions string
+	}{
+		{core.LineageRequirement, `SELECT id,COALESCE(current_version,0),archived_at IS NOT NULL FROM requirements WHERE workspace_id=$1 AND id=ANY($2)`,
+			`SELECT v.requirement_id,v.version,v.confirmed,v.retired FROM unnest($2::text[],$3::int[]) AS p(id,version)
+				JOIN requirement_versions v ON v.workspace_id=$1 AND v.requirement_id=p.id AND v.version=p.version`},
+		{core.LineageSystemDesign, `SELECT id,COALESCE(current_version,0),archived_at IS NOT NULL FROM system_designs WHERE workspace_id=$1 AND id=ANY($2)`,
+			`SELECT v.document_id,v.version,v.confirmed,v.dismissed FROM unnest($2::text[],$3::int[]) AS p(id,version)
+				JOIN system_design_versions v ON v.workspace_id=$1 AND v.document_id=p.id AND v.version=p.version`},
+		{core.LineageReferenceDocument, `SELECT id,COALESCE(current_version,0),deleted_at IS NOT NULL FROM reference_documents WHERE workspace_id=$1 AND id=ANY($2)`, ""},
+	}
+	for _, document := range documents {
+		byID := map[string]store.LineageStatusDocument{}
+		rows.Documents[document.class] = byID
+		if err := s.lineageStatusQuery(ctx, document.document, ids[document.class], func(r pgx.Rows) error {
+			var id string
+			var recorded store.LineageStatusDocument
+			if err := r.Scan(&id, &recorded.CurrentVersion, &recorded.Archived); err != nil {
+				return err
+			}
+			byID[id] = recorded
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		pairs := request.Versions[document.class]
+		if document.versions == "" || len(pairs) == 0 {
+			continue
+		}
+		// Only the version rows the nodes name are read, never a document's
+		// whole history (component-lineage).
+		documentIDs, numbers := make([]string, len(pairs)), make([]int32, len(pairs))
+		for index, pair := range pairs {
+			documentIDs[index], numbers[index] = pair.DocumentID, int32(pair.Version)
+		}
+		versions := map[string]map[int]store.LineageStatusVersion{}
+		rows.Versions[document.class] = versions
+		versionRows, err := s.boundary.Query(ctx, document.versions, workspace(ctx), documentIDs, numbers)
+		if err != nil {
+			return nil, err
+		}
+		for versionRows.Next() {
+			var id string
+			var version int
+			var recorded store.LineageStatusVersion
+			if err = versionRows.Scan(&id, &version, &recorded.Confirmed, &recorded.Dismissed); err != nil {
+				versionRows.Close()
+				return nil, err
+			}
+			if observe := observeLineageStatusVersionRow.Load(); observe != nil {
+				(*observe)(id, version)
+			}
+			if versions[id] == nil {
+				versions[id] = map[int]store.LineageStatusVersion{}
+			}
+			versions[id][version] = recorded
+		}
+		versionRows.Close()
+		if err = versionRows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	// A verdict's outcome lives on its task's review.completed record. SQL
+	// keeps only the latest event naming each requested review order and
+	// returns its outcome, round, and seat, so one verdict costs one row
+	// however long the task's review history is (component-lineage).
+	if err := s.lineageStatusQuery(ctx, `SELECT DISTINCT ON (wo.id) wo.id,COALESCE(e.payload_json->>'verdict',''),
+			CASE WHEN jsonb_typeof(e.payload_json->'review_round')='number' THEN (e.payload_json->>'review_round')::numeric::int ELSE 0 END,
+			CASE WHEN jsonb_typeof(e.payload_json->'review_seat')='number' THEN (e.payload_json->>'review_seat')::numeric::int ELSE 0 END
+		FROM work_orders wo
+		JOIN events e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed' AND e.payload_json->>'review_work_order_id'=wo.id
+		WHERE wo.workspace_id=$1 AND wo.id=ANY($2)
+		ORDER BY wo.id,e.id DESC`, ids[core.LineageVerdict], func(r pgx.Rows) error {
+		var orderID string
+		var status core.LineageNodeStatus
+		if err := r.Scan(&orderID, &status.Outcome, &status.ReviewRound, &status.ReviewSeat); err != nil {
+			return err
+		}
+		if observe := observeLineageStatusVerdictRow.Load(); observe != nil {
+			(*observe)(orderID)
+		}
+		rows.Verdicts[orderID] = status
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return rows.Statuses(nodes), nil
+}
+
+// observeLineageStatusVersionRow, when set by a test, sees each version
+// row a status read returns, so fetch bounds are checked against rows.
+var observeLineageStatusVersionRow atomic.Pointer[func(documentID string, version int)]
+
+// observeLineageStatusVerdictRow, when set by a test, sees each verdict row
+// a status read returns.
+var observeLineageStatusVerdictRow atomic.Pointer[func(orderID string)]
+
+// lineageKindLinksSQL reads one kind at the named nodes through the links
+// primary key (outbound) or links_destination_idx (inbound), in
+// core.SortLineageKindLinks order (component-lineage).
+// With newest it orders descending under the limit, and the caller restores
+// ascending order.
+func lineageKindLinksSQL(inbound, newest bool) string {
+	near, far := "src", "dst"
+	if inbound {
+		near, far = "dst", "src"
+	}
+	order := ""
+	if newest {
+		order = " DESC"
+	}
+	return `SELECT l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
+	FROM (SELECT DISTINCT node_type,node_id FROM unnest($2::text[],$3::text[]) AS f(node_type,node_id)) f
+	JOIN links l ON l.workspace_id=$1 AND l.` + near + `_type=f.node_type AND l.` + near + `_id=f.node_id
+	WHERE l.kind=$4 AND l.` + far + `_type=$5 AND btrim(l.` + far + `_id,E' \t\n\r\v\f')<>''
+		AND NOT (l.src_type=l.dst_type AND l.src_id=l.dst_id)
+		AND (COALESCE(l.created_by_event_id,0)>0 OR (l.kind='historical_feature_assignment' AND btrim(COALESCE(l.legacy_created_by_event,''),E' \t\n\r\v\f')<>''))
+	ORDER BY COALESCE(l.created_by_event_id,0)` + order + `,l.src_type COLLATE "C"` + order + `,l.src_id COLLATE "C"` + order + `,l.dst_type COLLATE "C"` + order + `,l.dst_id COLLATE "C"` + order + `,l.kind COLLATE "C"` + order + `
+	LIMIT $6`
+}
+
+func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
+	if err := query.Validate(); err != nil {
+		return nil, err
+	}
+	types, ids := make([]string, len(query.Nodes)), make([]string, len(query.Nodes))
+	for index, node := range query.Nodes {
+		types[index], ids[index] = string(node.Type), node.ID
+	}
+	rows, err := s.boundary.Query(ctx, lineageKindLinksSQL(query.Inbound, query.Newest), workspace(ctx), types, ids, query.Kind, string(query.FarType), query.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []core.LineageLink{}
+	for rows.Next() {
+		var link core.LineageLink
+		var legacy pgtype.Text
+		var createdAt pgtype.Timestamptz
+		var eventID pgtype.Int8
+		if err = rows.Scan(&link.Workspace, &link.SrcType, &link.SrcID, &link.DstType, &link.DstID, &link.Kind, &legacy, &createdAt, &eventID); err != nil {
+			return nil, err
+		}
+		link.LegacyCreatedByEvent, link.CreatedByEventID, link.CreatedAt = legacy.String, eventID.Int64, createdAt.Time
+		if link.Validate() == nil {
+			out = append(out, link)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	core.SortLineageKindLinks(out)
+	return out, nil
 }
 
 func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (store.LineageContextRecords, error) {

@@ -1,10 +1,12 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -22,6 +24,8 @@ type memoryLineage struct {
 	// lookups and examined count endpoint lookups and index entries read by
 	// prefix and existence reads, so tests can bound per-request cost.
 	lookups, examined atomic.Int64
+	// kindLinkPeak is the most candidates one kind-link read retained.
+	kindLinkPeak atomic.Int64
 }
 
 type memoryLineageEndpoint struct {
@@ -197,9 +201,225 @@ func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.Lineag
 					records[node] = LineageNodeRecord{TaskID: order.TaskID, Stage: order.Stage}
 				}
 			}
+		case core.LineagePlanningBundle:
+			if bundle, ok := m.planningBundles[memoryScopedKey{workspace: workspace, id: baseID}]; ok {
+				records[node] = LineageNodeRecord{Title: bundle.Title}
+			}
 		}
 	}
 	return records, nil
+}
+
+// ListLineageNodeStatuses reads each supplied node's record once
+// (component-lineage).
+func (m *memory) ListLineageNodeStatuses(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]core.LineageNodeStatus, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	statuses := make(map[core.LineageNode]core.LineageNodeStatus, len(nodes))
+	for _, node := range nodes {
+		// Statuses are keyed by identity; a caller's label never splits a key.
+		node = core.LineageNode{Type: node.Type, ID: node.ID}
+		baseID, versionNumber := LineageVersionNodeParts(node)
+		key := memoryScopedKey{workspace: workspace, id: baseID}
+		switch node.Type {
+		case core.LineageTask, core.LineageBlueprint:
+			if task, ok := m.tasks[baseID]; ok && task.Workspace == workspace {
+				statuses[node] = core.LineageNodeStatus{State: string(task.State)}
+			}
+		case core.LineageWorkOrder:
+			if order, ok := m.workOrders[baseID]; ok {
+				if task, exists := m.tasks[order.TaskID]; exists && task.Workspace == workspace {
+					statuses[node] = core.LineageNodeStatus{State: string(order.State)}
+				}
+			}
+		case core.LineageRequirement:
+			if requirement, ok := m.requirements[key]; ok {
+				statuses[node] = core.LineageNodeStatus{CurrentVersion: requirement.CurrentVersion, Archived: requirement.Archived}
+			}
+		case core.LineageRequirementVersion:
+			requirement, ok := m.requirements[key]
+			if !ok {
+				continue
+			}
+			for _, candidate := range m.requirementVersions[key] {
+				if candidate.Version == versionNumber {
+					statuses[node] = core.LineageNodeStatus{
+						VersionStatus:  core.LineageVersionStatus(candidate.Version, requirement.CurrentVersion, candidate.Confirmed, candidate.Retired),
+						CurrentVersion: requirement.CurrentVersion, Archived: requirement.Archived,
+					}
+				}
+			}
+		case core.LineageSystemDesign:
+			if document, ok := m.systemDesigns[key]; ok {
+				statuses[node] = core.LineageNodeStatus{CurrentVersion: document.CurrentVersion, Archived: document.Archived}
+			}
+		case core.LineageSystemDesignVersion:
+			document, ok := m.systemDesigns[key]
+			if !ok {
+				continue
+			}
+			for _, candidate := range m.systemDesignVersions[key] {
+				if candidate.Version == versionNumber {
+					statuses[node] = core.LineageNodeStatus{
+						VersionStatus:  core.LineageVersionStatus(candidate.Version, document.CurrentVersion, candidate.Confirmed, candidate.Dismissed),
+						CurrentVersion: document.CurrentVersion, Archived: document.Archived,
+					}
+				}
+			}
+		case core.LineageReferenceDocument:
+			if document, ok := m.referenceDocuments[key]; ok {
+				statuses[node] = core.LineageNodeStatus{CurrentVersion: document.CurrentVersion, Archived: !document.DeletedAt.IsZero()}
+			}
+		case core.LineageReferenceDocumentVersion:
+			document, ok := m.referenceDocuments[key]
+			if !ok {
+				continue
+			}
+			for _, candidate := range m.referenceDocumentVersions[key] {
+				if candidate.Version == versionNumber {
+					statuses[node] = core.LineageNodeStatus{
+						VersionStatus:  core.LineageVersionStatus(candidate.Version, document.CurrentVersion, true, false),
+						CurrentVersion: document.CurrentVersion, Archived: !document.DeletedAt.IsZero(),
+					}
+				}
+			}
+		case core.LineageDecision:
+			if decision, ok := m.decisions[key]; ok {
+				statuses[node] = core.LineageNodeStatus{State: string(decision.Status)}
+			}
+		case core.LineagePlanningSession:
+			if session, ok := m.planningSessions[key]; ok {
+				statuses[node] = core.LineageNodeStatus{State: string(session.Status)}
+			}
+		case core.LineagePlanningBundle:
+			if bundle, ok := m.planningBundles[key]; ok {
+				statuses[node] = core.LineageNodeStatus{State: string(bundle.Status)}
+			}
+		case core.LineageVerdict:
+			orderID := strings.TrimPrefix(node.ID, "review:")
+			order, ok := m.workOrders[orderID]
+			if !ok {
+				continue
+			}
+			if task, exists := m.tasks[order.TaskID]; !exists || task.Workspace != workspace {
+				continue
+			}
+			for _, event := range m.events[order.TaskID] {
+				if event.Kind != "review.completed" {
+					continue
+				}
+				if status, ok := LineageVerdictStatus(event.Payload, orderID); ok {
+					statuses[node] = status
+				}
+			}
+		}
+	}
+	return statuses, nil
+}
+
+// LineageVerdictStatus reads a verdict's outcome, round, and seat from one
+// review.completed payload when it names orderID.
+func LineageVerdictStatus(payload []byte, orderID string) (core.LineageNodeStatus, bool) {
+	var recorded struct {
+		ReviewWorkOrderID string `json:"review_work_order_id"`
+		Verdict           string `json:"verdict"`
+		ReviewRound       int    `json:"review_round"`
+		ReviewSeat        int    `json:"review_seat"`
+	}
+	if json.Unmarshal(payload, &recorded) != nil || recorded.ReviewWorkOrderID != orderID {
+		return core.LineageNodeStatus{}, false
+	}
+	return core.LineageNodeStatus{Outcome: recorded.Verdict, ReviewRound: recorded.ReviewRound, ReviewSeat: recorded.ReviewSeat}, true
+}
+
+// LineageVersionNodeParts splits a version node ID `<document>:v<n>` into
+// its document ID and version. Other nodes return their ID and zero.
+func LineageVersionNodeParts(node core.LineageNode) (string, int) {
+	baseID := lineageRecordBaseID(node)
+	if baseID == node.ID {
+		return baseID, 0
+	}
+	version, err := strconv.Atoi(node.ID[len(baseID)+2:])
+	if err != nil || version <= 0 {
+		return baseID, 0
+	}
+	return baseID, version
+}
+
+// ListLineageKindLinks reads only the named nodes' index entries and
+// retains at most query.Limit candidates while it scans, so its allocation
+// follows the limit rather than a node's history (component-lineage).
+func (m *memory) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
+	if err := query.Validate(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	seen := map[core.LineageNode]bool{}
+	retained := &lineageKindLinkHeap{newest: query.Newest, links: make([]core.LineageLink, 0, min(query.Limit, 64))}
+	for _, node := range query.Nodes {
+		node = core.LineageNode{Type: node.Type, ID: node.ID}
+		if seen[node] {
+			continue
+		}
+		seen[node] = true
+		m.lineage.lookups.Add(1)
+		for _, link := range m.lineage.byNode[memoryLineageEndpoint{workspace: workspace, node: node}] {
+			m.lineage.examined.Add(1)
+			near, far := core.LineageNode{Type: link.SrcType, ID: link.SrcID}, link.DstType
+			if query.Inbound {
+				near, far = core.LineageNode{Type: link.DstType, ID: link.DstID}, link.SrcType
+			}
+			if link.Kind != query.Kind || near != node || far != query.FarType || link.Validate() != nil {
+				continue
+			}
+			if retained.Len() < query.Limit {
+				heap.Push(retained, link)
+			} else if retained.keeps(link) {
+				retained.links[0] = link
+				heap.Fix(retained, 0)
+			}
+			if peak := int64(retained.Len()); peak > m.lineage.kindLinkPeak.Load() {
+				m.lineage.kindLinkPeak.Store(peak)
+			}
+		}
+	}
+	out := retained.links
+	core.SortLineageKindLinks(out)
+	return out, nil
+}
+
+// lineageKindLinkHeap holds the retained kind-link candidates with the one
+// to evict at the root: the latest in sort order when the read keeps the
+// first links, the earliest when it keeps the newest.
+type lineageKindLinkHeap struct {
+	newest bool
+	links  []core.LineageLink
+}
+
+func (h *lineageKindLinkHeap) Len() int { return len(h.links) }
+func (h *lineageKindLinkHeap) Less(i, j int) bool {
+	if h.newest {
+		return core.LineageKindLinkBefore(h.links[i], h.links[j])
+	}
+	return core.LineageKindLinkBefore(h.links[j], h.links[i])
+}
+func (h *lineageKindLinkHeap) Swap(i, j int) { h.links[i], h.links[j] = h.links[j], h.links[i] }
+func (h *lineageKindLinkHeap) Push(x any)    { h.links = append(h.links, x.(core.LineageLink)) }
+func (h *lineageKindLinkHeap) Pop() any {
+	last := h.links[len(h.links)-1]
+	h.links = h.links[:len(h.links)-1]
+	return last
+}
+
+// keeps reports whether link displaces the root of a full heap.
+func (h *lineageKindLinkHeap) keeps(link core.LineageLink) bool {
+	if h.newest {
+		return core.LineageKindLinkBefore(h.links[0], link)
+	}
+	return core.LineageKindLinkBefore(link, h.links[0])
 }
 
 func (m *memory) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (LineageContextRecords, error) {
@@ -539,4 +759,166 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 		"workspace_id": workspace, "reason": request.Reason, "request_id": request.RequestID, "result": result,
 	})})
 	return result, nil
+}
+
+// LineageStatusRows carries the batched record columns a SQL backend reads
+// for ListLineageNodeStatuses, so every backend assembles statuses with the
+// same rules (component-lineage).
+type LineageStatusRows struct {
+	TaskStates    map[string]string
+	OrderStates   map[string]string
+	DecisionState map[string]string
+	SessionState  map[string]string
+	BundleState   map[string]string
+	// Documents and Versions are keyed by the document node type:
+	// requirement, system_design, or reference_document.
+	Documents map[core.LineageNodeType]map[string]LineageStatusDocument
+	Versions  map[core.LineageNodeType]map[string]map[int]LineageStatusVersion
+	// Verdicts is keyed by review work order ID.
+	Verdicts map[string]core.LineageNodeStatus
+}
+
+type LineageStatusDocument struct {
+	CurrentVersion int
+	Archived       bool
+}
+
+type LineageStatusVersion struct {
+	Confirmed bool
+	// Dismissed is a dismissed design version or a retired requirement version.
+	Dismissed bool
+}
+
+// LineageVersionPair names one document version a status read selects.
+type LineageVersionPair struct {
+	DocumentID string
+	Version    int
+}
+
+// LineageStatusRequest is what a SQL status read selects. IDs groups the
+// record IDs by node class: task, work_order, decision, planning_session,
+// planning_bundle, requirement, system_design, reference_document, and
+// verdict (review work order IDs). Versions lists, per document class, only
+// the version pairs that version nodes name, so a document's other versions
+// are never read (component-lineage).
+type LineageStatusRequest struct {
+	IDs      map[core.LineageNodeType][]string
+	Versions map[core.LineageNodeType][]LineageVersionPair
+}
+
+// LineageStatusIDs builds the status request for nodes.
+func LineageStatusIDs(nodes []core.LineageNode) LineageStatusRequest {
+	seen := map[core.LineageNodeType]map[string]bool{}
+	seenPair := map[core.LineageNodeType]map[LineageVersionPair]bool{}
+	request := LineageStatusRequest{IDs: map[core.LineageNodeType][]string{}, Versions: map[core.LineageNodeType][]LineageVersionPair{}}
+	add := func(class core.LineageNodeType, id string) {
+		if seen[class] == nil {
+			seen[class] = map[string]bool{}
+		}
+		if id != "" && !seen[class][id] {
+			seen[class][id] = true
+			request.IDs[class] = append(request.IDs[class], id)
+		}
+	}
+	addVersion := func(class core.LineageNodeType, id string, version int) {
+		add(class, id)
+		pair := LineageVersionPair{DocumentID: id, Version: version}
+		if seenPair[class] == nil {
+			seenPair[class] = map[LineageVersionPair]bool{}
+		}
+		if id != "" && version > 0 && !seenPair[class][pair] {
+			seenPair[class][pair] = true
+			request.Versions[class] = append(request.Versions[class], pair)
+		}
+	}
+	for _, node := range nodes {
+		baseID, version := LineageVersionNodeParts(node)
+		switch node.Type {
+		case core.LineageTask, core.LineageBlueprint:
+			add(core.LineageTask, baseID)
+		case core.LineageWorkOrder, core.LineageDecision, core.LineagePlanningSession, core.LineagePlanningBundle:
+			add(node.Type, baseID)
+		case core.LineageRequirement, core.LineageSystemDesign, core.LineageReferenceDocument:
+			add(node.Type, baseID)
+		case core.LineageRequirementVersion:
+			addVersion(core.LineageRequirement, baseID, version)
+		case core.LineageSystemDesignVersion:
+			addVersion(core.LineageSystemDesign, baseID, version)
+		case core.LineageReferenceDocumentVersion:
+			// Reference versions classify from the document row alone.
+			add(core.LineageReferenceDocument, baseID)
+		case core.LineageVerdict:
+			add(core.LineageVerdict, strings.TrimPrefix(node.ID, "review:"))
+		}
+	}
+	for class := range request.IDs {
+		sort.Strings(request.IDs[class])
+	}
+	for class := range request.Versions {
+		pairs := request.Versions[class]
+		sort.Slice(pairs, func(i, j int) bool {
+			if pairs[i].DocumentID != pairs[j].DocumentID {
+				return pairs[i].DocumentID < pairs[j].DocumentID
+			}
+			return pairs[i].Version < pairs[j].Version
+		})
+	}
+	return request
+}
+
+// Statuses assembles each supplied node's status from the batched rows.
+func (rows LineageStatusRows) Statuses(nodes []core.LineageNode) map[core.LineageNode]core.LineageNodeStatus {
+	statuses := make(map[core.LineageNode]core.LineageNodeStatus, len(nodes))
+	state := func(node core.LineageNode, states map[string]string, id string) {
+		if value, ok := states[id]; ok {
+			statuses[node] = core.LineageNodeStatus{State: value}
+		}
+	}
+	documentType := map[core.LineageNodeType]core.LineageNodeType{
+		core.LineageRequirementVersion: core.LineageRequirement, core.LineageSystemDesignVersion: core.LineageSystemDesign,
+		core.LineageReferenceDocumentVersion: core.LineageReferenceDocument,
+	}
+	for _, node := range nodes {
+		node = core.LineageNode{Type: node.Type, ID: node.ID}
+		baseID, version := LineageVersionNodeParts(node)
+		switch node.Type {
+		case core.LineageTask, core.LineageBlueprint:
+			state(node, rows.TaskStates, baseID)
+		case core.LineageWorkOrder:
+			state(node, rows.OrderStates, baseID)
+		case core.LineageDecision:
+			state(node, rows.DecisionState, baseID)
+		case core.LineagePlanningSession:
+			state(node, rows.SessionState, baseID)
+		case core.LineagePlanningBundle:
+			state(node, rows.BundleState, baseID)
+		case core.LineageRequirement, core.LineageSystemDesign, core.LineageReferenceDocument:
+			if document, ok := rows.Documents[node.Type][baseID]; ok {
+				statuses[node] = core.LineageNodeStatus{CurrentVersion: document.CurrentVersion, Archived: document.Archived}
+			}
+		case core.LineageRequirementVersion, core.LineageSystemDesignVersion, core.LineageReferenceDocumentVersion:
+			docType := documentType[node.Type]
+			document, ok := rows.Documents[docType][baseID]
+			if !ok || version == 0 {
+				continue
+			}
+			recorded, ok := rows.Versions[docType][baseID][version]
+			if docType == core.LineageReferenceDocument {
+				// Reference versions are informative uploads; each is
+				// current or superseded by a later upload.
+				recorded, ok = LineageStatusVersion{Confirmed: true}, version <= document.CurrentVersion
+			}
+			if ok {
+				statuses[node] = core.LineageNodeStatus{
+					VersionStatus:  core.LineageVersionStatus(version, document.CurrentVersion, recorded.Confirmed, recorded.Dismissed),
+					CurrentVersion: document.CurrentVersion, Archived: document.Archived,
+				}
+			}
+		case core.LineageVerdict:
+			if status, ok := rows.Verdicts[strings.TrimPrefix(node.ID, "review:")]; ok {
+				statuses[node] = status
+			}
+		}
+	}
+	return statuses
 }

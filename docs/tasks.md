@@ -353,6 +353,30 @@ not grow with unrelated parts of the workspace. A review or verify order
 shows each served requirement at the version its claim pinned. The
 dashboard's knowledge explorer is the same bounded traversal, rendered.
 
+Operators query the graph through three read-only surfaces, all bounded:
+
+- `conveyor lineage show <type> <id>` (`GET /v1/lineage/{type}/{id}`, MCP
+  `get_lineage`) walks from one node. `--direction out|in|both`, `--kind`, and
+  `--node-type` narrow the walk; a link they refuse still counts against its
+  node's fan-out, so a filter never widens store reads. Each node carries its
+  depth, its `edge_path`, and its status: task or work-order state, version
+  status (`current`, `superseded`, `proposed`, `dismissed`), or verdict outcome,
+  round, and seat. This answers "what delivered this requirement, who reviewed
+  it, against which design version?"
+- `conveyor lineage impact <requirement|system_design> <id>`
+  (`GET /v1/lineage/{type}/{id}/impact`) lists every task each version served
+  or governed, with task state, version status, and merged commit ranges.
+  `--outdated` keeps merged tasks built on a superseded version. This answers
+  "if I change this document, which merged work was built on the old
+  version?" A task whose attachment recorded no version is listed as
+  `unrecorded` and never counted as outdated. The read covers at most 1000
+  version-to-task links and pages them.
+
+Walk defaults are the agent context budget. The operator read budget
+(`execution_settings.control_plane.planning.context.operator_read_depth` and
+`operator_read_nodes`, at most 16 and 1024) raises only the caps an operator
+read may ask for; agent context assembly keeps its own budget.
+
 ## Observability
 
 Every claim mints an attempt ID, and the order tracks the current and last

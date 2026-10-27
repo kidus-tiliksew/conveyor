@@ -476,6 +476,16 @@ type LineageStore interface {
 	// graph nodes. Implementations must not replace this with workspace-wide
 	// entity scans.
 	ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error)
+	// ListLineageNodeStatuses resolves status only for the supplied bounded
+	// graph nodes, with a fixed set of batched reads (component-lineage). A
+	// document node reads only its document row; a version node reads only
+	// its own version row. Nodes without a record are absent from the result.
+	ListLineageNodeStatuses(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]core.LineageNodeStatus, error)
+	// ListLineageKindLinks returns at most query.Limit valid workspace links
+	// of query.Kind at the query's nodes, leaving them or with Inbound
+	// entering them, whose far endpoint has query.FarType, ordered by
+	// core.SortLineageKindLinks. It reads only the named nodes' links.
+	ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error)
 	// ListLineageContextRecords resolves the bounded task outcomes and current
 	// confirmed requirement documents used by agent context assembly. It must
 	// read only the supplied graph nodes and avoid per-node queries.

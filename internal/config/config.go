@@ -645,6 +645,41 @@ type LineageContextSettings struct {
 	RenderableBytes int `yaml:"renderable_bytes" json:"renderable_bytes"`
 	ArtifactRefs    int `yaml:"artifact_refs" json:"artifact_refs"`
 	AuthorityNodes  int `yaml:"authority_nodes" json:"authority_nodes"`
+	// OperatorReadDepth and OperatorReadNodes bound operator lineage reads
+	// (HTTP, CLI, and MCP) separately from agent context assembly. Zero
+	// takes the context depth or nodes; links stay nodes × 4
+	// (component-lineage).
+	OperatorReadDepth int `yaml:"operator_read_depth,omitempty" json:"operator_read_depth,omitempty"`
+	OperatorReadNodes int `yaml:"operator_read_nodes,omitempty" json:"operator_read_nodes,omitempty"`
+}
+
+// The operator read budget stays bounded whatever the configuration says.
+const (
+	MaxLineageOperatorReadDepth = 16
+	MaxLineageOperatorReadNodes = 1024
+)
+
+// LineageOperatorReadBudget returns the depth, node, and link caps of
+// operator lineage reads: the configured operator values, else the context
+// budget's (component-lineage).
+func LineageOperatorReadBudget(cfg *Config) (depth, nodes, links int) {
+	depth, nodes = DefaultLineageContextDepth, DefaultLineageContextNodes
+	if cfg != nil && cfg.ExecutionSettings != nil {
+		settings := cfg.ExecutionSettings.ControlPlane.Planning.Context
+		if settings.Depth > 0 {
+			depth = settings.Depth
+		}
+		if settings.Nodes > 0 {
+			nodes = settings.Nodes
+		}
+		if settings.OperatorReadDepth > 0 {
+			depth = settings.OperatorReadDepth
+		}
+		if settings.OperatorReadNodes > 0 {
+			nodes = settings.OperatorReadNodes
+		}
+	}
+	return depth, nodes, nodes * DefaultLineageContextLinksPerNode
 }
 
 type PlanningSettings struct {
@@ -1842,6 +1877,12 @@ func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config
 	}
 	if planning.Context.AuthorityNodes < MinServedRequirementAuthorityNodes {
 		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.authority_nodes must be at least %d", MinServedRequirementAuthorityNodes)
+	}
+	if planning.Context.OperatorReadDepth < 0 || planning.Context.OperatorReadDepth > MaxLineageOperatorReadDepth {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.operator_read_depth must be between 0 and %d", MaxLineageOperatorReadDepth)
+	}
+	if planning.Context.OperatorReadNodes < 0 || planning.Context.OperatorReadNodes > MaxLineageOperatorReadNodes {
+		return nil, fmt.Errorf("execution_settings.control_plane.planning.context.operator_read_nodes must be between 0 and %d", MaxLineageOperatorReadNodes)
 	}
 	normalizedSettings.ControlPlane.Planning = planning
 	c.ExecutionSettings = normalizedSettings
