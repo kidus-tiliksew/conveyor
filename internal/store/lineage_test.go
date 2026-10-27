@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -82,8 +84,15 @@ func TestRequirementConfirmationWithoutPredecessorDoesNotSupersedeDraft(t *testi
 	event := core.Event{ID: 1, Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{
 		"requirement_id": "req-1", "version": 3, "supersedes_version": 0,
 	})}
-	if links := lineageLinksForEvent("demo", event); len(links) != 0 {
-		t.Fatalf("first confirmed version superseded an unconfirmed draft: %+v", links)
+	links := lineageLinksForEvent("demo", event)
+	for _, link := range links {
+		if link.Kind == "supersedes" {
+			t.Fatalf("first confirmed version superseded an unconfirmed draft: %+v", links)
+		}
+	}
+	// The confirmed version still joins its requirement (component-lineage).
+	if len(links) != 1 || links[0].Kind != "versions" || links[0].SrcID != "req-1" || links[0].DstID != "req-1:v3" {
+		t.Fatalf("confirmed version links=%+v, want requirement -versions-> req-1:v3 only", links)
 	}
 }
 
@@ -104,7 +113,8 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	if err := st.CreateTaskWithDependencies(ctx, child, []string{dependency.ID}); err != nil {
 		t.Fatal(err)
 	}
-	assertMemoryLineage(t, st, ctx, 2)
+	// Each task.created also projects blueprint -plans-> task (component-lineage).
+	assertMemoryLineage(t, st, ctx, 5)
 
 	if _, err := st.RemoveTaskDependency(ctx, DependencyRemovalRequest{
 		TaskID: child.ID, DependsOnTaskID: dependency.ID, Reason: "No longer blocks", RequestID: "remove-1",
@@ -113,7 +123,7 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	}
 	// Removal suppresses the depends_on edge; the materializes edge stays
 	// (component-lineage).
-	assertMemoryLineage(t, st, ctx, 1)
+	assertMemoryLineage(t, st, ctx, 4)
 	memoryStore := st.(*memory)
 	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note"})] = core.LineageLink{
 		Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note", CreatedByEventID: 1,
@@ -121,12 +131,12 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment"})] = core.LineageLink{
 		Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment",
 	}
-	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 1 {
+	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 4 {
 		t.Fatalf("rebuild result=%+v err=%v", result, err)
 	} else if result.Existing != 2 {
 		t.Fatalf("rebuild omitted retained legacy links: %+v", result)
 	}
-	assertMemoryLineage(t, st, ctx, 3)
+	assertMemoryLineage(t, st, ctx, 6)
 }
 
 func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) {
@@ -153,11 +163,12 @@ func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.PreservedUnregenerable != 53 || result.Unsupported != 53 || result.Projected != 0 {
+	// The task's own blueprint -plans-> task edge is the one projected row.
+	if result.PreservedUnregenerable != 53 || result.Unsupported != 53 || result.Projected != 1 {
 		t.Fatalf("rebuild result=%+v", result)
 	}
 	links, err := st.ListLineageLinks(ctx)
-	if err != nil || len(links) != 53 {
+	if err != nil || len(links) != 54 {
 		t.Fatalf("links=%d err=%v", len(links), err)
 	}
 	if repeated, err := st.RebuildLineage(ctx, request); err != nil || repeated != result {
@@ -201,7 +212,8 @@ func TestMemoryLineageRebuildDropsStaleRemovedDependencyRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.PreservedUnregenerable != 0 || result.Ambiguous != 0 || result.Projected != 0 {
+	// Only the two tasks' blueprint -plans-> task edges are projected.
+	if result.PreservedUnregenerable != 0 || result.Ambiguous != 0 || result.Projected != 2 {
 		t.Fatalf("rebuild result=%+v, want the stale row dropped", result)
 	}
 	if _, exists := st.lineage[lineageLinkKey(stale)]; exists {
@@ -231,7 +243,8 @@ func TestMemoryLineageRebuildClassifiesRegeneratedLegacyKeyOnlyAsProjected(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Projected != 1 || result.Existing != 0 || result.PreservedUnregenerable != 0 {
+	// The regenerated dispatches key and the task's plans edge are projected.
+	if result.Projected != 2 || result.Existing != 0 || result.PreservedUnregenerable != 0 {
 		t.Fatalf("overlapping legacy key was double-classified: %+v", result)
 	}
 }
@@ -249,5 +262,119 @@ func assertMemoryLineage(t *testing.T, st Store, ctx context.Context, want int) 
 		if err := link.Validate(); err != nil {
 			t.Fatalf("invalid projected link %+v: %v", link, err)
 		}
+	}
+}
+
+// TestLineageProjectorConnectsRequirementVersionsPlansAndSuccessors covers
+// the projector cases that join requirements to their versions, a served
+// version to its task, a task's plan side to its delivery side, and a retired
+// task to its start-over successor (component-lineage; req-260802-72fc68
+// AC-1.1, AC-5.1, AC-5.2).
+func TestLineageProjectorConnectsRequirementVersionsPlansAndSuccessors(t *testing.T) {
+	t.Parallel()
+	keys := func(links []core.LineageLink) []string {
+		out := make([]string, 0, len(links))
+		for _, link := range links {
+			out = append(out, string(link.SrcType)+":"+link.SrcID+" -"+link.Kind+"-> "+string(link.DstType)+":"+link.DstID)
+		}
+		sort.Strings(out)
+		return out
+	}
+	project := func(kind, taskID string, payload map[string]any) LineageEventProjection {
+		return ProjectLineageEvent("demo", core.Event{ID: 7, TaskID: taskID, Kind: kind, Payload: core.JSONPayload(payload)})
+	}
+	for _, test := range []struct {
+		name        string
+		kind        string
+		payload     map[string]any
+		links       []string
+		suppresses  []string
+		unsupported int
+	}{
+		{name: "first confirmed version joins its requirement", kind: "requirement.version_confirmed", payload: map[string]any{"requirement_id": "req-a", "version": 1},
+			links: []string{"requirement:req-a -versions-> requirement_version:req-a:v1"}},
+		{name: "later version joins and supersedes", kind: "requirement.version_confirmed", payload: map[string]any{"requirement_id": "req-a", "version": 3, "supersedes_version": 2},
+			links: []string{"requirement:req-a -versions-> requirement_version:req-a:v3", "requirement_version:req-a:v3 -supersedes-> requirement_version:req-a:v2"}},
+		{name: "versioned attachment serves from both nodes", kind: TaskContextRequirementAdded, payload: map[string]any{"id": "req-a", "version": 2},
+			links: []string{"requirement:req-a -serves-> task:task-1", "requirement_version:req-a:v2 -serves-> task:task-1"}},
+		{name: "historical attachment stays unversioned", kind: TaskContextRequirementAdded, payload: map[string]any{"id": "req-a"},
+			links: []string{"requirement:req-a -serves-> task:task-1"}},
+		{name: "unconfirmed attachment projects nothing", kind: TaskContextRequirementAdded, payload: map[string]any{"id": "req-a", "pending_version": 4, "unconfirmed": true}},
+		{name: "activation serves from both nodes", kind: TaskContextRequirementActive, payload: map[string]any{"id": "req-a", "version": 4},
+			links: []string{"requirement:req-a -serves-> task:task-1", "requirement_version:req-a:v4 -serves-> task:task-1"}},
+		{name: "removal suppresses every recorded version", kind: TaskContextRequirementRemoved, payload: map[string]any{"id": "req-a", "versions": []int{2, 4}},
+			suppresses: []string{"requirement:req-a -serves-> task:task-1", "requirement_version:req-a:v2 -serves-> task:task-1", "requirement_version:req-a:v4 -serves-> task:task-1"}},
+		{name: "historical removal suppresses the requirement edge", kind: TaskContextRequirementRemoved, payload: map[string]any{"id": "req-a"},
+			suppresses: []string{"requirement:req-a -serves-> task:task-1"}},
+		{name: "task creation joins its blueprint", kind: "task.created", payload: map[string]any{"id": "task-1"},
+			links: []string{"blueprint:task-1 -plans-> task:task-1"}},
+		{name: "child creation joins its blueprint and materializes", kind: "task.created", payload: map[string]any{"parent_task_id": "parent", "origin_spec_version": 2},
+			links: []string{"blueprint:task-1 -plans-> task:task-1", "blueprint_version:parent:v2 -materializes-> task:task-1"}},
+		{name: "start-over links the successor", kind: "task.started_over", payload: map[string]any{"successor_id": "task-2", "reason": "retry"},
+			links: []string{"task:task-1 -succeeded_by-> task:task-2"}},
+		{name: "start-over without a successor is unsupported", kind: "task.started_over", payload: map[string]any{"reason": "retry"}, unsupported: 1},
+	} {
+		projection := project(test.kind, "task-1", test.payload)
+		if got := keys(projection.Links); !reflect.DeepEqual(got, append([]string{}, test.links...)) {
+			t.Errorf("%s: links=%v want %v", test.name, got, test.links)
+		}
+		if got := keys(projection.Suppresses); !reflect.DeepEqual(got, append([]string{}, test.suppresses...)) {
+			t.Errorf("%s: suppresses=%v want %v", test.name, got, test.suppresses)
+		}
+		if projection.Unsupported != test.unsupported {
+			t.Errorf("%s: unsupported=%d want %d", test.name, projection.Unsupported, test.unsupported)
+		}
+	}
+	if projection := ProjectLineageEvent("demo", core.Event{ID: 8, Kind: "task.created", Payload: core.JSONPayload(map[string]any{})}); len(projection.Links) != 0 {
+		t.Fatalf("task.created without a task projected %+v", projection.Links)
+	}
+	for _, kind := range []string{"plans", "succeeded_by"} {
+		if !projectorOwnsLineageKind(kind) {
+			t.Fatalf("projector does not own %s", kind)
+		}
+	}
+}
+
+// TestLineageReplaySuppressesHistoricalVersionlessRemoval proves that replay
+// ends every version edge an attachment projected when its historical removal
+// records no versions, that a removal recording its versions adds no duplicate
+// suppression, and that the attachment fold the removal writers use records
+// the same versions (component-lineage; req-260802-72fc68 AC-1.3).
+func TestLineageReplaySuppressesHistoricalVersionlessRemoval(t *testing.T) {
+	t.Parallel()
+	events := []core.Event{
+		{ID: 1, TaskID: "task-1", Kind: TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "req-a", "version": 1})},
+		{ID: 2, TaskID: "task-1", Kind: TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "req-b", "pending_version": 3, "unconfirmed": true})},
+		{ID: 3, TaskID: "task-1", Kind: TaskContextRequirementActive, Payload: core.JSONPayload(map[string]any{"id": "req-a", "version": 2})},
+		{ID: 4, TaskID: "task-2", Kind: TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "req-a", "version": 2})},
+	}
+	if got := ActiveTaskContextRequirementVersions(events); !reflect.DeepEqual(got, map[string][]int{"req-a": {1, 2}}) {
+		t.Fatalf("folded versions=%v", got)
+	}
+	replay := NewLineageReplay()
+	for _, event := range events {
+		replay.Project("demo", event)
+	}
+	suppressed := func(projection LineageEventProjection) []string {
+		out := []string{}
+		for _, link := range projection.Suppresses {
+			out = append(out, link.SrcID+"->"+link.DstID)
+		}
+		sort.Strings(out)
+		return out
+	}
+	historical := replay.Project("demo", core.Event{ID: 5, TaskID: "task-1", Kind: TaskContextRequirementRemoved, Payload: core.JSONPayload(map[string]any{"id": "req-a"})})
+	if got := suppressed(historical); !reflect.DeepEqual(got, []string{"req-a->task-1", "req-a:v1->task-1", "req-a:v2->task-1"}) {
+		t.Fatalf("historical removal suppressed %v", got)
+	}
+	readd := core.Event{ID: 6, TaskID: "task-1", Kind: TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "req-a", "version": 3})}
+	replay.Project("demo", readd)
+	recorded := replay.Project("demo", core.Event{ID: 7, TaskID: "task-1", Kind: TaskContextRequirementRemoved, Payload: core.JSONPayload(RequirementRemovalPayload("req-a", []int{3}))})
+	if got := suppressed(recorded); !reflect.DeepEqual(got, []string{"req-a->task-1", "req-a:v3->task-1"}) {
+		t.Fatalf("recorded removal suppressed %v", got)
+	}
+	other := replay.Project("demo", core.Event{ID: 8, TaskID: "task-2", Kind: TaskContextRequirementRemoved, Payload: core.JSONPayload(map[string]any{"id": "req-a"})})
+	if got := suppressed(other); !reflect.DeepEqual(got, []string{"req-a->task-2", "req-a:v2->task-2"}) {
+		t.Fatalf("another task's removal suppressed %v", got)
 	}
 }

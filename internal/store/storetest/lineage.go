@@ -16,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 type LineageFixture struct {
@@ -136,6 +137,251 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	t.Run("retired feature history survives replay and bounded traversal", func(t *testing.T) {
 		assertRetiredFeatureHistory(t, fixture)
 	})
+	t.Run("requirement versions, plan joins, and start-over successors are reachable and rebuild", func(t *testing.T) {
+		assertVersionPlanAndSuccessorLineage(t, fixture)
+	})
+}
+
+// assertVersionPlanAndSuccessorLineage proves the four joins that make
+// lineage queryable end to end (component-lineage; req-260802-72fc68 AC-1.1,
+// AC-1.3, AC-5.1, AC-5.2): a requirement reaches its versions; a requirement
+// version reaches the task that served it, its work order, and its pull
+// request; a task reaches its blueprint and the planning session that
+// produced it; and a started-over task reaches its successor. Every read goes
+// through GET /v1/lineage, and every new key survives a fresh rebuild as
+// projected, never preserved or ambiguous.
+func assertVersionPlanAndSuccessorLineage(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	if fixture.HTTP == nil {
+		t.Fatal("lineage fixture has no HTTP handler; the version-lineage case cannot read GET /v1/lineage")
+	}
+	handler := fixture.HTTP(t)
+	st := fixture.Store
+	ctx := store.WithActor(fixture.Context, store.Actor{ID: "operator-lineage-versions", Role: core.ActorHuman})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-versions-" + core.NewTaskID(), Title: "Versioned intent"}, core.RequirementVersion{
+		Content: "# Versioned intent", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Name the served version."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Versioned intent, revised", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Name the served version, revised."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, second.Version); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+	task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	attach := func(t *testing.T) {
+		t.Helper()
+		if _, err := st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	attach(t)
+	workOrderID, sessionID := task.ID+"-implement-1", "planning-"+task.ID
+	for _, event := range []core.Event{
+		{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": workOrderID})},
+		{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "number": 4242, "base_sha": "base-" + task.ID, "head_sha": "head-" + task.ID})},
+		{TaskID: task.ID, Kind: "planning_session.finalized", Payload: core.JSONPayload(map[string]any{"session_id": sessionID, "produced_task_id": task.ID})},
+	} {
+		if err = st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	requirementNode := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
+	firstNode := core.LineageNode{Type: core.LineageRequirementVersion, ID: core.RequirementVersionLineageID(requirement.ID, first.Version)}
+	secondNode := core.LineageNode{Type: core.LineageRequirementVersion, ID: core.RequirementVersionLineageID(requirement.ID, second.Version)}
+	taskNode := core.LineageNode{Type: core.LineageTask, ID: task.ID}
+	walk := func(t *testing.T, root core.LineageNode) (map[core.LineageNode]bool, map[string]core.LineageLink) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/lineage/"+string(root.Type)+"/"+root.ID, nil)
+		request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
+		request.Header.Set("X-Workspace-ID", fixture.Workspace)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /v1/lineage/%s/%s status=%d body=%s", root.Type, root.ID, response.Code, response.Body.String())
+		}
+		var graph core.LineageTraversal
+		if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+			t.Fatal(err)
+		}
+		nodes, links := map[core.LineageNode]bool{}, map[string]core.LineageLink{}
+		for _, node := range graph.Nodes {
+			nodes[core.LineageNode{Type: node.Type, ID: node.ID}] = true
+		}
+		for _, link := range graph.Links {
+			links[lineageKey(link)] = link
+		}
+		return nodes, links
+	}
+	expectNodes := func(t *testing.T, name string, root core.LineageNode, want ...core.LineageNode) {
+		t.Helper()
+		nodes, _ := walk(t, root)
+		for _, node := range want {
+			if !nodes[node] {
+				t.Fatalf("%s: walk from %v missed %v; reached %v", name, root, node, nodes)
+			}
+		}
+	}
+	expectNodes(t, "requirement root", requirementNode, firstNode, secondNode)
+	expectNodes(t, "requirement version root (AC-5.2)", secondNode, taskNode,
+		core.LineageNode{Type: core.LineageWorkOrder, ID: workOrderID},
+		core.LineageNode{Type: core.LineagePullRequest, ID: core.PullRequestLineageID("conveyor", 4242)})
+	expectNodes(t, "task root", taskNode,
+		core.LineageNode{Type: core.LineageBlueprint, ID: task.ID},
+		core.LineageNode{Type: core.LineagePlanningSession, ID: sessionID})
+	expectNodes(t, "work order root", core.LineageNode{Type: core.LineageWorkOrder, ID: workOrderID},
+		core.LineageNode{Type: core.LineageBlueprint, ID: task.ID}, requirementNode)
+
+	servedKey := lineageKey(core.LineageLink{SrcType: secondNode.Type, SrcID: secondNode.ID, DstType: core.LineageTask, DstID: task.ID, Kind: "serves"})
+	newKeys := []string{
+		lineageKey(core.LineageLink{SrcType: core.LineageRequirement, SrcID: requirement.ID, DstType: firstNode.Type, DstID: firstNode.ID, Kind: "versions"}),
+		lineageKey(core.LineageLink{SrcType: core.LineageRequirement, SrcID: requirement.ID, DstType: secondNode.Type, DstID: secondNode.ID, Kind: "versions"}),
+		servedKey,
+		lineageKey(core.LineageLink{SrcType: core.LineageBlueprint, SrcID: task.ID, DstType: core.LineageTask, DstID: task.ID, Kind: "plans"}),
+	}
+	stored := func(t *testing.T) map[string]core.LineageLink {
+		t.Helper()
+		links, err := st.ListLineageLinks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]core.LineageLink{}
+		for _, link := range links {
+			out[lineageKey(link)] = link
+		}
+		return out
+	}
+	rebuild := func(t *testing.T) core.LineageRebuildResult {
+		t.Helper()
+		result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "version lineage conformance", RequestID: core.NewTaskID()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	latestRequirementEvent := func(t *testing.T, taskID, kind string) core.Event {
+		t.Helper()
+		events, err := st.ListEvents(ctx, taskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var latest core.Event
+		for _, event := range events {
+			if event.Kind == kind && event.ID > latest.ID {
+				latest = event
+			}
+		}
+		if latest.ID == 0 {
+			t.Fatalf("no %s event on %s", kind, taskID)
+		}
+		return latest
+	}
+	var attached struct {
+		Version int `json:"version"`
+	}
+	if err = json.Unmarshal(latestRequirementEvent(t, task.ID, store.TaskContextRequirementAdded).Payload, &attached); err != nil || attached.Version != second.Version {
+		t.Fatalf("attachment recorded version=%d err=%v, want the current confirmed v%d", attached.Version, err, second.Version)
+	}
+	before := stored(t)
+	for _, key := range newKeys {
+		if before[key].CreatedByEventID == 0 {
+			t.Fatalf("live writers did not project %q", key)
+		}
+	}
+
+	baseline := rebuild(t)
+	if _, err = st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Remove: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
+		t.Fatal(err)
+	}
+	var removed struct {
+		Versions []int `json:"versions"`
+	}
+	if err = json.Unmarshal(latestRequirementEvent(t, task.ID, store.TaskContextRequirementRemoved).Payload, &removed); err != nil || !reflect.DeepEqual(removed.Versions, []int{second.Version}) {
+		t.Fatalf("removal recorded versions=%v err=%v, want [%d]", removed.Versions, err, second.Version)
+	}
+	if _, ok := stored(t)[servedKey]; ok {
+		t.Fatal("removal left requirement_version -serves-> task in place")
+	}
+	if _, links := walk(t, secondNode); links[servedKey].Kind != "" {
+		t.Fatalf("removed version edge still served over HTTP: %+v", links[servedKey])
+	}
+	attach(t)
+	readded := latestRequirementEvent(t, task.ID, store.TaskContextRequirementAdded).ID
+	if _, links := walk(t, secondNode); links[servedKey].CreatedByEventID != readded {
+		t.Fatalf("re-attached version edge over HTTP=%+v want event %d", links[servedKey], readded)
+	}
+	restored := rebuild(t)
+	if restored.Projected != baseline.Projected || restored.PreservedUnregenerable != baseline.PreservedUnregenerable ||
+		restored.Ambiguous != baseline.Ambiguous || restored.Unsupported != baseline.Unsupported {
+		t.Fatalf("rebuild after remove and re-attach=%+v baseline=%+v", restored, baseline)
+	}
+	after := stored(t)
+	for _, key := range newKeys {
+		want := before[key].CreatedByEventID
+		if key == servedKey {
+			want = readded
+		}
+		if after[key].CreatedByEventID != want {
+			t.Fatalf("rebuild key %q provenance=%d want %d", key, after[key].CreatedByEventID, want)
+		}
+	}
+
+	result, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: task.ID, RequestID: "lineage-start-over-" + task.ID, Reason: "retry", CanConfirmDocuments: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorNode := core.LineageNode{Type: core.LineageTask, ID: result.Successor.ID}
+	expectNodes(t, "retired task root", taskNode, successorNode)
+	expectNodes(t, "successor root", successorNode, taskNode, secondNode)
+	successorKey := lineageKey(core.LineageLink{SrcType: core.LineageTask, SrcID: task.ID, DstType: core.LineageTask, DstID: result.Successor.ID, Kind: "succeeded_by"})
+	beforeSuccessor := stored(t)[successorKey]
+	if beforeSuccessor.CreatedByEventID != latestRequirementEvent(t, task.ID, "task.started_over").ID {
+		t.Fatalf("succeeded_by provenance=%+v", beforeSuccessor)
+	}
+
+	// A removal recorded before removals carried versions still ends the
+	// version edge on rebuild (LineageReplay). The live writers never write
+	// this shape any more; it is seeded history.
+	historical := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+	historical.Branch, historical.Title = "conveyor/task-"+historical.ID, historical.ID
+	if err = st.CreateTask(ctx, historical); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: historical.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID, "version": second.Version})},
+		{TaskID: historical.ID, Kind: store.TaskContextRequirementRemoved, Payload: core.JSONPayload(map[string]any{"id": requirement.ID})},
+	} {
+		if err = st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	historicalKey := lineageKey(core.LineageLink{SrcType: secondNode.Type, SrcID: secondNode.ID, DstType: core.LineageTask, DstID: historical.ID, Kind: "serves"})
+	if _, ok := stored(t)[historicalKey]; !ok {
+		t.Fatal("seeded versioned attachment projected no version edge")
+	}
+	final := rebuild(t)
+	if _, ok := stored(t)[historicalKey]; ok {
+		t.Fatal("rebuild kept the version edge a historical removal ended")
+	}
+	if final.PreservedUnregenerable != baseline.PreservedUnregenerable || final.Ambiguous != baseline.Ambiguous || final.Unsupported != baseline.Unsupported {
+		t.Fatalf("final rebuild=%+v baseline=%+v", final, baseline)
+	}
+	if after := stored(t)[successorKey]; after.CreatedByEventID != beforeSuccessor.CreatedByEventID {
+		t.Fatalf("rebuild succeeded_by provenance=%+v want %+v", after, beforeSuccessor)
+	}
 }
 
 // assertDependencyRemovalLineage proves that removing a dependency removes
@@ -401,6 +647,10 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 	historicalNode := core.LineageNode{Type: core.LineageRequirement, ID: historical.SrcID}
 	chainRequirement := core.LineageNode{Type: core.LineageRequirement, ID: "req-feat-chain"}
 	taskNode := func(id string) core.LineageNode { return core.LineageNode{Type: core.LineageTask, ID: id} }
+	// The root's own task.created joins it to its blueprint, the one current
+	// edge beside the retained history (component-lineage).
+	planNode := core.LineageNode{Type: core.LineageBlueprint, ID: task.ID}
+	currentLinks := 1
 	// walk reads the bounded neighborhood with every axis one beyond the
 	// budget, as callers do (component-lineage "Traversal under a budget"),
 	// and traverses with the real budget so Truncated reflects what lies
@@ -445,29 +695,32 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 		t.Helper()
 		reached := nodeSet(graph)
 		for _, link := range graph.Links {
+			if link.Kind == "plans" && link.SrcType == planNode.Type && link.SrcID == planNode.ID && link.DstType == root.Type && link.DstID == root.ID {
+				continue
+			}
 			if link.Kind != "historical_feature_assignment" || link.LegacyCreatedByEvent != "feature.migrated" ||
 				!reached[core.LineageNode{Type: link.SrcType, ID: link.SrcID}] || !reached[core.LineageNode{Type: link.DstType, ID: link.DstID}] {
 				t.Fatalf("%s selected a link outside its reached history: %+v", name, link)
 			}
 		}
 	}
-	allNodes := []core.LineageNode{root, historicalNode, taskNode(chainTask), taskNode(fanTasks[0]), taskNode(fanTasks[1]), chainRequirement, taskNode(tailTask)}
+	allNodes := []core.LineageNode{root, planNode, historicalNode, taskNode(chainTask), taskNode(fanTasks[0]), taskNode(fanTasks[1]), chainRequirement, taskNode(tailTask)}
 
 	// Unbounded within the default budget: the whole retained graph.
 	full := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, Workspace: fixture.Workspace})
 	assertNodes(t, "full walk", full, allNodes...)
 	assertLinksWithin(t, "full walk", full)
 	if full.Depths[historicalNode] != 1 || full.Depths[taskNode(chainTask)] != 2 || full.Depths[chainRequirement] != 3 || full.Depths[taskNode(tailTask)] != 4 ||
-		full.Truncated || len(full.Links) != len(retainedLinks) || full.OmittedNodes != 0 || full.OmittedLinks != 0 || len(full.ExhaustionReasons) != 0 {
+		full.Depths[planNode] != 1 || full.Truncated || len(full.Links) != len(retainedLinks)+currentLinks || full.OmittedNodes != 0 || full.OmittedLinks != 0 || len(full.ExhaustionReasons) != 0 {
 		t.Fatalf("full walk over retained history: %+v", full)
 	}
 
 	// Depth limit: depth 2 reaches the requirement and its three tasks; the
 	// chain requirement one hop beyond is omitted and the tail stays unseen.
 	depth := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 2, MaxNodes: 32, Workspace: fixture.Workspace})
-	assertNodes(t, "depth limit", depth, root, historicalNode, taskNode(chainTask), taskNode(fanTasks[0]), taskNode(fanTasks[1]))
+	assertNodes(t, "depth limit", depth, root, planNode, historicalNode, taskNode(chainTask), taskNode(fanTasks[0]), taskNode(fanTasks[1]))
 	assertLinksWithin(t, "depth limit", depth)
-	if !depth.Truncated || depth.OmittedNodes != 1 || depth.OmittedLinks != 0 || len(depth.Links) != 4 ||
+	if !depth.Truncated || depth.OmittedNodes != 1 || depth.OmittedLinks != 0 || len(depth.Links) != 4+currentLinks ||
 		!reflect.DeepEqual(depth.ExhaustionReasons, []string{"depth"}) {
 		t.Fatalf("depth budget not honored: %+v", depth)
 	}
@@ -477,15 +730,16 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 	linkLimited := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 32, MaxLinks: 3, Workspace: fixture.Workspace})
 	assertNodes(t, "link limit", linkLimited, allNodes...)
 	assertLinksWithin(t, "link limit", linkLimited)
-	if !linkLimited.Truncated || len(linkLimited.Links) != 3 || linkLimited.OmittedLinks != len(retainedLinks)-3 || linkLimited.OmittedNodes != 0 ||
+	if !linkLimited.Truncated || len(linkLimited.Links) != 3 || linkLimited.OmittedLinks != len(retainedLinks)+currentLinks-3 || linkLimited.OmittedNodes != 0 ||
 		!reflect.DeepEqual(linkLimited.ExhaustionReasons, []string{"links"}) {
 		t.Fatalf("link budget not honored: %+v", linkLimited)
 	}
 
-	// Node limit: only the root fits; its one historical neighbor is omitted.
+	// Node limit: only the root fits; its historical neighbor and its
+	// blueprint are omitted.
 	bounded := walk(t, ctx, core.LineageTraversalBudget{MaxDepth: 5, MaxNodes: 1, Workspace: fixture.Workspace})
 	assertNodes(t, "node limit", bounded, root)
-	if !bounded.Truncated || bounded.OmittedNodes != 1 || len(bounded.Links) != 0 ||
+	if !bounded.Truncated || bounded.OmittedNodes != 2 || len(bounded.Links) != 0 ||
 		!reflect.DeepEqual(bounded.ExhaustionReasons, []string{"nodes"}) {
 		t.Fatalf("node budget not honored: %+v", bounded)
 	}
@@ -1031,7 +1285,7 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 
 func assertCanonicalVocabulary(t *testing.T) {
 	t.Helper()
-	want := []string{"consulted", "creates", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "produced_blueprint", "produced_bundle", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "proposes", "serves", "submitted_as", "submitted_range", "supersedes", "supports", "versions"}
+	want := []string{"consulted", "creates", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "plans", "produced_blueprint", "produced_bundle", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "proposes", "serves", "submitted_as", "submitted_range", "succeeded_by", "supersedes", "supports", "versions"}
 	got := store.CanonicalLineageKinds()
 	if len(got) != len(want) {
 		t.Fatalf("canonical lineage vocabulary=%v, want %v", got, want)

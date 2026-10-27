@@ -110,7 +110,13 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 		t.Fatalf("events=%+v", events)
 	}
 	links, err := st.ListLineageLinks(ctx)
-	if err != nil || len(links) != 1 || links[0].Kind != "merged_range" || links[0].DstID != core.CommitRangeLineageID("acme/app", "base-sha", "head-sha") {
+	var merged []core.LineageLink
+	for _, link := range links {
+		if link.Kind == "merged_range" {
+			merged = append(merged, link)
+		}
+	}
+	if err != nil || len(merged) != 1 || merged[0].DstID != core.CommitRangeLineageID("acme/app", "base-sha", "head-sha") {
 		t.Fatalf("merge lineage=%+v err=%v", links, err)
 	}
 	if err := d.MergeApprovedTask(ctx, task); err != nil {

@@ -64,9 +64,13 @@ func runRepositoryInstall(t *testing.T, x Fixture) {
 		if payload.Source != core.RepositoryRegistrationSource || payload.RepositoryInstallAttempt != 1 {
 			t.Fatal("event lost registration provenance")
 		}
+		// Every task.created joins the task to its own blueprint and nothing
+		// else (component-lineage); registration adds no other edge.
 		projection := store.ProjectLineageEvent(x.Workspace, event)
-		if len(projection.Links) != 0 {
-			t.Fatal("registration fabricated lineage links")
+		if len(projection.Links) != 1 || projection.Links[0].Kind != "plans" ||
+			projection.Links[0].SrcType != core.LineageBlueprint || projection.Links[0].SrcID != first.ID ||
+			projection.Links[0].DstType != core.LineageTask || projection.Links[0].DstID != first.ID {
+			t.Fatalf("registration fabricated lineage links: %+v", projection.Links)
 		}
 		found = true
 	}
