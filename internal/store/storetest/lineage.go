@@ -140,6 +140,145 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	t.Run("requirement versions, plan joins, and start-over successors are reachable and rebuild", func(t *testing.T) {
 		assertVersionPlanAndSuccessorLineage(t, fixture)
 	})
+	t.Run("a hub requirement serving 40 other tasks keeps the root's own outcomes", func(t *testing.T) {
+		assertHubFanoutKeepsRootOutcomes(t, fixture)
+	})
+}
+
+// assertHubFanoutKeepsRootOutcomes proves that a requirement serving 40
+// other tasks cannot spend the default budget before the root's own work
+// orders, verdict, pull request, and ranges (component-lineage;
+// req-260802-72fc68 AC-2.3, AC-2.4, AC-2.5). The walk reads through
+// ListLineageNeighborhood and GET /v1/lineage, equals a traversal over every
+// workspace link, and names one literal node set on every backend.
+func assertHubFanoutKeepsRootOutcomes(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	if fixture.HTTP == nil {
+		t.Fatal("lineage fixture has no HTTP handler; the hub case cannot read GET /v1/lineage")
+	}
+	st := fixture.Store
+	ctx := store.WithActor(fixture.Context, store.Actor{ID: "operator-lineage-hub", Role: core.ActorHuman})
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-hub-" + core.NewTaskID(), Title: "Hub intent"}, core.RequirementVersion{
+		Content: "# Hub intent", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Serve many tasks."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	newTask := func() core.Task {
+		t.Helper()
+		task := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+		task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	root := newTask()
+	roles := map[core.LineageNode]string{
+		{Type: core.LineageTask, ID: root.ID}:               "root",
+		{Type: core.LineageBlueprint, ID: root.ID}:          "root-blueprint",
+		{Type: core.LineageRequirement, ID: requirement.ID}: "requirement",
+		{Type: core.LineageRequirementVersion, ID: core.RequirementVersionLineageID(requirement.ID, version.Version)}: "requirement:v1",
+	}
+	for index := 0; index < 40; index++ {
+		sibling := newTask()
+		roles[core.LineageNode{Type: core.LineageTask, ID: sibling.ID}] = fmt.Sprintf("sibling-%02d", index)
+		roles[core.LineageNode{Type: core.LineageBlueprint, ID: sibling.ID}] = fmt.Sprintf("sibling-%02d-blueprint", index)
+	}
+	implementID, reviewID := root.ID+"-implement-1", root.ID+"-review-1"
+	for _, event := range []core.Event{
+		{TaskID: root.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": implementID})},
+		{TaskID: root.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "number": 4343, "base_sha": "base-" + root.ID, "head_sha": "head-" + root.ID})},
+		{TaskID: root.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": reviewID})},
+		{TaskID: root.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": reviewID, "verdict": "approve"})},
+		{TaskID: root.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "base_sha": "merge-base-" + root.ID, "head_sha": "merge-head-" + root.ID})},
+	} {
+		if err = st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	own := map[core.LineageNode]string{
+		{Type: core.LineageWorkOrder, ID: implementID}:                                                                           "root-implement",
+		{Type: core.LineageWorkOrder, ID: reviewID}:                                                                              "root-review",
+		{Type: core.LineageVerdict, ID: core.VerdictLineageID(reviewID)}:                                                         "root-verdict",
+		{Type: core.LineagePullRequest, ID: core.PullRequestLineageID("conveyor", 4343)}:                                         "root-pr",
+		{Type: core.LineageCommitRange, ID: core.CommitRangeLineageID("conveyor", "base-"+root.ID, "head-"+root.ID)}:             "root-submitted-range",
+		{Type: core.LineageCommitRange, ID: core.CommitRangeLineageID("conveyor", "merge-base-"+root.ID, "merge-head-"+root.ID)}: "root-merged-range",
+	}
+	for node, role := range own {
+		roles[node] = role
+	}
+	rootNode := core.LineageNode{Type: core.LineageTask, ID: root.ID}
+	budget := core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes,
+		MaxLinks: config.DefaultLineageContextNodes * config.DefaultLineageContextLinksPerNode, Workspace: fixture.Workspace}.Normalized()
+	fetched, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{rootNode}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := core.TraverseLineage(fetched, []core.LineageNode{rootNode}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := core.TraverseLineage(all, []core.LineageNode{rootNode}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(graph.Nodes, full.Nodes) || !reflect.DeepEqual(graph.Links, full.Links) || graph.Omissions != full.Omissions || !reflect.DeepEqual(graph.ExhaustionReasons, full.ExhaustionReasons) {
+		t.Fatalf("fetched walk differs from the full walk\nfetched %+v\nfull    %+v", graph, full)
+	}
+	named := func(t *testing.T, nodes []core.LineageNode) []string {
+		t.Helper()
+		out := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			role, ok := roles[core.LineageNode{Type: node.Type, ID: node.ID}]
+			if !ok {
+				t.Fatalf("hub walk reached a node outside the fixture: %v", node)
+			}
+			out = append(out, role)
+		}
+		sort.Strings(out)
+		return out
+	}
+	// Default fan-out 8: the requirement and its version each examine the
+	// root and seven siblings, so seven siblings and their blueprints join
+	// the root's own nodes; every backend names this one set.
+	want := []string{"requirement", "requirement:v1", "root", "root-blueprint", "root-implement", "root-merged-range", "root-pr", "root-review", "root-submitted-range", "root-verdict"}
+	for index := 0; index < 7; index++ {
+		want = append(want, fmt.Sprintf("sibling-%02d", index), fmt.Sprintf("sibling-%02d-blueprint", index))
+	}
+	sort.Strings(want)
+	if got := named(t, graph.Nodes); !reflect.DeepEqual(got, want) {
+		t.Fatalf("hub walk nodes=%v\nwant %v", got, want)
+	}
+	if !graph.Truncated || graph.Omissions.FanoutNodes != 2 || !reflect.DeepEqual(graph.ExhaustionReasons, []string{"fanout"}) {
+		t.Fatalf("hub walk truncation=%v omissions=%+v reasons=%v", graph.Truncated, graph.Omissions, graph.ExhaustionReasons)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+root.ID, nil)
+	request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
+	request.Header.Set("X-Workspace-ID", fixture.Workspace)
+	response := httptest.NewRecorder()
+	fixture.HTTP(t).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/lineage/task/%s status=%d body=%s", root.ID, response.Code, response.Body.String())
+	}
+	var served core.LineageTraversal
+	if err = json.Unmarshal(response.Body.Bytes(), &served); err != nil {
+		t.Fatal(err)
+	}
+	if got := named(t, served.Nodes); !reflect.DeepEqual(got, want) || served.Omissions != graph.Omissions || served.Budget.MaxFanout != budget.MaxFanout {
+		t.Fatalf("HTTP hub walk nodes=%v omissions=%+v budget=%+v\nwant %v %+v", got, served.Omissions, served.Budget, want, graph.Omissions)
+	}
 }
 
 // assertVersionPlanAndSuccessorLineage proves the four joins that make
@@ -651,10 +790,10 @@ func assertRetiredFeatureHistory(t *testing.T, fixture LineageFixture) {
 	// edge beside the retained history (component-lineage).
 	planNode := core.LineageNode{Type: core.LineageBlueprint, ID: task.ID}
 	currentLinks := 1
-	// walk reads the bounded neighborhood with every axis one beyond the
-	// budget, as callers do (component-lineage "Traversal under a budget"),
-	// and traverses with the real budget so Truncated reflects what lies
-	// beyond it.
+	// walk reads the bounded neighborhood with depth and nodes one beyond the
+	// budget and the same fan-out, then traverses with the real budget. A
+	// wider fetch traverses identically (component-lineage "Traversal under a
+	// budget"), so Truncated still reflects what lies beyond the budget.
 	walk := func(t *testing.T, ctx context.Context, budget core.LineageTraversalBudget) core.LineageTraversal {
 		t.Helper()
 		// Normalize first so the wider fetch keeps the traversal's fan-out.
