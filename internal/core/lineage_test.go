@@ -138,6 +138,65 @@ func TestTraverseLineageCapsHubFanoutAndAdmitsByRound(t *testing.T) {
 	}
 }
 
+// A node at the depth cap whose prefix is cut may hide an unseen neighbor
+// behind links to seen peers; the walk reports fan-out instead of a complete
+// neighborhood, on the full and the fetched walk (component-lineage).
+func TestTraverseLineageReportsFanoutCutAtDepthCap(t *testing.T) {
+	root := LineageNode{Type: LineageTask, ID: "root"}
+	links := []LineageLink{lineageTestLink(1, LineageTask, "root", LineageTask, "hub", "depends_on")}
+	id := int64(2)
+	for index := 0; index < 7; index++ {
+		peer := fmt.Sprintf("peer-%d", index)
+		links = append(links, lineageTestLink(id, LineageTask, "root", LineageTask, peer, "depends_on"), lineageTestLink(id+1, LineageTask, "hub", LineageTask, peer, "depends_on"))
+		id += 2
+	}
+	links = append(links, lineageTestLink(id, LineageTask, "hub", LineageTask, "hidden", "depends_on"))
+	budget := LineageTraversalBudget{MaxDepth: 1, MaxNodes: 32, MaxLinks: 128}.Normalized()
+	full, err := TraverseLineage(links, []LineageNode{root}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjacent := map[LineageNode][]LineageLink{}
+	for _, link := range links {
+		src, dst := LineageNode{Type: link.SrcType, ID: link.SrcID}, LineageNode{Type: link.DstType, ID: link.DstID}
+		adjacent[src], adjacent[dst] = append(adjacent[src], link), append(adjacent[dst], link)
+	}
+	fetched, err := FetchLineageNeighborhood(t.Context(), []LineageNode{root}, budget, func(_ context.Context, nodes []LineageNode, limit int) (map[LineageNode][]LineageLink, error) {
+		out := map[LineageNode][]LineageLink{}
+		for _, node := range nodes {
+			out[node] = RankLineageLinks(node, adjacent[node], limit)
+		}
+		return out, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaFetch, err := TraverseLineage(fetched, []LineageNode{root}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]LineageTraversal{"full": full, "fetched": viaFetch} {
+		if len(got.Nodes) != 9 || !got.Truncated || got.Omissions.FanoutNodes != 1 || !reflect.DeepEqual(got.ExhaustionReasons, []string{"fanout"}) {
+			t.Fatalf("%s walk nodes=%d truncated=%v omissions=%+v reasons=%v, want 9 nodes and a reported fan-out cut", name, len(got.Nodes), got.Truncated, got.Omissions, got.ExhaustionReasons)
+		}
+		for _, node := range got.Nodes {
+			if node.ID == "hidden" {
+				t.Fatalf("%s walk admitted the node beyond the depth cap", name)
+			}
+		}
+	}
+	if !reflect.DeepEqual(full.Nodes, viaFetch.Nodes) || !reflect.DeepEqual(full.Links, viaFetch.Links) || full.Omissions != viaFetch.Omissions {
+		t.Fatalf("fetched walk differs: %+v vs %+v", viaFetch, full)
+	}
+	hub := LineageNode{Type: LineageTask, ID: "hub"}
+	ranked := RankLineageLinks(hub, adjacent[hub], -1)
+	for position := 1; position < len(ranked); position++ {
+		if !LineageLinkRanksBefore(hub, ranked[position-1], ranked[position]) || LineageLinkRanksBefore(hub, ranked[position], ranked[position-1]) {
+			t.Fatalf("LineageLinkRanksBefore disagrees with RankLineageLinks at %d", position)
+		}
+	}
+}
+
 // FetchLineageNeighborhood must return a link set that traverses exactly as
 // the whole graph does, within the documented row bound (component-lineage).
 func TestFetchLineageNeighborhoodMatchesFullTraversal(t *testing.T) {

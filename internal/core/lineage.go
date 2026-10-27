@@ -138,7 +138,7 @@ type LineageOmissions struct {
 	DepthNodes int `json:"depth_nodes"`
 	// NodeCapNodes counts distinct unseen nodes examined after the node cap filled.
 	NodeCapNodes int `json:"node_cap_nodes"`
-	// FanoutNodes counts nodes below the depth cap whose ranked links exceeded
+	// FanoutNodes counts nodes, at any depth, whose ranked links exceeded
 	// their examined prefix.
 	FanoutNodes int `json:"fanout_nodes"`
 	// Links counts reached links dropped by the link cap.
@@ -443,11 +443,7 @@ func FetchLineageNeighborhood(ctx context.Context, roots []LineageNode, budget L
 func RankLineageLinks(node LineageNode, links []LineageLink, limit int) []LineageLink {
 	neighbors := make([]lineageNeighbor, 0, len(links))
 	for _, link := range links {
-		far := LineageNode{Type: link.DstType, ID: link.DstID}
-		if far == node {
-			far = LineageNode{Type: link.SrcType, ID: link.SrcID}
-		}
-		neighbors = append(neighbors, lineageNeighbor{node: far, link: link})
+		neighbors = append(neighbors, lineageNeighbor{node: lineageFarEndpoint(node, link), link: link})
 	}
 	sortLineageNeighbors(neighbors)
 	if limit >= 0 && len(neighbors) > limit {
@@ -479,6 +475,20 @@ func lineageNeighborLess(left, right lineageNeighbor) bool {
 		return leftKey < rightKey
 	}
 	return left.link.Kind < right.link.Kind
+}
+
+// LineageLinkRanksBefore reports whether left ranks before right among
+// node's incident links, in the order the walk examines them. Stores that
+// keep ranked per-node lists use it to insert in place.
+func LineageLinkRanksBefore(node LineageNode, left, right LineageLink) bool {
+	return lineageNeighborLess(lineageNeighbor{node: lineageFarEndpoint(node, left), link: left}, lineageNeighbor{node: lineageFarEndpoint(node, right), link: right})
+}
+
+func lineageFarEndpoint(node LineageNode, link LineageLink) LineageNode {
+	if far := (LineageNode{Type: link.DstType, ID: link.DstID}); far != node {
+		return far
+	}
+	return LineageNode{Type: link.SrcType, ID: link.SrcID}
 }
 
 func sortLineageNeighbors(neighbors []lineageNeighbor) {
@@ -557,12 +567,14 @@ func walkLineage(roots []LineageNode, budget LineageTraversalBudget, neighbors f
 		for index, node := range level {
 			prefix := adjacent[node]
 			if len(prefix) > limit {
+				// A cut prefix may hide a neighbor the walk never examined,
+				// at the depth cap as anywhere else, so it always reports
+				// fan-out rather than claim a complete neighborhood
+				// (component-lineage).
 				prefix = prefix[:limit]
-				if depth < budget.MaxDepth {
-					result.Truncated = true
-					result.Omissions.FanoutNodes++
-					reasons["fanout"] = true
-				}
+				result.Truncated = true
+				result.Omissions.FanoutNodes++
+				reasons["fanout"] = true
 			}
 			for _, candidate := range prefix {
 				examined[lineageTraversalLinkKey(candidate.link)] = candidate.link
