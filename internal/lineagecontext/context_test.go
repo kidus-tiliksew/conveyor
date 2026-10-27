@@ -12,6 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 type contextRecordCountingStore struct {
@@ -273,5 +274,113 @@ repos: []
 	roomy, err := Assemble(ctx, backend, partial, []core.LineageNode{{Type: core.LineageTask, ID: task.ID}}, task.ID, true)
 	if err != nil || len(roomy.Items) != 1 || roomy.OmittedCount != 0 {
 		t.Fatalf("default renderable budget items=%d omitted=%d err=%v", len(roomy.Items), roomy.OmittedCount, err)
+	}
+}
+
+// TestAssembleLabelsOnlyOwnServedRequirements covers the shapes
+// A <-serves- R1 -serves-> B <-serves- R2 (B a sibling of A) and
+// A -depends_on-> C <-serves- R3: R2 and R3 reach A's graph only through
+// another task's serves link, so they are never rendered as A's
+// served_requirement. R1 serves A directly and RP serves the blueprint A
+// materializes from, so both still are (component-lineage;
+// req-260802-72fc68 AC-2.1, AC-2.3).
+func TestAssembleLabelsOnlyOwnServedRequirements(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	blueprint := core.Task{ID: "own-served-blueprint", Workspace: "demo", Repo: "conveyor", Title: "Blueprint", State: core.TaskRunning, CreatedAt: now}
+	dependency := core.Task{ID: "own-served-dependency", Workspace: "demo", Repo: "conveyor", Title: "Dependency task", State: core.TaskRunning, CreatedAt: now}
+	for _, task := range []core.Task{blueprint, dependency} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: blueprint.ID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": 1})}); err != nil {
+		t.Fatal(err)
+	}
+	sibling := core.Task{ID: "own-served-sibling", Workspace: "demo", Repo: "conveyor", Title: "Sibling task", State: core.TaskMerged,
+		ParentTaskID: blueprint.ID, OriginSpecVersion: 1, OriginSubID: "SUB-2", CreatedAt: now}
+	if err := st.CreateTask(ctx, sibling); err != nil {
+		t.Fatal(err)
+	}
+	local := core.Task{ID: "own-served-local", Workspace: "demo", Repo: "conveyor", Title: "Local task", State: core.TaskRunning,
+		ParentTaskID: blueprint.ID, OriginSpecVersion: 1, OriginSubID: "SUB-1", CreatedAt: now}
+	if err := st.CreateTaskWithDependencies(ctx, local, []string{dependency.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// Only a terminal dependency contributes an outcome.
+	if _, err := taskops.New(st).Cancel(ctx, core.Intervention{TaskID: dependency.ID, Action: core.InterventionCancel, ReasonCode: "operator_cancel", Comment: "dependency finished"}); err != nil {
+		t.Fatal(err)
+	}
+	requirement := func(id string) string {
+		t.Helper()
+		created, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: "Title " + id}, core.RequirementVersion{
+			Content: "# " + id, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Statement of " + id + "."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning-session",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(human, created.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+		return created.ID
+	}
+	direct, siblingOnly, dependencyOnly, parent := requirement("req-own-direct"), requirement("req-sibling-only"), requirement("req-dependency-only"), requirement("req-own-blueprint")
+	for _, event := range []core.Event{
+		{TaskID: local.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": direct})},
+		{TaskID: sibling.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": direct})},
+		{TaskID: sibling.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": siblingOnly})},
+		{TaskID: dependency.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": dependencyOnly})},
+		{TaskID: blueprint.ID, Kind: "requirement.serves_confirmed", Payload: core.JSONPayload(map[string]any{"requirement_id": parent})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := Assemble(ctx, st, nil, []core.LineageNode{{Type: core.LineageTask, ID: local.ID}}, local.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached := map[string]bool{}
+	for _, node := range result.Traversal.Nodes {
+		reached[node.ID] = true
+	}
+	for _, id := range []string{direct, siblingOnly, dependencyOnly, parent, sibling.ID, dependency.ID} {
+		if !reached[id] {
+			t.Fatalf("fixture did not reach %s: nodes=%+v", id, result.Traversal.Nodes)
+		}
+	}
+	reasons := map[string]string{}
+	for _, item := range result.Items {
+		reasons[item.Node.ID] = item.SelectionReason
+	}
+	if reasons[direct] != "served_requirement" || reasons[parent] != "served_requirement" {
+		t.Fatalf("own served requirements not labelled served: %+v", reasons)
+	}
+	for _, id := range []string{siblingOnly, dependencyOnly} {
+		if reason, rendered := reasons[id]; rendered {
+			t.Fatalf("requirement %s reached through another task rendered as %q", id, reason)
+		}
+	}
+	if reasons[sibling.ID] != "sibling_outcome" || reasons[dependency.ID] != "dependency_outcome" {
+		t.Fatalf("sibling and dependency outcomes dropped: %+v", reasons)
+	}
+
+	// Without a local task, as in planning, every reached requirement stays a
+	// served_requirement candidate.
+	planning, err := Assemble(ctx, st, nil, []core.LineageNode{{Type: core.LineageTask, ID: local.ID}}, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planningReasons := map[string]string{}
+	for _, item := range planning.Items {
+		planningReasons[item.Node.ID] = item.SelectionReason
+	}
+	for _, id := range []string{direct, siblingOnly, dependencyOnly, parent} {
+		if planningReasons[id] != "served_requirement" {
+			t.Fatalf("planning assembly dropped requirement %s: %+v", id, planningReasons)
+		}
 	}
 }

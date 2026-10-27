@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/testimage"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"testing"
@@ -25,7 +27,15 @@ type LineageFixture struct {
 	// SeedHistoricalLink inserts a retained, non-projector-owned link row; see
 	// Fixture.SeedHistoricalLink.
 	SeedHistoricalLink func(*testing.T, context.Context, core.LineageLink)
+	// HTTP returns the real httpapi handler over Store, bound to Workspace and
+	// authenticated as its operator by LineageHTTPToken; see
+	// Fixture.LineageHTTP. The dependency-removal case requires it.
+	HTTP func(*testing.T) http.Handler
 }
+
+// LineageHTTPToken is the shared operator bearer each entry point configures
+// on the handler Fixture.LineageHTTP returns.
+const LineageHTTPToken = "storetest-lineage-operator"
 
 type LineageFactory func(*testing.T, []config.Repo) LineageFixture
 
@@ -120,9 +130,146 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 		}
 	}
 	assertTaskContext(t)
+	t.Run("dependency removal suppresses its edge across HTTP reads and rebuild", func(t *testing.T) {
+		assertDependencyRemovalLineage(t, fixture)
+	})
 	t.Run("retired feature history survives replay and bounded traversal", func(t *testing.T) {
 		assertRetiredFeatureHistory(t, fixture)
 	})
+}
+
+// assertDependencyRemovalLineage proves that removing a dependency removes
+// its task -depends_on-> task edge from GET /v1/lineage, that a rebuild with a
+// fresh request ID neither regenerates nor preserves the key and adds nothing
+// ambiguous, and that re-adding the dependency projects the edge again with
+// the re-add's provenance (component-lineage; req-260802-72fc68 AC-1.1,
+// AC-1.3, AC-2.3). The suite fixture is shared, so rebuild classifications
+// are compared with a baseline rebuild of the same workspace.
+func assertDependencyRemovalLineage(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	if fixture.HTTP == nil {
+		t.Fatal("lineage fixture has no HTTP handler; the dependency-removal case cannot read GET /v1/lineage")
+	}
+	handler := fixture.HTTP(t)
+	st := fixture.Store
+	ctx := store.WithActor(fixture.Context, store.Actor{ID: "operator-lineage-dependency", Role: core.ActorHuman})
+	now := time.Now().UTC()
+	dependent := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	dependency := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, CreatedAt: now}
+	for _, task := range []*core.Task{&dependent, &dependency} {
+		task.BaseBranch, task.Branch, task.Title = "main", "conveyor/task-"+task.ID, task.ID
+		if err := st.CreateTask(ctx, *task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	edgeKey := lineageKey(core.LineageLink{SrcType: core.LineageTask, SrcID: dependent.ID, DstType: core.LineageTask, DstID: dependency.ID, Kind: "depends_on"})
+	httpEdge := func(t *testing.T) (core.LineageLink, bool) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/lineage/task/"+dependent.ID, nil)
+		request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
+		request.Header.Set("X-Workspace-ID", fixture.Workspace)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /v1/lineage/task/%s status=%d body=%s", dependent.ID, response.Code, response.Body.String())
+		}
+		var graph core.LineageTraversal
+		if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+			t.Fatal(err)
+		}
+		for _, link := range graph.Links {
+			if lineageKey(link) == edgeKey {
+				return link, true
+			}
+		}
+		return core.LineageLink{}, false
+	}
+	storedEdge := func(t *testing.T) bool {
+		t.Helper()
+		links, err := st.ListLineageLinks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, link := range links {
+			if lineageKey(link) == edgeKey {
+				return true
+			}
+		}
+		return false
+	}
+	latestAddition := func(t *testing.T) int64 {
+		t.Helper()
+		events, err := st.ListEvents(ctx, dependent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+		for _, event := range events {
+			if event.Kind == "task.dependency_added" && event.ID > id {
+				id = event.ID
+			}
+		}
+		if id == 0 {
+			t.Fatalf("no task.dependency_added event on %s", dependent.ID)
+		}
+		return id
+	}
+	rebuild := func(t *testing.T) core.LineageRebuildResult {
+		t.Helper()
+		result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "dependency removal conformance", RequestID: core.NewTaskID()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	add := func(t *testing.T, requestID string) {
+		t.Helper()
+		if result, err := st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent.ID, DependsOnTaskID: dependency.ID, Reason: "deliver dependency first", RequestID: requestID}); err != nil || !result.Added {
+			t.Fatalf("add dependency result=%+v err=%v", result, err)
+		}
+	}
+
+	add(t, "lineage-dependency-add-"+dependent.ID)
+	if link, ok := httpEdge(t); !ok || link.CreatedByEventID != latestAddition(t) {
+		t.Fatalf("added dependency edge over HTTP=%+v present=%v", link, ok)
+	}
+	baseline := rebuild(t)
+	if result, err := st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: dependent.ID, DependsOnTaskID: dependency.ID, Reason: "no longer needed", RequestID: "lineage-dependency-remove-" + dependent.ID}); err != nil || !result.Removed {
+		t.Fatalf("remove dependency result=%+v err=%v", result, err)
+	}
+	if link, ok := httpEdge(t); ok {
+		t.Fatalf("removed dependency still served over HTTP: %+v", link)
+	}
+	if storedEdge(t) {
+		t.Fatal("removed dependency edge survived the removal transaction")
+	}
+	removed := rebuild(t)
+	if removed.PreservedUnregenerable != baseline.PreservedUnregenerable || removed.Ambiguous != baseline.Ambiguous || removed.Projected != baseline.Projected-1 {
+		t.Fatalf("rebuild after removal=%+v baseline=%+v, want the key neither projected, preserved, nor ambiguous", removed, baseline)
+	}
+	if storedEdge(t) {
+		t.Fatal("rebuild regenerated or preserved the removed dependency edge")
+	}
+	if link, ok := httpEdge(t); ok {
+		t.Fatalf("removed dependency served over HTTP after rebuild: %+v", link)
+	}
+
+	add(t, "lineage-dependency-readd-"+dependent.ID)
+	readded := latestAddition(t)
+	if link, ok := httpEdge(t); !ok || link.CreatedByEventID != readded {
+		t.Fatalf("re-added dependency edge over HTTP=%+v present=%v want event %d", link, ok, readded)
+	}
+	restored := rebuild(t)
+	if restored.PreservedUnregenerable != baseline.PreservedUnregenerable || restored.Ambiguous != baseline.Ambiguous || restored.Projected != baseline.Projected {
+		t.Fatalf("rebuild after re-add=%+v baseline=%+v", restored, baseline)
+	}
+	if link, ok := httpEdge(t); !ok || link.CreatedByEventID != readded {
+		t.Fatalf("re-added dependency edge after rebuild=%+v present=%v want event %d", link, ok, readded)
+	}
+}
+
+func lineageKey(link core.LineageLink) string {
+	return string(link.SrcType) + "\x00" + link.SrcID + "\x00" + string(link.DstType) + "\x00" + link.DstID + "\x00" + link.Kind
 }
 
 // assertRetiredFeatureHistory proves that removing the features entity

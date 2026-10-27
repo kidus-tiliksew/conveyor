@@ -50,7 +50,7 @@ func TestTraverseLineageKeepsLegacyHistoryAndDropsForeignWorkspace(t *testing.T)
 func TestTraverseLineageUsesRelationPriorityAndIsPermutationStable(t *testing.T) {
 	root := []LineageNode{{Type: LineageTask, ID: "child"}}
 	links := []LineageLink{
-		lineageTestLink(1, LineageTask, "child", LineageEvidence, "evidence", "proved_by"),
+		lineageTestLink(1, LineageTask, "child", LineageEvidence, "evidence", "supports"),
 		lineageTestLink(3, LineageRequirement, "req", LineageTask, "child", "serves"),
 		lineageTestLink(2, LineageTask, "child", LineageTask, "dependency", "depends_on"),
 	}
@@ -63,6 +63,29 @@ func TestTraverseLineageUsesRelationPriorityAndIsPermutationStable(t *testing.T)
 		}
 		if !reflect.DeepEqual(got.Nodes, want) || len(got.Links) != 2 || got.OmittedLinks != 1 || !got.Truncated || !reflect.DeepEqual(got.ExhaustionReasons, []string{"links"}) {
 			t.Fatalf("priority traversal=%+v", got)
+		}
+	}
+}
+
+func TestLineageRelationPriorityRanksOnlyProjectedKinds(t *testing.T) {
+	want := map[string]int{
+		"serves": 0, "materializes": 1, "supersedes": 1, "depends_on": 2,
+		"produced_verdict": 3, "merged_range": 3, "submitted_range": 3, "submitted_as": 3,
+		"supports": 4,
+	}
+	kinds := LineageRankedRelationKinds()
+	if len(kinds) != len(want) {
+		t.Fatalf("ranked kinds=%v want %v", kinds, want)
+	}
+	for _, kind := range kinds {
+		if priority, ok := want[kind]; !ok || LineageRelationPriority(kind) != priority {
+			t.Fatalf("kind %q priority=%d want %d (ranked=%v)", kind, LineageRelationPriority(kind), want[kind], ok)
+		}
+	}
+	// No projector case produces proved_by, so it ranks with every other kind.
+	for _, kind := range []string{"proved_by", "dispatches", "historical_feature_assignment", ""} {
+		if got := LineageRelationPriority(kind); got != LineageRelationDefaultPriority {
+			t.Fatalf("kind %q priority=%d want default %d", kind, got, LineageRelationDefaultPriority)
 		}
 	}
 }
@@ -112,7 +135,7 @@ func TestLineageVersionIDsAreStable(t *testing.T) {
 
 func TestTraverseLineageIsDeterministicAndBounded(t *testing.T) {
 	links := []LineageLink{
-		lineageTestLink(3, LineageTask, "task-b", LineageEvidence, "evidence-b", "proved_by"),
+		lineageTestLink(3, LineageTask, "task-b", LineageEvidence, "evidence-b", "supports"),
 		lineageTestLink(1, LineageTask, "task-a", LineageWorkOrder, "order-a", "executes_as"),
 		lineageTestLink(2, LineageTask, "task-a", LineageTask, "task-b", "depends_on"),
 	}

@@ -127,7 +127,7 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 		relation := 99
 		if len(path) > 0 {
 			last := path[len(path)-1]
-			eventID, at, relation = last.CreatedByEventID, last.CreatedAt, relationRank(last.Kind)
+			eventID, at, relation = last.CreatedByEventID, last.CreatedAt, core.LineageRelationPriority(last.Kind)
 		}
 		item := Item{Node: node, EdgePath: path, SourceEventID: eventID, SelectionReason: reason, ByteCount: len([]byte(content)), Content: content, Origin: "source"}
 		if reason == "parent_blueprint_rationale" {
@@ -159,10 +159,15 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 	for _, dependency := range local.Dependencies {
 		dependencyIDs[dependency.ID] = true
 	}
+	ownServed := ownServedRequirements(links, workspace, local)
 	for _, node := range graph.Nodes {
 		switch node.Type {
 		case core.LineageRequirement:
-			if localTaskID != "" && !pathContains(graph.Paths[core.LineageNode{Type: node.Type, ID: node.ID}], "serves") {
+			// Only a requirement this task or its parent blueprint serves is
+			// labelled served. One reached through a sibling's or a
+			// dependency's serves link is that task's intent, not this one's
+			// (component-lineage; req-260802-72fc68 AC-2.1).
+			if localTaskID != "" && !ownServed[node.ID] {
 				continue
 			}
 			requirement, ok := records.Requirements[node.ID]
@@ -406,22 +411,6 @@ func artifactNode(artifact core.Artifact) core.LineageNode {
 	}
 }
 
-func relationRank(kind string) int {
-	switch kind {
-	case "serves":
-		return 0
-	case "materializes", "supersedes":
-		return 1
-	case "depends_on":
-		return 2
-	case "produced_verdict", "merged_range":
-		return 3
-	case "supports", "proved_by":
-		return 4
-	default:
-		return 5
-	}
-}
 func pathLabel(path []core.LineageLink) string {
 	if len(path) == 0 {
 		return "root"
@@ -457,11 +446,24 @@ func nonempty(values ...string) []string {
 	}
 	return result
 }
-func pathContains(path []core.LineageLink, kind string) bool {
-	for _, link := range path {
-		if link.Kind == kind {
-			return true
+
+// ownServedRequirements returns the requirements the local task serves
+// itself: those with a serves link to the task, or to the blueprint the task
+// materializes from.
+func ownServedRequirements(links []core.LineageLink, workspace string, local core.Task) map[string]bool {
+	served := map[string]bool{}
+	if local.ID == "" {
+		return served
+	}
+	for _, link := range links {
+		if link.Kind != "serves" || link.SrcType != core.LineageRequirement || (workspace != "" && link.Workspace != workspace) {
+			continue
+		}
+		direct := link.DstType == core.LineageTask && link.DstID == local.ID
+		blueprint := link.DstType == core.LineageBlueprint && local.ParentTaskID != "" && link.DstID == local.ParentTaskID
+		if direct || blueprint {
+			served[link.SrcID] = true
 		}
 	}
-	return false
+	return served
 }

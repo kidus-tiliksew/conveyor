@@ -311,8 +311,8 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	for node := range adjacent {
 		sort.Slice(adjacent[node], func(i, j int) bool {
 			left, right := adjacent[node][i], adjacent[node][j]
-			if lineageRelationPriority(left.link.Kind) != lineageRelationPriority(right.link.Kind) {
-				return lineageRelationPriority(left.link.Kind) < lineageRelationPriority(right.link.Kind)
+			if LineageRelationPriority(left.link.Kind) != LineageRelationPriority(right.link.Kind) {
+				return LineageRelationPriority(left.link.Kind) < LineageRelationPriority(right.link.Kind)
 			}
 			if !left.link.CreatedAt.Equal(right.link.CreatedAt) {
 				return left.link.CreatedAt.Before(right.link.CreatedAt)
@@ -435,23 +435,41 @@ func TraverseLineage(links []LineageLink, roots []LineageNode, budget LineageTra
 	return result, nil
 }
 
-// lineageRelationPriority is the graph-walk half of the context priority
+// LineageRelationDefaultPriority ranks every kind lineageRelationPriorities
+// does not name.
+const LineageRelationDefaultPriority = 5
+
+// lineageRelationPriorities is the one relation ranking. Traversal, the
+// SingleStore neighborhood walk, and the context-assembly relation tie-break
+// call LineageRelationPriority; the PostgreSQL neighborhood CTE mirrors it in
+// SQL, and a parity test holds the two together (component-lineage). Only
+// kinds a projector case produces are ranked.
+var lineageRelationPriorities = map[string]int{
+	"serves":       0,
+	"materializes": 1, "supersedes": 1,
+	"depends_on":       2,
+	"produced_verdict": 3, "merged_range": 3, "submitted_range": 3, "submitted_as": 3,
+	"supports": 4,
+}
+
+// LineageRelationPriority is the graph-walk half of the context priority
 // contract. Item-type ranking is applied again after content is rendered.
-func lineageRelationPriority(kind string) int {
-	switch kind {
-	case "serves":
-		return 0
-	case "materializes", "supersedes":
-		return 1
-	case "depends_on":
-		return 2
-	case "produced_verdict", "merged_range", "submitted_range", "submitted_as":
-		return 3
-	case "supports", "proved_by":
-		return 4
-	default:
-		return 5
+func LineageRelationPriority(kind string) int {
+	if priority, ok := lineageRelationPriorities[kind]; ok {
+		return priority
 	}
+	return LineageRelationDefaultPriority
+}
+
+// LineageRankedRelationKinds returns the kinds ranked ahead of the default,
+// sorted, so callers can compare another copy of the ranking against it.
+func LineageRankedRelationKinds() []string {
+	kinds := make([]string, 0, len(lineageRelationPriorities))
+	for kind := range lineageRelationPriorities {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 func lineageTraversalNodeKey(node LineageNode) string {
