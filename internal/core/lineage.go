@@ -112,6 +112,84 @@ type LineageTraversalBudget struct {
 	// Workspace makes the trust boundary explicit even when a caller supplies
 	// mixed link input. Empty preserves compatibility for pure in-memory walks.
 	Workspace string `json:"-"`
+	// Filter narrows which examined links the walk follows. Nil walks every
+	// link in both directions, as before (component-lineage).
+	Filter *LineageTraversalFilter `json:"filter,omitempty"`
+}
+
+// LineageDirection names which side of a link the walk leaves a node by.
+type LineageDirection string
+
+const (
+	LineageDirectionBoth LineageDirection = "both"
+	LineageDirectionOut  LineageDirection = "out"
+	LineageDirectionIn   LineageDirection = "in"
+)
+
+func (direction LineageDirection) Valid() bool {
+	switch direction {
+	case "", LineageDirectionBoth, LineageDirectionOut, LineageDirectionIn:
+		return true
+	default:
+		return false
+	}
+}
+
+// LineageTraversalFilter selects among the ranked link prefix each node
+// examines. A link the filter refuses still counts against that node's
+// fan-out, so a filter narrows a walk without widening its store reads or
+// changing its ranking (component-lineage).
+type LineageTraversalFilter struct {
+	// Direction out follows a link only from its source to its destination,
+	// in only from its destination to its source. Empty means both.
+	Direction LineageDirection `json:"direction,omitempty"`
+	// Kinds, when set, admits only links of these kinds.
+	Kinds []string `json:"kinds,omitempty"`
+	// NodeTypes, when set, admits only neighbors of these types. Roots are
+	// always admitted.
+	NodeTypes []LineageNodeType `json:"node_types,omitempty"`
+}
+
+// admitsKind reports whether the filter keeps a link of kind.
+func (filter *LineageTraversalFilter) admitsKind(kind string) bool {
+	if filter == nil || len(filter.Kinds) == 0 {
+		return true
+	}
+	for _, candidate := range filter.Kinds {
+		if candidate == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// admits reports whether the walk may leave node along link to far.
+func (filter *LineageTraversalFilter) admits(node, far LineageNode, link LineageLink) bool {
+	if filter == nil {
+		return true
+	}
+	switch filter.Direction {
+	case LineageDirectionOut:
+		if link.SrcType != node.Type || link.SrcID != node.ID {
+			return false
+		}
+	case LineageDirectionIn:
+		if link.DstType != node.Type || link.DstID != node.ID {
+			return false
+		}
+	}
+	if !filter.admitsKind(link.Kind) {
+		return false
+	}
+	if len(filter.NodeTypes) == 0 {
+		return true
+	}
+	for _, nodeType := range filter.NodeTypes {
+		if nodeType == far.Type {
+			return true
+		}
+	}
+	return false
 }
 
 // LineageFanoutFloor is the smallest default per-node fan-out.
@@ -160,6 +238,92 @@ type LineageTraversal struct {
 	ForeignWorkspaceLinksIgnored int                           `json:"foreign_workspace_links_ignored,omitempty"`
 	Depths                       map[LineageNode]int           `json:"-"`
 	Paths                        map[LineageNode][]LineageLink `json:"-"`
+}
+
+// LineageNodeStatus is the bounded status projection of one lineage node.
+// Each field applies only to the node types that carry it (component-lineage).
+type LineageNodeStatus struct {
+	// State is a task, blueprint, or work order state, a decision status, a
+	// planning session status, or a planning bundle status.
+	State string `json:"state,omitempty"`
+	// VersionStatus is current, superseded, proposed, or dismissed for a
+	// document version node.
+	VersionStatus string `json:"version_status,omitempty"`
+	// CurrentVersion is the document's current confirmed or current version.
+	CurrentVersion int  `json:"current_version,omitempty"`
+	Archived       bool `json:"archived,omitempty"`
+	// Outcome, ReviewRound, and ReviewSeat describe a verdict from its
+	// review.completed record.
+	Outcome     string `json:"outcome,omitempty"`
+	ReviewRound int    `json:"review_round,omitempty"`
+	ReviewSeat  int    `json:"review_seat,omitempty"`
+}
+
+// Version status vocabulary for document version nodes.
+const (
+	LineageVersionCurrent    = "current"
+	LineageVersionSuperseded = "superseded"
+	LineageVersionProposed   = "proposed"
+	LineageVersionDismissed  = "dismissed"
+)
+
+// LineageVersionStatus classifies one document version. A dismissed or
+// retired unconfirmed version is dismissed; an unconfirmed live one is
+// proposed; a confirmed one is current when it is the document's current
+// version and superseded otherwise.
+func LineageVersionStatus(version, current int, confirmed, dismissed bool) string {
+	switch {
+	case !confirmed && dismissed:
+		return LineageVersionDismissed
+	case !confirmed:
+		return LineageVersionProposed
+	case version == current:
+		return LineageVersionCurrent
+	default:
+		return LineageVersionSuperseded
+	}
+}
+
+// LineageOutLinkQuery reads one link kind leaving a bounded set of source
+// nodes, for reads such as impact that need every such link rather than a
+// walk's ranked prefix (component-lineage).
+type LineageOutLinkQuery struct {
+	Sources []LineageNode
+	Kind    string
+	DstType LineageNodeType
+	// Limit caps returned links; stores return at most Limit links ordered by
+	// event ID, then source and destination keys.
+	Limit int
+}
+
+// LineageOutLinkMaxSources bounds the sources one out-link read names.
+const LineageOutLinkMaxSources = 1024
+
+// Validate refuses an unbounded or malformed out-link query.
+func (query LineageOutLinkQuery) Validate() error {
+	if len(query.Sources) == 0 || len(query.Sources) > LineageOutLinkMaxSources {
+		return fmt.Errorf("lineage out-link query needs 1-%d sources", LineageOutLinkMaxSources)
+	}
+	for _, source := range query.Sources {
+		if !source.Valid() {
+			return fmt.Errorf("lineage out-link query names an invalid source")
+		}
+	}
+	if strings.TrimSpace(query.Kind) == "" || !query.DstType.Valid() || query.Limit <= 0 {
+		return fmt.Errorf("lineage out-link query needs a kind, a destination type, and a positive limit")
+	}
+	return nil
+}
+
+// SortLineageOutLinks orders out-link results as every store returns them.
+func SortLineageOutLinks(links []LineageLink) {
+	sort.Slice(links, func(i, j int) bool {
+		left, right := links[i], links[j]
+		if left.CreatedByEventID != right.CreatedByEventID {
+			return left.CreatedByEventID < right.CreatedByEventID
+		}
+		return lineageTraversalLinkKey(left) < lineageTraversalLinkKey(right)
+	})
 }
 
 // ContextArtifactSelection is the common bounded artifact view used by both
@@ -591,7 +755,7 @@ func walkLineage(roots []LineageNode, budget LineageTraversalBudget, neighbors f
 					continue
 				}
 				neighbor := prefixes[index][round]
-				if seen[neighbor.node] {
+				if seen[neighbor.node] || !budget.Filter.admits(node, neighbor.node, neighbor.link) {
 					continue
 				}
 				if depth == budget.MaxDepth {
@@ -618,6 +782,9 @@ func walkLineage(roots []LineageNode, budget LineageTraversalBudget, neighbors f
 		level = next
 	}
 	for _, link := range examined {
+		if !budget.Filter.admitsKind(link.Kind) {
+			continue
+		}
 		if seen[LineageNode{Type: link.SrcType, ID: link.SrcID}] && seen[LineageNode{Type: link.DstType, ID: link.DstID}] {
 			result.Links = append(result.Links, link)
 		}

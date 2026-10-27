@@ -267,6 +267,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/verification/observations", s.recordTaskVerificationObservation)
 			r.Get("/tasks/{id}/audit/{kind}/{record_id}", s.getTaskAudit)
 			r.Get("/lineage/{type}/{id}", s.getLineage)
+			r.Get("/lineage/{type}/{id}/impact", s.getLineageImpact)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/lineage/rebuild", s.rebuildLineage)
 			r.Get("/tasks/{id}/interventions", s.listInterventions)
 			r.Get("/tasks/{id}/spec", s.getLatestSpec)

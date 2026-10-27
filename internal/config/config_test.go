@@ -389,6 +389,15 @@ func TestPlanningConfigurationDefaultsValidatesAndRoundTrips(t *testing.T) {
 		"non-positive artifact refs": func(value *WorkspaceDocument) {
 			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.ArtifactRefs = -1
 		},
+		"negative operator read depth": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.OperatorReadDepth = -1
+		},
+		"unbounded operator read depth": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.OperatorReadDepth = MaxLineageOperatorReadDepth + 1
+		},
+		"unbounded operator read nodes": func(value *WorkspaceDocument) {
+			value.Setups[0].ExecutionSettings.ControlPlane.Planning.Context.OperatorReadNodes = MaxLineageOperatorReadNodes + 1
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := document
@@ -2103,6 +2112,28 @@ func TestPlanningSnapshotSizeCap(t *testing.T) {
 		}
 		if err != nil || cfg.PlanningSnapshotMaxBytes != test.want {
 			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	}
+}
+
+// TestLineageOperatorReadBudgetDefaultsToTheContextBudget proves the operator
+// read budget falls back to the context depth and nodes and keeps links at
+// nodes × 4 (component-lineage).
+func TestLineageOperatorReadBudgetDefaultsToTheContextBudget(t *testing.T) {
+	withContext := func(settings LineageContextSettings) *Config {
+		return &Config{ExecutionSettings: &ContextualExecutionSettings{ControlPlane: ControlPlaneSettings{Planning: PlanningSettings{Context: settings}}}}
+	}
+	for name, test := range map[string]struct {
+		cfg                 *Config
+		depth, nodes, links int
+	}{
+		"no configuration":  {nil, DefaultLineageContextDepth, DefaultLineageContextNodes, DefaultLineageContextNodes * DefaultLineageContextLinksPerNode},
+		"context budget":    {withContext(LineageContextSettings{Depth: 3, Nodes: 10}), 3, 10, 40},
+		"operator override": {withContext(LineageContextSettings{Depth: 3, Nodes: 10, OperatorReadDepth: 8, OperatorReadNodes: 256}), 8, 256, 1024},
+	} {
+		depth, nodes, links := LineageOperatorReadBudget(test.cfg)
+		if depth != test.depth || nodes != test.nodes || links != test.links {
+			t.Fatalf("%s: budget=%d/%d/%d want %d/%d/%d", name, depth, nodes, links, test.depth, test.nodes, test.links)
 		}
 	}
 }

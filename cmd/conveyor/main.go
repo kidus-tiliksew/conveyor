@@ -100,7 +100,7 @@ func main() {
 }
 
 func lineageCmd() *cobra.Command {
-	command := &cobra.Command{Use: "lineage", Short: "Operate the workspace lineage projection"}
+	command := &cobra.Command{Use: "lineage", Short: "Read and operate the workspace lineage projection"}
 	var reason, requestID string
 	rebuild := &cobra.Command{Use: "rebuild", Short: "Repair lineage while preserving non-regenerable history", Args: cobra.NoArgs,
 		Long: "Repair the event-derived lineage projection by replaying every workspace event in memory within one transaction. Rebuild never deletes rows it cannot regenerate; those rows are reported as preserved_unregenerable. Stale identity cleanup requires a migration.",
@@ -122,7 +122,7 @@ func lineageCmd() *cobra.Command {
 		}}
 	rebuild.Flags().StringVar(&reason, "reason", "", "operator reason")
 	rebuild.Flags().StringVar(&requestID, "request-id", "", "idempotency key")
-	command.AddCommand(rebuild)
+	command.AddCommand(rebuild, lineageShowCmd(), lineageImpactCmd())
 	return command
 }
 

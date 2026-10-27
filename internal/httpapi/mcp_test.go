@@ -1226,8 +1226,8 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
-	want = append(append(append([]string{}, want[:12]...), verificationTools...), want[12:]...)
+	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "report_continuation", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
+	want = append(append(append([]string{}, want[:13]...), verificationTools...), want[13:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -1288,7 +1288,7 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 	literal := []string{
 		"add_task_dependency", "set_assignee", "redispatch_work_order", "attach_task_branch", "report_continuation",
 		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context",
-		"list_documents", "get_document", "list_document_events", "list_decisions", "get_decision",
+		"list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "get_lineage",
 	}
 	for _, name := range literal {
 		if !agentRefusedMCPTool(name) {

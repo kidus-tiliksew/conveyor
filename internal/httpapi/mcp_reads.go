@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
@@ -59,6 +60,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_document_events", "Read recorded document history, including archive/restore events, with chronological ID tie-breaks. Archived documents require explicit inclusion.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "include_archived": boolean, "event_kind": str()}, []string{"kind", "document_id"}},
 		{"list_decisions", "Discover confirmed decisions; include_history explicitly includes superseded decisions, which are not active authority.", map[string]any{"include_history": boolean, "query": str()}, nil},
 		{"get_decision", "Read a decision by stable DEC identifier. Superseded records require include_history=true; pending decisions are not confirmed authority. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"decision_id": str(), "include_history": boolean}, []string{"decision_id"}},
+		{"get_lineage", "Walk the lineage graph from one root under the operator read budget. Items are the reached nodes in walk order, each with label, depth, the edge_path that admitted it, and status (task or work-order state, version status, verdict outcome and seat). traversal reports the budget, truncation, omissions per axis, and the reached link count. root_type is a lineage node type such as requirement, task, or system_design_version. direction is out, in, or both; edge_kind and node_type take comma-separated edge kinds and node types. The graph is read-only: no tool accepts a link.", map[string]any{"root_type": str(), "root_id": str(), "direction": enum("out", "in", "both"), "edge_kind": str(), "node_type": str(), "max_depth": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadDepth}, "max_nodes": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes}, "max_links": map[string]any{"type": "integer", "minimum": 1, "maximum": config.MaxLineageOperatorReadNodes * config.DefaultLineageContextLinksPerNode}}, []string{"root_type", "root_id"}},
 	}
 }
 func mcpReadTools() []map[string]any {
@@ -103,6 +105,8 @@ type mcpReadPage struct {
 	// HistoryTotal and NextCursor are list_task_events window fields.
 	HistoryTotal *int   `json:"history_total,omitempty"`
 	NextCursor   string `json:"next_cursor,omitempty"`
+	// Traversal is the get_lineage walk summary, repeated on every page.
+	Traversal json.RawMessage `json:"traversal,omitempty"`
 }
 
 func validateMCPRead(name string, args map[string]any) (int, int, string, error) {
@@ -230,17 +234,29 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 			return nil, fmt.Errorf("snapshot unavailable: restart read")
 		}
 	} else {
-		items, e := s.mcpReadItems(ctx, name, args)
+		var items []any
+		var traversal json.RawMessage
+		var e error
+		if name == "get_lineage" {
+			items, traversal, e = s.mcpLineageRead(r.WithContext(ctx), args)
+		} else {
+			items, e = s.mcpReadItems(ctx, name, args)
+		}
 		if e != nil {
 			return nil, e
 		}
 		if len(items) > mcpReadMaxItems {
 			return nil, fmt.Errorf("read exceeds 1000 items: narrow filters")
 		}
-		snapshot = mcpReadSnapshot{owner: owner, workspace: workspace, query: query, expires: now.Add(mcpReadSnapshotTTL), items: []json.RawMessage{}}
+		snapshot = mcpReadSnapshot{owner: owner, workspace: workspace, query: query, expires: now.Add(mcpReadSnapshotTTL), items: []json.RawMessage{}, traversal: traversal}
 		redactor, redactionErr := s.mcpReadRedactor(ctx)
 		if redactionErr != nil {
 			return nil, redactionErr
+		}
+		if traversal != nil {
+			if snapshot.traversal, e = renderMCPReadItem(traversal, redactor); e != nil {
+				return nil, e
+			}
 		}
 		size := 0
 		for _, item := range items {
@@ -276,7 +292,7 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 			}
 		}
 	}
-	page := mcpReadPage{Items: []json.RawMessage{}, Total: len(snapshot.items), Offset: offset, Limit: limit, Snapshot: token, ExpiresAt: snapshot.expires, Evidence: mcpReadEvidence}
+	page := mcpReadPage{Items: []json.RawMessage{}, Total: len(snapshot.items), Offset: offset, Limit: limit, Snapshot: token, ExpiresAt: snapshot.expires, Evidence: mcpReadEvidence, Traversal: snapshot.traversal}
 	if single {
 		page.ExpiresAt, page.Evidence = time.Time{}, mcpReadSingleEvidence
 	}

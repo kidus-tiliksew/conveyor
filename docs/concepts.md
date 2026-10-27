@@ -65,9 +65,21 @@ and merge as commit ranges; a task that is started over is succeeded by its
 replacement; work orders produce verdicts supported by evidence; proposals
 point back at the task or session that authored them. Ask it in either
 direction:
-"what delivered this requirement, who reviewed it, against which design
-version?" or "if I change this document, which merged work was built on the
-old version?"
+
+- "What delivered this requirement, who reviewed it, against which design
+  version?" `conveyor lineage show requirement <id> --node-type
+  task,work_order,verdict,system_design_version` walks from the requirement
+  to the tasks it served, the design versions that governed them, their work
+  orders, and the verdicts they produced. Each node carries its depth, the
+  edge path that admitted it, and its status: task state, version status,
+  and verdict outcome and reviewer seat. The walk is
+  `GET /v1/lineage/{type}/{id}` with `include=depth,path,status`, and the
+  read-only MCP tool `get_lineage`.
+- "If I change this document, which merged work was built on the old
+  version?" `conveyor lineage impact requirement <id> --outdated` (or
+  `system_design <id>`) lists merged tasks that a superseded version served or
+  governed, with their merged commit ranges. The read is
+  `GET /v1/lineage/{type}/{id}/impact?outdated=true`.
 
 The graph is a working memory. 
 

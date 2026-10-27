@@ -32,6 +32,8 @@ type mcpReadSnapshot struct {
 	items                   []json.RawMessage
 	// events is set only for list_task_events windows (component-mcp-investigation-reads).
 	events *mcpEventWindow
+	// traversal is set only for get_lineage: the walk summary every page repeats.
+	traversal json.RawMessage
 	// access is the LRU sequence. It never extends expires.
 	access uint64
 }

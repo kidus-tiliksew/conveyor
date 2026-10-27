@@ -143,6 +143,182 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	t.Run("a hub requirement serving 40 other tasks keeps the root's own outcomes", func(t *testing.T) {
 		assertHubFanoutKeepsRootOutcomes(t, fixture)
 	})
+	t.Run("node statuses and out-link reads cover tasks, versions, decisions, bundles, and verdicts", func(t *testing.T) {
+		assertLineageNodeStatusesAndOutLinks(t, fixture)
+	})
+}
+
+// assertLineageNodeStatusesAndOutLinks proves the two bounded operator reads
+// behind GET /v1/lineage status and the impact read (component-lineage;
+// req-260802-72fc68 AC-5.2): each node class reports its status from one
+// batched read, version nodes classify as current, superseded, proposed, or
+// dismissed, a verdict reports its outcome and seat, and the out-link read
+// returns one kind from the named sources in event order under its limit and
+// never another workspace's links.
+func assertLineageNodeStatusesAndOutLinks(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	st := fixture.Store
+	ctx := store.WithActor(fixture.Context, store.Actor{ID: "operator-lineage-status", Role: core.ActorHuman})
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-status-" + core.NewTaskID(), Title: "Status intent"}, core.RequirementVersion{
+		Content: "# Status intent", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Report status."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	newTask := func() core.Task {
+		t.Helper()
+		task := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+		task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	oldTask := newTask()
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Status intent v2", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Report status for every node."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, second.Version); err != nil {
+		t.Fatal(err)
+	}
+	newTaskOnSecond := newTask()
+	third, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Status intent v3", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Report status for every node class."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	design, designFirst, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-status-" + core.NewTaskID(), Title: "Status design", Category: "Architecture"},
+		core.SystemDesignVersion{Content: "# Status design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/status/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designFirst.Version, 0); err != nil {
+		t.Fatal(err)
+	}
+	designDismissed, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Status design v2\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/status/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	designCurrent, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Status design v3\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/status/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designCurrent.Version, designFirst.Version); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Report lineage status.", Context: "Operators read node state.", AlternativesRejected: "Labels alone hide outcomes.", Origin: core.DecisionOriginImplementation, OriginTaskID: oldTask.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewID := oldTask.ID + "-review-1-seat-2"
+	if err = st.CreateJob(ctx, core.Job{ID: reviewID, TaskID: oldTask.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err = CreateWorkOrder(ctx, st, core.WorkOrder{ID: reviewID, TaskID: oldTask.ID, JobID: reviewID, Stage: core.StageReview, State: core.WorkOrderQueued, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: oldTask.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": reviewID})},
+		{TaskID: oldTask.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": reviewID, "verdict": "request_changes", "review_round": 1, "review_seat": 2})},
+		{TaskID: oldTask.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "base_sha": "status-base-" + oldTask.ID, "head_sha": "status-head-" + oldTask.ID})},
+	} {
+		if err = st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-status-" + core.NewTaskID(), Title: "Status planning", Goal: core.PlanningGoalSystemDesign})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := st.CreatePlanningBundle(ctx, core.PlanningBundle{ID: "bundle-status-" + core.NewTaskID(), SessionID: session.ID, Title: "Status bundle",
+		Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: third.Version}},
+		Tasks:     []core.PlanningBundleTask{{MemberID: "one", Title: "One", Body: "Status fixture", Repo: "conveyor"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundleNode := core.LineageNode{Type: core.LineagePlanningBundle, ID: bundle.ID}
+	if records, err := st.ListLineageNodeRecords(ctx, []core.LineageNode{bundleNode}); err != nil || records[bundleNode].Title != "Status bundle" {
+		t.Fatalf("planning bundle label record=%+v err=%v", records, err)
+	}
+	version := func(id string, number int) core.LineageNode {
+		return core.LineageNode{Type: core.LineageRequirementVersion, ID: core.RequirementVersionLineageID(id, number)}
+	}
+	designVersion := func(number int) core.LineageNode {
+		return core.LineageNode{Type: core.LineageSystemDesignVersion, ID: core.SystemDesignVersionLineageID(design.ID, number)}
+	}
+	want := map[core.LineageNode]core.LineageNodeStatus{
+		{Type: core.LineageTask, ID: oldTask.ID}:                         {State: string(core.TaskRunning)},
+		{Type: core.LineageBlueprint, ID: newTaskOnSecond.ID}:            {State: string(core.TaskRunning)},
+		{Type: core.LineageWorkOrder, ID: reviewID}:                      {State: string(core.WorkOrderQueued)},
+		{Type: core.LineageVerdict, ID: core.VerdictLineageID(reviewID)}: {Outcome: "request_changes", ReviewRound: 1, ReviewSeat: 2},
+		{Type: core.LineageRequirement, ID: requirement.ID}:              {CurrentVersion: second.Version},
+		version(requirement.ID, first.Version):                           {VersionStatus: core.LineageVersionSuperseded, CurrentVersion: second.Version},
+		version(requirement.ID, second.Version):                          {VersionStatus: core.LineageVersionCurrent, CurrentVersion: second.Version},
+		version(requirement.ID, third.Version):                           {VersionStatus: core.LineageVersionProposed, CurrentVersion: second.Version},
+		{Type: core.LineageSystemDesign, ID: design.ID}:                  {CurrentVersion: designCurrent.Version},
+		designVersion(designFirst.Version):                               {VersionStatus: core.LineageVersionSuperseded, CurrentVersion: designCurrent.Version},
+		designVersion(designDismissed.Version):                           {VersionStatus: core.LineageVersionDismissed, CurrentVersion: designCurrent.Version},
+		designVersion(designCurrent.Version):                             {VersionStatus: core.LineageVersionCurrent, CurrentVersion: designCurrent.Version},
+		{Type: core.LineageDecision, ID: decision.ID}:                    {State: string(core.DecisionProposed)},
+		bundleNode: {State: string(bundle.Status)},
+		{Type: core.LineagePlanningSession, ID: session.ID}: {State: string(session.Status)},
+	}
+	nodes := make([]core.LineageNode, 0, len(want)+2)
+	for node := range want {
+		nodes = append(nodes, node)
+	}
+	// A caller's label never splits a status key.
+	absent := []core.LineageNode{{Type: core.LineageTask, ID: "absent-" + core.NewTaskID()}, version(requirement.ID, 99), {Type: core.LineageTask, ID: oldTask.ID, Label: "labeled"}}
+	nodes = append(nodes, absent...)
+	statuses, err := st.ListLineageNodeStatuses(ctx, nodes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(statuses, want) {
+		t.Fatalf("lineage node statuses=%+v\nwant %+v", statuses, want)
+	}
+	if foreign, err := st.ListLineageNodeStatuses(fixture.ForeignContext, nodes); err != nil || len(foreign) != 0 {
+		t.Fatalf("foreign-workspace statuses=%+v err=%v", foreign, err)
+	}
+	// The second version serves only the task attached while it was current.
+	sources := []core.LineageNode{version(requirement.ID, first.Version), version(requirement.ID, second.Version), version(requirement.ID, first.Version)}
+	served, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: sources, Kind: "serves", DstType: core.LineageTask, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairs := func(links []core.LineageLink) []string {
+		out := make([]string, 0, len(links))
+		for _, link := range links {
+			out = append(out, link.SrcID+"->"+link.DstID)
+		}
+		return out
+	}
+	wantServed := []string{sources[0].ID + "->" + oldTask.ID, sources[1].ID + "->" + newTaskOnSecond.ID}
+	if got := pairs(served); !reflect.DeepEqual(got, wantServed) {
+		t.Fatalf("version serves out-links=%v want %v", got, wantServed)
+	}
+	if limited, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: sources, Kind: "serves", DstType: core.LineageTask, Limit: 1}); err != nil || !reflect.DeepEqual(pairs(limited), wantServed[:1]) {
+		t.Fatalf("limited out-links=%v err=%v", pairs(limited), err)
+	}
+	merged, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: []core.LineageNode{{Type: core.LineageTask, ID: oldTask.ID}, {Type: core.LineageTask, ID: newTaskOnSecond.ID}}, Kind: "merged_range", DstType: core.LineageCommitRange, Limit: 10})
+	if err != nil || !reflect.DeepEqual(pairs(merged), []string{oldTask.ID + "->" + core.CommitRangeLineageID("conveyor", "status-base-"+oldTask.ID, "status-head-"+oldTask.ID)}) {
+		t.Fatalf("merged range out-links=%v err=%v", pairs(merged), err)
+	}
+	if foreign, err := st.ListLineageOutLinks(fixture.ForeignContext, core.LineageOutLinkQuery{Sources: sources, Kind: "serves", DstType: core.LineageTask, Limit: 10}); err != nil || len(foreign) != 0 {
+		t.Fatalf("foreign-workspace out-links=%v err=%v", foreign, err)
+	}
+	if _, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Kind: "serves", DstType: core.LineageTask, Limit: 10}); err == nil {
+		t.Fatal("an out-link read without sources was accepted")
+	}
 }
 
 // assertHubFanoutKeepsRootOutcomes proves that a requirement serving 40

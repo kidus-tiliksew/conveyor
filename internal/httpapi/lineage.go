@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,54 +43,21 @@ func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
 // getLineage exposes the same bounded, deterministic graph walk used for
 // agent context. The graph remains a read-only projection of events; callers
 // cannot volunteer edges through this surface (req-260802-72fc68 REQ-1).
+// Direction, kind, node-type, and include parameters are additive: a request
+// without them answers exactly as before (component-lineage).
 func (s *Server) getLineage(w http.ResponseWriter, r *http.Request) {
 	root := core.LineageNode{
 		Type: core.LineageNodeType(strings.TrimSpace(chi.URLParam(r, "type"))),
 		ID:   strings.TrimSpace(chi.URLParam(r, "id")),
 	}
-	if !root.Valid() {
-		http.Error(w, "a valid lineage node type and id are required", http.StatusBadRequest)
-		return
-	}
-	effective, err := s.effectiveLineageBudget(r.Context())
+	request, err := parseLineageWalkQuery(r, root)
 	if err != nil {
-		log.Printf("resolve lineage traversal budget: %v", err)
-		http.Error(w, "lineage configuration is unavailable", http.StatusInternalServerError)
+		writeLineageError(w, err)
 		return
 	}
-	maxDepth, err := boundedLineageQueryValue(r, "max_depth", effective.Depth)
+	graph, err := s.walkLineage(r, request)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	maxNodes, err := boundedLineageQueryValue(r, "max_nodes", effective.Nodes)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	maxLinks, err := boundedLineageQueryValue(r, "max_links", effective.Links)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if maxDepth > effective.Depth || maxNodes > effective.Nodes || maxLinks > effective.Links {
-		http.Error(w, "lineage query exceeds the context traversal budget", http.StatusBadRequest)
-		return
-	}
-	exists, err := s.lineageNodeExists(r, root)
-	if err != nil {
-		log.Printf("handle lineage request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !exists {
-		http.Error(w, "lineage node not found", http.StatusNotFound)
-		return
-	}
-	graph, err := s.lineageGraph(r, root, core.LineageTraversalBudget{MaxDepth: maxDepth, MaxNodes: maxNodes, MaxLinks: maxLinks})
-	if err != nil {
-		log.Printf("handle lineage request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeLineageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, graph)
