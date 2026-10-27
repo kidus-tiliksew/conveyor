@@ -301,6 +301,12 @@ func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKind
 	if query.Inbound {
 		near, far = "dst", "src"
 	}
+	// Newest orders descending under the limit; ascending order is restored
+	// below.
+	order := ""
+	if query.Newest {
+		order = " DESC"
+	}
 	seen := map[core.LineageNode]bool{}
 	requested := []string{}
 	args := []any{}
@@ -320,7 +326,7 @@ func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKind
 		WHERE l.kind=? AND l.`+far+`_type=? AND TRIM(l.`+far+`_id)<>''
 			AND NOT (l.src_type=l.dst_type AND l.src_id=l.dst_id)
 			AND (COALESCE(l.created_by_event_id,0)>0 OR (l.kind='historical_feature_assignment' AND TRIM(COALESCE(l.legacy_created_by_event,''))<>''))
-		ORDER BY COALESCE(l.created_by_event_id,0),l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind
+		ORDER BY COALESCE(l.created_by_event_id,0)`+order+`,l.src_type`+order+`,l.src_id`+order+`,l.dst_type`+order+`,l.dst_id`+order+`,l.kind`+order+`
 		LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
@@ -336,7 +342,11 @@ func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKind
 			out = append(out, link)
 		}
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	core.SortLineageKindLinks(out)
+	return out, nil
 }
 
 func lineageRecordBaseID(node core.LineageNode) string {

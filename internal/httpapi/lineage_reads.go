@@ -414,9 +414,10 @@ func (s *Server) lineageImpact(ctx context.Context, request lineageImpactRequest
 		return view, errLineageRootNotFound
 	}
 	view.CurrentVersion, view.Archived = status.CurrentVersion, status.Archived
-	// The document -versions-> version links name every confirmed version,
-	// read with a cap and a sentinel. The newest versions stay in scope.
-	versionLinks, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{root}, Kind: "versions", FarType: versionType, Limit: lineageImpactMaxVersions + 1})
+	// The document -versions-> version links name every confirmed version.
+	// The store selects the newest window with a sentinel, so the newest
+	// versions stay in scope however long the history is.
+	versionLinks, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{root}, Kind: "versions", FarType: versionType, Limit: lineageImpactMaxVersions + 1, Newest: true})
 	if err != nil {
 		return view, err
 	}
@@ -491,6 +492,13 @@ func (s *Server) lineageImpact(ctx context.Context, request lineageImpactRequest
 			unknown[link.DstID] = inboundCut
 		}
 		core.SortLineageKindLinks(links)
+	}
+	// One shared budget bounds the combined entries before any enrichment
+	// read, so every later read names at most lineageImpactMaxEntries tasks
+	// and every page stays within the offset ceiling (AC-5.2).
+	if len(links) > lineageImpactMaxEntries {
+		links = links[:lineageImpactMaxEntries]
+		truncate("tasks")
 	}
 	taskNodes := []core.LineageNode{}
 	statusNodes := []core.LineageNode{}

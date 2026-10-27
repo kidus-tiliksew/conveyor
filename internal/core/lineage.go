@@ -296,6 +296,18 @@ type LineageKindLinkQuery struct {
 	// Limit caps returned links; stores return at most Limit links in
 	// SortLineageKindLinks order.
 	Limit int
+	// Newest selects the last Limit links in that order instead of the
+	// first; the result is still returned in ascending order.
+	Newest bool
+}
+
+// LineageKindLinkBefore reports whether left sorts before right in
+// SortLineageKindLinks order.
+func LineageKindLinkBefore(left, right LineageLink) bool {
+	if left.CreatedByEventID != right.CreatedByEventID {
+		return left.CreatedByEventID < right.CreatedByEventID
+	}
+	return lineageTraversalLinkKey(left) < lineageTraversalLinkKey(right)
 }
 
 // LineageKindLinkMaxNodes bounds the nodes one kind-link read names.
@@ -320,13 +332,7 @@ func (query LineageKindLinkQuery) Validate() error {
 // SortLineageKindLinks orders kind-link results as every store returns them:
 // event ID, then source and destination keys.
 func SortLineageKindLinks(links []LineageLink) {
-	sort.Slice(links, func(i, j int) bool {
-		left, right := links[i], links[j]
-		if left.CreatedByEventID != right.CreatedByEventID {
-			return left.CreatedByEventID < right.CreatedByEventID
-		}
-		return lineageTraversalLinkKey(left) < lineageTraversalLinkKey(right)
-	})
+	sort.Slice(links, func(i, j int) bool { return LineageKindLinkBefore(links[i], links[j]) })
 }
 
 // ContextArtifactSelection is the common bounded artifact view used by both

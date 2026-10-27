@@ -382,6 +382,15 @@ func assertLineageReadsBoundVersionHistory(t *testing.T, st store.Store, ctx con
 			t.Fatalf("version link %d=%s want %s", index, link.DstID, want)
 		}
 	}
+	newest, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{root}, Kind: "versions", FarType: core.LineageRequirementVersion, Limit: 5, Newest: true})
+	if err != nil || len(newest) != 5 {
+		t.Fatalf("newest version links=%d err=%v", len(newest), err)
+	}
+	for index, link := range newest {
+		if want := core.RequirementVersionLineageID(requirement.ID, history-4+index); link.DstID != want {
+			t.Fatalf("newest version link %d=%s want %s", index, link.DstID, want)
+		}
+	}
 }
 
 // assertHubFanoutKeepsRootOutcomes proves that a requirement serving 40

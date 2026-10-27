@@ -3,9 +3,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -411,4 +413,88 @@ func TestLineageHTTPImpactNeverCallsATruncatedVersionUnrecorded(t *testing.T) {
 			t.Fatalf("an unrecorded version counted as outdated: %+v", outdated)
 		}
 	})
+}
+
+// TestLineageHTTPImpactBoundsCombinedTasksAboveTheNodeCap seeds 25 earlier
+// attachments without a version and 1005 later versioned attachments, so the
+// versioned and fallback candidates together exceed the 1024-node read bound.
+// The read stays a bounded, truncated page (component-lineage;
+// req-260802-72fc68 AC-5.2).
+func TestLineageHTTPImpactBoundsCombinedTasksAboveTheNodeCap(t *testing.T) {
+	f := newLineageReadsFixture(t, config.LineageContextSettings{})
+	attach := func(id string, version int) {
+		t.Helper()
+		task := core.Task{ID: id, Workspace: "demo", Title: id, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+		if err := f.server.Store.CreateTask(f.ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		payload := map[string]any{"id": f.requirement}
+		if version > 0 {
+			payload["version"] = version
+		}
+		if err := f.server.Store.AppendEvent(f.ctx, core.Event{TaskID: id, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < 25; index++ {
+		attach(fmt.Sprintf("task-legacy-%04d", index), 0)
+	}
+	for index := 0; index < 1005; index++ {
+		attach(fmt.Sprintf("task-versioned-%04d", index), 1)
+	}
+	for _, query := range []string{"?limit=1", "?limit=100&offset=900", "?outdated=true&limit=1"} {
+		response := f.get(t, "/v1/lineage/requirement/"+f.requirement+"/impact"+query)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", query, response.Code, response.Body.String())
+		}
+		var view lineageImpactView
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		if !view.Truncated || !slices.Contains(view.ExhaustionReasons, "tasks") || view.Total > lineageImpactMaxEntries || len(view.Items) == 0 {
+			t.Fatalf("%s impact total=%d truncated=%v reasons=%v items=%d", query, view.Total, view.Truncated, view.ExhaustionReasons, len(view.Items))
+		}
+	}
+}
+
+// TestLineageHTTPImpactKeepsTheNewestVersionWindow confirms more design
+// versions than the version cap and governs a task on the newest one. The
+// read keeps the newest window, so that task stays in scope
+// (component-lineage; req-260802-72fc68 AC-5.2).
+func TestLineageHTTPImpactKeepsTheNewestVersionWindow(t *testing.T) {
+	f := newLineageReadsFixture(t, config.LineageContextSettings{})
+	governs := "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/lineage/**\n```"
+	current := 2
+	for number := 3; number <= 5; number++ {
+		proposed, err := f.server.Store.ProposeSystemDesignVersion(f.ctx, core.SystemDesignVersion{DocumentID: f.design, Content: fmt.Sprintf("# Lineage reads design v%d", number) + governs, Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = f.server.Store.ConfirmSystemDesignVersion(f.ctx, f.design, proposed.Version, current); err != nil {
+			t.Fatal(err)
+		}
+		current = proposed.Version
+	}
+	task := core.Task{ID: "task-lineage-newest", Workspace: "demo", Title: "Newest design", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-task-lineage-newest", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := f.server.Store.CreateTask(f.ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.server.Store.AppendEvent(f.ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextDesignAdded, Payload: core.JSONPayload(map[string]any{"id": f.design, "version": current})}); err != nil {
+		t.Fatal(err)
+	}
+	previous := lineageImpactMaxVersions
+	lineageImpactMaxVersions = 2
+	defer func() { lineageImpactMaxVersions = previous }()
+	response := f.get(t, "/v1/lineage/system_design/"+f.design+"/impact")
+	if response.Code != http.StatusOK {
+		t.Fatalf("impact status=%d body=%s", response.Code, response.Body.String())
+	}
+	var view lineageImpactView
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.CurrentVersion != current || !view.Truncated || !slices.Contains(view.ExhaustionReasons, "versions") || view.Total != 1 ||
+		view.Items[0].Task.ID != task.ID || view.Items[0].Version != current || view.Items[0].VersionStatus != core.LineageVersionCurrent {
+		t.Fatalf("newest window impact=%+v", view)
+	}
 }

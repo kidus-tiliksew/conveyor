@@ -286,10 +286,16 @@ var observeLineageStatusVersionRow atomic.Pointer[func(documentID string, versio
 // lineageKindLinksSQL reads one kind at the named nodes through the links
 // primary key (outbound) or links_destination_idx (inbound), in
 // core.SortLineageKindLinks order (component-lineage).
-func lineageKindLinksSQL(inbound bool) string {
+// With newest it orders descending under the limit, and the caller restores
+// ascending order.
+func lineageKindLinksSQL(inbound, newest bool) string {
 	near, far := "src", "dst"
 	if inbound {
 		near, far = "dst", "src"
+	}
+	order := ""
+	if newest {
+		order = " DESC"
 	}
 	return `SELECT l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,l.legacy_created_by_event,l.created_at,l.created_by_event_id
 	FROM (SELECT DISTINCT node_type,node_id FROM unnest($2::text[],$3::text[]) AS f(node_type,node_id)) f
@@ -297,7 +303,7 @@ func lineageKindLinksSQL(inbound bool) string {
 	WHERE l.kind=$4 AND l.` + far + `_type=$5 AND btrim(l.` + far + `_id,E' \t\n\r\v\f')<>''
 		AND NOT (l.src_type=l.dst_type AND l.src_id=l.dst_id)
 		AND (COALESCE(l.created_by_event_id,0)>0 OR (l.kind='historical_feature_assignment' AND btrim(COALESCE(l.legacy_created_by_event,''),E' \t\n\r\v\f')<>''))
-	ORDER BY COALESCE(l.created_by_event_id,0),l.src_type COLLATE "C",l.src_id COLLATE "C",l.dst_type COLLATE "C",l.dst_id COLLATE "C",l.kind COLLATE "C"
+	ORDER BY COALESCE(l.created_by_event_id,0)` + order + `,l.src_type COLLATE "C"` + order + `,l.src_id COLLATE "C"` + order + `,l.dst_type COLLATE "C"` + order + `,l.dst_id COLLATE "C"` + order + `,l.kind COLLATE "C"` + order + `
 	LIMIT $6`
 }
 
@@ -309,7 +315,7 @@ func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKind
 	for index, node := range query.Nodes {
 		types[index], ids[index] = string(node.Type), node.ID
 	}
-	rows, err := s.boundary.Query(ctx, lineageKindLinksSQL(query.Inbound), workspace(ctx), types, ids, query.Kind, string(query.FarType), query.Limit)
+	rows, err := s.boundary.Query(ctx, lineageKindLinksSQL(query.Inbound, query.Newest), workspace(ctx), types, ids, query.Kind, string(query.FarType), query.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +334,11 @@ func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKind
 			out = append(out, link)
 		}
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	core.SortLineageKindLinks(out)
+	return out, nil
 }
 
 func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (store.LineageContextRecords, error) {

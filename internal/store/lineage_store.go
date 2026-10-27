@@ -1,6 +1,7 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,8 @@ type memoryLineage struct {
 	// lookups and examined count endpoint lookups and index entries read by
 	// prefix and existence reads, so tests can bound per-request cost.
 	lookups, examined atomic.Int64
+	// kindLinkPeak is the most candidates one kind-link read retained.
+	kindLinkPeak atomic.Int64
 }
 
 type memoryLineageEndpoint struct {
@@ -344,8 +347,9 @@ func LineageVersionNodeParts(node core.LineageNode) (string, int) {
 	return baseID, version
 }
 
-// ListLineageKindLinks reads only the named nodes' index entries
-// (component-lineage).
+// ListLineageKindLinks reads only the named nodes' index entries and
+// retains at most query.Limit candidates while it scans, so its allocation
+// follows the limit rather than a node's history (component-lineage).
 func (m *memory) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
 	if err := query.Validate(); err != nil {
 		return nil, err
@@ -354,7 +358,7 @@ func (m *memory) ListLineageKindLinks(ctx context.Context, query core.LineageKin
 	defer m.mu.RUnlock()
 	workspace := workspaceOrDefault(ctx, "")
 	seen := map[core.LineageNode]bool{}
-	out := []core.LineageLink{}
+	retained := &lineageKindLinkHeap{newest: query.Newest, links: make([]core.LineageLink, 0, min(query.Limit, 64))}
 	for _, node := range query.Nodes {
 		node = core.LineageNode{Type: node.Type, ID: node.ID}
 		if seen[node] {
@@ -368,16 +372,54 @@ func (m *memory) ListLineageKindLinks(ctx context.Context, query core.LineageKin
 			if query.Inbound {
 				near, far = core.LineageNode{Type: link.DstType, ID: link.DstID}, link.SrcType
 			}
-			if link.Kind == query.Kind && near == node && far == query.FarType && link.Validate() == nil {
-				out = append(out, link)
+			if link.Kind != query.Kind || near != node || far != query.FarType || link.Validate() != nil {
+				continue
+			}
+			if retained.Len() < query.Limit {
+				heap.Push(retained, link)
+			} else if retained.keeps(link) {
+				retained.links[0] = link
+				heap.Fix(retained, 0)
+			}
+			if peak := int64(retained.Len()); peak > m.lineage.kindLinkPeak.Load() {
+				m.lineage.kindLinkPeak.Store(peak)
 			}
 		}
 	}
+	out := retained.links
 	core.SortLineageKindLinks(out)
-	if len(out) > query.Limit {
-		out = out[:query.Limit]
-	}
 	return out, nil
+}
+
+// lineageKindLinkHeap holds the retained kind-link candidates with the one
+// to evict at the root: the latest in sort order when the read keeps the
+// first links, the earliest when it keeps the newest.
+type lineageKindLinkHeap struct {
+	newest bool
+	links  []core.LineageLink
+}
+
+func (h *lineageKindLinkHeap) Len() int { return len(h.links) }
+func (h *lineageKindLinkHeap) Less(i, j int) bool {
+	if h.newest {
+		return core.LineageKindLinkBefore(h.links[i], h.links[j])
+	}
+	return core.LineageKindLinkBefore(h.links[j], h.links[i])
+}
+func (h *lineageKindLinkHeap) Swap(i, j int) { h.links[i], h.links[j] = h.links[j], h.links[i] }
+func (h *lineageKindLinkHeap) Push(x any)    { h.links = append(h.links, x.(core.LineageLink)) }
+func (h *lineageKindLinkHeap) Pop() any {
+	last := h.links[len(h.links)-1]
+	h.links = h.links[:len(h.links)-1]
+	return last
+}
+
+// keeps reports whether link displaces the root of a full heap.
+func (h *lineageKindLinkHeap) keeps(link core.LineageLink) bool {
+	if h.newest {
+		return core.LineageKindLinkBefore(h.links[0], link)
+	}
+	return core.LineageKindLinkBefore(link, h.links[0])
 }
 
 func (m *memory) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (LineageContextRecords, error) {
