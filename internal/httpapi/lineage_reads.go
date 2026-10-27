@@ -275,18 +275,29 @@ func writeLineageError(w http.ResponseWriter, err error) {
 	}
 }
 
-// Impact read bounds: at most lineageImpactMaxEntries version-to-task links
-// are read, and pages of at most 100 entries select from them
-// (component-lineage).
-const (
-	lineageImpactMaxEntries   = 1000
-	lineageImpactDefaultLimit = 25
-	lineageImpactMaxLimit     = 100
+// Impact read bounds: at most lineageImpactMaxVersions version links and
+// lineageImpactMaxEntries version-to-task links are read, and pages of at most
+// 100 entries select from them. They are variables only so tests can drive
+// truncation with small histories (component-lineage).
+var (
+	lineageImpactMaxVersions = core.LineageKindLinkMaxNodes
+	lineageImpactMaxEntries  = 1000
 )
 
-// Version status of a task served through the requirement edge alone, whose
-// attachment recorded no version.
-const lineageVersionUnrecorded = "unrecorded"
+const (
+	lineageImpactDefaultLimit = 25
+	lineageImpactMaxLimit     = 100
+	lineageImpactMaxOffset    = 1000
+)
+
+// Version status of a task served through the requirement edge alone. It is
+// unrecorded only when a complete inbound read finds no version edge from the
+// requirement; when that read is truncated the version is unknown, never
+// unrecorded.
+const (
+	lineageVersionUnrecorded = "unrecorded"
+	lineageVersionUnknown    = "unknown"
+)
 
 type lineageImpactRequest struct {
 	Root          core.LineageNode
@@ -340,8 +351,8 @@ func parseLineageImpactQuery(r *http.Request, root core.LineageNode) (lineageImp
 	}
 	if raw := strings.TrimSpace(query.Get("offset")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 0 || parsed > lineageImpactMaxEntries {
-			return request, lineageRequestError{fmt.Sprintf("offset must be an integer from 0 to %d", lineageImpactMaxEntries)}
+		if err != nil || parsed < 0 || parsed > lineageImpactMaxOffset {
+			return request, lineageRequestError{fmt.Sprintf("offset must be an integer from 0 to %d", lineageImpactMaxOffset)}
 		}
 		request.Offset = parsed
 	}
@@ -370,112 +381,137 @@ func (s *Server) getLineageImpact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-type lineageImpactVersion struct {
-	confirmed, dismissed bool
-}
-
 func (s *Server) lineageImpact(ctx context.Context, request lineageImpactRequest) (lineageImpactView, error) {
-	root := request.Root
+	root := core.LineageNode{Type: request.Root.Type, ID: request.Root.ID}
 	view := lineageImpactView{Root: root, OutdatedOnly: request.OutdatedOnly, Limit: request.Limit, Offset: request.Offset, Items: []lineageImpactEntry{}}
-	versions := map[int]lineageImpactVersion{}
+	truncate := func(reason string) {
+		view.Truncated = true
+		for _, existing := range view.ExhaustionReasons {
+			if existing == reason {
+				return
+			}
+		}
+		view.ExhaustionReasons = append(view.ExhaustionReasons, reason)
+	}
 	var versionType core.LineageNodeType
 	var kind string
 	switch root.Type {
 	case core.LineageRequirement:
-		requirement, err := s.Store.GetRequirement(ctx, root.ID)
-		if err != nil {
-			return view, errLineageRootNotFound
-		}
-		recorded, err := s.Store.ListRequirementVersions(ctx, root.ID)
-		if err != nil {
-			return view, err
-		}
-		for _, version := range recorded {
-			versions[version.Version] = lineageImpactVersion{confirmed: version.Confirmed, dismissed: version.Retired}
-		}
-		view.CurrentVersion, view.Archived = requirement.CurrentVersion, requirement.Archived
 		versionType, kind = core.LineageRequirementVersion, "serves"
 	case core.LineageSystemDesign:
-		design, err := s.Store.GetSystemDesign(ctx, root.ID)
-		if err != nil {
-			return view, errLineageRootNotFound
-		}
-		recorded, err := s.Store.ListSystemDesignVersions(ctx, root.ID)
-		if err != nil {
-			return view, err
-		}
-		for _, version := range recorded {
-			versions[version.Version] = lineageImpactVersion{confirmed: version.Confirmed, dismissed: version.Dismissed}
-		}
-		view.CurrentVersion, view.Archived = design.CurrentVersion, design.Archived
 		versionType, kind = core.LineageSystemDesignVersion, "governs"
 	default:
 		return view, lineageRequestError{"lineage impact reads a requirement or system_design root"}
 	}
-	numbers := make([]int, 0, len(versions))
-	for number := range versions {
-		numbers = append(numbers, number)
+	// The document row alone gives the current version and archive state;
+	// no version history is read (component-lineage).
+	rootStatus, err := s.Store.ListLineageNodeStatuses(ctx, []core.LineageNode{root})
+	if err != nil {
+		return view, err
 	}
-	sort.Ints(numbers)
-	if len(numbers) > core.LineageOutLinkMaxSources {
-		// Newest versions first stay within the source bound.
-		numbers = numbers[len(numbers)-core.LineageOutLinkMaxSources:]
-		view.Truncated = true
-		view.ExhaustionReasons = append(view.ExhaustionReasons, "versions")
+	status, exists := rootStatus[root]
+	if !exists {
+		return view, errLineageRootNotFound
 	}
-	sources := make([]core.LineageNode, 0, len(numbers))
-	for _, number := range numbers {
-		id := core.RequirementVersionLineageID(root.ID, number)
-		if versionType == core.LineageSystemDesignVersion {
-			id = core.SystemDesignVersionLineageID(root.ID, number)
+	view.CurrentVersion, view.Archived = status.CurrentVersion, status.Archived
+	// The document -versions-> version links name every confirmed version,
+	// read with a cap and a sentinel. The newest versions stay in scope.
+	versionLinks, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{root}, Kind: "versions", FarType: versionType, Limit: lineageImpactMaxVersions + 1})
+	if err != nil {
+		return view, err
+	}
+	if len(versionLinks) > lineageImpactMaxVersions {
+		versionLinks = versionLinks[len(versionLinks)-lineageImpactMaxVersions:]
+		truncate("versions")
+	}
+	sources := make([]core.LineageNode, 0, len(versionLinks))
+	for _, link := range versionLinks {
+		sources = append(sources, core.LineageNode{Type: link.DstType, ID: link.DstID})
+	}
+	readTasks := func(nodes []core.LineageNode, kind string, inbound bool, farType core.LineageNodeType) ([]core.LineageLink, bool, error) {
+		if len(nodes) == 0 {
+			return nil, false, nil
 		}
-		sources = append(sources, core.LineageNode{Type: versionType, ID: id})
-	}
-	var links []core.LineageLink
-	if len(sources) > 0 {
-		var err error
-		links, err = s.Store.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: sources, Kind: kind, DstType: core.LineageTask, Limit: lineageImpactMaxEntries + 1})
-		if err != nil {
-			return view, err
+		links, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: nodes, Kind: kind, Inbound: inbound, FarType: farType, Limit: lineageImpactMaxEntries + 1})
+		if err != nil || len(links) <= lineageImpactMaxEntries {
+			return links, false, err
 		}
+		return links[:lineageImpactMaxEntries], true, nil
 	}
+	links, cut, err := readTasks(sources, kind, false, core.LineageTask)
+	if err != nil {
+		return view, err
+	}
+	if cut {
+		truncate("tasks")
+	}
+	unknown := map[string]bool{}
 	if root.Type == core.LineageRequirement {
-		// An attachment that recorded no version projects only the
-		// requirement edge; its task is listed with an unrecorded version.
-		direct, err := s.Store.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: []core.LineageNode{root}, Kind: "serves", DstType: core.LineageTask, Limit: lineageImpactMaxEntries + 1})
+		// Every requirement attachment projects requirement -serves-> task,
+		// so the direct edges name every served task. A task the version
+		// read did not reach is checked from the task side: its own inbound
+		// version edges from this requirement give the recorded version
+		// even when the version read was truncated (AC-5.2).
+		direct, cut, err := readTasks([]core.LineageNode{root}, "serves", false, core.LineageTask)
 		if err != nil {
 			return view, err
+		}
+		if cut {
+			truncate("tasks")
 		}
 		versioned := map[string]bool{}
 		for _, link := range links {
 			versioned[link.DstID] = true
 		}
+		missing := []core.LineageNode{}
 		for _, link := range direct {
 			if !versioned[link.DstID] {
-				links = append(links, link)
+				missing = append(missing, core.LineageNode{Type: core.LineageTask, ID: link.DstID})
 			}
 		}
-		core.SortLineageOutLinks(links)
-	}
-	if len(links) > lineageImpactMaxEntries {
-		links = links[:lineageImpactMaxEntries]
-		view.Truncated = true
-		view.ExhaustionReasons = append(view.ExhaustionReasons, "tasks")
+		inbound, inboundCut, err := readTasks(missing, "serves", true, core.LineageRequirementVersion)
+		if err != nil {
+			return view, err
+		}
+		if inboundCut {
+			truncate("version_edges")
+		}
+		recovered := map[string]bool{}
+		for _, link := range inbound {
+			if baseID, _ := store.LineageVersionNodeParts(core.LineageNode{Type: link.SrcType, ID: link.SrcID}); baseID == root.ID {
+				links = append(links, link)
+				recovered[link.DstID] = true
+			}
+		}
+		for _, link := range direct {
+			if versioned[link.DstID] || recovered[link.DstID] {
+				continue
+			}
+			links = append(links, link)
+			unknown[link.DstID] = inboundCut
+		}
+		core.SortLineageKindLinks(links)
 	}
 	taskNodes := []core.LineageNode{}
-	seenTasks := map[string]bool{}
+	statusNodes := []core.LineageNode{}
+	seen := map[core.LineageNode]bool{}
 	for _, link := range links {
-		if !seenTasks[link.DstID] {
-			seenTasks[link.DstID] = true
-			taskNodes = append(taskNodes, core.LineageNode{Type: core.LineageTask, ID: link.DstID})
+		for _, node := range []core.LineageNode{{Type: core.LineageTask, ID: link.DstID}, {Type: link.SrcType, ID: link.SrcID}} {
+			if node.Type == root.Type || seen[node] {
+				continue
+			}
+			seen[node] = true
+			statusNodes = append(statusNodes, node)
+			if node.Type == core.LineageTask {
+				taskNodes = append(taskNodes, node)
+			}
 		}
 	}
 	statuses := map[core.LineageNode]core.LineageNodeStatus{}
 	labels := map[string]string{}
 	ranges := map[string][]string{}
 	if len(taskNodes) > 0 {
-		var err error
-		if statuses, err = s.Store.ListLineageNodeStatuses(ctx, taskNodes); err != nil {
+		if statuses, err = s.Store.ListLineageNodeStatuses(ctx, statusNodes); err != nil {
 			return view, err
 		}
 		records, err := s.Store.ListLineageNodeRecords(ctx, taskNodes)
@@ -486,14 +522,13 @@ func (s *Server) lineageImpact(ctx context.Context, request lineageImpactRequest
 			labels[node.ID] = firstLabel(records[node].Title, node.ID)
 		}
 		rangeLimit := 4 * lineageImpactMaxEntries
-		merged, err := s.Store.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: taskNodes, Kind: "merged_range", DstType: core.LineageCommitRange, Limit: rangeLimit + 1})
+		merged, err := s.Store.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: taskNodes, Kind: "merged_range", FarType: core.LineageCommitRange, Limit: rangeLimit + 1})
 		if err != nil {
 			return view, err
 		}
 		if len(merged) > rangeLimit {
 			merged = merged[:rangeLimit]
-			view.Truncated = true
-			view.ExhaustionReasons = append(view.ExhaustionReasons, "merged_ranges")
+			truncate("merged_ranges")
 		}
 		for _, link := range merged {
 			ranges[link.SrcID] = append(ranges[link.SrcID], link.DstID)
@@ -501,17 +536,20 @@ func (s *Server) lineageImpact(ctx context.Context, request lineageImpactRequest
 	}
 	entries := make([]lineageImpactEntry, 0, len(links))
 	for _, link := range links {
-		task := core.LineageNode{Type: core.LineageTask, ID: link.DstID, Label: labels[link.DstID]}
-		entry := lineageImpactEntry{Relation: kind, Task: task, TaskState: statuses[core.LineageNode{Type: core.LineageTask, ID: link.DstID}].State, MergedRanges: ranges[link.DstID], EventID: link.CreatedByEventID}
-		if link.SrcType == versionType {
-			_, number := store.LineageVersionNodeParts(core.LineageNode{Type: link.SrcType, ID: link.SrcID})
-			recorded, known := versions[number]
-			entry.Version, entry.VersionNode = number, core.LineageNode{Type: link.SrcType, ID: link.SrcID}
-			entry.VersionStatus = lineageVersionUnrecorded
-			if known {
-				entry.VersionStatus = core.LineageVersionStatus(number, view.CurrentVersion, recorded.confirmed, recorded.dismissed)
+		task := core.LineageNode{Type: core.LineageTask, ID: link.DstID}
+		entry := lineageImpactEntry{Relation: kind, Task: core.LineageNode{Type: task.Type, ID: task.ID, Label: labels[task.ID]}, TaskState: statuses[task].State, MergedRanges: ranges[link.DstID], EventID: link.CreatedByEventID}
+		switch {
+		case link.SrcType == versionType:
+			version := core.LineageNode{Type: link.SrcType, ID: link.SrcID}
+			_, entry.Version = store.LineageVersionNodeParts(version)
+			entry.VersionNode = version
+			entry.VersionStatus = lineageVersionUnknown
+			if recorded, ok := statuses[version]; ok && recorded.VersionStatus != "" {
+				entry.VersionStatus = recorded.VersionStatus
 			}
-		} else {
+		case unknown[link.DstID]:
+			entry.VersionStatus = lineageVersionUnknown
+		default:
 			entry.VersionStatus = lineageVersionUnrecorded
 		}
 		if request.OutdatedOnly && !lineageImpactOutdated(entry) {
@@ -532,7 +570,8 @@ func (s *Server) lineageImpact(ctx context.Context, request lineageImpactRequest
 }
 
 // lineageImpactOutdated holds for merged work built on a confirmed version
-// that is no longer current. An unrecorded version is never asserted.
+// that is no longer current. An unrecorded or unknown version is never
+// asserted.
 func lineageImpactOutdated(entry lineageImpactEntry) bool {
 	return entry.TaskState == string(core.TaskMerged) && entry.VersionStatus == core.LineageVersionSuperseded
 }

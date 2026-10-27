@@ -291,7 +291,7 @@ func assertLineageNodeStatusesAndOutLinks(t *testing.T, fixture LineageFixture) 
 	}
 	// The second version serves only the task attached while it was current.
 	sources := []core.LineageNode{version(requirement.ID, first.Version), version(requirement.ID, second.Version), version(requirement.ID, first.Version)}
-	served, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: sources, Kind: "serves", DstType: core.LineageTask, Limit: 10})
+	served, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: sources, Kind: "serves", FarType: core.LineageTask, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,18 +306,81 @@ func assertLineageNodeStatusesAndOutLinks(t *testing.T, fixture LineageFixture) 
 	if got := pairs(served); !reflect.DeepEqual(got, wantServed) {
 		t.Fatalf("version serves out-links=%v want %v", got, wantServed)
 	}
-	if limited, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: sources, Kind: "serves", DstType: core.LineageTask, Limit: 1}); err != nil || !reflect.DeepEqual(pairs(limited), wantServed[:1]) {
+	if limited, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: sources, Kind: "serves", FarType: core.LineageTask, Limit: 1}); err != nil || !reflect.DeepEqual(pairs(limited), wantServed[:1]) {
 		t.Fatalf("limited out-links=%v err=%v", pairs(limited), err)
 	}
-	merged, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Sources: []core.LineageNode{{Type: core.LineageTask, ID: oldTask.ID}, {Type: core.LineageTask, ID: newTaskOnSecond.ID}}, Kind: "merged_range", DstType: core.LineageCommitRange, Limit: 10})
+	merged, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{{Type: core.LineageTask, ID: oldTask.ID}, {Type: core.LineageTask, ID: newTaskOnSecond.ID}}, Kind: "merged_range", FarType: core.LineageCommitRange, Limit: 10})
 	if err != nil || !reflect.DeepEqual(pairs(merged), []string{oldTask.ID + "->" + core.CommitRangeLineageID("conveyor", "status-base-"+oldTask.ID, "status-head-"+oldTask.ID)}) {
 		t.Fatalf("merged range out-links=%v err=%v", pairs(merged), err)
 	}
-	if foreign, err := st.ListLineageOutLinks(fixture.ForeignContext, core.LineageOutLinkQuery{Sources: sources, Kind: "serves", DstType: core.LineageTask, Limit: 10}); err != nil || len(foreign) != 0 {
+	if foreign, err := st.ListLineageKindLinks(fixture.ForeignContext, core.LineageKindLinkQuery{Nodes: sources, Kind: "serves", FarType: core.LineageTask, Limit: 10}); err != nil || len(foreign) != 0 {
 		t.Fatalf("foreign-workspace out-links=%v err=%v", foreign, err)
 	}
-	if _, err := st.ListLineageOutLinks(ctx, core.LineageOutLinkQuery{Kind: "serves", DstType: core.LineageTask, Limit: 10}); err == nil {
-		t.Fatal("an out-link read without sources was accepted")
+	if _, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Kind: "serves", FarType: core.LineageTask, Limit: 10}); err == nil {
+		t.Fatal("a kind-link read without nodes was accepted")
+	}
+	// Inbound reads name the destination: the old task's version edge is
+	// found from the task without enumerating the requirement's versions.
+	inbound, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{{Type: core.LineageTask, ID: oldTask.ID}}, Kind: "serves", Inbound: true, FarType: core.LineageRequirementVersion, Limit: 10})
+	if err != nil || !reflect.DeepEqual(pairs(inbound), wantServed[:1]) {
+		t.Fatalf("inbound version serves=%v err=%v", pairs(inbound), err)
+	}
+	assertLineageReadsBoundVersionHistory(t, st, ctx)
+}
+
+// SeedLineageVersionHistory creates a requirement with versions confirmed
+// versions and returns its ID, for backend fetch-bound tests of the lineage
+// status read (component-lineage).
+func SeedLineageVersionHistory(t *testing.T, st store.Store, ctx context.Context, versions int) string {
+	t.Helper()
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-history-" + core.NewTaskID(), Title: "Long history"}, core.RequirementVersion{
+		Content: "# Long history v1", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep history."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	for number := 2; number <= versions; number++ {
+		proposed, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: fmt.Sprintf("# Long history v%d", number), Origin: core.RequirementOriginOperator,
+			Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: fmt.Sprintf("Keep history %d.", number)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, proposed.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return requirement.ID
+}
+
+// assertLineageReadsBoundVersionHistory proves both reads stay bounded by
+// their request when a document's history is far larger: a status read
+// returns only the nodes it names, and a kind-link read of the document's
+// versions returns at most its limit in event order (component-lineage).
+func assertLineageReadsBoundVersionHistory(t *testing.T, st store.Store, ctx context.Context) {
+	t.Helper()
+	const history = 24
+	requirement := core.Requirement{ID: SeedLineageVersionHistory(t, st, ctx, history)}
+	root := core.LineageNode{Type: core.LineageRequirement, ID: requirement.ID}
+	old := core.LineageNode{Type: core.LineageRequirementVersion, ID: core.RequirementVersionLineageID(requirement.ID, 3)}
+	statuses, err := st.ListLineageNodeStatuses(ctx, []core.LineageNode{root, old})
+	want := map[core.LineageNode]core.LineageNodeStatus{
+		root: {CurrentVersion: history},
+		old:  {VersionStatus: core.LineageVersionSuperseded, CurrentVersion: history},
+	}
+	if err != nil || !reflect.DeepEqual(statuses, want) {
+		t.Fatalf("long-history statuses=%+v err=%v\nwant %+v", statuses, err, want)
+	}
+	versions, err := st.ListLineageKindLinks(ctx, core.LineageKindLinkQuery{Nodes: []core.LineageNode{root}, Kind: "versions", FarType: core.LineageRequirementVersion, Limit: 5})
+	if err != nil || len(versions) != 5 {
+		t.Fatalf("bounded version links=%d err=%v", len(versions), err)
+	}
+	for index, link := range versions {
+		if want := core.RequirementVersionLineageID(requirement.ID, index+1); link.DstID != want {
+			t.Fatalf("version link %d=%s want %s", index, link.DstID, want)
+		}
 	}
 }
 

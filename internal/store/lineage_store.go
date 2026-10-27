@@ -344,9 +344,9 @@ func LineageVersionNodeParts(node core.LineageNode) (string, int) {
 	return baseID, version
 }
 
-// ListLineageOutLinks reads only the named sources' index entries
+// ListLineageKindLinks reads only the named nodes' index entries
 // (component-lineage).
-func (m *memory) ListLineageOutLinks(ctx context.Context, query core.LineageOutLinkQuery) ([]core.LineageLink, error) {
+func (m *memory) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
 	if err := query.Validate(); err != nil {
 		return nil, err
 	}
@@ -355,20 +355,25 @@ func (m *memory) ListLineageOutLinks(ctx context.Context, query core.LineageOutL
 	workspace := workspaceOrDefault(ctx, "")
 	seen := map[core.LineageNode]bool{}
 	out := []core.LineageLink{}
-	for _, source := range query.Sources {
-		if seen[source] {
+	for _, node := range query.Nodes {
+		node = core.LineageNode{Type: node.Type, ID: node.ID}
+		if seen[node] {
 			continue
 		}
-		seen[source] = true
+		seen[node] = true
 		m.lineage.lookups.Add(1)
-		for _, link := range m.lineage.byNode[memoryLineageEndpoint{workspace: workspace, node: source}] {
+		for _, link := range m.lineage.byNode[memoryLineageEndpoint{workspace: workspace, node: node}] {
 			m.lineage.examined.Add(1)
-			if link.Kind == query.Kind && link.SrcType == source.Type && link.SrcID == source.ID && link.DstType == query.DstType && link.Validate() == nil {
+			near, far := core.LineageNode{Type: link.SrcType, ID: link.SrcID}, link.DstType
+			if query.Inbound {
+				near, far = core.LineageNode{Type: link.DstType, ID: link.DstID}, link.SrcType
+			}
+			if link.Kind == query.Kind && near == node && far == query.FarType && link.Validate() == nil {
 				out = append(out, link)
 			}
 		}
 	}
-	core.SortLineageOutLinks(out)
+	core.SortLineageKindLinks(out)
 	if len(out) > query.Limit {
 		out = out[:query.Limit]
 	}
@@ -742,42 +747,81 @@ type LineageStatusVersion struct {
 	Dismissed bool
 }
 
-// LineageStatusIDs groups the record IDs a status read needs by node class:
-// task, work_order, decision, planning_session, planning_bundle, requirement,
-// system_design, reference_document, and verdict (review work order IDs).
-func LineageStatusIDs(nodes []core.LineageNode) map[core.LineageNodeType][]string {
+// LineageVersionPair names one document version a status read selects.
+type LineageVersionPair struct {
+	DocumentID string
+	Version    int
+}
+
+// LineageStatusRequest is what a SQL status read selects. IDs groups the
+// record IDs by node class: task, work_order, decision, planning_session,
+// planning_bundle, requirement, system_design, reference_document, and
+// verdict (review work order IDs). Versions lists, per document class, only
+// the version pairs that version nodes name, so a document's other versions
+// are never read (component-lineage).
+type LineageStatusRequest struct {
+	IDs      map[core.LineageNodeType][]string
+	Versions map[core.LineageNodeType][]LineageVersionPair
+}
+
+// LineageStatusIDs builds the status request for nodes.
+func LineageStatusIDs(nodes []core.LineageNode) LineageStatusRequest {
 	seen := map[core.LineageNodeType]map[string]bool{}
-	out := map[core.LineageNodeType][]string{}
+	seenPair := map[core.LineageNodeType]map[LineageVersionPair]bool{}
+	request := LineageStatusRequest{IDs: map[core.LineageNodeType][]string{}, Versions: map[core.LineageNodeType][]LineageVersionPair{}}
 	add := func(class core.LineageNodeType, id string) {
 		if seen[class] == nil {
 			seen[class] = map[string]bool{}
 		}
 		if id != "" && !seen[class][id] {
 			seen[class][id] = true
-			out[class] = append(out[class], id)
+			request.IDs[class] = append(request.IDs[class], id)
+		}
+	}
+	addVersion := func(class core.LineageNodeType, id string, version int) {
+		add(class, id)
+		pair := LineageVersionPair{DocumentID: id, Version: version}
+		if seenPair[class] == nil {
+			seenPair[class] = map[LineageVersionPair]bool{}
+		}
+		if id != "" && version > 0 && !seenPair[class][pair] {
+			seenPair[class][pair] = true
+			request.Versions[class] = append(request.Versions[class], pair)
 		}
 	}
 	for _, node := range nodes {
-		baseID, _ := LineageVersionNodeParts(node)
+		baseID, version := LineageVersionNodeParts(node)
 		switch node.Type {
 		case core.LineageTask, core.LineageBlueprint:
 			add(core.LineageTask, baseID)
 		case core.LineageWorkOrder, core.LineageDecision, core.LineagePlanningSession, core.LineagePlanningBundle:
 			add(node.Type, baseID)
-		case core.LineageRequirement, core.LineageRequirementVersion:
-			add(core.LineageRequirement, baseID)
-		case core.LineageSystemDesign, core.LineageSystemDesignVersion:
-			add(core.LineageSystemDesign, baseID)
-		case core.LineageReferenceDocument, core.LineageReferenceDocumentVersion:
+		case core.LineageRequirement, core.LineageSystemDesign, core.LineageReferenceDocument:
+			add(node.Type, baseID)
+		case core.LineageRequirementVersion:
+			addVersion(core.LineageRequirement, baseID, version)
+		case core.LineageSystemDesignVersion:
+			addVersion(core.LineageSystemDesign, baseID, version)
+		case core.LineageReferenceDocumentVersion:
+			// Reference versions classify from the document row alone.
 			add(core.LineageReferenceDocument, baseID)
 		case core.LineageVerdict:
 			add(core.LineageVerdict, strings.TrimPrefix(node.ID, "review:"))
 		}
 	}
-	for class := range out {
-		sort.Strings(out[class])
+	for class := range request.IDs {
+		sort.Strings(request.IDs[class])
 	}
-	return out
+	for class := range request.Versions {
+		pairs := request.Versions[class]
+		sort.Slice(pairs, func(i, j int) bool {
+			if pairs[i].DocumentID != pairs[j].DocumentID {
+				return pairs[i].DocumentID < pairs[j].DocumentID
+			}
+			return pairs[i].Version < pairs[j].Version
+		})
+	}
+	return request
 }
 
 // Statuses assembles each supplied node's status from the batched rows.

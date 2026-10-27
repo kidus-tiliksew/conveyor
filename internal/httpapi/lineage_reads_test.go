@@ -336,3 +336,79 @@ func TestLineageHTTPImpactListsOnlyMergedWorkOnOldVersions(t *testing.T) {
 		}
 	}
 }
+
+// TestLineageHTTPImpactNeverCallsATruncatedVersionUnrecorded proves the
+// impact read recovers a task's recorded version from the task side when the
+// version read leaves that version out, and when the version-edge read is
+// truncated. Neither case may report the task as unrecorded
+// (component-lineage; req-260802-72fc68 AC-5.2).
+func TestLineageHTTPImpactNeverCallsATruncatedVersionUnrecorded(t *testing.T) {
+	f := newLineageReadsFixture(t, config.LineageContextSettings{})
+	restore := func(versions, entries int) func() {
+		previousVersions, previousEntries := lineageImpactMaxVersions, lineageImpactMaxEntries
+		lineageImpactMaxVersions, lineageImpactMaxEntries = versions, entries
+		return func() { lineageImpactMaxVersions, lineageImpactMaxEntries = previousVersions, previousEntries }
+	}
+	read := func(t *testing.T, query string) lineageImpactView {
+		t.Helper()
+		response := f.get(t, "/v1/lineage/requirement/"+f.requirement+"/impact"+query)
+		if response.Code != http.StatusOK {
+			t.Fatalf("impact status=%d body=%s", response.Code, response.Body.String())
+		}
+		var view lineageImpactView
+		if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+			t.Fatal(err)
+		}
+		return view
+	}
+	byTask := func(view lineageImpactView) map[string]lineageImpactEntry {
+		out := map[string]lineageImpactEntry{}
+		for _, item := range view.Items {
+			out[item.Task.ID] = item
+		}
+		return out
+	}
+	t.Run("version outside the selected versions", func(t *testing.T) {
+		defer restore(1, 1000)()
+		view := read(t, "")
+		old := byTask(view)[f.oldTask]
+		if !view.Truncated || !reflect.DeepEqual(view.ExhaustionReasons, []string{"versions"}) || view.Total != 3 ||
+			old.Version != 1 || old.VersionStatus != core.LineageVersionSuperseded {
+			t.Fatalf("impact=%+v old=%+v", view, old)
+		}
+		outdated := read(t, "?outdated=true")
+		if outdated.Total != 1 || outdated.Items[0].Task.ID != f.oldTask {
+			t.Fatalf("outdated impact=%+v", outdated)
+		}
+	})
+	t.Run("truncated version links", func(t *testing.T) {
+		defer restore(1, 1)()
+		view := read(t, "")
+		old := byTask(view)[f.oldTask]
+		if !view.Truncated || old.Version != 1 || old.VersionStatus != core.LineageVersionSuperseded {
+			t.Fatalf("impact=%+v old=%+v", view, old)
+		}
+		for _, item := range view.Items {
+			if item.VersionStatus == lineageVersionUnrecorded {
+				t.Fatalf("truncated read called %s unrecorded: %+v", item.Task.ID, view)
+			}
+		}
+	})
+	t.Run("an attachment without a version is unrecorded", func(t *testing.T) {
+		task := core.Task{ID: "task-lineage-legacy", Workspace: "demo", Title: "Legacy attachment", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-task-lineage-legacy", State: core.TaskMerged, CreatedAt: time.Now().UTC()}
+		if err := f.server.Store.CreateTask(f.ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.server.Store.AppendEvent(f.ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": f.requirement})}); err != nil {
+			t.Fatal(err)
+		}
+		view := read(t, "")
+		legacy := byTask(view)[task.ID]
+		if view.Truncated || legacy.VersionStatus != lineageVersionUnrecorded || legacy.Version != 0 {
+			t.Fatalf("impact=%+v legacy=%+v", view, legacy)
+		}
+		if outdated := read(t, "?outdated=true"); outdated.Total != 1 || outdated.Items[0].Task.ID != f.oldTask {
+			t.Fatalf("an unrecorded version counted as outdated: %+v", outdated)
+		}
+	})
+}

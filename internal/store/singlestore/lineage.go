@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
@@ -167,7 +168,8 @@ func (s *Store) lineageStatusQuery(ctx context.Context, query string, ids []stri
 // ListLineageNodeStatuses reads one batch per node class, only for the
 // supplied nodes (component-lineage).
 func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]core.LineageNodeStatus, error) {
-	ids := store.LineageStatusIDs(nodes)
+	request := store.LineageStatusIDs(nodes)
+	ids := request.IDs
 	rows := store.LineageStatusRows{
 		TaskStates: map[string]string{}, OrderStates: map[string]string{}, DecisionState: map[string]string{},
 		SessionState: map[string]string{}, BundleState: map[string]string{},
@@ -205,9 +207,9 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 		versions string
 	}{
 		{core.LineageRequirement, `SELECT id,COALESCE(current_version,0),archived_at IS NOT NULL FROM requirements WHERE workspace_id=? AND id IN (%s)`,
-			`SELECT requirement_id,version,confirmed,retired FROM requirement_versions WHERE workspace_id=? AND requirement_id IN (%s)`},
+			`SELECT v.requirement_id,v.version,v.confirmed,v.retired FROM (%s) p JOIN requirement_versions v ON v.workspace_id=? AND v.requirement_id=p.id AND v.version=p.version`},
 		{core.LineageSystemDesign, `SELECT id,COALESCE(current_version,0),archived_at IS NOT NULL FROM system_designs WHERE workspace_id=? AND id IN (%s)`,
-			`SELECT document_id,version,confirmed,dismissed FROM system_design_versions WHERE workspace_id=? AND document_id IN (%s)`},
+			`SELECT v.document_id,v.version,v.confirmed,v.dismissed FROM (%s) p JOIN system_design_versions v ON v.workspace_id=? AND v.document_id=p.id AND v.version=p.version`},
 		{core.LineageReferenceDocument, `SELECT id,COALESCE(current_version,0),deleted_at IS NOT NULL FROM reference_documents WHERE workspace_id=? AND id IN (%s)`, ""},
 	}
 	for _, document := range documents {
@@ -224,24 +226,43 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 		}); err != nil {
 			return nil, err
 		}
-		if document.versions == "" {
+		pairs := request.Versions[document.class]
+		if document.versions == "" || len(pairs) == 0 {
 			continue
 		}
+		// Only the version rows the nodes name are read, never a document's
+		// whole history (component-lineage).
+		requested := make([]string, len(pairs))
+		args := make([]any, 0, 2*len(pairs)+1)
+		for index, pair := range pairs {
+			requested[index] = "SELECT ? AS id, ? AS version"
+			args = append(args, pair.DocumentID, pair.Version)
+		}
+		args = append(args, documentWorkspace(ctx))
 		versions := map[string]map[int]store.LineageStatusVersion{}
 		rows.Versions[document.class] = versions
-		if err := s.lineageStatusQuery(ctx, document.versions, ids[document.class], func(r *documentResultSet) error {
+		versionRows, err := documentRows(ctx, s.db, strings.Replace(document.versions, "%s", strings.Join(requested, " UNION ALL "), 1), args...)
+		if err != nil {
+			return nil, err
+		}
+		for versionRows.Next() {
 			var id string
 			var version int
 			var recorded store.LineageStatusVersion
-			if err := r.Scan(&id, &version, &recorded.Confirmed, &recorded.Dismissed); err != nil {
-				return err
+			if err = versionRows.Scan(&id, &version, &recorded.Confirmed, &recorded.Dismissed); err != nil {
+				versionRows.Close()
+				return nil, err
+			}
+			if observe := observeLineageStatusVersionRow.Load(); observe != nil {
+				(*observe)(id, version)
 			}
 			if versions[id] == nil {
 				versions[id] = map[int]store.LineageStatusVersion{}
 			}
 			versions[id][version] = recorded
-			return nil
-		}); err != nil {
+		}
+		versionRows.Close()
+		if err = versionRows.Err(); err != nil {
 			return nil, err
 		}
 	}
@@ -264,29 +285,39 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 	return rows.Statuses(nodes), nil
 }
 
-// ListLineageOutLinks reads one kind leaving the named sources through the
-// links primary key, in core.SortLineageOutLinks order under the table's
-// binary collation (component-lineage).
-func (s *Store) ListLineageOutLinks(ctx context.Context, query core.LineageOutLinkQuery) ([]core.LineageLink, error) {
+// observeLineageStatusVersionRow, when set by a test, sees each version
+// row a status read returns, so fetch bounds are checked against rows.
+var observeLineageStatusVersionRow atomic.Pointer[func(documentID string, version int)]
+
+// ListLineageKindLinks reads one kind at the named nodes through the links
+// primary key (outbound) or links_destination_idx (inbound), in
+// core.SortLineageKindLinks order under the table's binary collation
+// (component-lineage).
+func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
 	if err := query.Validate(); err != nil {
 		return nil, err
+	}
+	near, far := "src", "dst"
+	if query.Inbound {
+		near, far = "dst", "src"
 	}
 	seen := map[core.LineageNode]bool{}
 	requested := []string{}
 	args := []any{}
-	for _, source := range query.Sources {
-		if seen[source] {
+	for _, node := range query.Nodes {
+		node = core.LineageNode{Type: node.Type, ID: node.ID}
+		if seen[node] {
 			continue
 		}
-		seen[source] = true
+		seen[node] = true
 		requested = append(requested, "SELECT ? AS node_type, ? AS node_id")
-		args = append(args, string(source.Type), source.ID)
+		args = append(args, string(node.Type), node.ID)
 	}
-	args = append(args, documentWorkspace(ctx), query.Kind, string(query.DstType), query.Limit)
+	args = append(args, documentWorkspace(ctx), query.Kind, string(query.FarType), query.Limit)
 	rows, err := documentRows(ctx, s.db, `SELECT l.workspace_id,l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind,COALESCE(l.legacy_created_by_event,''),l.created_at,COALESCE(l.created_by_event_id,0)
 		FROM (`+strings.Join(requested, " UNION ALL ")+`) q
-		JOIN links l ON l.workspace_id=? AND l.src_type=q.node_type AND l.src_id=q.node_id
-		WHERE l.kind=? AND l.dst_type=? AND TRIM(l.dst_id)<>''
+		JOIN links l ON l.workspace_id=? AND l.`+near+`_type=q.node_type AND l.`+near+`_id=q.node_id
+		WHERE l.kind=? AND l.`+far+`_type=? AND TRIM(l.`+far+`_id)<>''
 			AND NOT (l.src_type=l.dst_type AND l.src_id=l.dst_id)
 			AND (COALESCE(l.created_by_event_id,0)>0 OR (l.kind='historical_feature_assignment' AND TRIM(COALESCE(l.legacy_created_by_event,''))<>''))
 		ORDER BY COALESCE(l.created_by_event_id,0),l.src_type,l.src_id,l.dst_type,l.dst_id,l.kind

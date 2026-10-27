@@ -284,39 +284,42 @@ func LineageVersionStatus(version, current int, confirmed, dismissed bool) strin
 	}
 }
 
-// LineageOutLinkQuery reads one link kind leaving a bounded set of source
-// nodes, for reads such as impact that need every such link rather than a
-// walk's ranked prefix (component-lineage).
-type LineageOutLinkQuery struct {
-	Sources []LineageNode
+// LineageKindLinkQuery reads one link kind at a bounded set of named nodes:
+// links leaving them, or with Inbound links entering them, whose far endpoint
+// has FarType. Reads such as impact need every such link rather than a walk's
+// ranked prefix (component-lineage).
+type LineageKindLinkQuery struct {
+	Nodes   []LineageNode
 	Kind    string
-	DstType LineageNodeType
-	// Limit caps returned links; stores return at most Limit links ordered by
-	// event ID, then source and destination keys.
+	Inbound bool
+	FarType LineageNodeType
+	// Limit caps returned links; stores return at most Limit links in
+	// SortLineageKindLinks order.
 	Limit int
 }
 
-// LineageOutLinkMaxSources bounds the sources one out-link read names.
-const LineageOutLinkMaxSources = 1024
+// LineageKindLinkMaxNodes bounds the nodes one kind-link read names.
+const LineageKindLinkMaxNodes = 1024
 
-// Validate refuses an unbounded or malformed out-link query.
-func (query LineageOutLinkQuery) Validate() error {
-	if len(query.Sources) == 0 || len(query.Sources) > LineageOutLinkMaxSources {
-		return fmt.Errorf("lineage out-link query needs 1-%d sources", LineageOutLinkMaxSources)
+// Validate refuses an unbounded or malformed kind-link query.
+func (query LineageKindLinkQuery) Validate() error {
+	if len(query.Nodes) == 0 || len(query.Nodes) > LineageKindLinkMaxNodes {
+		return fmt.Errorf("lineage kind-link query needs 1-%d nodes", LineageKindLinkMaxNodes)
 	}
-	for _, source := range query.Sources {
-		if !source.Valid() {
-			return fmt.Errorf("lineage out-link query names an invalid source")
+	for _, node := range query.Nodes {
+		if !node.Valid() {
+			return fmt.Errorf("lineage kind-link query names an invalid node")
 		}
 	}
-	if strings.TrimSpace(query.Kind) == "" || !query.DstType.Valid() || query.Limit <= 0 {
-		return fmt.Errorf("lineage out-link query needs a kind, a destination type, and a positive limit")
+	if strings.TrimSpace(query.Kind) == "" || !query.FarType.Valid() || query.Limit <= 0 {
+		return fmt.Errorf("lineage kind-link query needs a kind, a far endpoint type, and a positive limit")
 	}
 	return nil
 }
 
-// SortLineageOutLinks orders out-link results as every store returns them.
-func SortLineageOutLinks(links []LineageLink) {
+// SortLineageKindLinks orders kind-link results as every store returns them:
+// event ID, then source and destination keys.
+func SortLineageKindLinks(links []LineageLink) {
 	sort.Slice(links, func(i, j int) bool {
 		left, right := links[i], links[j]
 		if left.CreatedByEventID != right.CreatedByEventID {
