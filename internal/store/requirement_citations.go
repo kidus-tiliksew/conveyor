@@ -41,7 +41,12 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 	if len(authorityNodes) > 0 && authorityNodes[0] > 0 {
 		limit = authorityNodes[0]
 	}
-	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: limit, MaxLinks: limit * 4, Workspace: workspace}.Normalized()
+	// A depth-0 walk examines only the roots' own ranked links, so a
+	// requirement's links to other tasks are never read and a requirement
+	// that serves many tasks cannot exhaust the budget. Each root examines up
+	// to limit links; a root whose own links exceed it fails closed
+	// (component-work-orders; component-lineage).
+	budget := core.LineageTraversalBudget{MaxDepth: 0, MaxNodes: limit, MaxLinks: limit * 4, Workspace: workspace}.Normalized()
 	links, err := st.ListLineageNeighborhood(ctx, roots, budget)
 	if err != nil {
 		return ServedRequirementsResult{}, err
@@ -52,8 +57,8 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 	}
 	authorityTruncated := false
 	for _, reason := range walk.ExhaustionReasons {
-		// Every budget axis fails closed: a root whose links exceed its
-		// examined prefix may hide a serves edge (component-lineage).
+		// At depth 0 only a root can be fan-out truncated, and a cut root
+		// prefix may hide a serves edge, so every axis but depth fails closed.
 		authorityTruncated = authorityTruncated || reason == "nodes" || reason == "fanout" || reason == "links"
 	}
 	if authorityTruncated {
