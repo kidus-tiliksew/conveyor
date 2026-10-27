@@ -378,8 +378,9 @@ func (m *memory) RebuildLineage(ctx context.Context, request core.LineageRebuild
 		}
 	}
 	sort.Slice(workspaceEvents, func(i, j int) bool { return workspaceEvents[i].ID < workspaceEvents[j].ID })
+	replay := NewLineageReplay()
 	for _, event := range workspaceEvents {
-		projection := projectLineageEvent(workspace, event)
+		projection := replay.Project(workspace, event)
 		links := projection.Links
 		if requirementID, version, historical := HistoricalRequirementConfirmation(event); historical {
 			predecessor := 0

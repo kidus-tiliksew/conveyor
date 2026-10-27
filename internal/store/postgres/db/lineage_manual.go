@@ -65,13 +65,15 @@ func (q *Queries) DeleteLineageLinks(ctx context.Context, workspaceID string) (i
 	// planning_session -produced_design-> system_design,
 	// planning_session -produced_bundle-> planning_bundle,
 	// planning_bundle -proposes-> requirement_version/system_design_version/decision,
-	// and planning_bundle -creates-> task.
+	// planning_bundle -creates-> task, blueprint -plans-> task, and
+	// task -succeeded_by-> task.
 	tag, err := q.db.Exec(ctx, `DELETE FROM links WHERE workspace_id=$1
 		AND created_by_event_id IS NOT NULL AND kind = ANY(ARRAY[
 		'consulted','depends_on','derived_from','dispatches','materializes','merged_range','produced_blueprint',
 		'produced_requirement','produced_verdict','serves','submitted_as','submitted_range',
 		'supersedes','supports','versions'
 		,'governs','proposed_by','produced_design','produced_bundle','proposes','creates'
+		,'plans','succeeded_by'
 	]::text[])`, workspaceID)
 	return tag.RowsAffected(), err
 }
