@@ -55,6 +55,26 @@ type Item struct {
 	Origin          string             `json:"origin,omitempty"`
 }
 
+// Omissions reports each context budget axis on its own; OmittedCount keeps
+// their sum for existing readers (component-lineage).
+type Omissions struct {
+	Nodes           int `json:"nodes"`
+	DepthNodes      int `json:"depth_nodes"`
+	NodeCapNodes    int `json:"node_cap_nodes"`
+	FanoutNodes     int `json:"fanout_nodes"`
+	Links           int `json:"links"`
+	ArtifactRefs    int `json:"artifact_refs"`
+	RenderableBytes int `json:"renderable_bytes"`
+}
+
+// Options carries order-scoped inputs. PinnedRequirements is the served
+// requirement snapshot a claimed review or verify order pinned; a requirement
+// in it renders at its pinned version (component-lineage;
+// component-work-orders).
+type Options struct {
+	PinnedRequirements []core.ServedRequirementContext
+}
+
 type Result struct {
 	// Only ContextFreshness exposes this through its 64-KiB envelope. Do not
 	// serialize an additional, untrimmed copy in the legacy lineage response.
@@ -66,6 +86,7 @@ type Result struct {
 	Budget            Budget                `json:"budget"`
 	OmittedCount      int                   `json:"omitted_count,omitempty"`
 	OmittedArtifacts  int                   `json:"omitted_artifacts,omitempty"`
+	Omissions         Omissions             `json:"omissions"`
 	ExhaustionReasons []string              `json:"exhaustion_reasons,omitempty"`
 	RenderedBytes     int                   `json:"rendered_bytes,omitempty"`
 }
@@ -86,13 +107,16 @@ func Assemble(ctx context.Context, st store.Store, cfg *config.Config, roots []c
 // budget. Planning uses this after higher-priority reference documents have
 // consumed their share of the same configured allowance (component-lineage).
 func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, roots []core.LineageNode, localTaskID string, includeLocalEvidence bool) (Result, error) {
+	return AssembleWithOptions(ctx, st, budget, roots, localTaskID, includeLocalEvidence, Options{})
+}
+
+// AssembleWithOptions is the one assembly. It fetches the walk's own links
+// with the traversal budget and traverses once; artifact selection reuses
+// that traversal (component-lineage).
+func AssembleWithOptions(ctx context.Context, st store.Store, budget Budget, roots []core.LineageNode, localTaskID string, includeLocalEvidence bool, options Options) (Result, error) {
 	workspace, _ := store.WorkspaceFromContext(ctx)
-	graphBudget := core.LineageTraversalBudget{MaxDepth: budget.Depth, MaxNodes: budget.Nodes, MaxLinks: budget.Links, Workspace: workspace}
-	fetchBudget := graphBudget
-	fetchBudget.MaxDepth++
-	fetchBudget.MaxNodes++
-	fetchBudget.MaxLinks++
-	links, err := st.ListLineageNeighborhood(ctx, roots, fetchBudget)
+	graphBudget := core.LineageTraversalBudget{MaxDepth: budget.Depth, MaxNodes: budget.Nodes, MaxLinks: budget.Links, Workspace: workspace}.Normalized()
+	links, err := st.ListLineageNeighborhood(ctx, roots, graphBudget)
 	if err != nil {
 		return Result{}, err
 	}
@@ -105,7 +129,13 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 		return Result{}, err
 	}
 	result := Result{Untrusted: true, Items: []Item{}, Artifacts: []core.Artifact{}, Traversal: graph, Budget: budget,
-		OmittedCount: graph.OmittedNodes + graph.OmittedLinks, ExhaustionReasons: append([]string(nil), graph.ExhaustionReasons...)}
+		OmittedCount: graph.OmittedNodes + graph.OmittedLinks, ExhaustionReasons: append([]string(nil), graph.ExhaustionReasons...),
+		Omissions: Omissions{Nodes: graph.OmittedNodes, DepthNodes: graph.Omissions.DepthNodes, NodeCapNodes: graph.Omissions.NodeCapNodes,
+			FanoutNodes: graph.Omissions.FanoutNodes, Links: graph.Omissions.Links}}
+	pinned := make(map[string]core.ServedRequirementContext, len(options.PinnedRequirements))
+	for _, requirement := range options.PinnedRequirements {
+		pinned[requirement.ID] = requirement
+	}
 	candidates := []candidate{}
 	seen := map[string]bool{}
 	add := func(node core.LineageNode, reason, content string, priority int, artifact *core.Artifact) {
@@ -171,10 +201,25 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 				continue
 			}
 			requirement, ok := records.Requirements[node.ID]
+			if pin, isPinned := pinned[node.ID]; isPinned && pin.Version > 0 {
+				// A pinned order renders the version its authority names, so
+				// one work order never shows two versions of a requirement
+				// (component-lineage; req-260802-72fc68 AC-2.1).
+				version, versionErr := st.GetRequirementVersion(ctx, node.ID, pin.Version)
+				if versionErr != nil {
+					return Result{}, fmt.Errorf("read pinned requirement %s v%d: %w", node.ID, pin.Version, versionErr)
+				}
+				requirement, ok = store.LineageContextRequirementRecord{Title: pin.Title, Version: pin.Version, Content: version.Content,
+					Statements: append([]core.RequirementStatement(nil), version.Statements...), Archived: pin.Archived}, true
+			}
 			if !ok || requirement.Version <= 0 {
 				continue
 			}
-			lines := []string{fmt.Sprintf("%s (confirmed v%d)", requirement.Title, requirement.Version), requirement.Content}
+			label := fmt.Sprintf("confirmed v%d", requirement.Version)
+			if requirement.Archived {
+				label += ", archived"
+			}
+			lines := []string{fmt.Sprintf("%s (%s)", requirement.Title, label), requirement.Content}
 			for _, statement := range requirement.Statements {
 				lines = append(lines, statement.ID+": "+statement.Statement)
 			}
@@ -206,13 +251,10 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 	}
 	artifactSelection := core.ContextArtifactSelection{}
 	if budget.ArtifactRefs > 0 {
-		artifactSelection, err = core.SelectContextArtifacts(links, roots, artifacts, core.ContextArtifactSelectionOptions{
+		artifactSelection = core.SelectContextArtifactsFromTraversal(graph, artifacts, core.ContextArtifactSelectionOptions{
 			Workspace: workspace, LocalTaskID: localTaskID, IncludeLocalVerificationEvidence: includeLocalEvidence,
 			Budget: graphBudget, MaxArtifactRefs: budget.ArtifactRefs,
 		})
-		if err != nil {
-			return Result{}, err
-		}
 	} else {
 		reachable := make(map[core.LineageNode]bool, len(graph.Nodes))
 		for _, node := range graph.Nodes {
@@ -238,6 +280,7 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 		omissions = append(omissions, d)
 	}
 	result.OmittedArtifacts = artifactSelection.Omitted
+	result.Omissions.ArtifactRefs = artifactSelection.Omitted
 	result.OmittedCount += artifactSelection.Omitted
 	if artifactSelection.Omitted > 0 {
 		appendReason(&result.ExhaustionReasons, "artifact_refs")
@@ -277,6 +320,7 @@ func AssembleWithBudget(ctx context.Context, st store.Store, budget Budget, root
 		renderedBytes := len(renderItem(selected.item))
 		if used+renderedBytes > budget.RenderableBytes {
 			result.OmittedCount++
+			result.Omissions.RenderableBytes++
 			d := itemDescriptor(selected.item)
 			if selected.artifact != nil {
 				d = artifactDescriptor(*selected.artifact, graph, localTaskID)

@@ -384,3 +384,138 @@ func TestAssembleLabelsOnlyOwnServedRequirements(t *testing.T) {
 		}
 	}
 }
+
+// A pinned order renders the requirement version its snapshot names, a live
+// read renders the current confirmed version, and an archived requirement is
+// flagged in both (component-lineage; req-260802-72fc68 AC-2.1).
+func TestAssembleRendersPinnedRequirementVersionAndArchiveFlag(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	st := store.NewMemory()
+	task := core.Task{ID: "pinned-render", Workspace: "demo", Repo: "conveyor", Title: "Pinned render", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-pinned-render", Title: "Pinned render intent"}, core.RequirementVersion{
+		Content: "# First prose", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First statement."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Second prose",
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second statement."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	roots := []core.LineageNode{{Type: core.LineageTask, ID: task.ID}}
+	served := func(options Options) string {
+		t.Helper()
+		result, err := AssembleWithOptions(ctx, st, BudgetFromConfig(nil), roots, task.ID, false, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range result.Items {
+			if item.SelectionReason == "served_requirement" && item.Node.ID == requirement.ID {
+				return item.Content
+			}
+		}
+		t.Fatalf("served requirement missing: %+v", result.Items)
+		return ""
+	}
+	pin := core.ServedRequirementContext{ID: requirement.ID, Title: requirement.Title, Version: first.Version}
+	// The live title follows the confirmed version's heading; the pinned
+	// title is the one the snapshot recorded.
+	if live := served(Options{}); !strings.Contains(live, " (confirmed v2)\n# Second prose") || !strings.Contains(live, "REQ-1: Second statement.") {
+		t.Fatalf("live render=%q", live)
+	}
+	if pinned := served(Options{PinnedRequirements: []core.ServedRequirementContext{pin}}); !strings.HasPrefix(pinned, "Pinned render intent (confirmed v1)\n# First prose") ||
+		!strings.Contains(pinned, "REQ-1: First statement.") || strings.Contains(pinned, "Second") {
+		t.Fatalf("pinned render=%q", pinned)
+	}
+	if err = st.ArchiveRequirement(human, requirement.ID, "operator", nil); err != nil {
+		t.Fatal(err)
+	}
+	if live := served(Options{}); !strings.Contains(live, " (confirmed v2, archived)\n# Second prose") {
+		t.Fatalf("archived live render=%q", live)
+	}
+	pin.Archived = true
+	if pinned := served(Options{PinnedRequirements: []core.ServedRequirementContext{pin}}); !strings.HasPrefix(pinned, "Pinned render intent (confirmed v1, archived)") {
+		t.Fatalf("archived pinned render=%q", pinned)
+	}
+}
+
+// Each context budget axis reports its own omission count, and
+// omitted_count keeps their sum (component-lineage).
+func TestAssembleReportsOmissionsPerAxis(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	local := core.Task{ID: "axes-local", Workspace: "demo", Repo: "conveyor", Title: "Local", State: core.TaskRunning, CreatedAt: now}
+	tasks := []core.Task{local}
+	for index := 0; index < 6; index++ {
+		tasks = append(tasks, core.Task{ID: "axes-sibling-" + string(rune('a'+index)), Workspace: "demo", Repo: "conveyor", Title: "Sibling", State: core.TaskRunning, CreatedAt: now})
+	}
+	for _, task := range tasks {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requirement, version, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-axes", Title: "Axes"}, core.RequirementVersion{
+		Content: "# Axes", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Count each axis."}}, Origin: core.RequirementOriginChat, OriginSessionID: "planning",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if err = st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: store.TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": requirement.ID})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"one.txt", "two.txt"} {
+		if _, err = st.CreateArtifact(ctx, core.Artifact{Name: name, ContentType: "text/plain", TaskID: local.ID}, []byte(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Five nodes, fan-out 4: the requirement hub examines four links (the
+	// local task and three siblings), admits two siblings before the node
+	// cap, and reports fan-out; each admitted sibling's own blueprint lies
+	// beyond depth 2.
+	budget := Budget{Depth: 2, Nodes: 5, Links: 3, RenderableBytes: 1, ArtifactRefs: 1, AuthorityNodes: 256}
+	result, err := AssembleWithBudget(ctx, st, budget, []core.LineageNode{{Type: core.LineageTask, ID: local.ID}}, local.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Omissions{Nodes: 3, DepthNodes: 2, NodeCapNodes: 1, FanoutNodes: 1, Links: 1, ArtifactRefs: 1, RenderableBytes: 2}
+	if result.Omissions != want {
+		t.Fatalf("omissions=%+v want %+v (nodes=%v)", result.Omissions, want, result.Traversal.Nodes)
+	}
+	if result.OmittedCount != want.Nodes+want.Links+want.ArtifactRefs+want.RenderableBytes {
+		t.Fatalf("omitted_count=%d, want the sum of node, link, artifact, and byte omissions", result.OmittedCount)
+	}
+	for _, reason := range []string{"depth", "nodes", "fanout", "links", "artifact_refs", "renderable_bytes"} {
+		found := false
+		for _, got := range result.ExhaustionReasons {
+			found = found || got == reason
+		}
+		if !found {
+			t.Fatalf("exhaustion reasons %v miss %s", result.ExhaustionReasons, reason)
+		}
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(encoded), `"omissions":{"nodes":3,"depth_nodes":2,"node_cap_nodes":1,"fanout_nodes":1,"links":1,"artifact_refs":1,"renderable_bytes":2}`) {
+		t.Fatalf("serialized omissions missing: %s err=%v", encoded, err)
+	}
+}

@@ -179,7 +179,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range requirementIDs {
 			ids = append(ids, id)
 		}
-		rows, err := s.boundary.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json
+		rows, err := s.boundary.Query(ctx, `SELECT r.id,r.title,v.version,v.content,v.statements_json,r.archived_at IS NOT NULL
 			FROM requirements r
 			JOIN requirement_versions v ON v.workspace_id=r.workspace_id
 				AND v.requirement_id=r.id AND v.version=r.current_version AND v.confirmed
@@ -191,7 +191,8 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 			var id, title, content string
 			var version int
 			var statementsJSON []byte
-			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON); err != nil {
+			var archived bool
+			if err = rows.Scan(&id, &title, &version, &content, &statementsJSON, &archived); err != nil {
 				rows.Close()
 				return store.LineageContextRecords{}, err
 			}
@@ -201,7 +202,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 				return store.LineageContextRecords{}, fmt.Errorf("decode requirement %s v%d statements: %w", id, version, err)
 			}
 			result.Requirements[id] = store.LineageContextRequirementRecord{
-				Title: title, Version: version, Content: content, Statements: statements,
+				Title: title, Version: version, Content: content, Statements: statements, Archived: archived,
 			}
 		}
 		if err = rows.Err(); err != nil {

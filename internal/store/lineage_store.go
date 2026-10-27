@@ -40,6 +40,8 @@ type LineageContextRequirementRecord struct {
 	Version    int
 	Content    string
 	Statements []core.RequirementStatement
+	// Archived flags the rendered label (component-lineage).
+	Archived bool
 }
 
 func (m *memory) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]LineageNodeRecord, error) {
@@ -133,7 +135,7 @@ func (m *memory) ListLineageContextRecords(ctx context.Context, nodes []core.Lin
 			}
 			result.Requirements[node.ID] = LineageContextRequirementRecord{
 				Title: requirement.Title, Version: version.Version, Content: version.Content,
-				Statements: append([]core.RequirementStatement(nil), version.Statements...),
+				Statements: append([]core.RequirementStatement(nil), version.Statements...), Archived: requirement.Archived,
 			}
 		}
 	}

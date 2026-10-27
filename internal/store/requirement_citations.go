@@ -41,11 +41,8 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 	if len(authorityNodes) > 0 && authorityNodes[0] > 0 {
 		limit = authorityNodes[0]
 	}
-	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: limit, MaxLinks: limit * 4, Workspace: workspace}
-	fetchBudget := budget
-	fetchBudget.MaxNodes++
-	fetchBudget.MaxLinks++
-	links, err := st.ListLineageNeighborhood(ctx, roots, fetchBudget)
+	budget := core.LineageTraversalBudget{MaxDepth: 1, MaxNodes: limit, MaxLinks: limit * 4, Workspace: workspace}.Normalized()
+	links, err := st.ListLineageNeighborhood(ctx, roots, budget)
 	if err != nil {
 		return ServedRequirementsResult{}, err
 	}
@@ -55,7 +52,9 @@ func ServedRequirementsForTask(ctx context.Context, st Store, taskID string, aut
 	}
 	authorityTruncated := false
 	for _, reason := range walk.ExhaustionReasons {
-		authorityTruncated = authorityTruncated || reason == "nodes" || reason == "links"
+		// Every budget axis fails closed: a root whose links exceed its
+		// examined prefix may hide a serves edge (component-lineage).
+		authorityTruncated = authorityTruncated || reason == "nodes" || reason == "fanout" || reason == "links"
 	}
 	if authorityTruncated {
 		return ServedRequirementsResult{}, &AuthorityBudgetError{TaskID: taskID, Limit: limit}

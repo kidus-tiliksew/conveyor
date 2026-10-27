@@ -1376,6 +1376,154 @@ func TestReviewClaimPinsRequirementVersionRenderedAfterAuthorityMoves(t *testing
 	}
 }
 
+// A claimed review order's lineage context renders the requirement version
+// its served-requirement snapshot pins, not the version confirmed after the
+// claim (component-work-orders; component-lineage; req-260802-72fc68 AC-2.1).
+func TestPinnedReviewClaimRendersPinnedRequirementVersion(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "review-lineage-pin", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-lineage-pin", Title: "Lineage pin"}, core.RequirementVersion{
+		Content: "# First prose", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First statement"}},
+		Origin: core.RequirementOriginChat, OriginSessionID: "first",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.UpdateTaskContext(ctx, task.ID, store.TaskContextChange{Add: store.TaskContextInput{RequirementIDs: []string{requirement.ID}}}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}
+	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-lineage-pin-session", ClientToken: "secret", ClaimantID: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.ServedRequirementSnapshot) != 1 || claimed.ServedRequirementSnapshot[0].Version != 1 {
+		t.Fatalf("claim snapshot=%+v", claimed.ServedRequirementSnapshot)
+	}
+	second, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Second prose", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second statement"}}, Origin: core.RequirementOriginChat, OriginSessionID: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(human, requirement.ID, second.Version, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	served := func(result Context) string {
+		t.Helper()
+		for _, item := range result.LineageContext.Items {
+			if item.SelectionReason == "served_requirement" && item.Node.ID == requirement.ID {
+				return item.Content
+			}
+		}
+		t.Fatalf("no served requirement in lineage context: %+v", result.LineageContext.Items)
+		return ""
+	}
+	pinned, err := service.Get(ctx, job.ID, "review-lineage-pin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := served(pinned); !strings.Contains(content, "(confirmed v1)") || !strings.Contains(content, "# First prose") || !strings.Contains(content, "REQ-1: First statement") || strings.Contains(content, "Second") {
+		t.Fatalf("pinned review lineage rendered %q, want v1", content)
+	}
+	// An implement order resolves live authority and renders the current version.
+	implement := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err = st.CreateJob(ctx, implement); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implement.ID, TaskID: task.ID, JobID: implement.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	live, err := service.lineageForOrder(ctx, core.WorkOrder{ID: implement.ID, TaskID: task.ID, Stage: core.StageImplement})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := served(Context{LineageContext: live}); !strings.Contains(content, "(confirmed v2)") || !strings.Contains(content, "# Second prose") {
+		t.Fatalf("live lineage rendered %q, want v2", content)
+	}
+}
+
+// ReadArtifact assembles the order's lineage selection once per read
+// (component-work-orders; component-lineage).
+func TestReadArtifactAssemblesLineageOnce(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	if err := st.CreateTask(ctx, core.Task{ID: "task-once", Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: "order-once", TaskID: "task-once", JobID: "job-once", Stage: core.StageImplement, State: core.WorkOrderQueued}
+	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "once-session", ClientToken: "secret", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := st.CreateArtifact(ctx, core.Artifact{Name: "once.txt", ContentType: "text/plain", TaskID: "task-once"}, []byte("once"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := &assemblyCountingStore{scopedContextStore: scopedContextStore{Store: st}, orderID: order.ID}
+	service := &Service{Store: guard}
+	for attempt := 1; attempt <= 2; attempt++ {
+		guard.neighborhood, guard.assemblies = 0, 0
+		read, readErr := service.ReadArtifact(ctx, order.ID, "once-session", artifact.ID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if decoded, _ := base64.StdEncoding.DecodeString(read.Data); string(decoded) != "once" {
+			t.Fatalf("read %d data=%q", attempt, decoded)
+		}
+		// One assembly rooted at the task and the order, plus the one live
+		// served-requirement authority read an implement order makes.
+		if guard.assemblies != 1 || guard.neighborhood != 2 || guard.fullLineage != 0 {
+			t.Fatalf("read %d assemblies=%d neighborhoods=%d full scans=%d, want 1, 2, 0", attempt, guard.assemblies, guard.neighborhood, guard.fullLineage)
+		}
+	}
+	guard.neighborhood, guard.assemblies = 0, 0
+	if _, err = service.ReadArtifact(ctx, order.ID, "once-session", "sha256:absent"); err == nil || !strings.Contains(err.Error(), "not found") || guard.assemblies != 1 {
+		t.Fatalf("absent artifact err=%v assemblies=%d", err, guard.assemblies)
+	}
+}
+
+// assemblyCountingStore counts context assemblies: neighborhood fetches
+// rooted at the work order itself.
+type assemblyCountingStore struct {
+	scopedContextStore
+	orderID    string
+	assemblies int
+}
+
+func (st *assemblyCountingStore) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	for _, root := range roots {
+		if root.Type == core.LineageWorkOrder && root.ID == st.orderID {
+			st.assemblies++
+		}
+	}
+	return st.scopedContextStore.ListLineageNeighborhood(ctx, roots, budget)
+}
+
 func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
