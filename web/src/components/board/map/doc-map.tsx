@@ -6,8 +6,19 @@ import { type DocIndex, mapClusters, UNATTACHED } from './docs'
 import { DONE, type GraphStatus, type GraphTask, statusMeta, type TaskGraphModel } from './graph-model'
 
 const GATES = new Set<GraphStatus>(['plan_gate', 'merge_gate', 'needs_you'])
-// Delivered first, then what is moving, then what needs a person.
-const barOrder: GraphStatus[] = ['merged', 'running', 'ready', 'plan_gate', 'merge_gate', 'needs_you', 'blocked']
+// Delivered first, then what is moving, then what needs a person, then what
+// closed undelivered: every treatment statusOf yields, so the bar fills.
+const barOrder: GraphStatus[] = [
+  'merged',
+  'running',
+  'ready',
+  'parked',
+  'plan_gate',
+  'merge_gate',
+  'needs_you',
+  'blocked',
+  'closed',
+]
 
 export interface DocCard {
   id: string

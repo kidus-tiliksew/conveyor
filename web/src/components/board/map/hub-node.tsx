@@ -75,7 +75,8 @@ function InsightToolbar({ tab, onOpen }: NonNullable<HubNodeData['insight']>) {
     </div>
   )
 }
-const summaryOrder: GraphStatus[] = ['blocked', 'plan_gate', 'merge_gate', 'needs_you', 'running', 'ready', 'waiting']
+// Every open treatment statusOf yields, the neutral one included.
+const summaryOrder: GraphStatus[] = ['blocked', 'plan_gate', 'merge_gate', 'needs_you', 'running', 'ready', 'parked']
 
 export const HubNode = memo(function HubNode({ data }: NodeProps<HubFlowNode>) {
   const { doc, stats, emphasis } = data

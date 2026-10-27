@@ -1,6 +1,6 @@
 // ELK's layered layout, run in a web worker so a few hundred tasks never stall
 // the page (DEC-76).
-import ELK from 'elkjs/lib/elk-api'
+import ELK, { type ELK as ElkApi, type ElkNode } from 'elkjs/lib/elk-api'
 import workerUrl from 'elkjs/lib/elk-worker.min.js?url'
 
 export const CARD_WIDTH = 264
@@ -8,10 +8,48 @@ export const CARD_HEIGHT = 80
 export const HUB_WIDTH = 300
 export const HUB_HEIGHT = 132
 
+// ELK answers each layout through its worker. A worker that fails to load or
+// dies answers nothing, so its error event rejects every layout in flight and
+// the next layout starts a fresh worker (component-web-task-surfaces, Board
+// map Layout failure).
+let engine: { elk: ElkApi; failed: Promise<never> } | undefined
+
+function layoutEngine() {
+  if (engine) return engine
+  let fail: (reason: Error) => void = () => undefined
+  const failed = new Promise<never>((_, reject) => {
+    fail = reject
+  })
+  // A failure no layout is waiting on is not an unhandled rejection.
+  failed.catch(() => undefined)
+  const current = {
+    elk: new ELK({
+      workerUrl,
+      workerFactory: (url) => {
+        const worker = new Worker(url as string)
+        worker.addEventListener('error', (event) => {
+          if (engine === current) engine = undefined
+          worker.terminate()
+          fail(new Error(event.message || 'The layout worker stopped.'))
+        })
+        return worker
+      },
+    }),
+    failed,
+  }
+  engine = current
+  return current
+}
+
+function runLayout<T extends ElkNode>(graph: T) {
+  const { elk, failed } = layoutEngine()
+  return Promise.race([elk.layout(graph), failed])
+}
+
 // The worker starts when the map's code loads, and a two-node layout compiles
-// its layered code, so the first real layout does not wait for either.
-const elk = new ELK({ workerUrl })
-void elk.layout({
+// its layered code, so the first real layout does not wait for either. Its
+// failure surfaces on the first real layout instead.
+runLayout({
   id: 'warm',
   layoutOptions: { 'elk.algorithm': 'layered', 'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX' },
   children: [
@@ -19,7 +57,7 @@ void elk.layout({
     { id: 'b', width: CARD_WIDTH, height: CARD_HEIGHT },
   ],
   edges: [{ id: 'a->b', sources: ['a'], targets: ['b'] }],
-})
+}).catch(() => undefined)
 
 export interface LayoutEdge {
   id: string
@@ -34,7 +72,7 @@ export interface LayoutNode {
 }
 
 export async function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], direction: 'RIGHT' | 'DOWN' = 'RIGHT') {
-  const result = await elk.layout({
+  const result = await runLayout({
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
@@ -84,7 +122,7 @@ export interface Rect {
 // The map: each document's tasks flow top to bottom into its hub, and the
 // frames are placed in the order given (req-board-map AC-1.3).
 export async function layoutClusters(clusters: ClusterInput[]) {
-  const result = await elk.layout({
+  const result = await runLayout({
     id: 'root',
     // ELK only sizes the frames; placeFrames places them.
     layoutOptions: { 'elk.algorithm': 'fixed' },

@@ -9,7 +9,6 @@ export type GraphStatus =
   | 'merge_gate'
   | 'needs_you'
   | 'running'
-  | 'waiting'
   | 'ready'
   | 'parked'
   | 'merged'
@@ -44,7 +43,8 @@ export interface TaskGraphModel {
 // The treatment follows only the stated actor, judgment flag, and kind
 // (req-board-map AC-2.1; req-operator-next-action AC-1.7). Merged and closed
 // tasks keep their terminal presentation. Waiting on another task is a
-// separate dependency mark, never a status. A requirement insight row, which
+// separate dependency mark, never a status, so GraphStatus holds exactly what
+// this returns. A requirement insight row, which
 // lists only open tasks, passes its next action alone.
 export function statusOf(item: Pick<TaskMapItem, 'next_action'> & { state?: TaskMapItem['state'] }): GraphStatus {
   const action = item.next_action
@@ -117,18 +117,115 @@ export function buildModel(items: TaskMapItem[]): TaskGraphModel {
   }
   const dependents = new Map<string, string[]>()
   for (const task of tasks.values()) {
-    for (const id of task.dependsOn) dependents.set(id, [...(dependents.get(id) ?? []), task.id])
-  }
-  const unblocks = new Map<string, number>()
-  for (const id of tasks.keys()) {
-    let open = 0
-    for (const downstream of walk(id, 'down', tasks, dependents)) {
-      const status = tasks.get(downstream)?.status
-      if (status && !DONE.has(status)) open++
+    for (const id of task.dependsOn) {
+      const list = dependents.get(id)
+      if (list) list.push(task.id)
+      else dependents.set(id, [task.id])
     }
-    unblocks.set(id, open)
   }
-  return { tasks, dependents, unblocks }
+  return { tasks, dependents, unblocks: openDownstreamCounts(tasks, dependents).counts }
+}
+
+// Each task's count of distinct open tasks downstream, in one pass per build
+// rather than a walk from every task (component-web-task-surfaces, Board map
+// Model). Tarjan's algorithm follows dependents; as each strongly connected
+// component closes, every component it reaches has closed already, so its
+// reachable open tasks are its own open members joined with theirs, kept as a
+// bitset over the open tasks. Each edge between components is relaxed once,
+// and `relaxed` counts those unions. A task counts the rest of its component,
+// and itself only on a cycle, as the walk it replaces does.
+export function openDownstreamCounts(
+  tasks: Map<string, GraphTask>,
+  dependents: Map<string, string[]>,
+): { counts: Map<string, number>; relaxed: number } {
+  const ids = [...tasks.keys()]
+  const slot = new Map(ids.map((id, index) => [id, index]))
+  const next = ids.map((id) =>
+    (dependents.get(id) ?? []).flatMap((dependent) => {
+      const index = slot.get(dependent)
+      return index === undefined ? [] : [index]
+    }),
+  )
+  // Open tasks get consecutive bits.
+  const bit = new Int32Array(ids.length).fill(-1)
+  let open = 0
+  ids.forEach((id, index) => {
+    const status = tasks.get(id)?.status
+    if (status && !DONE.has(status)) bit[index] = open++
+  })
+  const words = (open + 31) >>> 5
+  const order = new Int32Array(ids.length).fill(-1)
+  const low = new Int32Array(ids.length)
+  const component = new Int32Array(ids.length).fill(-1)
+  const onStack = new Uint8Array(ids.length)
+  const stack: number[] = []
+  const reach: Uint32Array[] = []
+  const counts = new Map<string, number>()
+  let visited = 0
+  let relaxed = 0
+  for (let root = 0; root < ids.length; root++) {
+    if (order[root] !== -1) continue
+    order[root] = low[root] = visited++
+    stack.push(root)
+    onStack[root] = 1
+    // Each frame is a task and the next of its dependents to follow.
+    const frames: Array<[number, number]> = [[root, 0]]
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1]
+      const [node, edge] = frame
+      if (edge < next[node].length) {
+        frame[1]++
+        const dependent = next[node][edge]
+        if (order[dependent] === -1) {
+          order[dependent] = low[dependent] = visited++
+          stack.push(dependent)
+          onStack[dependent] = 1
+          frames.push([dependent, 0])
+        } else if (onStack[dependent]) low[node] = Math.min(low[node], order[dependent])
+        continue
+      }
+      frames.pop()
+      if (frames.length > 0) {
+        const parent = frames[frames.length - 1][0]
+        low[parent] = Math.min(low[parent], low[node])
+      }
+      if (low[node] !== order[node]) continue
+      const id = reach.length
+      const members: number[] = []
+      let member: number
+      do {
+        member = stack.pop() as number
+        onStack[member] = 0
+        component[member] = id
+        members.push(member)
+      } while (member !== node)
+      const set = new Uint32Array(words)
+      let cyclic = members.length > 1
+      for (const index of members) {
+        if (bit[index] >= 0) set[bit[index] >>> 5] |= 1 << (bit[index] & 31)
+        for (const dependent of next[index]) {
+          if (component[dependent] === id) {
+            if (dependent === index) cyclic = true
+            continue
+          }
+          const other = reach[component[dependent]]
+          for (let word = 0; word < words; word++) set[word] |= other[word]
+          relaxed++
+        }
+      }
+      reach.push(set)
+      let size = 0
+      for (const word of set) size += popcount(word)
+      for (const index of members) counts.set(ids[index], size - (!cyclic && bit[index] >= 0 ? 1 : 0))
+    }
+  }
+  return { counts, relaxed }
+}
+
+function popcount(word: number) {
+  let value = word - ((word >>> 1) & 0x55555555)
+  value = (value & 0x33333333) + ((value >>> 2) & 0x33333333)
+  return (((value + (value >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24
 }
 
 export function walk(
@@ -157,7 +254,6 @@ export const statusMeta: Record<GraphStatus, { label: string; tone: string; ring
   merge_gate: { label: 'Merge gate', tone: 'text-attention', ring: 'border-attention-dot', dot: 'bg-attention-dot' },
   needs_you: { label: 'Needs you', tone: 'text-attention', ring: 'border-attention-dot', dot: 'bg-attention-dot' },
   running: { label: 'Running', tone: 'text-primary', ring: 'border-primary', dot: 'bg-primary' },
-  waiting: { label: 'Waiting on deps', tone: 'text-faint', ring: 'border-edge', dot: 'bg-faint' },
   ready: { label: 'Ready', tone: 'text-positive', ring: 'border-positive', dot: 'bg-positive' },
   parked: { label: 'Parked', tone: 'text-muted', ring: 'border-muted', dot: 'bg-muted' },
   merged: { label: 'Merged', tone: 'text-positive', ring: 'border-positive', dot: 'bg-positive' },
@@ -178,7 +274,6 @@ export const statusOrder: GraphStatus[] = [
   'needs_you',
   'running',
   'ready',
-  'waiting',
   'parked',
   'merged',
   'closed',
