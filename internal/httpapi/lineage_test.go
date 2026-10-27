@@ -121,7 +121,13 @@ func TestLineageHTTPReturnsBoundedTaskGraphAndTaskDetailProjection(t *testing.T)
 	if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
 		t.Fatal(err)
 	}
-	if len(graph.Roots) != 1 || graph.Roots[0].ID != task.ID || len(graph.Nodes) != 2 || len(graph.Links) != 1 || graph.Links[0].Kind != "dispatches" || graph.Truncated {
+	// The task reaches its work order and, through task.created, its own
+	// blueprint (component-lineage).
+	kinds := map[string]bool{}
+	for _, link := range graph.Links {
+		kinds[link.Kind] = true
+	}
+	if len(graph.Roots) != 1 || graph.Roots[0].ID != task.ID || len(graph.Nodes) != 3 || len(graph.Links) != 2 || !kinds["dispatches"] || !kinds["plans"] || graph.Truncated {
 		t.Fatalf("lineage graph=%+v", graph)
 	}
 
@@ -177,7 +183,9 @@ func TestLineageHTTPDistinguishesUnlinkedAndAbsentRootsAndBoundsLargeGraphs(t *t
 		t.Fatalf("unlinked status=%d body=%s", unlinked.Code, unlinked.Body.String())
 	}
 	var empty core.LineageTraversal
-	if json.Unmarshal(unlinked.Body.Bytes(), &empty) != nil || len(empty.Links) != 0 || empty.Nodes[0].Label != root.Title {
+	// A task with no delivery edges still carries the blueprint join its
+	// task.created projects (component-lineage).
+	if json.Unmarshal(unlinked.Body.Bytes(), &empty) != nil || len(empty.Links) != 1 || empty.Links[0].Kind != "plans" || empty.Nodes[0].Label != root.Title {
 		t.Fatalf("unlinked graph=%+v", empty)
 	}
 	if absent := call("/v1/lineage/task/absent"); absent.Code != http.StatusNotFound {

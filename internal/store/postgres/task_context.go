@@ -98,36 +98,37 @@ func repinTaskDesignContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries, wor
 	return nil
 }
 
-func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, input store.TaskContextInput) (map[string]int, error) {
+func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, input store.TaskContextInput) (store.TaskContextVersions, error) {
+	versions := store.TaskContextVersions{Requirements: map[string]int{}, Designs: map[string]int{}}
 	for _, id := range input.RequirementIDs {
 		var current pgtype.Int4
 		var archivedAt *time.Time
 		err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=$1 AND id=$2 FOR SHARE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: store.ContextReasonNotFound}
+			return store.TaskContextVersions{}, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
 		if err := store.ValidateContextDocument("requirement", id, int(current.Int32), archivedAt != nil); err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
+		versions.Requirements[id] = int(current.Int32)
 	}
-	versions := map[string]int{}
 	for _, id := range input.DesignIDs {
 		var current pgtype.Int4
 		var archivedAt *time.Time
 		err := tx.QueryRow(ctx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=$1 AND id=$2 FOR SHARE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: store.ContextReasonNotFound}
+			return store.TaskContextVersions{}, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
 		if err := store.ValidateContextDocument("system design", id, int(current.Int32), archivedAt != nil); err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
-		versions[id] = int(current.Int32)
+		versions.Designs[id] = int(current.Int32)
 	}
 	return versions, nil
 }
@@ -174,28 +175,31 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 		}
 		now := time.Now().UTC()
 		appendEvent := func(kind string, payload map[string]any) error {
-			return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: kind, At: now, Payload: core.JSONPayload(payload)})
+			event := core.Event{TaskID: taskID, Kind: kind, At: now, Payload: core.JSONPayload(payload)}
+			events = append(events, event)
+			return insertEvent(ctx, q, event)
 		}
 		for _, id := range add.RequirementIDs {
-			if err := appendEvent(store.TaskContextRequirementAdded, map[string]any{"id": id}); err != nil {
+			if err := appendEvent(store.TaskContextRequirementAdded, store.RequirementAttachmentPayload(id, versions.Requirements[id])); err != nil {
 				return err
 			}
 		}
+		recordedVersions := store.ActiveTaskContextRequirementVersions(events)
 		for _, id := range remove.RequirementIDs {
-			if err := appendEvent(store.TaskContextRequirementRemoved, map[string]any{"id": id}); err != nil {
+			if err := appendEvent(store.TaskContextRequirementRemoved, store.RequirementRemovalPayload(id, recordedVersions[id])); err != nil {
 				return err
 			}
 		}
 		for _, id := range add.DesignIDs {
-			if err := appendEvent(store.TaskContextDesignAdded, map[string]any{"id": id, "version": versions[id]}); err != nil {
+			if err := appendEvent(store.TaskContextDesignAdded, map[string]any{"id": id, "version": versions.Designs[id]}); err != nil {
 				return err
 			}
-			activeDesigns[id] = versions[id]
+			activeDesigns[id] = versions.Designs[id]
 		}
 		for _, id := range remove.DesignIDs {
 			version := activeDesigns[id]
 			if version == 0 {
-				version = versions[id]
+				version = versions.Designs[id]
 			}
 			if err := appendEvent(store.TaskContextDesignRemoved, map[string]any{"id": id, "version": version}); err != nil {
 				return err

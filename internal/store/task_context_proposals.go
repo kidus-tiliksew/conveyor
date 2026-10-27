@@ -140,7 +140,8 @@ func (m *memory) transitionTaskContextProposal(ctx context.Context, taskID strin
 		activeRequirements, activeDesigns := ActiveTaskContextReferences(m.events[taskID])
 		if kind == core.TaskContextProposalRequirement {
 			if !activeRequirements[targetID] {
-				m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": targetID})})
+				document := m.requirements[memoryScopedKey{workspace: task.Workspace, id: targetID}]
+				m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(RequirementAttachmentPayload(targetID, document.CurrentVersion))})
 			}
 		} else {
 			if activeDesigns[targetID] == 0 {

@@ -122,6 +122,9 @@ func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBu
 }
 
 type bundleContextVersions struct {
+	// requirements holds the confirmed version a non-pending requirement
+	// attachment records for lineage (component-lineage).
+	requirements        map[string]int
 	designs             map[string]int
 	pendingRequirements map[string]int
 	pendingDesigns      map[string]int
@@ -161,7 +164,7 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx *sql.Tx, bundle co
 	}
 	result := map[string]bundleContextVersions{}
 	for _, member := range bundle.Tasks {
-		versions := bundleContextVersions{designs: map[string]int{}, pendingRequirements: map[string]int{}, pendingDesigns: map[string]int{}, activeRequirements: map[string]int{}, activeDesigns: map[string]int{}}
+		versions := bundleContextVersions{requirements: map[string]int{}, designs: map[string]int{}, pendingRequirements: map[string]int{}, pendingDesigns: map[string]int{}, activeRequirements: map[string]int{}, activeDesigns: map[string]int{}}
 		for _, id := range member.Context.RequirementIDs {
 			if version := pendingRequirements[id]; version > 0 {
 				versions.pendingRequirements[id] = version
@@ -174,9 +177,11 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx *sql.Tx, bundle co
 				}
 				continue
 			}
-			if _, err := validateTaskContextTx(ctx, tx, bundle.Workspace, store.TaskContextInput{RequirementIDs: []string{id}}); err != nil {
+			confirmed, err := validateTaskContextTx(ctx, tx, bundle.Workspace, store.TaskContextInput{RequirementIDs: []string{id}})
+			if err != nil {
 				return nil, err
 			}
+			versions.requirements[id] = confirmed.Requirements[id]
 		}
 		for _, id := range member.Context.DesignIDs {
 			if version := pendingDesigns[id]; version > 0 {
@@ -194,7 +199,7 @@ func validatePlanningBundleContextsTx(ctx context.Context, tx *sql.Tx, bundle co
 			if err != nil {
 				return nil, err
 			}
-			versions.designs[id] = confirmed[id]
+			versions.designs[id] = confirmed.Designs[id]
 		}
 		result[member.MemberID] = versions
 	}
@@ -301,7 +306,7 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 				}
 			}
 			for _, reqID := range member.Context.RequirementIDs {
-				payload := map[string]any{"id": reqID}
+				payload := store.RequirementAttachmentPayload(reqID, contextVersions[member.MemberID].requirements[reqID])
 				if pending := contextVersions[member.MemberID].pendingRequirements[reqID]; pending > 0 {
 					payload["pending_version"], payload["unconfirmed"] = pending, true
 				}
@@ -483,8 +488,9 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 		if proposal.State != core.TaskContextProposalProposed {
 			return fmt.Errorf("%w: cannot transition %s proposal to %s", store.ErrTaskContextProposalTransition, proposal.State, target)
 		}
+		var confirmedVersions store.TaskContextVersions
 		if target == core.TaskContextProposalConfirmed {
-			if _, err := validateTaskContextTx(ctx, tx, documentWorkspace(ctx), store.TaskContextProposalInput(kind, targetID)); err != nil {
+			if confirmedVersions, err = validateTaskContextTx(ctx, tx, documentWorkspace(ctx), store.TaskContextProposalInput(kind, targetID)); err != nil {
 				return err
 			}
 		}
@@ -514,7 +520,7 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 			activeRequirements, activeDesigns := store.ActiveTaskContextReferences(events)
 			if kind == core.TaskContextProposalRequirement {
 				if !activeRequirements[targetID] {
-					if err = insertEvent(ctx, tx, core.Event{TaskID: taskID, Kind: store.TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(map[string]any{"id": targetID})}); err != nil {
+					if err = insertEvent(ctx, tx, core.Event{TaskID: taskID, Kind: store.TaskContextRequirementAdded, At: now, Payload: core.JSONPayload(store.RequirementAttachmentPayload(targetID, confirmedVersions.Requirements[targetID]))}); err != nil {
 						return err
 					}
 				}
@@ -604,36 +610,37 @@ func activatePendingTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID, 
 	return nil
 }
 
-func validateTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID string, input store.TaskContextInput) (map[string]int, error) {
+func validateTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID string, input store.TaskContextInput) (store.TaskContextVersions, error) {
+	versions := store.TaskContextVersions{Requirements: map[string]int{}, Designs: map[string]int{}}
 	for _, id := range input.RequirementIDs {
 		var current sql.NullInt32
 		var archivedAt *time.Time
 		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM requirements WHERE workspace_id=? AND id=? FOR UPDATE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: store.ContextReasonNotFound}
+			return store.TaskContextVersions{}, &store.TaskContextReferenceError{Kind: "requirement", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
 		if err := store.ValidateContextDocument("requirement", id, int(current.Int32), archivedAt != nil); err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
+		versions.Requirements[id] = int(current.Int32)
 	}
-	versions := map[string]int{}
 	for _, id := range input.DesignIDs {
 		var current sql.NullInt32
 		var archivedAt *time.Time
 		err := documentRow(ctx, tx, `SELECT current_version,archived_at FROM system_designs WHERE workspace_id=? AND id=? FOR UPDATE`, workspaceID, id).Scan(&current, &archivedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: store.ContextReasonNotFound}
+			return store.TaskContextVersions{}, &store.TaskContextReferenceError{Kind: "system design", ID: id, Reason: store.ContextReasonNotFound}
 		}
 		if err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
 		if err := store.ValidateContextDocument("system design", id, int(current.Int32), archivedAt != nil); err != nil {
-			return nil, err
+			return store.TaskContextVersions{}, err
 		}
-		versions[id] = int(current.Int32)
+		versions.Designs[id] = int(current.Int32)
 	}
 	return versions, nil
 }

@@ -137,7 +137,10 @@ func TestListLineageNeighborhoodRanksAdjacentParentsAcrossDepths(t *testing.T) {
 		insertLink(candidate.id, candidate.id+"-marker", "consulted", now.Add(time.Minute), highEventID)
 	}
 
-	budget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 1 + len(parents) + 4, Workspace: workspace}
+	// The root's own task.created projects blueprint -plans-> task, one more
+	// depth-1 node ahead of every depth-2 candidate (component-lineage).
+	const rootBlueprint = 1
+	budget := core.LineageTraversalBudget{MaxDepth: 3, MaxNodes: 1 + rootBlueprint + len(parents) + 4, Workspace: workspace}
 	links, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{{Type: core.LineageTask, ID: rootID}}, budget)
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +237,8 @@ func TestPostgresLineageRebuildClassifiesRegeneratedLegacyKeyOnlyAsProjected(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Projected != 1 || result.Existing != 0 || result.PreservedUnregenerable != 0 {
+	// The regenerated dispatches key and the task's plans edge are projected.
+	if result.Projected != 2 || result.Existing != 0 || result.PreservedUnregenerable != 0 {
 		t.Fatalf("overlapping legacy key was double-classified: %+v", result)
 	}
 }

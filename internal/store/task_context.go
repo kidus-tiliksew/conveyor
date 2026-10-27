@@ -26,6 +26,15 @@ type TaskContextInput struct {
 	DesignIDs      []string `json:"system_design_ids,omitempty"`
 }
 
+// TaskContextVersions carries the confirmed version current for each
+// validated attachment. A design pins it; a requirement records it on its
+// attachment event for lineage only and stays live in the task's read model
+// (component-task-lifecycle; component-lineage; req-260802-72fc68 AC-5.2).
+type TaskContextVersions struct {
+	Requirements map[string]int
+	Designs      map[string]int
+}
+
 type TaskContextChange struct {
 	Add    TaskContextInput `json:"add"`
 	Remove TaskContextInput `json:"remove"`
@@ -168,6 +177,66 @@ func ActiveTaskContextReferences(events []core.Event) (map[string]bool, map[stri
 		}
 	}
 	return requirements, designs
+}
+
+// ActiveTaskContextRequirementVersions folds the confirmed versions each
+// active requirement attachment recorded since its last removal, ascending.
+// A removal writer records them as `versions`, so the projector suppresses
+// every requirement_version -serves-> task edge the attachment projected
+// without looking anything up (component-lineage).
+func ActiveTaskContextRequirementVersions(events []core.Event) map[string][]int {
+	recorded := map[string]map[int]bool{}
+	for _, event := range events {
+		var payload struct {
+			ID          string `json:"id"`
+			Version     int    `json:"version"`
+			Unconfirmed bool   `json:"unconfirmed"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			continue
+		}
+		switch event.Kind {
+		case TaskContextRequirementAdded, TaskContextRequirementActive:
+			if (event.Kind == TaskContextRequirementAdded && payload.Unconfirmed) || payload.Version <= 0 {
+				continue
+			}
+			if recorded[payload.ID] == nil {
+				recorded[payload.ID] = map[int]bool{}
+			}
+			recorded[payload.ID][payload.Version] = true
+		case TaskContextRequirementRemoved:
+			delete(recorded, payload.ID)
+		}
+	}
+	result := make(map[string][]int, len(recorded))
+	for id, versions := range recorded {
+		for version := range versions {
+			result[id] = append(result[id], version)
+		}
+		sort.Ints(result[id])
+	}
+	return result
+}
+
+// RequirementAttachmentPayload is the payload of a confirmed requirement
+// attachment: its ID and, when known, the confirmed version current at that
+// moment, which projects requirement_version -serves-> task.
+func RequirementAttachmentPayload(id string, version int) map[string]any {
+	payload := map[string]any{"id": id}
+	if version > 0 {
+		payload["version"] = version
+	}
+	return payload
+}
+
+// RequirementRemovalPayload is the payload of a requirement removal: its ID
+// and every version the removed attachment recorded.
+func RequirementRemovalPayload(id string, versions []int) map[string]any {
+	payload := map[string]any{"id": id}
+	if len(versions) > 0 {
+		payload["versions"] = append([]int(nil), versions...)
+	}
+	return payload
 }
 
 // AdvancedTaskContextDesignPins returns active design attachments whose

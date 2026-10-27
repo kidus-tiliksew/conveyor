@@ -385,9 +385,10 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		suppressed := map[string]struct{}{}
 		candidateEvent := map[string]int64{}
 		ambiguous := map[string]struct{}{}
+		replay := store.NewLineageReplay()
 		for _, row := range events {
 			event := row
-			projection := store.ProjectLineageEvent(documentWorkspace(ctx), event)
+			projection := replay.Project(documentWorkspace(ctx), event)
 			links := projection.Links
 			if requirementID, version, historical := store.HistoricalRequirementConfirmation(event); historical {
 				var predecessor sql.NullInt32

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,10 +65,19 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 
 	switch event.Kind {
 	case "task.created":
-		parent, version := text("parent_task_id"), number("origin_spec_version")
-		if parent != "" && version > 0 && event.TaskID != "" {
-			return emit(link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(parent, version), core.LineageTask, event.TaskID, "materializes"))
+		if event.TaskID == "" {
+			return result
 		}
+		// The plan side (blueprint:<id>) and the delivery side (task:<id>) of
+		// one task share its ID; this join lets a walk from either reach the
+		// other (component-lineage; req-260802-72fc68 AC-5.1, AC-5.3).
+		links := []core.LineageLink{link(core.LineageBlueprint, event.TaskID, core.LineageTask, event.TaskID, "plans")}
+		if parent, version := text("parent_task_id"), number("origin_spec_version"); parent != "" && version > 0 {
+			links = append(links, link(core.LineageBlueprintVersion, core.BlueprintVersionLineageID(parent, version), core.LineageTask, event.TaskID, "materializes"))
+		}
+		return emit(links...)
+	case "task.started_over":
+		return emit(link(core.LineageTask, event.TaskID, core.LineageTask, text("successor_id"), "succeeded_by"))
 	case "task.dependency_added":
 		taskID, dependencyID := text("task_id"), text("depends_on_task_id")
 		if taskID == "" {
@@ -170,15 +180,30 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	case "requirement.serves_dismissed":
 		result.Suppresses = valid(link(core.LineageRequirement, text("requirement_id"), core.LineageBlueprint, event.TaskID, "serves"))
 		return result
-	case TaskContextRequirementAdded:
-		if boolean("unconfirmed") {
+	case TaskContextRequirementAdded, TaskContextRequirementActive:
+		if event.Kind == TaskContextRequirementAdded && boolean("unconfirmed") {
 			return result
 		}
-		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
-	case TaskContextRequirementActive:
-		return emit(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
+		// The requirement edge stays for delivery lineage and staleness; the
+		// version edge names the confirmed version the attachment recorded, so
+		// a requirement version reaches the tasks that served it
+		// (component-lineage; req-260802-72fc68 AC-5.2).
+		id := text("id")
+		links := []core.LineageLink{link(core.LineageRequirement, id, core.LineageTask, event.TaskID, "serves")}
+		if version := number("version"); id != "" && version > 0 {
+			links = append(links, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageTask, event.TaskID, "serves"))
+		}
+		return emit(links...)
 	case TaskContextRequirementRemoved:
-		result.Suppresses = valid(link(core.LineageRequirement, text("id"), core.LineageTask, event.TaskID, "serves"))
+		id := text("id")
+		suppresses := []core.LineageLink{link(core.LineageRequirement, id, core.LineageTask, event.TaskID, "serves")}
+		for _, version := range recordedRequirementVersions(payload) {
+			if id == "" {
+				break
+			}
+			suppresses = append(suppresses, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), core.LineageTask, event.TaskID, "serves"))
+		}
+		result.Suppresses = valid(suppresses...)
 		return result
 	case TaskContextDesignAdded:
 		if boolean("unconfirmed") {
@@ -192,6 +217,9 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 		return result
 	case "requirement.version_confirmed":
 		var links []core.LineageLink
+		if id, version := text("requirement_id"), number("version"); id != "" && version > 0 {
+			links = append(links, link(core.LineageRequirement, id, core.LineageRequirementVersion, core.RequirementVersionLineageID(id, version), "versions"))
+		}
 		if documentID, documentVersion := text("derived_document_id"), number("derived_document_version"); documentID != "" && documentVersion > 0 {
 			links = append(links, link(core.LineageRequirementVersion, core.RequirementVersionLineageID(text("requirement_id"), number("version")), core.LineageReferenceDocumentVersion, core.ReferenceDocumentVersionLineageID(documentID, documentVersion), "derived_from"))
 		}
@@ -314,6 +342,97 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 	return result
 }
 
+// recordedRequirementVersions reads the versions a requirement removal
+// records: every version in `versions` plus a scalar `version`, deduplicated
+// and ascending. A historical removal records none.
+func recordedRequirementVersions(payload map[string]any) []int {
+	seen := map[int]bool{}
+	add := func(raw any) {
+		switch value := raw.(type) {
+		case float64:
+			if version := int(value); version > 0 {
+				seen[version] = true
+			}
+		case string:
+			if version, err := strconv.Atoi(value); err == nil && version > 0 {
+				seen[version] = true
+			}
+		}
+	}
+	if values, ok := payload["versions"].([]any); ok {
+		for _, raw := range values {
+			add(raw)
+		}
+	}
+	add(payload["version"])
+	versions := make([]int, 0, len(seen))
+	for version := range seen {
+		versions = append(versions, version)
+	}
+	sort.Ints(versions)
+	return versions
+}
+
+// LineageReplay carries the one piece of state a rebuild needs that the
+// per-event projector cannot hold: the requirement versions replay has
+// projected as served by each task since that attachment's last removal. A
+// historical task.context_requirement_removed without recorded versions then
+// suppresses those version edges too (component-lineage; req-260802-72fc68
+// AC-1.3). Live writers record the versions on the removal itself, so only
+// rebuild needs this.
+type LineageReplay struct {
+	served map[string]map[string]core.LineageLink
+}
+
+func NewLineageReplay() *LineageReplay {
+	return &LineageReplay{served: map[string]map[string]core.LineageLink{}}
+}
+
+// Project applies the canonical projector and then the replay-only removal
+// completion described on LineageReplay.
+func (r *LineageReplay) Project(workspace string, event core.Event) LineageEventProjection {
+	projection := projectLineageEvent(workspace, event)
+	switch event.Kind {
+	case TaskContextRequirementAdded, TaskContextRequirementActive:
+		for _, link := range projection.Links {
+			if link.Kind != "serves" || link.SrcType != core.LineageRequirementVersion || link.DstType != core.LineageTask {
+				continue
+			}
+			attachment := r.attachmentKey(event)
+			if r.served[attachment] == nil {
+				r.served[attachment] = map[string]core.LineageLink{}
+			}
+			r.served[attachment][lineageLinkKey(link)] = link
+		}
+	case TaskContextRequirementRemoved:
+		attachment := r.attachmentKey(event)
+		suppressed := map[string]bool{}
+		for _, link := range projection.Suppresses {
+			suppressed[lineageLinkKey(link)] = true
+		}
+		keys := make([]string, 0, len(r.served[attachment]))
+		for key := range r.served[attachment] {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if !suppressed[key] {
+				projection.Suppresses = append(projection.Suppresses, r.served[attachment][key])
+			}
+		}
+		delete(r.served, attachment)
+	}
+	return projection
+}
+
+func (r *LineageReplay) attachmentKey(event core.Event) string {
+	var payload struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(event.Payload, &payload)
+	return event.TaskID + "\x00" + strings.TrimSpace(payload.ID)
+}
+
 func lineageLinksForEvent(workspace string, event core.Event) []core.LineageLink {
 	return projectLineageEvent(workspace, event).Links
 }
@@ -371,6 +490,7 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 	"consulted": {}, "derived_from": {},
 	"governs": {}, "proposed_by": {}, "produced_design": {},
 	"produced_bundle": {}, "proposes": {}, "creates": {},
+	"plans": {}, "succeeded_by": {},
 }
 
 // Direction is part of the vocabulary contract even though ownership is keyed
@@ -378,7 +498,9 @@ var projectorOwnedLineageKinds = map[string]struct{}{
 // task/work_order -consulted-> system_design_version, and
 // requirement_version -derived_from-> reference_document_version,
 // system_design_version -governs-> repository_path/task,
-// requirement -serves-> blueprint/task,
+// requirement/requirement_version -serves-> blueprint/task,
+// requirement -versions-> requirement_version, blueprint -plans-> task,
+// task -succeeded_by-> task,
 // system_design_version -proposed_by-> task/planning_session, and
 // planning_session -produced_design-> system_design,
 // planning_session -produced_bundle-> planning_bundle,
