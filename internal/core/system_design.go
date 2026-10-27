@@ -399,6 +399,40 @@ type GovernanceSnapshot struct {
 
 var decisionIDPattern = regexp.MustCompile(`^DEC-[1-9][0-9]*$`)
 
+var decisionTokenPattern = regexp.MustCompile(`\bDEC-[1-9][0-9]*\b`)
+
+// IsDecisionID reports whether id has the server-minted DEC-n shape.
+func IsDecisionID(id string) bool { return decisionIDPattern.MatchString(id) }
+
+// DecisionTokens returns every decision ID that content names as a whole
+// token, deduplicated and in numeric order. It applies the same word-boundary
+// rule as ContainsDecisionToken, so DEC-4 never matches inside DEC-40
+// (component-document-corpus; DEC-90(2); req-260802-72fc68 AC-6.3).
+func DecisionTokens(content string) []string {
+	seen := map[string]bool{}
+	tokens := []string{}
+	for _, token := range decisionTokenPattern.FindAllString(content, -1) {
+		if !seen[token] {
+			seen[token] = true
+			tokens = append(tokens, token)
+		}
+	}
+	SortDecisionIDs(tokens)
+	return tokens
+}
+
+// SortDecisionIDs orders DEC-n IDs by their number, so DEC-9 sorts before
+// DEC-10.
+func SortDecisionIDs(ids []string) {
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := strings.TrimPrefix(ids[i], "DEC-"), strings.TrimPrefix(ids[j], "DEC-")
+		if len(left) != len(right) {
+			return len(left) < len(right)
+		}
+		return left < right
+	})
+}
+
 func ValidateDecision(decision Decision) error {
 	if decision.ID != "" && !decisionIDPattern.MatchString(decision.ID) {
 		return fmt.Errorf("decision id must use DEC-n")

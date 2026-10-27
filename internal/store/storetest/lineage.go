@@ -32,6 +32,10 @@ type LineageFixture struct {
 	// authenticated as its operator by LineageHTTPToken; see
 	// Fixture.LineageHTTP. The dependency-removal case requires it.
 	HTTP func(*testing.T) http.Handler
+	// SeedEvents inserts events without running the projector, modelling
+	// history recorded before a projector case existed; see
+	// Fixture.SeedEvents. The decision-citation case requires it.
+	SeedEvents func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event
 }
 
 // LineageHTTPToken is the shared operator bearer each entry point configures
@@ -143,6 +147,335 @@ func RunLineageConformance(t *testing.T, factory LineageFactory) {
 	t.Run("a hub requirement serving 40 other tasks keeps the root's own outcomes", func(t *testing.T) {
 		assertHubFanoutKeepsRootOutcomes(t, fixture)
 	})
+	t.Run("a decision cited by 100 other verdicts keeps the root's own outcomes", func(t *testing.T) {
+		assertDecisionHubKeepsRootOutcomes(t, fixture)
+	})
+	// Runs last: its seeded history sits above every later event ID.
+	t.Run("decision citations from verdicts and confirmed documents are reachable and rebuild", func(t *testing.T) {
+		assertDecisionCitationLineage(t, fixture)
+	})
+}
+
+// lineageWalkHTTP reads GET /v1/lineage/{type}/{id} with the default budget.
+func lineageWalkHTTP(t *testing.T, fixture LineageFixture, handler http.Handler, root core.LineageNode) core.LineageTraversal {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/v1/lineage/"+string(root.Type)+"/"+root.ID, nil)
+	request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
+	request.Header.Set("X-Workspace-ID", fixture.Workspace)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/lineage/%s/%s status=%d body=%s", root.Type, root.ID, response.Code, response.Body.String())
+	}
+	var graph core.LineageTraversal
+	if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
+	return graph
+}
+
+// confirmedDecision proposes and confirms one operator decision.
+func confirmedDecision(t *testing.T, st store.Store, ctx context.Context, statement, supersedes string) core.Decision {
+	t.Helper()
+	decision, err := st.ProposeDecision(ctx, core.Decision{Statement: statement, Context: "Decision lineage conformance.", AlternativesRejected: "None recorded.", Origin: core.DecisionOriginOperator, Supersedes: supersedes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision, err = st.ConfirmDecision(ctx, decision.ID); err != nil {
+		t.Fatal(err)
+	}
+	return decision
+}
+
+// assertDecisionCitationLineage proves the DEC-90 relationships end to end
+// on every backend (component-lineage; req-260802-72fc68 AC-1.1, AC-1.3,
+// AC-6.1–AC-6.4). The real confirmation writers record cited_decision_ids
+// and the real review writer records the governance assessment; a decision
+// root reaches the citing versions, the verdict, its work order, its task,
+// and its pull request; and a rebuild projects a seeded historical verdict's
+// citation without new ambiguous or unsupported counts.
+func assertDecisionCitationLineage(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	if fixture.HTTP == nil || fixture.SeedEvents == nil {
+		t.Fatal("lineage fixture needs HTTP and SeedEvents for the decision-citation case")
+	}
+	handler := fixture.HTTP(t)
+	st := fixture.Store
+	ctx := store.WithActor(fixture.Context, store.Actor{ID: "operator-lineage-decisions", Role: core.ActorHuman})
+	cited := confirmedDecision(t, st, ctx, "Cite decisions from verdicts.", "")
+	retired := confirmedDecision(t, st, ctx, "A decision that will be superseded.", "")
+	successor := confirmedDecision(t, st, ctx, "Supersede the retired decision.", retired.ID)
+	uncited := confirmedDecision(t, st, ctx, "A confirmed decision nobody cites.", "")
+	// U's number followed by 0 is a different token, so it never cites U
+	// (core.DecisionTokens; DEC-4 never matches DEC-40).
+	longer := uncited.ID + "0"
+
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-decisions-" + core.NewTaskID(), Title: "Decision-citing intent"}, core.RequirementVersion{
+		Content: "# Decision-citing intent\n\nRelies on " + cited.ID + " and " + successor.ID + ".", Origin: core.RequirementOriginOperator,
+		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Name the decisions relied on."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	designID := "design-decisions-" + core.NewTaskID()
+	design, designVersion, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: designID, Title: "Decision-citing mechanism", Category: "Architecture"},
+		core.SystemDesignVersion{Content: "# Decision-citing mechanism\n\nFollows " + cited.ID + ", " + successor.ID + ", and not " + longer + ".\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/decisions/**\n```", Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designVersion.Version, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	task := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+	task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+	if err = st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: task.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": job.ID})},
+		{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "number": 4545, "base_sha": "base-" + task.ID, "head_sha": "head-" + task.ID})},
+	} {
+		if err = st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	yes := true
+	if err = For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: job.ID,
+		ReviewRound: 1, ReviewSeat: 1, Verdict: "changes_requested", ReasonCode: "other", Summary: "decision lineage", Reviewer: "decision-lineage", MaxBounces: 3,
+		GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &yes, DecisionCitable: &yes,
+			CitedIDs: []string{cited.ID, successor.ID, cited.ID, design.ID}, UnknownIDs: []string{}, UngovernedIDs: []string{},
+			SupersededIDs: []string{retired.ID}, Conflicts: []string{}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	requirementVersion := core.LineageNode{Type: core.LineageRequirementVersion, ID: core.RequirementVersionLineageID(requirement.ID, first.Version)}
+	systemDesignVersion := core.LineageNode{Type: core.LineageSystemDesignVersion, ID: core.SystemDesignVersionLineageID(design.ID, designVersion.Version)}
+	verdict := core.LineageNode{Type: core.LineageVerdict, ID: core.VerdictLineageID(job.ID)}
+	decisionNode := func(id string) core.LineageNode { return core.LineageNode{Type: core.LineageDecision, ID: id} }
+	key := func(src core.LineageNode, kind, decisionID string) string {
+		return lineageKey(core.LineageLink{SrcType: src.Type, SrcID: src.ID, DstType: core.LineageDecision, DstID: decisionID, Kind: kind})
+	}
+	stored := func(t *testing.T) map[string]core.LineageLink {
+		t.Helper()
+		links, err := st.ListLineageLinks(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]core.LineageLink{}
+		for _, link := range links {
+			out[lineageKey(link)] = link
+		}
+		return out
+	}
+	wantKeys := []string{
+		key(requirementVersion, "cites", cited.ID), key(requirementVersion, "cites", successor.ID),
+		key(systemDesignVersion, "cites", cited.ID), key(systemDesignVersion, "cites", successor.ID),
+		key(verdict, "cites", cited.ID), key(verdict, "cites", successor.ID), key(verdict, "flags_superseded", retired.ID),
+	}
+	before := stored(t)
+	decisionLinks := 0
+	for _, link := range before {
+		if link.Kind == "cites" || link.Kind == "flags_superseded" {
+			if link.DstType != core.LineageDecision {
+				t.Fatalf("decision kind ends at %v: %+v", link.DstType, link)
+			}
+			if link.SrcID == requirementVersion.ID || link.SrcID == systemDesignVersion.ID || link.SrcID == verdict.ID {
+				decisionLinks++
+			}
+		}
+		if link.SrcID == uncited.ID || link.DstID == uncited.ID {
+			t.Fatalf("an uncited confirmed decision has a link: %+v", link)
+		}
+	}
+	for _, want := range wantKeys {
+		if before[want].CreatedByEventID == 0 {
+			t.Fatalf("live writers did not project %q", want)
+		}
+	}
+	if decisionLinks != len(wantKeys) {
+		t.Fatalf("decision links from the citing nodes=%d, want exactly %d (one key per decision)", decisionLinks, len(wantKeys))
+	}
+
+	reached := func(t *testing.T, root core.LineageNode, want ...core.LineageNode) core.LineageTraversal {
+		t.Helper()
+		graph := lineageWalkHTTP(t, fixture, handler, root)
+		nodes := map[core.LineageNode]bool{}
+		for _, node := range graph.Nodes {
+			nodes[core.LineageNode{Type: node.Type, ID: node.ID}] = true
+		}
+		for _, node := range want {
+			if !nodes[node] {
+				t.Fatalf("walk from %v missed %v; reached %v", root, node, graph.Nodes)
+			}
+		}
+		return graph
+	}
+	reached(t, decisionNode(cited.ID), requirementVersion, systemDesignVersion, verdict,
+		core.LineageNode{Type: core.LineageWorkOrder, ID: job.ID}, core.LineageNode{Type: core.LineageTask, ID: task.ID},
+		core.LineageNode{Type: core.LineagePullRequest, ID: core.PullRequestLineageID("conveyor", 4545)})
+	reached(t, decisionNode(retired.ID), decisionNode(successor.ID), verdict)
+	reached(t, decisionNode(successor.ID), decisionNode(retired.ID), requirementVersion, systemDesignVersion, verdict)
+	if graph := reached(t, decisionNode(uncited.ID)); len(graph.Nodes) != 1 || len(graph.Links) != 0 {
+		t.Fatalf("uncited decision walk nodes=%v links=%v, want only the root", graph.Nodes, graph.Links)
+	}
+
+	rebuild := func(t *testing.T) core.LineageRebuildResult {
+		t.Helper()
+		result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "decision lineage conformance", RequestID: core.NewTaskID()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	baseline := rebuild(t)
+	// A verdict recorded before the decision cases existed: its event is on
+	// the ledger, and only a rebuild projects its citation.
+	historicalOrder := task.ID + "-review-historical"
+	seeded := fixture.SeedEvents(t, ctx, 0, []core.Event{{ID: 1, TaskID: task.ID, Kind: "review.completed", At: time.Now().UTC(),
+		Payload: core.JSONPayload(map[string]any{"review_work_order_id": historicalOrder, "verdict": "approve",
+			"governance_assessment": map[string]any{"design_applicable": false, "decision_citable": true, "cited_ids": []string{cited.ID}, "unknown_ids": []string{}, "ungoverned_ids": []string{}, "superseded_ids": []string{}, "conflicts": []string{}}})}})
+	historicalKey := key(core.LineageNode{Type: core.LineageVerdict, ID: core.VerdictLineageID(historicalOrder)}, "cites", cited.ID)
+	if _, ok := stored(t)[historicalKey]; ok {
+		t.Fatal("seeded history projected before rebuild")
+	}
+	restored := rebuild(t)
+	after := stored(t)
+	if after[historicalKey].CreatedByEventID != seeded[0].ID {
+		t.Fatalf("rebuild historical verdict citation=%+v, want provenance %d", after[historicalKey], seeded[0].ID)
+	}
+	if restored.Projected != baseline.Projected+2 || restored.PreservedUnregenerable != baseline.PreservedUnregenerable ||
+		restored.Ambiguous != baseline.Ambiguous || restored.Unsupported != baseline.Unsupported {
+		t.Fatalf("rebuild with history=%+v baseline=%+v, want two more projected keys (produced_verdict, cites) and nothing else", restored, baseline)
+	}
+	for _, want := range wantKeys {
+		if after[want].CreatedByEventID != before[want].CreatedByEventID {
+			t.Fatalf("rebuild key %q provenance=%d want %d", want, after[want].CreatedByEventID, before[want].CreatedByEventID)
+		}
+	}
+}
+
+// assertDecisionHubKeepsRootOutcomes proves that a decision cited by 100
+// other verdicts cannot crowd a task's own outcomes out of a default-budget
+// walk (component-lineage; req-260802-72fc68 AC-2.3, AC-2.5, AC-6.4). The
+// walk reads through ListLineageNeighborhood and GET /v1/lineage, equals a
+// traversal over every workspace link, and names one literal node set on
+// every backend.
+func assertDecisionHubKeepsRootOutcomes(t *testing.T, fixture LineageFixture) {
+	t.Helper()
+	if fixture.HTTP == nil {
+		t.Fatal("lineage fixture has no HTTP handler; the decision hub case cannot read GET /v1/lineage")
+	}
+	st := fixture.Store
+	ctx := store.WithActor(fixture.Context, store.Actor{ID: "operator-lineage-decision-hub", Role: core.ActorHuman})
+	hub := confirmedDecision(t, st, ctx, "A decision many deliveries rely on.", "")
+	newTask := func() core.Task {
+		t.Helper()
+		task := core.Task{ID: core.NewTaskID(), Workspace: fixture.Workspace, Repo: "conveyor", State: core.TaskRunning, BaseBranch: "main", CreatedAt: time.Now().UTC()}
+		task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	root, other := newTask(), newTask()
+	citing := func(workOrderID string) map[string]any {
+		return map[string]any{"review_work_order_id": workOrderID, "verdict": "approve",
+			"governance_assessment": map[string]any{"design_applicable": false, "decision_citable": true, "cited_ids": []string{hub.ID}, "unknown_ids": []string{}, "ungoverned_ids": []string{}, "superseded_ids": []string{}, "conflicts": []string{}}}
+	}
+	implementID, reviewID := root.ID+"-implement-1", root.ID+"-review-1"
+	events := []core.Event{
+		{TaskID: root.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": implementID})},
+		{TaskID: root.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "number": 4646, "base_sha": "base-" + root.ID, "head_sha": "head-" + root.ID})},
+		{TaskID: root.ID, Kind: "work_order.created", Payload: core.JSONPayload(map[string]any{"id": reviewID})},
+		{TaskID: root.ID, Kind: "review.completed", Payload: core.JSONPayload(citing(reviewID))},
+		{TaskID: root.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "conveyor", "base_sha": "merge-base-" + root.ID, "head_sha": "merge-head-" + root.ID})},
+	}
+	roles := map[core.LineageNode]string{
+		{Type: core.LineageTask, ID: root.ID}:                                                                                    "root",
+		{Type: core.LineageBlueprint, ID: root.ID}:                                                                               "root-blueprint",
+		{Type: core.LineageWorkOrder, ID: implementID}:                                                                           "root-implement",
+		{Type: core.LineageWorkOrder, ID: reviewID}:                                                                              "root-review",
+		{Type: core.LineageVerdict, ID: core.VerdictLineageID(reviewID)}:                                                         "root-verdict",
+		{Type: core.LineagePullRequest, ID: core.PullRequestLineageID("conveyor", 4646)}:                                         "root-pr",
+		{Type: core.LineageCommitRange, ID: core.CommitRangeLineageID("conveyor", "base-"+root.ID, "head-"+root.ID)}:             "root-submitted-range",
+		{Type: core.LineageCommitRange, ID: core.CommitRangeLineageID("conveyor", "merge-base-"+root.ID, "merge-head-"+root.ID)}: "root-merged-range",
+		{Type: core.LineageDecision, ID: hub.ID}:                                                                                 "decision",
+	}
+	for index := 0; index < 100; index++ {
+		workOrderID := fmt.Sprintf("%s-other-%03d", other.ID, index)
+		events = append(events, core.Event{TaskID: other.ID, Kind: "review.completed", Payload: core.JSONPayload(citing(workOrderID))})
+		roles[core.LineageNode{Type: core.LineageWorkOrder, ID: workOrderID}] = fmt.Sprintf("other-%03d", index)
+		roles[core.LineageNode{Type: core.LineageVerdict, ID: core.VerdictLineageID(workOrderID)}] = fmt.Sprintf("other-%03d-verdict", index)
+	}
+	for _, event := range events {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootNode := core.LineageNode{Type: core.LineageTask, ID: root.ID}
+	budget := core.LineageTraversalBudget{MaxDepth: config.DefaultLineageContextDepth, MaxNodes: config.DefaultLineageContextNodes,
+		MaxLinks: config.DefaultLineageContextNodes * config.DefaultLineageContextLinksPerNode, Workspace: fixture.Workspace}.Normalized()
+	fetched, err := st.ListLineageNeighborhood(ctx, []core.LineageNode{rootNode}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := core.TraverseLineage(fetched, []core.LineageNode{rootNode}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.ListLineageLinks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := core.TraverseLineage(all, []core.LineageNode{rootNode}, budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(graph.Nodes, full.Nodes) || !reflect.DeepEqual(graph.Links, full.Links) || graph.Omissions != full.Omissions || !reflect.DeepEqual(graph.ExhaustionReasons, full.ExhaustionReasons) {
+		t.Fatalf("fetched walk differs from the full walk\nfetched %+v\nfull    %+v", graph, full)
+	}
+	named := func(t *testing.T, nodes []core.LineageNode) []string {
+		t.Helper()
+		out := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			role, ok := roles[core.LineageNode{Type: node.Type, ID: node.ID}]
+			if !ok {
+				t.Fatalf("decision hub walk reached a node outside the fixture: %v", node)
+			}
+			out = append(out, role)
+		}
+		sort.Strings(out)
+		return out
+	}
+	// Default fan-out 8: the decision at depth 3 examines the root's verdict
+	// and the seven earliest other verdicts, and each of those reaches its
+	// work order at depth 5; every backend names this one set.
+	want := []string{"decision", "root", "root-blueprint", "root-implement", "root-merged-range", "root-pr", "root-review", "root-submitted-range", "root-verdict"}
+	for index := 0; index < 7; index++ {
+		want = append(want, fmt.Sprintf("other-%03d", index), fmt.Sprintf("other-%03d-verdict", index))
+	}
+	sort.Strings(want)
+	if got := named(t, graph.Nodes); !reflect.DeepEqual(got, want) {
+		t.Fatalf("decision hub walk nodes=%v\nwant %v", got, want)
+	}
+	if !graph.Truncated || graph.Omissions.FanoutNodes != 1 || !reflect.DeepEqual(graph.ExhaustionReasons, []string{"fanout"}) {
+		t.Fatalf("decision hub walk truncation=%v omissions=%+v reasons=%v", graph.Truncated, graph.Omissions, graph.ExhaustionReasons)
+	}
+	served := lineageWalkHTTP(t, fixture, fixture.HTTP(t), rootNode)
+	if got := named(t, served.Nodes); !reflect.DeepEqual(got, want) || served.Omissions != graph.Omissions || served.Budget.MaxFanout != budget.MaxFanout {
+		t.Fatalf("HTTP decision hub walk nodes=%v omissions=%+v budget=%+v\nwant %v %+v", got, served.Omissions, served.Budget, want, graph.Omissions)
+	}
 }
 
 // assertHubFanoutKeepsRootOutcomes proves that a requirement serving 40
@@ -1426,7 +1759,7 @@ func assertLineageArtifactOrderingAndBounds(t *testing.T, st store.Store, ctx co
 
 func assertCanonicalVocabulary(t *testing.T) {
 	t.Helper()
-	want := []string{"consulted", "creates", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "plans", "produced_blueprint", "produced_bundle", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "proposes", "serves", "submitted_as", "submitted_range", "succeeded_by", "supersedes", "supports", "versions"}
+	want := []string{"consulted", "creates", "depends_on", "derived_from", "dispatches", "governs", "materializes", "merged_range", "plans", "produced_blueprint", "produced_bundle", "produced_design", "produced_requirement", "produced_verdict", "proposed_by", "proposes", "serves", "submitted_as", "submitted_range", "succeeded_by", "supersedes", "supports", "versions", "cites", "flags_superseded"}
 	got := store.CanonicalLineageKinds()
 	if len(got) != len(want) {
 		t.Fatalf("canonical lineage vocabulary=%v, want %v", got, want)
