@@ -266,18 +266,28 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 			return nil, err
 		}
 	}
-	// A verdict's outcome lives on its task's review.completed record; the
-	// join reads only the named review orders' task ledgers.
-	if err := s.lineageStatusQuery(ctx, `SELECT wo.id,e.payload_json FROM work_orders wo
-		JOIN events e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed'
-		WHERE wo.workspace_id=? AND wo.id IN (%s) ORDER BY e.id`, ids[core.LineageVerdict], func(r *documentResultSet) error {
-		var orderID, payload string
-		if err := r.Scan(&orderID, &payload); err != nil {
+	// A verdict's outcome lives on its task's review.completed record. SQL
+	// keeps only the latest event naming each requested review order and
+	// returns its outcome, round, and seat, so one verdict costs one row
+	// however long the task's review history is (component-lineage).
+	if err := s.lineageStatusQuery(ctx, `SELECT x.id,x.verdict,x.review_round,x.review_seat FROM (
+			SELECT wo.id,COALESCE(JSON_EXTRACT_STRING(e.payload_json,'verdict'),'') AS verdict,
+				COALESCE(JSON_EXTRACT_BIGINT(e.payload_json,'review_round'),0) AS review_round,
+				COALESCE(JSON_EXTRACT_BIGINT(e.payload_json,'review_seat'),0) AS review_seat,
+				ROW_NUMBER() OVER (PARTITION BY wo.id ORDER BY e.id DESC) AS rn
+			FROM work_orders wo
+			JOIN events e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed' AND JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id')=wo.id
+			WHERE wo.workspace_id=? AND wo.id IN (%s)
+		) x WHERE x.rn=1`, ids[core.LineageVerdict], func(r *documentResultSet) error {
+		var orderID string
+		var status core.LineageNodeStatus
+		if err := r.Scan(&orderID, &status.Outcome, &status.ReviewRound, &status.ReviewSeat); err != nil {
 			return err
 		}
-		if status, ok := store.LineageVerdictStatus([]byte(payload), orderID); ok {
-			rows.Verdicts[orderID] = status
+		if observe := observeLineageStatusVerdictRow.Load(); observe != nil {
+			(*observe)(orderID)
 		}
+		rows.Verdicts[orderID] = status
 		return nil
 	}); err != nil {
 		return nil, err
@@ -288,6 +298,10 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 // observeLineageStatusVersionRow, when set by a test, sees each version
 // row a status read returns, so fetch bounds are checked against rows.
 var observeLineageStatusVersionRow atomic.Pointer[func(documentID string, version int)]
+
+// observeLineageStatusVerdictRow, when set by a test, sees each verdict row
+// a status read returns.
+var observeLineageStatusVerdictRow atomic.Pointer[func(orderID string)]
 
 // ListLineageKindLinks reads one kind at the named nodes through the links
 // primary key (outbound) or links_destination_idx (inbound), in

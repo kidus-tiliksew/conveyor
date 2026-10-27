@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,6 +327,18 @@ func assertLineageNodeStatusesAndOutLinks(t *testing.T, fixture LineageFixture) 
 		t.Fatalf("inbound version serves=%v err=%v", pairs(inbound), err)
 	}
 	assertLineageReadsBoundVersionHistory(t, st, ctx)
+	// A verdict reports the latest review.completed event that names its
+	// order, whatever else the task's review history holds.
+	_, orders := SeedLineageVerdictHistory(t, st, ctx, fixture.Workspace, 3, 12)
+	verdicts := []core.LineageNode{{Type: core.LineageVerdict, ID: core.VerdictLineageID(orders[0])}, {Type: core.LineageVerdict, ID: core.VerdictLineageID(orders[2])}}
+	verdictStatuses, err := st.ListLineageNodeStatuses(ctx, verdicts)
+	wantVerdicts := map[core.LineageNode]core.LineageNodeStatus{
+		verdicts[0]: {Outcome: "request_changes", ReviewRound: 1, ReviewSeat: 1},
+		verdicts[1]: {Outcome: "approve", ReviewRound: 1, ReviewSeat: 3},
+	}
+	if err != nil || !reflect.DeepEqual(verdictStatuses, wantVerdicts) {
+		t.Fatalf("verdict statuses=%+v err=%v\nwant %+v", verdictStatuses, err, wantVerdicts)
+	}
 }
 
 // SeedLineageVersionHistory creates a requirement with versions confirmed
@@ -353,6 +366,45 @@ func SeedLineageVersionHistory(t *testing.T, st store.Store, ctx context.Context
 		}
 	}
 	return requirement.ID
+}
+
+// SeedLineageVerdictHistory creates a task with orders review work orders
+// and a long review history: other seats' review.completed events, then an
+// approve and a later request_changes for the first order, then one approve
+// for each other order. It returns the task and order IDs, for backend
+// fetch-bound tests of verdict status (component-lineage).
+func SeedLineageVerdictHistory(t *testing.T, st store.Store, ctx context.Context, workspace string, orders, otherEvents int) (string, []string) {
+	t.Helper()
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	task.Branch, task.Title = "conveyor/task-"+task.ID, task.ID
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, orders)
+	for index := range ids {
+		ids[index] = fmt.Sprintf("%s-review-1-seat-%d", task.ID, index+1)
+		if err := st.CreateJob(ctx, core.Job{ID: ids[index], TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: ids[index], TaskID: task.ID, JobID: ids[index], Stage: core.StageReview, State: core.WorkOrderQueued, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	completed := func(orderID, verdict string, round, seat int) {
+		t.Helper()
+		if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.completed", Payload: core.JSONPayload(map[string]any{"review_work_order_id": orderID, "verdict": verdict, "review_round": round, "review_seat": seat, "summary": strings.Repeat("history ", 64)})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < otherEvents; index++ {
+		completed(fmt.Sprintf("%s-review-9-seat-%d", task.ID, index+1), "approve", 9, index+1)
+	}
+	completed(ids[0], "approve", 1, 1)
+	completed(ids[0], "request_changes", 1, 1)
+	for index := 1; index < orders; index++ {
+		completed(ids[index], "approve", 1, index+1)
+	}
+	return task.ID, ids
 }
 
 // assertLineageReadsBoundVersionHistory proves both reads stay bounded by

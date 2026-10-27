@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"reflect"
 	"sort"
 	"sync"
@@ -50,6 +51,51 @@ func TestLineageStatusReadsOnlyNamedVersionRowsIntegration(t *testing.T) {
 		sort.Ints(fetched)
 		if !reflect.DeepEqual(fetched, read.rows) || statuses[root].CurrentVersion != 40 {
 			t.Fatalf("nodes %v fetched version rows %v want %v; statuses=%+v", read.nodes, fetched, read.rows, statuses)
+		}
+	}
+}
+
+// TestLineageVerdictStatusReadsOneRowPerRequestedOrderIntegration seeds a
+// task with 60 other review.completed events and two for the first order.
+// A status read returns one metadata row per requested verdict, the latest
+// event's outcome, and nothing for another workspace (component-lineage).
+func TestLineageVerdictStatusReadsOneRowPerRequestedOrderIntegration(t *testing.T) {
+	st, ctx, workspace := newPhase61IntegrationStore(t)
+	defer st.Close()
+	ctx = store.WithActor(ctx, store.Actor{ID: "operator-lineage-verdict", Role: core.ActorHuman})
+	foreign := store.WithWorkspace(ctx, workspace+"-foreign")
+	_, orders := storetest.SeedLineageVerdictHistory(t, st, ctx, workspace, 3, 60)
+	var mu sync.Mutex
+	var fetched []string
+	observe := func(orderID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		fetched = append(fetched, orderID)
+	}
+	observeLineageStatusVerdictRow.Store(&observe)
+	defer observeLineageStatusVerdictRow.Store(nil)
+	verdict := func(index int) core.LineageNode {
+		return core.LineageNode{Type: core.LineageVerdict, ID: core.VerdictLineageID(orders[index])}
+	}
+	for _, read := range []struct {
+		ctx   context.Context
+		nodes []core.LineageNode
+		rows  int
+	}{
+		{ctx, []core.LineageNode{verdict(0)}, 1},
+		{ctx, []core.LineageNode{verdict(0), verdict(1), verdict(2), verdict(2)}, 3},
+		{foreign, []core.LineageNode{verdict(0)}, 0},
+	} {
+		fetched = nil
+		statuses, err := st.ListLineageNodeStatuses(read.ctx, read.nodes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fetched) != read.rows || len(statuses) != read.rows {
+			t.Fatalf("nodes %v fetched %d verdict rows (%v), want %d; statuses=%+v", read.nodes, len(fetched), fetched, read.rows, statuses)
+		}
+		if read.rows > 0 && statuses[verdict(0)] != (core.LineageNodeStatus{Outcome: "request_changes", ReviewRound: 1, ReviewSeat: 1}) {
+			t.Fatalf("latest verdict status=%+v", statuses[verdict(0)])
 		}
 	}
 }
