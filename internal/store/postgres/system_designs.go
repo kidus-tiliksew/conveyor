@@ -288,7 +288,11 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 				return err
 			}
 		}
-		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs})}); err != nil {
+		cited, citedErr := citedDecisionIDsTx(ctx, tx, confirmed.Content)
+		if citedErr != nil {
+			return citedErr
+		}
+		if err = insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.version_confirmed", Payload: core.JSONPayload(map[string]any{"workspace_id": workspace(ctx), "document_id": documentID, "version": version, "supersedes_version": currentVersion, "confirmed_by": actor.ID, "origin": confirmed.Origin, "origin_session_id": confirmed.OriginSessionID, "origin_task_id": confirmed.OriginTaskID, "governs": confirmed.Governs, "cited_decision_ids": cited})}); err != nil {
 			return err
 		}
 		if renamed {
@@ -992,6 +996,40 @@ RETURNING `+decisionSweepReturning,
 // decisionSweepReturning lists the sweep columns in scanDecisionSupersessionSweep
 // order, qualified by the statement's alias s.
 const decisionSweepReturning = `s.decision_id,s.superseded_decision_id,s.document_tier,s.document_id,s.status,s.detected_by,s.detected_at,s.resolved_by,s.resolved_at`
+
+// citedDecisionIDsTx returns the workspace decisions that confirmed content
+// names as whole tokens, in numeric order, read with one keyed query inside
+// the confirming transaction (component-document-corpus; DEC-90(2);
+// req-260802-72fc68 AC-6.3).
+func citedDecisionIDsTx(ctx context.Context, tx pgx.Tx, content string) ([]string, error) {
+	tokens := core.DecisionTokens(content)
+	if len(tokens) == 0 {
+		return tokens, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT id FROM decisions WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), tokens)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	known := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		known[id] = true
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	cited := make([]string, 0, len(tokens))
+	for _, id := range tokens {
+		if known[id] {
+			cited = append(cited, id)
+		}
+	}
+	return cited, nil
+}
 
 func recomputeDecisionSweepsForDocumentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, tier, documentID, content string) error {
 	exists, err := decisionSupersessionSweepTableExistsTx(ctx, tx)

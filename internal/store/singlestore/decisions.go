@@ -287,6 +287,40 @@ func recomputeDecisionSupersessionSweepTx(ctx context.Context, tx *sql.Tx, decis
 	return nil
 }
 
+// citedDecisionIDsTx returns the workspace decisions that confirmed content
+// names as whole tokens, in numeric order, read with one keyed query inside
+// the confirming transaction (component-document-corpus; DEC-90(2);
+// req-260802-72fc68 AC-6.3).
+func citedDecisionIDsTx(ctx context.Context, tx *sql.Tx, content string) ([]string, error) {
+	tokens := core.DecisionTokens(content)
+	if len(tokens) == 0 {
+		return tokens, nil
+	}
+	rows, err := documentBatchRows(ctx, tx, `SELECT id FROM decisions WHERE workspace_id=? AND id IN (%s)`, documentWorkspace(ctx), tokens)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	known := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		known[id] = true
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	cited := make([]string, 0, len(tokens))
+	for _, id := range tokens {
+		if known[id] {
+			cited = append(cited, id)
+		}
+	}
+	return cited, nil
+}
+
 func recomputeDecisionSweepsForDocumentTx(ctx context.Context, tx *sql.Tx, tier, documentID, content string) error {
 	rows, err := documentRows(ctx, tx, `SELECT id,supersedes FROM decisions WHERE workspace_id=? AND supersedes IS NOT NULL AND confirmed_at IS NOT NULL`, documentWorkspace(ctx))
 	if err != nil {

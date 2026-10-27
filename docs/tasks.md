@@ -316,6 +316,8 @@ task                  --dispatches-->       work_order
 work_order / task / planning_session --consulted--> system_design_version
 planning_session      --consulted-->        reference_document_version
 work_order            --produced_verdict--> verdict  <--supports-- evidence
+verdict / requirement_version / system_design_version --cites--> decision
+verdict               --flags_superseded--> decision
 task                  --submitted_as-->     pull_request
 task                  --submitted_range / merged_range--> commit_range
 ```
@@ -326,7 +328,11 @@ delivery served. Attachments recorded before that field existed carry only
 `requirement --serves--> task`. `blueprint --plans--> task` joins a task's
 plan side (its planning session and plan versions) to its delivery side (its
 work orders, pull requests, and ranges). `task --succeeded_by--> task` links a
-task that was started over to its replacement.
+task that was started over to its replacement. A verdict cites the confirmed
+decisions its governance assessment names and flags the superseded ones it
+found, and a confirmed requirement or System Design version cites the
+decisions its content names, so a decision reaches the documents and reviewed
+deliveries that rely on it (DEC-90).
 
 So a merged change answers, from the graph alone: which requirement versions
 it served (for attachments that recorded one), which designs governed it and

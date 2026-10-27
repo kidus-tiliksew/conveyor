@@ -458,6 +458,9 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 		if stored.DerivedFrom != nil {
 			payload["derived_document_id"], payload["derived_document_version"], payload["derived_section_anchor"], payload["derived_target_id"] = stored.DerivedFrom.DocumentID, stored.DerivedFrom.Version, stored.DerivedFrom.SectionAnchor, stored.DerivedFrom.TargetID
 		}
+		if payload["cited_decision_ids"], err = citedDecisionIDsTx(ctx, tx, stored.Content); err != nil {
+			return err
+		}
 		if err = insertRequirementEvent(ctx, q, "requirement.version_confirmed", payload); err != nil {
 			return err
 		}

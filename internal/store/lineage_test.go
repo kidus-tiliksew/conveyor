@@ -515,3 +515,85 @@ func mustMemoryLineageLinks(t *testing.T, st *memory, ctx context.Context) []cor
 	}
 	return links
 }
+
+// TestLineageProjectorLinksVerdictsAndConfirmedVersionsToDecisions pins the
+// DEC-90 decision cases: a verdict's recorded governance assessment and a
+// confirmation's recorded cited_decision_ids are the only sources, each
+// decision yields one key, and anything else projects nothing
+// (component-lineage; req-260802-72fc68 AC-6.1, AC-6.2, AC-6.3).
+func TestLineageProjectorLinksVerdictsAndConfirmedVersionsToDecisions(t *testing.T) {
+	t.Parallel()
+	yes, no := true, false
+	// The real writers marshal *core.GovernanceAssessment into the payload.
+	assessment := &core.GovernanceAssessment{DesignApplicable: &yes, DecisionCitable: &yes,
+		CitedIDs: []string{"DEC-10", "component-lineage", " DEC-9 ", "DEC-10"}, UnknownIDs: []string{"DEC-77"},
+		UngovernedIDs: []string{}, SupersededIDs: []string{"DEC-12"}, Conflicts: []string{}}
+	project := func(t *testing.T, kind string, payload map[string]any) LineageEventProjection {
+		t.Helper()
+		raw, err := json.Marshal(core.Event{ID: 41, TaskID: "task-1", Kind: kind, Payload: core.JSONPayload(payload), At: time.Now().UTC()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var event core.Event
+		if err = json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		return ProjectLineageEvent("demo", event)
+	}
+	decisionLinks := func(projection LineageEventProjection) []string {
+		var out []string
+		for _, link := range projection.Links {
+			if link.DstType == core.LineageDecision {
+				out = append(out, string(link.SrcType)+":"+link.SrcID+" -"+link.Kind+"-> "+link.DstID)
+			}
+		}
+		return out
+	}
+	verdict := project(t, "review.completed", map[string]any{"review_work_order_id": "review-1", "governance_assessment": assessment})
+	if got, want := decisionLinks(verdict), []string{
+		"verdict:review:review-1 -cites-> DEC-9", "verdict:review:review-1 -cites-> DEC-10",
+		"verdict:review:review-1 -flags_superseded-> DEC-12",
+	}; !reflect.DeepEqual(got, want) || verdict.Unsupported != 0 {
+		t.Fatalf("verdict decision links=%v unsupported=%d, want %v", got, verdict.Unsupported, want)
+	}
+	for name, payload := range map[string]map[string]any{
+		"no assessment":         {"review_work_order_id": "review-2"},
+		"pinned but uncited":    {"review_work_order_id": "review-3", "governance_assessment": &core.GovernanceAssessment{DesignApplicable: &no, DecisionCitable: &yes, CitedIDs: []string{}, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}}},
+		"null assessment":       {"review_work_order_id": "review-4", "governance_assessment": nil},
+		"no review work order":  {"governance_assessment": assessment},
+		"design citations only": {"review_work_order_id": "review-5", "governance_assessment": map[string]any{"cited_ids": []string{"component-lineage"}, "superseded_ids": []string{"DEC-0", "DEC-x"}}},
+	} {
+		projection := project(t, "review.completed", payload)
+		if got := decisionLinks(projection); len(got) != 0 {
+			t.Fatalf("%s projected decision links %v", name, got)
+		}
+		if name == "no review work order" && projection.Unsupported != 1 {
+			t.Fatalf("a verdict without a review work order counted unsupported=%d, want only its produced_verdict link", projection.Unsupported)
+		}
+	}
+
+	cited := []string{"DEC-4", "DEC-40", "DEC-4"}
+	requirement := project(t, "requirement.version_confirmed", map[string]any{"requirement_id": "req-1", "version": 3, "supersedes_version": 2, "cited_decision_ids": cited})
+	if got, want := decisionLinks(requirement), []string{"requirement_version:req-1:v3 -cites-> DEC-4", "requirement_version:req-1:v3 -cites-> DEC-40"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requirement version decision links=%v want %v", got, want)
+	}
+	first := project(t, "requirement.version_confirmed", map[string]any{"requirement_id": "req-2", "version": 1, "supersedes_version": 0, "cited_decision_ids": []string{"DEC-1"}})
+	if got, want := decisionLinks(first), []string{"requirement_version:req-2:v1 -cites-> DEC-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first requirement version decision links=%v want %v", got, want)
+	}
+	design := project(t, "system_design.version_confirmed", map[string]any{"document_id": "component-lineage", "version": 16, "supersedes_version": 15, "cited_decision_ids": cited})
+	if got, want := decisionLinks(design), []string{"system_design_version:component-lineage:v16 -cites-> DEC-4", "system_design_version:component-lineage:v16 -cites-> DEC-40"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("design version decision links=%v want %v", got, want)
+	}
+	for _, kind := range []string{"requirement.version_confirmed", "system_design.version_confirmed"} {
+		historical := project(t, kind, map[string]any{"requirement_id": "req-1", "document_id": "component-lineage", "version": 2, "supersedes_version": 1})
+		if got := decisionLinks(historical); len(got) != 0 {
+			t.Fatalf("historical %s without cited_decision_ids projected %v", kind, got)
+		}
+	}
+	for _, kind := range []string{"cites", "flags_superseded"} {
+		if !projectorOwnsLineageKind(kind) {
+			t.Fatalf("projector does not own %q, so rebuild would not regenerate it", kind)
+		}
+	}
+}
