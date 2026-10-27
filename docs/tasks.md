@@ -341,8 +341,9 @@ reports what it left out, axis by axis, because an unbounded graph walk is how
 context windows and API latencies die. A popular node, such as a requirement
 that serves many tasks, contributes at most its fan-out, so a task's own work
 orders, verdicts, pull requests, and ranges arrive ahead of the siblings
-reached through it. The store reads only the links the walk examines, so a
-walk costs the same whatever the workspace's size. A review or verify order
+reached through it. Each store reads only the links of the nodes the walk
+reaches and returns at most a fixed number per node, so a walk's cost does
+not grow with unrelated parts of the workspace. A review or verify order
 shows each served requirement at the version its claim pinned. The
 dashboard's knowledge explorer is the same bounded traversal, rendered.
 

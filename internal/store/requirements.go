@@ -604,7 +604,7 @@ func (m *memory) DismissRequirementServes(ctx context.Context, blueprintTaskID, 
 	proposal, err := m.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalDismissed, true)
 	if err == nil {
 		m.mu.Lock()
-		delete(m.lineage, lineageLinkKey(core.LineageLink{Workspace: proposal.Workspace, SrcType: core.LineageRequirement, SrcID: proposal.TargetID, DstType: core.LineageBlueprint, DstID: proposal.TaskID, Kind: "serves"}))
+		m.lineage.remove(lineageLinkKey(core.LineageLink{Workspace: proposal.Workspace, SrcType: core.LineageRequirement, SrcID: proposal.TargetID, DstType: core.LineageBlueprint, DstID: proposal.TaskID, Kind: "serves"}))
 		m.mu.Unlock()
 	}
 	return requirementServesFromProposal(proposal), err
