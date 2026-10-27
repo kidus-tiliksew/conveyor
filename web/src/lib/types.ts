@@ -563,6 +563,23 @@ export interface LineageNode {
   type: LineageNodeType
   id: string
   label?: string
+  // Present when the walk is read with include=depth,path,status
+  // (component-lineage). depth counts edges from the root; edge_path is the
+  // walk's links from the root to this node.
+  depth?: number
+  edge_path?: LineageLink[]
+  status?: LineageNodeStatus
+}
+// The bounded status projection of one lineage node. Each field applies only
+// to the node types that carry it.
+export interface LineageNodeStatus {
+  state?: string
+  version_status?: 'current' | 'superseded' | 'proposed' | 'dismissed' | string
+  current_version?: number
+  archived?: boolean
+  outcome?: string
+  review_round?: number
+  review_seat?: number
 }
 export interface LineageLink {
   workspace: string
@@ -579,9 +596,34 @@ export interface LineageGraph {
   nodes: LineageNode[]
   links: LineageLink[]
   truncated: boolean
-  budget?: { max_depth: number; max_nodes: number; max_links?: number }
+  budget?: { max_depth: number; max_nodes: number; max_links?: number; max_fanout?: number }
   omitted_nodes?: number
   omitted_links?: number
+  exhaustion_reasons?: string[]
+  omissions?: { depth_nodes: number; node_cap_nodes: number; fanout_nodes: number; links: number }
+}
+// One version-to-task edge of GET /v1/lineage/{type}/{id}/impact.
+export interface LineageImpactEntry {
+  version?: number
+  version_node?: LineageNode
+  version_status: string
+  relation: string
+  task: LineageNode
+  task_state?: string
+  merged_ranges?: string[]
+  created_by_event_id: number
+}
+export interface LineageImpact {
+  root: LineageNode
+  current_version: number
+  archived?: boolean
+  outdated_only: boolean
+  items: LineageImpactEntry[]
+  total: number
+  limit: number
+  offset: number
+  next_offset?: number
+  truncated: boolean
   exhaustion_reasons?: string[]
 }
 

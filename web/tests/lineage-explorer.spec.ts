@@ -231,11 +231,19 @@ async function initShell(page: Page) {
 interface Options {
   /** Lineage roots that answer with a walk carrying no related records. */
   empty?: boolean
-  /** Every lineage request the page made, with its auth header and workspace. */
-  reads?: Array<{ path: string; authorization?: string; workspace: string | null }>
+  /**
+   * Every lineage walk that delivered a response, with its auth header,
+   * workspace, and includes. Reads consume the query's abort signal, so
+   * StrictMode's discarded first mount aborts a read that never reaches the
+   * page and is not counted.
+   */
+  reads?: Array<{ path: string; authorization?: string; workspace: string | null; include?: string | null }>
   parentTaskId?: string
   lineageDelayMs?: number
   lineageFailure?: boolean
+  /** The impact read's answer, and every impact request with its query. */
+  impact?: unknown
+  impactReads?: Array<{ path: string; workspace: string | null; outdated: string | null }>
   /** Replaces the populated walk with a caller-built graph. */
   graph?: (rootType: string, rootId: string) => unknown
   /** Every evidence download, with the workspace it named. */
@@ -245,6 +253,23 @@ interface Options {
 }
 
 async function routeAPI(page: Page, options: Options = {}) {
+  page.on('requestfinished', (request) => {
+    const url = new URL(request.url())
+    if (/^\/v1\/lineage\/[^/]+\/[^/]+\/impact$/.test(url.pathname)) {
+      options.impactReads?.push({
+        path: url.pathname,
+        workspace: url.searchParams.get('workspace_id'),
+        outdated: url.searchParams.get('outdated'),
+      })
+    } else if (/^\/v1\/lineage\/[^/]+\/.+$/.test(url.pathname)) {
+      options.reads?.push({
+        path: url.pathname,
+        authorization: request.headers().authorization,
+        workspace: url.searchParams.get('workspace_id'),
+        include: url.searchParams.get('include'),
+      })
+    }
+  })
   await serveNextActionsFromActivity(page)
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -279,14 +304,13 @@ async function routeAPI(page: Page, options: Options = {}) {
           },
         },
       })
+    const impact = /^\/v1\/lineage\/([^/]+)\/([^/]+)\/impact$/.exec(path)
+    if (impact) {
+      return route.fulfill({ json: options.impact ?? { items: [], total: 0, truncated: false } })
+    }
     const lineage = /^\/v1\/lineage\/([^/]+)\/(.+)$/.exec(path)
     if (lineage) {
       const [rootType, rootId] = [decodeURIComponent(lineage[1]), decodeURIComponent(lineage[2])]
-      options.reads?.push({
-        path,
-        authorization: request.headers().authorization,
-        workspace: url.searchParams.get('workspace_id'),
-      })
       if (options.lineageDelayMs) await new Promise((resolve) => setTimeout(resolve, options.lineageDelayMs))
       if (options.lineageFailure) {
         return route.fulfill({ status: 503, body: 'Lineage temporarily unavailable.' })
@@ -337,9 +361,11 @@ test('the task Knowledge explorer makes one canonical bounded read on demand', a
   expect(reads[0].path).toBe(`/v1/lineage/task/${taskId}`)
   expect(reads[0].authorization).toBeUndefined()
   expect(reads[0].workspace).toBe('demo')
+  expect(reads[0].include).toBe('depth,path,status')
 
-  // The server bounded the walk, and the panel says so (7 = 3 nodes + 4 links).
-  await expect(panel.getByText('This is a bounded view: 7 further connections were not read.')).toBeVisible()
+  // The server bounded the walk, and the panel says so.
+  await expect(panel.getByText('This is a bounded view.')).toBeVisible()
+  await expect(panel.getByText('3 further records and 4 further links were not read.')).toBeVisible()
   // Opening the panel is not navigation.
   expect(new URL(page.url()).pathname).toBe(`/tasks/${taskId}/full`)
   await panel.getByRole('button', { name: 'Close Knowledge explorer' }).click()
@@ -406,8 +432,16 @@ test('lineage renders work documents delivery and evidence', async ({ page }) =>
     'href',
     '/system-design?document=design-dispatch&target=3',
   )
-  // Record and version nodes fold into one entry per document.
-  await expect(documents.getByRole('link')).toHaveCount(5)
+  // Record and version nodes fold into one entry per document, and each
+  // returned version is its own row under that entry.
+  await expect(documents.getByRole('link')).toHaveCount(8)
+  await expect(documents.getByRole('list', { name: 'Versions of Retry behavior' }).getByRole('link')).toHaveAttribute(
+    'href',
+    '/requirements?requirement=req-retries&target=2',
+  )
+  // A reference document is labelled as one, not as a product overview.
+  await expect(documents.getByRole('link', { name: /Retry overview/ })).toContainText('Reference document')
+  await expect(panel.getByText('Product overview')).toHaveCount(0)
 
   const delivery = panel.getByRole('region', { name: 'Delivery' })
   const pullRequest = delivery.getByRole('link', { name: /conveyor#284/ })
@@ -499,7 +533,7 @@ test('lineage links only returned ownership', async ({ page }) => {
     ['Orphaned verdict', 'No returned links name the work order and task behind this verdict.'],
     ['Orphaned bundle', 'No returned link names the planning session that produced this bundle.'],
     ['Ungoverned path', 'No returned System Design version governs this path.'],
-    ['Unversioned overview', 'No returned version of this product overview can be opened.'],
+    ['Unversioned overview', 'No returned version of this reference document can be opened.'],
     ['Legacy pull request 42', 'Not a canonical owner/repository#number identity'],
     ['Pull request without owner', 'Not a canonical owner/repository#number identity'],
     ['Traversing pull request', 'Not a canonical owner/repository#number identity'],
@@ -544,7 +578,11 @@ test('lineage preserves versions peers and bounded notices', async ({ page }) =>
   const current = documents.locator('[aria-current="true"]')
   await expect(current).toHaveCount(1)
   await expect(current).toContainText('Retry behavior')
-  await expect(current).toContainText('Versions v1, v2')
+  // Each returned version is listed on its own row, newest first.
+  await expect(documents.getByRole('list', { name: 'Versions of Retry behavior' }).locator(':scope > li')).toHaveText([
+    /v2/,
+    /v1/,
+  ])
 
   const peer = documents.getByRole('link', { name: /Budget limits/ })
   await expect(peer).toHaveAttribute('href', '/requirements?requirement=req-budget&target=5')
@@ -559,6 +597,287 @@ test('lineage preserves versions peers and bounded notices', async ({ page }) =>
   ).toHaveAttribute('href', '/tasks/task-unlabelled/full')
   // Truncated without omitted counts still says the view is bounded.
   await expect(panel.getByText('This is a bounded view.')).toBeVisible()
+})
+
+// A walk node as the server renders it with include=depth,path,status: its
+// depth counts the edge path's links from the root.
+function walked(type: string, id: string, label: string, path: unknown[], status?: unknown) {
+  return { type, id, label, depth: path.length, edge_path: path, ...(status ? { status } : {}) }
+}
+
+// Root-relative grouping: a task's own verdict and pull request stay with the
+// record, while a sibling task's, reached through a shared requirement, are
+// listed under "Through other tasks" and name that task. Verdicts show their
+// returned outcome, round, and seat.
+test('lineage groups entries relative to the root and names the task they come through', async ({ page }) => {
+  await initShell(page)
+  const toRequirement = link('requirement', 'req-retries', 'task', taskId, 'serves', 1)
+  const toSibling = link('requirement', 'req-retries', 'task', 'task-neighbour', 'serves', 2)
+  const ownOrder = link('task', taskId, 'work_order', `${taskId}-review-1`, 'dispatches', 3)
+  const ownVerdict = link(
+    'work_order',
+    `${taskId}-review-1`,
+    'verdict',
+    `review:${taskId}-review-1`,
+    'produced_verdict',
+    4,
+  )
+  const ownPull = link('task', taskId, 'pull_request', 'kidus-tiliksew/conveyor#284', 'opened', 5)
+  const siblingOrder = link('task', 'task-neighbour', 'work_order', 'task-neighbour-review-1', 'dispatches', 6)
+  const siblingVerdict = link(
+    'work_order',
+    'task-neighbour-review-1',
+    'verdict',
+    'review:task-neighbour-review-1',
+    'produced_verdict',
+    7,
+  )
+  const siblingPull = link('task', 'task-neighbour', 'pull_request', 'kidus-tiliksew/conveyor#300', 'opened', 8)
+  await routeAPI(page, {
+    graph: (rootType, rootId) => ({
+      roots: [{ type: rootType, id: rootId, label: 'Bound the retry loop' }],
+      nodes: [
+        walked(rootType, rootId, 'Bound the retry loop', [], { state: 'running' }),
+        walked('requirement', 'req-retries', 'Retry behavior', [toRequirement]),
+        walked('task', 'task-neighbour', 'Serve the retry limit', [toRequirement, toSibling], { state: 'merged' }),
+        walked('work_order', `${taskId}-review-1`, 'review work order for task-explorer', [ownOrder]),
+        walked('verdict', `review:${taskId}-review-1`, `Review verdict ${taskId}-review-1`, [ownOrder, ownVerdict], {
+          outcome: 'approve',
+          review_round: 2,
+          review_seat: 1,
+        }),
+        walked('pull_request', 'kidus-tiliksew/conveyor#284', 'Pull request kidus-tiliksew/conveyor#284', [ownPull]),
+        walked('work_order', 'task-neighbour-review-1', 'review work order for task-neighbour', [
+          toRequirement,
+          toSibling,
+          siblingOrder,
+        ]),
+        walked(
+          'verdict',
+          'review:task-neighbour-review-1',
+          'Review verdict task-neighbour-review-1',
+          [toRequirement, toSibling, siblingOrder, siblingVerdict],
+          { outcome: 'changes_requested', review_round: 1, review_seat: 2 },
+        ),
+        walked('pull_request', 'kidus-tiliksew/conveyor#300', 'Pull request kidus-tiliksew/conveyor#300', [
+          toRequirement,
+          toSibling,
+          siblingPull,
+        ]),
+      ],
+      links: [toRequirement, toSibling, ownOrder, ownVerdict, ownPull, siblingOrder, siblingVerdict, siblingPull],
+      truncated: false,
+    }),
+  })
+
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  const delivery = panel.getByRole('region', { name: 'Delivery', exact: true })
+  const deliveryThrough = panel.getByRole('region', { name: 'Delivery through other tasks' })
+
+  // The task's own verdict shows its returned outcome, round, and seat
+  // instead of "Review verdict <id>", and no "via".
+  const ownVerdictEntry = delivery.getByRole('link', { name: /^Review verdict Approved/ })
+  await expect(ownVerdictEntry).toContainText('Review round 2, seat 1')
+  await expect(ownVerdictEntry).not.toContainText('via')
+  await expect(ownVerdictEntry).toHaveAttribute('href', `/tasks/${taskId}/full`)
+  await expect(delivery.getByText(`Review verdict ${taskId}-review-1`)).toHaveCount(0)
+  await expect(deliveryThrough.getByRole('link', { name: /conveyor#284/ })).toHaveCount(0)
+
+  // The sibling's verdict and pull request come through the sibling task.
+  const siblingVerdictEntry = deliveryThrough.getByRole('link', { name: /Changes requested/ })
+  await expect(siblingVerdictEntry).toContainText('Review round 1, seat 2')
+  await expect(siblingVerdictEntry).toContainText('via Serve the retry limit')
+  await expect(siblingVerdictEntry).toHaveAttribute('href', '/tasks/task-neighbour/full')
+  await expect(deliveryThrough.getByRole('link', { name: /conveyor#300/ })).toContainText('via Serve the retry limit')
+
+  // The sibling task itself is reached through the requirement, not through
+  // another task, so it stays in the group's own list; its work order does not.
+  const work = panel.getByRole('region', { name: 'Work', exact: true })
+  await expect(work.getByRole('link', { name: /Serve the retry limit/ }).first()).toHaveAttribute(
+    'href',
+    '/tasks/task-neighbour/full',
+  )
+  await expect(
+    panel.getByRole('region', { name: 'Work through other tasks' }).getByRole('link', {
+      name: /review work order for task-neighbour/,
+    }),
+  ).toContainText('via Serve the retry limit')
+  await expect(panel.getByRole('region', { name: 'Documents through other tasks' })).toHaveCount(0)
+})
+
+// Each returned version is listed with its returned status and the tasks a
+// returned serves link from it names, with their state. Requirement detail
+// offers the impact read's "merged on an older version" view.
+test('lineage lists each version with its status and served tasks and offers the impact view', async ({ page }) => {
+  await initShell(page)
+  const reads: Options['reads'] = []
+  const impactReads: Options['impactReads'] = []
+  const v1 = link('requirement', 'req-retries', 'requirement_version', 'req-retries:v1', 'versions', 1)
+  const v2 = link('requirement', 'req-retries', 'requirement_version', 'req-retries:v2', 'versions', 2)
+  const v3 = link('requirement', 'req-retries', 'requirement_version', 'req-retries:v3', 'versions', 3)
+  const servesOld = link('requirement_version', 'req-retries:v1', 'task', 'task-old', 'serves', 4)
+  const servesNew = link('requirement_version', 'req-retries:v2', 'task', taskId, 'serves', 5)
+  const peer = link('task', taskId, 'system_design_version', 'design-retired:v2', 'governed_by', 6)
+  await routeAPI(page, {
+    reads,
+    impactReads,
+    graph: (rootType, rootId) => ({
+      roots: [{ type: rootType, id: rootId, label: 'Retry behavior' }],
+      nodes: [
+        walked(rootType, rootId, 'Retry behavior', [], { current_version: 2 }),
+        walked('requirement_version', 'req-retries:v1', 'Retry behavior v1', [v1], {
+          version_status: 'superseded',
+          current_version: 2,
+        }),
+        walked('requirement_version', 'req-retries:v2', 'Retry behavior v2', [v2], {
+          version_status: 'current',
+          current_version: 2,
+        }),
+        walked('requirement_version', 'req-retries:v3', 'Retry behavior v3', [v3], {
+          version_status: 'dismissed',
+          current_version: 2,
+        }),
+        walked('task', 'task-old', 'Old retry task', [v1, servesOld], { state: 'merged' }),
+        walked('task', taskId, 'Bound the retry loop', [v2, servesNew], { state: 'running' }),
+        walked('system_design_version', 'design-retired:v2', 'Retired design v2', [v2, servesNew, peer], {
+          version_status: 'superseded',
+          current_version: 3,
+          archived: true,
+        }),
+      ],
+      links: [v1, v2, v3, servesOld, servesNew, peer],
+      truncated: false,
+    }),
+    impact: {
+      root: { type: 'requirement', id: 'req-retries' },
+      current_version: 2,
+      outdated_only: true,
+      items: [
+        {
+          version: 1,
+          version_status: 'superseded',
+          relation: 'serves',
+          task: { type: 'task', id: 'task-old', label: 'Old retry task' },
+          task_state: 'merged',
+          created_by_event_id: 4,
+        },
+      ],
+      total: 3,
+      limit: 100,
+      offset: 0,
+      next_offset: 1,
+      truncated: true,
+      exhaustion_reasons: ['tasks'],
+    },
+  })
+
+  await page.goto('/requirements')
+  await expect(page.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  const documents = panel.getByRole('region', { name: 'Documents', exact: true })
+
+  const versions = documents.getByRole('list', { name: 'Versions of Retry behavior' })
+  const rows = versions.locator(':scope > li')
+  await expect(rows).toHaveCount(3)
+  await expect(rows.nth(0)).toContainText('v3 dismissed')
+  await expect(rows.nth(1)).toContainText('v2 current')
+  await expect(rows.nth(2)).toContainText('v1 superseded')
+  await expect(rows.nth(2).getByRole('link', { name: /v1/ })).toHaveAttribute(
+    'href',
+    '/requirements?requirement=req-retries&target=1',
+  )
+  // Each version names the tasks it serves, with their returned state.
+  const onV1 = versions.getByRole('list', { name: 'Tasks on v1' })
+  await expect(onV1.getByRole('link', { name: 'Old retry task' })).toHaveAttribute('href', '/tasks/task-old/full')
+  await expect(onV1).toContainText('Merged')
+  await expect(versions.getByRole('list', { name: 'Tasks on v2' })).toContainText('Running')
+  await expect(versions.getByRole('list', { name: 'Tasks on v3' })).toHaveCount(0)
+
+  // An archived peer says so beside its returned version status.
+  const retired = documents.getByRole('link', { name: /Retired design/ })
+  await expect(retired).toContainText('Archived')
+  await expect(documents.getByRole('list', { name: 'Versions of Retired design v2' })).toContainText('v2 superseded')
+
+  // The impact view is offered, not read, until asked for.
+  expect(impactReads).toHaveLength(0)
+  await documents.getByRole('button', { name: 'Show work merged on an older version' }).click()
+  const impact = documents.getByRole('region', { name: 'Merged on an older version' })
+  await expect(impact.getByRole('link', { name: 'Old retry task' })).toHaveAttribute('href', '/tasks/task-old/full')
+  await expect(impact).toContainText('v1 superseded · Merged')
+  await expect(impact).toContainText('Showing 1 of 3.')
+  await expect(impact).toContainText('The impact read was bounded by the task limit.')
+  await expect
+    .poll(() => impactReads)
+    .toEqual([{ path: '/v1/lineage/requirement/req-retries/impact', workspace: 'demo', outdated: 'true' }])
+  expect(reads).toHaveLength(1)
+})
+
+test('task detail does not offer the impact view', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page)
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByRole('region', { name: 'Work', exact: true })).toBeVisible()
+  await expect(panel.getByRole('button', { name: 'Show work merged on an older version' })).toHaveCount(0)
+})
+
+// A truncated walk names each exhausted budget axis with its limit, and an
+// entry whose destination link is missing says the budget may have omitted
+// it rather than that it does not exist.
+test('a truncated walk names its exhausted limits and budget-omitted destinations', async ({ page }) => {
+  await initShell(page)
+  await routeAPI(page, {
+    graph: (rootType, rootId) => ({
+      roots: [{ type: rootType, id: rootId, label: 'Bound the retry loop' }],
+      nodes: [
+        { type: rootType, id: rootId, label: 'Bound the retry loop' },
+        { type: 'work_order', id: 'task-far-implement-1', label: 'Far work order' },
+        { type: 'verdict', id: 'review:task-far-review-1', label: 'Far verdict' },
+        { type: 'repository_path', id: 'conveyor:internal/far/**', label: 'Far path' },
+      ],
+      links: [],
+      truncated: true,
+      budget: { max_depth: 5, max_nodes: 32, max_links: 128, max_fanout: 8 },
+      omitted_nodes: 2,
+      omitted_links: 4,
+      exhaustion_reasons: ['depth', 'fanout', 'links'],
+      omissions: { depth_nodes: 2, node_cap_nodes: 0, fanout_nodes: 1, links: 4 },
+    }),
+  })
+
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByText('This is a bounded view.')).toBeVisible()
+  await expect(panel.getByRole('list', { name: 'Exhausted limits' }).getByRole('listitem')).toHaveText([
+    'Depth limit of 5 steps reached: at least 2 records lie deeper.',
+    'Per-record link limit of 8 links reached: 1 record has more links than were read.',
+    'Link limit of 128 links reached: 4 links were dropped.',
+  ])
+  await expect(panel.getByText('2 further records and 4 further links were not read.')).toBeVisible()
+
+  const unresolved = panel.locator('[data-destination="none"]')
+  for (const [label, reason] of [
+    [
+      'Far work order',
+      'This bounded view may have omitted the link that names the task that dispatched this work order.',
+    ],
+    [
+      'Far verdict',
+      'This bounded view may have omitted the links that name the work order and task behind this verdict.',
+    ],
+    [
+      'Far path',
+      'This bounded view may have omitted the link that names the System Design version governing this path.',
+    ],
+  ]) {
+    await expect(unresolved.filter({ hasText: label })).toContainText(reason)
+  }
+  await expect(panel.getByText(/No returned link/)).toHaveCount(0)
 })
 
 // The blueprint detail page has no version selector: it shows the blueprint's
@@ -657,7 +976,7 @@ test('the explorer opens from the task detail panel without closing it', async (
   await taskPanel.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByRole('region', { name: 'Work' })).toBeVisible()
-  await expect(reads).toHaveLength(1)
+  await expect.poll(() => reads.length).toBe(1)
 
   // Escape dismisses the panel the operator opened — and only that one.
   await page.keyboard.press('Escape')
@@ -674,6 +993,49 @@ test('the Knowledge explorer exposes loading and error states with updated acces
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByRole('status', { name: 'Loading Knowledge explorer' })).toBeVisible()
   await expect(panel.getByText('Lineage temporarily unavailable.')).toBeVisible()
+})
+
+// The error state offers Retry, which reads the same walk again.
+test('the Knowledge explorer error state retries the same read', async ({ page }) => {
+  await initShell(page)
+  const reads: Options['reads'] = []
+  // The route reads the toggle per request, so walks fail until it flips.
+  const options: Options = { reads, lineageFailure: true }
+  await routeAPI(page, options)
+
+  await page.goto(`/tasks/${taskId}/full`)
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
+  await expect(panel.getByText('Lineage temporarily unavailable.')).toBeVisible()
+  const failedReads = reads.length
+  expect(failedReads).toBeGreaterThan(0)
+
+  options.lineageFailure = false
+  await panel.getByRole('button', { name: 'Retry' }).click()
+  await expect(panel.getByRole('region', { name: 'Work', exact: true })).toBeVisible()
+  await expect(panel.getByText('Lineage temporarily unavailable.')).toHaveCount(0)
+  // Retry made exactly one more read of the same walk.
+  await expect.poll(() => reads.length).toBe(failedReads + 1)
+  expect(new Set(reads.map((read) => `${read.path}?${read.include}&${read.workspace}`))).toEqual(
+    new Set([`/v1/lineage/task/${taskId}?depth,path,status&demo`]),
+  )
+})
+
+// The walk names the shell's workspace context, the one its query key holds,
+// even when the stored selection changes underneath the page.
+test('the Knowledge explorer reads the context workspace explicitly', async ({ page }) => {
+  await initShell(page)
+  const reads: Options['reads'] = []
+  await routeAPI(page, { reads })
+
+  await page.goto(`/tasks/${taskId}/full`)
+  await expect(page.getByRole('heading', { name: 'Bound the retry loop' })).toBeVisible()
+  await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'elsewhere'))
+  await page.getByRole('button', { name: 'Knowledge explorer' }).click()
+  await expect(
+    page.getByRole('dialog', { name: 'Knowledge explorer' }).getByRole('region', { name: 'Work' }),
+  ).toBeVisible()
+  await expect.poll(() => reads.map((read) => read.workspace)).toEqual(['demo'])
 })
 
 // req-document-operating-surfaces AC-4.1 first half: the navigation carries
