@@ -6,7 +6,7 @@
 // and ELK stay out of the initial route chunk (DEC-76).
 import '@xyflow/react/dist/style.css'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { useNavigate, useSearch } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   Background,
   BackgroundVariant,
@@ -21,9 +21,10 @@ import {
   useStore,
   useUpdateNodeInternals,
 } from '@xyflow/react'
-import { BookText, ExternalLink, Eye, EyeOff, Focus, Maximize2, Search, Workflow, X } from 'lucide-react'
+import { BookText, ExternalLink, Eye, EyeOff, Focus, Maximize2, RotateCw, Search, Workflow, X } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchTaskMap } from '../../../lib/api'
+import { errorMessage } from '../../../lib/errors'
 import type { RequirementInsightTab } from '../../../lib/types'
 import { cn, relativeTime } from '../../../lib/utils'
 import { useWorkspace, useWorkspaceSelection } from '../../app-shell'
@@ -47,7 +48,7 @@ import {
 } from './graph-model'
 import { type HubFlowNode, HubNode } from './hub-node'
 import { CARD_HEIGHT, CARD_WIDTH, HUB_HEIGHT, HUB_WIDTH, type LayoutEdge, layoutGraph } from './layout'
-import { type InsightEmphasis, MapView } from './map-view'
+import { type InsightEmphasis, LAYOUT_FAILURE, MapFailure, MapView } from './map-view'
 import { DependencyMark, DOT_ZOOM, statusIcon, type TaskFlowNode, TaskNode } from './task-node'
 
 const nodeTypes = { task: TaskNode, hub: HubNode }
@@ -81,8 +82,8 @@ function BoardMapView() {
   const [showDone, setShowDone] = useState(false)
   const [repo, setRepo] = useState('')
   // One read, filtered by the server (AC-3.4). The last answer stays on the
-  // canvas while a changed filter loads.
-  const { data, isLoading, error } = useQuery({
+  // canvas while a changed filter loads, and when a refresh fails.
+  const { data, isLoading, error, errorUpdatedAt, isFetching, refetch } = useQuery({
     queryKey: ['task-map', workspace, repo, showDone],
     queryFn: ({ signal }) =>
       fetchTaskMap(workspace, { repositories: repo ? [repo] : [], includeFinished: showDone }, signal),
@@ -91,6 +92,8 @@ function BoardMapView() {
     placeholderData: keepPreviousData,
   })
   const model = useMemo(() => buildModel(data?.tasks ?? []), [data])
+  // The failure a dismissed refresh notice named; a later failure shows again.
+  const [dismissedFailure, setDismissedFailure] = useState(0)
 
   const [chainOnly, setChainOnly] = useState(false)
   const [highlight, setHighlight] = useState<Set<string>>(new Set())
@@ -188,19 +191,29 @@ function BoardMapView() {
   )
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>()
   const [laidOutKey, setLaidOutKey] = useState('')
+  // The key whose layout rejected, and Retry's count of fresh attempts.
+  const [failedKey, setFailedKey] = useState<string>()
+  const [layoutAttempt, setLayoutAttempt] = useState(0)
   const latestKey = useRef(layoutKey)
   useEffect(() => {
     latestKey.current = layoutKey
     if (!scene || scene.taskIds.length === 0) return
     const nodes = scene.taskIds.map((id) => ({ id, width: CARD_WIDTH, height: CARD_HEIGHT }))
     if (scene.hub) nodes.push({ id: scene.hub, width: HUB_WIDTH, height: HUB_HEIGHT })
-    void layoutGraph(nodes, scene.edges, scene.hub ? 'DOWN' : 'RIGHT').then((next) => {
-      if (latestKey.current !== layoutKey) return
-      setPositions(next)
-      setLaidOutKey(layoutKey)
-    })
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the key names everything laid out
-  }, [layoutKey])
+    // A result or a failure for a layout since replaced is ignored.
+    layoutGraph(nodes, scene.edges, scene.hub ? 'DOWN' : 'RIGHT').then(
+      (next) => {
+        if (latestKey.current !== layoutKey) return
+        setPositions(next)
+        setLaidOutKey(layoutKey)
+        setFailedKey(undefined)
+      },
+      () => {
+        if (latestKey.current === layoutKey) setFailedKey(layoutKey)
+      },
+    )
+    // biome-ignore lint/correctness/useExhaustiveDependencies: the key names everything laid out; Retry lays it out again
+  }, [layoutKey, layoutAttempt])
 
   // Only a selected task traces and dims; hovering lights the hovered task's
   // own edges (AC-2.6).
@@ -362,7 +375,9 @@ function BoardMapView() {
   }, [counted, model])
 
   // The shared toolbar renders in every state, so the view switch stays
-  // reachable while the map's read is loading or has failed.
+  // reachable while the map's read is loading or has failed. A failure with
+  // nothing loaded yet replaces the canvas; once a map has loaded, a failed
+  // refresh keeps it and shows a notice instead.
   if (isLoading)
     return (
       <>
@@ -370,13 +385,19 @@ function BoardMapView() {
         <Skeleton className="m-6 h-96" />
       </>
     )
-  if (error)
+  if (error && !data)
     return (
       <>
         <BoardToolbar />
-        <p className="m-6 text-sm text-failure">{String(error)}</p>
+        <MapFailure
+          title="Could not load the map"
+          detail={errorMessage(error)}
+          retrying={isFetching}
+          onRetry={() => void refetch()}
+        />
       </>
     )
+  const refreshFailed = Boolean(error) && errorUpdatedAt !== dismissedFailure
 
   const card = cards.find((entry) => entry.id === scope)
   const stats = scope && docIndex ? docIndex.stats.get(scope) : undefined
@@ -482,19 +503,18 @@ function BoardMapView() {
               {stats && (
                 <p className="text-xs text-muted">
                   {stats.merged} of {stats.total} delivered
+                  {/* The map groups only by requirement, so the requirement page is
+                      the one document a group opens, in place. */}
                   {scope && scope !== UNATTACHED && (
                     <>
                       {' · '}
-                      <a
-                        href={
-                          docIndex?.kind === 'requirement'
-                            ? `/requirements?requirement=${scope}`
-                            : `/system-design?document=${scope}`
-                        }
+                      <Link
+                        to="/requirements"
+                        search={{ requirement: scope }}
                         className="hover:text-foreground hover:underline"
                       >
                         Open document
-                      </a>
+                      </Link>
                     </>
                   )}
                 </p>
@@ -531,6 +551,26 @@ function BoardMapView() {
             </div>
           </header>
           <div className="relative min-h-0 flex-1">
+            {refreshFailed && (
+              <div
+                role="status"
+                className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-1 rounded-md border border-border bg-card py-1 pl-3 pr-1 text-xs text-foreground shadow-sm"
+              >
+                <span className="mr-1">Could not refresh the map. Showing the last loaded tasks.</span>
+                <Button size="sm" variant="ghost" disabled={isFetching} onClick={() => void refetch()}>
+                  <RotateCw />
+                  Retry
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Dismiss"
+                  onClick={() => setDismissedFailure(errorUpdatedAt)}
+                >
+                  <X />
+                </Button>
+              </div>
+            )}
             {mapped && docIndex ? (
               <MapView
                 model={model}
@@ -551,6 +591,14 @@ function BoardMapView() {
                 onClear={() => go(focus ? { focus: undefined } : { scope: undefined, insight: undefined })}
                 onFocus={setFocus}
                 onOpen={openTask}
+              />
+            ) : scene && scene.taskIds.length > 0 && failedKey === layoutKey ? (
+              <MapFailure
+                {...LAYOUT_FAILURE}
+                onRetry={() => {
+                  setFailedKey(undefined)
+                  setLayoutAttempt((count) => count + 1)
+                }}
               />
             ) : scene && scene.taskIds.length > 0 ? (
               <Canvas

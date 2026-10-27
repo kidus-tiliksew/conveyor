@@ -17,10 +17,11 @@ import {
   useReactFlow,
   useStore,
 } from '@xyflow/react'
-import { Maximize2 } from 'lucide-react'
+import { Maximize2, RotateCw } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { RequirementInsightTab } from '../../../lib/types'
 import { cn } from '../../../lib/utils'
+import { Button } from '../../ui/button'
 import { byUrgency } from './doc-map'
 import { type DocIndex, hubId, mapClusters, UNATTACHED } from './docs'
 import { DONE, type GraphStatus, type GraphTask, labelOf, type TaskGraphModel, walk } from './graph-model'
@@ -90,6 +91,37 @@ const FrameNode = memo(function FrameNode({ data, width = 0, height = 0 }: NodeP
 
 const nodeTypes = { frame: FrameNode, hub: HubNode, task: TaskNode }
 
+// A map that could not be read or laid out says so in words, in place of the
+// canvas, and offers Retry (component-web-task-surfaces, Board map Read and
+// Layout failure).
+export function MapFailure({
+  title,
+  detail,
+  retrying = false,
+  onRetry,
+}: {
+  title: string
+  detail: string
+  retrying?: boolean
+  onRetry: () => void
+}) {
+  return (
+    <div role="alert" className="m-6 max-w-md">
+      <p className="text-sm font-medium text-foreground">{title}</p>
+      <p className="mt-1 text-sm text-muted">{detail}</p>
+      <Button size="sm" variant="outline" className="mt-3" disabled={retrying} onClick={onRetry}>
+        <RotateCw />
+        Retry
+      </Button>
+    </div>
+  )
+}
+
+export const LAYOUT_FAILURE = {
+  title: 'Could not lay out the map',
+  detail: 'The layout engine stopped before placing the tasks. Retry lays the map out again.',
+}
+
 export function MapView({
   model,
   index,
@@ -155,17 +187,27 @@ export function MapView({
   )
   const [layout, setLayout] = useState<Awaited<ReturnType<typeof layoutClusters>>>()
   const [laidOutKey, setLaidOutKey] = useState('')
+  // The key whose layout rejected, and Retry's count of fresh attempts.
+  const [failedKey, setFailedKey] = useState<string>()
+  const [attempt, setAttempt] = useState(0)
   const latestKey = useRef(layoutKey)
   useEffect(() => {
     latestKey.current = layoutKey
     if (ordered.length === 0) return
-    void layoutClusters(ordered).then((next) => {
-      if (latestKey.current !== layoutKey) return
-      setLayout(next)
-      setLaidOutKey(layoutKey)
-    })
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the key names everything laid out
-  }, [layoutKey])
+    // A result or a failure for a layout since replaced is ignored.
+    layoutClusters(ordered).then(
+      (next) => {
+        if (latestKey.current !== layoutKey) return
+        setLayout(next)
+        setLaidOutKey(layoutKey)
+        setFailedKey(undefined)
+      },
+      () => {
+        if (latestKey.current === layoutKey) setFailedKey(layoutKey)
+      },
+    )
+    // biome-ignore lint/correctness/useExhaustiveDependencies: the key names everything laid out; Retry lays it out again
+  }, [layoutKey, attempt])
 
   // Only a clicked task dims the rest of the canvas; hovering lights the
   // hovered card's own lines, after a short pause, so sweeping the pointer
@@ -471,6 +513,16 @@ export function MapView({
     // biome-ignore lint/correctness/useExhaustiveDependencies: the palette follows the theme
   }, [theme])
 
+  if (failedKey === layoutKey)
+    return (
+      <MapFailure
+        {...LAYOUT_FAILURE}
+        onRetry={() => {
+          setFailedKey(undefined)
+          setAttempt((count) => count + 1)
+        }}
+      />
+    )
   return (
     <ReactFlow
       nodes={nodes}

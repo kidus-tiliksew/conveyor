@@ -31,7 +31,6 @@ export const statusIcon: Record<GraphStatus, LucideIcon> = {
   merge_gate: GitMerge,
   needs_you: Hand,
   running: Play,
-  waiting: Hourglass,
   ready: CircleDot,
   parked: Pause,
   merged: Check,
@@ -181,7 +180,7 @@ export function DependencyMark({ task }: { task: GraphTask }) {
       aria-label={explanation}
       title={explanation}
       data-dependency-mark={closed.length ? 'unsatisfiable' : 'waiting'}
-      className={cn('inline-flex shrink-0', closed.length ? 'text-attention' : statusMeta.waiting.tone)}
+      className={cn('inline-flex shrink-0', closed.length ? 'text-attention' : 'text-faint')}
     >
       <Hourglass aria-hidden className="size-3.5" />
     </span>
