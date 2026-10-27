@@ -375,6 +375,17 @@ func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (b
 	return exists, err
 }
 
+// lineageRelationRankSQL mirrors core.LineageRelationPriority for the
+// neighborhood CTE, which cannot call Go. TestLineageRelationRankSQLMatchesCore
+// fails when the two disagree (component-lineage).
+const lineageRelationRankSQL = `CASE p.kind
+				WHEN 'serves' THEN 0
+				WHEN 'materializes' THEN 1 WHEN 'supersedes' THEN 1
+				WHEN 'depends_on' THEN 2
+				WHEN 'produced_verdict' THEN 3 WHEN 'merged_range' THEN 3 WHEN 'submitted_range' THEN 3 WHEN 'submitted_as' THEN 3
+				WHEN 'supports' THEN 4
+				ELSE 5 END`
+
 func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
 	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 {
 		return nil, fmt.Errorf("lineage neighborhood requires bounded depth and nodes")
@@ -422,13 +433,7 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 		JOIN nearest p ON p.root_no=a.root_no AND p.node_type=a.other_type AND p.node_id=a.other_id AND p.depth=a.depth-1
 	), prioritized AS (
 		SELECT n.root_no,n.node_type,n.node_id,n.depth,
-			COALESCE(min(CASE p.kind
-				WHEN 'serves' THEN 0
-				WHEN 'materializes' THEN 1 WHEN 'supersedes' THEN 1
-				WHEN 'depends_on' THEN 2
-				WHEN 'produced_verdict' THEN 3 WHEN 'merged_range' THEN 3 WHEN 'submitted_range' THEN 3 WHEN 'submitted_as' THEN 3
-				WHEN 'supports' THEN 4 WHEN 'proved_by' THEN 4
-				ELSE 5 END),99) AS relation_rank,
+			COALESCE(min(`+lineageRelationRankSQL+`),99) AS relation_rank,
 			min(p.created_at) AS relation_at,min(p.created_by_event_id) AS relation_event
 		FROM nearest n
 		LEFT JOIN parent_edges p ON p.root_no=n.root_no AND p.node_type=n.node_type AND p.node_id=n.node_id AND p.depth=n.depth

@@ -56,6 +56,27 @@ func TestLineageProjectorDoesNotInventCommitRanges(t *testing.T) {
 	}
 }
 
+func TestLineageProjectorSuppressesRemovedDependency(t *testing.T) {
+	t.Parallel()
+	want := core.LineageLink{Workspace: "demo", SrcType: core.LineageTask, SrcID: "task-1", DstType: core.LineageTask, DstID: "task-2", Kind: "depends_on", CreatedByEventID: 2}
+	for _, payload := range []map[string]any{
+		{"task_id": "task-1", "depends_on_task_id": "task-2"},
+		{"depends_on_task_id": "task-2"},
+	} {
+		projection := ProjectLineageEvent("demo", core.Event{ID: 2, TaskID: "task-1", Kind: "task.dependency_removed", Payload: core.JSONPayload(payload)})
+		if len(projection.Links) != 0 || projection.Unsupported != 0 || len(projection.Suppresses) != 1 {
+			t.Fatalf("removal projection=%+v", projection)
+		}
+		if got := projection.Suppresses[0]; lineageLinkKey(got) != lineageLinkKey(want) {
+			t.Fatalf("suppressed=%+v want key of %+v", got, want)
+		}
+	}
+	malformed := ProjectLineageEvent("demo", core.Event{ID: 3, TaskID: "task-1", Kind: "task.dependency_removed", Payload: core.JSONPayload(map[string]any{"task_id": "task-1"})})
+	if len(malformed.Suppresses) != 0 || malformed.Unsupported != 1 {
+		t.Fatalf("removal without a dependency suppressed=%+v", malformed)
+	}
+}
+
 func TestRequirementConfirmationWithoutPredecessorDoesNotSupersedeDraft(t *testing.T) {
 	t.Parallel()
 	event := core.Event{ID: 1, Kind: "requirement.version_confirmed", Payload: core.JSONPayload(map[string]any{
@@ -90,8 +111,9 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The operational edge is gone, but the immutable historical lineage stays.
-	assertMemoryLineage(t, st, ctx, 2)
+	// Removal suppresses the depends_on edge; the materializes edge stays
+	// (component-lineage).
+	assertMemoryLineage(t, st, ctx, 1)
 	memoryStore := st.(*memory)
 	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note"})] = core.LineageLink{
 		Workspace: workspace, SrcType: core.LineageTask, SrcID: child.ID, DstType: core.LineageTask, DstID: "legacy", Kind: "legacy_event_note", CreatedByEventID: 1,
@@ -99,12 +121,12 @@ func TestMemoryLineageProjectsAndRebuildsFromEvents(t *testing.T) {
 	memoryStore.lineage[lineageLinkKey(core.LineageLink{Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment"})] = core.LineageLink{
 		Workspace: workspace, SrcType: core.LineageRequirement, SrcID: "legacy", DstType: core.LineageTask, DstID: child.ID, Kind: "historical_feature_assignment",
 	}
-	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 2 {
+	if result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "test", RequestID: "memory-1"}); err != nil || result.Projected != 1 {
 		t.Fatalf("rebuild result=%+v err=%v", result, err)
 	} else if result.Existing != 2 {
 		t.Fatalf("rebuild omitted retained legacy links: %+v", result)
 	}
-	assertMemoryLineage(t, st, ctx, 4)
+	assertMemoryLineage(t, st, ctx, 3)
 }
 
 func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) {
@@ -143,6 +165,47 @@ func TestMemoryLineageRebuildPreservesUnregenerableProjectorLinks(t *testing.T) 
 	}
 	if _, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "different", RequestID: request.RequestID}); !errors.Is(err, ErrLineageRebuildConflict) {
 		t.Fatalf("request id conflict error=%v", err)
+	}
+}
+
+// TestMemoryLineageRebuildDropsStaleRemovedDependencyRow models a depends_on
+// row an earlier binary left in place after task.dependency_removed, before
+// the projector suppressed it. Rebuild neither regenerates nor preserves the
+// row (component-lineage).
+func TestMemoryLineageRebuildDropsStaleRemovedDependencyRow(t *testing.T) {
+	const workspace = "lineage-stale-dependency"
+	st := NewMemoryWithConfig(&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main"}}}).(*memory)
+	ctx := WithWorkspace(WithActor(t.Context(), Actor{ID: "operator", Role: core.ActorHuman}), workspace)
+	for _, id := range []string{"dependent", "dependency"} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Repo: "app", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.AddTaskDependency(ctx, DependencyAdditionRequest{TaskID: "dependent", DependsOnTaskID: "dependency", Reason: "order", RequestID: "add"}); err != nil {
+		t.Fatal(err)
+	}
+	var stale core.LineageLink
+	for _, link := range st.lineage {
+		if link.Kind == "depends_on" {
+			stale = link
+		}
+	}
+	if stale.CreatedByEventID == 0 {
+		t.Fatal("dependency addition projected no edge")
+	}
+	if _, err := st.RemoveTaskDependency(ctx, DependencyRemovalRequest{TaskID: "dependent", DependsOnTaskID: "dependency", Reason: "unordered", RequestID: "remove"}); err != nil {
+		t.Fatal(err)
+	}
+	st.lineage[lineageLinkKey(stale)] = stale
+	result, err := st.RebuildLineage(ctx, core.LineageRebuildRequest{Reason: "drop stale dependency", RequestID: "stale-dependency"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.PreservedUnregenerable != 0 || result.Ambiguous != 0 || result.Projected != 0 {
+		t.Fatalf("rebuild result=%+v, want the stale row dropped", result)
+	}
+	if _, exists := st.lineage[lineageLinkKey(stale)]; exists {
+		t.Fatalf("rebuild kept stale dependency row %+v", stale)
 	}
 }
 

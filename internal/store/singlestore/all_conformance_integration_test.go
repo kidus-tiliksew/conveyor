@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -247,6 +249,12 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}
 			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
 				return conformanceWorkerExercise(st, cfg)
+			}, LineageHTTP: func(*testing.T) http.Handler {
+				// The shared-token operator fixture (component-lineage).
+				server := httpapi.NewServer(st)
+				server.Credentials = nil
+				server.Workspace, server.BearerToken = ws, storetest.LineageHTTPToken
+				return server.Handler()
 			}}
 		}})
 }

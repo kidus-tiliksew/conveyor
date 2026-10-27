@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"net/http"
 	"testing"
 	"time"
 
@@ -63,6 +64,14 @@ type Fixture struct {
 	// constructs it (component-verification-strategy). The hold-retirement
 	// cases require it and never skip.
 	WorkerService func(t *testing.T) WorkerExercise
+	// LineageHTTP returns the real httpapi handler over Backend, bound to
+	// Workspace and accepting LineageHTTPToken as its operator bearer, so the
+	// Lineage suite reads GET /v1/lineage/{type}/{id}. storetest cannot
+	// import internal/httpapi, because httpapi tests import storetest, so
+	// each conformance entry point constructs it
+	// (component-verification-strategy; component-lineage). The
+	// dependency-removal case requires it and never skips.
+	LineageHTTP func(t *testing.T) http.Handler
 }
 
 // WorkerExercise is the worker-service surface the Workers hold-retirement
@@ -175,7 +184,7 @@ func RunAll(t *testing.T, factory Factory) {
 			if _, err := x.Backend.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: foreign, Repos: repos}); err != nil {
 				t.Fatal(err)
 			}
-			return LineageFixture{Store: x.Backend, Context: x.Context, ForeignContext: ctx, Workspace: x.Workspace, SeedLegacy: x.SeedLegacy, SeedHistoricalLink: x.SeedHistoricalLink}
+			return LineageFixture{Store: x.Backend, Context: x.Context, ForeignContext: ctx, Workspace: x.Workspace, SeedLegacy: x.SeedLegacy, SeedHistoricalLink: x.SeedHistoricalLink, HTTP: x.LineageHTTP}
 		})
 	})
 	for _, suite := range []struct {

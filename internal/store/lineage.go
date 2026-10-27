@@ -74,6 +74,16 @@ func projectLineageEvent(workspace string, event core.Event) LineageEventProject
 			taskID = event.TaskID
 		}
 		return emit(link(core.LineageTask, taskID, core.LineageTask, dependencyID, "depends_on"))
+	case "task.dependency_removed":
+		// Removal suppresses the edge its addition projected, so a removed
+		// dependency stops feeding context and rebuild drops its stale row
+		// (component-lineage; req-260802-72fc68 AC-1.1, AC-2.3).
+		taskID, dependencyID := text("task_id"), text("depends_on_task_id")
+		if taskID == "" {
+			taskID = event.TaskID
+		}
+		result.Suppresses = valid(link(core.LineageTask, taskID, core.LineageTask, dependencyID, "depends_on"))
+		return result
 	case "work_order.created":
 		id := text("id")
 		if id == "" {
