@@ -100,6 +100,7 @@ const (
 	VerificationCodeFeedbackUngrounded         = "verification_feedback_ungrounded"
 	VerificationCodeCheckpointUngrounded       = "verification_checkpoint_ungrounded"
 	VerificationCodeSubmissionConflict         = "verification_submission_conflict"
+	VerificationCodeRequestShape               = "verification_request_shape"
 )
 
 // Fixed remedies. They carry no record data.
@@ -115,7 +116,19 @@ const (
 	verificationRemedyAction    = "Request only actions the grant and the local kit_permissions both cover, or ask an operator to grant the missing action."
 	verificationRemedyOperation = "Reconcile each unresolved operation with reconcile_verification_operation, or submit operator_action_required."
 	verificationRemedyRetry     = "The latest attempt's retry policy is operator_action_required: submit operator_action_required, and the operator recovers the order with a verification disposition."
+	verificationRemedyShape     = "Compare the call with the tool's input schema from tools/list: send every required property, use the listed JSON types and values, and omit properties the schema does not define."
 )
+
+// VerificationRequestShapeRefusal is the request-shape refusal of an
+// authenticated caller: field is the JSON path and rule a server sentence
+// naming the violated keyword. Both are bounded to 1024 bytes
+// (component-verification-service "Correctable refusals").
+func VerificationRequestShapeRefusal(field, rule string) error {
+	if len(field) > verificationRuleLimit {
+		field = field[:verificationRuleLimit-3] + "..."
+	}
+	return verificationRefusal(ErrVerificationInvalid, VerificationCodeRequestShape, field, verificationRemedyShape, rule)
+}
 
 // VerificationMissingGrantRemedy is the two-phase missing-grant phrase that
 // component-verification-runner prints (cmd/conveyor/kit_verify.go#kitMissingGrantRemedy)

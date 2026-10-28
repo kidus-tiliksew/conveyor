@@ -916,6 +916,187 @@ func TestVerificationCorrectableRefusals(t *testing.T) {
 	}
 }
 
+// TestVerificationRequestShapeRefusals: after claim authentication a malformed
+// start_verification_attempt names verification_request_shape with the exact
+// JSON path over MCP and REST and writes nothing; an unauthenticated caller
+// keeps the one generic refusal (component-verification-service "Correctable
+// refusals").
+func TestVerificationRequestShapeRefusals(t *testing.T) {
+	f := newNoEligibleKitFixture(t)
+	contextID := f.context("shape", "no_manifest", []verification.KitReceipt{}, []verification.Diagnostic{})
+	subject := f.register(contextID, "plan-check")
+	start := func(mutate func(map[string]any)) map[string]any {
+		args := map[string]any{}
+		if err := json.Unmarshal(core.JSONPayload(f.start(contextID, "shape-start", "", subject, f.coverage(subject))), &args); err != nil {
+			t.Fatal(err)
+		}
+		mutate(args)
+		return args
+	}
+	environment := func(args map[string]any) map[string]any { return args["environment"].(map[string]any) }
+	attempts := func() int {
+		snapshot, err := f.s.Store.(store.VerificationStore).ReadVerification(f.ctx, f.access(), contextID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(snapshot.Attempts)
+	}
+	before := attempts()
+	secret := "sk-abcdefghijklmnopqrstuvwxyz012345"
+	cases := []struct {
+		name, field string
+		input       map[string]any
+	}{
+		{"unknown argument", "bogus_argument", start(func(a map[string]any) { a["bogus_argument"] = true })},
+		{"missing environment", "environment", start(func(a map[string]any) { delete(a, "environment") })},
+		{"blank deployment", "environment.deployment", start(func(a map[string]any) { environment(a)["deployment"] = "" })},
+		{"missing deployment", "environment.deployment", start(func(a map[string]any) { delete(environment(a), "deployment") })},
+		{"unknown nested property", "environment.region", start(func(a map[string]any) { environment(a)["region"] = "eu" })},
+		{"number as string", "coverage.sources[0].source.version", start(func(a map[string]any) {
+			a["coverage"].(map[string]any)["sources"].([]any)[0].(map[string]any)["source"].(map[string]any)["version"] = "1"
+		})},
+		{"withheld property name", "request", start(func(a map[string]any) { a["bad name"] = 1 })},
+		{"start key over 128 bytes", "start_key", start(func(a map[string]any) { a["start_key"] = strings.Repeat("k", 129) })},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f.t = t
+			f.refused("start_verification_attempt", tc.input, store.VerificationCodeRequestShape, tc.field, http.StatusBadRequest)
+		})
+	}
+	f.t = t
+	// A credential-like property name never leaves in the field or rule.
+	_, err, response := f.call("start_verification_attempt", start(func(a map[string]any) { a[secret] = 1 }), true)
+	var refusal *store.VerificationRefusal
+	if !errors.As(err, &refusal) || refusal.Code != store.VerificationCodeRequestShape || strings.Contains(err.Error(), secret) || strings.Contains(response.Body.String(), secret) || response.Code != http.StatusBadRequest {
+		t.Fatalf("credential-like property: MCP %v, REST %d %s", err, response.Code, response.Body)
+	}
+	if after := attempts(); after != before {
+		t.Fatalf("refused starts wrote attempts: %d -> %d", before, after)
+	}
+	// Unauthenticated callers keep the generic refusal with no code, whatever
+	// is wrong with the request.
+	for _, malformed := range []map[string]any{cases[0].input, cases[1].input, cases[2].input} {
+		for _, caller := range []struct {
+			name, order, session, token string
+		}{{"foreign session", f.id, "foreign", "token"}, {"wrong token", f.id, "session", "wrong"}, {"unknown order", "unknown-order", "session", "token"}} {
+			args := map[string]any{}
+			for k, v := range malformed {
+				args[k] = v
+			}
+			args["workspace_id"], args["work_order_id"], args["session_id"], args["client_token"] = "demo", caller.order, caller.session, caller.token
+			_, err := f.s.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(f.ctx), "start_verification_attempt", args)
+			var refusal *store.VerificationRefusal
+			if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) || strings.Contains(err.Error(), "verification_") {
+				t.Fatalf("%s MCP got detail: %v", caller.name, err)
+			}
+			response := verificationRESTCall(f.s, f.ctx, caller.order, "start_verification_attempt", args)
+			if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "verification_") || strings.Contains(response.Body.String(), "environment") {
+				t.Fatalf("%s REST got detail: %d %s", caller.name, response.Code, response.Body)
+			}
+		}
+	}
+	// Under the live claim, a malformed request naming an unknown context or
+	// another task's context keeps the generic refusal: request-shape detail
+	// follows context authentication, not claim authentication alone.
+	foreign := f.foreignContext()
+	unknown := "0123456789abcdef0123456789abcdef"
+	events, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generic := func(label, tool string, args map[string]any) {
+		t.Helper()
+		_, err, response := f.call(tool, args, true)
+		var refusal *store.VerificationRefusal
+		if err == nil || errors.As(err, &refusal) || strings.Contains(err.Error(), "verification_") {
+			t.Fatalf("%s MCP got detail: %v", label, err)
+		}
+		if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "verification_") || strings.Contains(response.Body.String(), "environment") || strings.Contains(response.Body.String(), "bogus") {
+			t.Fatalf("%s REST got detail: %d %s", label, response.Code, response.Body)
+		}
+	}
+	for _, named := range []struct{ name, id string }{{"unknown context", unknown}, {"foreign context", foreign}} {
+		for _, malformed := range cases[:3] {
+			args := map[string]any{}
+			for k, v := range malformed.input {
+				args[k] = v
+			}
+			args["context_id"] = named.id
+			generic(named.name+" "+malformed.name, "start_verification_attempt", args)
+		}
+		bogus := func(input any) map[string]any {
+			args := map[string]any{}
+			if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+				t.Fatal(err)
+			}
+			args["context_id"], args["bogus_argument"] = named.id, true
+			return args
+		}
+		for tool, input := range map[string]any{
+			"register_verification_obligation": workorder.VerificationObligationRequest{ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: "DC-1"}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}},
+			"report_verification_outcome":      workorder.VerificationOutcomeRequest{RunID: "run", State: "failed", Explanation: "x"},
+			"submit_verification":              workorder.VerificationSubmitRequest{Outcome: "feedback", Coverage: f.coverage(subject), Feedback: "x"},
+			"get_verification_context":         workorder.VerificationContextRequest{},
+		} {
+			generic(named.name+" "+tool, tool, bogus(input))
+		}
+	}
+	if after, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID); err != nil || !reflect.DeepEqual(events, after) {
+		t.Fatal("refused context-bearing requests wrote events")
+	}
+	if after := attempts(); after != before {
+		t.Fatalf("refused context-bearing requests wrote attempts: %d -> %d", before, after)
+	}
+	// The same tools naming the claim's own context keep the detail.
+	for tool, input := range map[string]any{
+		"submit_verification":      workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: f.coverage(subject), Feedback: "x"},
+		"get_verification_context": workorder.VerificationContextRequest{ContextID: contextID},
+	} {
+		args := map[string]any{}
+		if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+			t.Fatal(err)
+		}
+		args["bogus_argument"] = true
+		f.t = t
+		f.refused(tool, args, store.VerificationCodeRequestShape, "bogus_argument", http.StatusBadRequest)
+	}
+	// get_evidence_schemas authenticates no claim, so its malformed call stays generic.
+	_, err = f.s.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(f.ctx), "get_evidence_schemas", map[string]any{"workspace_id": "demo", "bogus_argument": true})
+	if !errors.Is(err, store.ErrVerificationInvalid) || errors.As(err, &refusal) {
+		t.Fatalf("get_evidence_schemas malformed call: %v", err)
+	}
+}
+
+// foreignContext prepares a context of another task in the same workspace,
+// claimed by a different session (component-verification-service).
+func (f *noEligibleKitFixture) foreignContext() string {
+	f.t.Helper()
+	b := f.s.Store.(store.Backend)
+	admin := store.WithWorkspace(store.WithActor(f.t.Context(), store.SystemActor()), "demo")
+	task := core.Task{ID: "verification-foreign", Workspace: "demo", Repo: "repo", Title: "foreign", Branch: "conveyor/foreign", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: strings.Repeat("b", 40), CreatedAt: time.Now().UTC()}
+	task.SetupContract.VerifyStage = true
+	if err := b.CreateTask(admin, task); err != nil {
+		f.t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, CreatedAt: task.CreatedAt}
+	if _, err := storetest.CreateStageWorkOrder(admin, b, job, o); err != nil {
+		f.t.Fatal(err)
+	}
+	o, err := storetest.ClaimWorkOrder(admin, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "foreign-session", ClientToken: "foreign-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	access := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: "foreign-token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "foreign-session"}}
+	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: o.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": o.HeadSHA, "state": "no_manifest"})}}
+	created, err := f.s.Store.(store.VerificationStore).ApplyVerification(f.ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "foreign", Access: access, Context: &vc})
+	if err != nil {
+		f.t.Fatalf("foreign context: %v", err)
+	}
+	return created.ID
+}
+
 // reviewClaimFixture seals an empty context at the verify head, creates a
 // review round through the store, and claims its seat as a distinct reviewer.
 // It returns the server, the reviewer request, the review order, the sealed

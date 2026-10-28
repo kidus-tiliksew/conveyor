@@ -6,6 +6,8 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,6 +100,8 @@ func VerificationJSONSchema(t reflect.Type) map[string]any {
 
 // ValidateVerificationWire uses the published structural contract before the
 // typed decoder. Semantic ownership and lifecycle checks follow in the service.
+// A structural mismatch returns *VerificationSchemaError
+// (component-verification-evidence).
 func ValidateVerificationWire(raw []byte, t reflect.Type) error {
 	var value any
 	if err := DecodeVerificationRequest(raw, &value); err != nil {
@@ -105,62 +109,97 @@ func ValidateVerificationWire(raw []byte, t reflect.Type) error {
 	}
 	return validateVerificationSchema(value, VerificationJSONSchema(t))
 }
+
+// VerificationSchemaError names the JSON path and the schema keyword of a
+// structural mismatch. Path joins schema property names with ".", writes array
+// indices as [i] and a map entry as *, so it never holds a caller value.
+// Property is the caller's name of an unknown property (keyword
+// additionalProperties); Error never prints it, so callers decide whether it
+// may be shown (component-verification-service "Correctable refusals").
+type VerificationSchemaError struct {
+	Path     string
+	Keyword  string
+	Property string
+	// Expected is the schema's own constraint: a type, pattern, format, enum
+	// list, constant, or bound.
+	Expected string
+}
+
+func (e *VerificationSchemaError) Error() string {
+	path := e.Path
+	if path == "" {
+		path = "request"
+	}
+	return "verification schema mismatch at " + path + ": " + e.Keyword
+}
+
+// Rule is the server sentence for the keyword. It quotes only the schema's
+// expected constraint, never the caller's value.
+func (e *VerificationSchemaError) Rule() string {
+	switch e.Keyword {
+	case "additionalProperties":
+		return "the tool's input schema defines no property with this name; remove it or correct its spelling."
+	case "required":
+		return "this required property is absent."
+	case "type":
+		return "the value must have JSON type " + e.Expected + "."
+	case "pattern":
+		return "the value must match the schema pattern " + strconv.Quote(e.Expected) + verificationPatternMeaning(e.Expected) + "."
+	case "format":
+		return "the value must be an RFC 3339 " + e.Expected + "."
+	case "enum":
+		return "the value must be one of: " + e.Expected + "."
+	case "const":
+		return "the value must equal " + e.Expected + "."
+	case "minimum":
+		return "the value must be at least " + e.Expected + "."
+	case "maximum":
+		return "the value must be at most " + e.Expected + "."
+	case "minItems":
+		return "the list must hold at least " + e.Expected + " items."
+	case "oneOf":
+		return "the value must match exactly one alternative of the tool's input schema; it matches " + e.Expected + "."
+	case "anyOf":
+		return "the value matches none of the alternatives of the tool's input schema."
+	}
+	return "the value does not match the tool's input schema."
+}
+
+func verificationPatternMeaning(pattern string) string {
+	switch pattern {
+	case `\S`:
+		return " (a non-blank text)"
+	case "^[a-f0-9]{64}$":
+		return " (64 lowercase hexadecimal characters)"
+	case "^([a-f0-9]{40}|[a-f0-9]{64})$":
+		return " (a 40- or 64-character lowercase hexadecimal object ID)"
+	case `(Z|\+00:00)$`:
+		return " (a UTC time ending in Z or +00:00)"
+	}
+	return ""
+}
+
 func validateVerificationSchema(v any, s map[string]any) error {
-	fail := func() error { return fmt.Errorf("verification schema mismatch") }
-	if expected, ok := s["const"]; ok {
-		if n, isInt := expected.(int); isInt {
-			expected = float64(n)
-		}
-		if !reflect.DeepEqual(v, expected) {
-			return fail()
-		}
+	if err := checkVerificationSchema(v, s, ""); err != nil {
+		return err
 	}
-	if enum, ok := s["enum"].([]string); ok {
-		found := false
-		for _, x := range enum {
-			if v == x {
-				found = true
-			}
-		}
-		if !found {
-			return fail()
-		}
+	return nil
+}
+
+func verificationSchemaPath(path, name string) string {
+	if path == "" {
+		return name
 	}
-	if pattern, ok := s["pattern"].(string); ok {
-		str, ok := v.(string)
-		if !ok || !regexp.MustCompile(pattern).MatchString(str) {
-			return fail()
-		}
-	}
-	if s["format"] == "date-time" {
-		str, ok := v.(string)
-		if !ok {
-			return fail()
-		}
-		if _, err := time.Parse(time.RFC3339Nano, str); err != nil {
-			return fail()
-		}
-	}
-	if n, ok := v.(float64); ok {
-		if min, ok := s["minimum"].(int); ok && n < float64(min) {
-			return fail()
-		}
-		if max, ok := s["maximum"].(int); ok && n > float64(max) {
-			return fail()
-		}
-	}
-	for _, group := range []string{"oneOf", "anyOf"} {
-		if choices, ok := s[group].([]map[string]any); ok {
-			passed := 0
-			for _, choice := range choices {
-				if validateVerificationSchema(v, choice) == nil {
-					passed++
-				}
-			}
-			if passed == 0 || (group == "oneOf" && passed != 1) {
-				return fail()
-			}
-		}
+	return path + "." + name
+}
+
+// checkVerificationSchema reports the first failure in a fixed order: the type,
+// then const, enum, pattern, format, bounds and alternatives, then absent
+// required properties in schema order and properties in sorted name order. The
+// accepted set is the same whatever the order.
+func checkVerificationSchema(v any, s map[string]any, path string) *VerificationSchemaError {
+	fail := func(keyword, expected string) *VerificationSchemaError {
+		return &VerificationSchemaError{Path: path, Keyword: keyword, Expected: expected}
 	}
 	kind, _ := s["type"].(string)
 	if kind == "" {
@@ -171,70 +210,143 @@ func validateVerificationSchema(v any, s map[string]any) error {
 			kind = "object"
 		}
 	}
+	nullable := false
 	if types, ok := s["type"].([]string); ok {
-		if v == nil {
-			return nil
-		}
+		nullable = true
 		kind = types[0]
+	}
+	if !(nullable && v == nil) && !verificationSchemaKind(v, kind) {
+		expected := kind
+		if nullable {
+			expected += " or null"
+		}
+		return fail("type", expected)
+	}
+	if expected, ok := s["const"]; ok {
+		if n, isInt := expected.(int); isInt {
+			expected = float64(n)
+		}
+		if !reflect.DeepEqual(v, expected) {
+			b, _ := json.Marshal(expected)
+			return fail("const", string(b))
+		}
+	}
+	if enum, ok := s["enum"].([]string); ok {
+		found := false
+		for _, x := range enum {
+			if v == x {
+				found = true
+			}
+		}
+		if !found {
+			return fail("enum", strings.Join(enum, ", "))
+		}
+	}
+	if pattern, ok := s["pattern"].(string); ok {
+		str, ok := v.(string)
+		if !ok || !regexp.MustCompile(pattern).MatchString(str) {
+			return fail("pattern", pattern)
+		}
+	}
+	if s["format"] == "date-time" {
+		str, ok := v.(string)
+		if !ok {
+			return fail("format", "date-time")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, str); err != nil {
+			return fail("format", "date-time")
+		}
+	}
+	if n, ok := v.(float64); ok {
+		if min, ok := s["minimum"].(int); ok && n < float64(min) {
+			return fail("minimum", strconv.Itoa(min))
+		}
+		if max, ok := s["maximum"].(int); ok && n > float64(max) {
+			return fail("maximum", strconv.Itoa(max))
+		}
+	}
+	for _, group := range []string{"oneOf", "anyOf"} {
+		if choices, ok := s[group].([]map[string]any); ok {
+			passed := 0
+			for _, choice := range choices {
+				if checkVerificationSchema(v, choice, path) == nil {
+					passed++
+				}
+			}
+			if passed == 0 || (group == "oneOf" && passed != 1) {
+				return fail(group, fmt.Sprintf("%d of %d alternatives", passed, len(choices)))
+			}
+		}
+	}
+	if nullable && v == nil {
+		return nil
 	}
 	switch kind {
 	case "object":
-		obj, ok := v.(map[string]any)
-		if !ok {
-			return fail()
-		}
+		obj := v.(map[string]any)
 		props, _ := s["properties"].(map[string]any)
 		required, _ := s["required"].([]string)
 		for _, key := range required {
 			if _, ok := obj[key]; !ok {
-				return fail()
+				return &VerificationSchemaError{Path: verificationSchemaPath(path, key), Keyword: "required"}
 			}
 		}
-		for key, value := range obj {
+		keys := make([]string, 0, len(obj))
+		for key := range obj {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			value := obj[key]
 			if child, ok := props[key].(map[string]any); ok {
-				if err := validateVerificationSchema(value, child); err != nil {
+				if err := checkVerificationSchema(value, child, verificationSchemaPath(path, key)); err != nil {
 					return err
 				}
 			} else if child, ok := s["additionalProperties"].(map[string]any); ok {
-				if err := validateVerificationSchema(value, child); err != nil {
+				if err := checkVerificationSchema(value, child, verificationSchemaPath(path, "*")); err != nil {
 					return err
 				}
 			} else if s["additionalProperties"] == false {
-				return fail()
+				return &VerificationSchemaError{Path: path, Keyword: "additionalProperties", Property: key}
 			}
 		}
 	case "array":
-		values, ok := v.([]any)
-		if !ok {
-			return fail()
-		}
+		values := v.([]any)
 		if min, ok := s["minItems"].(int); ok && len(values) < min {
-			return fail()
+			return fail("minItems", strconv.Itoa(min))
 		}
 		child, _ := s["items"].(map[string]any)
-		for _, value := range values {
-			if err := validateVerificationSchema(value, child); err != nil {
+		for i, value := range values {
+			if err := checkVerificationSchema(value, child, fmt.Sprintf("%s[%d]", path, i)); err != nil {
 				return err
 			}
 		}
-	case "string":
-		if _, ok := v.(string); !ok {
-			return fail()
-		}
-	case "integer":
-		if n, ok := v.(float64); !ok || math.Trunc(n) != n {
-			return fail()
-		}
-	case "number":
-		if _, ok := v.(float64); !ok {
-			return fail()
-		}
-	case "boolean":
-		if _, ok := v.(bool); !ok {
-			return fail()
-		}
 	}
 	return nil
+}
+
+func verificationSchemaKind(v any, kind string) bool {
+	switch kind {
+	case "object":
+		_, ok := v.(map[string]any)
+		return ok
+	case "array":
+		_, ok := v.([]any)
+		return ok
+	case "string":
+		_, ok := v.(string)
+		return ok
+	case "integer":
+		n, ok := v.(float64)
+		return ok && math.Trunc(n) == n
+	case "number":
+		_, ok := v.(float64)
+		return ok
+	case "boolean":
+		_, ok := v.(bool)
+		return ok
+	}
+	return true
 }
 
 func verificationSchemaConstraints(t reflect.Type, s map[string]any) {

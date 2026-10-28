@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
@@ -254,8 +255,13 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 	var a store.VerificationAccess
 	var o core.WorkOrder
 	var err error
+	// authenticated is set only when VerifyVerificationClaim or a member read
+	// succeeded; the retained-checkpoint replay authenticates its token later
+	// in the store (component-verification-service "Correctable refusals").
+	authenticated := false
 	if operation != "get_evidence_schemas" {
 		backend, a, o, err = s.verificationAccess(ctx, id, session, token, write && operation != "submit_verification")
+		authenticated = err == nil
 		if err != nil && operation == "submit_verification" {
 			backend, a, o, err = s.verificationCheckpointReplayAccess(ctx, id, session, token)
 		}
@@ -265,10 +271,10 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 
 	}
 	if err := core.ValidateVerificationWire(raw, reflect.TypeOf(request)); err != nil {
-		return nil, store.ErrVerificationInvalid
+		return nil, s.verificationShapeRefusal(ctx, authenticated && s.verificationShapeContext(ctx, backend, a, operation, write, raw), token, err, verificationRuleJSON)
 	}
 	if err := core.DecodeVerificationRequest(raw, request); err != nil {
-		return nil, store.ErrVerificationInvalid
+		return nil, s.verificationShapeRefusal(ctx, authenticated && s.verificationShapeContext(ctx, backend, a, operation, write, raw), token, err, verificationRuleDecode)
 	}
 	if operation == "get_evidence_schemas" {
 		return core.VerificationEvidenceSchemas(), nil
@@ -318,7 +324,10 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 		command.Coverage = &r.Coverage
 		command.Kind, command.ContextID, command.Key = store.VerificationStartAttempt, r.ContextID, r.StartKey
 		if !validVerificationSubject(r.Subject) {
-			return nil, store.ErrVerificationInvalid
+			if !s.verificationShapeContext(ctx, backend, a, operation, write, raw) {
+				return nil, store.ErrVerificationInvalid
+			}
+			return nil, store.VerificationRequestShapeRefusal("subject", verificationRuleSubject)
 		}
 		command.Attempt = &store.VerificationAttempt{LocalActions: r.LocalActions, GrantID: r.GrantID, EffectiveActions: r.EffectiveActions, Subject: r.Subject, Environment: r.Environment, SafeInputs: r.SafeInputs, EffectivePermissions: r.EffectivePermissions, ReplayAuthorizationID: r.ReplayAuthorizationID}
 	case *VerificationOutcomeRequest:
@@ -508,6 +517,95 @@ func (s *Service) prepareVerification(ctx context.Context, b store.VerificationS
 		return nil, err
 	}
 	return b.ReadVerification(ctx, a, result.ID)
+}
+
+// Request-shape rule sentences (component-verification-service "Correctable
+// refusals"). They are server constants and quote no caller value.
+const (
+	verificationRuleJSON     = "the request must be one JSON object with unique property names and no trailing value."
+	verificationRuleDecode   = "the request does not decode into the tool's input type; check number ranges and base64 content."
+	verificationRuleWithheld = "an object at this path carries a property the tool's input schema does not define; its name is withheld because it holds characters other than letters, digits, '_' and '-'."
+	verificationRuleSubject  = "subject must be a kit subject with kit_id, kit_version, exercise_id and a 64-character content_digest, or an ordinary subject with obligation_id and a 64-character contract_digest, with no field of the other kind."
+)
+
+// verificationPropertyName admits an unknown property's name into a refusal
+// field; any other name is withheld.
+var verificationPropertyName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// verificationShapeContext reports whether request-shape detail may be
+// returned for the context the request names. A tool without a context_id
+// field needs only the authenticated claim or member read. Otherwise the
+// caller's own ReadVerification must return that context, and a claim write
+// also needs the claim's order and work-order attempt, as the store requires
+// before a mutation. A missing, non-string, unknown, or foreign context keeps
+// the generic refusal, so an unknown context stays indistinguishable from a
+// foreign one (component-verification-service "Correctable refusals").
+func (s *Service) verificationShapeContext(ctx context.Context, backend store.VerificationStore, a store.VerificationAccess, operation string, write bool, raw []byte) bool {
+	if !verificationNamesContext(operation) {
+		return true
+	}
+	var fields map[string]json.RawMessage
+	if backend == nil || json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	var id string
+	if json.Unmarshal(fields["context_id"], &id) != nil || id == "" {
+		return false
+	}
+	snapshot, err := backend.ReadVerification(ctx, a, id)
+	if err != nil || len(snapshot.Contexts) != 1 || snapshot.Contexts[0].TaskID != a.TaskID {
+		return false
+	}
+	vc := snapshot.Contexts[0]
+	return !write || vc.WorkOrderID == a.WorkOrderID && vc.WorkOrderAttemptID == a.WorkOrderAttemptID
+}
+
+// verificationNamesContext reports whether the tool's request type carries a
+// context_id field.
+func verificationNamesContext(operation string) bool {
+	t := reflect.TypeOf(VerificationRequestType(operation)).Elem()
+	for i := 0; i < t.NumField(); i++ {
+		if strings.Split(t.Field(i).Tag.Get("json"), ",")[0] == "context_id" {
+			return true
+		}
+	}
+	return false
+}
+
+// verificationShapeRefusal turns a structural or decoding failure into the
+// verification_request_shape refusal for an authenticated caller. Everyone
+// else keeps the generic invalid refusal. The field and rule pass the
+// configured redaction policy and the caller's own client token; without a
+// redactor the refusal stays generic (component-verification-service).
+func (s *Service) verificationShapeRefusal(ctx context.Context, authenticated bool, token string, err error, rule string) error {
+	if !authenticated {
+		return store.ErrVerificationInvalid
+	}
+	field := "request"
+	var shape *core.VerificationSchemaError
+	if errors.As(err, &shape) {
+		rule = shape.Rule()
+		if shape.Path != "" {
+			field = shape.Path
+		}
+		if shape.Keyword == "additionalProperties" {
+			if verificationPropertyName.MatchString(shape.Property) {
+				field = shape.Property
+				if shape.Path != "" {
+					field = shape.Path + "." + shape.Property
+				}
+			} else {
+				rule = verificationRuleWithheld
+			}
+		}
+	}
+	redactor, rerr := redact.WithSecrets(ctx, s.RedactionSecrets, []string{token})
+	if rerr != nil {
+		return store.ErrVerificationInvalid
+	}
+	field, _ = redactor.Redact(field)
+	rule, _ = redactor.Redact(rule)
+	return store.VerificationRequestShapeRefusal(field, rule)
 }
 
 func validVerificationSubject(s core.VerificationSubject) bool {

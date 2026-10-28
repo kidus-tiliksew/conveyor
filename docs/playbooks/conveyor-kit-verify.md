@@ -624,6 +624,29 @@ coverage.sources[0].source` (name a section ID the pinned document holds),
 `approved_plan` source). A foreign or stale claim keeps the generic
 `verification access refused` with no detail.
 
+A call that does not match the tool's input schema answers
+`verification_request_shape`. Its field is the JSON path of the failing value,
+such as `environment.deployment`, `coverage.sources[0].source.version`, or the
+name of an argument the schema does not define, and its rule names the broken
+schema keyword: `required` for an absent property, `additionalProperties` for
+an unknown one, and `type`, `pattern`, `enum`, `const`, `format`, `minimum`,
+`maximum`, `minItems`, `oneOf` or `anyOf` for a value. A field of `request`
+means the body as a whole failed, or that an unknown property's name was
+withheld. Compare the call with the schema from `tools/list`, correct that
+path and resubmit. An absent required property, such as a missing
+`start_key` or `safe_inputs`, and a blank text the schema refuses, such as
+`environment.deployment`, answer this code. A value the schema admits but the
+store refuses answers `verification_field_required`: a list or `safe_inputs`
+sent as `null`, or a blank `start_key`.
+
+`conveyor kit verify` prints the server's refusal text after its own redactor
+removes the launcher credential and claim token, as
+`<tool> refused: <code> at <field>: <rule> <remedy>`. Read the code and field
+as above. The sentence `<tool> refused or unavailable; inspect the claim and
+verification context` means the server sent no refusal text; inspect the claim
+with `get_work_order` and the context with `get_verification_context`. A
+transport error names the network failure instead.
+
 Report reproducible code failures separately from infrastructure failures and
 blocked/waiting operator actions; use the delivered failure/release lifecycle
 rather than fabricate success. Check `get_verification_publication` separately:
