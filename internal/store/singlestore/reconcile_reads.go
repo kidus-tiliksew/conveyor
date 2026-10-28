@@ -2,6 +2,7 @@ package singlestore
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -66,4 +67,44 @@ ORDER BY t.created_at DESC,t.id ASC`, ws, ws)
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// verificationClaimTaskIDs selects the tasks ReconcileVerificationClaims
+// reads, in ListTasks order. Only a running or pending attempt yields a
+// claim-loss command, so only a task holding one is read, whatever the task
+// state: a closed task can still hold a lost attempt
+// (component-verification-service).
+func (s *Store) verificationClaimTaskIDs(ctx context.Context) ([]string, error) {
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT t.id FROM tasks t
+WHERE t.workspace_id=? AND t.id IN (SELECT a.task_id FROM verification_attempts a WHERE a.workspace_id=? AND a.state IN ('running','pending'))
+ORDER BY t.created_at DESC,t.id ASC`, ws, ws)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// verificationClaimReadObserver, when a test binary sets it, sees each task
+// whose verification rows ReconcileVerificationClaims reads. The sweep's
+// per-task reads are internal SQL, so this is the measurable read boundary
+// the ReconcileReads conformance case observes. Production never sets it.
+var verificationClaimReadObserver atomic.Pointer[func(workspaceID, taskID string)]
+
+func observeVerificationClaimRead(workspaceID, taskID string) {
+	if observe := verificationClaimReadObserver.Load(); observe != nil {
+		(*observe)(workspaceID, taskID)
+	}
 }

@@ -74,6 +74,10 @@ func runReconcileReads(t *testing.T, x Fixture) {
 		}
 	})
 
+	t.Run("VerificationClaimsReadOnlyAttemptHolders", func(t *testing.T) {
+		runVerificationClaimReadScope(t, x)
+	})
+
 	t.Run("GitHubLifecycleReconcileTaskIDsSelectCandidatesInTaskOrder", func(t *testing.T) {
 		before, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx)
 		requireOK(t, err)
@@ -118,6 +122,108 @@ func runReconcileReads(t *testing.T, x Fixture) {
 			t.Fatalf("candidate order %v differs from ListTasks order %v", want, order)
 		}
 	})
+}
+
+// runVerificationClaimReadScope seeds a workspace dominated by finished
+// tasks with long histories beside four verification tasks: a running task
+// whose attempt lost its claim, a closed task whose attempt lost its claim, a
+// running task whose attempt still holds a live claim, and a running task
+// whose attempt already ended. ReconcileVerificationClaims must cancel both
+// lost attempts, leave the others unchanged, act again on nothing, and, on
+// the durable backends, read verification rows only for the three tasks that
+// hold a running or pending attempt (component-verification-service;
+// component-persistence).
+func runVerificationClaimReadScope(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	var reads func() []string
+	if x.VerificationClaimReads != nil {
+		reads = x.VerificationClaimReads(t)
+	} else if st.IsDurable() {
+		t.Fatal("durable conformance fixture must provide VerificationClaimReads")
+	}
+	terminal := SeedTerminalHistory(t, st, ctx, x.Workspace, "conveyor", 30, 15)
+	loseClaim := func(v verificationFixture) {
+		t.Helper()
+		order, err := st.GetWorkOrder(ctx, v.access.WorkOrderID)
+		requireOK(t, err)
+		order.LeaseExpiresAt = time.Now().Add(-time.Second)
+		requireOK(t, UpdateWorkOrder(ctx, st, order))
+	}
+	lost := newVerificationFixture(t, x)
+	loseClaim(lost)
+	closedLost := newVerificationFixture(t, x)
+	loseClaim(closedLost)
+	_, err := taskops.New(st).Perform(ctx, closedLost.access.TaskID, taskops.Command{Kind: core.TaskCancel})
+	requireOK(t, err)
+	if closed, getErr := st.GetTask(ctx, closedLost.access.TaskID); getErr != nil || closed.State != core.TaskClosed {
+		t.Fatalf("closed verification task=%+v err=%v", closed, getErr)
+	}
+	live := newVerificationFixture(t, x)
+	ended := newVerificationFixture(t, x)
+	ended.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Key: "terminate-" + ended.runID, Attempt: &store.VerificationAttempt{State: "failed"}})
+
+	userContext, owner := bootstrapOwner(t, x)
+	attemptState := func(v verificationFixture) (string, bool) {
+		t.Helper()
+		snapshot, readErr := st.ReadVerification(userContext, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, v.contextID)
+		requireOK(t, readErr)
+		if len(snapshot.Attempts) != 1 {
+			t.Fatalf("task %s attempts=%+v", v.access.TaskID, snapshot.Attempts)
+		}
+		return snapshot.Attempts[0].State, snapshot.Attempts[0].EndedAt != nil
+	}
+	if state, ended := attemptState(closedLost); state != "running" || ended {
+		t.Fatalf("closing the task ended its attempt before the sweep: state=%s ended=%t", state, ended)
+	}
+	before := map[string]string{}
+	for _, v := range []verificationFixture{live, ended} {
+		before[v.access.TaskID], _ = attemptState(v)
+	}
+
+	reconciler := store.WithActor(ctx, store.Actor{ID: "verification-reconciler", Role: core.ActorSystem})
+	count, err := st.ReconcileVerificationClaims(reconciler)
+	requireOK(t, err)
+	if count != 2 {
+		t.Fatalf("first sweep reconciled %d attempts, want the two lost claims", count)
+	}
+	for _, v := range []verificationFixture{lost, closedLost} {
+		if state, ended := attemptState(v); state != "cancelled" || !ended {
+			t.Fatalf("lost attempt of task %s state=%s ended=%t", v.access.TaskID, state, ended)
+		}
+	}
+	for _, v := range []verificationFixture{live, ended} {
+		if state, _ := attemptState(v); state != before[v.access.TaskID] {
+			t.Fatalf("task %s attempt changed from %s to %s", v.access.TaskID, before[v.access.TaskID], state)
+		}
+	}
+	firstReads := []string(nil)
+	if reads != nil {
+		firstReads = reads()
+		want := []string{live.access.TaskID, closedLost.access.TaskID, lost.access.TaskID}
+		if !slices.Equal(firstReads, want) {
+			t.Fatalf("first sweep read verification rows of %v, want the attempt holders in ListTasks order %v", firstReads, want)
+		}
+	}
+	count, err = st.ReconcileVerificationClaims(reconciler)
+	requireOK(t, err)
+	if count != 0 {
+		t.Fatalf("repeat sweep reconciled %d attempts", count)
+	}
+	if reads != nil {
+		if repeat := reads()[len(firstReads):]; !slices.Equal(repeat, []string{live.access.TaskID}) {
+			t.Fatalf("repeat sweep read verification rows of %v, want only the live attempt's task", repeat)
+		}
+		for _, id := range reads() {
+			for _, task := range terminal {
+				if id == task.ID {
+					t.Fatalf("sweep read finished task %s", id)
+				}
+			}
+			if id == ended.access.TaskID {
+				t.Fatal("sweep read the task whose attempt already ended")
+			}
+		}
+	}
 }
 
 // ReadRecorder wraps a store and records the task rows and per-task history

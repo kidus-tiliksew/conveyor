@@ -311,33 +311,13 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 	if _, err := store.VerificationReconciliationCommands(ctx, nil); err != nil {
 		return 0, err
 	}
-	// Only a running or pending attempt yields a claim-loss command, so the
-	// sweep reads just the tasks that hold one, in ListTasks order, whatever
-	// the task state: a closed task can still hold a lost attempt
-	// (component-verification-service).
-	ws := documentWorkspace(ctx)
-	candidates, err := documentRows(ctx, s.db, `SELECT t.id FROM tasks t
-WHERE t.workspace_id=? AND t.id IN (SELECT a.task_id FROM verification_attempts a WHERE a.workspace_id=? AND a.state IN ('running','pending'))
-ORDER BY t.created_at DESC,t.id ASC`, ws, ws)
-	if err != nil {
-		return 0, err
-	}
-	var taskIDs []string
-	for candidates.Next() {
-		var id string
-		if err = candidates.Scan(&id); err != nil {
-			candidates.Close()
-			return 0, err
-		}
-		taskIDs = append(taskIDs, id)
-	}
-	err = candidates.Err()
-	candidates.Close()
+	taskIDs, err := s.verificationClaimTaskIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
 	for _, taskID := range taskIDs {
+		observeVerificationClaimRead(documentWorkspace(ctx), taskID)
 		var rows []store.VerificationRow
 		err = s.withTx(ctx, func(tx *sql.Tx) error {
 			var e error

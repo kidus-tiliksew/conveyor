@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -58,4 +59,32 @@ ORDER BY t.created_at DESC, t.id`, workspace(ctx))
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// verificationClaimTaskIDs selects the tasks ReconcileVerificationClaims
+// reads, in ListTasks order. Only a running or pending attempt yields a
+// claim-loss command, so only a task holding one is read, whatever the task
+// state: a closed task can still hold a lost attempt
+// (component-verification-service).
+func (s *Store) verificationClaimTaskIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.boundary.Query(ctx, `SELECT t.id FROM tasks t
+WHERE t.workspace_id = $1 AND t.id IN (
+	SELECT a.task_id FROM verification_attempts a WHERE a.workspace_id = $1 AND a.state IN ('running', 'pending'))
+ORDER BY t.created_at DESC, t.id`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// verificationClaimReadObserver, when a test binary sets it, sees each task
+// whose verification rows ReconcileVerificationClaims reads. The sweep's
+// per-task reads are internal SQL, so this is the measurable read boundary
+// the ReconcileReads conformance case observes. Production never sets it.
+var verificationClaimReadObserver atomic.Pointer[func(workspaceID, taskID string)]
+
+func observeVerificationClaimRead(workspaceID, taskID string) {
+	if observe := verificationClaimReadObserver.Load(); observe != nil {
+		(*observe)(workspaceID, taskID)
+	}
 }

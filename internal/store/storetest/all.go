@@ -72,6 +72,13 @@ type Fixture struct {
 	// (component-verification-strategy; component-lineage). The
 	// dependency-removal case requires it and never skips.
 	LineageHTTP func(t *testing.T) http.Handler
+	// VerificationClaimReads observes the tasks whose verification rows
+	// ReconcileVerificationClaims reads in Workspace and returns a reader of
+	// the task IDs seen so far, in read order. The durable backends read
+	// through internal SQL, so each test binary installs its backend's read
+	// observer; durable backends must provide it. The volatile backend reads
+	// in-process and leaves it nil (component-persistence).
+	VerificationClaimReads func(t *testing.T) func() []string
 }
 
 // WorkerExercise is the worker-service surface the Workers hold-retirement
