@@ -447,13 +447,32 @@ function titleOf(entry: TimelineEntry) {
 const agentActivity = (entries: TimelineEntry[]) =>
   entries.filter((entry) => entry.type === 'note' && entry.title.startsWith('Agent activity'))
 
-test('a completed plan entry sits at its end, after the plan version it drafted', () => {
+// The plan section and the approval intervention tell a plan stage, so its
+// "Plan vN drafted" note stays technical (component-web-task-surfaces, Task
+// detail composition; task 261028-5c2ae2).
+test('a completed plan entry sits at its end and its plan version note stays out of the story', () => {
   for (const drafted of [planEnd, '2026-10-15T06:34:17.900Z']) {
     const titles = timelineOf(planStage({ draftedAt: drafted })).map(titleOf)
-    expect(titles).toEqual(['Plan v1 drafted', 'spec job'])
+    expect(titles).toEqual(['spec job'])
   }
   const [entry] = timelineOf(planStage()).filter((item) => item.type === 'job')
   expect(entry.at).toBe(planEnd)
+})
+
+// An implementation that records an unabsorbed note at the instant it ends
+// follows that note: an order without a head shows no delivery line, so its
+// pull request keeps its own note (component-web-task-surfaces).
+test('a finished implementation entry follows the note it recorded at the same instant', () => {
+  const id = `${taskId}-implement-1`
+  for (const opened of [planEnd, '2026-10-15T06:34:17.900Z']) {
+    const item = activity({
+      jobs: [job(id, 'implement', 'done', { started_at: planStart, ended_at: planEnd })],
+      work_orders: [order(id, { state: 'submitted', queue_entered_at: planStart })],
+      events: [{ ...event(779762, 'pull_request.opened', opened, { number: 7, url: prURL }), job_id: id }],
+      summaries: { pull_request: { url: prURL, number: 7, event_id: '779762', at: opened } },
+    })
+    expect(timelineOf(item).map(titleOf)).toEqual(['Pull request opened', 'implement job'])
+  }
 })
 
 test('a running job sits at its start, and a finished job without an end keeps its start', () => {
@@ -624,7 +643,7 @@ for (const surface of surfaces) {
 }
 
 for (const surface of surfaces) {
-  test(`the ${surface.name} lists the completed plan after its draft and keeps lease renewals technical`, async ({
+  test(`the ${surface.name} shows no row for a placeholder plan and keeps its draft and lease renewals technical`, async ({
     page,
   }) => {
     const item = planStage()
@@ -647,28 +666,357 @@ for (const surface of surfaces) {
     )
     await page.goto(surface.url)
     const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-    const drafted = timeline.getByText('Plan v1 drafted')
-    const completed = timeline.getByText('Plan completed')
-    await expect(drafted).toBeVisible()
-    await expect(completed).toBeVisible()
-    const follows = await drafted.evaluate(
-      (element, other) => Boolean(element.compareDocumentPosition(other as Node) & Node.DOCUMENT_POSITION_FOLLOWING),
-      await completed.elementHandle(),
-    )
-    expect(follows).toBe(true)
-    const row = completed.locator('..')
-    await expect(row.getByText('2m 41s')).toBeVisible()
-    const endTime = await page.evaluate(
-      (value) =>
-        new Date(value).toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      planEnd,
-    )
-    await expect(row.locator('time')).toHaveText(endTime)
+    await expect(timeline.getByText('Activity', { exact: true })).toBeVisible()
+    await expect(timeline.getByText('Plan v1 drafted')).toHaveCount(0)
+    await expect(timeline.getByText('Plan completed')).toHaveCount(0)
     await expect(timeline.getByText(/Claim lease renewed/)).toHaveCount(0)
     await page.getByRole('button', { name: 'Show technical activity' }).click()
-    await expect(
-      page.getByRole('list', { name: 'Technical activity events' }).getByText('work_order.lease_renewed'),
-    ).toBeVisible()
+    const technical = page.getByRole('list', { name: 'Technical activity events' })
+    await expect(technical.getByText('work_order.lease_renewed')).toBeVisible()
+    await expect(technical.getByText('spec.version_created')).toBeVisible()
+  })
+}
+
+// A narrated, failed, or rejected plan job keeps its job entry; only the
+// finished placeholder row is gone, and other stages keep their one-line row.
+test('narrated, failed, and rejected plan jobs keep their entries and other stages keep the completed row', async ({
+  page,
+}) => {
+  const spec = (n: number) => `${taskId}-spec-${n}`
+  const item = activity({
+    jobs: [
+      job(spec(1), 'spec', 'done', { started_at: minutes(1), ended_at: minutes(2) }),
+      job(spec(2), 'spec', 'failed', { started_at: minutes(3), ended_at: minutes(4) }),
+      job(spec(3), 'spec', 'done', { started_at: minutes(5), ended_at: minutes(6) }),
+      job(spec(4), 'spec', 'done', { started_at: minutes(7), ended_at: minutes(8) }),
+      job(`${taskId}-triage-1`, 'triage', 'done', { started_at: minutes(0), ended_at: minutes(1) }),
+    ],
+    summaries: {
+      job_results: {
+        [spec(1)]: { stage_summary: { text: 'Plan v1 splits the card from the history change.', event_id: '11' } },
+        [spec(2)]: { failure_error: { text: 'The planner exited before submitting.', event_id: '12' } },
+        [spec(3)]: { output_rejection: { event_id: '13', error: 'plan missing done criteria' } },
+      },
+    },
+  })
+  await mockAPI(page, item, { ...nextAction(`${taskId}-implement-1`), current_order: undefined, attempt: undefined })
+  await page.goto(`/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Plan v1 splits the card from the history change.')).toBeVisible()
+  await expect(timeline.getByText('The planner exited before submitting.')).toBeVisible()
+  await expect(timeline.getByText(/Output rejected by the pipeline — plan missing done criteria/)).toBeVisible()
+  await expect(timeline.getByText('Triage completed')).toBeVisible()
+  await expect(timeline.getByText('Plan completed')).toHaveCount(0)
+  await expect(timeline.locator('li article')).toHaveCount(3)
+})
+
+// Each started implement job renders as its own Implementation card, the way
+// verify and review do: its status, its attempt number when the task has more
+// than one, the agent's text, and the pull request with the head its own order
+// submitted. A pull_request.opened the card shows is absorbed; the plan
+// version and publication bookkeeping notes stay technical
+// (component-web-task-surfaces v41, Work-order timeline entries;
+// component-http-api v62, Bounded detail view; task 261028-5c2ae2).
+const prURL = 'https://github.com/kidus-tiliksew/conveyor/pull/1431'
+const firstHead = '4a136fe1e6efae140758830baacedef02f1b76d8'
+const secondHead = '61b4fa3ed1dac18b6f36a8ac756e198ac6b1e411'
+const implementID = (n: number) => `${taskId}-implement-${n}`
+
+function deliveredTask(extraEvents: object[] = []) {
+  return activity({
+    task: { ...task, state: 'merged' },
+    latest_stage: 'merge',
+    jobs: [
+      // Response order is not attempt order.
+      job(implementID(2), 'implement', 'done', { started_at: minutes(40), ended_at: minutes(60) }),
+      job(`${taskId}-spec-1`, 'spec', 'done', { started_at: minutes(1), ended_at: minutes(3) }),
+      job(implementID(1), 'implement', 'done', { started_at: minutes(5), ended_at: minutes(30) }),
+    ],
+    work_orders: [
+      order(implementID(1), {
+        state: 'cancelled',
+        head_sha: firstHead,
+        agent: 'claude-code',
+        model: 'claude-opus-5-5',
+        progress: 'Submitted at head 4a136fe1 (PR #1431).',
+      }),
+      order(implementID(2), {
+        state: 'cancelled',
+        queue_entered_at: minutes(35),
+        head_sha: secondHead,
+        agent: 'claude-code',
+        model: 'claude-opus-5-5',
+        progress: 'Resubmitted at head 61b4fa3e (PR #1431).',
+      }),
+    ],
+    events: [
+      event(10, 'spec.version_created', minutes(3), { version: 1 }),
+      event(11, 'github_issue.publication_queued', minutes(4), {}),
+      event(12, 'github_issue.associated', minutes(4), {
+        issue_url: 'https://github.com/kidus-tiliksew/conveyor/issues/9',
+      }),
+      event(13, 'github_issue.publication_published', minutes(4), {
+        issue_url: 'https://github.com/kidus-tiliksew/conveyor/issues/9',
+      }),
+      {
+        ...event(20, 'pull_request.opened', minutes(30), { url: prURL, number: 1431, head_sha: firstHead }),
+        job_id: implementID(1),
+      },
+      event(21, 'review.publication_retry', minutes(31), { attempt: 1 }),
+      {
+        ...event(30, 'pull_request.opened', minutes(60), { url: prURL, number: 1431, head_sha: secondHead }),
+        job_id: implementID(2),
+      },
+      event(31, 'review.publication_retry', minutes(61), { attempt: 1 }),
+      ...extraEvents,
+    ],
+    summaries: {
+      pull_request: {
+        url: prURL,
+        number: 1431,
+        repository: 'kidus-tiliksew/conveyor',
+        head_sha: secondHead,
+        event_id: '30',
+        at: minutes(60),
+      },
+    },
+  })
+}
+
+const removedTitles = [
+  'Plan v1 drafted',
+  'Plan completed',
+  'GitHub issue publication queued',
+  'GitHub issue associated',
+  'Implementation completed',
+  'GitHub review publication retrying',
+  'Pull request opened',
+]
+
+test('implement attempts are numbered by start time with their own delivery heads', () => {
+  const entries = timelineOf(deliveredTask())
+  const implement = entries.filter((entry) => entry.type === 'job' && entry.job.stage === 'implement')
+  expect(implement.map((entry) => entry.type === 'job' && [entry.job.id, entry.attempt, entry.delivery])).toEqual([
+    [implementID(1), 1, { number: 1431, url: prURL, headSha: firstHead }],
+    [implementID(2), 2, { number: 1431, url: prURL, headSha: secondHead }],
+  ])
+  const notes = entries.filter((entry) => entry.type === 'note').map(titleOf)
+  for (const title of removedTitles) expect(notes).not.toContain(title)
+})
+
+test('a pull request record stays a note unless its own card shows that pull request', () => {
+  const unmatched = [
+    // Another pull request number on a delivered job.
+    { ...event(40, 'pull_request.opened', minutes(62), { url: `${prURL}0`, number: 14310 }), job_id: implementID(2) },
+    // No job, so no card can show it.
+    event(41, 'pull_request.opened', minutes(63), { url: prURL, number: 1431 }),
+    // An omitted payload whose index carries no number.
+    {
+      ...event(42, 'pull_request.opened', minutes(64), {}),
+      job_id: implementID(2),
+      payload: null,
+      payload_omitted: true,
+      payload_bytes: 70000,
+      audit_available: true,
+    },
+    // An omitted payload whose index names the shown number is absorbed.
+    {
+      ...event(43, 'pull_request.opened', minutes(65), {}),
+      job_id: implementID(1),
+      payload: null,
+      payload_omitted: true,
+      payload_bytes: 70000,
+      payload_index: { number: 1431 },
+      audit_available: true,
+    },
+  ]
+  const notes = timelineOf(deliveredTask(unmatched)).filter((entry) => entry.type === 'note')
+  expect(notes.map((entry) => entry.type === 'note' && [entry.key, entry.title])).toEqual([
+    ['event-40', 'Pull request opened'],
+    ['event-41', 'Pull request opened'],
+    ['event-42', 'Pull request opened'],
+  ])
+  // A single attempt carries no attempt number.
+  const single = activity({
+    jobs: [job(implementID(1), 'implement', 'done', { ended_at: minutes(9) })],
+    work_orders: [order(implementID(1), { state: 'submitted', head_sha: firstHead })],
+  })
+  const [entry] = timelineOf(single).filter((item) => item.type === 'job')
+  expect(entry.type === 'job' && [entry.attempt, entry.delivery]).toEqual([undefined, undefined])
+})
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} renders each implementation attempt as a card with its pull request and head`, async ({
+    page,
+  }) => {
+    const item = deliveredTask([event(50, 'github_issue.publication_failed', minutes(70), { last_error: 'forbidden' })])
+    await mockAPI(page, item, {
+      ...nextAction(implementID(2)),
+      label: 'Finished',
+      actor: 'none',
+      kind: 'terminal',
+      current_order: undefined,
+      attempt: undefined,
+    })
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const first = timeline.getByRole('article', { name: 'Implementation attempt 1' })
+    const second = timeline.getByRole('article', { name: 'Implementation attempt 2' })
+    await expect(first).toBeVisible()
+    await expect(second).toBeVisible()
+    for (const [card, text, head] of [
+      [first, 'Submitted at head 4a136fe1 (PR #1431).', '4a136fe'],
+      [second, 'Resubmitted at head 61b4fa3e (PR #1431).', '61b4fa3'],
+    ] as const) {
+      await expect(card.getByText('Submitted', { exact: true })).toBeVisible()
+      await expect(card.getByText(text)).toBeVisible()
+      const header = card.locator('[data-job-header]')
+      await expect(header.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expect(header.locator('[data-job-duration]')).toHaveText(elapsed)
+      const delivery = card.locator('[data-implementation-delivery]')
+      await expect(delivery.getByRole('link', { name: '#1431' })).toHaveAttribute('href', prURL)
+      await expect(delivery.getByText(head, { exact: true })).toBeVisible()
+    }
+    // Attempt 1 precedes attempt 2 whatever the response order.
+    const follows = await first.evaluate(
+      (element, other) => Boolean(other && element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING),
+      await second.elementHandle(),
+    )
+    expect(follows).toBe(true)
+    for (const title of removedTitles) await expect(timeline.getByText(title, { exact: true })).toHaveCount(0)
+    await expect(timeline.getByText('GitHub issue publication failed')).toBeVisible()
+    // The hidden kinds stay readable in technical activity.
+    await page.route(`**/v1/tasks/${taskId}/history*`, (route) =>
+      route.fulfill({
+        json: {
+          selection: 'technical',
+          limit: 50,
+          events: (item.events as { id: number }[]).map((entry) => ({ ...entry, id: String(entry.id) })),
+          boundary: { max_id: '50', count: item.events.length },
+          has_older: false,
+          has_newer: false,
+        },
+      }),
+    )
+    await page.getByRole('button', { name: 'Show technical activity' }).click()
+    const technical = page.getByRole('list', { name: 'Technical activity events' })
+    for (const kind of ['spec.version_created', 'github_issue.associated', 'review.publication_retry'])
+      await expect(technical.getByText(kind).first()).toBeVisible()
+  })
+}
+
+const implementationCases = [
+  {
+    name: 'running',
+    jobState: 'running',
+    extra: {},
+    order: { state: 'claimed', progress: 'Writing the implementation card.' },
+    badge: 'Running',
+    text: 'Writing the implementation card.',
+    delivery: false,
+  },
+  {
+    name: 'failed',
+    jobState: 'failed',
+    extra: { ended_at: minutes(9) },
+    order: { state: 'cancelled' },
+    results: { failure_error: { text: 'The agent exited 1 before submitting.', event_id: '61' } },
+    badge: 'Failed',
+    text: 'The agent exited 1 before submitting.',
+    delivery: false,
+  },
+  {
+    name: 'queued',
+    jobState: 'pending',
+    extra: {},
+    order: { state: 'claimed' },
+    badge: 'Queued',
+    text: 'Queued for an operator-owned agent over MCP.',
+    delivery: false,
+  },
+  {
+    name: 'rejected output',
+    jobState: 'done',
+    extra: { ended_at: minutes(9) },
+    order: { state: 'submitted', head_sha: firstHead },
+    results: { output_rejection: { event_id: '62', error: 'missing head' } },
+    badge: 'Submitted',
+    text: 'Output rejected by the pipeline — missing head. Retrying with this feedback.',
+    delivery: true,
+    warning: true,
+  },
+  {
+    name: 'no pull request',
+    jobState: 'done',
+    extra: { ended_at: minutes(9) },
+    order: { state: 'submitted', head_sha: firstHead, progress: 'Submitted without a forge.' },
+    noPullRequest: true,
+    badge: 'Submitted',
+    text: 'Submitted without a forge.',
+    delivery: false,
+  },
+  {
+    name: 'no head',
+    jobState: 'done',
+    extra: { ended_at: minutes(9) },
+    order: { state: 'submitted', progress: 'Submitted before heads were recorded.' },
+    badge: 'Submitted',
+    text: 'Submitted before heads were recorded.',
+    delivery: false,
+  },
+  {
+    name: 'shortened summary with a transcript',
+    jobState: 'done',
+    extra: { ended_at: minutes(9) },
+    order: {
+      state: 'submitted',
+      head_sha: firstHead,
+      transcript_captures: [
+        {
+          attempt_id: 'attempt-impl',
+          content: 'transcript body',
+          termination_reason: 'completed',
+          truncated: false,
+          captured_at: minutes(9),
+        },
+      ],
+    },
+    results: { summary: { text: 'Implemented the **card** and its tests.', event_id: '63', truncated: true } },
+    badge: 'Submitted',
+    text: 'Implemented the card and its tests.',
+    delivery: true,
+  },
+] as const
+
+for (const scenario of implementationCases) {
+  test(`a ${scenario.name} implementation renders as one card without an attempt number`, async ({ page }) => {
+    const id = implementID(1)
+    const item = activity({
+      jobs: [job(id, 'implement', scenario.jobState, scenario.extra)],
+      work_orders: [order(id, { agent: 'claude-code', model: 'claude-opus-5-5', ...scenario.order })],
+      summaries: {
+        ...('noPullRequest' in scenario
+          ? {}
+          : { pull_request: { url: prURL, number: 1431, head_sha: firstHead, event_id: '1', at: minutes(9) } }),
+        ...('results' in scenario ? { job_results: { [id]: scenario.results } } : {}),
+      },
+    })
+    await mockAPI(page, item, { ...nextAction(id), current_order: undefined, attempt: undefined })
+    await page.goto(`/tasks/${taskId}/full`)
+    const card = page
+      .getByRole('region', { name: 'Execution event timeline' })
+      .getByRole('article', { name: 'Implementation', exact: true })
+    await expect(card).toBeVisible()
+    await expect(card.getByText(scenario.badge, { exact: true })).toBeVisible()
+    await expect(card).toContainText(scenario.text)
+    await expect(card.getByText(/^Attempt \d/)).toHaveCount(0)
+    await expect(card.locator('[data-implementation-delivery]')).toHaveCount(scenario.delivery ? 1 : 0)
+    if ('warning' in scenario) await expect(card).toHaveClass(/bg-attention-soft/)
+    if (scenario.name === 'shortened summary with a transcript') {
+      await expect(card.locator('strong', { hasText: 'card' })).toBeVisible()
+      await expect(card.getByText('Full text (shortened here)')).toBeVisible()
+      await expect(card.getByText('Attempt attempt-impl transcript')).toBeVisible()
+    }
   })
 }
 
@@ -687,6 +1035,30 @@ test.describe('at 390 px', () => {
       await expect(running).toBeVisible()
       const card = await running.evaluate((element) => [element.scrollWidth, element.clientWidth])
       expect(card[0]).toBeLessThanOrEqual(card[1])
+      const viewport = await page.evaluate(() => [
+        document.documentElement.scrollWidth,
+        document.documentElement.clientWidth,
+      ])
+      expect(viewport[0]).toBeLessThanOrEqual(viewport[1])
+    })
+  }
+
+  for (const surface of surfaces) {
+    test(`the ${surface.name} implementation cards have no horizontal scroll`, async ({ page }) => {
+      await mockAPI(page, deliveredTask(), {
+        ...nextAction(implementID(2)),
+        current_order: undefined,
+        attempt: undefined,
+      })
+      await page.goto(surface.url)
+      const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+      const cards = timeline.locator('[data-implementation-entry]')
+      await expect(cards).toHaveCount(2)
+      for (const card of await cards.all()) {
+        await expect(card).toBeVisible()
+        const size = await card.evaluate((element) => [element.scrollWidth, element.clientWidth])
+        expect(size[0]).toBeLessThanOrEqual(size[1])
+      }
       const viewport = await page.evaluate(() => [
         document.documentElement.scrollWidth,
         document.documentElement.clientWidth,

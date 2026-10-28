@@ -338,9 +338,19 @@ export const noteEventKinds = [
 
 type NoteEventKind = (typeof noteEventKinds)[number]
 
-// Kinds `noteFor` never renders: the review cards, panels, and the approval
-// intervention already tell their story.
-const hiddenNoteKinds = new Set(['review.completed', 'spec.version_approved'])
+// Kinds `noteFor` never renders: the review cards, panels, the plan section,
+// and the approval intervention already tell their story, and the remaining
+// publication bookkeeping reads as noise. Technical activity keeps them all
+// (component-web-task-surfaces, Task detail composition; task 261028-5c2ae2).
+const hiddenNoteKinds = new Set([
+  'review.completed',
+  'spec.version_approved',
+  'spec.version_created',
+  'github_issue.publication_queued',
+  'github_issue.publication_published',
+  'github_issue.associated',
+  'review.publication_retry',
+])
 
 // Attempt kinds that read as an entry when the factory retries the run on its
 // own (req-operator-next-action AC-7.3); see automaticRetryEvent.
@@ -777,6 +787,10 @@ export type TimelineEntry =
       model: string
       tone: 'default' | 'warning'
       order?: WorkOrder
+      // An implement job's attempt number, set only when the task has more
+      // than one started implement job, and its delivery line.
+      attempt?: number
+      delivery?: ImplementationDelivery
     }
   | {
       type: 'note'
@@ -1083,17 +1097,69 @@ function humanizeKind(kind: string) {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-// One selected event as a timeline note. Panel absorption is evaluated first,
-// on the payload or its index; a selected event whose payload was omitted then
-// renders as a note titled from its kind with an audit disclosure, so an
-// omitted payload never removes a human row (component-web-task-surfaces).
+// The pull request an Implementation entry shows, and the head that attempt's
+// own order submitted (component-web-task-surfaces, Work-order timeline
+// entries). The pull request comes from the complete-ledger summary; the head
+// never does, so an earlier attempt keeps its own.
+export interface ImplementationDelivery {
+  number: number
+  url: string
+  headSha: string
+}
+
+// Started implement jobs keyed by job ID, numbered from 1 in `started_at`
+// order with ties broken by job ID, so a number never depends on response
+// order or the bounded event page.
+export function implementationAttempts(item: ActivityItem): Map<string, number> {
+  const jobs = item.jobs
+    .filter((job) => job.stage === 'implement' && job.started_at)
+    .sort(
+      (a, b) =>
+        Date.parse(a.started_at ?? '') - Date.parse(b.started_at ?? '') || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
+  return new Map(jobs.map((job, index) => [job.id, index + 1]))
+}
+
+// The delivery line of each started implement job whose order recorded a head,
+// while the task's pull request summary has a number and URL.
+export function implementationDeliveries(item: ActivityItem): Map<string, ImplementationDelivery> {
+  const deliveries = new Map<string, ImplementationDelivery>()
+  const pr = item.summaries?.pull_request
+  if (typeof pr?.number !== 'number' || typeof pr.url !== 'string' || !pr.url) return deliveries
+  const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
+  for (const jobID of implementationAttempts(item).keys()) {
+    const headSha = orderByJob.get(jobID)?.head_sha
+    if (headSha) deliveries.set(jobID, { number: pr.number, url: pr.url, headSha })
+  }
+  return deliveries
+}
+
+// A `pull_request.opened` is absorbed when its job's Implementation entry shows
+// the same pull request number, read from the payload or, when the server
+// omitted it, from `payload_index`. Without a job ID or a number the event
+// keeps its note and audit disclosure.
+function isDeliveredPullRequestEvent(event: TaskEventView, deliveries: Map<string, ImplementationDelivery>): boolean {
+  if (event.kind !== 'pull_request.opened' || !event.job_id) return false
+  const delivery = deliveries.get(event.job_id)
+  if (!delivery) return false
+  const number = event.payload ? event.payload.number : event.payload_index?.number
+  return typeof number === 'number' && number === delivery.number
+}
+
+// One selected event as a timeline note. Panel and delivery absorption are
+// evaluated first, on the payload or its index; a selected event whose payload
+// was omitted then renders as a note titled from its kind with an audit
+// disclosure, so an omitted payload never removes a human row
+// (component-web-task-surfaces).
 function noteFor(
   event: TaskEventView,
   panels: PanelIndex,
+  deliveries: Map<string, ImplementationDelivery>,
   assignee?: TaskAssignee,
   members: WorkspaceMembership[] = [],
 ): NoteContent | undefined {
   if (event.kind === 'review.round_completed' && isPanelReviewEvent(event, panels)) return undefined
+  if (isDeliveredPullRequestEvent(event, deliveries)) return undefined
   if (event.payload_omitted && !event.payload) {
     if (!humanTimelineKinds.has(event.kind)) return undefined
     const title = noteContent(event.kind, event.payload_index ?? {}, panels, assignee, members)?.title
@@ -1252,11 +1318,11 @@ function noteContent(
         detail: request.rationale,
       }
     }
+    // The plan section shows each version and the approval intervention
+    // renders the richer human "Approved" card. Retain the audit events in the
+    // API without repeating them in the timeline.
     case 'spec.version_created':
-      return { title: `Plan v${typeof payload.version === 'number' ? payload.version : '?'} drafted` }
     case 'spec.version_approved':
-      // The approval intervention renders the richer human "Approved" card.
-      // Retain the audit event in the API without repeating it in the timeline.
       return undefined
     case 'blueprint.materialized':
       return {
@@ -1278,20 +1344,17 @@ function noteContent(
         title: 'Dependency removed',
         detail: typeof payload.reason === 'string' ? payload.reason : undefined,
       }
+    // Queued and associated issue publications are bookkeeping; only the
+    // retry and failure alarms read as timeline notes.
     case 'github_issue.publication_queued':
-      return { title: 'GitHub issue publication queued' }
+    case 'github_issue.publication_published':
+    case 'github_issue.associated':
+      return undefined
     case 'github_issue.publication_retry':
       return {
         title: 'GitHub issue publication retrying',
         detail: forgeFailureDetail(payload, 'last_error'),
         alarm: Boolean(payload.last_error),
-      }
-    case 'github_issue.publication_published':
-    case 'github_issue.associated':
-      return {
-        title: 'GitHub issue associated',
-        detail: typeof payload.issue_url === 'string' ? payload.issue_url : undefined,
-        href: typeof payload.issue_url === 'string' ? payload.issue_url : undefined,
       }
     case 'github_issue.publication_failed':
       return {
@@ -1299,12 +1362,10 @@ function noteContent(
         detail: forgeFailureDetail(payload, 'last_error'),
         alarm: true,
       }
+    // A review publication retry is the forge client's own bookkeeping; the
+    // failure alarm below reads when the retries run out.
     case 'review.publication_retry':
-      return {
-        title: 'GitHub review publication retrying',
-        detail: forgeFailureDetail(payload, 'last_error'),
-        alarm: Boolean(payload.last_error),
-      }
+      return undefined
     case 'review.publication_failed':
       return {
         title: 'GitHub review publication failed',
@@ -1532,6 +1593,8 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   entries.push(...panels.panels)
   const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
+  const attempts = implementationAttempts(item)
+  const deliveries = implementationDeliveries(item)
   // Orders whose progress report is printed as a job entry's summary.
   const progressShown = new Set<string>()
   for (const job of item.jobs) {
@@ -1557,6 +1620,8 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
       model,
       tone,
       order,
+      attempt: attempts.size > 1 ? attempts.get(job.id) : undefined,
+      delivery: deliveries.get(job.id),
     })
   }
   const orders = item.work_orders ?? []
@@ -1570,7 +1635,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   for (const event of item.events) {
     const retry = automaticRetryEvent(event)
     if (attemptEventKinds.has(event.kind) && !retry) continue
-    const note = noteFor(event, panels, item.task.assignee, members)
+    const note = noteFor(event, panels, deliveries, item.task.assignee, members)
     if (!note) continue
     const shown = retry ? retryNote(note) : note
     entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })
@@ -1615,19 +1680,21 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   )
 }
 
-// Earlier human history rows, rendered through the same `noteFor` and panel
-// absorption the timeline uses (component-web-task-surfaces, History pages).
+// Earlier human history rows, rendered through the same `noteFor`, panel
+// absorption, and delivery absorption the timeline uses
+// (component-web-task-surfaces, History pages).
 export function historyNoteEntries(
   item: ActivityItem,
   events: TaskEventView[],
   members: WorkspaceMembership[] = [],
 ): Extract<TimelineEntry, { type: 'note' }>[] {
   const panels = buildReviewPanels(item)
+  const deliveries = implementationDeliveries(item)
   const entries: Extract<TimelineEntry, { type: 'note' }>[] = []
   for (const event of events) {
     const retry = automaticRetryEvent(event)
     if (attemptEventKinds.has(event.kind) && !retry) continue
-    const note = noteFor(event, panels, item.task.assignee, members)
+    const note = noteFor(event, panels, deliveries, item.task.assignee, members)
     if (!note) continue
     const shown = retry ? retryNote(note) : note
     entries.push({ type: 'note', at: event.at, key: `event-${event.id}`, ...shown })

@@ -545,6 +545,74 @@ test('Earlier history pages the human selection and renders omitted payloads as 
   expect(server.calls.every((call) => call.selection === 'human' && call.workspace === 'demo')).toBe(true)
 })
 
+// A pull request record whose job's Implementation card shows that pull
+// request is absorbed in Earlier history as on the bounded page, so the oldest
+// human page no longer repeats it; the generated ledger above, whose record
+// names no job, keeps its note (component-web-task-surfaces v41, Work-order
+// timeline entries; task 261028-5c2ae2).
+function deliveredLedger(): GeneratedLedger {
+  const generated = generateLedger({ taskId: 'ledger-delivered', total: 3_000, reconciled: 2_700, human: 160 })
+  const implementID = `${generated.taskId}-implement`
+  const events = generated.item.events.map((event) =>
+    event.kind === 'pull_request.opened' ? { ...event, job_id: implementID } : event,
+  )
+  const head = 'feedfacecafebeef00112233445566778899aabb'
+  const implementOrder = {
+    id: implementID,
+    task_id: generated.taskId,
+    job_id: implementID,
+    stage: 'implement',
+    state: 'completed',
+    head_sha: head,
+    queue_entered_at: events[4].at,
+    created_at: events[4].at,
+    model: 'claude-opus',
+    tokens_in: 0,
+    tokens_out: 0,
+  }
+  const item = {
+    ...generated.item,
+    events,
+    work_orders: [...(generated.item.work_orders ?? []), implementOrder],
+  } as CompleteActivity
+  return { ...generated, item }
+}
+
+test('Earlier history absorbs a pull request record its Implementation card shows', async ({ page }) => {
+  const generated = deliveredLedger()
+  const view = boundedView(generated.item)
+  expect(view.event_page?.has_older).toBe(true)
+  expect(view.events.some((event) => event.kind === 'pull_request.opened')).toBe(false)
+  await serveLedgers(page, [generated])
+  const scope = await openDetail(page, 'full route', generated)
+
+  // The card shows the pull request from summaries, outside the bounded page.
+  const card = scope.getByRole('article', { name: 'Implementation', exact: true })
+  await expect(card).toContainText('Implemented the bounded history pager across every task surface.')
+  const delivery = card.locator('[data-implementation-delivery]')
+  await expect(delivery.getByRole('link', { name: '#4242' })).toHaveAttribute(
+    'href',
+    'https://github.com/acme/widgets/pull/4242',
+  )
+  await expect(delivery.getByText('feedfac', { exact: true })).toBeVisible()
+
+  await scope.getByRole('button', { name: 'Earlier history' }).click()
+  const earlierPager = pager(scope, 'Earlier history pages')
+  const earlierRows = scope.getByRole('list', { name: 'Earlier history events' }).getByRole('listitem')
+  await expect(earlierRows.first()).toBeVisible()
+  const olderButton = earlierPager.getByRole('button', { name: 'Older' })
+  for (let step = 0; step < 10; step++) {
+    await expect(earlierPager.getByText('Pull request opened')).toHaveCount(0)
+    if ((await earlierPager.getByText('End of history.').count()) > 0) break
+    const firstRow = (await earlierRows.first().textContent()) ?? ''
+    await olderButton.click()
+    await expect(earlierRows.first()).not.toHaveText(firstRow)
+  }
+  await expect(earlierPager.getByText('End of history.')).toBeVisible()
+  await expect(earlierPager.getByText('Pull request opened')).toHaveCount(0)
+  await expect(scope.getByText('Pull request opened')).toHaveCount(0)
+})
+
 // Automatic retries whose payloads exceed the presentation limit: the
 // suppression flag survives in payload_index, an unsuppressed retry keeps its
 // omission marker and audit reference, and a suppressed one stays attempt
