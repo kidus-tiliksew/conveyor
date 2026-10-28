@@ -238,6 +238,7 @@ func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTask
 		CreatedTo: nullableTimestamp(filter.CreatedTo), ServesRequirements: emptyIfNil(filter.ServesRequirementIDs),
 		GoverningDesigns: emptyIfNil(filter.GoverningDesignIDs), Assignee: filter.Assignee,
 		UpdatedFrom: nullableTimestamp(filter.UpdatedFrom), UpdatedTo: nullableTimestamp(filter.UpdatedTo),
+		OpenOnly: filter.Open,
 	}
 }
 
@@ -249,7 +250,7 @@ func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limi
 		ServesRequirements: bound.ServesRequirements, GoverningDesigns: bound.GoverningDesigns,
 		Assignee:    bound.Assignee,
 		UpdatedFrom: bound.UpdatedFrom, UpdatedTo: bound.UpdatedTo,
-		PageLimit: int32(limit), PageOffset: int32(offset),
+		PageLimit: int32(limit), PageOffset: int32(offset), OpenOnly: bound.OpenOnly,
 	}
 }
 

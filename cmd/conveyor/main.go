@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -376,21 +378,17 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
 	newCmd.Flags().StringSliceVar(&dependsOn, "depends-on", nil, "open task ID that must merge first (repeatable)")
 
+	var listStates []string
+	var listLimit, listOffset int
 	listCmd := &cobra.Command{
-		Use: "list", Short: "List tasks",
-		RunE: func(*cobra.Command, []string) error {
-			tasks, err := newClient().listTasks()
-			if err != nil {
-				return err
-			}
-			tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tSTATE\tREPO\tSOURCE\tTITLE")
-			for _, t := range tasks {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.State, t.Repo, t.Source, t.Title)
-			}
-			return tw.Flush()
+		Use: "list", Short: "List tasks, newest first, one page at a time",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runTaskList(newClient(), cmd.OutOrStdout(), cmd.ErrOrStderr(), listStates, listLimit, listOffset, cmd.Flags().Changed("limit"), cmd.Flags().Changed("offset"))
 		},
 	}
+	listCmd.Flags().StringSliceVar(&listStates, "state", nil, "task state to list (repeatable)")
+	listCmd.Flags().IntVar(&listLimit, "limit", 0, "rows per page, 1 to 200 (server default 100)")
+	listCmd.Flags().IntVar(&listOffset, "offset", 0, "rows to skip; requires --limit")
 
 	showCmd := &cobra.Command{
 		Use: "show <id>", Short: "Show a task and its jobs", Args: cobra.ExactArgs(1),
@@ -791,7 +789,7 @@ func doneCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tasks, err := client.listTasks()
+			tasks, err := client.listOpenTasksHoldingBranch(task.Repo, task.Branch)
 			if err != nil {
 				return err
 			}
@@ -948,6 +946,48 @@ func runTaskRestart(cmd *cobra.Command, c *client, request core.TaskStartOverReq
 	fmt.Fprintf(out, "Successor: %s\nBranch: %s\nRun: conveyor --workspace %s run %s\n", result.Successor.ID, result.Successor.Branch, result.Successor.Workspace, result.Successor.ID)
 	for _, drop := range result.DroppedContext {
 		fmt.Fprintf(out, "Dropped %s %s: %s\n", drop.Kind, drop.ID, drop.Reason)
+	}
+	return nil
+}
+
+// runTaskList prints one GET /v1/tasks page. The server bounds a request
+// without --limit to its default page, so the command sends only the states
+// and page the operator asked for and names the range it printed when more
+// rows match (component-http-api, Task list read).
+func runTaskList(c *client, out, errOut io.Writer, states []string, limit, offset int, limitSet, offsetSet bool) error {
+	if offsetSet && !limitSet {
+		return fmt.Errorf("--offset requires --limit")
+	}
+	query := url.Values{}
+	for _, state := range states {
+		if state = strings.TrimSpace(state); state != "" {
+			query.Add("state", state)
+		}
+	}
+	if limitSet {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if offsetSet {
+		query.Set("offset", strconv.Itoa(offset))
+	}
+	page, err := c.listTaskPage(query)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tSTATE\tREPO\tSOURCE\tTITLE")
+	for _, t := range page.Tasks {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.ID, t.State, t.Repo, t.Source, t.Title)
+	}
+	if err = tw.Flush(); err != nil {
+		return err
+	}
+	if page.HasTotal && len(page.Tasks) < page.Total {
+		first := offset + 1
+		if len(page.Tasks) == 0 {
+			first = offset
+		}
+		fmt.Fprintf(errOut, "showing tasks %d-%d of %d; use --limit and --offset for more\n", first, offset+len(page.Tasks), page.Total)
 	}
 	return nil
 }

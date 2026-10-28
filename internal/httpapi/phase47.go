@@ -31,7 +31,7 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 	if s.WorkOrders != nil {
 		orders, err = s.WorkOrders.List(r.Context())
 	} else {
-		orders, err = s.Store.ListWorkOrders(r.Context())
+		orders, err = s.Store.ListLiveWorkOrders(r.Context())
 	}
 	if err != nil {
 		log.Printf("handle work order request: %v", err)
@@ -49,6 +49,35 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, orders)
+}
+
+// getWorkOrder is the exact read of one order in any state, through the
+// list's projections, so a client resolves a terminal order without widening
+// the list (component-work-orders, Listing).
+func (s *Server) getWorkOrder(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	// The workspace-scoped read decides existence; an order of another
+	// workspace is as missing as an unknown ID.
+	order, err := s.Store.GetWorkOrder(r.Context(), id)
+	if err != nil {
+		http.Error(w, "work order not found", http.StatusNotFound)
+		return
+	}
+	if s.WorkOrders != nil {
+		if order, err = s.WorkOrders.Lookup(r.Context(), id); err != nil {
+			log.Printf("handle work order request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+	orders := projectAssigneeClaimability(r.Context(), []core.WorkOrder{order})
+	orders, err = s.projectWorkOrderSessions(r.Context(), orders, false, core.Worker{})
+	if err != nil {
+		log.Printf("project work order sessions: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, orders[0])
 }
 
 // projectWorkOrderSessions removes bearer session material unless the caller

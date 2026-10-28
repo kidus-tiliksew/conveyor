@@ -260,6 +260,11 @@ type WorkOrderStore interface {
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
+	// ListLiveWorkOrders returns the workspace's orders whose stored state is
+	// queued, claimed, stale, or timed out, projected at read time and ordered
+	// as ListWorkOrders orders them. Every backend applies the state predicate
+	// in its own read (component-work-orders, Listing).
+	ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersStored returns persisted work-order states without

@@ -81,10 +81,75 @@ func (c *client) createTaskWithDependencies(body, repo, base string, specApprova
 	return task, err
 }
 
-func (c *client) listTasks() ([]core.Task, error) {
-	var ts []core.Task
-	err := c.do(http.MethodGet, "/v1/tasks", nil, &ts)
-	return ts, err
+// openTaskStates are the task states other than merged and closed.
+var openTaskStates = []core.TaskState{core.TaskClaiming, core.TaskQueued, core.TaskRunning, core.TaskAwaiting, core.TaskApproved, core.TaskParked}
+
+// taskListPageLimit is the largest page GET /v1/tasks serves.
+const taskListPageLimit = 200
+
+// taskListPage is one GET /v1/tasks page. HasTotal is false when the server
+// sent no X-Conveyor-Total, as a server that predates paging does; its body is
+// then the complete list.
+type taskListPage struct {
+	Tasks    []core.Task
+	Total    int
+	HasTotal bool
+}
+
+// listTaskPage reads one page of GET /v1/tasks under the shared filter family
+// (component-http-api, Task list read).
+func (c *client) listTaskPage(query url.Values) (taskListPage, error) {
+	path := "/v1/tasks"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	body, header, err := c.getRawWithHeader(path)
+	if err != nil {
+		return taskListPage{}, err
+	}
+	var page taskListPage
+	if err = json.Unmarshal(body, &page.Tasks); err != nil {
+		return taskListPage{}, err
+	}
+	if raw := header.Get("X-Conveyor-Total"); raw != "" {
+		if page.Total, err = strconv.Atoi(raw); err != nil {
+			return taskListPage{}, fmt.Errorf("invalid X-Conveyor-Total %q", raw)
+		}
+		page.HasTotal = true
+	}
+	return page, nil
+}
+
+// listOpenTasksHoldingBranch reads every open task of repo whose identifying
+// text contains branch, a page of 200 at a time. The occupied-branch rule
+// still compares repository, branch, and state exactly, so an older server
+// that ignores the filter answers correctly with its whole list
+// (component-http-api, Task list read).
+func (c *client) listOpenTasksHoldingBranch(repo, branch string) ([]core.Task, error) {
+	query := url.Values{}
+	for _, state := range openTaskStates {
+		query.Add("state", string(state))
+	}
+	if repo != "" {
+		query.Set("repository", repo)
+	}
+	if branch != "" {
+		query.Set("q", branch)
+	}
+	query.Set("limit", strconv.Itoa(taskListPageLimit))
+	var tasks []core.Task
+	for offset := 0; ; {
+		query.Set("offset", strconv.Itoa(offset))
+		page, err := c.listTaskPage(query)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, page.Tasks...)
+		offset += len(page.Tasks)
+		if !page.HasTotal || len(page.Tasks) == 0 || offset >= page.Total {
+			return tasks, nil
+		}
+	}
 }
 
 func (c *client) getTask(id string) (core.Task, error) {
@@ -382,12 +447,22 @@ func (c *client) send(method, path string, body []byte, headers map[string]strin
 		defer resp.Body.Close()
 		msg, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusUnauthorized {
-			return nil, fmt.Errorf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())
+			return nil, &apiStatusError{Status: resp.StatusCode, message: fmt.Sprintf("%s: %s (%s)", resp.Status, bytes.TrimSpace(msg), c.credentialDiagnostic())}
 		}
-		return nil, fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(msg))
+		return nil, &apiStatusError{Status: resp.StatusCode, message: fmt.Sprintf("%s: %s", resp.Status, bytes.TrimSpace(msg))}
 	}
 	return resp, nil
 }
+
+// apiStatusError is a refused request. Its text is the status and the
+// server's message; Status lets a caller branch on one status, such as a 404
+// from a server that predates a route.
+type apiStatusError struct {
+	Status  int
+	message string
+}
+
+func (e *apiStatusError) Error() string { return e.message }
 
 // credentialDiagnostic names the credential source and whether a stored
 // credential exists for the resolved server. It never includes a credential

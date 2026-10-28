@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -123,6 +124,39 @@ func runOrderRecover(c *client, w io.Writer, orderID, direction, requestID strin
 	return writeOrderResult(w, response, asJSON, fmt.Sprintf("recovered work order %s (request %s)", orderID, requestID))
 }
 
+// resolvedWorkOrder is the part of a work order the order commands read.
+type resolvedWorkOrder struct {
+	ID     string `json:"id"`
+	TaskID string `json:"task_id"`
+	State  string `json:"state"`
+}
+
+// resolveWorkOrder reads one order through GET /v1/work-orders/{id}, which
+// serves an order in any state; the list holds live orders only. A 404 falls
+// back to one list search, so a server that predates the exact read still
+// resolves a live order (component-work-orders, Listing).
+func resolveWorkOrder(c *client, orderID string) (resolvedWorkOrder, bool, error) {
+	var order resolvedWorkOrder
+	err := c.doHeaders(http.MethodGet, "/v1/work-orders/"+url.PathEscape(orderID), nil, &order, nil)
+	if err == nil {
+		return order, order.ID == orderID, nil
+	}
+	var status *apiStatusError
+	if !errors.As(err, &status) || status.Status != http.StatusNotFound {
+		return resolvedWorkOrder{}, false, err
+	}
+	var orders []resolvedWorkOrder
+	if err := c.doHeaders(http.MethodGet, "/v1/work-orders", nil, &orders, nil); err != nil {
+		return resolvedWorkOrder{}, false, err
+	}
+	for _, candidate := range orders {
+		if candidate.ID == orderID {
+			return candidate, true, nil
+		}
+	}
+	return resolvedWorkOrder{}, false, nil
+}
+
 func runOrderRedispatch(c *client, w io.Writer, orderID, requestID string, asJSON bool) error {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
@@ -132,21 +166,12 @@ func runOrderRedispatch(c *client, w io.Writer, orderID, requestID string, asJSO
 	if err != nil {
 		return err
 	}
-	var orders []struct {
-		ID     string `json:"id"`
-		TaskID string `json:"task_id"`
-	}
-	if err := c.doHeaders(http.MethodGet, "/v1/work-orders", nil, &orders, nil); err != nil {
+	order, found, err := resolveWorkOrder(c, orderID)
+	if err != nil {
 		return err
 	}
-	taskID := ""
-	for _, order := range orders {
-		if order.ID == orderID {
-			taskID = order.TaskID
-			break
-		}
-	}
-	if taskID == "" {
+	taskID := order.TaskID
+	if !found || taskID == "" {
 		return fmt.Errorf("work order %s not found", orderID)
 	}
 	payload := struct {
@@ -167,20 +192,11 @@ func runOrderRetire(c *client, w io.Writer, orderID, reason, requestID string, a
 	if strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("--reason is required")
 	}
-	var orders []struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
-	}
-	if err := c.doHeaders(http.MethodGet, "/v1/work-orders", nil, &orders, nil); err != nil {
+	order, found, err := resolveWorkOrder(c, orderID)
+	if err != nil {
 		return err
 	}
-	state, found := "", false
-	for _, order := range orders {
-		if order.ID == orderID {
-			state, found = order.State, true
-			break
-		}
-	}
+	state := order.State
 	switch {
 	case !found:
 		return fmt.Errorf("work order %s not found", orderID)
@@ -189,7 +205,7 @@ func runOrderRetire(c *client, w io.Writer, orderID, reason, requestID string, a
 	case state != "queued" && state != "stale":
 		return fmt.Errorf("work order %s is %s; only queued or stale orders can be retired", orderID, state)
 	}
-	requestID, err := orderRequestID(requestID)
+	requestID, err = orderRequestID(requestID)
 	if err != nil {
 		return err
 	}

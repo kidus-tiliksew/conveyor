@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -273,5 +275,88 @@ func TestClientAttachTaskBranchNamedRefusals(t *testing.T) {
 				t.Fatalf("named = %+v err=%v", named, err)
 			}
 		})
+	}
+}
+
+// The occupied-branch read asks only for open tasks of the repository whose
+// text holds the branch, a page of 200 at a time, and follows
+// X-Conveyor-Total; a server without the header answers in one page
+// (component-http-api, Task list read).
+func TestListOpenTasksHoldingBranchPagesAndFilters(t *testing.T) {
+	var queries []url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tasks" {
+			t.Fatalf("request %s %s", r.Method, r.URL.Path)
+		}
+		queries = append(queries, r.URL.Query())
+		w.Header().Set("X-Conveyor-Total", "3")
+		if r.URL.Query().Get("offset") == "0" {
+			_ = json.NewEncoder(w).Encode([]core.Task{{ID: "a"}, {ID: "b"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]core.Task{{ID: "c"}})
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, workspace: "demo"}
+	tasks, err := c.listOpenTasksHoldingBranch("conveyor", "conveyor/task-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 3 || tasks[2].ID != "c" || len(queries) != 2 {
+		t.Fatalf("tasks=%+v queries=%v", tasks, queries)
+	}
+	for index, query := range queries {
+		want := url.Values{
+			"state":      {"claiming", "queued", "running", "awaiting_human", "approved", "parked"},
+			"repository": {"conveyor"}, "q": {"conveyor/task-a"}, "limit": {"200"},
+			"offset": {[]string{"0", "2"}[index]},
+		}
+		if !reflect.DeepEqual(query, want) {
+			t.Fatalf("query %d = %v, want %v", index, query, want)
+		}
+	}
+
+	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]core.Task{{ID: "a"}, {ID: "merged", State: core.TaskMerged}})
+	}))
+	defer legacy.Close()
+	tasks, err = (&client{base: legacy.URL, workspace: "demo"}).listOpenTasksHoldingBranch("conveyor", "conveyor/task-a")
+	if err != nil || len(tasks) != 2 {
+		t.Fatalf("legacy tasks=%+v err=%v", tasks, err)
+	}
+}
+
+func TestTaskListSendsStatesAndPageAndNamesTheRange(t *testing.T) {
+	var query url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		w.Header().Set("X-Conveyor-Total", "7")
+		_ = json.NewEncoder(w).Encode([]core.Task{{ID: "t-1", State: core.TaskQueued, Repo: "conveyor", Source: "operator", Title: "One"}, {ID: "t-2", State: core.TaskRunning}})
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, workspace: "demo"}
+	var out, errOut strings.Builder
+	if err := runTaskList(c, &out, &errOut, []string{"queued", "running"}, 2, 4, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if want := (url.Values{"state": {"queued", "running"}, "limit": {"2"}, "offset": {"4"}}); !reflect.DeepEqual(query, want) {
+		t.Fatalf("query=%v, want %v", query, want)
+	}
+	if !strings.Contains(out.String(), "t-1") || !strings.Contains(out.String(), "t-2") {
+		t.Fatalf("output %q", out.String())
+	}
+	if errOut.String() != "showing tasks 5-6 of 7; use --limit and --offset for more\n" {
+		t.Fatalf("range note %q", errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if err := runTaskList(c, &out, &errOut, nil, 0, 0, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(query) != 0 {
+		t.Fatalf("default list sent %v, want the server's default page", query)
+	}
+	if err := runTaskList(c, &out, &errOut, nil, 0, 3, false, true); err == nil || err.Error() != "--offset requires --limit" {
+		t.Fatalf("offset without limit err=%v", err)
 	}
 }

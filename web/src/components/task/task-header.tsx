@@ -24,7 +24,7 @@ import {
   taskCreator,
   taskRestartLinks,
 } from '../../lib/activity'
-import { addTaskDependency, cancelTask, fetchTasks, removeTaskDependency, setTaskAssignee } from '../../lib/api'
+import { addTaskDependency, cancelTask, fetchOpenTasks, removeTaskDependency, setTaskAssignee } from '../../lib/api'
 import { findBlueprint } from '../../lib/blueprint'
 import { taskStateLabels } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
@@ -440,7 +440,7 @@ function LinkDependencyControl({ item, onClose }: { item: ActivityItem; onClose:
   const requestID = useRef(crypto.randomUUID())
   const tasks = useQuery({
     queryKey: ['tasks', workspace, 'dependency-candidates'],
-    queryFn: fetchTasks,
+    queryFn: fetchOpenTasks,
     enabled: Boolean(workspace),
   })
   const existing = new Set(item.task.dependencies?.map((dependency) => dependency.id) ?? [])

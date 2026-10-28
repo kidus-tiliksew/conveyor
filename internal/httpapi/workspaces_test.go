@@ -46,6 +46,10 @@ func (s workspaceAwareStore) ListTasks(ctx context.Context) ([]core.Task, error)
 	id, _ := store.WorkspaceFromContext(ctx)
 	return append([]core.Task(nil), s.tasks[id]...), nil
 }
+func (s workspaceAwareStore) ListTaskPage(ctx context.Context, _ store.TaskOperationsQuery) (store.TaskPage, error) {
+	tasks, _ := s.ListTasks(ctx)
+	return store.TaskPage{Tasks: tasks, Total: len(tasks)}, nil
+}
 func (s workspaceAwareStore) ListActivityMarkers(context.Context) ([]store.ActivityMarker, error) {
 	return nil, nil
 }

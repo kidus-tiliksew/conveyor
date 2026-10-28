@@ -106,17 +106,16 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	if opts.Now.IsZero() {
 		opts.Now = time.Now().UTC()
 	}
-	tasks, err := s.Store.ListTasksFiltered(ctx, filter)
+	// The store excludes merged and closed tasks and blueprint anchors before
+	// a row is read, so the inbox's reads cover open tasks only
+	// (feature-operator-next-action NA-5).
+	filter.Open = true
+	candidates, err := s.Store.ListTasksFiltered(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
-	candidates := make([]core.Task, 0, len(tasks))
-	ids := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		if core.TaskTerminal(task.State) || core.BlueprintAnchor(task) {
-			continue
-		}
-		candidates = append(candidates, task)
+	ids := make([]string, 0, len(candidates))
+	for _, task := range candidates {
 		ids = append(ids, task.ID)
 	}
 	projected, err := store.ReadNextActions(ctx, s.Store, candidates, opts)

@@ -319,6 +319,35 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, err
 }
 
+// ListLiveWorkOrders applies the live-state predicate in SQL, so completed,
+// cancelled, and submitted history is never read (component-work-orders,
+// Listing).
+func (s *Store) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	query := `SELECT ` + workOrderColumns + ` FROM work_orders WHERE workspace_id=? AND state IN (` + strings.TrimSuffix(strings.Repeat("?,", len(store.LiveWorkOrderStates)), ",") + `) ORDER BY created_at,id`
+	args := []any{documentWorkspace(ctx)}
+	for _, state := range store.LiveWorkOrderStates {
+		args = append(args, string(state))
+	}
+	rows, err := documentRows(ctx, s.db, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := []core.WorkOrder{}
+	for rows.Next() {
+		o, err := scanWorkOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, o)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	projectOrders(orders)
+	return orders, s.hydrateWorkOrderAssignees(ctx, orders)
+}
+
 // ListWorkOrdersForTasks is the batch projection read of activity, markers,
 // and next actions. Like PostgreSQL's, it omits the authority snapshots.
 func (s *Store) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {

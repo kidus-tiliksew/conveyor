@@ -54,6 +54,35 @@ func okJSON(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"id":"o-1","state":"queued"}`))
 }
 
+// serveOrderReads answers the order reads from listed, a JSON array of
+// orders: GET /v1/work-orders with the array and GET /v1/work-orders/{id}
+// with the matching order or 404. legacy answers 404 to every exact read, as
+// a server that predates the route does. It reports whether it answered.
+func serveOrderReads(t *testing.T, w http.ResponseWriter, r *http.Request, listed string, legacy bool) bool {
+	t.Helper()
+	if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/v1/work-orders") {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/v1/work-orders" {
+		_, _ = w.Write([]byte(listed))
+		return true
+	}
+	var orders []map[string]any
+	if err := json.Unmarshal([]byte(listed), &orders); err != nil {
+		t.Fatalf("listed orders %q: %v", listed, err)
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/v1/work-orders/")
+	for _, order := range orders {
+		if order["id"] == id && !legacy {
+			_ = json.NewEncoder(w).Encode(order)
+			return true
+		}
+	}
+	http.Error(w, "work order not found", http.StatusNotFound)
+	return true
+}
+
 func TestOrderRecoverRequestID(t *testing.T) {
 	c, seen := serveOrders(t, okJSON)
 	var out bytes.Buffer
@@ -86,18 +115,19 @@ func TestOrderRecoverRequestID(t *testing.T) {
 
 func TestOrderRedispatchResolvesTask(t *testing.T) {
 	c, seen := serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/v1/work-orders" {
-			_, _ = w.Write([]byte(`[{"id":"261011-other-spec-1","task_id":"261011-other"},{"id":"261011-aaaaaa-spec-2","task_id":"261011-aaaaaa"}]`))
+		if serveOrderReads(t, w, r, `[{"id":"261011-other-spec-1","task_id":"261011-other"},{"id":"261011-aaaaaa-spec-2","task_id":"261011-aaaaaa","state":"completed"}]`, false) {
 			return
 		}
 		okJSON(w, r)
 	})
 	var out bytes.Buffer
+	// A completed order still names its task through the exact read, which
+	// serves every state; the list holds live orders only.
 	if err := runOrderRedispatch(c, &out, "261011-aaaaaa-spec-2", "", false); err != nil {
 		t.Fatal(err)
 	}
 	requests := seen()
-	if len(requests) != 2 || requests[0].method != http.MethodGet || requests[0].path != "/v1/work-orders" ||
+	if len(requests) != 2 || requests[0].method != http.MethodGet || requests[0].path != "/v1/work-orders/261011-aaaaaa-spec-2" ||
 		requests[1].method != http.MethodPost || requests[1].path != "/v1/tasks/261011-aaaaaa/redispatch" {
 		t.Fatalf("requests = %+v", requests)
 	}
@@ -106,20 +136,52 @@ func TestOrderRedispatchResolvesTask(t *testing.T) {
 		t.Fatalf("request id %q headers %v", id, requests[1].header)
 	}
 
+	// A 404 searches the list once before reporting the order missing.
 	err := runOrderRedispatch(c, &out, "261011-missing-spec-1", "", false)
 	if err == nil || err.Error() != "work order 261011-missing-spec-1 not found" {
 		t.Fatalf("unknown order err = %v", err)
 	}
-	if got := seen(); len(got) != 3 || got[2].method != http.MethodGet {
-		t.Fatalf("unknown order must not post: %+v", got)
+	if got := seen(); len(got) != 4 || got[2].path != "/v1/work-orders/261011-missing-spec-1" || got[3].method != http.MethodGet || got[3].path != "/v1/work-orders" {
+		t.Fatalf("unknown order must read exactly, search the list, and not post: %+v", got)
+	}
+}
+
+// A server that predates GET /v1/work-orders/{id} answers 404; the commands
+// then resolve a live order from the list (component-work-orders, Listing).
+func TestOrderCommandsFallBackToListOnOlderServer(t *testing.T) {
+	listed := `[{"id":"261011-aaaaaa-implement-1","task_id":"261011-aaaaaa","state":"stale"}]`
+	c, seen := serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
+		if serveOrderReads(t, w, r, listed, true) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"request_id":"r","work_order":{"id":"261011-aaaaaa-implement-1","state":"cancelled"}}`))
+	})
+	if err := runOrderRedispatch(c, io.Discard, "261011-aaaaaa-implement-1", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := runOrderRetire(c, io.Discard, "261011-aaaaaa-implement-1", "obsolete", "", false); err != nil {
+		t.Fatal(err)
+	}
+	requests := seen()
+	want := []string{
+		"GET /v1/work-orders/261011-aaaaaa-implement-1", "GET /v1/work-orders", "POST /v1/tasks/261011-aaaaaa/redispatch",
+		"GET /v1/work-orders/261011-aaaaaa-implement-1", "GET /v1/work-orders", "POST /v1/work-orders/261011-aaaaaa-implement-1/preempt",
+	}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %+v", requests)
+	}
+	for i, request := range requests {
+		if got := request.method + " " + request.path; got != want[i] {
+			t.Fatalf("request %d = %s, want %s", i, got, want[i])
+		}
 	}
 }
 
 func TestOrderCommands409Passthrough(t *testing.T) {
 	const refusal = "task is already active"
 	c, _ := serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`[{"id":"o-1","task_id":"t-1"}]`))
+		if serveOrderReads(t, w, r, `[{"id":"o-1","task_id":"t-1"}]`, false) {
 			return
 		}
 		http.Error(w, refusal, http.StatusConflict)
@@ -171,11 +233,10 @@ func runConveyorMain(t *testing.T, server string, args ...string) (string, int) 
 func serveRetire(t *testing.T, listed, preempt string) (*client, func() []orderRequest) {
 	t.Helper()
 	return serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodGet && r.URL.Path == "/v1/work-orders" {
-			_, _ = w.Write([]byte(listed))
+		if serveOrderReads(t, w, r, listed, false) {
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(preempt))
 	})
 }
@@ -190,7 +251,7 @@ func TestOrderRetireQueuedAndStale(t *testing.T) {
 				t.Fatal(err)
 			}
 			requests := seen()
-			if len(requests) != 2 || requests[0].method != http.MethodGet || requests[0].path != "/v1/work-orders" ||
+			if len(requests) != 2 || requests[0].method != http.MethodGet || requests[0].path != "/v1/work-orders/261011-aaaaaa-review-1-seat-1" ||
 				requests[1].method != http.MethodPost || requests[1].path != "/v1/work-orders/261011-aaaaaa-review-1-seat-1/preempt" {
 				t.Fatalf("requests = %+v", requests)
 			}
@@ -226,12 +287,15 @@ func TestOrderRetireRequestIDAndJSON(t *testing.T) {
 }
 
 func TestOrderRetireRefusesBeforePosting(t *testing.T) {
-	c, seen := serveRetire(t, `[{"id":"o-claimed","state":"claimed"},{"id":"o-timed","state":"timed_out"},{"id":"o-queued","state":"queued"}]`, `{}`)
+	c, seen := serveRetire(t, `[{"id":"o-claimed","state":"claimed"},{"id":"o-timed","state":"timed_out"},{"id":"o-cancelled","state":"cancelled"},{"id":"o-queued","state":"queued"}]`, `{}`)
 	for _, tc := range []struct {
 		name, id, reason, want string
 	}{
 		{"claimed", "o-claimed", "obsolete", "work order o-claimed is claimed; retire refuses a live claim, stop its attempt with operator preemption instead"},
 		{"unsupported state", "o-timed", "obsolete", "work order o-timed is timed_out; only queued or stale orders can be retired"},
+		// A terminal order is outside the live list; the exact read still
+		// names its state in the refusal.
+		{"terminal state", "o-cancelled", "obsolete", "work order o-cancelled is cancelled; only queued or stale orders can be retired"},
 		{"missing", "o-missing", "obsolete", "work order o-missing not found"},
 		{"blank reason", "o-queued", "  ", "--reason is required"},
 		{"blank id", " ", "obsolete", "order ID is required"},
@@ -265,8 +329,7 @@ func TestOrderRetireReportsNonRetiredResult(t *testing.T) {
 func TestOrderRetireServerRefusalPassthrough(t *testing.T) {
 	const refusal = "work order o-1 cannot be preempted"
 	c, _ := serveOrders(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`[{"id":"o-1","state":"stale"}]`))
+		if serveOrderReads(t, w, r, `[{"id":"o-1","state":"stale"}]`, false) {
 			return
 		}
 		http.Error(w, refusal, http.StatusConflict)

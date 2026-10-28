@@ -42,6 +42,13 @@ func (s *taskRunReadCounter) ListWorkOrders(ctx context.Context) ([]core.WorkOrd
 	return s.Store.ListWorkOrders(ctx)
 }
 
+func (s *taskRunReadCounter) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	s.mu.Lock()
+	s.workspaceOrders++
+	s.mu.Unlock()
+	return s.Store.ListLiveWorkOrders(ctx)
+}
+
 func (s *taskRunReadCounter) ListTaskWorkOrders(ctx context.Context, id string) ([]core.WorkOrder, error) {
 	s.mu.Lock()
 	s.taskOrders++

@@ -204,6 +204,10 @@ func (failingWorkerOrderStore) ListWorkOrders(context.Context) ([]core.WorkOrder
 	return nil, fmt.Errorf("raw worker order store failure")
 }
 
+func (failingWorkerOrderStore) ListLiveWorkOrders(context.Context) ([]core.WorkOrder, error) {
+	return nil, fmt.Errorf("raw worker order store failure")
+}
+
 func TestListWorkerOrdersMapsSentinelsAndRedactsInternalFailures(t *testing.T) {
 	tests := []struct {
 		name       string

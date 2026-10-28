@@ -39,6 +39,10 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, tasks []core
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// Rows carry only the compact action, so the projection skips the
+	// disposition read and covers the given page alone (component-http-api,
+	// Task list read).
+	opts.CompactOnly = true
 	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
 	if err != nil {
 		writeJSON(w, http.StatusOK, tasks)

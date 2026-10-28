@@ -4,9 +4,9 @@ import { Paperclip, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 import {
   createTask,
+  fetchOpenTasks,
   fetchRequirements,
   fetchSystemDesigns,
-  fetchTasks,
   fetchWorkers,
   TaskIntakeError,
 } from '../../lib/api'
@@ -41,7 +41,7 @@ export function TaskCreateSheet() {
   })
   const tasks = useQuery({
     queryKey: ['tasks', workspace?.workspace, 'dependency-candidates'],
-    queryFn: fetchTasks,
+    queryFn: fetchOpenTasks,
     enabled: advancedOpen && Boolean(workspace?.workspace),
   })
   const requirements = useQuery({

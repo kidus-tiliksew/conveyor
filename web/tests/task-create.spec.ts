@@ -16,6 +16,7 @@ async function mockTaskCreateAPIs(
 ) {
   let submitted = ''
   let taskListRequests = 0
+  let taskListQuery = ''
   let releaseTaskList = () => {}
   const taskListGate = new Promise<void>((resolve) => {
     releaseTaskList = resolve
@@ -147,6 +148,7 @@ async function mockTaskCreateAPIs(
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'GET') {
       taskListRequests++
+      taskListQuery = url.search
       if (options.taskList === 'delayed') await taskListGate
       if (options.taskList === 'error') {
         await route.fulfill({ status: 401, body: 'unauthorized' })
@@ -213,6 +215,7 @@ async function mockTaskCreateAPIs(
   return {
     submitted: () => submitted,
     taskListRequests: () => taskListRequests,
+    taskListQuery: () => new URLSearchParams(taskListQuery),
     releaseTaskList,
   }
 }
@@ -380,12 +383,23 @@ test('pull-only intake stays quiet when no enrolled worker is expected', async (
 test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({
   page,
 }) => {
-  const { submitted, taskListRequests } = await mockTaskCreateAPIs(page)
+  const { submitted, taskListRequests, taskListQuery } = await mockTaskCreateAPIs(page)
   await page.goto('/new')
   expect(taskListRequests()).toBe(0)
   await page.locator('textarea').fill('Implement the dependent task')
   await page.getByText('Advanced options').click()
   await expect.poll(taskListRequests).toBe(1)
+  // One bounded read of open tasks, never the workspace's whole history
+  // (component-http-api, Task list read).
+  expect(taskListQuery().getAll('state')).toEqual([
+    'claiming',
+    'queued',
+    'running',
+    'awaiting_human',
+    'approved',
+    'parked',
+  ])
+  expect(taskListQuery().get('limit')).toBe('200')
   await expect(page.getByText('2 matching open tasks.')).toBeVisible()
   // The empty query proves terminal tasks are filtered independently of search.
   await expect(page.getByText('Already merged')).toHaveCount(0)
