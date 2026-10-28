@@ -114,20 +114,13 @@ func (s *Server) proposalClaimWaitingByTask(ctx context.Context, orders []core.W
 	if err != nil {
 		return nil, err
 	}
-	return waitingProposalsByTask(selected), nil
-}
-
-// waitingProposalsByTask converts one claim-wait selection for the wire, so a
-// caller that also hands the raw selection to store.ReadNextActions reads it
-// once (component-http-api, Activity and attention reads).
-func waitingProposalsByTask(selected map[string][]store.ClaimBlockingProposal) map[string][]waitingProposal {
 	result := make(map[string][]waitingProposal, len(selected))
 	for taskID, items := range selected {
 		for _, item := range items {
 			result[taskID] = append(result[taskID], waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
 		}
 	}
-	return result
+	return result, nil
 }
 
 // proposalSignals reads one task page's orders once and derives both the

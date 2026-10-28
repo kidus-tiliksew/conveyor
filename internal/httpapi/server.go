@@ -1638,7 +1638,15 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	claimWaiting := waitingProposalsByTask(selectedClaimWaiting)
+	// The one selection feeds both proposal_claim_waiting and the next
+	// action, so the request reads it once (component-http-api, Activity and
+	// attention reads).
+	claimWaiting := make(map[string][]waitingProposal, len(selectedClaimWaiting))
+	for taskID, items := range selectedClaimWaiting {
+		for _, item := range items {
+			claimWaiting[taskID] = append(claimWaiting[taskID], waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
+		}
+	}
 	pendingAuthority := pendingAuthorityByTask(orders, proposals)
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
