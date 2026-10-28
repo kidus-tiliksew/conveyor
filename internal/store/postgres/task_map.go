@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -234,4 +235,225 @@ func (s *Store) ListTaskHeads(ctx context.Context, taskIDs []string) (map[string
 		out[head.ID] = head
 	}
 	return out, rows.Err()
+}
+
+// ListNextActionHistory selects, in one query, only the rows
+// store.FoldNextActionHistory consumes: every merge-conflict row, and per task
+// and kind the latest state change with a non-empty string command, the latest
+// pull request with a positive integer number, and the latest bounce limit
+// (component-persistence).
+func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
+	if len(taskIDs) == 0 {
+		return map[string]store.NextActionHistory{}, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.kind, e.payload_json, e.at
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
+UNION ALL
+SELECT latest.id, latest.task_id, latest.kind, latest.payload_json, latest.at FROM (
+	SELECT DISTINCT ON (e.task_id, e.kind) e.id, e.task_id, e.kind, e.payload_json, e.at
+	FROM events e
+	JOIN tasks t ON t.id = e.task_id
+	WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND (
+		(e.kind = 'task.state_changed' AND jsonb_typeof(e.payload_json->'command') = 'string' AND e.payload_json->>'command' <> '')
+		OR (e.kind = 'pull_request.opened' AND jsonb_typeof(e.payload_json->'number') = 'number' AND e.payload_json->>'number' ~ '^[1-9][0-9]*$')
+		OR e.kind = 'pipeline.bounce_limit')
+	ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC
+) latest`, workspace(ctx), taskIDs, store.MergeConflictEventKinds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var selected []core.Event
+	for rows.Next() {
+		var event core.Event
+		var payload []byte
+		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &payload, &event.At); err != nil {
+			return nil, err
+		}
+		event.Payload = payload
+		event.At = event.At.UTC()
+		selected = append(selected, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.FoldNextActionHistories(selected), nil
+}
+
+// ListOpenDependents reads, in one query, the heads of the workspace's open
+// tasks with a dependency edge to any requested task.
+func (s *Store) ListOpenDependents(ctx context.Context, taskIDs []string) ([]store.TaskHead, error) {
+	out := []store.TaskHead{}
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT t.id, t.title, t.state FROM tasks t
+WHERE t.workspace_id=$1 AND t.state NOT IN ('merged','closed') AND EXISTS (
+	SELECT 1 FROM task_dependencies edge
+	WHERE edge.workspace_id=t.workspace_id AND edge.task_id=t.id AND edge.depends_on_task_id=ANY($2::text[])
+)
+ORDER BY t.id`, workspace(ctx), taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var head store.TaskHead
+		var state string
+		if err = rows.Scan(&head.ID, &head.Title, &state); err != nil {
+			return nil, fmt.Errorf("scan dependent head: %w", err)
+		}
+		head.State = core.TaskState(state)
+		out = append(out, head)
+	}
+	return out, rows.Err()
+}
+
+// ListTaskContextDesignPins reads the requested tasks' context attachment
+// events in one query and folds them with store.ActiveTaskContextReferences.
+func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error) {
+	if len(taskIDs) == 0 {
+		return map[string]map[string]int{}, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.kind, e.payload_json, e.at
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
+ORDER BY e.task_id, e.at, e.id`, workspace(ctx), taskIDs, store.TaskContextEventKinds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var selected []core.Event
+	for rows.Next() {
+		var event core.Event
+		var payload []byte
+		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &payload, &event.At); err != nil {
+			return nil, err
+		}
+		event.Payload = payload
+		selected = append(selected, event)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.TaskContextDesignPins(selected), nil
+}
+
+// ListDocumentHeads reads requirement and System Design heads in one query;
+// a requirement wins over a System Design with the same ID.
+func (s *Store) ListDocumentHeads(ctx context.Context, ids []string) (map[string]store.DocumentHead, error) {
+	out := map[string]store.DocumentHead{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT id, 'requirement'::text AS tier, COALESCE(current_version,0)::int, archived_at IS NOT NULL FROM requirements
+WHERE workspace_id=$1 AND id=ANY($2::text[])
+UNION ALL
+SELECT id, 'system_design'::text, COALESCE(current_version,0)::int, archived_at IS NOT NULL FROM system_designs
+WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var head store.DocumentHead
+		if err = rows.Scan(&head.ID, &head.Tier, &head.CurrentVersion, &head.Archived); err != nil {
+			return nil, err
+		}
+		if existing, ok := out[head.ID]; ok && existing.Tier == store.DocumentHeadRequirement {
+			continue
+		}
+		out[head.ID] = head
+	}
+	return out, rows.Err()
+}
+
+// ReadVerificationReviews reads every verification table once for all
+// requested tasks and the requested orders in one query, inside one
+// transaction, with ReadVerificationReview's per-pair result and errors.
+func (s *Store) ReadVerificationReviews(ctx context.Context, refs []store.VerificationReviewRef) (map[string]store.VerificationReviewState, error) {
+	out := make(map[string]store.VerificationReviewState, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	taskIDs := make([]string, 0, len(refs))
+	orderIDs := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if !slices.Contains(taskIDs, ref.TaskID) {
+			taskIDs = append(taskIDs, ref.TaskID)
+		}
+		orderIDs = append(orderIDs, ref.OrderID)
+	}
+	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		ws := workspace(ctx)
+		byTask := map[string][]db.VerificationRecord{}
+		for _, table := range store.VerificationTables {
+			condition := "task_id=ANY($2::text[])"
+			if table == "verification_operations" {
+				condition = "(task_id=ANY($2::text[]) OR true)"
+			}
+			rows, err := tx.Query(ctx, "SELECT id,task_id,context_id,run_id,logical_key,key_hash,state,body,expires_at FROM "+table+" WHERE workspace_id=$1 AND "+condition+" ORDER BY id", ws, taskIDs)
+			if err != nil {
+				return err
+			}
+			var shared []db.VerificationRecord
+			for rows.Next() {
+				v := db.VerificationRecord{Table: table, WorkspaceID: ws}
+				if err = rows.Scan(&v.ID, &v.TaskID, &v.ContextID, &v.RunID, &v.LogicalKey, &v.KeyHash, &v.State, &v.Body, &v.ExpiresAt); err != nil {
+					rows.Close()
+					return err
+				}
+				if table == "verification_operations" {
+					shared = append(shared, v)
+					continue
+				}
+				byTask[v.TaskID] = append(byTask[v.TaskID], v)
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return err
+			}
+			// Operations are read for the whole workspace, as the
+			// per-task read does, so every task receives them in ID order.
+			if table == "verification_operations" {
+				for _, id := range taskIDs {
+					byTask[id] = append(byTask[id], shared...)
+				}
+			}
+		}
+		rows, err := tx.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=ANY($2::text[])", ws, orderIDs)
+		if err != nil {
+			return err
+		}
+		orders := map[string]core.WorkOrder{}
+		for rows.Next() {
+			order, err := scanWorkOrder(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			orders[order.ID] = order
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, ref := range refs {
+			order, ok := orders[ref.OrderID]
+			if !ok {
+				return fmt.Errorf("%w: work order %s", store.ErrNotFound, ref.OrderID)
+			}
+			if order.TaskID != ref.TaskID {
+				return store.ErrVerificationAccess
+			}
+			out[ref.OrderID] = store.VerificationReviewState{Rows: verificationRows(byTask[ref.TaskID]), Order: order}
+		}
+		return nil
+	})
+	return out, err
 }

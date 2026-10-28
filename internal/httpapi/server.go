@@ -1632,12 +1632,13 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders)
+	selectedClaimWaiting, err := store.ClaimWaitingProposals(r.Context(), s.Store, orders)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	claimWaiting := waitingProposalsByTask(selectedClaimWaiting)
 	pendingAuthority := pendingAuthorityByTask(orders, proposals)
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
@@ -1647,6 +1648,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	}
 	opts.MarkersLoaded, opts.Markers = true, markers
 	opts.OrdersLoaded, opts.Orders = true, orders
+	opts.ClaimWaitingLoaded, opts.ClaimWaiting = true, selectedClaimWaiting
 	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)

@@ -92,25 +92,29 @@ func ClaimWaitWindowTasks(orders []core.WorkOrder) map[string]bool {
 	return result
 }
 
-// ClaimBlockingProposalReader is the one read the claim-wait selection needs.
+// ClaimBlockingProposalReader is the per-task read listing and the claim
+// precheck call.
 type ClaimBlockingProposalReader interface {
 	ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]ClaimBlockingProposal, error)
 }
 
-type claimBlockingProposalBatchReader interface {
+// ClaimBlockingProposalBatchReader is the one read the claim-wait selection
+// needs. Every Store satisfies it through NextActionInputStore.
+type ClaimBlockingProposalBatchReader interface {
 	ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]ClaimBlockingProposal, error)
 }
 
 // ClaimWaitingProposals is the one claim-wait selection: for each task inside
 // its claim window, the versions that withhold its verify and review claims,
-// read through ListClaimBlockingProposalsForTask, the read listing and the
-// claim precheck use. Next-action row 8 and the proposal_claim_waiting and
-// waiting_proposals reads all call it, so they agree with the claim gate
-// (req-260810-70ce2f AC-1.1, AC-1.3; req-operator-next-action AC-1.7;
-// component-work-orders, Next action). Tasks outside the window cost no read,
-// tasks without a withholding version are absent, and a read failure is
-// returned.
-func ClaimWaitingProposals(ctx context.Context, st ClaimBlockingProposalReader, orders []core.WorkOrder) (map[string][]ClaimBlockingProposal, error) {
+// read for every windowed task with one ListClaimBlockingProposalsForTasks
+// call, which applies the predicate and order of
+// ListClaimBlockingProposalsForTask, the read listing and the claim precheck
+// use. Next-action row 8 and the proposal_claim_waiting and waiting_proposals
+// reads all call it, so they agree with the claim gate (req-260810-70ce2f
+// AC-1.1, AC-1.3; req-operator-next-action AC-1.7; component-work-orders,
+// Next action). Tasks outside the window cost no read, tasks without a
+// withholding version are absent, and a read failure is returned.
+func ClaimWaitingProposals(ctx context.Context, st ClaimBlockingProposalBatchReader, orders []core.WorkOrder) (map[string][]ClaimBlockingProposal, error) {
 	window := ClaimWaitWindowTasks(orders)
 	ids := make([]string, 0, len(window))
 	for id := range window {
@@ -121,26 +125,12 @@ func ClaimWaitingProposals(ctx context.Context, st ClaimBlockingProposalReader, 
 	if len(ids) == 0 {
 		return result, nil
 	}
-	// A store that batches the predicate answers every windowed task in one
-	// read with the same per-task selection and order.
-	if batch, ok := st.(claimBlockingProposalBatchReader); ok {
-		selected, err := batch.ListClaimBlockingProposalsForTasks(ctx, ids)
-		if err != nil {
-			return nil, err
-		}
-		for _, id := range ids {
-			if items := selected[id]; len(items) > 0 {
-				result[id] = items
-			}
-		}
-		return result, nil
+	selected, err := st.ListClaimBlockingProposalsForTasks(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
 	for _, id := range ids {
-		items, err := st.ListClaimBlockingProposalsForTask(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if len(items) > 0 {
+		if items := selected[id]; len(items) > 0 {
 			result[id] = items
 		}
 	}

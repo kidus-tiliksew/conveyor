@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 
@@ -228,6 +229,138 @@ type NextActionInputStore interface {
 	// ListTaskHeads returns the requested workspace tasks' heads. A missing
 	// task is absent; callers that require it report not found.
 	ListTaskHeads(ctx context.Context, taskIDs []string) (map[string]TaskHead, error)
+	// ListNextActionHistory returns each requested task's bounded
+	// NextActionHistory, built with FoldNextActionHistory from only the rows
+	// that fold consumes. Tasks without one are absent.
+	ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]NextActionHistory, error)
+	// ListOpenDependents returns, in ID order, the heads of the workspace's
+	// tasks outside merged and closed that depend on any requested task.
+	ListOpenDependents(ctx context.Context, taskIDs []string) ([]TaskHead, error)
+	// ListTaskContextDesignPins returns each requested task's System Design
+	// pins, folded by ActiveTaskContextReferences from its context
+	// attachment events alone. Tasks without a pin are absent.
+	ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error)
+	// ListDocumentHeads returns each requested requirement or System Design
+	// head; a requirement wins over a System Design with the same ID and a
+	// missing ID is absent.
+	ListDocumentHeads(ctx context.Context, ids []string) (map[string]DocumentHead, error)
+}
+
+// MergeConflictEventKinds are the kinds the merge-conflict fold reads. Every
+// one of them is kept in NextActionHistory.MergeEvents, because the fold
+// needs each episode boundary and each dispatched fix order.
+var MergeConflictEventKinds = []string{
+	"merge.blocked", "merge.conflict_cleared", "merge.conflict_fix_dispatched",
+	"merge.conflict_dispatch_failed", "merge.conflict_dispatch_exhausted", "merge.conflict_recovery_blocked",
+}
+
+// NextActionHistory is the bounded summary of the history the next-action
+// assembler folds: the park command, the latest recorded pull request, the
+// bounce window, and the merge-conflict events in (at, id) order
+// (component-persistence; component-work-orders, Next action).
+type NextActionHistory struct {
+	ParkCommand string
+	PullRequest int
+	BounceCount int
+	MergeEvents []core.Event
+}
+
+// FoldNextActionHistory is the one fold every backend applies to build a
+// NextActionHistory from a task's events in (at, id) order. It applies the
+// assembler's park-command, pull-request, and bounce-count folds unchanged,
+// so a durable backend that passes only the latest row each of those folds
+// can consume yields the summary of the task's full history.
+func FoldNextActionHistory(events []core.Event) NextActionHistory {
+	history := NextActionHistory{
+		ParkCommand: parkCommand(events),
+		PullRequest: recordedPullRequest(events),
+		BounceCount: recordedBounceCount(events),
+	}
+	for _, event := range events {
+		if slices.Contains(MergeConflictEventKinds, event.Kind) {
+			history.MergeEvents = append(history.MergeEvents, event)
+		}
+	}
+	return history
+}
+
+// FoldNextActionHistories groups rows in (at, id) order by task and folds
+// each task's rows. A task without a folded field or merge event is absent.
+func FoldNextActionHistories(rows []core.Event) map[string]NextActionHistory {
+	byTask := map[string][]core.Event{}
+	var order []string
+	for _, row := range rows {
+		if _, ok := byTask[row.TaskID]; !ok {
+			order = append(order, row.TaskID)
+		}
+		byTask[row.TaskID] = append(byTask[row.TaskID], row)
+	}
+	out := map[string]NextActionHistory{}
+	for _, id := range order {
+		events := byTask[id]
+		sort.SliceStable(events, func(i, j int) bool {
+			if events[i].At.Equal(events[j].At) {
+				return events[i].ID < events[j].ID
+			}
+			return events[i].At.Before(events[j].At)
+		})
+		if history := FoldNextActionHistory(events); !history.empty() {
+			out[id] = history
+		}
+	}
+	return out
+}
+
+func (h NextActionHistory) empty() bool {
+	return h.ParkCommand == "" && h.PullRequest == 0 && h.BounceCount == 0 && len(h.MergeEvents) == 0
+}
+
+// DocumentHead is one cited document's tier, current confirmed version
+// (zero when none), and archived flag.
+type DocumentHead struct {
+	ID             string
+	Tier           string
+	CurrentVersion int
+	Archived       bool
+}
+
+// Document head tiers.
+const (
+	DocumentHeadRequirement  = "requirement"
+	DocumentHeadSystemDesign = "system_design"
+)
+
+// TaskContextEventKinds are the context attachment kinds
+// ActiveTaskContextReferences folds.
+var TaskContextEventKinds = []string{TaskContextRequirementAdded, TaskContextRequirementRemoved, TaskContextDesignAdded, TaskContextDesignRemoved}
+
+// TaskContextDesignPins folds rows in (at, id) order into each task's design
+// pins. A task without one is absent.
+func TaskContextDesignPins(rows []core.Event) map[string]map[string]int {
+	byTask := map[string][]core.Event{}
+	for _, row := range rows {
+		byTask[row.TaskID] = append(byTask[row.TaskID], row)
+	}
+	out := map[string]map[string]int{}
+	for id, events := range byTask {
+		if _, pins := ActiveTaskContextReferences(events); len(pins) > 0 {
+			out[id] = pins
+		}
+	}
+	return out
+}
+
+// VerificationReviewRef names one (task, order) pair of a batched
+// verification review read.
+type VerificationReviewRef struct {
+	TaskID  string
+	OrderID string
+}
+
+// VerificationReviewBatchReader reads ReadVerificationReview for several
+// pairs at once, keyed by order ID, with the same per-pair result and errors.
+type VerificationReviewBatchReader interface {
+	ReadVerificationReviews(ctx context.Context, refs []VerificationReviewRef) (map[string]VerificationReviewState, error)
 }
 
 // NextActionEventKind reports whether the assembler folds an event kind.
@@ -306,4 +439,104 @@ func GroupClaimBlockingProposals(rows map[string][]ClaimBlockingProposal) map[st
 		SortClaimBlockingProposals(rows[id])
 	}
 	return rows
+}
+
+func (m *memory) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]NextActionHistory, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, scoped := WorkspaceFromContext(ctx)
+	var rows []core.Event
+	for _, id := range taskIDs {
+		task, ok := m.tasks[id]
+		if !ok || (scoped && workspace != "" && task.Workspace != workspace) {
+			continue
+		}
+		for _, event := range m.sortedEventsLocked(id) {
+			if NextActionEventKind(event.Kind) {
+				rows = append(rows, event)
+			}
+		}
+	}
+	return FoldNextActionHistories(rows), nil
+}
+
+func (m *memory) ListOpenDependents(ctx context.Context, taskIDs []string) ([]TaskHead, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, scoped := WorkspaceFromContext(ctx)
+	out := []TaskHead{}
+	for dependentID, dependencies := range m.dependencies {
+		task, ok := m.tasks[dependentID]
+		if !ok || core.TaskTerminal(task.State) || (scoped && workspace != "" && task.Workspace != workspace) {
+			continue
+		}
+		for _, id := range taskIDs {
+			if _, edge := dependencies[id]; edge {
+				out = append(out, TaskHead{ID: task.ID, Title: task.Title, State: task.State})
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (m *memory) ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, scoped := WorkspaceFromContext(ctx)
+	var rows []core.Event
+	for _, id := range taskIDs {
+		task, ok := m.tasks[id]
+		if !ok || (scoped && workspace != "" && task.Workspace != workspace) {
+			continue
+		}
+		for _, event := range m.sortedEventsLocked(id) {
+			if slices.Contains(TaskContextEventKinds, event.Kind) {
+				rows = append(rows, event)
+			}
+		}
+	}
+	return TaskContextDesignPins(rows), nil
+}
+
+func (m *memory) ListDocumentHeads(ctx context.Context, ids []string) (map[string]DocumentHead, error) {
+	out := map[string]DocumentHead{}
+	for _, id := range ids {
+		if _, done := out[id]; done {
+			continue
+		}
+		requirement, err := m.GetRequirement(ctx, id)
+		if err == nil {
+			out[id] = DocumentHead{ID: id, Tier: DocumentHeadRequirement, CurrentVersion: requirement.CurrentVersion, Archived: requirement.Archived}
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		design, err := m.GetSystemDesign(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out[id] = DocumentHead{ID: id, Tier: DocumentHeadSystemDesign, CurrentVersion: design.CurrentVersion, Archived: design.Archived}
+	}
+	return out, nil
+}
+
+func (m *memory) ReadVerificationReviews(ctx context.Context, refs []VerificationReviewRef) (map[string]VerificationReviewState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ws, _ := WorkspaceFromContext(ctx)
+	out := make(map[string]VerificationReviewState, len(refs))
+	for _, ref := range refs {
+		task, ok := m.tasks[ref.TaskID]
+		if !ok || task.Workspace != ws {
+			return nil, ErrVerificationAccess
+		}
+		out[ref.OrderID] = m.verificationReviewStateLocked(task, ref.OrderID)
+	}
+	return out, nil
 }
