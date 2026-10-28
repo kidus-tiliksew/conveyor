@@ -11,7 +11,7 @@ import type {
   Task,
   WaitingProposal,
 } from '../../lib/types'
-import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { slowReadStaleTime, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 
 export interface Proposal {
@@ -232,7 +232,7 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
     queryKey: ['system-designs', workspace],
     queryFn: fetchSystemDesigns,
     enabled: Boolean(workspace),
-    staleTime: 60_000,
+    staleTime: slowReadStaleTime,
   })
   return selfOriginated(task, designs.data ?? [])
 }

@@ -851,7 +851,10 @@ test('the notify stream refreshes on ready, coalesces frames, reconnects, and ne
   expect(server.detailCalls.length).toBe(details)
   await page.clock.runFor(1)
   await expect.poll(() => server.detailCalls.length).toBe(details + 1)
-  await expect.poll(() => counts.feed).toBe(feed + 1)
+  // The full route mounts no Board page, so the workspace's activity family
+  // has no active entry and the refresh sends no feed read
+  // (component-web-task-surfaces, Board navigation).
+  expect(counts.feed).toBe(feed)
   await expect.poll(() => counts.nextAction).toBeGreaterThan(nextAction)
   expect(await invalidated()).toEqual([false, false, false, false, true])
   await page.clock.runFor(5_000)

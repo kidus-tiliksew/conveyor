@@ -636,13 +636,16 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   expect(new URL(urls.at(-1) ?? '').searchParams.has('since')).toBe(false)
 })
 
-test('simultaneous filtered Board and task-order consumers share one serialized refresh lifecycle', async ({
-  page,
-}) => {
+// A Board sheet reads its navigation from the Board's own page, so it adds no
+// unfiltered activity read, and the Board pass stays serialized: a route
+// barrier holds each activity response, and no second read leaves while one is
+// held (component-web-task-surfaces, Board navigation).
+test('a Board sheet adds no unfiltered activity read and the Board pass stays serialized', async ({ page }) => {
   const seen: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
+  await page.clock.install({ time: new Date('2026-08-20T12:00:00Z') })
   await routeBoard(page, seen)
   await page.route('**/v1/tasks/task-recent/activity**', (route) =>
     route.fulfill({
@@ -658,34 +661,50 @@ test('simultaneous filtered Board and task-order consumers share one serialized 
       },
     }),
   )
-  let active = 0
-  let maxActive = 0
   const urls: string[] = []
+  const held: Array<() => Promise<void>> = []
   await page.route('**/v1/activity?**', async (route) => {
     const url = route.request().url()
     const params = new URL(url).searchParams
     const matching = matchingActivity(url)
-    active++
-    maxActive = Math.max(maxActive, active)
     urls.push(url)
-    await new Promise((resolve) => setTimeout(resolve, 80))
-    active--
-    await route.fulfill({
-      headers: {
-        'X-Conveyor-Total': String(matching.length),
-        'X-Conveyor-Limit': params.get('limit') ?? '100',
-        'X-Conveyor-Offset': params.get('offset') ?? '0',
-      },
-      json: matching,
-    })
+    held.push(() =>
+      route.fulfill({
+        headers: {
+          'X-Conveyor-Total': String(matching.length),
+          'X-Conveyor-Limit': params.get('limit') ?? '100',
+          'X-Conveyor-Offset': params.get('offset') ?? '0',
+        },
+        json: matching,
+      }),
+    )
   })
+  const release = async () => {
+    const next = held.shift()
+    if (!next) throw new Error('no held activity read')
+    await next()
+  }
 
   await page.goto('/tasks/task-recent')
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
-  await expect.poll(() => urls.length).toBeGreaterThanOrEqual(2)
-  expect(urls.some((url) => new URL(url).searchParams.has('updated_from'))).toBe(true)
-  expect(urls.some((url) => !new URL(url).searchParams.has('updated_from'))).toBe(true)
-  expect(maxActive).toBe(1)
+  await expect.poll(() => urls.length).toBe(1)
+  await release()
+  await expect(page.getByRole('dialog', { name: 'Task detail' }).getByRole('note')).toHaveCount(0)
+
+  // A clock tick and a cold focus pass while the tick's read is held: the
+  // focus pass waits for the held read instead of overlapping it.
+  await page.clock.runFor(15_000)
+  await expect.poll(() => urls.length).toBe(2)
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await page.clock.runFor(1_000)
+  expect(urls).toHaveLength(2)
+  expect(held).toHaveLength(1)
+  await release()
+  await expect.poll(() => urls.length).toBe(3)
+  expect(held).toHaveLength(1)
+  await release()
+
+  expect(urls.every((url) => new URL(url).searchParams.has('updated_from'))).toBe(true)
 })
 
 test('board opens and closes task creation without leaving the board', async ({ page }) => {
