@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -271,5 +274,189 @@ func TestReviewAcceptanceTransactionIntegration(t *testing.T) {
 				t.Fatalf("accepted task=%s want %s", currentTask.State, want)
 			}
 		})
+	}
+}
+
+// SingleStore task and work-order list reads hydrate every relation with a
+// fixed number of workspace-scoped queries, so their query count does not
+// grow with the workspace's tasks, and each listed task equals the per-task
+// read: dependencies, BlockingTaskIDs, children, assignee profile or nil when
+// its binding is gone, GitHub lifecycle or nil, and the pull-request close
+// projection (component-persistence; req-task-lifecycle-and-queue AC-2.6,
+// AC-4.4). A chunked IN list returns the same rows.
+func TestTaskListHydrationQueryBoundIntegration(t *testing.T) {
+	st := integrationStore(t)
+	workspace := "task-hydration"
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	_, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Hydration", Email: "owner@example.test", DisplayName: "Owner"}, "hydration-token")
+	taskTestOK(t, err)
+	_, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}})
+	taskTestOK(t, err)
+	owner, err := st.VerifyPersonalAccessToken(ctx, "hydration-token")
+	taskTestOK(t, err)
+	ownerCtx := store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	_, err = st.GrantWorkspaceRole(ownerCtx, owner.Email, workspace, core.WorkspaceRoleOperator)
+	taskTestOK(t, err)
+	departed, err := st.ProvisionIdentityUser(ownerCtx, "departed@example.test", "Departed")
+	taskTestOK(t, err)
+	_, err = st.GrantWorkspaceRole(ownerCtx, departed.Email, workspace, core.WorkspaceRoleExecutor)
+	taskTestOK(t, err)
+	plane := taskops.New(st)
+
+	created := time.Now().UTC().Add(-time.Hour)
+	newTask := func(id string, edit func(*core.Task), dependencies ...string) {
+		t.Helper()
+		created = created.Add(time.Second)
+		task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, Title: id, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created}
+		if edit != nil {
+			edit(&task)
+		}
+		taskTestOK(t, st.CreateTaskWithDependencies(ctx, task, dependencies))
+	}
+	// Each group carries every relation the list reads hydrate.
+	seedGroups := func(from, to int) {
+		t.Helper()
+		for i := from; i < to; i++ {
+			prefix := fmt.Sprintf("g%02d-", i)
+			newTask(prefix+"dep-merged", nil)
+			newTask(prefix+"dep-open", nil)
+			newTask(prefix+"dependent", nil, prefix+"dep-open", prefix+"dep-merged")
+			_, err := plane.Perform(ctx, prefix+"dep-merged", taskops.Command{Kind: core.TaskMergeRecover})
+			taskTestOK(t, err)
+			for _, child := range []struct {
+				id      string
+				version int
+				sub     string
+			}{{prefix + "child-late", 2, "SUB-1"}, {prefix + "child-b", 1, "SUB-2"}, {prefix + "child-a", 1, "SUB-1"}} {
+				newTask(child.id, func(task *core.Task) {
+					task.ParentTaskID, task.OriginSpecVersion, task.OriginSubID = prefix+"dependent", child.version, child.sub
+				})
+			}
+			_, err = plane.SetAssignee(ownerCtx, prefix+"dependent", owner.ID)
+			taskTestOK(t, err)
+			taskTestOK(t, st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: prefix + "dependent", Repository: "acme/conveyor", SpecVersion: 1}))
+			for _, id := range []string{prefix + "dependent", prefix + "child-a"} {
+				job := core.Job{ID: id + "-implement", TaskID: id, Stage: core.StageImplement, StartedAt: time.Now().UTC()}
+				taskTestOK(t, st.CreateJob(ctx, job))
+				taskTestOK(t, storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, CreatedAt: time.Now().UTC()}))
+			}
+		}
+	}
+	seedGroups(0, 2)
+	// A binding removed under an assignment reads as no assignee.
+	newTask("departed-assignee", nil)
+	_, err = plane.SetAssignee(ownerCtx, "departed-assignee", departed.ID)
+	taskTestOK(t, err)
+	if _, err = sharedDatabase.admin.ExecContext(t.Context(), "DELETE FROM `"+sharedDatabase.name+"`.workspace_role_bindings WHERE workspace_id=? AND user_id=?", workspace, departed.ID); err != nil {
+		t.Fatal(err)
+	}
+	newTask("restarted", func(task *core.Task) { task.State = core.TaskRunning })
+	taskTestOK(t, st.AppendEvent(ctx, core.Event{TaskID: "restarted", Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 7, "url": "https://github.com/acme/conveyor/pull/7"})}))
+	restart, err := plane.StartOver(ctx, core.TaskStartOverRequest{TaskID: "restarted", RequestID: "hydration-restart", Reason: "replace"})
+	taskTestOK(t, err)
+	taskTestOK(t, st.QueuePullRequestClose(ctx, core.PullRequestClose{WorkspaceID: workspace, TaskID: "restarted", Repository: "acme/conveyor", Branch: "conveyor/task-restarted", SuccessorID: restart.Successor.ID, SuccessorBranch: restart.Successor.Branch, Reason: "replace", RestartingOperatorID: "operator", ForgeAuthorClass: core.ForgeAuthorWorkspace, State: "queued", Number: 7, URL: "https://github.com/acme/conveyor/pull/7"}))
+
+	recorder := &selectedBytesRecorder{}
+	connector, err := mysql.NewConnector(sharedDatabase.cfg)
+	taskTestOK(t, err)
+	db := sql.OpenDB(recordingConnector{Connector: connector, recorder: recorder})
+	t.Cleanup(func() { _ = db.Close() })
+	recorded := &Store{db: db, log: s2log.New(db)}
+	filter := store.TaskFilter{Repositories: []string{"conveyor"}}
+	type listing struct {
+		tasks  map[string][]core.Task
+		orders []core.WorkOrder
+		counts map[string]int
+	}
+	list := func() listing {
+		t.Helper()
+		out := listing{tasks: map[string][]core.Task{}, counts: map[string]int{}}
+		for name, read := range map[string]func() ([]core.Task, error){
+			"ListTasks":         func() ([]core.Task, error) { return recorded.ListTasks(ctx) },
+			"ListTasksFiltered": func() ([]core.Task, error) { return recorded.ListTasksFiltered(ctx, filter) },
+			"ListTaskPage": func() ([]core.Task, error) {
+				page, err := recorded.ListTaskPage(ctx, store.TaskOperationsQuery{TaskFilter: filter, Limit: 200})
+				return page.Tasks, err
+			},
+		} {
+			recorder.start()
+			tasks, err := read()
+			queries, _ := recorder.stop()
+			taskTestOK(t, err)
+			out.tasks[name], out.counts[name] = tasks, len(queries)
+		}
+		recorder.start()
+		orders, err := recorded.ListWorkOrders(ctx)
+		queries, _ := recorder.stop()
+		taskTestOK(t, err)
+		out.orders, out.counts["ListWorkOrders"] = orders, len(queries)
+		return out
+	}
+	requireEqualsSingleReads := func(label string, got listing) {
+		t.Helper()
+		single := map[string]core.Task{}
+		for name, tasks := range got.tasks {
+			for _, task := range tasks {
+				want, ok := single[task.ID]
+				if !ok {
+					want, err = st.GetTask(ctx, task.ID)
+					taskTestOK(t, err)
+					single[task.ID] = want
+				}
+				if !reflect.DeepEqual(task, want) {
+					t.Fatalf("%s %s %s differs from GetTask:\n got=%+v\nwant=%+v", label, name, task.ID, task, want)
+				}
+			}
+		}
+		for _, order := range got.orders {
+			want := single[order.TaskID].Assignee
+			if !reflect.DeepEqual(order.Assignee, want) {
+				t.Fatalf("%s work order %s assignee=%+v, task read=%+v", label, order.ID, order.Assignee, want)
+			}
+		}
+		// Pin the oracle itself so two equally wrong reads cannot agree.
+		dependent, departedTask, restarted := single["g00-dependent"], single["departed-assignee"], single["restarted"]
+		if len(dependent.Dependencies) != 2 || dependent.Dependencies[0].ID != "g00-dep-merged" || !reflect.DeepEqual(dependent.BlockingTaskIDs, []string{"g00-dep-open"}) {
+			t.Fatalf("%s dependent relations=%+v blocking=%v", label, dependent.Dependencies, dependent.BlockingTaskIDs)
+		}
+		if len(dependent.Children) != 3 || dependent.Children[0].ID != "g00-child-a" || dependent.Children[1].ID != "g00-child-b" || dependent.Children[2].ID != "g00-child-late" {
+			t.Fatalf("%s dependent children=%+v", label, dependent.Children)
+		}
+		if dependent.Assignee == nil || dependent.Assignee.Email != owner.Email || dependent.Assignee.DisplayName != "Owner" || dependent.GitHub == nil {
+			t.Fatalf("%s dependent assignee=%+v github=%+v", label, dependent.Assignee, dependent.GitHub)
+		}
+		if departedTask.Assignee != nil || departedTask.GitHub != nil {
+			t.Fatalf("%s departed assignee=%+v github=%+v", label, departedTask.Assignee, departedTask.GitHub)
+		}
+		if restarted.PullRequestClose == nil || restarted.PullRequestCloseState != "queued" {
+			t.Fatalf("%s restarted close=%+v", label, restarted.PullRequestClose)
+		}
+	}
+
+	small := list()
+	requireEqualsSingleReads("small", small)
+	seedGroups(2, 12)
+	large := list()
+	requireEqualsSingleReads("large", large)
+	if len(large.tasks["ListTasks"]) <= 3*len(small.tasks["ListTasks"]) || len(large.orders) <= 3*len(small.orders) {
+		t.Fatalf("large workspace did not grow: tasks %d->%d orders %d->%d", len(small.tasks["ListTasks"]), len(large.tasks["ListTasks"]), len(small.orders), len(large.orders))
+	}
+	if !reflect.DeepEqual(small.counts, large.counts) {
+		t.Fatalf("list query counts grew with row count: %d tasks %v, %d tasks %v", len(small.tasks["ListTasks"]), small.counts, len(large.tasks["ListTasks"]), large.counts)
+	}
+	for name, count := range large.counts {
+		// One row read, one count for the page, five relation reads.
+		if count > 7 {
+			t.Fatalf("%s issued %d queries", name, count)
+		}
+	}
+	t.Logf("query counts at %d and %d tasks: %v", len(small.tasks["ListTasks"]), len(large.tasks["ListTasks"]), large.counts)
+
+	previous := hydrationChunk
+	hydrationChunk = 2
+	t.Cleanup(func() { hydrationChunk = previous })
+	chunked := list()
+	if !reflect.DeepEqual(chunked.tasks, large.tasks) || !reflect.DeepEqual(chunked.orders, large.orders) {
+		t.Fatal("chunked hydration differs from the single-chunk read")
 	}
 }
