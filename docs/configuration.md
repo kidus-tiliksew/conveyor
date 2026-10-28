@@ -168,6 +168,8 @@ Server (read by `conveyord`):
 | `CONVEYOR_LISTEN_ADDR` | Daemon listen address as `host:port`; used when `-addr` is not explicitly set. |
 | `PORT` | Daemon listen port; resolves to `0.0.0.0:<PORT>` when neither `-addr` nor `CONVEYOR_LISTEN_ADDR` is set. |
 | `CONVEYOR_SHUTDOWN_TIMEOUT` | Total daemon shutdown budget (default `25s`); used when `-shutdown-timeout` is not explicitly set. Must be positive. |
+| `CONVEYOR_DEBUG_ADDR` | Opt-in `net/http/pprof` listener as `host:port` (default off); used when `-debug-addr` is not explicitly set. The host must be a loopback IP address such as `127.0.0.1` or `[::1]` unless `-debug-addr-allow-remote` is passed; any other address stops startup. Never mounted on the API port. |
+| `GOMEMLIMIT` | Go runtime soft memory limit, read by the Go runtime rather than by Conveyor. Set it to about 75–80% of the container memory limit; [server setup](server-setup.md#size-the-memory-limit) explains why and how to take a heap profile. |
 | `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` | Base64 of exactly 32 bytes; encrypts workspace GitHub App private keys. Required before connecting an app. `CONVEYOR_FORGE_TOKEN_ENCRYPTION_KEY` is its deprecated alias: set alone, it supplies the key and `conveyord` logs one startup warning; set to a different value beside the new name, `conveyord` refuses to start. When renaming, move the existing value; a new value cannot decrypt stored App keys. |
 | `CONVEYOR_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | Invitation email delivery. Configured only when host and from are both set; otherwise links are surfaced for manual delivery. |
 | `CONVEYOR_ORGANIZATION_NAME`, `CONVEYOR_FIRST_OPERATOR_EMAIL`, `CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME` | First-operator identity at bootstrap. |

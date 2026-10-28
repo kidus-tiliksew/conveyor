@@ -16,6 +16,10 @@ type shutdownHTTPServer interface {
 	Shutdown(context.Context) error
 }
 
+type shutdownDebugServer interface {
+	Close() error
+}
+
 type shutdownQueue interface {
 	Stop(context.Context) error
 	StopAndCancel(context.Context) error
@@ -24,6 +28,7 @@ type shutdownQueue interface {
 type conveyordShutdown struct {
 	Timeout       time.Duration
 	HTTP          shutdownHTTPServer
+	Debug         shutdownDebugServer
 	Queue         shutdownQueue
 	CancelHTTP    context.CancelFunc
 	CancelService context.CancelFunc
@@ -107,7 +112,14 @@ func (s conveyordShutdown) Run() {
 	} else {
 		httpDone <- nil
 	}
-	phase("http-drain-started", nil)
+	// The debug listener closes at once rather than draining, so an
+	// in-flight CPU profile or trace cannot hold the budget
+	// (component-runtime, The debug listener).
+	var debugErr error
+	if s.Debug != nil {
+		debugErr = s.Debug.Close()
+	}
+	phase("http-drain-started", debugErr)
 
 	var queueErr, httpErr error
 	queueFinished, httpFinished := false, false

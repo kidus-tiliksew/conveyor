@@ -29,6 +29,13 @@ func (f fakeShutdownHTTP) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+type fakeShutdownDebug struct{ recorder *shutdownRecorder }
+
+func (f fakeShutdownDebug) Close() error {
+	f.recorder.record("debug-close", context.Background())
+	return nil
+}
+
 type fakeShutdownQueue struct{ recorder *shutdownRecorder }
 
 func (f fakeShutdownQueue) Stop(ctx context.Context) error {
@@ -45,7 +52,7 @@ func TestConveyordShutdownOrdersPhasesAndSharesBudget(t *testing.T) {
 	recorder := &shutdownRecorder{deadlines: map[string]time.Time{}}
 	shutdown := conveyordShutdown{
 		Timeout: 50 * time.Millisecond,
-		HTTP:    fakeShutdownHTTP{recorder}, Queue: fakeShutdownQueue{recorder},
+		HTTP:    fakeShutdownHTTP{recorder}, Debug: fakeShutdownDebug{recorder}, Queue: fakeShutdownQueue{recorder},
 		CancelService: func() { recorder.record("service-cancel", context.Background()) },
 		CancelHTTP:    func() { recorder.record("http-cancel", context.Background()) },
 		CloseStore:    func() { recorder.record("store-close", context.Background()) },
@@ -62,13 +69,14 @@ func TestConveyordShutdownOrdersPhasesAndSharesBudget(t *testing.T) {
 		}
 		return -1
 	}
-	for _, step := range []string{"service-cancel", "queue-soft", "http-cancel", "http", "queue-hard", "store-close"} {
+	for _, step := range []string{"service-cancel", "queue-soft", "http-cancel", "http", "debug-close", "queue-hard", "store-close"} {
 		if position(step) < 0 {
 			t.Fatalf("shutdown steps=%v, missing %s", recorder.steps, step)
 		}
 	}
 	if position("service-cancel") > position("queue-soft") || position("http-cancel") > position("http") ||
 		position("queue-hard") < position("queue-soft") || position("queue-hard") < position("http") ||
+		position("debug-close") < position("http-cancel") || position("debug-close") > position("queue-hard") ||
 		position("store-close") != len(recorder.steps)-1 {
 		t.Fatalf("shutdown steps=%v", recorder.steps)
 	}
