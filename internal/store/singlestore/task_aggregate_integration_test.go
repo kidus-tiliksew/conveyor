@@ -327,7 +327,7 @@ func TestTaskListHydrationQueryBoundIntegration(t *testing.T) {
 				id      string
 				version int
 				sub     string
-			}{{prefix + "child-late", 2, "SUB-1"}, {prefix + "child-b", 1, "SUB-2"}, {prefix + "child-a", 1, "SUB-1"}} {
+			}{{prefix + "child-late", 2, "SUB-0"}, {prefix + "child-b", 1, "SUB-2"}, {prefix + "child-a", 1, "SUB-1"}} {
 				newTask(child.id, func(task *core.Task) {
 					task.ParentTaskID, task.OriginSpecVersion, task.OriginSubID = prefix+"dependent", child.version, child.sub
 				})

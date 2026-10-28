@@ -192,7 +192,7 @@ func runTaskListHydration(t *testing.T, x Fixture) {
 		name    string
 		version int
 		sub     string
-	}{{"child-late", 2, "SUB-1"}, {"child-b", 1, "SUB-2"}, {"child-a", 1, "SUB-1"}} {
+	}{{"child-late", 2, "SUB-0"}, {"child-b", 1, "SUB-2"}, {"child-a", 1, "SUB-1"}} {
 		children[child.name] = newTask(child.name, func(task *core.Task) {
 			task.ParentTaskID, task.OriginSpecVersion, task.OriginSubID = parent.ID, child.version, child.sub
 		})
