@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -59,6 +60,9 @@ type kitExecutionFixture struct {
 	// onEvidenceArrival runs when an evidence request arrives, before any
 	// delay and outside the fixture lock.
 	onEvidenceArrival func()
+	// startRefusal, when set, refuses start_verification_attempt with this
+	// raw MCP error text.
+	startRefusal string
 }
 
 func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecutionFixture {
@@ -143,6 +147,10 @@ func newKitExecutionFixture(t *testing.T, e verification.Exercise) *kitExecution
 		case "prepare_verification":
 			result = f.snapshot
 		case "start_verification_attempt":
+			if f.startRefusal != "" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": f.startRefusal}}}})
+				return
+			}
 			var args workorder.VerificationStartRequest
 			_ = json.Unmarshal(request.Params.Arguments, &args)
 			f.starts++
@@ -904,4 +912,80 @@ func TestKitPermissionsUntrustedSourceRefused(t *testing.T) {
 			t.Fatalf("trusted kit subject: starts=%d outcome=%q", f.starts, f.outcome)
 		}
 	})
+}
+
+// TestKitRPCSurfacesServerRefusal: a coded server refusal reaches the
+// command's error output with its code and field, a JSON-RPC error message is
+// surfaced, an empty envelope or refusal keeps the fallback sentence, and a
+// transport failure keeps its transient error (component-verification-runner).
+func TestKitRPCSurfacesServerRefusal(t *testing.T) {
+	e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	f.startRefusal = "verification_request_shape at environment.deployment: the value must be a non-blank text. Compare the call with the tool's input schema from tools/list."
+	err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", ordinaryKitVerifyOptions(t, f, "no_manifest"), &f.output)
+	var admission *kitAdmissionError
+	if err == nil || errors.As(err, &admission) || !strings.Contains(err.Error(), "start_verification_attempt refused: verification_request_shape at environment.deployment: ") {
+		t.Fatalf("command error = %v, want the surfaced coded refusal", err)
+	}
+	if f.outcome != "" || strings.Contains(f.output.String(), "operator_action_required") {
+		t.Fatalf("a server refusal changed classification: outcome %q, output %q", f.outcome, f.output.String())
+	}
+
+	reply := func(envelope any) kitRPC {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(envelope) }))
+		t.Cleanup(server.Close)
+		return kitRPC{client: &client{base: server.URL, token: "factory-secret-fixture", workspace: "demo"}, order: "order", session: "session", claimToken: "claim-secret-fixture"}
+	}
+	fallback := "start_verification_attempt refused or unavailable; inspect the claim and verification context"
+	for _, tc := range []struct {
+		name     string
+		envelope any
+		want     string
+	}{
+		{"json-rpc error", map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32602, "message": "invalid tool arguments"}}, "start_verification_attempt refused: invalid tool arguments"},
+		{"control characters", map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": "verification_grant_missing at grant_id:\nno grant\x1b[31m"}}}}, "start_verification_attempt refused: verification_grant_missing at grant_id: no grant [31m"},
+		{"empty envelope", map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{}}, fallback},
+		{"empty refusal", map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": " "}}}}, fallback},
+		{"two items", map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": "a"}, {"type": "text", "text": "b"}}}}, fallback},
+	} {
+		if err := reply(tc.envelope).call(t.Context(), "start_verification_attempt", map[string]any{}, nil); err == nil || err.Error() != tc.want {
+			t.Fatalf("%s: got %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	long := reply(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"isError": true, "content": []map[string]string{{"type": "text", "text": strings.Repeat("é", kitRefusalLimit)}}}})
+	if err := long.call(t.Context(), "start_verification_attempt", map[string]any{}, nil); err == nil || len(err.Error()) > len("start_verification_attempt refused: ")+kitRefusalLimit || !utf8.ValidString(err.Error()) {
+		t.Fatalf("long refusal not bounded: %d bytes", len(err.Error()))
+	}
+	closed := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closed.Close()
+	transport := kitRPC{client: &client{base: closed.URL, token: "factory-secret-fixture", workspace: "demo"}, order: "order", session: "session", claimToken: "claim-secret-fixture"}
+	if err := transport.call(t.Context(), "start_verification_attempt", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "start_verification_attempt refused") || !transientWorkerError(err) {
+		t.Fatalf("transport failure classification changed: %v", err)
+	}
+}
+
+// TestKitRPCRedactsEchoedTokens: when a fixture server echoes the launcher
+// credential and the claim token in its refusal, neither reaches the error
+// (component-verification-runner).
+func TestKitRPCRedactsEchoedTokens(t *testing.T) {
+	e := verification.Exercise{ID: "ordinary", Kind: "script", Argv: []string{"true"}, Cwd: ".", TimeoutSeconds: 5, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+	f := newKitExecutionFixture(t, e)
+	f.startRefusal = "verification_request_shape at bogus: launcher factory-secret-fixture claim claim-secret-fixture"
+	err := verifyKits(t.Context(), f.v.rpc, f.v.root, "task", ordinaryKitVerifyOptions(t, f, "no_manifest"), &f.output)
+	if err == nil || !strings.Contains(err.Error(), "verification_request_shape at bogus") {
+		t.Fatalf("command error = %v", err)
+	}
+	for _, token := range []string{"factory-secret-fixture", "claim-secret-fixture"} {
+		if strings.Contains(err.Error(), token) || strings.Contains(f.output.String(), token) {
+			t.Fatalf("echoed %s reached the runner output: %v / %q", token, err, f.output.String())
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32602, "message": "bad claim-secret-fixture"}})
+	}))
+	t.Cleanup(server.Close)
+	rpc := kitRPC{client: &client{base: server.URL, token: "factory-secret-fixture", workspace: "demo"}, order: "order", session: "session", claimToken: "claim-secret-fixture"}
+	if err := rpc.call(t.Context(), "start_verification_attempt", map[string]any{}, nil); err == nil || strings.Contains(err.Error(), "claim-secret-fixture") || !strings.Contains(err.Error(), "refused: bad ") {
+		t.Fatalf("JSON-RPC echo: %v", err)
+	}
 }
