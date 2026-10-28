@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -11,18 +12,98 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
+// verificationReadTx runs one inspection read in a read-only REPEATABLE READ
+// transaction. It takes no advisory or row lock, so a read never waits for a
+// verification command or a held task side-effect lock, and every query sees
+// one snapshot (component-verification-evidence "Bounded task inspection reads").
+func (s *Store) verificationReadTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
+	tx, err := s.beginWith(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return translateBackendConflict(err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := fn(tx, s.queries.WithTx(tx)); err != nil {
+		return translateBackendConflict(err)
+	}
+	return translateBackendConflict(tx.Commit(ctx))
+}
+
+// verificationReadScopeTx is the inspection twin of verificationScopeTx. It
+// checks membership, task and order ownership, and claim binding inside the
+// read transaction with plain SELECTs; mutations keep verificationScopeTx and
+// its lock order (component-verification-service).
+func (s *Store) verificationReadScopeTx(ctx context.Context, tx pgx.Tx, q *db.Queries, a store.VerificationAccess) (core.WorkOrder, error) {
+	ws, ok := store.WorkspaceFromContext(ctx)
+	if !ok {
+		return core.WorkOrder{}, store.ErrVerificationAccess
+	}
+	if err := store.AuthorizeVerificationUserRead(ctx, verificationReadMembership{Store: s, tx: tx}, a); err != nil {
+		return core.WorkOrder{}, err
+	}
+	var found string
+	if err := tx.QueryRow(ctx, "SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2", ws, a.TaskID).Scan(&found); err != nil {
+		return core.WorkOrder{}, store.ErrVerificationAccess
+	}
+	var order core.WorkOrder
+	if a.UserID == "" || a.WorkOrderID != "" {
+		var err error
+		order, err = scanWorkOrder(tx.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", ws, a.WorkOrderID))
+		if err != nil {
+			return core.WorkOrder{}, store.ErrVerificationAccess
+		}
+	}
+	if a.UserID == "" {
+		task, err := q.GetTask(ctx, db.GetTaskParams{ID: found, WorkspaceID: ws})
+		if err != nil {
+			return core.WorkOrder{}, err
+		}
+		if err = store.VerifyVerificationClaim(ctx, a, taskFromDB(task), order, false, time.Now().UTC()); err != nil {
+			return core.WorkOrder{}, err
+		}
+	}
+	verificationReadScoped(ctx)
+	return order, nil
+}
+
+// verificationReadMembership answers the shared member-read rule from the
+// read transaction's snapshot instead of a separate pooled query.
+type verificationReadMembership struct {
+	*Store
+	tx pgx.Tx
+}
+
+func (m verificationReadMembership) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
+	var role core.WorkspaceRole
+	err := m.tx.QueryRow(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return core.RoleAllows(role, capability), nil
+}
+
+// verificationReadScopedKey carries a test-only callback that runs after the
+// read scope is authorized and before any record is read. Production contexts
+// carry none.
+type verificationReadScopedKey struct{}
+
+func verificationReadScoped(ctx context.Context) {
+	if fn, ok := ctx.Value(verificationReadScopedKey{}).(func()); ok {
+		fn()
+	}
+}
+
 // component-verification-evidence / DEC-43: this boundary never calls ListVerificationRecords or the snapshot reader.
 func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAccess, p store.VerificationPageRequest) (store.VerificationReadPage, error) {
 	cursor, err := store.ValidateVerificationPage(ctx, a, &p)
 	if err != nil {
 		return store.VerificationReadPage{}, err
 	}
-	if err = store.AuthorizeVerificationUserRead(ctx, s, a); err != nil {
-		return store.VerificationReadPage{}, err
-	}
 	var result store.VerificationReadPage
-	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := s.verificationScopeTx(ctx, tx, a, false); err != nil {
+	err = s.verificationReadTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := s.verificationReadScopeTx(ctx, tx, q, a); err != nil {
 			return err
 		}
 		if p.ContextID != "" {
@@ -62,12 +143,9 @@ func (s *Store) ReadVerificationDetail(ctx context.Context, a store.Verification
 	if a.UserID == "" {
 		return store.VerificationEvidenceRecord{}, store.ErrVerificationAccess
 	}
-	if err := store.AuthorizeVerificationUserRead(ctx, s, a); err != nil {
-		return store.VerificationEvidenceRecord{}, err
-	}
 	var result store.VerificationEvidenceRecord
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := s.verificationScopeTx(ctx, tx, a, false); err != nil {
+	err := s.verificationReadTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := s.verificationReadScopeTx(ctx, tx, q, a); err != nil {
 			return err
 		}
 		var raw []byte
