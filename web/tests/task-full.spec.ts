@@ -7985,7 +7985,10 @@ function fullTaskHeader(page: Page) {
   return page.getByRole('region', { name: 'Task content' }).getByRole('heading', { level: 1 })
 }
 
-test('every task stream connection refreshes task detail once through its ready frame', async ({ page }) => {
+// A ready frame refreshes only entries past their stale window
+// (component-web-task-surfaces, Live updates), so each ready frame below
+// arrives after the detail's five-second window.
+test('every task stream connection refreshes stale task detail once through its ready frame', async ({ page }) => {
   const streams = await controlTaskStreams(page)
   let detailRequests = 0
   let activityRequests = 0
@@ -8011,14 +8014,16 @@ test('every task stream connection refreshes task detail once through its ready 
   await pauseClock(page)
   const connections = await streams.count()
   const feedRequests = activityRequests
-  await page.clock.runFor(1_000)
+  await page.clock.runFor(5_000)
   expect(detailRequests).toBe(1)
   await streams.send(readyFrame)
   await page.clock.runFor(249)
   expect(detailRequests).toBe(1)
   await page.clock.runFor(1)
   await expect.poll(() => detailRequests).toBe(2)
-  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
+  // The full route mounts no Board page, so no activity entry is active and
+  // the refresh sends no activity read.
+  expect(activityRequests).toBe(feedRequests)
 
   // A proxy idle timeout or restart ends the response cleanly.
   await streams.close()
@@ -8029,14 +8034,15 @@ test('every task stream connection refreshes task detail once through its ready 
   expect((await streams.urls()).at(-1)).toContain('/v1/tasks/stream-gap/events/stream?mode=notify&workspace_id=demo')
   expect(detailRequests).toBe(2)
 
-  // The reconnect's ready frame refreshes detail once, covering the outage.
+  // The reconnect's ready frame refreshes the now-stale detail once, covering
+  // the outage.
   await streams.open()
-  await page.clock.runFor(1_000)
+  await page.clock.runFor(5_000)
   expect(detailRequests).toBe(2)
   await streams.send(readyFrame)
   await page.clock.runFor(250)
   await expect.poll(() => detailRequests).toBe(3)
-  await expect.poll(() => activityRequests).toBe(feedRequests + 2)
+  expect(activityRequests).toBe(feedRequests)
   await page.clock.resume()
   await expect(fullTaskHeader(page)).toContainText('After the stream gap')
   expect(detailRequests).toBe(3)
@@ -8153,9 +8159,12 @@ test('changing tasks stops the old stream, its retry wait, and its pending refre
     })
   })
   await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
-  await page.goto('/tasks/stream-owner-a/full')
-  await expect(fullTaskHeader(page)).toContainText('First stream owner')
-  const next = page.getByRole('link', { name: 'Next task' })
+  // Navigation follows the Board page, so the move happens on the Board sheet
+  // (component-web-task-surfaces, Board navigation).
+  await page.goto('/tasks/stream-owner-a')
+  const sheetHeader = page.getByRole('dialog', { name: 'Task detail' }).locator('header').first()
+  await expect(sheetHeader).toContainText('First stream owner')
+  const next = sheetHeader.getByRole('link', { name: 'Next task' })
   await expect(next).toBeVisible()
   await expect.poll(() => streams.countFor('stream-owner-a')).toBeGreaterThan(0)
   await streams.open()
@@ -8177,7 +8186,7 @@ test('changing tasks stops the old stream, its retry wait, and its pending refre
   // The second task's live connection is the only one still owned.
   expect(urls.filter((url, index) => !aborted[index] && url.includes('stream-owner-a'))).toHaveLength(0)
   await page.clock.resume()
-  await expect(fullTaskHeader(page)).toContainText('Second stream owner')
+  await expect(sheetHeader).toContainText('Second stream owner')
 })
 
 test('a request-changes conflict refetches task detail and renders the current gate', async ({ page }) => {
@@ -8208,16 +8217,19 @@ test('a request-changes conflict refetches task detail and renders the current g
     await route.fulfill({ status: 409, json: { detail: 'task is not at the merge gate' } })
   })
 
-  await page.goto('/tasks/merge-request-changes/full')
+  // The Board sheet keeps an active Board page, so the activity family has an
+  // entry to refetch (component-web-task-surfaces, Board navigation).
+  await page.goto('/tasks/merge-request-changes')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
   await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
   await expect.poll(() => detailRequests).toBe(1)
+  await expect.poll(() => activityRequests).toBeGreaterThan(0)
   const feedRequests = activityRequests
   await gate.getByRole('button', { name: 'Request changes' }).last().click()
 
   await expect.poll(() => detailRequests).toBe(2)
-  await expect.poll(() => activityRequests).toBe(feedRequests + 1)
+  await expect.poll(() => activityRequests).toBeGreaterThan(feedRequests)
   // The panel renders the server's current gate while the refusal stays visible.
   await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toBeEnabled()
   await expect(gate.getByRole('region', { name: 'What you are approving' })).toHaveCount(0)

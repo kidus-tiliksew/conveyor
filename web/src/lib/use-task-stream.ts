@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { type Query, type QueryKey, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { nextActionQueryKey, nextActionsQueryKey } from '../components/inbox/use-next-actions'
 import { taskDetailQueryKey } from './query-keys'
@@ -16,13 +16,23 @@ const taskStreamRefreshDelayMs = 250
 // updates). The server never replays history in this mode: it sends `ready`
 // once it has read the task's history fingerprint and `activity` whenever the
 // fingerprint changes. Each frame schedules one refresh of the task detail, the
-// activity family, the task's next action, and the workspace inbox, all in the
-// workspace captured when the effect started; it never touches history pages,
-// audit records, or verification families. `fetch` does not reconnect on its
+// workspace's activity family, the task's next action, and the workspace inbox,
+// all in the workspace captured when the effect started; it never touches
+// history pages, audit records, or verification families. A batch holding an
+// `activity` frame invalidates every target, however fresh. A batch of `ready`
+// frames alone refreshes only stale targets that are not already fetching and
+// never cancels an in-flight read, so the first detail read of a just-opened
+// sheet is not restarted; a reconnect after the stale window still refreshes,
+// covering events committed during an outage. `fetch` does not reconnect on its
 // own, so one serial loop per effect reopens the stream after it ends, errors,
 // returns a non-OK status, or has no body (including 204), waiting a bounded
-// backoff. Every connection refreshes detail once through its `ready` frame,
-// which covers events committed before the subscription or during an outage.
+// backoff.
+// A ready-only refresh skips entries still fresh by their own observers'
+// stale time and entries already fetching (component-web-task-surfaces).
+function staleAndIdle(query: Query) {
+  return query.isStale() && query.state.fetchStatus === 'idle'
+}
+
 export function useTaskStream(taskId: string, workspace: string) {
   const queryClient = useQueryClient()
   useEffect(() => {
@@ -31,19 +41,31 @@ export function useTaskStream(taskId: string, workspace: string) {
     const { signal } = controller
     const url = `/v1/tasks/${encodeURIComponent(taskId)}/events/stream?mode=notify&workspace_id=${encodeURIComponent(workspace)}`
     let refresh: number | undefined
+    // Whether an activity frame joined the scheduled refresh.
+    let changed = false
     const invalidate = () => {
       refresh = undefined
+      const activity = changed
+      changed = false
       // An aborted effect belongs to another task, workspace, or an unmounted view.
       if (signal.aborted) return
-      void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(workspace, taskId) })
-      void queryClient.invalidateQueries({ queryKey: ['activity'] })
-      // The task's next action and the inbox listing it move with its events.
-      void queryClient.invalidateQueries({ queryKey: nextActionQueryKey(workspace, taskId) })
-      void queryClient.invalidateQueries({ queryKey: nextActionsQueryKey(workspace) })
+      const targets: QueryKey[] = [
+        taskDetailQueryKey(workspace, taskId),
+        ['activity', workspace],
+        // The task's next action and the inbox listing it move with its events.
+        nextActionQueryKey(workspace, taskId),
+        nextActionsQueryKey(workspace),
+      ]
+      for (const queryKey of targets) {
+        if (activity) void queryClient.invalidateQueries({ queryKey })
+        else void queryClient.invalidateQueries({ queryKey, predicate: staleAndIdle }, { cancelRefetch: false })
+      }
     }
-    const refreshQueries = () => {
+    const refreshQueries = (activity: boolean) => {
+      if (signal.aborted) return
+      if (activity) changed = true
       // A frame inside the delay joins the refresh already scheduled.
-      if (refresh !== undefined || signal.aborted) return
+      if (refresh !== undefined) return
       refresh = window.setTimeout(invalidate, taskStreamRefreshDelayMs)
     }
     const wait = (ms: number) =>
@@ -84,9 +106,9 @@ export function useTaskStream(taskId: string, workspace: string) {
             if (name === 'activity') {
               // Only an activity frame proves the stream carried a change.
               framed = true
-              refreshQueries()
+              refreshQueries(true)
             } else if (name === 'ready') {
-              refreshQueries()
+              refreshQueries(false)
             }
           }
         }

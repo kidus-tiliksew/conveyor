@@ -1,4 +1,4 @@
-import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Activity,
@@ -14,19 +14,28 @@ import {
   SunMoon,
   Workflow,
 } from 'lucide-react'
-import { createContext, type ReactNode, useContext, useEffect, useState } from 'react'
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import {
   fetchActivity,
   fetchBlueprints,
   fetchCallerIdentity,
   fetchPendingProposals,
+  fetchSystemDesigns,
   fetchWorkspace,
   fetchWorkspaceMembers,
   fetchWorkspaces,
   signOutDashboardSession,
   WorkspacesError,
 } from '../lib/api'
-import type { WorkspaceCapability, WorkspaceRole } from '../lib/types'
+import type { ActivityPage, WorkspaceCapability, WorkspaceRole } from '../lib/types'
 import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
 import { cn } from '../lib/utils'
 import { ThemeProvider, useTheme } from './theme-provider'
@@ -43,17 +52,67 @@ export function useWorkspaceSelection() {
   return useContext(WorkspaceContext)
 }
 
-// The caller's identity in the selected workspace. The workspace captured in
-// the query key is the one the request names, so every entry holds exactly
-// that workspace's projection (component-web-dashboard).
-function useCallerIdentity() {
-  const { workspace } = useWorkspaceSelection()
-  return useQuery({
+// Slow-changing shared reads stay fresh for five minutes: identity, members,
+// blueprints, and the task sheet's System Design collection. Their existing
+// mutation invalidations still refresh them at once, and a workspace switch or
+// sign-out still drops them (component-web-dashboard, Server-state discipline).
+export const slowReadStaleTime = 5 * 60_000
+
+// Registered in main.tsx as the family defaults of caller-identity,
+// workspace-members, and blueprints, so a reader outside the shell that sets
+// no stale time of its own shares the same freshness.
+export const slowReadQueryDefaults = { staleTime: slowReadStaleTime }
+
+// One option factory per slow read: the shell's hooks and the task sheet's
+// mount-time prefetch build from these, so a prefetched entry and its later
+// observer share one key, one request, and one stale time.
+//
+// The caller's identity in the workspace the key names; '' is the unscoped
+// creation-right read. The workspace captured in the query key is the one the
+// request names, so every entry holds exactly that workspace's projection.
+export function callerIdentityQueryOptions(workspace: string) {
+  return queryOptions({
     queryKey: ['caller-identity', workspace],
     queryFn: () => fetchCallerIdentity(workspace),
+    retry: false,
+    staleTime: slowReadStaleTime,
+  })
+}
+
+export function workspaceMembersQueryOptions(workspace: string) {
+  return queryOptions({
+    queryKey: ['workspace-members', workspace],
+    queryFn: () => fetchWorkspaceMembers(workspace),
     enabled: Boolean(workspace),
+    staleTime: slowReadStaleTime,
     retry: false,
   })
+}
+
+// No interval here: only the Blueprints routes poll (useBlueprints).
+export function blueprintsQueryOptions(workspace: string) {
+  return queryOptions({
+    queryKey: ['blueprints', workspace],
+    queryFn: fetchBlueprints,
+    enabled: Boolean(workspace),
+    staleTime: slowReadStaleTime,
+  })
+}
+
+// The non-archived System Design collection as the task sheet reads it;
+// useSystemDesignProposals keeps the same key and request with this stale time.
+export function systemDesignsQueryOptions(workspace: string) {
+  return queryOptions({
+    queryKey: ['system-designs', workspace],
+    queryFn: () => fetchSystemDesigns(),
+    enabled: Boolean(workspace),
+    staleTime: slowReadStaleTime,
+  })
+}
+
+function useCallerIdentity() {
+  const { workspace } = useWorkspaceSelection()
+  return useQuery({ ...callerIdentityQueryOptions(workspace), enabled: Boolean(workspace) })
 }
 
 // Dashboard affordances follow the capability list the server serves for the
@@ -80,11 +139,7 @@ export function useWorkspaceCapability(capability: WorkspaceCapability) {
 // (component-web-dashboard). Presentation only: the server authorizes
 // POST /v1/workspaces again.
 export function useWorkspaceCreationStatus(): 'pending' | 'allowed' | 'denied' {
-  const identity = useQuery({
-    queryKey: ['caller-identity', ''],
-    queryFn: () => fetchCallerIdentity(''),
-    retry: false,
-  })
+  const identity = useQuery(callerIdentityQueryOptions(''))
   if (identity.status === 'pending') return 'pending'
   if (identity.status === 'success' && identity.data.can_create_workspaces === true) return 'allowed'
   return 'denied'
@@ -177,26 +232,52 @@ export function useActivity(filter?: ActivityFilter, enabled = true, offset = 0,
 
 export function useWorkspaceMembers() {
   const { workspace } = useWorkspaceSelection()
-  return useQuery({
-    queryKey: ['workspace-members', workspace],
-    queryFn: () => fetchWorkspaceMembers(workspace),
-    enabled: Boolean(workspace),
-    staleTime: 60_000,
-    retry: false,
-  })
+  return useQuery(workspaceMembersQueryOptions(workspace))
 }
 
 // Blueprint anchors left the activity feed, so this projection
 // is the only place the dashboard can resolve one — the Blueprints surface,
-// the anchor's own detail, and a child's parent reference all read it.
+// the anchor's own detail, and a child's parent reference all read it. It
+// polls every 15 s only on the Blueprints routes; a task sheet or full task
+// route reading a parent's title never polls (component-web-dashboard).
 export function useBlueprints() {
   const { workspace } = useWorkspaceSelection()
-  return useQuery({
-    queryKey: ['blueprints', workspace],
-    queryFn: fetchBlueprints,
-    enabled: !!workspace,
-    refetchInterval: 15_000,
-  })
+  const onBlueprints = useRouterState({ select: (state) => isBlueprintsPath(state.location.pathname) })
+  return useQuery({ ...blueprintsQueryOptions(workspace), refetchInterval: onBlueprints ? 15_000 : false })
+}
+
+function isBlueprintsPath(pathname: string) {
+  return pathname === '/blueprints' || pathname.startsWith('/blueprints/')
+}
+
+// The Board's current activity page, read from the Query cache without
+// mounting an activity observer or sending a request (component-web-dashboard,
+// Server-state discipline). The Kanban view is the only activity observer, so
+// its page is the one active member of the workspace's activity family, and
+// that member's key already carries the Board's canonical filter, limit, and
+// offset. No active member, more than one, or one without data yields nothing:
+// an inactive cached page is never read, and nothing pages or fetches.
+export function useBoardActivityPage(): ActivityPage | undefined {
+  const { workspace } = useWorkspaceSelection()
+  const queryClient = useQueryClient()
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      let active = true
+      // Cache events can fire while another component renders; read after it.
+      const unsubscribe = queryClient.getQueryCache().subscribe(() => queueMicrotask(() => active && onChange()))
+      return () => {
+        active = false
+        unsubscribe()
+      }
+    },
+    [queryClient],
+  )
+  const snapshot = useCallback(() => {
+    if (!workspace) return undefined
+    const pages = queryClient.getQueryCache().findAll({ queryKey: ['activity', workspace], type: 'active' })
+    return pages.length === 1 ? (pages[0].state.data as ActivityPage | undefined) : undefined
+  }, [queryClient, workspace])
+  return useSyncExternalStore(subscribe, snapshot)
 }
 
 export function useWorkspace() {
