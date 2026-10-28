@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -237,49 +238,155 @@ func (s *Store) ListTaskHeads(ctx context.Context, taskIDs []string) (map[string
 	return out, rows.Err()
 }
 
-// ListNextActionHistory selects, in one query, only the rows
-// store.FoldNextActionHistory consumes: every merge-conflict row, and per task
-// and kind the latest state change with a non-empty string command, the latest
-// pull request with a positive integer number, and the latest bounce limit
-// (component-persistence).
+// positiveInt64SQL accepts a JSON number token that Go decodes into a
+// positive int: digits alone, without fraction or exponent, at most
+// 9223372036854775807.
+func positiveInt64SQL(text string) string {
+	return `(` + text + ` ~ '^[1-9][0-9]*$' AND (length(` + text + `) < 19 OR (length(` + text + `) = 19 AND ` + text + ` COLLATE "C" <= '9223372036854775807')))`
+}
+
+// int64SQL accepts a JSON number token that Go decodes into an int.
+func int64SQL(text string) string {
+	return `((` + text + ` ~ '^[0-9]+$' AND (length(` + text + `) < 19 OR (length(` + text + `) = 19 AND ` + text + ` COLLATE "C" <= '9223372036854775807')))` +
+		` OR (` + text + ` ~ '^-[0-9]+$' AND (length(` + text + `) < 20 OR (length(` + text + `) = 20 AND ` + text + ` COLLATE "C" <= '-9223372036854775808'))))`
+}
+
+// mergeConflictSummarySQL computes store.MergeConflictHistory per task in
+// SQL: one summary row for a decodable latest merge.blocked, one step row per
+// same-episode dispatch or failure after it while no clear follows, and one
+// order row per task order a same-heads dispatch named inside an open
+// episode. Rows carry no payload beyond a failure's next_retry_at value.
+const mergeConflictSummarySQL = `WITH m AS (
+	SELECT e.task_id, e.kind, e.payload_json AS p,
+		row_number() OVER (PARTITION BY e.task_id ORDER BY e.at, e.id) AS rn,
+		(jsonb_typeof(e.payload_json) IN ('object','null')
+			AND COALESCE(jsonb_typeof(e.payload_json->'approved_head'),'null') IN ('string','null')
+			AND COALESCE(jsonb_typeof(e.payload_json->'new_head'),'null') IN ('string','null')) AS decodes,
+		COALESCE(e.payload_json->>'approved_head','') AS approved_head,
+		COALESCE(e.payload_json->>'new_head','') AS new_head
+	FROM events e
+	JOIN tasks t ON t.id = e.task_id
+	WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
+), r AS (
+	SELECT m.*, max(CASE WHEN kind IN ('merge.blocked','merge.conflict_cleared') THEN rn END)
+		OVER (PARTITION BY task_id ORDER BY rn ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS reset_rn
+	FROM m
+), l AS (
+	SELECT DISTINCT ON (task_id) task_id, rn, decodes, approved_head, new_head
+	FROM m WHERE kind = 'merge.blocked' ORDER BY task_id, rn DESC
+), cleared AS (
+	SELECT task_id, max(rn) AS rn FROM m WHERE kind = 'merge.conflict_cleared' GROUP BY task_id
+), s AS (
+	SELECT l.task_id, l.rn, l.approved_head, l.new_head, COALESCE(cleared.rn > l.rn, false) AS cleared
+	FROM l LEFT JOIN cleared ON cleared.task_id = l.task_id
+	WHERE l.decodes
+), same AS (
+	SELECT s.task_id, s.cleared, x.kind, x.rn, x.p, x.reset_rn, s.rn AS latest_rn
+	FROM s JOIN r x ON x.task_id = s.task_id AND x.decodes AND x.approved_head = s.approved_head AND x.new_head = s.new_head
+), exhausted AS (
+	SELECT DISTINCT task_id FROM same WHERE kind = 'merge.conflict_dispatch_exhausted' AND rn > latest_rn
+)
+SELECT 0 AS row_kind, s.task_id, 0::bigint AS rn, s.cleared, (NOT s.cleared AND exhausted.task_id IS NOT NULL) AS exhausted, '' AS value, NULL::text AS raw
+FROM s LEFT JOIN exhausted ON exhausted.task_id = s.task_id
+UNION ALL
+SELECT 1, task_id, rn, false, false, kind, CASE WHEN kind = 'merge.conflict_dispatch_failed' THEN (p->'next_retry_at')::text END
+FROM same
+WHERE NOT cleared AND rn > latest_rn AND kind IN ('merge.conflict_fix_dispatched','merge.conflict_dispatch_failed')
+UNION ALL
+SELECT DISTINCT 2, x.task_id, 0::bigint, false, false, x.p->>'work_order_id', NULL::text
+FROM same x
+JOIN same b ON b.task_id = x.task_id AND b.rn = x.reset_rn AND b.kind = 'merge.blocked'
+JOIN work_orders wo ON wo.workspace_id = $1 AND wo.task_id = x.task_id AND wo.id = x.p->>'work_order_id'
+WHERE x.kind = 'merge.conflict_fix_dispatched' AND jsonb_typeof(x.p->'work_order_id') = 'string'
+`
+
+// latestHistorySQL selects, per task and kind, the latest row each
+// park-command, pull-request, and bounce fold accepts, carrying only the field
+// that fold reads: the command, the number, or the window. A bounce payload
+// that is not an object or null travels as an undecodable array, as the fold
+// then reads zero.
+var latestHistorySQL = `SELECT DISTINCT ON (e.task_id, e.kind) e.id, e.task_id, e.kind,
+	CASE
+		WHEN e.kind = 'task.state_changed' THEN jsonb_build_object('command', e.payload_json->'command')
+		WHEN e.kind = 'pull_request.opened' THEN jsonb_build_object('number', e.payload_json->'number')
+		WHEN jsonb_typeof(e.payload_json) IN ('object','null') THEN jsonb_build_object('window', e.payload_json->'window')
+		ELSE '[]'::jsonb
+	END AS payload_json, e.at
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND (
+	(e.kind = 'task.state_changed' AND jsonb_typeof(e.payload_json->'command') = 'string' AND e.payload_json->>'command' <> '')
+	OR (e.kind = 'pull_request.opened' AND ` + positiveInt64SQL(`(e.payload_json->'number')::text`) + `)
+	OR e.kind = 'pipeline.bounce_limit')
+ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC`
+
+// ListNextActionHistory computes store.NextActionHistory in two queries:
+// the latest row each park-command, pull-request, and bounce fold accepts,
+// and the merge-conflict summary computed in SQL (component-persistence).
 func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
 	if len(taskIDs) == 0 {
 		return map[string]store.NextActionHistory{}, nil
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.kind, e.payload_json, e.at
-FROM events e
-JOIN tasks t ON t.id = e.task_id
-WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
-UNION ALL
-SELECT latest.id, latest.task_id, latest.kind, latest.payload_json, latest.at FROM (
-	SELECT DISTINCT ON (e.task_id, e.kind) e.id, e.task_id, e.kind, e.payload_json, e.at
-	FROM events e
-	JOIN tasks t ON t.id = e.task_id
-	WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND (
-		(e.kind = 'task.state_changed' AND jsonb_typeof(e.payload_json->'command') = 'string' AND e.payload_json->>'command' <> '')
-		OR (e.kind = 'pull_request.opened' AND jsonb_typeof(e.payload_json->'number') = 'number' AND e.payload_json->>'number' ~ '^[1-9][0-9]*$')
-		OR e.kind = 'pipeline.bounce_limit')
-	ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC
-) latest`, workspace(ctx), taskIDs, store.MergeConflictEventKinds)
+	rows, err := s.boundary.Query(ctx, latestHistorySQL, workspace(ctx), taskIDs)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var selected []core.Event
 	for rows.Next() {
 		var event core.Event
 		var payload []byte
 		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &payload, &event.At); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		event.Payload = payload
-		event.At = event.At.UTC()
 		selected = append(selected, event)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	out := store.LatestHistoryFields(selected)
+	if rows, err = s.boundary.Query(ctx, mergeConflictSummarySQL, workspace(ctx), taskIDs, store.MergeConflictEventKinds); err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// Rows arrive in no guaranteed order; steps sort by their position in
+	// the task's merge history and order IDs sort by value.
+	positions := map[string][]int64{}
+	for rows.Next() {
+		var rowKind int
+		var taskID, value string
+		var rn int64
+		var cleared, exhausted bool
+		var raw *string
+		if err = rows.Scan(&rowKind, &taskID, &rn, &cleared, &exhausted, &value, &raw); err != nil {
+			return nil, err
+		}
+		history := out[taskID]
+		switch rowKind {
+		case 0:
+			history.MergeConflict.Open, history.MergeConflict.Cleared, history.MergeConflict.Exhausted = true, cleared, exhausted
+		case 1:
+			step := store.MergeConflictStep{Dispatched: value == "merge.conflict_fix_dispatched"}
+			if raw != nil {
+				step.NextRetryAt = json.RawMessage(*raw)
+			}
+			history.MergeConflict.Steps = append(history.MergeConflict.Steps, step)
+			positions[taskID] = append(positions[taskID], rn)
+		case 2:
+			history.MergeConflict.DispatchedOrderIDs = append(history.MergeConflict.DispatchedOrderIDs, value)
+		}
+		out[taskID] = history
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	return store.FoldNextActionHistories(selected), nil
+	for taskID, history := range out {
+		store.SortMergeConflictHistory(&history.MergeConflict, positions[taskID])
+		out[taskID] = history
+	}
+	return store.CompactNextActionHistories(out), nil
 }
 
 // ListOpenDependents reads, in one query, the heads of the workspace's open
@@ -311,35 +418,49 @@ ORDER BY t.id`, workspace(ctx), taskIDs)
 	return out, rows.Err()
 }
 
-// ListTaskContextDesignPins reads the requested tasks' context attachment
-// events in one query and folds them with store.ActiveTaskContextReferences.
+// designPinsSQL selects the latest decodable design add or remove per task
+// and design ID and keeps the adds, with the shapes ActiveTaskContextReferences
+// decodes: an object or null payload, a string, null, or missing id, and a
+// null, missing, or int version.
+var designPinsSQL = `SELECT task_id, design_id, version FROM (
+	SELECT DISTINCT ON (e.task_id, COALESCE(e.payload_json->>'id',''))
+		e.task_id, COALESCE(e.payload_json->>'id','') AS design_id, e.kind,
+		CASE WHEN jsonb_typeof(e.payload_json->'version') = 'number' THEN (e.payload_json->>'version')::bigint ELSE 0 END AS version
+	FROM events e
+	JOIN tasks t ON t.id = e.task_id
+	WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind IN ($3, $4)
+		AND jsonb_typeof(e.payload_json) IN ('object','null')
+		AND COALESCE(jsonb_typeof(e.payload_json->'id'),'null') IN ('string','null')
+		AND (COALESCE(jsonb_typeof(e.payload_json->'version'),'null') = 'null' OR ` + int64SQL(`(e.payload_json->'version')::text`) + `)
+	ORDER BY e.task_id, COALESCE(e.payload_json->>'id',''), e.at DESC, e.id DESC
+) latest
+WHERE kind = $3`
+
+// ListTaskContextDesignPins selects, in one query, the latest decodable
+// design add or remove per task and design ID and keeps the adds, so only
+// current pins cross the boundary (component-persistence).
 func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error) {
+	out := map[string]map[string]int{}
 	if len(taskIDs) == 0 {
-		return map[string]map[string]int{}, nil
+		return out, nil
 	}
-	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.kind, e.payload_json, e.at
-FROM events e
-JOIN tasks t ON t.id = e.task_id
-WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
-ORDER BY e.task_id, e.at, e.id`, workspace(ctx), taskIDs, store.TaskContextEventKinds)
+	rows, err := s.boundary.Query(ctx, designPinsSQL, workspace(ctx), taskIDs, store.TaskContextDesignAdded, store.TaskContextDesignRemoved)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var selected []core.Event
 	for rows.Next() {
-		var event core.Event
-		var payload []byte
-		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &payload, &event.At); err != nil {
+		var taskID, designID string
+		var version int64
+		if err = rows.Scan(&taskID, &designID, &version); err != nil {
 			return nil, err
 		}
-		event.Payload = payload
-		selected = append(selected, event)
+		if out[taskID] == nil {
+			out[taskID] = map[string]int{}
+		}
+		out[taskID][designID] = int(version)
 	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return store.TaskContextDesignPins(selected), nil
+	return out, rows.Err()
 }
 
 // ListDocumentHeads reads requirement and System Design heads in one query;

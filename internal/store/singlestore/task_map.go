@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -340,11 +341,74 @@ func scanNextActionRows(rows *documentResultSet) ([]core.Event, error) {
 	return out, rows.Err()
 }
 
-// ListNextActionHistory selects, in one query, only the rows
-// store.FoldNextActionHistory consumes: every merge-conflict row, and per task
-// and kind the latest state change with a non-empty string command, the latest
-// pull request with a positive integer number, and the latest bounce limit,
-// ranked with ROW_NUMBER (component-persistence).
+// positiveInt64SQL accepts a JSON number token that Go decodes into a
+// positive int: digits alone, without fraction or exponent, at most
+// 9223372036854775807.
+func positiveInt64SQL(text string) string {
+	return `(` + text + ` RLIKE '^[1-9][0-9]*$' AND (LENGTH(` + text + `) < 19 OR (LENGTH(` + text + `) = 19 AND ` + text + ` <= '9223372036854775807')))`
+}
+
+// int64SQL accepts a JSON number token that Go decodes into an int.
+func int64SQL(text string) string {
+	return `((` + text + ` RLIKE '^[0-9]+$' AND (LENGTH(` + text + `) < 19 OR (LENGTH(` + text + `) = 19 AND ` + text + ` <= '9223372036854775807')))` +
+		` OR (` + text + ` RLIKE '^-[0-9]+$' AND (LENGTH(` + text + `) < 20 OR (LENGTH(` + text + `) = 20 AND ` + text + ` <= '-9223372036854775808'))))`
+}
+
+// jsonStringOrNullSQL reports a missing, null, or string JSON field.
+func jsonStringOrNullSQL(field string) string {
+	return `(` + field + ` IS NULL OR ` + field + ` = 'null' OR LEFT(` + field + `,1) = '"')`
+}
+
+// mergeConflictSummarySQL computes store.MergeConflictHistory per task, as
+// the PostgreSQL backend does, without correlated subqueries.
+var mergeConflictSummarySQL = `WITH m AS (
+	SELECT task_id, kind, payload_json AS p,
+		ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY at, id) AS rn,
+		((LEFT(payload_json :> TEXT, 1) = '{' OR (payload_json :> TEXT) = 'null')
+			AND ` + jsonStringOrNullSQL(`JSON_EXTRACT_JSON(payload_json,'approved_head')`) + `
+			AND ` + jsonStringOrNullSQL(`JSON_EXTRACT_JSON(payload_json,'new_head')`) + `) AS decodes,
+		COALESCE(JSON_EXTRACT_STRING(payload_json,'approved_head'),'') AS approved_head,
+		COALESCE(JSON_EXTRACT_STRING(payload_json,'new_head'),'') AS new_head
+	FROM events
+	WHERE workspace_id = ? AND task_id IN (%s) AND kind IN (%s)
+), r AS (
+	SELECT task_id, kind, p, rn, decodes, approved_head, new_head,
+		MAX(CASE WHEN kind IN ('merge.blocked','merge.conflict_cleared') THEN rn END)
+			OVER (PARTITION BY task_id ORDER BY rn ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS reset_rn
+	FROM m
+), lb AS (
+	SELECT task_id, MAX(rn) AS rn FROM m WHERE kind = 'merge.blocked' GROUP BY task_id
+), cl AS (
+	SELECT task_id, MAX(rn) AS rn FROM m WHERE kind = 'merge.conflict_cleared' GROUP BY task_id
+), s AS (
+	SELECT m.task_id, m.rn, m.approved_head, m.new_head, (cl.rn IS NOT NULL AND cl.rn > m.rn) AS cleared
+	FROM m JOIN lb ON lb.task_id = m.task_id AND lb.rn = m.rn
+	LEFT JOIN cl ON cl.task_id = m.task_id
+	WHERE m.decodes
+), same AS (
+	SELECT s.task_id, s.cleared, x.kind, x.rn, x.p, x.reset_rn, s.rn AS latest_rn
+	FROM s JOIN r x ON x.task_id = s.task_id AND x.decodes AND x.approved_head = s.approved_head AND x.new_head = s.new_head
+), ex AS (
+	SELECT DISTINCT task_id FROM same WHERE kind = 'merge.conflict_dispatch_exhausted' AND rn > latest_rn
+)
+SELECT 0 AS row_kind, s.task_id, 0 AS rn, s.cleared, (NOT s.cleared AND ex.task_id IS NOT NULL) AS exhausted, '' AS value, NULL AS raw
+FROM s LEFT JOIN ex ON ex.task_id = s.task_id
+UNION ALL
+SELECT 1, task_id, rn, 0, 0, kind, CASE WHEN kind = 'merge.conflict_dispatch_failed' THEN JSON_EXTRACT_JSON(p,'next_retry_at') END
+FROM same
+WHERE NOT cleared AND rn > latest_rn AND kind IN ('merge.conflict_fix_dispatched','merge.conflict_dispatch_failed')
+UNION ALL
+SELECT DISTINCT 2, x.task_id, 0, 0, 0, JSON_EXTRACT_STRING(x.p,'work_order_id'), NULL
+FROM same x
+JOIN same b ON b.task_id = x.task_id AND b.rn = x.reset_rn AND b.kind = 'merge.blocked'
+JOIN work_orders wo ON wo.workspace_id = ? AND wo.task_id = x.task_id AND wo.id = JSON_EXTRACT_STRING(x.p,'work_order_id')
+WHERE x.kind = 'merge.conflict_fix_dispatched' AND LEFT(JSON_EXTRACT_JSON(x.p,'work_order_id'),1) = '"'
+`
+
+// ListNextActionHistory computes store.NextActionHistory in two queries:
+// the latest row each park-command, pull-request, and bounce fold accepts,
+// ranked with ROW_NUMBER, and the merge-conflict summary computed in SQL
+// (component-persistence).
 func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
 	if len(taskIDs) == 0 {
 		return map[string]store.NextActionHistory{}, nil
@@ -354,23 +418,25 @@ func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (ma
 		return nil, err
 	}
 	marks := taskMapMarks(len(taskIDs))
-	args := append([]any{ws}, taskMapArgs(taskIDs)...)
-	args = append(args, taskMapArgs(store.MergeConflictEventKinds)...)
-	args = append(args, ws)
-	args = append(args, taskMapArgs(taskIDs)...)
-	rows, err := documentRows(ctx, s.db, `SELECT id,task_id,kind,payload_json,at FROM events
-WHERE workspace_id=? AND task_id IN (`+marks+`) AND kind IN (`+taskMapMarks(len(store.MergeConflictEventKinds))+`)
-UNION ALL
-SELECT id,task_id,kind,payload_json,at FROM (
-	SELECT id,task_id,kind,payload_json,at,
+	// Each row carries only the field its fold reads: the command, the
+	// number, or the window; a bounce payload that is not an object or null
+	// travels as an undecodable array, as the fold then reads zero.
+	rows, err := documentRows(ctx, s.db, `SELECT id,task_id,kind,payload_json,at FROM (
+	SELECT id,task_id,kind,at,
+		CASE
+			WHEN kind='task.state_changed' THEN CONCAT('{"command":',JSON_EXTRACT_JSON(payload_json,'command'),'}')
+			WHEN kind='pull_request.opened' THEN CONCAT('{"number":',JSON_EXTRACT_JSON(payload_json,'number'),'}')
+			WHEN LEFT(payload_json :> TEXT, 1) = '{' OR (payload_json :> TEXT) = 'null' THEN CONCAT('{"window":',COALESCE(JSON_EXTRACT_JSON(payload_json,'window'),'null'),'}')
+			ELSE '[]'
+		END AS payload_json,
 		ROW_NUMBER() OVER (PARTITION BY task_id,kind ORDER BY at DESC,id DESC) AS position
 	FROM events
 	WHERE workspace_id=? AND task_id IN (`+marks+`) AND (
 		(kind='task.state_changed' AND LEFT(JSON_EXTRACT_JSON(payload_json,'command'),1)='"' AND JSON_EXTRACT_STRING(payload_json,'command')<>'')
-		OR (kind='pull_request.opened' AND JSON_EXTRACT_JSON(payload_json,'number') RLIKE '^[1-9][0-9]*$')
+		OR (kind='pull_request.opened' AND `+positiveInt64SQL(`JSON_EXTRACT_JSON(payload_json,'number')`)+`)
 		OR kind='pipeline.bounce_limit')
 ) latest
-WHERE position=1`, args...)
+WHERE position=1`, append([]any{ws}, taskMapArgs(taskIDs)...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +444,51 @@ WHERE position=1`, args...)
 	if err != nil {
 		return nil, err
 	}
-	return store.FoldNextActionHistories(selected), nil
+	out := store.LatestHistoryFields(selected)
+	args := append([]any{ws}, taskMapArgs(taskIDs)...)
+	args = append(args, taskMapArgs(store.MergeConflictEventKinds)...)
+	args = append(args, ws)
+	summary, err := documentRows(ctx, s.db, fmt.Sprintf(mergeConflictSummarySQL, marks, taskMapMarks(len(store.MergeConflictEventKinds))), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer summary.Close()
+	// Rows arrive in no guaranteed order; steps sort by their position in
+	// the task's merge history and order IDs sort by value.
+	positions := map[string][]int64{}
+	for summary.Next() {
+		var rowKind int
+		var taskID, value string
+		var rn int64
+		var cleared, exhausted bool
+		var raw sql.NullString
+		if err = summary.Scan(&rowKind, &taskID, &rn, &cleared, &exhausted, &value, &raw); err != nil {
+			return nil, err
+		}
+		history := out[taskID]
+		switch rowKind {
+		case 0:
+			history.MergeConflict.Open, history.MergeConflict.Cleared, history.MergeConflict.Exhausted = true, cleared, exhausted
+		case 1:
+			step := store.MergeConflictStep{Dispatched: value == "merge.conflict_fix_dispatched"}
+			if raw.Valid {
+				step.NextRetryAt = json.RawMessage(raw.String)
+			}
+			history.MergeConflict.Steps = append(history.MergeConflict.Steps, step)
+			positions[taskID] = append(positions[taskID], rn)
+		case 2:
+			history.MergeConflict.DispatchedOrderIDs = append(history.MergeConflict.DispatchedOrderIDs, value)
+		}
+		out[taskID] = history
+	}
+	if err = summary.Err(); err != nil {
+		return nil, err
+	}
+	for taskID, history := range out {
+		store.SortMergeConflictHistory(&history.MergeConflict, positions[taskID])
+		out[taskID] = history
+	}
+	return store.CompactNextActionHistories(out), nil
 }
 
 // ListOpenDependents reads, in one query, the heads of the workspace's open
@@ -412,29 +522,48 @@ ORDER BY t.id`, append([]any{ws}, taskMapArgs(taskIDs)...)...)
 	return out, rows.Err()
 }
 
-// ListTaskContextDesignPins reads the requested tasks' context attachment
-// events in one query and folds them with store.ActiveTaskContextReferences.
+// ListTaskContextDesignPins selects, in one query, the latest decodable
+// design add or remove per task and design ID and keeps the adds, so only
+// current pins cross the boundary (component-persistence).
 func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error) {
+	out := map[string]map[string]int{}
 	if len(taskIDs) == 0 {
-		return map[string]map[string]int{}, nil
+		return out, nil
 	}
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err
 	}
+	version := `JSON_EXTRACT_JSON(payload_json,'version')`
 	args := append([]any{ws}, taskMapArgs(taskIDs)...)
-	args = append(args, taskMapArgs(store.TaskContextEventKinds)...)
-	rows, err := documentRows(ctx, s.db, `SELECT id,task_id,kind,payload_json,at FROM events
-WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind IN (`+taskMapMarks(len(store.TaskContextEventKinds))+`)
-ORDER BY task_id,at,id`, args...)
+	args = append(args, store.TaskContextDesignAdded, store.TaskContextDesignRemoved, store.TaskContextDesignAdded)
+	rows, err := documentRows(ctx, s.db, `SELECT task_id, design_id, version FROM (
+	SELECT task_id, kind, COALESCE(JSON_EXTRACT_STRING(payload_json,'id'),'') AS design_id,
+		CASE WHEN `+version+` IS NULL OR `+version+` = 'null' THEN 0 ELSE CAST(`+version+` AS SIGNED) END AS version,
+		ROW_NUMBER() OVER (PARTITION BY task_id, COALESCE(JSON_EXTRACT_STRING(payload_json,'id'),'') ORDER BY at DESC, id DESC) AS position
+	FROM events
+	WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind IN (?,?)
+		AND (LEFT(payload_json :> TEXT, 1) = '{' OR (payload_json :> TEXT) = 'null')
+		AND `+jsonStringOrNullSQL(`JSON_EXTRACT_JSON(payload_json,'id')`)+`
+		AND (`+version+` IS NULL OR `+version+` = 'null' OR `+int64SQL(version)+`)
+) latest
+WHERE position=1 AND kind=?`, args...)
 	if err != nil {
 		return nil, err
 	}
-	selected, err := scanNextActionRows(rows)
-	if err != nil {
-		return nil, err
+	defer rows.Close()
+	for rows.Next() {
+		var taskID, designID string
+		var pinned int64
+		if err = rows.Scan(&taskID, &designID, &pinned); err != nil {
+			return nil, err
+		}
+		if out[taskID] == nil {
+			out[taskID] = map[string]int{}
+		}
+		out[taskID][designID] = int(pinned)
 	}
-	return store.TaskContextDesignPins(selected), nil
+	return out, rows.Err()
 }
 
 // ListDocumentHeads reads requirement and System Design heads in one query;

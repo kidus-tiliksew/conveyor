@@ -194,7 +194,11 @@ func (f fullHistoryStore) ListNextActionHistory(ctx context.Context, ids []strin
 				kinds = append(kinds, event)
 			}
 		}
-		out[id] = store.FoldNextActionHistory(kinds)
+		orders, err := f.Store.ListWorkOrdersForTasks(ctx, []string{id})
+		if err != nil {
+			return nil, err
+		}
+		out[id] = store.FoldNextActionHistory(kinds, orders)
 	}
 	return out, nil
 }
@@ -637,4 +641,94 @@ func taskIDs(tasks []core.Task) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// previousMergeConflictFold is the merge-conflict fold the assembler applied
+// to the full history before the bounded summary.
+func previousMergeConflictFold(events []core.Event, orders []core.WorkOrder) nextaction.MergeConflict {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "merge.blocked" {
+			continue
+		}
+		var heads struct {
+			ApprovedHead string `json:"approved_head"`
+			NewHead      string `json:"new_head"`
+		}
+		if json.Unmarshal(events[i].Payload, &heads) != nil {
+			return nextaction.MergeConflict{}
+		}
+		state := store.MergeConflictDispatchState(events, heads.ApprovedHead, heads.NewHead, orders)
+		return nextaction.MergeConflict{Open: true, Exhausted: state.Exhausted || state.Failures >= 3, NextRetryAt: state.NextRetryAt}
+	}
+	return nextaction.MergeConflict{}
+}
+
+func TestMergeConflictHistoryMatchesFullFold(t *testing.T) {
+	base := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	orders := []core.WorkOrder{
+		{ID: "fix-terminal", State: core.WorkOrderCancelled},
+		{ID: "fix-released", State: core.WorkOrderQueued, LastAttemptOutcome: core.WorkOrderOutcomeReleased},
+		{ID: "fix-live", State: core.WorkOrderClaimed},
+		{ID: "fix-early", State: core.WorkOrderStale},
+	}
+	blocked := func(approved, fresh string) string {
+		return fmt.Sprintf(`{"approved_head":%q,"new_head":%q}`, approved, fresh)
+	}
+	dispatched := func(order string) string {
+		return fmt.Sprintf(`{"approved_head":"a","new_head":"b","work_order_id":%q}`, order)
+	}
+	failed := func(retry string) string {
+		return `{"approved_head":"a","new_head":"b","next_retry_at":` + retry + `}`
+	}
+	type step struct{ kind, payload string }
+	cases := map[string][]step{
+		"no block":            {{"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)}},
+		"undecodable latest":  {{"merge.blocked", blocked("a", "b")}, {"merge.blocked", `{"approved_head":5}`}},
+		"array block":         {{"merge.blocked", `[1]`}},
+		"null heads":          {{"merge.blocked", `null`}, {"merge.conflict_dispatch_failed", `{}`}, {"merge.conflict_dispatch_failed", `null`}, {"merge.conflict_dispatch_failed", `{"new_head":null}`}},
+		"three failures":      {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)}, {"merge.conflict_dispatch_failed", failed(`null`)}, {"merge.conflict_dispatch_failed", failed(`"2026-01-02T00:00:00Z"`)}},
+		"undecodable retries": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_failed", failed(`"tomorrow"`)}, {"merge.conflict_dispatch_failed", failed(`5`)}, {"merge.conflict_dispatch_failed", failed(`"2026-13-01T00:00:00Z"`)}},
+		"dispatch clears retry": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)},
+			{"merge.conflict_fix_dispatched", dispatched("fix-live")}},
+		"retry after dispatch": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_fix_dispatched", dispatched("fix-live")},
+			{"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)}},
+		"terminal orders across episodes": {{"merge.conflict_fix_dispatched", dispatched("fix-early")}, {"merge.blocked", blocked("a", "b")},
+			{"merge.conflict_fix_dispatched", dispatched("fix-terminal")}, {"merge.conflict_cleared", `{}`}, {"merge.conflict_fix_dispatched", dispatched("fix-early")},
+			{"merge.blocked", blocked("x", "b")}, {"merge.conflict_fix_dispatched", dispatched("fix-early")},
+			{"merge.blocked", blocked("a", "b")}, {"merge.conflict_fix_dispatched", dispatched("fix-released")}, {"merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":5}`},
+			{"merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"c","work_order_id":"fix-early"}`}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)}},
+		"cleared latest": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_fix_dispatched", dispatched("fix-terminal")},
+			{"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)}, {"merge.conflict_dispatch_exhausted", blocked("a", "b")}, {"merge.conflict_cleared", `{}`}},
+		"exhausted episode": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_exhausted", blocked("a", "b")}, {"merge.conflict_recovery_blocked", blocked("a", "b")}},
+		"other heads only":  {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_exhausted", blocked("a", "c")}, {"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"c","next_retry_at":"2026-01-01T00:00:00Z"}`}},
+	}
+	for name, steps := range cases {
+		t.Run(name, func(t *testing.T) {
+			var events []core.Event
+			for i, s := range steps {
+				// Pairs share a timestamp, so (at, id) order decides.
+				events = append(events, core.Event{ID: int64(i + 1), TaskID: "task", Kind: s.kind, At: base.Add(time.Duration(i/2) * time.Second), Payload: json.RawMessage(s.payload)})
+			}
+			summary := store.SummarizeMergeConflict(events, orders)
+			got, want := store.MergeConflictFromHistory(summary, orders), previousMergeConflictFold(events, orders)
+			if got != want {
+				t.Fatalf("summary %+v folds to %+v, previous fold %+v", summary, got, want)
+			}
+		})
+	}
+	// The fixtures reach every outcome the fold distinguishes.
+	outcomes := map[string]bool{}
+	for _, steps := range cases {
+		var events []core.Event
+		for i, s := range steps {
+			events = append(events, core.Event{ID: int64(i + 1), Kind: s.kind, At: base, Payload: json.RawMessage(s.payload)})
+		}
+		result := previousMergeConflictFold(events, orders)
+		outcomes[fmt.Sprintf("open=%t exhausted=%t retry=%t", result.Open, result.Exhausted, !result.NextRetryAt.IsZero())] = true
+	}
+	for _, want := range []string{"open=false exhausted=false retry=false", "open=true exhausted=true retry=true", "open=true exhausted=false retry=true", "open=true exhausted=false retry=false", "open=true exhausted=true retry=false"} {
+		if !outcomes[want] {
+			t.Fatalf("fixtures never reach %s: %v", want, outcomes)
+		}
+	}
 }

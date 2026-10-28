@@ -426,7 +426,7 @@ func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder,
 		pendingRevision := task.State == core.TaskAwaiting && task.GateKind == core.GateKindPlanRevision
 		ApplyRecoveryRefusal(&orders[i], task, orders, pendingRevision)
 	}
-	conflict := mergeConflictFromEvents(history.MergeEvents, orders)
+	conflict := MergeConflictFromHistory(history.MergeConflict, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFromHistory(marker, history.ParkCommand, orders), Assignee: task.Assignee,
 		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals),
@@ -807,26 +807,43 @@ func terminalConflictFix(order core.WorkOrder) bool {
 	}
 }
 
-func mergeConflictFromEvents(events []core.Event, orders []core.WorkOrder) nextaction.MergeConflict {
-	var approved, fresh string
-	open := false
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind != "merge.blocked" {
-			continue
-		}
-		var payload struct {
-			ApprovedHead string `json:"approved_head"`
-			NewHead      string `json:"new_head"`
-		}
-		if json.Unmarshal(events[i].Payload, &payload) == nil {
-			approved, fresh, open = payload.ApprovedHead, payload.NewHead, true
-		}
-		break
-	}
-	if !open {
+// MergeConflictFromHistory applies the merge-conflict fold to the bounded
+// summary: an unopened summary is no conflict; a cleared episode keeps no
+// failures, retry time, or exhaustion of its own; otherwise each dispatch
+// step clears the retry time and each failure whose next_retry_at decodes
+// counts and sets it; and each terminal conflict-fix order the episode
+// dispatched adds a failure. It equals MergeConflictDispatchState over the
+// task's full history (component-work-orders, Next action).
+func MergeConflictFromHistory(history MergeConflictHistory, orders []core.WorkOrder) nextaction.MergeConflict {
+	if !history.Open {
 		return nextaction.MergeConflict{}
 	}
-	state := MergeConflictDispatchState(events, approved, fresh, orders)
+	var state MergeConflictState
+	if !history.Cleared {
+		for _, step := range history.Steps {
+			if step.Dispatched {
+				state.NextRetryAt = time.Time{}
+				continue
+			}
+			payload := json.RawMessage(`{}`)
+			if step.NextRetryAt != nil {
+				payload = append(append(json.RawMessage(`{"next_retry_at":`), step.NextRetryAt...), '}')
+			}
+			var failed struct {
+				NextRetryAt time.Time `json:"next_retry_at"`
+			}
+			if json.Unmarshal(payload, &failed) == nil {
+				state.Failures++
+				state.NextRetryAt = failed.NextRetryAt
+			}
+		}
+		state.Exhausted = history.Exhausted
+	}
+	for _, order := range orders {
+		if slices.Contains(history.DispatchedOrderIDs, order.ID) && terminalConflictFix(order) {
+			state.Failures++
+		}
+	}
 	return nextaction.MergeConflict{Open: true, Exhausted: state.Exhausted || state.Failures >= 3, NextRetryAt: state.NextRetryAt}
 }
 

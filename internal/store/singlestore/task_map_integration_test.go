@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -38,12 +39,21 @@ type selectedBytesRecorder struct {
 	needles   [][]byte
 	queries   []string
 	hits      map[string]string
+	rows      int
+	bytes     int
 }
 
 func (r *selectedBytesRecorder) start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.recording, r.queries, r.hits = true, nil, map[string]string{}
+	r.recording, r.queries, r.hits, r.rows, r.bytes = true, nil, map[string]string{}, 0, 0
+}
+
+// totals reports the rows and value bytes returned while recording.
+func (r *selectedBytesRecorder) totals() (rows, bytes int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rows, r.bytes
 }
 
 func (r *selectedBytesRecorder) stop() (queries []string, hits map[string]string) {
@@ -67,6 +77,7 @@ func (r *selectedBytesRecorder) inspect(sql string, values []driver.Value) {
 	if !r.recording {
 		return
 	}
+	r.rows++
 	for _, value := range values {
 		var raw []byte
 		switch typed := value.(type) {
@@ -77,6 +88,7 @@ func (r *selectedBytesRecorder) inspect(sql string, values []driver.Value) {
 		default:
 			continue
 		}
+		r.bytes += len(raw)
 		for _, needle := range r.needles {
 			if bytes.Contains(raw, needle) {
 				r.hits[string(needle)] = sql
@@ -359,13 +371,15 @@ func TestTaskMapSelectsNoBodiesHistoriesOrSnapshotsIntegration(t *testing.T) {
 	}
 }
 
-// The bounded next-action history read on SingleStore selects only the latest
-// command, pull-request, and bounce rows plus the merge-conflict rows: no
-// superseded state-change or pull-request payload reaches the store, while a
-// direct history read through the same recorder sees them
-// (component-persistence, Task map and next-action batch reads).
+// The bounded next-action history and design-pin reads on SingleStore return
+// the same rows and value bytes when a task's state-change, pull-request,
+// bounce, conflict-episode, and attachment history grows tenfold and its
+// payloads grow, with the order set fixed. No payload sentinel reaches the
+// store, while a direct history read through the same recorder sees it, and
+// each summary equals the full-history fold (component-persistence, Task map
+// and next-action batch reads).
 func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
-	const superseded = "SINGLESTORE-HISTORY-SUPERSEDED-SENTINEL"
+	const sentinel = "SINGLESTORE-HISTORY-PAYLOAD-SENTINEL"
 	st := integrationStore(t)
 	workspace := "history-bytes"
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
@@ -373,29 +387,63 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	if err := st.CreateTask(ctx, core.Task{ID: "history-parked", Workspace: workspace, Title: "History", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-history-parked", State: core.TaskParked, CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	at := now.Add(-time.Hour)
-	appendEvent := func(kind string, payload any) {
+	seed := func(id string, rounds, padding int) {
 		t.Helper()
-		at = at.Add(time.Millisecond)
-		if err := st.AppendEvent(ctx, core.Event{TaskID: "history-parked", Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}); err != nil {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Title: "History " + id, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskApproved, MergeApproval: true, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
+		orders := []string{id + "-implement-1", id + "-implement-2"}
+		for _, order := range orders {
+			if err := st.CreateJob(ctx, core.Job{ID: order, TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: order, TaskID: id, JobID: order, Stage: core.StageImplement, State: core.WorkOrderQueued, LastAttemptOutcome: core.WorkOrderOutcomeReleased, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pad := strings.Repeat(sentinel+" ", padding)
+		at := now.Add(-time.Hour)
+		appendEvent := func(kind string, payload map[string]any) {
+			t.Helper()
+			at = at.Add(time.Millisecond)
+			if err := st.AppendEvent(ctx, core.Event{TaskID: id, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		heads := func(extra map[string]any) map[string]any {
+			out := map[string]any{"approved_head": "a", "new_head": "b", "note": pad}
+			for key, value := range extra {
+				out[key] = value
+			}
+			return out
+		}
+		appendEvent("merge.blocked", heads(nil))
+		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[0]}))
+		for i := 0; i < rounds; i++ {
+			appendEvent("task.state_changed", map[string]any{"command": fmt.Sprintf("superseded-%d", i), "note": pad})
+			appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running", "note": pad})
+			appendEvent("pull_request.opened", map[string]any{"number": 100 + i, "note": pad})
+			appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1, "note": pad})
+			appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
+			appendEvent("merge.blocked", heads(nil))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now}))
+			appendEvent("merge.conflict_dispatch_exhausted", heads(nil))
+			appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": i + 1, "note": pad})
+			appendEvent(store.TaskContextDesignRemoved, map[string]any{"id": "design-history", "note": pad})
+		}
+		appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
+		appendEvent("merge.blocked", heads(nil))
+		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
+		appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Hour)}))
+		appendEvent("pull_request.opened", map[string]any{"number": 7, "note": pad})
+		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "note": pad})
+		appendEvent("task.state_changed", map[string]any{"command": "triage.park", "note": pad})
+		appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": 4, "note": pad})
 	}
-	for i := 0; i < 40; i++ {
-		appendEvent("task.state_changed", map[string]any{"command": fmt.Sprintf("%s-%d", superseded, i)})
-		appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running", "note": superseded})
-		appendEvent("pull_request.opened", map[string]any{"number": 100 + i, "title": superseded})
-		appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1, "note": superseded})
-	}
-	appendEvent("pull_request.opened", map[string]any{"number": 7, "title": "latest"})
-	appendEvent("pipeline.bounce_limit", map[string]any{"window": 3})
-	appendEvent("merge.blocked", map[string]any{"approved_head": "a", "new_head": "b"})
-	appendEvent("task.state_changed", map[string]any{"command": "triage.park"})
+	seed("history-small-1", 20, 1)
+	seed("history-large-1", 200, 10)
 
-	recorder := &selectedBytesRecorder{needles: [][]byte{[]byte(superseded)}}
+	recorder := &selectedBytesRecorder{needles: [][]byte{[]byte(sentinel)}}
 	connector, err := mysql.NewConnector(sharedDatabase.cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -405,23 +453,56 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 	recorded := &Store{db: db, log: s2log.New(db)}
 
 	recorder.start()
-	if _, err = recorded.ListEvents(ctx, "history-parked"); err != nil {
+	if _, err = recorded.ListEvents(ctx, "history-small-1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, hits := recorder.stop(); len(hits) != 1 {
-		t.Fatalf("recorder control hits=%v, want the superseded sentinel", hits)
+		t.Fatalf("recorder control hits=%v, want the payload sentinel", hits)
 	}
-	recorder.start()
-	got, err := recorded.ListNextActionHistory(ctx, []string{"history-parked"})
-	if err != nil {
-		t.Fatal(err)
+	type observation struct{ queries, rows, bytes int }
+	observe := func(id string) observation {
+		t.Helper()
+		recorder.start()
+		histories, err := recorded.ListNextActionHistory(ctx, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pins, err := recorded.ListTaskContextDesignPins(ctx, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, bytes := recorder.totals()
+		queries, hits := recorder.stop()
+		if len(hits) != 0 {
+			t.Fatalf("task %s bounded reads selected payload sentinels: %v", id, hits)
+		}
+		events, err := st.ListEvents(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		orders, err := st.ListWorkOrdersForTasks(ctx, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, want := histories[id], store.FoldNextActionHistory(events, orders)
+		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+			store.MergeConflictFromHistory(got.MergeConflict, orders) != store.MergeConflictFromHistory(want.MergeConflict, orders) ||
+			len(got.MergeConflict.Steps) != len(want.MergeConflict.Steps) || !slices.Equal(got.MergeConflict.DispatchedOrderIDs, want.MergeConflict.DispatchedOrderIDs) {
+			t.Fatalf("task %s history=%+v full fold %+v", id, got, want)
+		}
+		if _, wantPins := store.ActiveTaskContextReferences(events); pins[id]["design-history"] != 4 || len(pins[id]) != len(wantPins) {
+			t.Fatalf("task %s pins=%+v full fold %+v", id, pins[id], wantPins)
+		}
+		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || len(got.MergeConflict.DispatchedOrderIDs) != 2 || len(got.MergeConflict.Steps) != 2 {
+			t.Fatalf("task %s summary=%+v", id, got)
+		}
+		return observation{queries: len(queries), rows: rows, bytes: bytes}
 	}
-	queries, hits := recorder.stop()
-	if len(hits) != 0 || len(queries) != 1 {
-		t.Fatalf("history read queries=%d selected superseded rows: %v", len(queries), hits)
-	}
-	history := got["history-parked"]
-	if history.ParkCommand != "triage.park" || history.PullRequest != 7 || history.BounceCount != 3 || len(history.MergeEvents) != 1 {
-		t.Fatalf("history=%+v", history)
+	small := observe("history-small-1")
+	large := observe("history-large-1")
+	// Three latest rows, one summary row, two steps, two dispatched orders,
+	// and one current pin, over three queries.
+	if small != large || small.queries != 3 || small.rows != 9 {
+		t.Fatalf("bounded reads small=%+v large=%+v, want equal with 3 queries and 9 rows", small, large)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"sort"
@@ -319,74 +320,142 @@ func sameEvents(got, want []core.Event) bool {
 func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTask func(string, string, core.TaskState, ...string) core.Task, requirement func(string, bool) string) {
 	st := x.Backend
 	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
-	appendAt := func(taskID, kind string, at time.Time, payload any) {
-		t.Helper()
-		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}))
-	}
 	t.Run("history equals the full-history fold", func(t *testing.T) {
-		history := newTask("history", "conveyor", core.TaskParked)
-		quiet := newTask("quiet history", "conveyor", core.TaskParked)
 		at := base
 		next := func() time.Time { at = at.Add(time.Second); return at }
-		appendAt(history.ID, "task.state_changed", next(), map[string]any{"command": "triage.park"})
-		for i := 0; i < 25; i++ {
-			appendAt(history.ID, "task.state_changed", next(), map[string]any{"from": "queued", "to": "running"})
-			appendAt(history.ID, "task.created", at, map[string]any{"body": "unrelated"})
+		raw := func(taskID, kind string, payload string) {
+			t.Helper()
+			requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, ActorRole: core.ActorSystem, At: next(), Payload: json.RawMessage(payload)}))
 		}
-		appendAt(history.ID, "task.state_changed", next(), map[string]any{"command": 5})
-		appendAt(history.ID, "task.state_changed", next(), map[string]any{"command": ""})
-		appendAt(history.ID, "pull_request.opened", next(), map[string]any{"number": 3})
-		appendAt(history.ID, "pull_request.opened", next(), map[string]any{"number": 0})
-		appendAt(history.ID, "pull_request.opened", next(), map[string]any{"number": "12"})
-		appendAt(history.ID, "pull_request.opened", next(), map[string]any{"number": 12.5})
-		appendAt(history.ID, "pipeline.bounce_limit", next(), map[string]any{"window": 2})
-		appendAt(history.ID, "pipeline.bounce_limit", next(), map[string]any{"window": 0})
-		episode := map[string]any{"approved_head": "approved", "new_head": "fresh"}
-		with := func(extra map[string]any) map[string]any {
-			out := map[string]any{"approved_head": "approved", "new_head": "fresh"}
-			for key, value := range extra {
-				out[key] = value
+		order := func(task core.Task, attempt int, terminal bool) string {
+			t.Helper()
+			id := fmt.Sprintf("%s-implement-%d", task.ID, attempt)
+			requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}))
+			wo := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: base, QueueDeadline: base.Add(time.Hour)}
+			if terminal {
+				wo.LastAttemptOutcome = core.WorkOrderOutcomeReleased
 			}
-			return out
+			requireOK(t, CreateWorkOrder(ctx, st, wo))
+			return id
 		}
-		appendAt(history.ID, "merge.blocked", next(), episode)
-		appendAt(history.ID, "merge.conflict_fix_dispatched", next(), with(map[string]any{"work_order_id": history.ID + "-implement-2"}))
-		appendAt(history.ID, "merge.conflict_dispatch_failed", next(), with(map[string]any{"next_retry_at": base.Add(time.Hour)}))
-		appendAt(history.ID, "merge.conflict_cleared", next(), map[string]any{})
-		tied := next()
-		appendAt(history.ID, "merge.blocked", tied, episode)
-		appendAt(history.ID, "merge.conflict_dispatch_failed", tied, with(map[string]any{"next_retry_at": base.Add(2 * time.Hour)}))
-		appendAt(history.ID, "merge.conflict_dispatch_exhausted", next(), episode)
-		appendAt(history.ID, "merge.conflict_recovery_blocked", next(), episode)
-		appendAt(history.ID, "task.state_changed", next(), map[string]any{"from": "approved", "to": "parked"})
-		appendAt(quiet.ID, "task.state_changed", next(), map[string]any{"from": "queued", "to": "parked"})
 
-		ids := []string{history.ID, quiet.ID, "missing-" + core.NewTaskID()}
+		history := newTask("history", "conveyor", core.TaskParked)
+		raw(history.ID, "task.state_changed", `{"command":"triage.park"}`)
+		for i := 0; i < 25; i++ {
+			raw(history.ID, "task.state_changed", `{"from":"queued","to":"running"}`)
+			raw(history.ID, "task.created", `{"body":"unrelated"}`)
+		}
+		raw(history.ID, "task.state_changed", `{"command":5}`)
+		raw(history.ID, "task.state_changed", `{"command":""}`)
+		raw(history.ID, "pipeline.bounce_limit", `{"window":2}`)
+		raw(history.ID, "pipeline.bounce_limit", `{"window":0}`)
+		// Pull-request numbers the Go int decoder rejects never displace an
+		// older accepted one.
+		overflow := newTask("pr overflow", "conveyor", core.TaskParked)
+		raw(overflow.ID, "pull_request.opened", `{"number":42}`)
+		raw(overflow.ID, "pull_request.opened", `{"number":9223372036854775808}`)
+		boundary := newTask("pr boundary", "conveyor", core.TaskParked)
+		raw(boundary.ID, "pull_request.opened", `{"number":42}`)
+		raw(boundary.ID, "pull_request.opened", `{"number":9223372036854775807}`)
+		invalid := newTask("pr invalid", "conveyor", core.TaskParked)
+		raw(invalid.ID, "pull_request.opened", `{"number":3}`)
+		for _, payload := range []string{`{"number":0}`, `{"number":-3}`, `{"number":null}`, `{}`, `{"number":"12"}`, `{"number":12.5}`, `{"number":99999999999999999999}`, `{"number":-9223372036854775809}`, `{"number":true}`, `[1]`, `null`} {
+			raw(invalid.ID, "pull_request.opened", payload)
+		}
+
+		// An open episode with failures, an exhaustion, and dispatches inside
+		// and outside episodes, of other heads, and of another task's order.
+		episode := newTask("conflict episodes", "conveyor", core.TaskApproved)
+		stranger := newTask("conflict stranger", "conveyor", core.TaskRunning)
+		strangerOrder := order(stranger, 1, true)
+		first, second, live, early := order(episode, 1, true), order(episode, 2, true), order(episode, 3, false), order(episode, 4, true)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+early+`"}`)
+		for i := 0; i < 3; i++ {
+			raw(episode.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+			raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-01-01T00:00:00Z"}`)
+			raw(episode.ID, "merge.conflict_cleared", `{}`)
+		}
+		raw(episode.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+first+`"}`)
+		raw(episode.ID, "merge.conflict_cleared", `{}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+early+`"}`)
+		raw(episode.ID, "merge.blocked", `{"approved_head":"other","new_head":"b"}`)
+		raw(episode.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+second+`"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+strangerOrder+`"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"other","work_order_id":"`+live+`"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":7}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-02-01T00:00:00Z"}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"not a time"}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":null}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"other","next_retry_at":"2026-03-01T00:00:00Z"}`)
+		raw(episode.ID, "merge.conflict_dispatch_exhausted", `{"approved_head":"a","new_head":"b"}`)
+		raw(episode.ID, "merge.conflict_recovery_blocked", `{"approved_head":"a","new_head":"b"}`)
+		// A cleared latest episode keeps only its dispatched orders.
+		cleared := newTask("conflict cleared", "conveyor", core.TaskApproved)
+		clearedOrder := order(cleared, 1, true)
+		raw(cleared.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(cleared.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+clearedOrder+`"}`)
+		raw(cleared.ID, "merge.conflict_dispatch_exhausted", `{"approved_head":"a","new_head":"b"}`)
+		raw(cleared.ID, "merge.conflict_cleared", `{}`)
+		// An undecodable latest block is no conflict; a null block reads
+		// empty heads.
+		undecodable := newTask("conflict undecodable", "conveyor", core.TaskApproved)
+		raw(undecodable.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(undecodable.ID, "merge.blocked", `{"approved_head":5,"new_head":"b"}`)
+		nullHeads := newTask("conflict null heads", "conveyor", core.TaskApproved)
+		raw(nullHeads.ID, "merge.blocked", `null`)
+		raw(nullHeads.ID, "merge.conflict_dispatch_failed", `{"approved_head":null,"new_head":""}`)
+		raw(nullHeads.ID, "merge.conflict_dispatch_failed", `[1]`)
+		tiedAt := next()
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: nullHeads.ID, Kind: "merge.conflict_dispatch_failed", ActorRole: core.ActorSystem, At: tiedAt, Payload: json.RawMessage(`{"next_retry_at":"2026-04-01T00:00:00Z"}`)}))
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: nullHeads.ID, Kind: "merge.conflict_fix_dispatched", ActorRole: core.ActorSystem, At: tiedAt, Payload: json.RawMessage(`{}`)}))
+		quiet := newTask("quiet history", "conveyor", core.TaskParked)
+		raw(quiet.ID, "task.state_changed", `{"from":"queued","to":"parked"}`)
+
+		tasks := []core.Task{history, overflow, boundary, invalid, episode, cleared, undecodable, nullHeads, quiet}
+		ids := []string{"missing-" + core.NewTaskID()}
+		for _, task := range tasks {
+			ids = append(ids, task.ID)
+		}
 		got, err := st.ListNextActionHistory(ctx, ids)
 		requireOK(t, err)
-		for _, id := range ids[:2] {
-			all, err := st.ListEvents(ctx, id)
+		for _, task := range tasks {
+			all, err := st.ListEvents(ctx, task.ID)
 			requireOK(t, err)
-			var kinds []core.Event
-			for _, event := range all {
-				if store.NextActionEventKind(event.Kind) {
-					kinds = append(kinds, event)
-				}
+			orders, err := st.ListWorkOrdersForTasks(ctx, []string{task.ID})
+			requireOK(t, err)
+			want := store.FoldNextActionHistory(all, orders)
+			if !sameHistory(got[task.ID], want) {
+				t.Fatalf("task %s history=%+v want full fold %+v", task.Title, got[task.ID], want)
 			}
-			want := store.FoldNextActionHistory(kinds)
-			if !sameHistory(got[id], want) {
-				t.Fatalf("task %s history=%+v want full fold %+v", id, got[id], want)
+			if gotConflict, oracle := store.MergeConflictFromHistory(got[task.ID].MergeConflict, orders), previousMergeConflict(all, orders); gotConflict != oracle {
+				t.Fatalf("task %s merge conflict=%+v previous fold %+v", task.Title, gotConflict, oracle)
 			}
 		}
-		h := got[history.ID]
-		if h.ParkCommand != "triage.park" || h.PullRequest != 3 || h.BounceCount != 0 || len(h.MergeEvents) != 8 {
-			t.Fatalf("fixture did not exercise the folds: %+v", h)
+		if h := got[history.ID]; h.ParkCommand != "triage.park" || h.BounceCount != 0 || h.MergeConflict.Open {
+			t.Fatalf("history fixture=%+v", h)
 		}
-		if _, ok := got[quiet.ID]; ok {
-			t.Fatalf("task without a folded field returned %+v", got[quiet.ID])
+		if got[overflow.ID].PullRequest != 42 || got[boundary.ID].PullRequest != 9223372036854775807 {
+			t.Fatalf("pull requests overflow=%d boundary=%d, want 42 and the int64 maximum", got[overflow.ID].PullRequest, got[boundary.ID].PullRequest)
 		}
-		if _, ok := got[ids[2]]; ok {
-			t.Fatal("missing task returned a history")
+		if n := got[invalid.ID].PullRequest; n != 3 && n != 100 {
+			t.Fatalf("invalid pull request numbers displaced the valid one: %d", n)
+		}
+		e := got[episode.ID].MergeConflict
+		if !e.Open || e.Cleared || !e.Exhausted || len(e.Steps) != 6 || !reflect.DeepEqual(e.DispatchedOrderIDs, sortedStrings(first, second)) {
+			t.Fatalf("episode summary=%+v want dispatched %s and %s", e, first, second)
+		}
+		if c := got[cleared.ID].MergeConflict; !c.Open || !c.Cleared || c.Exhausted || len(c.Steps) != 0 || !reflect.DeepEqual(c.DispatchedOrderIDs, []string{clearedOrder}) {
+			t.Fatalf("cleared summary=%+v", c)
+		}
+		if got[undecodable.ID].MergeConflict.Open || !got[nullHeads.ID].MergeConflict.Open {
+			t.Fatalf("undecodable=%+v null heads=%+v", got[undecodable.ID].MergeConflict, got[nullHeads.ID].MergeConflict)
+		}
+		for _, id := range []string{quiet.ID, undecodable.ID, ids[0]} {
+			if _, ok := got[id]; ok {
+				t.Fatalf("task %s without a folded field returned %+v", id, got[id])
+			}
 		}
 		empty, err := st.ListNextActionHistory(ctx, nil)
 		requireOK(t, err)
@@ -433,20 +502,37 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 		pinned := newTask("pins", "conveyor", core.TaskQueued)
 		unpinned := newTask("pins none", "conveyor", core.TaskQueued)
 		at := base.Add(10 * time.Minute)
-		next := func() time.Time { at = at.Add(time.Second); return at }
-		appendAt(pinned.ID, store.TaskContextDesignAdded, next(), map[string]any{"id": "design-pin-x", "version": 2})
-		appendAt(pinned.ID, store.TaskContextDesignAdded, next(), map[string]any{"id": "design-pin-y", "version": 1})
-		appendAt(pinned.ID, "task.state_changed", next(), map[string]any{"from": "queued", "to": "running"})
-		appendAt(pinned.ID, store.TaskContextDesignRemoved, next(), map[string]any{"id": "design-pin-y"})
-		appendAt(pinned.ID, store.TaskContextDesignAdded, next(), map[string]any{"id": "design-pin-x", "version": 3})
-		appendAt(pinned.ID, store.TaskContextRequirementAdded, next(), map[string]any{"id": "req-pin"})
-		appendAt(unpinned.ID, store.TaskContextRequirementAdded, next(), map[string]any{"id": "req-pin"})
+		attach := func(taskID, kind, payload string) {
+			t.Helper()
+			at = at.Add(time.Second)
+			requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: json.RawMessage(payload)}))
+		}
+		for round := 1; round <= 3; round++ {
+			attach(pinned.ID, store.TaskContextDesignAdded, fmt.Sprintf(`{"id":"design-pin-x","version":%d}`, round))
+			attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-y","version":1}`)
+			attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-y"}`)
+			attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-x"}`)
+		}
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-x","version":4}`)
+		attach(pinned.ID, "task.state_changed", `{"from":"queued","to":"running"}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-z","version":1}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-z","version":"two"}`)
+		attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-z","version":2.5}`)
+		attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":5}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-w","version":9223372036854775808}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-n","version":-9223372036854775808}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-v","version":null}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `[1]`)
+		attach(pinned.ID, store.TaskContextRequirementAdded, `{"id":"req-pin"}`)
+		attach(unpinned.ID, store.TaskContextRequirementAdded, `{"id":"req-pin"}`)
+		attach(unpinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-gone","version":1}`)
+		attach(unpinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-gone"}`)
 		got, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID, unpinned.ID})
 		requireOK(t, err)
 		all, err := st.ListEvents(ctx, pinned.ID)
 		requireOK(t, err)
 		_, want := store.ActiveTaskContextReferences(all)
-		if !reflect.DeepEqual(got[pinned.ID], want) || want["design-pin-x"] != 3 || len(want) != 1 {
+		if !reflect.DeepEqual(got[pinned.ID], want) || want["design-pin-x"] != 4 || want["design-pin-z"] != 1 || len(want) != 4 {
 			t.Fatalf("pins=%+v want %+v", got[pinned.ID], want)
 		}
 		if _, ok := got[unpinned.ID]; ok {
@@ -534,18 +620,46 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 	})
 }
 
-// sameHistory compares two summaries field by field; merge events compare by
-// identity, kind, instant, and decoded payload, the fields the fold reads.
+// sameHistory compares two summaries field by field; a step's retry value
+// compares by its decoded JSON, because PostgreSQL normalizes JSON text.
 func sameHistory(got, want store.NextActionHistory) bool {
-	if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount || len(got.MergeEvents) != len(want.MergeEvents) {
+	g, w := got.MergeConflict, want.MergeConflict
+	if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+		g.Open != w.Open || g.Cleared != w.Cleared || g.Exhausted != w.Exhausted || len(g.Steps) != len(w.Steps) || !reflect.DeepEqual(g.DispatchedOrderIDs, w.DispatchedOrderIDs) {
 		return false
 	}
-	for i := range got.MergeEvents {
-		a, b := got.MergeEvents[i], want.MergeEvents[i]
-		var pa, pb any
-		if a.ID != b.ID || a.Kind != b.Kind || !a.At.Equal(b.At) || json.Unmarshal(a.Payload, &pa) != nil || json.Unmarshal(b.Payload, &pb) != nil || !reflect.DeepEqual(pa, pb) {
+	for i := range g.Steps {
+		if g.Steps[i].Dispatched != w.Steps[i].Dispatched || (g.Steps[i].NextRetryAt == nil) != (w.Steps[i].NextRetryAt == nil) {
+			return false
+		}
+		if g.Steps[i].NextRetryAt == nil {
+			continue
+		}
+		var a, b any
+		if json.Unmarshal(g.Steps[i].NextRetryAt, &a) != nil || json.Unmarshal(w.Steps[i].NextRetryAt, &b) != nil || !reflect.DeepEqual(a, b) {
 			return false
 		}
 	}
 	return true
+}
+
+// previousMergeConflict is the merge-conflict fold the assembler applied to
+// the full history before the bounded summary: the latest merge.blocked
+// decides the episode, and MergeConflictDispatchState folds every event.
+func previousMergeConflict(events []core.Event, orders []core.WorkOrder) nextaction.MergeConflict {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "merge.blocked" {
+			continue
+		}
+		var heads struct {
+			ApprovedHead string `json:"approved_head"`
+			NewHead      string `json:"new_head"`
+		}
+		if json.Unmarshal(events[i].Payload, &heads) != nil {
+			return nextaction.MergeConflict{}
+		}
+		state := store.MergeConflictDispatchState(events, heads.ApprovedHead, heads.NewHead, orders)
+		return nextaction.MergeConflict{Open: true, Exhausted: state.Exhausted || state.Failures >= 3, NextRetryAt: state.NextRetryAt}
+	}
+	return nextaction.MergeConflict{}
 }

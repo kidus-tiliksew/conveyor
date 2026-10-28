@@ -64,7 +64,11 @@ func (f fullHistoryOracleStore) ListNextActionHistory(ctx context.Context, ids [
 				kinds = append(kinds, event)
 			}
 		}
-		out[id] = store.FoldNextActionHistory(kinds)
+		orders, err := f.Store.ListWorkOrdersForTasks(ctx, []string{id})
+		if err != nil {
+			return nil, err
+		}
+		out[id] = store.FoldNextActionHistory(kinds, orders)
 	}
 	return out, nil
 }

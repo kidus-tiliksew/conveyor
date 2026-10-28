@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"sort"
@@ -230,8 +231,9 @@ type NextActionInputStore interface {
 	// task is absent; callers that require it report not found.
 	ListTaskHeads(ctx context.Context, taskIDs []string) (map[string]TaskHead, error)
 	// ListNextActionHistory returns each requested task's bounded
-	// NextActionHistory, built with FoldNextActionHistory from only the rows
-	// that fold consumes. Tasks without one are absent.
+	// NextActionHistory, equal to FoldNextActionHistory over the task's full
+	// history and orders, without transferring event payloads. Tasks without
+	// a folded field are absent.
 	ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]NextActionHistory, error)
 	// ListOpenDependents returns, in ID order, the heads of the workspace's
 	// tasks outside merged and closed that depend on any requested task.
@@ -246,9 +248,7 @@ type NextActionInputStore interface {
 	ListDocumentHeads(ctx context.Context, ids []string) (map[string]DocumentHead, error)
 }
 
-// MergeConflictEventKinds are the kinds the merge-conflict fold reads. Every
-// one of them is kept in NextActionHistory.MergeEvents, because the fold
-// needs each episode boundary and each dispatched fix order.
+// MergeConflictEventKinds are the kinds the merge-conflict fold reads.
 var MergeConflictEventKinds = []string{
 	"merge.blocked", "merge.conflict_cleared", "merge.conflict_fix_dispatched",
 	"merge.conflict_dispatch_failed", "merge.conflict_dispatch_exhausted", "merge.conflict_recovery_blocked",
@@ -256,63 +256,181 @@ var MergeConflictEventKinds = []string{
 
 // NextActionHistory is the bounded summary of the history the next-action
 // assembler folds: the park command, the latest recorded pull request, the
-// bounce window, and the merge-conflict events in (at, id) order
-// (component-persistence; component-work-orders, Next action).
+// bounce window, and the merge-conflict summary. No field carries an event
+// payload (component-persistence; component-work-orders, Next action).
 type NextActionHistory struct {
-	ParkCommand string
-	PullRequest int
-	BounceCount int
-	MergeEvents []core.Event
+	ParkCommand   string
+	PullRequest   int
+	BounceCount   int
+	MergeConflict MergeConflictHistory
 }
 
-// FoldNextActionHistory is the one fold every backend applies to build a
-// NextActionHistory from a task's events in (at, id) order. It applies the
-// assembler's park-command, pull-request, and bounce-count folds unchanged,
-// so a durable backend that passes only the latest row each of those folds
-// can consume yields the summary of the task's full history.
-func FoldNextActionHistory(events []core.Event) NextActionHistory {
-	history := NextActionHistory{
-		ParkCommand: parkCommand(events),
-		PullRequest: recordedPullRequest(events),
-		BounceCount: recordedBounceCount(events),
-	}
-	for _, event := range events {
-		if slices.Contains(MergeConflictEventKinds, event.Kind) {
-			history.MergeEvents = append(history.MergeEvents, event)
+// MergeConflictHistory is the bounded input of the merge-conflict fold.
+// Open reports that the latest merge.blocked decodes into its heads; nothing
+// else is set otherwise. Cleared reports a merge.conflict_cleared after it.
+// Exhausted and Steps describe the open episode after it and are set only
+// when it is not cleared. DispatchedOrderIDs are the task's own orders that a
+// same-heads dispatch named while its episode was open, sorted.
+type MergeConflictHistory struct {
+	Open               bool
+	Cleared            bool
+	Exhausted          bool
+	Steps              []MergeConflictStep
+	DispatchedOrderIDs []string
+}
+
+// MergeConflictStep is one same-episode dispatch or dispatch failure after
+// the latest merge.blocked. A failure carries only the raw JSON value of its
+// next_retry_at, nil when the payload has none.
+type MergeConflictStep struct {
+	Dispatched  bool
+	NextRetryAt json.RawMessage
+}
+
+type mergeConflictHeads struct {
+	ApprovedHead string `json:"approved_head"`
+	NewHead      string `json:"new_head"`
+}
+
+// SummarizeMergeConflict builds the bounded merge-conflict summary from a
+// task's full history in (at, id) order and its work orders, with the fold's
+// own decoders; the volatile backend reads it, and every durable backend
+// computes the same summary in SQL (component-persistence).
+func SummarizeMergeConflict(events []core.Event, orders []core.WorkOrder) MergeConflictHistory {
+	latest := -1
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == "merge.blocked" {
+			latest = i
+			break
 		}
 	}
-	return history
+	if latest < 0 {
+		return MergeConflictHistory{}
+	}
+	var heads mergeConflictHeads
+	if json.Unmarshal(events[latest].Payload, &heads) != nil {
+		return MergeConflictHistory{}
+	}
+	same := func(payload json.RawMessage) bool {
+		var candidate mergeConflictHeads
+		return json.Unmarshal(payload, &candidate) == nil && candidate == heads
+	}
+	own := map[string]bool{}
+	for _, order := range orders {
+		own[order.ID] = true
+	}
+	out := MergeConflictHistory{Open: true}
+	inside := false
+	dispatched := map[string]bool{}
+	for i, event := range events {
+		switch event.Kind {
+		case "merge.conflict_cleared":
+			inside = false
+			if i > latest {
+				out.Cleared = true
+			}
+		case "merge.blocked":
+			inside = same(event.Payload)
+		case "merge.conflict_fix_dispatched":
+			if !inside || !same(event.Payload) {
+				continue
+			}
+			var payload struct {
+				WorkOrderID string `json:"work_order_id"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID != "" && own[payload.WorkOrderID] {
+				dispatched[payload.WorkOrderID] = true
+			}
+			if i > latest {
+				out.Steps = append(out.Steps, MergeConflictStep{Dispatched: true})
+			}
+		case "merge.conflict_dispatch_failed":
+			if i > latest && inside && same(event.Payload) {
+				var fields map[string]json.RawMessage
+				_ = json.Unmarshal(event.Payload, &fields)
+				out.Steps = append(out.Steps, MergeConflictStep{NextRetryAt: fields["next_retry_at"]})
+			}
+		case "merge.conflict_dispatch_exhausted":
+			if i > latest && inside && same(event.Payload) {
+				out.Exhausted = true
+			}
+		}
+	}
+	if out.Cleared {
+		out.Exhausted, out.Steps = false, nil
+	}
+	for id := range dispatched {
+		out.DispatchedOrderIDs = append(out.DispatchedOrderIDs, id)
+	}
+	sort.Strings(out.DispatchedOrderIDs)
+	return out
 }
 
-// FoldNextActionHistories groups rows in (at, id) order by task and folds
-// each task's rows. A task without a folded field or merge event is absent.
-func FoldNextActionHistories(rows []core.Event) map[string]NextActionHistory {
+// SortMergeConflictHistory orders a durable backend's summary rows: steps by
+// their position in the task's merge history, order IDs by value.
+func SortMergeConflictHistory(history *MergeConflictHistory, positions []int64) {
+	steps := make([]int, len(history.Steps))
+	for i := range steps {
+		steps[i] = i
+	}
+	sort.SliceStable(steps, func(i, j int) bool { return positions[steps[i]] < positions[steps[j]] })
+	ordered := make([]MergeConflictStep, len(steps))
+	for i, index := range steps {
+		ordered[i] = history.Steps[index]
+	}
+	if len(ordered) > 0 {
+		history.Steps = ordered
+	}
+	sort.Strings(history.DispatchedOrderIDs)
+}
+
+// FoldNextActionHistory builds a task's summary from its full history in
+// (at, id) order and its work orders, applying the assembler's park-command,
+// pull-request, bounce-count, and merge-conflict folds unchanged. The volatile
+// backend reads it, and tests use it as the full-history oracle.
+func FoldNextActionHistory(events []core.Event, orders []core.WorkOrder) NextActionHistory {
+	return NextActionHistory{
+		ParkCommand:   parkCommand(events),
+		PullRequest:   recordedPullRequest(events),
+		BounceCount:   recordedBounceCount(events),
+		MergeConflict: SummarizeMergeConflict(events, orders),
+	}
+}
+
+// LatestHistoryFields applies the park-command, pull-request, and bounce-count
+// folds to the latest rows a durable backend selected for each, grouped by
+// task in (at, id) order.
+func LatestHistoryFields(rows []core.Event) map[string]NextActionHistory {
 	byTask := map[string][]core.Event{}
-	var order []string
 	for _, row := range rows {
-		if _, ok := byTask[row.TaskID]; !ok {
-			order = append(order, row.TaskID)
-		}
 		byTask[row.TaskID] = append(byTask[row.TaskID], row)
 	}
 	out := map[string]NextActionHistory{}
-	for _, id := range order {
-		events := byTask[id]
+	for id, events := range byTask {
 		sort.SliceStable(events, func(i, j int) bool {
 			if events[i].At.Equal(events[j].At) {
 				return events[i].ID < events[j].ID
 			}
 			return events[i].At.Before(events[j].At)
 		})
-		if history := FoldNextActionHistory(events); !history.empty() {
-			out[id] = history
-		}
+		out[id] = NextActionHistory{ParkCommand: parkCommand(events), PullRequest: recordedPullRequest(events), BounceCount: recordedBounceCount(events)}
 	}
 	return out
 }
 
+// CompactNextActionHistories drops summaries without a folded field, so a
+// task without one is absent on every backend.
+func CompactNextActionHistories(histories map[string]NextActionHistory) map[string]NextActionHistory {
+	for id, history := range histories {
+		if history.empty() {
+			delete(histories, id)
+		}
+	}
+	return histories
+}
+
 func (h NextActionHistory) empty() bool {
-	return h.ParkCommand == "" && h.PullRequest == 0 && h.BounceCount == 0 && len(h.MergeEvents) == 0
+	return h.ParkCommand == "" && h.PullRequest == 0 && h.BounceCount == 0 && !h.MergeConflict.Open
 }
 
 // DocumentHead is one cited document's tier, current confirmed version
@@ -445,19 +563,27 @@ func (m *memory) ListNextActionHistory(ctx context.Context, taskIDs []string) (m
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace, scoped := WorkspaceFromContext(ctx)
-	var rows []core.Event
+	out := map[string]NextActionHistory{}
 	for _, id := range taskIDs {
 		task, ok := m.tasks[id]
 		if !ok || (scoped && workspace != "" && task.Workspace != workspace) {
 			continue
 		}
+		var events []core.Event
 		for _, event := range m.sortedEventsLocked(id) {
 			if NextActionEventKind(event.Kind) {
-				rows = append(rows, event)
+				events = append(events, event)
 			}
 		}
+		var orders []core.WorkOrder
+		for _, order := range m.workOrders {
+			if order.TaskID == id {
+				orders = append(orders, order)
+			}
+		}
+		out[id] = FoldNextActionHistory(events, orders)
 	}
-	return FoldNextActionHistories(rows), nil
+	return CompactNextActionHistories(out), nil
 }
 
 func (m *memory) ListOpenDependents(ctx context.Context, taskIDs []string) ([]TaskHead, error) {
