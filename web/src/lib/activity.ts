@@ -1147,9 +1147,10 @@ function isDeliveredPullRequestEvent(event: TaskEventView, deliveries: Map<strin
 }
 
 // One selected event as a timeline note. Panel and delivery absorption are
-// evaluated first, on the payload or its index; a selected event whose payload was omitted then
-// renders as a note titled from its kind with an audit disclosure, so an
-// omitted payload never removes a human row (component-web-task-surfaces).
+// evaluated first, on the payload or its index; a selected event whose payload
+// was omitted then renders as a note titled from its kind with an audit
+// disclosure, so an omitted payload never removes a human row
+// (component-web-task-surfaces).
 function noteFor(
   event: TaskEventView,
   panels: PanelIndex,

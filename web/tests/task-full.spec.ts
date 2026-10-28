@@ -507,10 +507,12 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                       events: Array.from({ length: liveEventCount }, (_, index) => ({
                         id: index + 1,
                         task_id: taskId,
-                        kind: 'spec.version_created',
+                        // Plan versions stay technical, so the filler rows are
+                        // dependency notes that the timeline still renders.
+                        kind: 'task.dependency_removed',
                         actor_id: 'system',
                         actor_role: 'system' as const,
-                        payload: { version: index + 1 },
+                        payload: { reason: `Live event ${index + 1}` },
                         at: `2026-07-15T12:00:${String(index).padStart(2, '0')}Z`,
                       })),
                       work_orders: [],
@@ -1234,7 +1236,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                             id: 2,
                                             task_id: taskId,
                                             job_id: 'human-gate-worker-scope-review-1-seat-1',
-                                            kind: 'review.publication_retry',
+                                            kind: 'review.publication_failed',
                                             actor_id: 'system',
                                             actor_role: 'system',
                                             payload: {
@@ -4179,7 +4181,7 @@ for (const [modelName, iconFile] of [
     const model = duration.locator('xpath=preceding-sibling::span[1]')
 
     await expect(card.locator('footer')).toHaveCount(0)
-    await expect(header.getByText('Implement', { exact: true })).toBeVisible()
+    await expect(header.getByText('Implementation', { exact: true })).toBeVisible()
     await expect(duration).toHaveText('1m 00s')
     await expect(model.getByText(modelName, { exact: true })).toBeVisible()
     await expect(model.getByText(modelName, { exact: true })).toHaveAttribute('title', modelName)
@@ -4986,14 +4988,16 @@ test('review card renders authorized verification evidence with accessible previ
   expect(authorizationHeaders.every((header) => header === '')).toBe(true)
 })
 
-test('spec approval keeps the human marker without a duplicate versioned event', async ({ page }) => {
+// The plan section shows each version, so neither versioned plan event adds a
+// timeline row (component-web-task-surfaces, Task detail composition).
+test('spec approval keeps the human marker without versioned plan events', async ({ page }) => {
   await page.goto('/tasks/spec-approval/full')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const timelineRows = timeline.locator('ol > li')
-  await expect(timelineRows).toHaveCount(2)
-  await expect(timelineRows.nth(0)).toContainText('Plan v2 drafted')
-  await expect(timelineRows.nth(1)).toContainText('Approved')
+  await expect(timelineRows).toHaveCount(1)
+  await expect(timelineRows.nth(0)).toContainText('Approved')
+  await expect(timeline.getByText('Plan v2 drafted')).toHaveCount(0)
   await expect(timeline.getByText(/Spec v\d+ approved/)).toHaveCount(0)
 })
 
@@ -5015,12 +5019,9 @@ test('output-validation rejections show job-specific errors with warning tone an
     await expect(card.locator('xpath=..').locator('.bg-attention-dot')).toHaveCount(1)
   }
 
-  // A stage that produced no narration of its own collapses to one line —
-  // it carries no warning tone and never leaks the rejected payload.
-  const acceptedSpec = timeline.locator('li').filter({ hasText: 'Plan completed' })
-  await expect(acceptedSpec).toHaveCount(1)
-  await expect(acceptedSpec.locator('article')).toHaveCount(0)
-  await expect(acceptedSpec.locator('.bg-attention-dot')).toHaveCount(0)
+  // A plan stage that produced no narration of its own renders no row: the
+  // plan section tells it, and the rejected payload never leaks.
+  await expect(timeline.locator('li').filter({ hasText: 'Plan completed' })).toHaveCount(0)
   await expect(page.getByText('PRIVATE REJECTED OUTPUT')).toHaveCount(0)
 
   await expect(timeline.getByText('Harness narration wins.', { exact: true })).toBeVisible()
@@ -5425,13 +5426,13 @@ test('the revision chain reads as request, decision, and the plan version it pro
   await expect(timeline.getByText('A dependency changed the public handler contract.')).toBeVisible()
   await expect(timeline.getByText('Plan revision approved — returning to planning')).toBeVisible()
   await expect(timeline.getByText('Re-plan around the new handler contract.')).toBeVisible()
-  await expect(timeline.getByText('Plan v8 drafted')).toBeVisible()
+  // The new version shows in the plan section, not as a timeline row.
+  await expect(timeline.getByText('Plan v8 drafted')).toHaveCount(0)
 
-  // Three distinct entries in the order they happened (AC-4.1) — and the
-  // release the request rode in on is not repeated as a fourth.
+  // Two distinct entries in the order they happened (AC-4.1) — and the
+  // release the request rode in on is not repeated as a third.
   await expect(rows.nth(0)).toContainText('The agent asked to revise plan v7')
   await expect(rows.nth(1)).toContainText('Plan revision approved')
-  await expect(rows.nth(2)).toContainText('Plan v8 drafted')
   await expect(timeline.getByText('Work-order claim released')).toHaveCount(0)
   // The wire vocabulary stays on the wire.
   await expect(timeline.getByText('plan-revision-approved')).toHaveCount(0)
@@ -5448,7 +5449,7 @@ test('worker warning is scoped to actionable task-owned work at the human gate',
   await expect(
     page.getByRole('region', { name: 'Human gate' }).getByRole('heading', { name: 'Plan approval' }),
   ).toBeVisible()
-  await expect(page.getByText('GitHub review publication retrying')).toBeVisible()
+  await expect(page.getByText('GitHub review publication failed')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 
@@ -5701,7 +5702,7 @@ test('new task events preserve the task sheet scroll position', async ({ page })
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
-  await expect(timeline.getByText('Plan v18 drafted')).toBeVisible()
+  await expect(timeline.getByText('Live event 18', { exact: true })).toBeVisible()
   await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
   await container.evaluate((element) => {
     element.scrollTop = 120
@@ -5711,7 +5712,7 @@ test('new task events preserve the task sheet scroll position', async ({ page })
 
   emitLiveScrollEvent()
 
-  const newest = timeline.getByText('Plan v19 drafted')
+  const newest = timeline.getByText('Live event 19', { exact: true })
   await expect(newest).toBeVisible()
   await expect.poll(() => container.evaluate((element) => element.scrollTop)).toBe(before)
   await expect(newest).not.toBeInViewport()
