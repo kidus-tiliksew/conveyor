@@ -14,6 +14,12 @@ const (
 	debugAddrFlag        = "debug-addr"
 	debugAllowRemoteFlag = "debug-addr-allow-remote"
 	debugAddrEnv         = "CONVEYOR_DEBUG_ADDR"
+
+	// The read bounds stop a stalled client from holding a connection,
+	// including a symbol lookup body; neither limits how long a CPU profile
+	// or trace response runs.
+	debugReadHeaderTimeout = 10 * time.Second
+	debugReadTimeout       = 30 * time.Second
 )
 
 // resolveConveyordDebugAddress resolves the opt-in profiling listener address
@@ -88,7 +94,7 @@ func startConveyordDebugServer(addr, source string, listen func(network, address
 		return nil, fmt.Errorf("debug listener: %w", err)
 	}
 	debug := &conveyordDebugServer{
-		server: &http.Server{Handler: conveyordDebugHandler(), ReadHeaderTimeout: 10 * time.Second},
+		server: &http.Server{Handler: conveyordDebugHandler(), ReadHeaderTimeout: debugReadHeaderTimeout, ReadTimeout: debugReadTimeout},
 		addr:   listener.Addr().String(),
 		served: make(chan error, 1),
 	}

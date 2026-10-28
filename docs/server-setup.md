@@ -284,9 +284,9 @@ curl -o allocs.pb.gz http://127.0.0.1:6060/debug/pprof/allocs
 curl -o goroutines.txt 'http://127.0.0.1:6060/debug/pprof/goroutine?debug=1'
 ```
 
-`heap` shows the live set at the last collection, and `allocs` shows every
-allocation since the process started, which finds the requests that create
-garbage. `/debug/pprof/profile?seconds=30` records a CPU profile and
+`heap` shows the live set at the last collection, and `allocs` shows a
+sampling of cumulative allocations since the process started, which finds the
+requests that create garbage. `/debug/pprof/profile?seconds=30` records a CPU profile and
 `/debug/pprof/trace?seconds=5` records an execution trace. Profiles carry stack
 traces, symbol names, and allocation sizes, not request data. Shutdown closes
 the debug listener at once, so an in-flight profile is cut off.

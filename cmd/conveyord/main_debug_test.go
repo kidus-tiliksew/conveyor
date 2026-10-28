@@ -166,6 +166,9 @@ func TestConveyordDebugServerServesPprofAndClosesOnShutdown(t *testing.T) {
 	if status, _ := get("/debug/pprof/cmdline"); status != http.StatusNotFound {
 		t.Fatalf("cmdline status=%d, want 404", status)
 	}
+	if debug.server.ReadHeaderTimeout != debugReadHeaderTimeout || debug.server.ReadTimeout != debugReadTimeout || debugReadTimeout <= 0 {
+		t.Fatalf("read bounds header=%s request=%s, want %s and %s", debug.server.ReadHeaderTimeout, debug.server.ReadTimeout, debugReadHeaderTimeout, debugReadTimeout)
+	}
 
 	conveyordShutdown{Timeout: time.Second, Debug: debug}.Run()
 	select {
