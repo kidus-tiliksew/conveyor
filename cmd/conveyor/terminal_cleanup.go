@@ -107,7 +107,7 @@ func attemptTerminalWorktreeCleanup(ctx context.Context, c *client, credential s
 	if item.Task.State != core.TaskMerged && item.Task.State != core.TaskClosed {
 		item.Task.State = core.TaskMerged
 	}
-	tasks, listErr := c.listTasks()
+	tasks, listErr := c.listOpenTasksHoldingBranch(item.Task.Repo, item.Task.Branch)
 	if listErr != nil {
 		cleanup := skippedOccupiedWorktreeCleanup()
 		receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{

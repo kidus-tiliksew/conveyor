@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -250,6 +251,28 @@ func (s *dependencyBatchObservationStore) ListWorkOrders(context.Context) ([]cor
 	return append([]core.WorkOrder(nil), s.orders...), nil
 }
 
+// ListLiveWorkOrders applies the stored-state predicate the durable stores
+// apply in SQL, so the fixture's completed order never reaches the list.
+func (s *dependencyBatchObservationStore) ListLiveWorkOrders(context.Context) ([]core.WorkOrder, error) {
+	var live []core.WorkOrder
+	for _, order := range s.orders {
+		if slices.Contains(store.LiveWorkOrderStates, order.State) {
+			live = append(live, order)
+		}
+	}
+	return live, nil
+}
+
+func (s *dependencyBatchObservationStore) ListWorkOrdersForTasks(_ context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	var out []core.WorkOrder
+	for _, order := range s.orders {
+		if slices.Contains(taskIDs, order.TaskID) {
+			out = append(out, order)
+		}
+	}
+	return out, nil
+}
+
 func (s *dependencyBatchObservationStore) ListDependencyBlockers(_ context.Context, taskIDs []string) (map[string]store.DependencyBlockers, error) {
 	s.calls = append(s.calls, append([]string(nil), taskIDs...))
 	return s.blockers, nil
@@ -326,6 +349,11 @@ type scopedListObservationStore struct {
 }
 
 func (s *scopedListObservationStore) ListWorkOrders(context.Context) ([]core.WorkOrder, error) {
+	s.workspaceReads++
+	return nil, fmt.Errorf("workspace work-order read must not be used")
+}
+
+func (s *scopedListObservationStore) ListLiveWorkOrders(context.Context) ([]core.WorkOrder, error) {
 	s.workspaceReads++
 	return nil, fmt.Errorf("workspace work-order read must not be used")
 }
@@ -3590,5 +3618,166 @@ func TestListUnreadablePlanRevisionGateIsRecoveryBlocked(t *testing.T) {
 	}
 	if !strings.Contains(listed[0].RecoveryRefusal, "plan-revision decision") {
 		t.Fatalf("recovery_refusal=%q", listed[0].RecoveryRefusal)
+	}
+}
+
+// liveListHistoryStore counts the order reads List and Lookup issue
+// (component-work-orders, Listing).
+type liveListHistoryStore struct {
+	store.Store
+	workspaceReads int
+	taskReads      int
+	historyReads   [][]string
+}
+
+func (s *liveListHistoryStore) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	s.workspaceReads++
+	return s.Store.ListWorkOrders(ctx)
+}
+
+func (s *liveListHistoryStore) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	s.taskReads++
+	return s.Store.ListTaskWorkOrders(ctx, taskID)
+}
+
+func (s *liveListHistoryStore) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	s.historyReads = append(s.historyReads, append([]string(nil), taskIDs...))
+	return s.Store.ListWorkOrdersForTasks(ctx, taskIDs)
+}
+
+// seedListedOrder creates a queued order and moves it to state through the
+// lifecycle commands, as the store requires.
+func seedListedOrder(t *testing.T, ctx context.Context, st store.Store, taskID string, stage core.Stage, number int, state core.WorkOrderState, createdAt time.Time) core.WorkOrder {
+	t.Helper()
+	id := fmt.Sprintf("%s-%s-%d", taskID, stage, number)
+	if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: taskID, Stage: stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: id, TaskID: taskID, JobID: id, Stage: stage, CreatedAt: createdAt, QueueEnteredAt: createdAt, QueueDeadline: createdAt.Add(24 * time.Hour)}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	move := func(next core.WorkOrderState, command core.WorkOrderCommand) {
+		t.Helper()
+		current, err := st.GetWorkOrder(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current.State = next
+		if err = storetest.UpdateWorkOrder(ctx, st, current, command); err != nil {
+			t.Fatalf("move %s to %s: %v", id, next, err)
+		}
+	}
+	switch state {
+	case core.WorkOrderQueued:
+	case core.WorkOrderCancelled:
+		move(core.WorkOrderCancelled, core.WorkOrderCmdCancel)
+	case core.WorkOrderTimedOut:
+		move(core.WorkOrderTimedOut, core.WorkOrderCmdTimeout)
+	case core.WorkOrderClaimed, core.WorkOrderSubmitted, core.WorkOrderCompleted:
+		if _, err := storetest.ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", WorkerID: "worker", SessionID: "session-" + id, ClientToken: "token-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+			t.Fatal(err)
+		}
+		switch state {
+		case core.WorkOrderSubmitted:
+			move(core.WorkOrderSubmitted, core.WorkOrderCmdSubmitForReview)
+		case core.WorkOrderCompleted:
+			// A plan order completes on its own submission.
+			move(core.WorkOrderCompleted, core.WorkOrderCmdSubmitSpec)
+		}
+	default:
+		t.Fatalf("unsupported seeded state %s", state)
+	}
+	stored, err := st.GetWorkOrder(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != state {
+		t.Fatalf("seeded %s state=%s, want %s", id, stored.State, state)
+	}
+	return stored
+}
+
+func TestListProjectsLiveOrdersWithFullRecoveryHistory(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	memory := store.NewMemory()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, id := range []string{"superseded", "recoverable", "history"} {
+		if err := memory.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// superseded's queued order has a newer submitted same-stage sibling that
+	// the live read never returns; its refusal must still name it. The
+	// sibling is written first, because creating an order retires its open
+	// predecessors.
+	newer := seedListedOrder(t, ctx, memory, "superseded", core.StageImplement, 2, core.WorkOrderSubmitted, now)
+	older := seedListedOrder(t, ctx, memory, "superseded", core.StageImplement, 1, core.WorkOrderQueued, now.Add(-time.Hour))
+	recoverable := seedListedOrder(t, ctx, memory, "recoverable", core.StageImplement, 1, core.WorkOrderQueued, now)
+	if err := memory.CreateTask(ctx, core.Task{ID: "history-plan", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	seedListedOrder(t, ctx, memory, "history-plan", core.StageSpec, 1, core.WorkOrderCompleted, now)
+	seedListedOrder(t, ctx, memory, "history", core.StageImplement, 1, core.WorkOrderCancelled, now.Add(time.Minute))
+	seedListedOrder(t, ctx, memory, "history", core.StageImplement, 2, core.WorkOrderSubmitted, now.Add(2*time.Minute))
+	counter := &liveListHistoryStore{Store: memory}
+	listed, err := (&Service{Store: counter}).List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]core.WorkOrder{}
+	for _, order := range listed {
+		byID[order.ID] = order
+	}
+	if len(listed) != 2 || byID[older.ID].ID == "" || byID[recoverable.ID].ID == "" {
+		t.Fatalf("listed=%v, want only the two queued orders", listed)
+	}
+	want := "work order " + older.ID + " was superseded by same-stage successor " + newer.ID
+	if got := byID[older.ID]; got.RecoveryRefusal != want || got.Claimable {
+		t.Fatalf("superseded order refusal=%q claimable=%v, want %q", got.RecoveryRefusal, got.Claimable, want)
+	}
+	if got := byID[recoverable.ID]; got.RecoveryRefusal != "" {
+		t.Fatalf("recoverable order refusal=%q", got.RecoveryRefusal)
+	}
+	if counter.workspaceReads != 0 || counter.taskReads != 0 || len(counter.historyReads) != 1 {
+		t.Fatalf("workspace reads=%d task reads=%d history reads=%v, want one batched history read", counter.workspaceReads, counter.taskReads, counter.historyReads)
+	}
+	if got := slices.Sorted(slices.Values(counter.historyReads[0])); !reflect.DeepEqual(got, []string{"recoverable", "superseded"}) {
+		t.Fatalf("history read tasks=%v", got)
+	}
+}
+
+func TestLookupProjectsAnyState(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	memory := store.NewMemory()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := memory.CreateTask(ctx, core.Task{ID: "lookup", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	submitted := seedListedOrder(t, ctx, memory, "lookup", core.StageImplement, 2, core.WorkOrderSubmitted, now)
+	older := seedListedOrder(t, ctx, memory, "lookup", core.StageImplement, 1, core.WorkOrderQueued, now.Add(-time.Hour))
+	if err := memory.CreateTask(ctx, core.Task{ID: "lookup-plan", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	completed := seedListedOrder(t, ctx, memory, "lookup-plan", core.StageSpec, 1, core.WorkOrderCompleted, now)
+	service := &Service{Store: memory}
+	for _, terminal := range []core.WorkOrder{submitted, completed} {
+		got, err := service.Lookup(ctx, terminal.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != terminal.ID || got.TaskID != terminal.TaskID || got.State != terminal.State {
+			t.Fatalf("lookup of a %s order=%+v", terminal.State, got)
+		}
+	}
+	got, err := service.Lookup(ctx, older.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "work order " + older.ID + " was superseded by same-stage successor " + submitted.ID; got.RecoveryRefusal != want {
+		t.Fatalf("lookup refusal=%q, want the list's %q", got.RecoveryRefusal, want)
+	}
+	if _, err = service.Lookup(ctx, "lookup-implement-9"); err == nil {
+		t.Fatal("lookup of a missing order succeeded")
 	}
 }

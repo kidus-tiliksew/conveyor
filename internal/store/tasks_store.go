@@ -57,6 +57,11 @@ type TaskFilter struct {
 	CreatedTo            time.Time
 	ServesRequirementIDs []string
 	GoverningDesignIDs   []string
+	// Open is a store-side member no route parses: it selects tasks in a state
+	// other than merged and closed that no other task names as its parent, the
+	// inbox's candidate set (component-http-api; feature-operator-next-action
+	// NA-5). It intersects with every other member, States included.
+	Open bool
 }
 
 // Active reports whether any predicate would narrow the workspace. Callers that
@@ -64,7 +69,7 @@ type TaskFilter struct {
 func (f TaskFilter) Active() bool {
 	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Assignee != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
 		!f.UpdatedTo.IsZero() || !f.CreatedFrom.IsZero() || !f.CreatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 ||
-		len(f.GoverningDesignIDs) > 0
+		len(f.GoverningDesignIDs) > 0 || f.Open
 }
 
 // Validate rejects a range no task can satisfy, so an inverted range fails at
@@ -931,6 +936,9 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 // store expresses the same members in SQL; the two must agree, so the fixtures
 // in storetest exercise both through one table.
 func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool {
+	if filter.Open && (core.TaskTerminal(task.State) || m.taskHasChildrenLocked(task)) {
+		return false
+	}
 	if len(filter.States) > 0 && !slices.Contains(filter.States, task.State) {
 		return false
 	}
@@ -995,6 +1003,17 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 		}
 	}
 	return true
+}
+
+// taskHasChildrenLocked reports whether the task is a blueprint anchor: some
+// task names it as its parent, as hydrateTaskLocked's Children read.
+func (m *memory) taskHasChildrenLocked(task core.Task) bool {
+	for _, child := range m.tasks {
+		if child.ParentTaskID == task.ID {
+			return true
+		}
+	}
+	return false
 }
 
 // taskLastActivityLocked is the instant the surfaces label "Updated": the time

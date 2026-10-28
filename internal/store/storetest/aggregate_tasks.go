@@ -58,6 +58,7 @@ func runTaskFilter(t *testing.T, x Fixture) {
 	SeedTaskFilterFixture(t, fixture)
 	RunTaskFilterConformance(t, fixture)
 	RunTaskFilterUpdatedConformance(t, fixture)
+	RunTaskFilterOpenConformance(t, fixture)
 }
 
 func runTaskAssigneeMembership(t *testing.T, x Fixture) {

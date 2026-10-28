@@ -919,6 +919,40 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, nil
 }
 
+// ListLiveWorkOrders applies the live-state predicate in SQL, so completed,
+// cancelled, and submitted history is never read (component-work-orders,
+// Listing).
+func (s *Store) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND state = ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), liveWorkOrderStates())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	orders := make([]core.WorkOrder, 0)
+	for rows.Next() {
+		order, scanErr := scanWorkOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if err = s.hydrateWorkOrderAssignees(ctx, orders); err != nil {
+		return nil, err
+	}
+	return orders, nil
+}
+
+func liveWorkOrderStates() []string {
+	states := make([]string, len(store.LiveWorkOrderStates))
+	for i, state := range store.LiveWorkOrderStates {
+		states[i] = string(state)
+	}
+	return states
+}
+
 func (s *Store) hydrateWorkOrderAssignees(ctx context.Context, orders []core.WorkOrder) error {
 	if len(orders) == 0 {
 		return nil

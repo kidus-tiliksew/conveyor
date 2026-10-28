@@ -129,11 +129,15 @@ func (s *Service) config(ctx context.Context) (*config.Config, error) {
 }
 
 func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
-	orders, err := s.Store.ListWorkOrders(ctx)
+	// The store selects live states in its own read, so completed, cancelled,
+	// and submitted history never reaches this projection
+	// (component-work-orders, Listing).
+	orders, err := s.Store.ListLiveWorkOrders(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.projectList(ctx, orders)
+	orders, err = s.projectList(ctx, orders, s.Store.ListWorkOrdersForTasks)
+	return liveOrders(orders), err
 }
 
 // ListForTask derives the same public work-order projection as List while
@@ -144,10 +148,43 @@ func (s *Service) ListForTask(ctx context.Context, taskID string) ([]core.WorkOr
 	if err != nil {
 		return nil, err
 	}
-	return s.projectList(ctx, orders)
+	complete := func(context.Context, []string) ([]core.WorkOrder, error) { return orders, nil }
+	projected, err := s.projectList(ctx, append([]core.WorkOrder(nil), orders...), complete)
+	return liveOrders(projected), err
 }
 
-func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]core.WorkOrder, error) {
+// Lookup reads one order of the workspace by ID, in any state, through the
+// list's projection. GET /v1/work-orders/{id} serves it so a client resolves a
+// terminal order without widening the list (component-work-orders, Listing).
+func (s *Service) Lookup(ctx context.Context, id string) (core.WorkOrder, error) {
+	order, err := s.Store.GetWorkOrder(ctx, id)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	projected, err := s.projectList(ctx, []core.WorkOrder{order}, s.Store.ListWorkOrdersForTasks)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
+	return projected[0], nil
+}
+
+// liveOrders keeps the states the list returns: queued, claimed, stale, and
+// timed out.
+func liveOrders(orders []core.WorkOrder) []core.WorkOrder {
+	out := orders[:0]
+	for _, order := range orders {
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
+			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
+			out = append(out, order)
+		}
+	}
+	return out
+}
+
+// projectList adds dependency, proposal, and recovery projections to orders.
+// Recovery refusal folds a task's whole order history, which history reads in
+// one batch for every task with a recoverable order.
+func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder, history func(context.Context, []string) ([]core.WorkOrder, error)) ([]core.WorkOrder, error) {
 	var err error
 	var queuedImplementTaskIDs []string
 	seenTask := map[string]bool{}
@@ -185,10 +222,7 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 		pendingPlanRevision bool
 	}
 	recoveryByTask := map[string]recoveryContext{}
-	ordersByTask := map[string][]core.WorkOrder{}
-	for _, order := range orders {
-		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
-	}
+	var recoveryTaskIDs []string
 	for _, order := range orders {
 		if !recoverEligible(order) {
 			continue
@@ -208,7 +242,20 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 		if gateErr != nil {
 			return nil, gateErr
 		}
-		recoveryByTask[order.TaskID] = recoveryContext{task: task, orders: ordersByTask[order.TaskID], pendingPlanRevision: pendingPlanRevision}
+		recoveryByTask[order.TaskID] = recoveryContext{task: task, pendingPlanRevision: pendingPlanRevision}
+		recoveryTaskIDs = append(recoveryTaskIDs, order.TaskID)
+	}
+	if len(recoveryTaskIDs) > 0 {
+		taskOrders, historyErr := history(ctx, recoveryTaskIDs)
+		if historyErr != nil {
+			return nil, historyErr
+		}
+		for _, candidate := range taskOrders {
+			if ctxn, ok := recoveryByTask[candidate.TaskID]; ok {
+				ctxn.orders = append(ctxn.orders, candidate)
+				recoveryByTask[candidate.TaskID] = ctxn
+			}
+		}
 	}
 	out := orders[:0]
 	for _, order := range orders {
@@ -226,10 +273,7 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder) ([]c
 		if ctxn, ok := recoveryByTask[order.TaskID]; ok {
 			store.ApplyRecoveryRefusal(&order, ctxn.task, ctxn.orders, ctxn.pendingPlanRevision)
 		}
-		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed ||
-			order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
-			out = append(out, order)
-		}
+		out = append(out, order)
 	}
 	return out, nil
 }

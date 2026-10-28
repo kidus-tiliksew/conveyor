@@ -233,6 +233,12 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
            SELECT max(e.at) FROM events e
            WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
        ), t.created_at) < sqlc.narg(updated_to))
+  AND (NOT sqlc.arg(open_only)::boolean OR (
+           t.state NOT IN ('merged', 'closed')
+           AND NOT EXISTS (
+               SELECT 1 FROM tasks child
+               WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+           )))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -280,7 +286,13 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
            SELECT max(e.at) FROM events e
            WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
-       ), t.created_at) < sqlc.narg(updated_to));
+       ), t.created_at) < sqlc.narg(updated_to))
+  AND (NOT sqlc.arg(open_only)::boolean OR (
+           t.state NOT IN ('merged', 'closed')
+           AND NOT EXISTS (
+               SELECT 1 FROM tasks child
+               WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+           )));
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id

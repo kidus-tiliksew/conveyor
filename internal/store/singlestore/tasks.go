@@ -675,6 +675,11 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	}
 	addIn("state", states)
 	addIn("repo_name", f.Repositories)
+	// Open selects the inbox's candidates: no merged or closed task and no
+	// blueprint anchor (component-http-api, Activity and attention reads).
+	if f.Open {
+		q += " AND state NOT IN ('merged','closed') AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.workspace_id=tasks.workspace_id AND child.parent_task_id=tasks.id)"
+	}
 	if f.Assignee == "unassigned" {
 		q += " AND assignee_user_id IS NULL"
 	} else if f.Assignee != "" {

@@ -387,6 +387,84 @@ func RunTaskFilterUpdatedConformance(t *testing.T, fixture TaskFilterFixture) {
 	})
 }
 
+// RunTaskFilterOpenConformance asserts the store-side Open member on every
+// backend after the other TaskFilter cases: it excludes merged and closed
+// tasks and blueprint anchors, keeps an anchor's open child, intersects with
+// States, and governs a page and its total alike (component-http-api,
+// Activity and attention reads). Its tasks carry the title token "Lantern"
+// and creation times in 2024, outside every earlier case's window.
+func RunTaskFilterOpenConformance(t *testing.T, fixture TaskFilterFixture) {
+	t.Helper()
+	for _, seed := range []struct {
+		name   string
+		state  core.TaskState
+		parent string
+		day    int
+	}{
+		{"lantern-open", core.TaskQueued, "", 1},
+		{"lantern-merged", core.TaskMerged, "", 2},
+		{"lantern-closed", core.TaskClosed, "", 3},
+		{"lantern-anchor", core.TaskQueued, "", 4},
+		{"lantern-child", core.TaskRunning, "lantern-anchor", 5},
+	} {
+		id := fixture.id(seed.name)
+		parent := ""
+		if seed.parent != "" {
+			parent = fixture.id(seed.parent)
+		}
+		if err := fixture.Store.CreateTask(fixture.Context, core.Task{
+			ID: id, Workspace: fixture.Workspace, Title: "Lantern " + seed.name, Source: "operator",
+			Repo: fixture.Repo, BaseBranch: "main", Branch: "conveyor/task-" + id, ParentTaskID: parent,
+			State: seed.state, NextStage: core.StageImplement, CreatedAt: time.Date(2024, time.January, seed.day, 12, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	for _, testCase := range []struct {
+		name   string
+		filter store.TaskFilter
+		want   []string
+	}{
+		{"without open", store.TaskFilter{Query: "lantern"}, []string{"lantern-child", "lantern-anchor", "lantern-closed", "lantern-merged", "lantern-open"}},
+		{"open excludes terminal tasks and anchors", store.TaskFilter{Query: "lantern", Open: true}, []string{"lantern-child", "lantern-open"}},
+		{"open intersects states", store.TaskFilter{Query: "lantern", Open: true, States: []core.TaskState{core.TaskQueued}}, []string{"lantern-open"}},
+		{"open with a terminal state selects nothing", store.TaskFilter{Query: "lantern", Open: true, States: []core.TaskState{core.TaskMerged, core.TaskClosed}}, nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			want := make([]string, len(testCase.want))
+			for i, name := range testCase.want {
+				want[i] = fixture.id(name)
+			}
+			tasks, err := fixture.Store.ListTasksFiltered(fixture.Context, testCase.filter)
+			if err != nil {
+				t.Fatalf("ListTasksFiltered: %v", err)
+			}
+			assertTaskIDs(t, "ListTasksFiltered", taskIDs(tasks), want)
+			page, err := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{TaskFilter: testCase.filter})
+			if err != nil {
+				t.Fatalf("ListTaskOperations: %v", err)
+			}
+			assertTaskIDs(t, "ListTaskOperations", taskIDs(page.Tasks), want)
+			if page.Total != len(want) {
+				t.Fatalf("ListTaskOperations total=%d want %d", page.Total, len(want))
+			}
+		})
+	}
+	t.Run("open page and total share predicate", func(t *testing.T) {
+		filter := store.TaskFilter{Query: "lantern", Open: true}
+		for offset, name := range []string{"lantern-child", "lantern-open"} {
+			page, err := fixture.Store.ListTaskPage(fixture.Context, store.TaskOperationsQuery{TaskFilter: filter, Limit: 1, Offset: offset})
+			if err != nil {
+				t.Fatalf("open page %d: %v", offset, err)
+			}
+			assertTaskIDs(t, "open page", taskIDs(page.Tasks), []string{fixture.id(name)})
+			if page.Total != 2 {
+				t.Fatalf("open page %d total=%d want 2", offset, page.Total)
+			}
+		}
+	})
+}
+
 func taskIDs(tasks []core.Task) []string {
 	ids := make([]string, 0, len(tasks))
 	for _, task := range tasks {

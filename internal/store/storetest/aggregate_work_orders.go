@@ -43,6 +43,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("ImplementationSubmissionReviewSeats", func(t *testing.T) { runImplementationSubmissionReviewSeats(t, x) })
 	t.Run("BaseConflictCheck", func(t *testing.T) { runBaseConflictCheck(t, x) })
 	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
+	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
@@ -466,4 +467,95 @@ func runImplementationSubmissionReviewSeats(t *testing.T, x Fixture) {
 		t.Fatal("failed job submission did not roll back")
 	}
 	requireDeclaredReviewSeats(t, x, refused, nil)
+}
+
+// runLiveWorkOrderListing stores one order in each of the seven states and
+// proves ListLiveWorkOrders returns exactly the queued, claimed, stale, and
+// timed-out ones, in ListWorkOrders order and isolated to the workspace
+// (component-work-orders, Listing).
+func runLiveWorkOrderListing(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	claim := func(order core.WorkOrder, session string) core.WorkOrder {
+		t.Helper()
+		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, Lease: time.Hour, ExecutionTimeout: time.Hour})
+		requireOK(t, err)
+		return claimed
+	}
+	queued := newAggregateOrder(t, x)
+	claimed := claim(newAggregateOrder(t, x), "live-claimed")
+	stale := newAggregateOrder(t, x)
+	_, err := taskops.ExecuteWorkOrder(ctx, st, stale.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+		return st.ApplyWorkOrderClock(ctx, lease, stale.TaskID, stale.QueueDeadline.Add(time.Second))
+	})
+	requireOK(t, err)
+	timedOut, err := st.GetWorkOrder(ctx, newAggregateOrder(t, x).ID)
+	requireOK(t, err)
+	timedOut.State = core.WorkOrderTimedOut
+	requireOK(t, UpdateWorkOrder(ctx, st, timedOut, core.WorkOrderCmdTimeout))
+	submitted := claim(newAggregateOrder(t, x), "live-submitted")
+	submitted.State = core.WorkOrderSubmitted
+	requireOK(t, UpdateWorkOrder(ctx, st, submitted, core.WorkOrderCmdSubmitForReview))
+	completed := claim(newAggregateOrder(t, x, core.StageSpec), "live-completed")
+	completed.State = core.WorkOrderCompleted
+	requireOK(t, UpdateWorkOrder(ctx, st, completed, core.WorkOrderCmdSubmitSpec))
+	cancelled, err := st.GetWorkOrder(ctx, newAggregateOrder(t, x).ID)
+	requireOK(t, err)
+	cancelled.State = core.WorkOrderCancelled
+	requireOK(t, UpdateWorkOrder(ctx, st, cancelled, core.WorkOrderCmdCancel))
+
+	seeded := map[string]core.WorkOrderState{
+		queued.ID: core.WorkOrderQueued, claimed.ID: core.WorkOrderClaimed, stale.ID: core.WorkOrderStale, timedOut.ID: core.WorkOrderTimedOut,
+		submitted.ID: core.WorkOrderSubmitted, completed.ID: core.WorkOrderCompleted, cancelled.ID: core.WorkOrderCancelled,
+	}
+	for id, want := range seeded {
+		got, err := st.GetWorkOrder(ctx, id)
+		requireOK(t, err)
+		if got.State != want {
+			t.Fatalf("seeded order %s state=%s, want %s", id, got.State, want)
+		}
+	}
+	all, err := st.ListWorkOrders(ctx)
+	requireOK(t, err)
+	var want []string
+	for _, order := range all {
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
+			want = append(want, order.ID)
+		}
+	}
+	live, err := st.ListLiveWorkOrders(ctx)
+	requireOK(t, err)
+	got := make([]string, 0, len(live))
+	listed := map[string]bool{}
+	for _, order := range live {
+		got = append(got, order.ID)
+		listed[order.ID] = true
+	}
+	if !equalStrings(got, want) {
+		t.Fatalf("ListLiveWorkOrders=%v, want the live ListWorkOrders sequence %v", got, want)
+	}
+	for id, state := range seeded {
+		live := state == core.WorkOrderQueued || state == core.WorkOrderClaimed || state == core.WorkOrderStale || state == core.WorkOrderTimedOut
+		if listed[id] != live {
+			t.Fatalf("order %s in state %s listed=%v, want %v", id, state, listed[id], live)
+		}
+	}
+	foreign, err := st.ListLiveWorkOrders(store.WithWorkspace(ctx, x.Workspace+"-live-foreign"))
+	requireOK(t, err)
+	for _, order := range foreign {
+		if _, ok := seeded[order.ID]; ok {
+			t.Fatalf("foreign workspace listed order %s", order.ID)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

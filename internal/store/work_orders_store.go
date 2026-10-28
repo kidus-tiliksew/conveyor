@@ -1929,6 +1929,36 @@ func (m *memory) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	return orders, nil
 }
 
+// LiveWorkOrderStates are the stored states ListLiveWorkOrders selects. Clock
+// projection maps them only to each other, so the read never needs a terminal
+// order (component-work-orders, Listing).
+var LiveWorkOrderStates = []core.WorkOrderState{core.WorkOrderQueued, core.WorkOrderClaimed, core.WorkOrderStale, core.WorkOrderTimedOut}
+
+func (m *memory) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	selected, scoped := WorkspaceFromContext(ctx)
+	now := time.Now()
+	orders := make([]core.WorkOrder, 0)
+	for _, order := range m.workOrders {
+		if !slices.Contains(LiveWorkOrderStates, order.State) {
+			continue
+		}
+		if scoped && selected != "" && m.tasks[order.TaskID].Workspace != selected {
+			continue
+		}
+		order.Assignee = m.tasks[order.TaskID].Assignee
+		orders = append(orders, ProjectWorkOrderAt(order, now))
+	}
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
+	return orders, nil
+}
+
 func (m *memory) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
 		return []core.WorkOrder{}, nil

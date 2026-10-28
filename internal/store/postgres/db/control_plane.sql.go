@@ -1270,6 +1270,12 @@ WHERE t.workspace_id = $1
            SELECT max(e.at) FROM events e
            WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
        ), t.created_at) < $11)
+  AND (NOT $12::boolean OR (
+           t.state NOT IN ('merged', 'closed')
+           AND NOT EXISTS (
+               SELECT 1 FROM tasks child
+               WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+           )))
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1284,6 +1290,7 @@ type CountTaskOperationsTasksParams struct {
 	Assignee           string             `json:"assignee"`
 	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
 	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
+	OpenOnly           bool               `json:"open_only"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
@@ -1299,6 +1306,7 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.Assignee,
 		arg.UpdatedFrom,
 		arg.UpdatedTo,
+		arg.OpenOnly,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1453,6 +1461,12 @@ WHERE t.workspace_id = $1
            SELECT max(e.at) FROM events e
            WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
        ), t.created_at) < $11)
+  AND (NOT $14::boolean OR (
+           t.state NOT IN ('merged', 'closed')
+           AND NOT EXISTS (
+               SELECT 1 FROM tasks child
+               WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+           )))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF($13::int, 0)
 OFFSET $12::int
@@ -1472,6 +1486,7 @@ type ListTaskOperationsTasksParams struct {
 	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
 	PageOffset         int32              `json:"page_offset"`
 	PageLimit          int32              `json:"page_limit"`
+	OpenOnly           bool               `json:"open_only"`
 }
 
 type ListTaskOperationsTasksRow struct {
@@ -1495,6 +1510,7 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 		arg.UpdatedTo,
 		arg.PageOffset,
 		arg.PageLimit,
+		arg.OpenOnly,
 	)
 	if err != nil {
 		return nil, err

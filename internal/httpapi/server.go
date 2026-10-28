@@ -287,6 +287,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
 			r.Get("/work-orders", s.listWorkOrders)
+			r.Get("/work-orders/{id}", s.getWorkOrder)
 			r.Get("/monitor", s.getMonitorStatus)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/work-orders/{id}/recover", s.recoverWorkOrder)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/work-orders/{id}/preempt", s.preemptWorkOrder)
@@ -1279,14 +1280,32 @@ func readTaskAttachment(header *multipart.FileHeader) (store.ArtifactUpload, err
 	return store.ArtifactUpload{Name: safeFilename(header), ContentType: media, Content: content}, nil
 }
 
+// defaultTaskListLimit bounds a GET /v1/tasks request that sends no limit, so
+// an unparameterized read never loads the workspace's whole history
+// (component-http-api, Task list read).
+const defaultTaskListLimit = 100
+
+// listTasks serves one page of task rows under the shared filter family. The
+// paging headers are always set; without limit they state the default.
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	tasks, err := s.Store.ListTasks(r.Context())
+	query, _, err := parseTaskOperationsQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if query.Limit == 0 {
+		query.Limit = defaultTaskListLimit
+	}
+	page, err := s.readTaskPage(r.Context(), query)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.writeTasks(w, r, tasks)
+	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
+	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
+	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
+	s.writeTasks(w, r, page.Tasks)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -1539,28 +1558,27 @@ func (s *Server) listCallerAttentionTasks(w http.ResponseWriter, r *http.Request
 	s.writeActivityItems(w, r, page.Tasks, false)
 }
 
-func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query store.TaskOperationsQuery) {
-	// The no-auth in-memory server used by embedders predates explicit
-	// workspace resolution. Preserve that singleton compatibility path while
-	// production requests continue through the workspace-scoped store page.
+// readTaskPage reads one page of the shared task filter. The no-auth
+// in-memory server used by embedders predates explicit workspace resolution.
+// Preserve that singleton compatibility path while production requests
+// continue through the workspace-scoped store page.
+func (s *Server) readTaskPage(ctx context.Context, query store.TaskOperationsQuery) (store.TaskPage, error) {
 	compatibilityStore, supportsUnscopedActivity := s.Store.(store.UnscopedActivityStore)
 	if s.Workspace == "" && s.Workspaces == nil && supportsUnscopedActivity && compatibilityStore.SupportsUnscopedActivity() {
-		tasks, err := s.Store.ListTasksFiltered(r.Context(), query.TaskFilter)
+		tasks, err := s.Store.ListTasksFiltered(ctx, query.TaskFilter)
 		if err != nil {
-			log.Printf("handle API request: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+			return store.TaskPage{}, err
 		}
 		total := len(tasks)
 		start := min(query.Offset, total)
 		end := min(start+query.Limit, total)
-		w.Header().Set("X-Conveyor-Total", strconv.Itoa(total))
-		w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
-		w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-		s.writeActivityItems(w, r, tasks[start:end], false)
-		return
+		return store.TaskPage{Tasks: tasks[start:end], Total: total}, nil
 	}
-	page, err := s.Store.ListTaskPage(r.Context(), query)
+	return s.Store.ListTaskPage(ctx, query)
+}
+
+func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query store.TaskOperationsQuery) {
+	page, err := s.readTaskPage(r.Context(), query)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

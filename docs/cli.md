@@ -67,7 +67,7 @@ Create and inspect tasks. Titles are always generated from the body.
 | Command | What it does |
 |---|---|
 | `conveyor task new` | Create a task. `--repo` (required), `-m/--message` for the body, `--base` (default `main`), `--depends-on <id>` (repeatable), `--spec-approval` and `--merge-approval` (`default`, `on`, or `off`). |
-| `conveyor task list` | List tasks: ID, state, repo, source, title. |
+| `conveyor task list` | List one page of tasks, newest first: ID, state, repo, source, title. Without `--limit` the server returns its default page of 100. Optional repeated `--state <state>`, `--limit <1-200>`, and `--offset <n>` (requires `--limit`). When more tasks match, standard error names the shown range and the total. |
 | `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
 | `conveyor task status <id>` | Print the server's next-action statement for the task (`GET /v1/tasks/{id}/next-action`). `--json` prints the server body verbatim. See [task status](#task-status). |
 | `conveyor task wait <id>` | Block until the task's state, pending gate, next claimable order, or pending proposals change, the task is merged, closed, or parked, or the timeout elapses. `--timeout` (default `5m`, must be positive), `--json`, and `--until operator\|terminal\|stage=<stage>`. See [task wait](#task-wait). |
@@ -213,8 +213,8 @@ the server body verbatim.
 | Command | What it does |
 |---|---|
 | `conveyor order recover <order-id>` | Post `{request_id, direction}` to `POST /v1/work-orders/{id}/recover`. Optional `--direction <text>`, `--request-id <id>`, and `--json`. |
-| `conveyor order redispatch <order-id>` | Resolve the order's task from `GET /v1/work-orders`, then post to `POST /v1/tasks/{task_id}/redispatch`. An order missing from the list exits `1` with `work order <id> not found`. Optional `--request-id <id>` and `--json`. |
-| `conveyor order retire <order-id> --reason <text>` | Read the order from `GET /v1/work-orders`, then post `{reason, request_id}` to `POST /v1/work-orders/{id}/preempt`, which retires a queued or stale order to `cancelled`. Prints `retired work order <id>: state cancelled (request <id>)`. Optional `--request-id <id>` and `--json`. |
+| `conveyor order redispatch <order-id>` | Resolve the order's task from `GET /v1/work-orders/{id}`, which serves an order in any state, then post to `POST /v1/tasks/{task_id}/redispatch`. On a 404 the command searches `GET /v1/work-orders` once, so a server without the exact read still resolves a live order. An order found by neither read exits `1` with `work order <id> not found`. Optional `--request-id <id>` and `--json`. |
+| `conveyor order retire <order-id> --reason <text>` | Read the order from `GET /v1/work-orders/{id}`, with the same list fallback on a 404, then post `{reason, request_id}` to `POST /v1/work-orders/{id}/preempt`, which retires a queued or stale order to `cancelled`. Prints `retired work order <id>: state cancelled (request <id>)`. Optional `--request-id <id>` and `--json`. |
 
 Every order command generates a 32-hex request ID unless `--request-id` is
 given and sends it as body `request_id` and as `X-Request-Id` and

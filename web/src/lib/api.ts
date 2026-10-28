@@ -32,6 +32,7 @@ import type {
   TaskHistorySelection,
   TaskRestartInput,
   TaskRestartResult,
+  TaskState,
   VersionedWorkspaceConfig,
   WorkerList,
   WorkOrder,
@@ -1169,8 +1170,23 @@ export async function resolveMonitorDrift(driftId: string, outcome: MonitorDrift
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<RepositoryDrift>
 }
-export function fetchTasks() {
-  return getJSON<Task[]>(workspaceURL('/v1/tasks'))
+// The task states other than merged and closed.
+const openTaskStates = [
+  'claiming',
+  'queued',
+  'running',
+  'awaiting_human',
+  'approved',
+  'parked',
+] as const satisfies readonly TaskState[]
+// Dependency pickers offer open tasks only. GET /v1/tasks serves one bounded
+// page, so they read the 200 newest open tasks in one request rather than the
+// workspace's whole history (component-http-api, Task list read).
+export function fetchOpenTasks() {
+  const params = new URLSearchParams()
+  for (const state of openTaskStates) params.append('state', state)
+  params.set('limit', '200')
+  return getJSON<Task[]>(workspaceURL(`/v1/tasks?${params.toString()}`))
 }
 export async function updateTaskContext(
   taskId: string,
