@@ -2,11 +2,12 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useEffect, useMemo } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { fetchTaskActivity, fetchTaskAudit, fetchVerificationPage, fetchVerificationSummary } from '../../lib/api'
+import { isBlueprintAnchor } from '../../lib/blueprint'
 import { stageGroups } from '../../lib/contracts'
 import { taskDetailQueryKey } from '../../lib/query-keys'
-import type { TaskAuditKind, VerificationCollection } from '../../lib/types'
+import type { ActivityItem, TaskAuditKind, VerificationCollection } from '../../lib/types'
 import { useTaskStream } from '../../lib/use-task-stream'
-import { useActivity, useWorkspaceSelection } from '../app-shell'
+import { useBoardActivityPage, useWorkspaceSelection } from '../app-shell'
 
 // Reads a query's abort signal one microtask after the query function starts.
 // React StrictMode mounts, unmounts, and remounts every effect once in
@@ -32,6 +33,9 @@ export function useTaskDetail(taskId: string) {
     // A dependency can merge without emitting an event on this task. Poll only
     // while the task reports active blockers; SSE remains the fast path.
     refetchInterval: (current) => ((current.state.data?.task.blocking_task_ids?.length ?? 0) > 0 ? 15_000 : false),
+    // A bounded view can weigh more than a megabyte, and the task stream keeps
+    // it current, so returning to the tab sends no detail read.
+    refetchOnWindowFocus: false,
   })
   useTaskStream(taskId, workspace)
   return query
@@ -46,15 +50,26 @@ const verificationQueryOptions = {
   refetchInterval: false,
 } as const
 
+// Whether the task reads verification at all: the predicate
+// VerificationVerdictLine applies before it queries the summary.
+export function taskHasVerifyStage(item: ActivityItem) {
+  return Boolean(
+    item.task.policy_contract?.verify_stage ||
+      (item.work_orders ?? []).some((order) => order.stage === 'verify') ||
+      item.task.next_stage === 'verify',
+  )
+}
+
 // These families are independent of task activity and SSE invalidation.
-export function useTaskVerification(taskId: string) {
+export function useTaskVerification(taskId: string, enabled = true) {
   const { workspace } = useWorkspaceSelection()
   return useInfiniteQuery({
     queryKey: ['verification-summary', workspace, taskId],
     queryFn: ({ pageParam, signal }) => fetchVerificationSummary(workspace, taskId, pageParam, signal),
     initialPageParam: '',
-    getNextPageParam: (page) => page.contexts.next_cursor || undefined,
-    enabled: Boolean(workspace && taskId),
+    // A body without contexts (an older or malformed answer) has no next page.
+    getNextPageParam: (page) => page.contexts?.next_cursor || undefined,
+    enabled: enabled && Boolean(workspace && taskId),
     ...verificationQueryOptions,
   })
 }
@@ -101,23 +116,28 @@ export function useTaskAudit(taskId: string, kind: TaskAuditKind, recordId: stri
   })
 }
 
-// Prev/next follow the board's visual order: columns left to right, cards
-// by recency within each column. Navigation is deliberately limited to the
-// current bounded Board page (req-operator-next-action AC-6.12).
+// Prev/next follow the visual order of the Board page the Kanban view shows:
+// columns left to right, blueprint anchors skipped, newest creation first with
+// the task ID breaking ties, exactly as the Board sorts. The page comes from
+// the cache, so no activity query is mounted here; navigation stays on that
+// page (req-operator-next-action AC-6.12), and without one (the full route,
+// the Board map, a pending read) there are no neighbours
+// (component-web-task-surfaces, Board navigation).
 export function useTaskOrder(taskId: string) {
-  const { data: activity } = useActivity()
+  const activity = useBoardActivityPage()
   return useMemo(() => {
-    const byGroup = new Map<string, Array<{ id: string; at: string }>>()
+    const byGroup = new Map<string, Array<{ id: string; created: number }>>()
     for (const summary of activity?.items ?? []) {
+      if (isBlueprintAnchor(summary.task)) continue
       const key = boardColumnFor(summary)
       byGroup.set(key, [
         ...(byGroup.get(key) ?? []),
-        { id: summary.task.id, at: summary.last_event_at || summary.task.created_at },
+        { id: summary.task.id, created: new Date(summary.task.created_at).getTime() },
       ])
     }
     const order = stageGroups.flatMap(({ key }) =>
       (byGroup.get(key) ?? [])
-        .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+        .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id))
         .map((entry) => entry.id),
     )
     const index = order.indexOf(taskId)

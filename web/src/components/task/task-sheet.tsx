@@ -1,7 +1,17 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
+import { useEffect } from 'react'
 import type { ActivityItem } from '../../lib/types'
+import {
+  blueprintsQueryOptions,
+  callerIdentityQueryOptions,
+  systemDesignsQueryOptions,
+  useWorkspaceSelection,
+  workspaceMembersQueryOptions,
+} from '../app-shell'
 import { useCanonicalBlueprintRedirect } from '../blueprint/use-blueprint-route'
+import { nextActionQueryOptions } from '../inbox/use-next-actions'
 import { LineageExplorer } from '../lineage/lineage-explorer'
 import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
@@ -12,7 +22,7 @@ import { SpecCard } from './spec-card'
 import { TaskActivityTabs } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
 import { TaskHeader } from './task-header'
-import { useTaskDetail, useTaskOrder } from './use-task-detail'
+import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
@@ -21,6 +31,12 @@ import { useTaskDetail, useTaskOrder } from './use-task-detail'
 export function TaskSheet({ taskId }: { taskId: string }) {
   const navigate = useNavigate()
   const { data: item, isLoading, error } = useTaskDetail(taskId)
+  useSheetPrefetch(taskId)
+  // The summary family has zero garbage-collection time, so this observer is
+  // what keeps the first summary page alive from the cold open until the
+  // verification entries mount with the body and share it. It reads while the
+  // detail is pending and afterwards only for a task with a verify stage.
+  useTaskVerification(taskId, item ? taskHasVerifyStage(item) : true)
   const boardOrder = useTaskOrder(taskId)
   const previousId = boardOrder.previousId
   const nextId = boardOrder.nextId
@@ -73,6 +89,27 @@ export function TaskSheet({ taskId }: { taskId: string }) {
       </div>
     </Sheet>
   )
+}
+
+// Starts every read the sheet body needs that does not depend on the bounded
+// detail when the sheet opens, instead of when the detail returns
+// (component-web-task-surfaces, Sheet read scheduling). Each prefetch uses the
+// option factory of the observer that later reads it, so that observer finds
+// a fresh entry and sends nothing. prefetchQuery never rejects: a failed read
+// leaves its entry in the error state for its consumer to retry and show. A
+// repeated run for the same task joins the read already in flight, and each
+// read fills only the key of the workspace it captured.
+function useSheetPrefetch(taskId: string) {
+  const queryClient = useQueryClient()
+  const { workspace } = useWorkspaceSelection()
+  useEffect(() => {
+    if (!workspace) return
+    void queryClient.prefetchQuery(callerIdentityQueryOptions(workspace))
+    void queryClient.prefetchQuery(workspaceMembersQueryOptions(workspace))
+    void queryClient.prefetchQuery(blueprintsQueryOptions(workspace))
+    void queryClient.prefetchQuery(nextActionQueryOptions(workspace, taskId))
+    void queryClient.prefetchQuery(systemDesignsQueryOptions(workspace))
+  }, [queryClient, workspace, taskId])
 }
 
 function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: string; icon: React.ReactNode }) {
