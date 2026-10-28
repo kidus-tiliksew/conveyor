@@ -731,6 +731,9 @@ func (s *Server) authenticateHumanCredential(w http.ResponseWriter, r *http.Requ
 		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 	}
 	credential, err := s.InvitationSessions.VerifyDashboardSession(r.Context(), cookie.Value)
+	// SessionExpiresAt is nonzero only when this verification's refresh won,
+	// so the cookie is re-set exactly when the stored expiry moved
+	// (component-identity-membership).
 	if err == nil && !credential.SessionExpiresAt.IsZero() {
 		setDashboardSessionCookie(w, r, s.InvitationDelivery.PublicURL, cookie.Value, credential.SessionExpiresAt)
 	}

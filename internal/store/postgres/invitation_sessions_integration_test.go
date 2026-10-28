@@ -310,7 +310,9 @@ func TestPasswordSignInResetAndSlidingSessionIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `UPDATE dashboard_sessions SET expires_at=now()+interval '1 hour' WHERE id=$1`, session.ID); err != nil {
+	// Sliding needs a stale last use as well as a near expiry: a session used
+	// within the refresh interval is verified without a write.
+	if _, err = st.pool.Exec(store.WithActor(t.Context(), store.SystemActor()), `UPDATE dashboard_sessions SET last_used_at=now()-interval '10 minutes',expires_at=now()+interval '1 hour' WHERE id=$1`, session.ID); err != nil {
 		t.Fatal(err)
 	}
 	verified, err := st.VerifyDashboardSession(store.WithActor(t.Context(), store.SystemActor()), session.Value)
@@ -357,5 +359,101 @@ func TestPasswordSignInResetAndSlidingSessionIntegration(t *testing.T) {
 	}
 	if passwordEvents != 3 || passwordSecrets != 0 {
 		t.Fatalf("password audit events=%d secrets=%d", passwordEvents, passwordSecrets)
+	}
+}
+
+// TestDashboardSessionRefreshIntegration proves on stored rows that a
+// verification inside the refresh interval writes nothing, leaving the row
+// version (xmin) and times unchanged, and that a stale verification changes
+// the row once and stores exactly the expiry it returns
+// (component-identity-membership).
+func TestDashboardSessionRefreshIntegration(t *testing.T) {
+	st := newIdentityIntegrationStore(t, 0)
+	system := store.WithActor(t.Context(), store.SystemActor())
+	legacy := "refresh-owner-token"
+	if _, err := st.BootstrapIdentity(system, config.FirstOperatorIdentity{OrganizationName: "Refresh Org", Email: "refresh-owner@example.test", DisplayName: "Refresh Owner"}, legacy); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := st.VerifyPersonalAccessToken(system, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := core.AuthenticatedCredential{ID: "legacy", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator, Method: core.CredentialMethodBearer}
+	ctx := store.WithActor(store.WithCredential(t.Context(), credential), store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+	link, err := st.IssueSignInLink(ctx, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := st.RedeemSignInLink(system, link.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		version  string
+		lastUsed *time.Time
+		expires  time.Time
+	}
+	stored := func() row {
+		t.Helper()
+		var r row
+		if err := st.pool.QueryRow(system, `SELECT xmin::text,last_used_at,expires_at FROM dashboard_sessions WHERE id=$1`, session.ID).Scan(&r.version, &r.lastUsed, &r.expires); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	attempts := 0
+	hooked := store.WithIdentityTestHook(system, func(stage string) error {
+		if stage == store.IdentityHookSessionRefreshing {
+			attempts++
+		}
+		return nil
+	})
+	verify := func() core.AuthenticatedCredential {
+		t.Helper()
+		auth, err := st.VerifyDashboardSession(hooked, session.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return auth
+	}
+
+	// A never-used session counts from its creation, so it is fresh.
+	before := stored()
+	if before.lastUsed != nil {
+		t.Fatalf("minted session last_used_at=%s, want null", before.lastUsed)
+	}
+	for range 2 {
+		if auth := verify(); !auth.SessionExpiresAt.IsZero() {
+			t.Fatalf("unused fresh session refreshed to %s", auth.SessionExpiresAt)
+		}
+	}
+	if after := stored(); after.version != before.version || after.lastUsed != nil || !after.expires.Equal(before.expires) || attempts != 0 {
+		t.Fatalf("unused fresh verification wrote: before=%+v after=%+v attempts=%d", before, after, attempts)
+	}
+
+	if _, err = st.pool.Exec(system, `UPDATE dashboard_sessions SET last_used_at=now()-interval '1 minute' WHERE id=$1`, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	before = stored()
+	for range 2 {
+		if auth := verify(); !auth.SessionExpiresAt.IsZero() {
+			t.Fatalf("fresh session refreshed to %s", auth.SessionExpiresAt)
+		}
+	}
+	if after := stored(); after.version != before.version || !after.lastUsed.Equal(*before.lastUsed) || !after.expires.Equal(before.expires) || attempts != 0 {
+		t.Fatalf("fresh verification wrote: before=%+v after=%+v attempts=%d", before, after, attempts)
+	}
+
+	if _, err = st.pool.Exec(system, `UPDATE dashboard_sessions SET last_used_at=now()-interval '10 minutes',expires_at=now()+interval '1 hour' WHERE id=$1`, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	before = stored()
+	auth := verify()
+	after := stored()
+	if attempts != 1 || after.version == before.version || !after.lastUsed.After(*before.lastUsed) || !auth.SessionExpiresAt.Equal(after.expires) || time.Until(after.expires) < 6*24*time.Hour+23*time.Hour {
+		t.Fatalf("stale verification: before=%+v after=%+v output=%s attempts=%d", before, after, auth.SessionExpiresAt, attempts)
+	}
+	if again := verify(); !again.SessionExpiresAt.IsZero() || stored().version != after.version {
+		t.Fatalf("verification after a refresh wrote again: output=%s", again.SessionExpiresAt)
 	}
 }

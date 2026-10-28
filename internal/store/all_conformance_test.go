@@ -77,6 +77,10 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {
 				store.SeedStoredTaskHoldForTest(t, st, taskID)
+			}, SeedDashboardSessionTimes: func(t *testing.T, _ context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration) {
+				store.SeedDashboardSessionTimesForTest(t, st, sessionID, lastUsedAgo, expiresIn)
+			}, DashboardSessionTimes: func(t *testing.T, _ context.Context, sessionID string) (time.Time, time.Time) {
+				return store.DashboardSessionTimesForTest(t, st, sessionID)
 			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
 				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {

@@ -198,13 +198,13 @@ type verificationSecretSnapshot []string
 func (s verificationSecretSnapshot) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
 	return s, nil
 }
+
+// ReadVerification and ReadVerificationArtifact are inspection reads: they use
+// the lock-free snapshot scope in verification_read.go, never verificationScopeTx.
 func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess, id string) (store.VerificationSnapshot, error) {
-	if err := store.AuthorizeVerificationUserRead(ctx, s, a); err != nil {
-		return store.VerificationSnapshot{}, err
-	}
 	var result store.VerificationSnapshot
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		order, err := s.verificationScopeTx(ctx, tx, a, false)
+	err := s.verificationReadTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		order, err := s.verificationReadScopeTx(ctx, tx, q, a)
 		if err != nil {
 			return err
 		}
@@ -231,13 +231,10 @@ func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess
 	return result, err
 }
 func (s *Store) ReadVerificationArtifact(ctx context.Context, a store.VerificationAccess, evidenceID, artifactID string) (core.Artifact, []byte, error) {
-	if err := store.AuthorizeVerificationUserRead(ctx, s, a); err != nil {
-		return core.Artifact{}, nil, err
-	}
 	var artifact core.Artifact
 	var content []byte
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		order, err := s.verificationScopeTx(ctx, tx, a, false)
+	err := s.verificationReadTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		order, err := s.verificationReadScopeTx(ctx, tx, q, a)
 		if err != nil {
 			return err
 		}

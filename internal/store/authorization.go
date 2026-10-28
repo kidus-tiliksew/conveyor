@@ -75,6 +75,12 @@ type InvitationSessionStore interface {
 	RedeemSignInLink(context.Context, string) (core.DashboardSession, core.IdentityUser, error)
 	SignInWithPassword(context.Context, string, string) (core.DashboardSession, core.IdentityUser, error)
 	SetOwnPassword(context.Context, string, string, string, string) error
+	// VerifyDashboardSession checks the session, its active owner, and live
+	// operator scope on every call, and refreshes the stored expiry at most
+	// once per five-minute refresh interval. SessionExpiresAt is the
+	// refresh output: the exact persisted new expiry only when this call's
+	// refresh won, and zero otherwise. Zero never means expiry or failure
+	// (component-identity-membership).
 	VerifyDashboardSession(context.Context, string) (core.AuthenticatedCredential, error)
 	RevokeDashboardSession(context.Context, string, string) error
 	RecordInvitationDelivery(context.Context, string, string) error
@@ -110,6 +116,16 @@ const (
 	// IdentityHookBootstrapBeforeCommit runs after every BootstrapIdentity
 	// write, including rotation and its audit, and before the commit.
 	IdentityHookBootstrapBeforeCommit = "bootstrap_before_commit"
+	// IdentityHookSessionRead runs after VerifyDashboardSession's initial
+	// read found a live session and before any refresh decision, with no
+	// transaction, row lock, or mutex held.
+	IdentityHookSessionRead = "session_read"
+	// IdentityHookSessionRefreshing runs immediately before each conditional
+	// dashboard-session refresh attempt.
+	IdentityHookSessionRefreshing = "session_refreshing"
+	// IdentityHookSessionRefreshed runs only after a refresh changed the
+	// session row, so exactly the winning verification reaches it.
+	IdentityHookSessionRefreshed = "session_refreshed"
 )
 
 type identityTestHookKey struct{}
