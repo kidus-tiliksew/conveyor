@@ -244,6 +244,53 @@ termination window, so start `conveyord` with `-shutdown-timeout` or
 `CONVEYOR_SHUTDOWN_TIMEOUT` set below ten seconds, such as `8s`. An explicit
 flag takes precedence over the environment value.
 
+#### Size the memory limit
+
+The Go runtime in `conveyord` does not read the container memory limit.
+Without a soft limit, the garbage collector lets the heap grow to about twice
+its live size before it collects, so a burst of short-lived allocations can
+cross the container limit and the kernel kills the process. Set `GOMEMLIMIT`
+to about 75–80% of the container memory limit, for example `GOMEMLIMIT=800MiB`
+under a 1 GiB limit or `GOMEMLIMIT=3200MiB` under a 4 GiB limit. The collector
+then works harder as the heap nears that value, and the remaining headroom
+covers memory the Go heap does not count. The image sets no `GOMEMLIMIT`,
+because the right value depends on the limit each deployment sets.
+
+Measurement, not a guarantee: on 2026-10-27, a deployment running v0.50.0
+with a workspace holding a long task history kept a live heap under 100 MiB,
+while single list requests peaked above 1 GiB of allocation. Under a 1 GiB
+limit without `GOMEMLIMIT`, that deployment was killed for exceeding its memory
+limit repeatedly until the limit was raised to 4 GiB. These figures predate
+the list-read fixes; measure your own deployment with a heap profile before you
+choose a limit.
+
+#### Take a heap profile
+
+`conveyord` can serve Go runtime profiles (`net/http/pprof`) on a second
+listener. It is off by default and is never mounted on the API port. Start
+`conveyord` with `-debug-addr 127.0.0.1:6060`, or set
+`CONVEYOR_DEBUG_ADDR=127.0.0.1:6060` (an explicit flag wins). The address must
+be a loopback IP address; `conveyord` refuses to start with any other address
+unless `-debug-addr-allow-remote` is also set. The listener has no
+authentication, so keep it on loopback. Startup logs the bound address.
+
+On Kubernetes, `kubectl port-forward` reaches a loopback listener inside the
+pod, so no remote opt-in is needed:
+
+```sh
+kubectl port-forward pod/<conveyord-pod> 6060:6060
+go tool pprof -top http://127.0.0.1:6060/debug/pprof/heap
+curl -o allocs.pb.gz http://127.0.0.1:6060/debug/pprof/allocs
+curl -o goroutines.txt 'http://127.0.0.1:6060/debug/pprof/goroutine?debug=1'
+```
+
+`heap` shows the live set at the last collection, and `allocs` shows every
+allocation since the process started, which finds the requests that create
+garbage. `/debug/pprof/profile?seconds=30` records a CPU profile and
+`/debug/pprof/trace?seconds=5` records an execution trace. Profiles carry stack
+traces, symbol names, and allocation sizes, not request data. Shutdown closes
+the debug listener at once, so an in-flight profile is cut off.
+
 ### Build from source
 
 This path is for developing Conveyor and running its development server.

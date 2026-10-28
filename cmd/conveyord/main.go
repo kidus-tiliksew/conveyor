@@ -54,12 +54,18 @@ func main() {
 	workerRetryDelay := flag.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay")
 	workerRetryMaximum := flag.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay")
 	shutdownTimeoutFlag := flag.Duration("shutdown-timeout", defaultConveyordShutdownTimeout, "total graceful shutdown budget")
+	debugAddrValue := flag.String(debugAddrFlag, "", "opt-in net/http/pprof listen address (loopback only unless -"+debugAllowRemoteFlag+"; empty disables)")
+	debugAllowRemote := flag.Bool(debugAllowRemoteFlag, false, "allow -"+debugAddrFlag+" to bind a non-loopback address")
 	flag.Parse()
 	listenAddr, listenAddrSource, err := resolveConveyordListenAddress(*addr, flagWasSet(flag.CommandLine, "addr"), os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
 	shutdownTimeout, shutdownTimeoutSource, err := resolveConveyordShutdownTimeout(*shutdownTimeoutFlag, flagWasSet(flag.CommandLine, "shutdown-timeout"), os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	debugAddr, debugAddrSource, err := resolveConveyordDebugAddress(*debugAddrValue, flagWasSet(flag.CommandLine, debugAddrFlag), *debugAllowRemote, os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -496,11 +502,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	debugServer, err := startConveyordDebugServer(debugAddr, debugAddrSource, net.Listen, log.Printf)
+	if err != nil {
+		log.Fatal(err)
+	}
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-signalCtx.Done()
 		conveyordShutdown{
-			Timeout: shutdownTimeout, HTTP: httpSrv, Queue: queueRuntime,
+			Timeout: shutdownTimeout, HTTP: httpSrv, Debug: debugServer, Queue: queueRuntime,
 			CancelHTTP: cancelHTTP, CancelService: cancelService, CloseStore: closeStore, Logf: log.Printf,
 		}.Run()
 		close(shutdownDone)
