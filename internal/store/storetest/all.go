@@ -311,6 +311,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"PlanningReads", true, runPlanningReads},
 		{"TaskFilter", factory.Capabilities.Membership, runTaskFilter},
 		{"TaskAssigneeMembership", factory.Capabilities.Membership, runTaskAssigneeMembership},
+		{"TaskListHydration", factory.Capabilities.Membership, runTaskListHydration},
 		{"Identity", factory.Capabilities.Identity, runIdentity},
 		{"Membership", factory.Capabilities.Membership, runMembership},
 		{"InvitationSessions", factory.Capabilities.Identity && factory.Capabilities.Membership, runInvitationSessions},

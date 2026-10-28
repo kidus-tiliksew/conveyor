@@ -343,19 +343,39 @@ func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, id string) ([]co
 	projectOrders(orders)
 	return orders, err
 }
+
+// hydrateWorkOrderAssignees reads the assignees of the orders' distinct tasks
+// with one workspace-scoped read (per hydrationChunk tasks) and gives each
+// order its own copy; an order whose task has no bound assignee keeps a nil
+// assignee (req-task-lifecycle-and-queue AC-2.6; component-work-orders).
 func (s *Store) hydrateWorkOrderAssignees(ctx context.Context, orders []core.WorkOrder) error {
+	taskIDs := []string{}
+	byTask := make(map[string][]int, len(orders))
 	for i := range orders {
-		var a core.TaskAssignee
-		err := documentRow(ctx, s.db, `SELECT u.id,u.email,u.display_name FROM tasks t JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id JOIN users u ON u.id=b.user_id WHERE t.workspace_id=? AND t.id=?`, documentWorkspace(ctx), orders[i].TaskID).Scan(&a.UserID, &a.Email, &a.DisplayName)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
+		if _, ok := byTask[orders[i].TaskID]; !ok {
+			taskIDs = append(taskIDs, orders[i].TaskID)
 		}
+		byTask[orders[i].TaskID] = append(byTask[orders[i].TaskID], i)
+	}
+	return eachIDChunk(taskIDs, func(marks string, args []any) error {
+		rows, err := documentRows(ctx, s.db, `SELECT t.id,u.id,u.email,u.display_name FROM tasks t JOIN workspace_role_bindings b ON b.workspace_id=t.workspace_id AND b.user_id=t.assignee_user_id JOIN users u ON u.id=b.user_id WHERE t.workspace_id=? AND t.id IN (`+marks+`)`, append([]any{documentWorkspace(ctx)}, args...)...)
 		if err != nil {
 			return err
 		}
-		orders[i].Assignee = &a
-	}
-	return nil
+		for rows.Next() {
+			var taskID string
+			var a core.TaskAssignee
+			if err = rows.Scan(&taskID, &a.UserID, &a.Email, &a.DisplayName); err != nil {
+				rows.Close()
+				return err
+			}
+			for _, i := range byTask[taskID] {
+				assignee := a
+				orders[i].Assignee = &assignee
+			}
+		}
+		return closeRows(rows)
+	})
 }
 func orderDefaults(o core.WorkOrder) core.WorkOrder {
 	if o.CreatedAt.IsZero() {

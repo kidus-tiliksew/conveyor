@@ -329,6 +329,177 @@ func (s *Store) hydrateTaskRelations(ctx context.Context, t *core.Task) error {
 	}
 	return nil
 }
+
+// hydrationChunk bounds the IN list of each set-based hydration read. The
+// protocol caps a prepared statement at 65,535 placeholders; a list of up to
+// this many tasks costs one read per relation, independent of its length.
+var hydrationChunk = 10000
+
+// eachIDChunk calls fn once per chunk of ids with the chunk's placeholder
+// marks and arguments, so every batched read stays below the placeholder cap.
+func eachIDChunk(ids []string, fn func(marks string, args []any) error) error {
+	for start := 0; start < len(ids); start += hydrationChunk {
+		chunk := ids[start:min(start+hydrationChunk, len(ids))]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		if err := fn(strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ","), args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hydrateTaskRelationsBatch fills the relations hydrateTaskRelations reads
+// for every listed task with one workspace-scoped read per relation (per
+// hydrationChunk tasks), restoring PostgreSQL's set-based list hydration
+// (component-persistence; req-task-lifecycle-and-queue REQ-2, REQ-4). Each
+// task's fields, slice order, BlockingTaskIDs, removed-binding nil assignee,
+// and absent-lifecycle nil GitHub equal the per-task read's.
+func (s *Store) hydrateTaskRelationsBatch(ctx context.Context, tasks []core.Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	ws := documentWorkspace(ctx)
+	ids := make([]string, len(tasks))
+	byID := make(map[string]*core.Task, len(tasks))
+	assignees := []string{}
+	seenAssignee := map[string]bool{}
+	for i := range tasks {
+		ids[i] = tasks[i].ID
+		byID[tasks[i].ID] = &tasks[i]
+		if a := tasks[i].Assignee; a != nil && !seenAssignee[a.UserID] {
+			seenAssignee[a.UserID] = true
+			assignees = append(assignees, a.UserID)
+		}
+	}
+	err := eachIDChunk(ids, func(marks string, args []any) error {
+		bound := append([]any{ws}, args...)
+		rows, err := documentRows(ctx, s.db, `SELECT task_id,payload_json FROM pull_request_closes WHERE workspace_id=? AND task_id IN (`+marks+`)`, bound...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var taskID string
+			var raw []byte
+			var p core.PullRequestClose
+			if err = rows.Scan(&taskID, &raw); err == nil {
+				err = json.Unmarshal(raw, &p)
+			}
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			if t := byID[taskID]; t != nil {
+				t.PullRequestClose = &p
+				t.PullRequestCloseState = p.State
+			}
+		}
+		if err = closeRows(rows); err != nil {
+			return err
+		}
+		rows, err = documentRows(ctx, s.db, `SELECT e.task_id,d.id,d.title,d.state,d.origin_spec_version,d.origin_sub_id FROM task_dependencies e JOIN tasks d ON d.workspace_id=e.workspace_id AND d.id=e.depends_on_task_id WHERE e.workspace_id=? AND e.task_id IN (`+marks+`) ORDER BY e.task_id,d.id`, bound...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var taskID string
+			var r core.TaskRelation
+			if err = rows.Scan(&taskID, &r.ID, &r.Title, &r.State, &r.OriginSpecVersion, &r.OriginSubID); err != nil {
+				rows.Close()
+				return err
+			}
+			if t := byID[taskID]; t != nil {
+				t.Dependencies = append(t.Dependencies, r)
+				if r.State != core.TaskMerged {
+					t.BlockingTaskIDs = append(t.BlockingTaskIDs, r.ID)
+				}
+			}
+		}
+		if err = closeRows(rows); err != nil {
+			return err
+		}
+		rows, err = documentRows(ctx, s.db, `SELECT parent_task_id,id,title,state,origin_spec_version,origin_sub_id FROM tasks WHERE workspace_id=? AND parent_task_id IN (`+marks+`) ORDER BY parent_task_id,origin_spec_version,origin_sub_id,id`, bound...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var parentID string
+			var r core.TaskRelation
+			if err = rows.Scan(&parentID, &r.ID, &r.Title, &r.State, &r.OriginSpecVersion, &r.OriginSubID); err != nil {
+				rows.Close()
+				return err
+			}
+			if t := byID[parentID]; t != nil {
+				t.Children = append(t.Children, r)
+			}
+		}
+		if err = closeRows(rows); err != nil {
+			return err
+		}
+		// Task reads include the persisted forge projection; forge writers remain sibling-owned.
+		rows, err = documentRows(ctx, s.db, `SELECT task_id,repository,spec_version,source,source_issue_number,issue_number,issue_url,outcome,state,create_state,create_attempts,reconcile_misses,attempts,forge_error_category,last_error,forge_author_class,forge_author_user_id,created_at,updated_at FROM github_lifecycles WHERE workspace_id=? AND task_id IN (`+marks+`)`, bound...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var l core.GitHubLifecycle
+			if err = rows.Scan(&l.TaskID, &l.Repository, &l.SpecVersion, &l.Source, &l.SourceIssueNumber, &l.IssueNumber, &l.IssueURL, &l.Outcome, &l.State, &l.CreateState, &l.CreateAttempts, &l.ReconcileMisses, &l.Attempts, &l.ForgeErrorCategory, &l.LastError, &l.ForgeAuthorClass, &l.ForgeAuthorUserID, &l.CreatedAt, &l.UpdatedAt); err != nil {
+				rows.Close()
+				return err
+			}
+			if t := byID[l.TaskID]; t != nil {
+				t.GitHub = &l
+			}
+		}
+		return closeRows(rows)
+	})
+	if err != nil {
+		return err
+	}
+	// An assignee whose workspace binding is gone reads as no assignee, as in
+	// hydrateTaskRelations.
+	type profile struct{ email, displayName string }
+	profiles := make(map[string]profile, len(assignees))
+	err = eachIDChunk(assignees, func(marks string, args []any) error {
+		rows, err := documentRows(ctx, s.db, `SELECT u.id,u.email,u.display_name FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id WHERE b.workspace_id=? AND u.id IN (`+marks+`)`, append([]any{ws}, args...)...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var id string
+			var p profile
+			if err = rows.Scan(&id, &p.email, &p.displayName); err != nil {
+				rows.Close()
+				return err
+			}
+			profiles[id] = p
+		}
+		return closeRows(rows)
+	})
+	if err != nil {
+		return err
+	}
+	for i := range tasks {
+		if a := tasks[i].Assignee; a != nil {
+			p, ok := profiles[a.UserID]
+			if !ok {
+				tasks[i].Assignee = nil
+				continue
+			}
+			a.Email, a.DisplayName = p.email, p.displayName
+		}
+	}
+	return nil
+}
+
+// closeRows closes a hydration result set and returns its iteration error.
+func closeRows(rows *documentResultSet) error {
+	err := rows.Err()
+	rows.Close()
+	return err
+}
 func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
 	branch = strings.TrimSpace(branch)
 	if !gitx.LegalBranchName(branch) {
@@ -586,10 +757,8 @@ func (s *Store) listTaskRows(ctx context.Context, q store.TaskOperationsQuery) (
 	if err != nil {
 		return nil, err
 	}
-	for i := range out {
-		if err = s.hydrateTaskRelations(ctx, &out[i]); err != nil {
-			return nil, err
-		}
+	if err = s.hydrateTaskRelationsBatch(ctx, out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
