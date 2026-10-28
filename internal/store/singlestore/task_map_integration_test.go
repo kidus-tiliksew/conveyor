@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -355,5 +356,72 @@ func TestTaskMapSelectsNoBodiesHistoriesOrSnapshotsIntegration(t *testing.T) {
 		if len(decoded.Requirements) != 1 || decoded.Requirements[0].OpenTaskCount != 3 || decoded.Requirements[0].MergedTaskCount != 2 || decoded.Requirements[0].TotalTaskCount != 5 {
 			t.Fatalf("%q requirements=%+v", query, decoded.Requirements)
 		}
+	}
+}
+
+// The bounded next-action history read on SingleStore selects only the latest
+// command, pull-request, and bounce rows plus the merge-conflict rows: no
+// superseded state-change or pull-request payload reaches the store, while a
+// direct history read through the same recorder sees them
+// (component-persistence, Task map and next-action batch reads).
+func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
+	const superseded = "SINGLESTORE-HISTORY-SUPERSEDED-SENTINEL"
+	st := integrationStore(t)
+	workspace := "history-bytes"
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := st.CreateTask(ctx, core.Task{ID: "history-parked", Workspace: workspace, Title: "History", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-history-parked", State: core.TaskParked, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	at := now.Add(-time.Hour)
+	appendEvent := func(kind string, payload any) {
+		t.Helper()
+		at = at.Add(time.Millisecond)
+		if err := st.AppendEvent(ctx, core.Event{TaskID: "history-parked", Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 40; i++ {
+		appendEvent("task.state_changed", map[string]any{"command": fmt.Sprintf("%s-%d", superseded, i)})
+		appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running", "note": superseded})
+		appendEvent("pull_request.opened", map[string]any{"number": 100 + i, "title": superseded})
+		appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1, "note": superseded})
+	}
+	appendEvent("pull_request.opened", map[string]any{"number": 7, "title": "latest"})
+	appendEvent("pipeline.bounce_limit", map[string]any{"window": 3})
+	appendEvent("merge.blocked", map[string]any{"approved_head": "a", "new_head": "b"})
+	appendEvent("task.state_changed", map[string]any{"command": "triage.park"})
+
+	recorder := &selectedBytesRecorder{needles: [][]byte{[]byte(superseded)}}
+	connector, err := mysql.NewConnector(sharedDatabase.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(recordingConnector{Connector: connector, recorder: recorder})
+	t.Cleanup(func() { _ = db.Close() })
+	recorded := &Store{db: db, log: s2log.New(db)}
+
+	recorder.start()
+	if _, err = recorded.ListEvents(ctx, "history-parked"); err != nil {
+		t.Fatal(err)
+	}
+	if _, hits := recorder.stop(); len(hits) != 1 {
+		t.Fatalf("recorder control hits=%v, want the superseded sentinel", hits)
+	}
+	recorder.start()
+	got, err := recorded.ListNextActionHistory(ctx, []string{"history-parked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries, hits := recorder.stop()
+	if len(hits) != 0 || len(queries) != 1 {
+		t.Fatalf("history read queries=%d selected superseded rows: %v", len(queries), hits)
+	}
+	history := got["history-parked"]
+	if history.ParkCommand != "triage.park" || history.PullRequest != 7 || history.BounceCount != 3 || len(history.MergeEvents) != 1 {
+		t.Fatalf("history=%+v", history)
 	}
 }

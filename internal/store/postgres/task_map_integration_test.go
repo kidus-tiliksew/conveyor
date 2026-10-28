@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -382,4 +384,107 @@ func sortedCopy(values []string) []string {
 	out := append([]string(nil), values...)
 	slices.Sort(out)
 	return out
+}
+
+// historyRowTracer records the row count PostgreSQL returns for the bounded
+// next-action history read, observed at the driver boundary before any Go
+// materialization (component-persistence).
+type historyRowTracer struct {
+	mu   sync.Mutex
+	rows []int64
+}
+
+type historyRowTracerKey struct{}
+
+func (r *historyRowTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, historyRowTracerKey{}, data.SQL)
+}
+
+func (r *historyRowTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	sql, _ := ctx.Value(historyRowTracerKey{}).(string)
+	if data.Err != nil || !strings.Contains(sql, "DISTINCT ON (e.task_id, e.kind)") {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows = append(r.rows, data.CommandTag.RowsAffected())
+}
+
+func (r *historyRowTracer) take() []int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.rows
+	r.rows = nil
+	return out
+}
+
+func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracer := &historyRowTracer{}
+	cfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(pool)
+	workspace := "history-rows-" + core.NewTaskID()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	seed := func(history int) string {
+		t.Helper()
+		id := core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Title: "history " + id, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskParked, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		at := now.Add(-time.Hour)
+		appendEvent := func(kind string, payload any) {
+			at = at.Add(time.Millisecond)
+			if err := st.AppendEvent(ctx, core.Event{TaskID: id, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := 0; i < history; i++ {
+			appendEvent("task.state_changed", map[string]any{"command": fmt.Sprintf("superseded-%d", i)})
+			appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running"})
+			appendEvent("pull_request.opened", map[string]any{"number": 100 + i})
+			appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1})
+		}
+		appendEvent("merge.blocked", map[string]any{"approved_head": "a", "new_head": "b"})
+		appendEvent("merge.conflict_dispatch_failed", map[string]any{"approved_head": "a", "new_head": "b", "next_retry_at": now})
+		appendEvent("task.state_changed", map[string]any{"command": "triage.park"})
+		return id
+	}
+	read := func(id string) (store.NextActionHistory, []int64) {
+		t.Helper()
+		tracer.take()
+		got, err := st.ListNextActionHistory(ctx, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got[id], tracer.take()
+	}
+	short, shortRows := read(seed(20))
+	long, longRows := read(seed(200))
+	if len(shortRows) != 1 || len(longRows) != 1 {
+		t.Fatalf("history reads short=%v long=%v, want one query each", shortRows, longRows)
+	}
+	// Two merge-conflict rows plus the latest command, pull request, and
+	// bounce row, whatever the length of the superseded history.
+	if shortRows[0] != 5 || longRows[0] != shortRows[0] {
+		t.Fatalf("history rows short=%d long=%d, want 5 for both", shortRows[0], longRows[0])
+	}
+	if long.ParkCommand != "triage.park" || long.PullRequest != 299 || long.BounceCount != 200 || len(long.MergeEvents) != 2 || short.PullRequest != 119 {
+		t.Fatalf("history summaries short=%+v long=%+v", short, long)
+	}
 }
