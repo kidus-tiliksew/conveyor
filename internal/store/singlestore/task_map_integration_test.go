@@ -20,6 +20,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -433,6 +434,17 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		}
 		appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
 		appendEvent("merge.blocked", heads(nil))
+		// The latest uncleared episode grows too: repeated dispatches of the
+		// same order and accepted, null, missing, and large invalid failures.
+		for i := 0; i < rounds; i++ {
+			appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Duration(i) * time.Minute)}))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": "invalid " + pad}))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": nil}))
+			missing := heads(nil)
+			delete(missing, "note")
+			appendEvent("merge.conflict_dispatch_failed", missing)
+		}
 		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
 		appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Hour)}))
 		appendEvent("pull_request.opened", map[string]any{"number": 7, "note": pad})
@@ -460,14 +472,14 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		t.Fatalf("recorder control hits=%v, want the payload sentinel", hits)
 	}
 	type observation struct{ queries, rows, bytes int }
-	observe := func(id string) observation {
+	observe := func(id string, rounds int) observation {
 		t.Helper()
 		recorder.start()
 		histories, err := recorded.ListNextActionHistory(ctx, []string{id})
 		if err != nil {
 			t.Fatal(err)
 		}
-		pins, err := recorded.ListTaskContextDesignPins(ctx, []string{id})
+		pins, err := recorded.ListTaskContextDesignPins(ctx, []string{id}, []string{"design-history"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -486,23 +498,29 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		}
 		got, want := histories[id], store.FoldNextActionHistory(events, orders)
 		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
-			store.MergeConflictFromHistory(got.MergeConflict, orders) != store.MergeConflictFromHistory(want.MergeConflict, orders) ||
-			len(got.MergeConflict.Steps) != len(want.MergeConflict.Steps) || !slices.Equal(got.MergeConflict.DispatchedOrderIDs, want.MergeConflict.DispatchedOrderIDs) {
+			!sameConflict(store.MergeConflictFromHistory(got.MergeConflict, orders), store.MergeConflictFromHistory(want.MergeConflict, orders)) ||
+			got.MergeConflict.Failures != want.MergeConflict.Failures || !slices.Equal(got.MergeConflict.DispatchedOrderIDs, want.MergeConflict.DispatchedOrderIDs) {
 			t.Fatalf("task %s history=%+v full fold %+v", id, got, want)
 		}
 		if _, wantPins := store.ActiveTaskContextReferences(events); pins[id]["design-history"] != 4 || len(pins[id]) != len(wantPins) {
 			t.Fatalf("task %s pins=%+v full fold %+v", id, pins[id], wantPins)
 		}
-		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || len(got.MergeConflict.DispatchedOrderIDs) != 2 || len(got.MergeConflict.Steps) != 2 {
+		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || len(got.MergeConflict.DispatchedOrderIDs) != 2 || got.MergeConflict.Failures != 3*rounds+1 || len(got.MergeConflict.NextRetryAt) > 37 {
 			t.Fatalf("task %s summary=%+v", id, got)
 		}
 		return observation{queries: len(queries), rows: rows, bytes: bytes}
 	}
-	small := observe("history-small-1")
-	large := observe("history-large-1")
-	// Three latest rows, one summary row, two steps, two dispatched orders,
-	// and one current pin, over three queries.
-	if small != large || small.queries != 3 || small.rows != 9 {
-		t.Fatalf("bounded reads small=%+v large=%+v, want equal with 3 queries and 9 rows", small, large)
+	small := observe("history-small-1", 20)
+	large := observe("history-large-1", 200)
+	// Three latest rows, one summary row, two dispatched orders, and one
+	// current pin, over three queries.
+	if small != large || small.queries != 3 || small.rows != 7 {
+		t.Fatalf("bounded reads small=%+v large=%+v, want equal with 3 queries and 7 rows", small, large)
 	}
+}
+
+// sameConflict compares merge-conflict results by instant, because each
+// decode of an offset time builds its own fixed zone.
+func sameConflict(a, b nextaction.MergeConflict) bool {
+	return a.Open == b.Open && a.Exhausted == b.Exhausted && a.NextRetryAt.Equal(b.NextRetryAt)
 }

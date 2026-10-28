@@ -346,7 +346,7 @@ func readCitedDocuments(ctx context.Context, st Store, tasks []core.Task, inputs
 	if err != nil {
 		return err
 	}
-	pins, err := st.ListTaskContextDesignPins(ctx, taskIDs)
+	pins, err := st.ListTaskContextDesignPins(ctx, taskIDs, documentIDs)
 	if err != nil {
 		return err
 	}
@@ -807,11 +807,11 @@ func terminalConflictFix(order core.WorkOrder) bool {
 	}
 }
 
-// MergeConflictFromHistory applies the merge-conflict fold to the bounded
+// MergeConflictFromHistory applies the merge-conflict fold to the fixed-size
 // summary: an unopened summary is no conflict; a cleared episode keeps no
-// failures, retry time, or exhaustion of its own; otherwise each dispatch
-// step clears the retry time and each failure whose next_retry_at decodes
-// counts and sets it; and each terminal conflict-fix order the episode
+// failures, retry time, or exhaustion of its own; otherwise the accepted
+// failure count and the last effective retry time, decoded with the same
+// decoder, carry over; and each terminal conflict-fix order the episode
 // dispatched adds a failure. It equals MergeConflictDispatchState over the
 // task's full history (component-work-orders, Next action).
 func MergeConflictFromHistory(history MergeConflictHistory, orders []core.WorkOrder) nextaction.MergeConflict {
@@ -820,24 +820,15 @@ func MergeConflictFromHistory(history MergeConflictHistory, orders []core.WorkOr
 	}
 	var state MergeConflictState
 	if !history.Cleared {
-		for _, step := range history.Steps {
-			if step.Dispatched {
-				state.NextRetryAt = time.Time{}
-				continue
-			}
-			payload := json.RawMessage(`{}`)
-			if step.NextRetryAt != nil {
-				payload = append(append(json.RawMessage(`{"next_retry_at":`), step.NextRetryAt...), '}')
-			}
+		state.Failures, state.Exhausted = history.Failures, history.Exhausted
+		if history.NextRetryAt != nil {
 			var failed struct {
 				NextRetryAt time.Time `json:"next_retry_at"`
 			}
-			if json.Unmarshal(payload, &failed) == nil {
-				state.Failures++
+			if json.Unmarshal(append(append(json.RawMessage(`{"next_retry_at":`), history.NextRetryAt...), '}'), &failed) == nil {
 				state.NextRetryAt = failed.NextRetryAt
 			}
 		}
-		state.Exhausted = history.Exhausted
 	}
 	for _, order := range orders {
 		if slices.Contains(history.DispatchedOrderIDs, order.ID) && terminalConflictFix(order) {

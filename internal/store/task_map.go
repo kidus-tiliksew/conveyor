@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -238,10 +242,10 @@ type NextActionInputStore interface {
 	// ListOpenDependents returns, in ID order, the heads of the workspace's
 	// tasks outside merged and closed that depend on any requested task.
 	ListOpenDependents(ctx context.Context, taskIDs []string) ([]TaskHead, error)
-	// ListTaskContextDesignPins returns each requested task's System Design
-	// pins, folded by ActiveTaskContextReferences from its context
-	// attachment events alone. Tasks without a pin are absent.
-	ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error)
+	// ListTaskContextDesignPins returns each requested task's pins of the
+	// requested System Designs, folded by ActiveTaskContextReferences from
+	// its context attachment events alone. Tasks without one are absent.
+	ListTaskContextDesignPins(ctx context.Context, taskIDs, documentIDs []string) (map[string]map[string]int, error)
 	// ListDocumentHeads returns each requested requirement or System Design
 	// head; a requirement wins over a System Design with the same ID and a
 	// missing ID is absent.
@@ -265,26 +269,55 @@ type NextActionHistory struct {
 	MergeConflict MergeConflictHistory
 }
 
-// MergeConflictHistory is the bounded input of the merge-conflict fold.
+// MergeConflictHistory is the fixed-size input of the merge-conflict fold.
 // Open reports that the latest merge.blocked decodes into its heads; nothing
 // else is set otherwise. Cleared reports a merge.conflict_cleared after it.
-// Exhausted and Steps describe the open episode after it and are set only
-// when it is not cleared. DispatchedOrderIDs are the task's own orders that a
+// Exhausted, Failures, and NextRetryAt describe the open episode after it and
+// are set only when it is not cleared: Failures counts the same-episode
+// failures whose next_retry_at the Go decoder accepts, and NextRetryAt is the
+// normalized time of the last effective step when that step is a failure with
+// a time, nil otherwise. DispatchedOrderIDs are the task's own orders that a
 // same-heads dispatch named while its episode was open, sorted.
 type MergeConflictHistory struct {
 	Open               bool
 	Cleared            bool
 	Exhausted          bool
-	Steps              []MergeConflictStep
+	Failures           int
+	NextRetryAt        json.RawMessage
 	DispatchedOrderIDs []string
 }
 
-// MergeConflictStep is one same-episode dispatch or dispatch failure after
-// the latest merge.blocked. A failure carries only the raw JSON value of its
-// next_retry_at, nil when the payload has none.
-type MergeConflictStep struct {
-	Dispatched  bool
-	NextRetryAt json.RawMessage
+// ParkCommandSummaryLength bounds the park command a summary carries. The
+// projection compares it only with dispatch.fail_final, which this prefix
+// decides exactly.
+const ParkCommandSummaryLength = 64
+
+// SummarizeParkCommand keeps the first ParkCommandSummaryLength characters
+// of a park command, as every backend transfers it.
+func SummarizeParkCommand(command string) string {
+	if runes := []rune(command); len(runes) > ParkCommandSummaryLength {
+		return string(runes[:ParkCommandSummaryLength])
+	}
+	return command
+}
+
+// NormalizeRetryTime keeps at most nine fraction digits of an accepted JSON
+// retry time, the digits the decoder reads, so the value is at most 37 bytes
+// and decodes to the same instant.
+func NormalizeRetryTime(raw json.RawMessage) json.RawMessage {
+	text := string(raw)
+	start := strings.IndexAny(text, ".,")
+	if start < 0 {
+		return raw
+	}
+	end := start + 1
+	for end < len(text) && text[end] >= '0' && text[end] <= '9' {
+		end++
+	}
+	if end-start <= 10 {
+		return raw
+	}
+	return json.RawMessage(text[:start+10] + text[end:])
 }
 
 type mergeConflictHeads struct {
@@ -342,13 +375,25 @@ func SummarizeMergeConflict(events []core.Event, orders []core.WorkOrder) MergeC
 				dispatched[payload.WorkOrderID] = true
 			}
 			if i > latest {
-				out.Steps = append(out.Steps, MergeConflictStep{Dispatched: true})
+				out.NextRetryAt = nil
 			}
 		case "merge.conflict_dispatch_failed":
-			if i > latest && inside && same(event.Payload) {
-				var fields map[string]json.RawMessage
-				_ = json.Unmarshal(event.Payload, &fields)
-				out.Steps = append(out.Steps, MergeConflictStep{NextRetryAt: fields["next_retry_at"]})
+			if i <= latest || !inside || !same(event.Payload) {
+				continue
+			}
+			var failed struct {
+				NextRetryAt time.Time `json:"next_retry_at"`
+			}
+			if json.Unmarshal(event.Payload, &failed) != nil {
+				continue
+			}
+			out.Failures++
+			var fields map[string]json.RawMessage
+			_ = json.Unmarshal(event.Payload, &fields)
+			if raw := fields["next_retry_at"]; raw != nil && string(raw) != "null" {
+				out.NextRetryAt = NormalizeRetryTime(raw)
+			} else {
+				out.NextRetryAt = nil
 			}
 		case "merge.conflict_dispatch_exhausted":
 			if i > latest && inside && same(event.Payload) {
@@ -357,7 +402,7 @@ func SummarizeMergeConflict(events []core.Event, orders []core.WorkOrder) MergeC
 		}
 	}
 	if out.Cleared {
-		out.Exhausted, out.Steps = false, nil
+		out.Exhausted, out.Failures, out.NextRetryAt = false, 0, nil
 	}
 	for id := range dispatched {
 		out.DispatchedOrderIDs = append(out.DispatchedOrderIDs, id)
@@ -366,56 +411,38 @@ func SummarizeMergeConflict(events []core.Event, orders []core.WorkOrder) MergeC
 	return out
 }
 
-// SortMergeConflictHistory orders a durable backend's summary rows: steps by
-// their position in the task's merge history, order IDs by value.
-func SortMergeConflictHistory(history *MergeConflictHistory, positions []int64) {
-	steps := make([]int, len(history.Steps))
-	for i := range steps {
-		steps[i] = i
-	}
-	sort.SliceStable(steps, func(i, j int) bool { return positions[steps[i]] < positions[steps[j]] })
-	ordered := make([]MergeConflictStep, len(steps))
-	for i, index := range steps {
-		ordered[i] = history.Steps[index]
-	}
-	if len(ordered) > 0 {
-		history.Steps = ordered
-	}
-	sort.Strings(history.DispatchedOrderIDs)
-}
-
 // FoldNextActionHistory builds a task's summary from its full history in
 // (at, id) order and its work orders, applying the assembler's park-command,
 // pull-request, bounce-count, and merge-conflict folds unchanged. The volatile
 // backend reads it, and tests use it as the full-history oracle.
 func FoldNextActionHistory(events []core.Event, orders []core.WorkOrder) NextActionHistory {
 	return NextActionHistory{
-		ParkCommand:   parkCommand(events),
+		ParkCommand:   SummarizeParkCommand(parkCommand(events)),
 		PullRequest:   recordedPullRequest(events),
 		BounceCount:   recordedBounceCount(events),
 		MergeConflict: SummarizeMergeConflict(events, orders),
 	}
 }
 
-// LatestHistoryFields applies the park-command, pull-request, and bounce-count
-// folds to the latest rows a durable backend selected for each, grouped by
-// task in (at, id) order.
-func LatestHistoryFields(rows []core.Event) map[string]NextActionHistory {
-	byTask := map[string][]core.Event{}
-	for _, row := range rows {
-		byTask[row.TaskID] = append(byTask[row.TaskID], row)
+// ApplyLatestHistoryValue sets the summary field a durable backend's typed
+// latest value fills: the park command, the pull-request number, or the
+// bounce window.
+func ApplyLatestHistoryValue(history *NextActionHistory, kind, value string) error {
+	switch kind {
+	case "task.state_changed":
+		history.ParkCommand = value
+	case "pull_request.opened", "pipeline.bounce_limit":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("next-action history %s value %q: %w", kind, value, err)
+		}
+		if kind == "pull_request.opened" {
+			history.PullRequest = n
+		} else {
+			history.BounceCount = n
+		}
 	}
-	out := map[string]NextActionHistory{}
-	for id, events := range byTask {
-		sort.SliceStable(events, func(i, j int) bool {
-			if events[i].At.Equal(events[j].At) {
-				return events[i].ID < events[j].ID
-			}
-			return events[i].At.Before(events[j].At)
-		})
-		out[id] = NextActionHistory{ParkCommand: parkCommand(events), PullRequest: recordedPullRequest(events), BounceCount: recordedBounceCount(events)}
-	}
-	return out
+	return nil
 }
 
 // CompactNextActionHistories drops summaries without a folded field, so a
@@ -452,17 +479,24 @@ const (
 // ActiveTaskContextReferences folds.
 var TaskContextEventKinds = []string{TaskContextRequirementAdded, TaskContextRequirementRemoved, TaskContextDesignAdded, TaskContextDesignRemoved}
 
-// TaskContextDesignPins folds rows in (at, id) order into each task's design
-// pins. A task without one is absent.
-func TaskContextDesignPins(rows []core.Event) map[string]map[string]int {
+// TaskContextDesignPins folds rows in (at, id) order into each task's pins
+// of the requested documents. A task without one is absent.
+func TaskContextDesignPins(rows []core.Event, documentIDs []string) map[string]map[string]int {
 	byTask := map[string][]core.Event{}
 	for _, row := range rows {
 		byTask[row.TaskID] = append(byTask[row.TaskID], row)
 	}
 	out := map[string]map[string]int{}
 	for id, events := range byTask {
-		if _, pins := ActiveTaskContextReferences(events); len(pins) > 0 {
-			out[id] = pins
+		_, pins := ActiveTaskContextReferences(events)
+		for document, version := range pins {
+			if !slices.Contains(documentIDs, document) {
+				continue
+			}
+			if out[id] == nil {
+				out[id] = map[string]int{}
+			}
+			out[id][document] = version
 		}
 	}
 	return out
@@ -607,7 +641,7 @@ func (m *memory) ListOpenDependents(ctx context.Context, taskIDs []string) ([]Ta
 	return out, nil
 }
 
-func (m *memory) ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error) {
+func (m *memory) ListTaskContextDesignPins(ctx context.Context, taskIDs, documentIDs []string) (map[string]map[string]int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace, scoped := WorkspaceFromContext(ctx)
@@ -623,7 +657,7 @@ func (m *memory) ListTaskContextDesignPins(ctx context.Context, taskIDs []string
 			}
 		}
 	}
-	return TaskContextDesignPins(rows), nil
+	return TaskContextDesignPins(rows, documentIDs), nil
 }
 
 func (m *memory) ListDocumentHeads(ctx context.Context, ids []string) (map[string]DocumentHead, error) {

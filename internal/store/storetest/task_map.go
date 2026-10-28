@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -413,7 +414,33 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 		quiet := newTask("quiet history", "conveyor", core.TaskParked)
 		raw(quiet.ID, "task.state_changed", `{"from":"queued","to":"parked"}`)
 
-		tasks := []core.Task{history, overflow, boundary, invalid, episode, cleared, undecodable, nullHeads, quiet}
+		// One task per retry time at and beyond each acceptance boundary of
+		// the Go decoder: each failure follows a dispatch, so the failure
+		// alone decides the count and the last effective time.
+		retryValues := []string{
+			`"2026-01-01T00:00:00Z"`, `"2026-01-01T1:00:00Z"`, `"2026-01-01T00:00:00,5Z"`, `"2026-01-01T00:00:00.123456789012345678901234567890Z"`,
+			`"2026-01-01T00:00:00+24:00"`, `"2026-01-01T00:00:00+24:01"`, `"2026-01-01T00:00:00+24:60"`, `"2026-01-01T23:59:59-23:59"`,
+			`"2024-02-29T00:00:00Z"`, `"0000-02-29T00:00:00Z"`, `"2000-02-29T00:00:00Z"`, `"2026-04-30T00:00:00Z"`, `null`,
+			`"2026-01-01T00:00:00+25:00"`, `"2026-01-01T00:00:00+24:61"`, `"2026-01-01T24:00:00Z"`, `"2026-01-01T00:60:00Z"`, `"2026-01-01T00:00:60Z"`,
+			`"2023-02-29T00:00:00Z"`, `"1900-02-29T00:00:00Z"`, `"2026-04-31T00:00:00Z"`, `"2026-13-01T00:00:00Z"`, `"2026-00-01T00:00:00Z"`, `"2026-01-00T00:00:00Z"`,
+			`"2026-01-01T123:00:00Z"`, `"2026-01-01t00:00:00Z"`, `"2026-01-01T00:00:00"`, `"2026-01-01T00:00:00.Z"`, `"2026-01-01T00:00:00+0100"`, `"26-01-01T00:00:00Z"`,
+			`"\u0032026-01-01T00:00:00Z"`, `5`, `true`, `{}`, `["2026-01-01T00:00:00Z"]`, `"` + strings.Repeat("x", 4096) + `"`,
+		}
+		var retryTasks []core.Task
+		for i, value := range retryValues {
+			task := newTask(fmt.Sprintf("retry %d", i), "conveyor", core.TaskApproved)
+			raw(task.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+			raw(task.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b"}`)
+			raw(task.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":`+value+`}`)
+			retryTasks = append(retryTasks, task)
+		}
+		missingRetry := newTask("retry missing", "conveyor", core.TaskApproved)
+		raw(missingRetry.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(missingRetry.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-01-01T00:00:00Z"}`)
+		raw(missingRetry.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b"}`)
+		retryTasks = append(retryTasks, missingRetry)
+
+		tasks := append([]core.Task{history, overflow, boundary, invalid, episode, cleared, undecodable, nullHeads, quiet}, retryTasks...)
 		ids := []string{"missing-" + core.NewTaskID()}
 		for _, task := range tasks {
 			ids = append(ids, task.ID)
@@ -429,7 +456,7 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 			if !sameHistory(got[task.ID], want) {
 				t.Fatalf("task %s history=%+v want full fold %+v", task.Title, got[task.ID], want)
 			}
-			if gotConflict, oracle := store.MergeConflictFromHistory(got[task.ID].MergeConflict, orders), previousMergeConflict(all, orders); gotConflict != oracle {
+			if gotConflict, oracle := store.MergeConflictFromHistory(got[task.ID].MergeConflict, orders), previousMergeConflict(all, orders); !sameConflict(gotConflict, oracle) {
 				t.Fatalf("task %s merge conflict=%+v previous fold %+v", task.Title, gotConflict, oracle)
 			}
 		}
@@ -443,10 +470,10 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 			t.Fatalf("invalid pull request numbers displaced the valid one: %d", n)
 		}
 		e := got[episode.ID].MergeConflict
-		if !e.Open || e.Cleared || !e.Exhausted || len(e.Steps) != 6 || !reflect.DeepEqual(e.DispatchedOrderIDs, sortedStrings(first, second)) {
+		if !e.Open || e.Cleared || !e.Exhausted || e.Failures != 2 || e.NextRetryAt != nil || !reflect.DeepEqual(e.DispatchedOrderIDs, sortedStrings(first, second)) {
 			t.Fatalf("episode summary=%+v want dispatched %s and %s", e, first, second)
 		}
-		if c := got[cleared.ID].MergeConflict; !c.Open || !c.Cleared || c.Exhausted || len(c.Steps) != 0 || !reflect.DeepEqual(c.DispatchedOrderIDs, []string{clearedOrder}) {
+		if c := got[cleared.ID].MergeConflict; !c.Open || !c.Cleared || c.Exhausted || c.Failures != 0 || c.NextRetryAt != nil || !reflect.DeepEqual(c.DispatchedOrderIDs, []string{clearedOrder}) {
 			t.Fatalf("cleared summary=%+v", c)
 		}
 		if got[undecodable.ID].MergeConflict.Open || !got[nullHeads.ID].MergeConflict.Open {
@@ -527,13 +554,25 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 		attach(unpinned.ID, store.TaskContextRequirementAdded, `{"id":"req-pin"}`)
 		attach(unpinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-gone","version":1}`)
 		attach(unpinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-gone"}`)
-		got, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID, unpinned.ID})
+		requested := []string{"design-pin-x", "design-pin-z", "design-pin-n", "design-pin-v", "design-pin-w", "design-pin-y", "design-pin-gone", ""}
+		got, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID, unpinned.ID}, requested)
 		requireOK(t, err)
 		all, err := st.ListEvents(ctx, pinned.ID)
 		requireOK(t, err)
 		_, want := store.ActiveTaskContextReferences(all)
 		if !reflect.DeepEqual(got[pinned.ID], want) || want["design-pin-x"] != 4 || want["design-pin-z"] != 1 || len(want) != 4 {
 			t.Fatalf("pins=%+v want %+v", got[pinned.ID], want)
+		}
+		// Only requested documents cross the boundary.
+		narrow, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID, unpinned.ID}, []string{"design-pin-z", "design-pin-missing"})
+		requireOK(t, err)
+		if !reflect.DeepEqual(narrow, map[string]map[string]int{pinned.ID: {"design-pin-z": 1}}) {
+			t.Fatalf("narrow pins=%+v", narrow)
+		}
+		none, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID}, nil)
+		requireOK(t, err)
+		if len(none) != 0 {
+			t.Fatalf("pins without requested documents=%+v", none)
 		}
 		if _, ok := got[unpinned.ID]; ok {
 			t.Fatalf("task without a design pin returned %+v", got[unpinned.ID])
@@ -620,27 +659,32 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 	})
 }
 
-// sameHistory compares two summaries field by field; a step's retry value
-// compares by its decoded JSON, because PostgreSQL normalizes JSON text.
+// sameHistory compares two summaries field by field; the retry time
+// compares by the instant it decodes to, because each backend serializes
+// JSON its own way.
 func sameHistory(got, want store.NextActionHistory) bool {
 	g, w := got.MergeConflict, want.MergeConflict
 	if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
-		g.Open != w.Open || g.Cleared != w.Cleared || g.Exhausted != w.Exhausted || len(g.Steps) != len(w.Steps) || !reflect.DeepEqual(g.DispatchedOrderIDs, w.DispatchedOrderIDs) {
+		g.Open != w.Open || g.Cleared != w.Cleared || g.Exhausted != w.Exhausted || g.Failures != w.Failures ||
+		(g.NextRetryAt == nil) != (w.NextRetryAt == nil) || !reflect.DeepEqual(g.DispatchedOrderIDs, w.DispatchedOrderIDs) {
 		return false
 	}
-	for i := range g.Steps {
-		if g.Steps[i].Dispatched != w.Steps[i].Dispatched || (g.Steps[i].NextRetryAt == nil) != (w.Steps[i].NextRetryAt == nil) {
-			return false
-		}
-		if g.Steps[i].NextRetryAt == nil {
-			continue
-		}
-		var a, b any
-		if json.Unmarshal(g.Steps[i].NextRetryAt, &a) != nil || json.Unmarshal(w.Steps[i].NextRetryAt, &b) != nil || !reflect.DeepEqual(a, b) {
-			return false
-		}
+	if g.NextRetryAt == nil {
+		return true
 	}
-	return true
+	if len(g.NextRetryAt) > 37 {
+		return false
+	}
+	decode := func(raw json.RawMessage) (time.Time, bool) {
+		var payload struct {
+			NextRetryAt time.Time `json:"next_retry_at"`
+		}
+		err := json.Unmarshal(append(append(json.RawMessage(`{"next_retry_at":`), raw...), '}'), &payload)
+		return payload.NextRetryAt, err == nil
+	}
+	a, okA := decode(g.NextRetryAt)
+	b, okB := decode(w.NextRetryAt)
+	return okA && okB && a.Equal(b)
 }
 
 // previousMergeConflict is the merge-conflict fold the assembler applied to
@@ -662,4 +706,10 @@ func previousMergeConflict(events []core.Event, orders []core.WorkOrder) nextact
 		return nextaction.MergeConflict{Open: true, Exhausted: state.Exhausted || state.Failures >= 3, NextRetryAt: state.NextRetryAt}
 	}
 	return nextaction.MergeConflict{}
+}
+
+// sameConflict compares merge-conflict results by instant, because each
+// decode of an offset time builds its own fixed zone.
+func sameConflict(a, b nextaction.MergeConflict) bool {
+	return a.Open == b.Open && a.Exhausted == b.Exhausted && a.NextRetryAt.Equal(b.NextRetryAt)
 }

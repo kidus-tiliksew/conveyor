@@ -129,9 +129,9 @@ func (c *countingStore) ListTaskContextProposals(ctx context.Context, taskID str
 	return c.Store.ListTaskContextProposals(ctx, taskID, state)
 }
 
-func (c *countingStore) ListTaskContextDesignPins(ctx context.Context, ids []string) (map[string]map[string]int, error) {
+func (c *countingStore) ListTaskContextDesignPins(ctx context.Context, ids, documents []string) (map[string]map[string]int, error) {
 	c.count("ListTaskContextDesignPins", ids)
-	return c.Store.ListTaskContextDesignPins(ctx, ids)
+	return c.Store.ListTaskContextDesignPins(ctx, ids, documents)
 }
 
 func (c *countingStore) ListDocumentHeads(ctx context.Context, ids []string) (map[string]store.DocumentHead, error) {
@@ -223,6 +223,7 @@ type batchFixture struct {
 	// requested are the tasks a batch read projects; off-request dependants
 	// stay outside it.
 	requested []core.Task
+	seq       int
 }
 
 func newBatchFixture(t *testing.T) *batchFixture {
@@ -236,7 +237,10 @@ func newBatchFixture(t *testing.T) *batchFixture {
 
 func (f *batchFixture) task(t *testing.T, name string, state core.TaskState, gate core.GateKind, dependencies ...string) core.Task {
 	t.Helper()
-	id := core.NewTaskID()
+	// A sequence keeps IDs unique across hundreds of tasks in one store,
+	// where random task IDs could collide.
+	f.seq++
+	id := fmt.Sprintf("%s-%04d", core.NewTaskID(), f.seq)
 	task := core.Task{ID: id, Workspace: f.workspace, Title: name + " " + id, Body: "body", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, GateKind: gate, NextStage: core.StageImplement, CreatedAt: f.now, MergeApproval: state == core.TaskApproved}
 	if err := f.st.CreateTaskWithDependencies(f.ctx, task, dependencies); err != nil {
 		t.Fatal(err)
@@ -701,6 +705,19 @@ func TestMergeConflictHistoryMatchesFullFold(t *testing.T) {
 			{"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)}, {"merge.conflict_dispatch_exhausted", blocked("a", "b")}, {"merge.conflict_cleared", `{}`}},
 		"exhausted episode": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_exhausted", blocked("a", "b")}, {"merge.conflict_recovery_blocked", blocked("a", "b")}},
 		"other heads only":  {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_exhausted", blocked("a", "c")}, {"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"c","next_retry_at":"2026-01-01T00:00:00Z"}`}},
+		"lenient retry forms": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T1:00:00Z"`)},
+			{"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00,5+24:60"`)}, {"merge.conflict_dispatch_failed", failed(`"0000-02-29T00:00:00.123456789012345678901234567890Z"`)}},
+		"rejected retry forms": {{"merge.blocked", blocked("a", "b")}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00Z"`)},
+			{"merge.conflict_dispatch_failed", failed(`"1900-02-29T00:00:00Z"`)}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00+25:00"`)},
+			{"merge.conflict_dispatch_failed", failed(`"2026-01-01T00:00:00+24:61"`)}, {"merge.conflict_dispatch_failed", failed(`"2026-01-01T24:00:00Z"`)},
+			{"merge.conflict_dispatch_failed", failed(`"` + strings.Repeat("9", 4096) + `"`)}},
+		"repeated dispatches and failures": func() []step {
+			var out []step
+			for _, s := range repeatedEpisodeSteps(40) {
+				out = append(out, step(s))
+			}
+			return out
+		}(),
 	}
 	for name, steps := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -711,7 +728,7 @@ func TestMergeConflictHistoryMatchesFullFold(t *testing.T) {
 			}
 			summary := store.SummarizeMergeConflict(events, orders)
 			got, want := store.MergeConflictFromHistory(summary, orders), previousMergeConflictFold(events, orders)
-			if got != want {
+			if !sameConflict(got, want) {
 				t.Fatalf("summary %+v folds to %+v, previous fold %+v", summary, got, want)
 			}
 		})
@@ -731,4 +748,29 @@ func TestMergeConflictHistoryMatchesFullFold(t *testing.T) {
 			t.Fatalf("fixtures never reach %s: %v", want, outcomes)
 		}
 	}
+}
+
+// sameConflict compares merge-conflict results by instant, because each
+// decode of an offset time builds its own fixed zone.
+func sameConflict(a, b nextaction.MergeConflict) bool {
+	return a.Open == b.Open && a.Exhausted == b.Exhausted && a.NextRetryAt.Equal(b.NextRetryAt)
+}
+
+// repeatedEpisodeSteps grows dispatches and accepted, null, missing, and large
+// invalid failures inside one uncleared episode, ending on a dispatch and then
+// one accepted failure.
+func repeatedEpisodeSteps(rounds int) []struct{ kind, payload string } {
+	steps := []struct{ kind, payload string }{{"merge.blocked", `{"approved_head":"a","new_head":"b"}`}}
+	for i := 0; i < rounds; i++ {
+		steps = append(steps,
+			struct{ kind, payload string }{"merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"fix-live"}`},
+			struct{ kind, payload string }{"merge.conflict_dispatch_failed", fmt.Sprintf(`{"approved_head":"a","new_head":"b","next_retry_at":"2026-01-%02dT00:00:00Z"}`, i%28+1)},
+			struct{ kind, payload string }{"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"` + strings.Repeat("x", 2048) + `"}`},
+			struct{ kind, payload string }{"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":null}`},
+			struct{ kind, payload string }{"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b"}`},
+		)
+	}
+	return append(steps,
+		struct{ kind, payload string }{"merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"fix-terminal"}`},
+		struct{ kind, payload string }{"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-03-01T00:00:00.5+01:00"}`})
 }

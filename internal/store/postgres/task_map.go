@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -251,12 +252,39 @@ func int64SQL(text string) string {
 		` OR (` + text + ` ~ '^-[0-9]+$' AND (length(` + text + `) < 20 OR (length(` + text + `) = 20 AND ` + text + ` COLLATE "C" <= '-9223372036854775808'))))`
 }
 
+// retryTimePattern is the shape time.Time's JSON decoder accepts in Go 1.24,
+// whose RFC 3339 parse falls back to the lenient time.Parse: a quoted
+// four-digit year, two-digit month and day, a one- or two-digit hour, two-digit
+// minute and second, an optional '.' or ',' fraction, and Z or a +hh:mm or
+// -hh:mm offset. retryAcceptedSQL adds the decoder's range checks.
+const retryTimePattern = `^"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{1,2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})"$`
+
+// retryAcceptedSQL reports whether the JSON text raw of a failure's
+// next_retry_at decodes: missing, null, or a string of retryTimePattern whose
+// month is 1-12, day 1 to the month's length (Gregorian leap years), hour
+// below 24, minute and second below 60, and offset hour and minute at most 24
+// and 60. hp is the hour's digit count.
+const retryAcceptedSQL = `(raw IS NULL OR raw = 'null' OR (CASE WHEN hp IS NULL THEN false ELSE
+	substr(raw, 7, 2)::int BETWEEN 1 AND 12
+	AND substr(raw, 10, 2)::int BETWEEN 1 AND (CASE substr(raw, 7, 2)::int
+		WHEN 2 THEN CASE WHEN substr(raw, 2, 4)::int % 4 = 0 AND (substr(raw, 2, 4)::int % 100 <> 0 OR substr(raw, 2, 4)::int % 400 = 0) THEN 29 ELSE 28 END
+		WHEN 4 THEN 30 WHEN 6 THEN 30 WHEN 9 THEN 30 WHEN 11 THEN 30 ELSE 31 END)
+	AND substr(raw, 13, hp)::int < 24
+	AND substr(raw, 14 + hp, 2)::int < 60
+	AND substr(raw, 17 + hp, 2)::int < 60
+	AND (right(raw, 2) = 'Z"' OR (substr(raw, length(raw) - 5, 2)::int <= 24 AND substr(raw, length(raw) - 2, 2)::int <= 60))
+END))`
+
+// retryNormalizedSQL keeps at most nine fraction digits of an accepted retry
+// time, so the transferred value is at most 37 bytes.
+const retryNormalizedSQL = `left(raw, 18 + hp) || left(substr(raw, 19 + hp, length(raw) - 18 - hp - CASE WHEN right(raw, 2) = 'Z"' THEN 2 ELSE 7 END), 10) || CASE WHEN right(raw, 2) = 'Z"' THEN 'Z"' ELSE right(raw, 7) END`
+
 // mergeConflictSummarySQL computes store.MergeConflictHistory per task in
-// SQL: one summary row for a decodable latest merge.blocked, one step row per
-// same-episode dispatch or failure after it while no clear follows, and one
-// order row per task order a same-heads dispatch named inside an open
-// episode. Rows carry no payload beyond a failure's next_retry_at value.
-const mergeConflictSummarySQL = `WITH m AS (
+// SQL: one fixed-size summary row for a decodable latest merge.blocked (clear
+// and exhaustion flags, the accepted-failure count, and the normalized retry
+// time of the last effective step) and one row per task order a same-heads
+// dispatch named inside an open episode.
+var mergeConflictSummarySQL = `WITH m AS (
 	SELECT e.task_id, e.kind, e.payload_json AS p,
 		row_number() OVER (PARTITION BY e.task_id ORDER BY e.at, e.id) AS rn,
 		(jsonb_typeof(e.payload_json) IN ('object','null')
@@ -285,33 +313,49 @@ const mergeConflictSummarySQL = `WITH m AS (
 	FROM s JOIN r x ON x.task_id = s.task_id AND x.decodes AND x.approved_head = s.approved_head AND x.new_head = s.new_head
 ), exhausted AS (
 	SELECT DISTINCT task_id FROM same WHERE kind = 'merge.conflict_dispatch_exhausted' AND rn > latest_rn
+), steps AS (
+	SELECT task_id, rn, kind, raw, CASE WHEN raw ~ '` + retryTimePattern + `' THEN strpos(substr(raw, 13), ':') - 1 END AS hp
+	FROM (
+		SELECT task_id, rn, kind, CASE WHEN kind = 'merge.conflict_dispatch_failed' THEN (p->'next_retry_at')::text END AS raw
+		FROM same
+		WHERE NOT cleared AND rn > latest_rn AND kind IN ('merge.conflict_fix_dispatched','merge.conflict_dispatch_failed')
+	) episode
+), effective AS (
+	SELECT task_id, rn, kind, raw, hp FROM steps
+	WHERE kind = 'merge.conflict_fix_dispatched' OR ` + retryAcceptedSQL + `
+), failures AS (
+	SELECT task_id, count(*) AS n FROM effective WHERE kind = 'merge.conflict_dispatch_failed' GROUP BY task_id
+), last AS (
+	SELECT DISTINCT ON (task_id) task_id,
+		CASE WHEN kind = 'merge.conflict_dispatch_failed' AND hp IS NOT NULL THEN ` + retryNormalizedSQL + ` END AS retry
+	FROM effective ORDER BY task_id, rn DESC
 )
-SELECT 0 AS row_kind, s.task_id, 0::bigint AS rn, s.cleared, (NOT s.cleared AND exhausted.task_id IS NOT NULL) AS exhausted, '' AS value, NULL::text AS raw
-FROM s LEFT JOIN exhausted ON exhausted.task_id = s.task_id
+SELECT 0 AS row_kind, s.task_id, s.cleared, (NOT s.cleared AND exhausted.task_id IS NOT NULL) AS exhausted,
+	COALESCE(failures.n, 0)::bigint AS failures,
+	last.retry,
+	'' AS value
+FROM s
+LEFT JOIN exhausted ON exhausted.task_id = s.task_id
+LEFT JOIN failures ON failures.task_id = s.task_id
+LEFT JOIN last ON last.task_id = s.task_id
 UNION ALL
-SELECT 1, task_id, rn, false, false, kind, CASE WHEN kind = 'merge.conflict_dispatch_failed' THEN (p->'next_retry_at')::text END
-FROM same
-WHERE NOT cleared AND rn > latest_rn AND kind IN ('merge.conflict_fix_dispatched','merge.conflict_dispatch_failed')
-UNION ALL
-SELECT DISTINCT 2, x.task_id, 0::bigint, false, false, x.p->>'work_order_id', NULL::text
+SELECT DISTINCT 2, x.task_id, false, false, 0::bigint, NULL::text, x.p->>'work_order_id'
 FROM same x
 JOIN same b ON b.task_id = x.task_id AND b.rn = x.reset_rn AND b.kind = 'merge.blocked'
 JOIN work_orders wo ON wo.workspace_id = $1 AND wo.task_id = x.task_id AND wo.id = x.p->>'work_order_id'
-WHERE x.kind = 'merge.conflict_fix_dispatched' AND jsonb_typeof(x.p->'work_order_id') = 'string'
-`
+WHERE x.kind = 'merge.conflict_fix_dispatched' AND jsonb_typeof(x.p->'work_order_id') = 'string'`
 
 // latestHistorySQL selects, per task and kind, the latest row each
-// park-command, pull-request, and bounce fold accepts, carrying only the field
-// that fold reads: the command, the number, or the window. A bounce payload
-// that is not an object or null travels as an undecodable array, as the fold
-// then reads zero.
-var latestHistorySQL = `SELECT DISTINCT ON (e.task_id, e.kind) e.id, e.task_id, e.kind,
+// park-command, pull-request, and bounce fold accepts, and transfers only a
+// typed value: the command's first 64 characters, the number's digits, or the
+// window's digits when the fold accepts it and 0 otherwise.
+var latestHistorySQL = `SELECT DISTINCT ON (e.task_id, e.kind) e.task_id, e.kind,
 	CASE
-		WHEN e.kind = 'task.state_changed' THEN jsonb_build_object('command', e.payload_json->'command')
-		WHEN e.kind = 'pull_request.opened' THEN jsonb_build_object('number', e.payload_json->'number')
-		WHEN jsonb_typeof(e.payload_json) IN ('object','null') THEN jsonb_build_object('window', e.payload_json->'window')
-		ELSE '[]'::jsonb
-	END AS payload_json, e.at
+		WHEN e.kind = 'task.state_changed' THEN left(e.payload_json->>'command', 64)
+		WHEN e.kind = 'pull_request.opened' THEN (e.payload_json->'number')::text
+		WHEN jsonb_typeof(e.payload_json) IN ('object','null') AND ` + positiveInt64SQL(`(e.payload_json->'window')::text`) + ` THEN (e.payload_json->'window')::text
+		ELSE '0'
+	END AS value
 FROM events e
 JOIN tasks t ON t.id = e.task_id
 WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND (
@@ -321,60 +365,54 @@ WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND (
 ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC`
 
 // ListNextActionHistory computes store.NextActionHistory in two queries:
-// the latest row each park-command, pull-request, and bounce fold accepts,
-// and the merge-conflict summary computed in SQL (component-persistence).
+// the typed latest values of the park-command, pull-request, and bounce
+// folds, and the fixed-size merge-conflict summary (component-persistence).
 func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
+	out := map[string]store.NextActionHistory{}
 	if len(taskIDs) == 0 {
-		return map[string]store.NextActionHistory{}, nil
+		return out, nil
 	}
 	rows, err := s.boundary.Query(ctx, latestHistorySQL, workspace(ctx), taskIDs)
 	if err != nil {
 		return nil, err
 	}
-	var selected []core.Event
 	for rows.Next() {
-		var event core.Event
-		var payload []byte
-		if err = rows.Scan(&event.ID, &event.TaskID, &event.Kind, &payload, &event.At); err != nil {
+		var taskID, kind, value string
+		if err = rows.Scan(&taskID, &kind, &value); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		event.Payload = payload
-		selected = append(selected, event)
+		history := out[taskID]
+		if err = store.ApplyLatestHistoryValue(&history, kind, value); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[taskID] = history
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	out := store.LatestHistoryFields(selected)
 	if rows, err = s.boundary.Query(ctx, mergeConflictSummarySQL, workspace(ctx), taskIDs, store.MergeConflictEventKinds); err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	// Rows arrive in no guaranteed order; steps sort by their position in
-	// the task's merge history and order IDs sort by value.
-	positions := map[string][]int64{}
 	for rows.Next() {
 		var rowKind int
 		var taskID, value string
-		var rn int64
 		var cleared, exhausted bool
-		var raw *string
-		if err = rows.Scan(&rowKind, &taskID, &rn, &cleared, &exhausted, &value, &raw); err != nil {
+		var failures int64
+		var retry *string
+		if err = rows.Scan(&rowKind, &taskID, &cleared, &exhausted, &failures, &retry, &value); err != nil {
 			return nil, err
 		}
 		history := out[taskID]
-		switch rowKind {
-		case 0:
-			history.MergeConflict.Open, history.MergeConflict.Cleared, history.MergeConflict.Exhausted = true, cleared, exhausted
-		case 1:
-			step := store.MergeConflictStep{Dispatched: value == "merge.conflict_fix_dispatched"}
-			if raw != nil {
-				step.NextRetryAt = json.RawMessage(*raw)
+		if rowKind == 0 {
+			history.MergeConflict = store.MergeConflictHistory{Open: true, Cleared: cleared, Exhausted: exhausted, Failures: int(failures), DispatchedOrderIDs: history.MergeConflict.DispatchedOrderIDs}
+			if retry != nil {
+				history.MergeConflict.NextRetryAt = json.RawMessage(*retry)
 			}
-			history.MergeConflict.Steps = append(history.MergeConflict.Steps, step)
-			positions[taskID] = append(positions[taskID], rn)
-		case 2:
+		} else {
 			history.MergeConflict.DispatchedOrderIDs = append(history.MergeConflict.DispatchedOrderIDs, value)
 		}
 		out[taskID] = history
@@ -383,7 +421,7 @@ func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (ma
 		return nil, err
 	}
 	for taskID, history := range out {
-		store.SortMergeConflictHistory(&history.MergeConflict, positions[taskID])
+		sort.Strings(history.MergeConflict.DispatchedOrderIDs)
 		out[taskID] = history
 	}
 	return store.CompactNextActionHistories(out), nil
@@ -429,6 +467,7 @@ var designPinsSQL = `SELECT task_id, design_id, version FROM (
 	FROM events e
 	JOIN tasks t ON t.id = e.task_id
 	WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind IN ($3, $4)
+		AND COALESCE(e.payload_json->>'id','') = ANY($5::text[])
 		AND jsonb_typeof(e.payload_json) IN ('object','null')
 		AND COALESCE(jsonb_typeof(e.payload_json->'id'),'null') IN ('string','null')
 		AND (COALESCE(jsonb_typeof(e.payload_json->'version'),'null') = 'null' OR ` + int64SQL(`(e.payload_json->'version')::text`) + `)
@@ -439,12 +478,12 @@ WHERE kind = $3`
 // ListTaskContextDesignPins selects, in one query, the latest decodable
 // design add or remove per task and design ID and keeps the adds, so only
 // current pins cross the boundary (component-persistence).
-func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs []string) (map[string]map[string]int, error) {
+func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs, documentIDs []string) (map[string]map[string]int, error) {
 	out := map[string]map[string]int{}
-	if len(taskIDs) == 0 {
+	if len(taskIDs) == 0 || len(documentIDs) == 0 {
 		return out, nil
 	}
-	rows, err := s.boundary.Query(ctx, designPinsSQL, workspace(ctx), taskIDs, store.TaskContextDesignAdded, store.TaskContextDesignRemoved)
+	rows, err := s.boundary.Query(ctx, designPinsSQL, workspace(ctx), taskIDs, store.TaskContextDesignAdded, store.TaskContextDesignRemoved, documentIDs)
 	if err != nil {
 		return nil, err
 	}
