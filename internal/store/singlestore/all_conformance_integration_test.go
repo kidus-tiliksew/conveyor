@@ -247,6 +247,23 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
 					t.Fatalf("seed stored hold rows=%d err=%v", rows, err)
 				}
+			}, SeedDashboardSessionTimes: func(t *testing.T, ctx context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration) {
+				// No public writer sets a session's stored times
+				// (component-identity-membership).
+				result, err := st.db.ExecContext(ctx, `UPDATE dashboard_sessions SET last_used_at=DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND),expires_at=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) WHERE id=?`, lastUsedAgo.Microseconds(), expiresIn.Microseconds(), sessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+					t.Fatalf("seed dashboard session times rows=%d err=%v", rows, err)
+				}
+			}, DashboardSessionTimes: func(t *testing.T, ctx context.Context, sessionID string) (time.Time, time.Time) {
+				var lastUsed sql.NullTime
+				var expires time.Time
+				if err := st.db.QueryRowContext(ctx, `SELECT last_used_at,expires_at FROM dashboard_sessions WHERE id=?`, sessionID).Scan(&lastUsed, &expires); err != nil {
+					t.Fatal(err)
+				}
+				return lastUsed.Time.UTC(), expires.UTC()
 			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
 				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {

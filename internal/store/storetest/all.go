@@ -79,6 +79,14 @@ type Fixture struct {
 	// observer; durable backends must provide it. The volatile backend reads
 	// in-process and leaves it nil (component-persistence).
 	VerificationClaimReads func(t *testing.T) func() []string
+	// SeedDashboardSessionTimes sets one dashboard session's stored last use
+	// and expiry relative to the backend's own clock, and
+	// DashboardSessionTimes returns that stored pair. No public writer or
+	// read exposes either, so each test binary supplies both. The
+	// InvitationSessions/SessionRefresh cases require them and never skip
+	// (component-identity-membership).
+	SeedDashboardSessionTimes func(t *testing.T, ctx context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration)
+	DashboardSessionTimes     func(t *testing.T, ctx context.Context, sessionID string) (lastUsedAt, expiresAt time.Time)
 }
 
 // WorkerExercise is the worker-service surface the Workers hold-retirement
