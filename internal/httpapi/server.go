@@ -1635,11 +1635,20 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), orders)
+	selectedClaimWaiting, err := store.ClaimWaitingProposals(r.Context(), s.Store, orders)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	// The one selection feeds both proposal_claim_waiting and the next
+	// action, so the request reads it once (component-http-api, Activity and
+	// attention reads).
+	claimWaiting := make(map[string][]waitingProposal, len(selectedClaimWaiting))
+	for taskID, items := range selectedClaimWaiting {
+		for _, item := range items {
+			claimWaiting[taskID] = append(claimWaiting[taskID], waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
+		}
 	}
 	pendingAuthority := pendingAuthorityByTask(orders, proposals)
 	opts, err := s.nextActionOptions(r)
@@ -1650,6 +1659,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	}
 	opts.MarkersLoaded, opts.Markers = true, markers
 	opts.OrdersLoaded, opts.Orders = true, orders
+	opts.ClaimWaitingLoaded, opts.ClaimWaiting = true, selectedClaimWaiting
 	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)

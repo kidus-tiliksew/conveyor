@@ -1,8 +1,10 @@
 package postgres
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -11,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -382,4 +386,217 @@ func sortedCopy(values []string) []string {
 	out := append([]string(nil), values...)
 	slices.Sort(out)
 	return out
+}
+
+// historyQueryTracer counts the rows PostgreSQL returns for each bounded
+// next-action read, observed at the driver boundary before any Go
+// materialization (component-persistence).
+type historyQueryTracer struct {
+	mu   sync.Mutex
+	rows map[string]int64
+}
+
+type historyQueryTracerKey struct{}
+
+func (r *historyQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, historyQueryTracerKey{}, data.SQL)
+}
+
+func (r *historyQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	sql, _ := ctx.Value(historyQueryTracerKey{}).(string)
+	name := map[string]string{latestHistorySQL: "latest", mergeConflictSummarySQL: "merge", designPinsSQL: "pins"}[sql]
+	if data.Err != nil || name == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows[name] += data.CommandTag.RowsAffected()
+}
+
+func (r *historyQueryTracer) take() map[string]int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.rows
+	r.rows = map[string]int64{}
+	return out
+}
+
+// TestNextActionHistoryTransfersBoundedRowsIntegration grows a task's
+// state-change, pull-request, bounce, conflict-episode, and attachment
+// history tenfold and its payloads with the order set fixed. The bounded
+// reads return the same rows and wire bytes for both sizes, never a payload
+// sentinel, and summaries equal to the full-history fold.
+func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
+	const sentinel = "POSTGRES-HISTORY-PAYLOAD-SENTINEL"
+	databaseURL := integrationDatabaseURL(t)
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracer := &historyQueryTracer{rows: map[string]int64{}}
+	cfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err = Migrate(store.WithActor(t.Context(), store.SystemActor()), pool); err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(pool)
+	workspace := "history-rows-" + core.NewTaskID()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	seed := func(rounds, padding int) string {
+		t.Helper()
+		id := core.NewTaskID()
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Title: "history " + id, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskApproved, MergeApproval: true, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		orders := make([]string, 2)
+		for i := range orders {
+			orders[i] = fmt.Sprintf("%s-implement-%d", id, i+1)
+			if err := st.CreateJob(ctx, core.Job{ID: orders[i], TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: orders[i], TaskID: id, JobID: orders[i], Stage: core.StageImplement, State: core.WorkOrderQueued, LastAttemptOutcome: core.WorkOrderOutcomeReleased, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pad := strings.Repeat(sentinel+" ", padding)
+		at := now.Add(-time.Hour)
+		appendEvent := func(kind string, payload map[string]any) {
+			at = at.Add(time.Millisecond)
+			if err := st.AppendEvent(ctx, core.Event{TaskID: id, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		heads := func(extra map[string]any) map[string]any {
+			out := map[string]any{"approved_head": "a", "new_head": "b", "note": pad}
+			for key, value := range extra {
+				out[key] = value
+			}
+			return out
+		}
+		appendEvent("merge.blocked", heads(nil))
+		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[0]}))
+		for i := 0; i < rounds; i++ {
+			appendEvent("task.state_changed", map[string]any{"command": fmt.Sprintf("superseded-%d", i), "note": pad})
+			appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running", "note": pad})
+			appendEvent("pull_request.opened", map[string]any{"number": 100 + i, "note": pad})
+			appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1, "note": pad})
+			appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
+			appendEvent("merge.blocked", heads(nil))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now}))
+			appendEvent("merge.conflict_dispatch_exhausted", heads(nil))
+			appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": i + 1, "note": pad})
+			appendEvent(store.TaskContextDesignRemoved, map[string]any{"id": "design-history", "note": pad})
+		}
+		appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
+		appendEvent("merge.blocked", heads(nil))
+		// The latest uncleared episode grows too: repeated dispatches of the
+		// same order and accepted, null, missing, and large invalid failures.
+		for i := 0; i < rounds; i++ {
+			appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Duration(i) * time.Minute)}))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": "invalid " + pad}))
+			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": nil}))
+			missing := heads(nil)
+			delete(missing, "note")
+			appendEvent("merge.conflict_dispatch_failed", missing)
+		}
+		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
+		appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Hour)}))
+		appendEvent("pull_request.opened", map[string]any{"number": 7, "note": pad})
+		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "note": pad})
+		appendEvent("task.state_changed", map[string]any{"command": "triage.park", "note": pad})
+		appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": 4, "note": pad})
+		return id
+	}
+	wire := func(sql string, args ...any) (rows, bytes int) {
+		t.Helper()
+		result, err := pool.Query(ctx, sql, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Close()
+		for result.Next() {
+			rows++
+			for _, value := range result.RawValues() {
+				bytes += len(value)
+				if strings.Contains(string(value), sentinel) {
+					t.Fatalf("bounded read transferred a payload sentinel: %.80s", value)
+				}
+			}
+		}
+		if err = result.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return rows, bytes
+	}
+	type observation struct {
+		rows  map[string]int64
+		bytes map[string]int
+	}
+	observe := func(id string, rounds int) observation {
+		t.Helper()
+		tracer.take()
+		histories, err := st.ListNextActionHistory(ctx, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pins, err := st.ListTaskContextDesignPins(ctx, []string{id}, []string{"design-history"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := tracer.take()
+		events, err := st.ListEvents(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		orders, err := st.ListWorkOrdersForTasks(ctx, []string{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, want := histories[id], store.FoldNextActionHistory(events, orders)
+		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+			!sameConflict(store.MergeConflictFromHistory(got.MergeConflict, orders), store.MergeConflictFromHistory(want.MergeConflict, orders)) ||
+			got.MergeConflict.Failures != want.MergeConflict.Failures || !slices.Equal(got.MergeConflict.DispatchedOrderIDs, want.MergeConflict.DispatchedOrderIDs) {
+			t.Fatalf("task %s history=%+v full fold %+v", id, got, want)
+		}
+		if _, wantPins := store.ActiveTaskContextReferences(events); pins[id]["design-history"] != 4 || len(pins[id]) != len(wantPins) {
+			t.Fatalf("task %s pins=%+v full fold %+v", id, pins[id], wantPins)
+		}
+		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || len(got.MergeConflict.DispatchedOrderIDs) != 2 || got.MergeConflict.Failures != 3*rounds+1 || len(got.MergeConflict.NextRetryAt) > 37 {
+			t.Fatalf("task %s summary=%+v", id, got)
+		}
+		bytes := map[string]int{}
+		var n int
+		n, bytes["latest"] = wire(latestHistorySQL, workspace, []string{id})
+		if int64(n) != rows["latest"] {
+			t.Fatalf("latest rows traced=%d read=%d", rows["latest"], n)
+		}
+		_, bytes["merge"] = wire(mergeConflictSummarySQL, workspace, []string{id}, store.MergeConflictEventKinds)
+		_, bytes["pins"] = wire(designPinsSQL, workspace, []string{id}, store.TaskContextDesignAdded, store.TaskContextDesignRemoved, []string{"design-history"})
+		return observation{rows: rows, bytes: bytes}
+	}
+	small := observe(seed(20, 1), 20)
+	large := observe(seed(200, 10), 200)
+	if !maps.Equal(small.rows, large.rows) || !maps.Equal(small.bytes, large.bytes) {
+		t.Fatalf("bounded reads grew: small rows=%v bytes=%v, large rows=%v bytes=%v", small.rows, small.bytes, large.rows, large.bytes)
+	}
+	// Three latest rows, one summary row, two dispatched orders, and one
+	// current pin.
+	if small.rows["latest"] != 3 || small.rows["merge"] != 3 || small.rows["pins"] != 1 {
+		t.Fatalf("bounded rows=%v", small.rows)
+	}
+}
+
+// sameConflict compares merge-conflict results by instant, because each
+// decode of an offset time builds its own fixed zone.
+func sameConflict(a, b nextaction.MergeConflict) bool {
+	return a.Open == b.Open && a.Exhausted == b.Exhausted && a.NextRetryAt.Equal(b.NextRetryAt)
 }

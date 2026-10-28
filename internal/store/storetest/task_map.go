@@ -1,9 +1,14 @@
 package storetest
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -282,6 +287,9 @@ func RunTaskMapConformance(t *testing.T, x Fixture) {
 			}
 		}
 	})
+	t.Run("next-action batch reads equal their per-task and full-history reads", func(t *testing.T) {
+		runNextActionBatchReads(t, x, ctx, newTask, requirement)
+	})
 	t.Run("empty workspace reads empty arrays", func(t *testing.T) {
 		other := x.Workspace + "-map-empty"
 		emptyCtx := store.WithWorkspace(ctx, other)
@@ -305,4 +313,403 @@ func sameEvents(got, want []core.Event) bool {
 		}
 	}
 	return true
+}
+
+// runNextActionBatchReads compares the next-action assembler's batch reads
+// with the per-task or full-history reads they replace on every backend
+// (component-persistence, Task map and next-action batch reads).
+func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTask func(string, string, core.TaskState, ...string) core.Task, requirement func(string, bool) string) {
+	st := x.Backend
+	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	t.Run("history equals the full-history fold", func(t *testing.T) {
+		at := base
+		next := func() time.Time { at = at.Add(time.Second); return at }
+		raw := func(taskID, kind string, payload string) {
+			t.Helper()
+			requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, ActorRole: core.ActorSystem, At: next(), Payload: json.RawMessage(payload)}))
+		}
+		order := func(task core.Task, attempt int, terminal bool) string {
+			t.Helper()
+			id := fmt.Sprintf("%s-implement-%d", task.ID, attempt)
+			requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}))
+			wo := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: base, QueueDeadline: base.Add(time.Hour)}
+			if terminal {
+				wo.LastAttemptOutcome = core.WorkOrderOutcomeReleased
+			}
+			requireOK(t, CreateWorkOrder(ctx, st, wo))
+			return id
+		}
+
+		history := newTask("history", "conveyor", core.TaskParked)
+		raw(history.ID, "task.state_changed", `{"command":"triage.park"}`)
+		for i := 0; i < 25; i++ {
+			raw(history.ID, "task.state_changed", `{"from":"queued","to":"running"}`)
+			raw(history.ID, "task.created", `{"body":"unrelated"}`)
+		}
+		raw(history.ID, "task.state_changed", `{"command":5}`)
+		raw(history.ID, "task.state_changed", `{"command":""}`)
+		raw(history.ID, "pipeline.bounce_limit", `{"window":2}`)
+		raw(history.ID, "pipeline.bounce_limit", `{"window":0}`)
+		// Pull-request numbers the Go int decoder rejects never displace an
+		// older accepted one.
+		overflow := newTask("pr overflow", "conveyor", core.TaskParked)
+		raw(overflow.ID, "pull_request.opened", `{"number":42}`)
+		raw(overflow.ID, "pull_request.opened", `{"number":9223372036854775808}`)
+		boundary := newTask("pr boundary", "conveyor", core.TaskParked)
+		raw(boundary.ID, "pull_request.opened", `{"number":42}`)
+		raw(boundary.ID, "pull_request.opened", `{"number":9223372036854775807}`)
+		invalid := newTask("pr invalid", "conveyor", core.TaskParked)
+		raw(invalid.ID, "pull_request.opened", `{"number":3}`)
+		for _, payload := range []string{`{"number":0}`, `{"number":-3}`, `{"number":null}`, `{}`, `{"number":"12"}`, `{"number":12.5}`, `{"number":99999999999999999999}`, `{"number":-9223372036854775809}`, `{"number":true}`, `[1]`, `null`} {
+			raw(invalid.ID, "pull_request.opened", payload)
+		}
+
+		// An open episode with failures, an exhaustion, and dispatches inside
+		// and outside episodes, of other heads, and of another task's order.
+		episode := newTask("conflict episodes", "conveyor", core.TaskApproved)
+		stranger := newTask("conflict stranger", "conveyor", core.TaskRunning)
+		strangerOrder := order(stranger, 1, true)
+		first, second, live, early := order(episode, 1, true), order(episode, 2, true), order(episode, 3, false), order(episode, 4, true)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+early+`"}`)
+		for i := 0; i < 3; i++ {
+			raw(episode.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+			raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-01-01T00:00:00Z"}`)
+			raw(episode.ID, "merge.conflict_cleared", `{}`)
+		}
+		raw(episode.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+first+`"}`)
+		raw(episode.ID, "merge.conflict_cleared", `{}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+early+`"}`)
+		raw(episode.ID, "merge.blocked", `{"approved_head":"other","new_head":"b"}`)
+		raw(episode.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+second+`"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+strangerOrder+`"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"other","work_order_id":"`+live+`"}`)
+		raw(episode.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":7}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-02-01T00:00:00Z"}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"not a time"}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":null}`)
+		raw(episode.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"other","next_retry_at":"2026-03-01T00:00:00Z"}`)
+		raw(episode.ID, "merge.conflict_dispatch_exhausted", `{"approved_head":"a","new_head":"b"}`)
+		raw(episode.ID, "merge.conflict_recovery_blocked", `{"approved_head":"a","new_head":"b"}`)
+		// A cleared latest episode keeps only its dispatched orders.
+		cleared := newTask("conflict cleared", "conveyor", core.TaskApproved)
+		clearedOrder := order(cleared, 1, true)
+		raw(cleared.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(cleared.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"`+clearedOrder+`"}`)
+		raw(cleared.ID, "merge.conflict_dispatch_exhausted", `{"approved_head":"a","new_head":"b"}`)
+		raw(cleared.ID, "merge.conflict_cleared", `{}`)
+		// An undecodable latest block is no conflict; a null block reads
+		// empty heads.
+		undecodable := newTask("conflict undecodable", "conveyor", core.TaskApproved)
+		raw(undecodable.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(undecodable.ID, "merge.blocked", `{"approved_head":5,"new_head":"b"}`)
+		nullHeads := newTask("conflict null heads", "conveyor", core.TaskApproved)
+		raw(nullHeads.ID, "merge.blocked", `null`)
+		raw(nullHeads.ID, "merge.conflict_dispatch_failed", `{"approved_head":null,"new_head":""}`)
+		raw(nullHeads.ID, "merge.conflict_dispatch_failed", `[1]`)
+		tiedAt := next()
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: nullHeads.ID, Kind: "merge.conflict_dispatch_failed", ActorRole: core.ActorSystem, At: tiedAt, Payload: json.RawMessage(`{"next_retry_at":"2026-04-01T00:00:00Z"}`)}))
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: nullHeads.ID, Kind: "merge.conflict_fix_dispatched", ActorRole: core.ActorSystem, At: tiedAt, Payload: json.RawMessage(`{}`)}))
+		quiet := newTask("quiet history", "conveyor", core.TaskParked)
+		raw(quiet.ID, "task.state_changed", `{"from":"queued","to":"parked"}`)
+
+		// One task per retry time at and beyond each acceptance boundary of
+		// the Go decoder: each failure follows a dispatch, so the failure
+		// alone decides the count and the last effective time.
+		retryValues := []string{
+			`"2026-01-01T00:00:00Z"`, `"2026-01-01T1:00:00Z"`, `"2026-01-01T00:00:00,5Z"`, `"2026-01-01T00:00:00.123456789012345678901234567890Z"`,
+			`"2026-01-01T00:00:00+24:00"`, `"2026-01-01T00:00:00+24:01"`, `"2026-01-01T00:00:00+24:60"`, `"2026-01-01T23:59:59-23:59"`,
+			`"2024-02-29T00:00:00Z"`, `"0000-02-29T00:00:00Z"`, `"2000-02-29T00:00:00Z"`, `"2026-04-30T00:00:00Z"`, `null`,
+			`"2026-01-01T00:00:00+25:00"`, `"2026-01-01T00:00:00+24:61"`, `"2026-01-01T24:00:00Z"`, `"2026-01-01T00:60:00Z"`, `"2026-01-01T00:00:60Z"`,
+			`"2023-02-29T00:00:00Z"`, `"1900-02-29T00:00:00Z"`, `"2026-04-31T00:00:00Z"`, `"2026-13-01T00:00:00Z"`, `"2026-00-01T00:00:00Z"`, `"2026-01-00T00:00:00Z"`,
+			`"2026-01-01T123:00:00Z"`, `"2026-01-01t00:00:00Z"`, `"2026-01-01T00:00:00"`, `"2026-01-01T00:00:00.Z"`, `"2026-01-01T00:00:00+0100"`, `"26-01-01T00:00:00Z"`,
+			`"\u0032026-01-01T00:00:00Z"`, `5`, `true`, `{}`, `["2026-01-01T00:00:00Z"]`, `"` + strings.Repeat("x", 4096) + `"`,
+		}
+		var retryTasks []core.Task
+		for i, value := range retryValues {
+			task := newTask(fmt.Sprintf("retry %d", i), "conveyor", core.TaskApproved)
+			raw(task.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+			raw(task.ID, "merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b"}`)
+			raw(task.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":`+value+`}`)
+			retryTasks = append(retryTasks, task)
+		}
+		missingRetry := newTask("retry missing", "conveyor", core.TaskApproved)
+		raw(missingRetry.ID, "merge.blocked", `{"approved_head":"a","new_head":"b"}`)
+		raw(missingRetry.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-01-01T00:00:00Z"}`)
+		raw(missingRetry.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b"}`)
+		retryTasks = append(retryTasks, missingRetry)
+
+		tasks := append([]core.Task{history, overflow, boundary, invalid, episode, cleared, undecodable, nullHeads, quiet}, retryTasks...)
+		ids := []string{"missing-" + core.NewTaskID()}
+		for _, task := range tasks {
+			ids = append(ids, task.ID)
+		}
+		got, err := st.ListNextActionHistory(ctx, ids)
+		requireOK(t, err)
+		for _, task := range tasks {
+			all, err := st.ListEvents(ctx, task.ID)
+			requireOK(t, err)
+			orders, err := st.ListWorkOrdersForTasks(ctx, []string{task.ID})
+			requireOK(t, err)
+			want := store.FoldNextActionHistory(all, orders)
+			if !sameHistory(got[task.ID], want) {
+				t.Fatalf("task %s history=%+v want full fold %+v", task.Title, got[task.ID], want)
+			}
+			if gotConflict, oracle := store.MergeConflictFromHistory(got[task.ID].MergeConflict, orders), previousMergeConflict(all, orders); !sameConflict(gotConflict, oracle) {
+				t.Fatalf("task %s merge conflict=%+v previous fold %+v", task.Title, gotConflict, oracle)
+			}
+		}
+		if h := got[history.ID]; h.ParkCommand != "triage.park" || h.BounceCount != 0 || h.MergeConflict.Open {
+			t.Fatalf("history fixture=%+v", h)
+		}
+		if got[overflow.ID].PullRequest != 42 || got[boundary.ID].PullRequest != 9223372036854775807 {
+			t.Fatalf("pull requests overflow=%d boundary=%d, want 42 and the int64 maximum", got[overflow.ID].PullRequest, got[boundary.ID].PullRequest)
+		}
+		if n := got[invalid.ID].PullRequest; n != 3 && n != 100 {
+			t.Fatalf("invalid pull request numbers displaced the valid one: %d", n)
+		}
+		e := got[episode.ID].MergeConflict
+		if !e.Open || e.Cleared || !e.Exhausted || e.Failures != 2 || e.NextRetryAt != nil || !reflect.DeepEqual(e.DispatchedOrderIDs, sortedStrings(first, second)) {
+			t.Fatalf("episode summary=%+v want dispatched %s and %s", e, first, second)
+		}
+		if c := got[cleared.ID].MergeConflict; !c.Open || !c.Cleared || c.Exhausted || c.Failures != 0 || c.NextRetryAt != nil || !reflect.DeepEqual(c.DispatchedOrderIDs, []string{clearedOrder}) {
+			t.Fatalf("cleared summary=%+v", c)
+		}
+		if got[undecodable.ID].MergeConflict.Open || !got[nullHeads.ID].MergeConflict.Open {
+			t.Fatalf("undecodable=%+v null heads=%+v", got[undecodable.ID].MergeConflict, got[nullHeads.ID].MergeConflict)
+		}
+		for _, id := range []string{quiet.ID, undecodable.ID, ids[0]} {
+			if _, ok := got[id]; ok {
+				t.Fatalf("task %s without a folded field returned %+v", id, got[id])
+			}
+		}
+		empty, err := st.ListNextActionHistory(ctx, nil)
+		requireOK(t, err)
+		foreign, err := st.ListNextActionHistory(store.WithWorkspace(ctx, x.Workspace+"-history-foreign"), ids)
+		requireOK(t, err)
+		if len(empty) != 0 || len(foreign) != 0 {
+			t.Fatalf("empty=%+v foreign=%+v", empty, foreign)
+		}
+	})
+	t.Run("open dependents read only the neighborhood", func(t *testing.T) {
+		blocker := newTask("dependents blocker", "conveyor", core.TaskRunning)
+		other := newTask("dependents other blocker", "conveyor", core.TaskRunning)
+		open := newTask("dependents open", "conveyor", core.TaskQueued, blocker.ID)
+		both := newTask("dependents both", "app", core.TaskAwaiting, blocker.ID, other.ID)
+		merged := newTask("dependents merged", "conveyor", core.TaskMerged, blocker.ID)
+		closed := newTask("dependents closed", "conveyor", core.TaskClosed, blocker.ID)
+		elsewhere := newTask("dependents elsewhere", "conveyor", core.TaskQueued, other.ID)
+		head := func(task core.Task) store.TaskHead {
+			return store.TaskHead{ID: task.ID, Title: task.Title, State: task.State}
+		}
+		sorted := func(heads ...store.TaskHead) []store.TaskHead {
+			sort.Slice(heads, func(i, j int) bool { return heads[i].ID < heads[j].ID })
+			return heads
+		}
+		got, err := st.ListOpenDependents(ctx, []string{blocker.ID})
+		requireOK(t, err)
+		if want := sorted(head(open), head(both)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("dependents of blocker=%+v want %+v (merged %s, closed %s excluded)", got, want, merged.ID, closed.ID)
+		}
+		got, err = st.ListOpenDependents(ctx, []string{other.ID, blocker.ID, blocker.ID})
+		requireOK(t, err)
+		if want := sorted(head(open), head(both), head(elsewhere)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("dependents of both=%+v want %+v", got, want)
+		}
+		got, err = st.ListOpenDependents(ctx, nil)
+		requireOK(t, err)
+		foreign, err := st.ListOpenDependents(store.WithWorkspace(ctx, x.Workspace+"-dependents-foreign"), []string{blocker.ID})
+		requireOK(t, err)
+		if len(got) != 0 || len(foreign) != 0 {
+			t.Fatalf("empty=%+v foreign=%+v", got, foreign)
+		}
+	})
+	t.Run("design pins equal the full context fold", func(t *testing.T) {
+		pinned := newTask("pins", "conveyor", core.TaskQueued)
+		unpinned := newTask("pins none", "conveyor", core.TaskQueued)
+		at := base.Add(10 * time.Minute)
+		attach := func(taskID, kind, payload string) {
+			t.Helper()
+			at = at.Add(time.Second)
+			requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: json.RawMessage(payload)}))
+		}
+		for round := 1; round <= 3; round++ {
+			attach(pinned.ID, store.TaskContextDesignAdded, fmt.Sprintf(`{"id":"design-pin-x","version":%d}`, round))
+			attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-y","version":1}`)
+			attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-y"}`)
+			attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-x"}`)
+		}
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-x","version":4}`)
+		attach(pinned.ID, "task.state_changed", `{"from":"queued","to":"running"}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-z","version":1}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-z","version":"two"}`)
+		attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-z","version":2.5}`)
+		attach(pinned.ID, store.TaskContextDesignRemoved, `{"id":5}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-w","version":9223372036854775808}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-n","version":-9223372036854775808}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-v","version":null}`)
+		attach(pinned.ID, store.TaskContextDesignAdded, `[1]`)
+		attach(pinned.ID, store.TaskContextRequirementAdded, `{"id":"req-pin"}`)
+		attach(unpinned.ID, store.TaskContextRequirementAdded, `{"id":"req-pin"}`)
+		attach(unpinned.ID, store.TaskContextDesignAdded, `{"id":"design-pin-gone","version":1}`)
+		attach(unpinned.ID, store.TaskContextDesignRemoved, `{"id":"design-pin-gone"}`)
+		requested := []string{"design-pin-x", "design-pin-z", "design-pin-n", "design-pin-v", "design-pin-w", "design-pin-y", "design-pin-gone", ""}
+		got, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID, unpinned.ID}, requested)
+		requireOK(t, err)
+		all, err := st.ListEvents(ctx, pinned.ID)
+		requireOK(t, err)
+		_, want := store.ActiveTaskContextReferences(all)
+		if !reflect.DeepEqual(got[pinned.ID], want) || want["design-pin-x"] != 4 || want["design-pin-z"] != 1 || len(want) != 4 {
+			t.Fatalf("pins=%+v want %+v", got[pinned.ID], want)
+		}
+		// Only requested documents cross the boundary.
+		narrow, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID, unpinned.ID}, []string{"design-pin-z", "design-pin-missing"})
+		requireOK(t, err)
+		if !reflect.DeepEqual(narrow, map[string]map[string]int{pinned.ID: {"design-pin-z": 1}}) {
+			t.Fatalf("narrow pins=%+v", narrow)
+		}
+		none, err := st.ListTaskContextDesignPins(ctx, []string{pinned.ID}, nil)
+		requireOK(t, err)
+		if len(none) != 0 {
+			t.Fatalf("pins without requested documents=%+v", none)
+		}
+		if _, ok := got[unpinned.ID]; ok {
+			t.Fatalf("task without a design pin returned %+v", got[unpinned.ID])
+		}
+	})
+	t.Run("document heads equal the per-document reads", func(t *testing.T) {
+		confirmed := requirement("heads confirmed", true)
+		unconfirmed := requirement("heads unconfirmed", false)
+		archived := requirement("heads archived", true)
+		requireOK(t, st.ArchiveRequirement(ctx, archived, requirementConformanceActor, nil))
+		designID := "design-heads-" + core.NewTaskID()
+		design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: designID, Title: "Heads design", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("heads"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version)
+		requireOK(t, err)
+		pendingDesign := "design-heads-pending-" + core.NewTaskID()
+		_, _, err = st.CreateSystemDesign(ctx, core.SystemDesign{ID: pendingDesign, Title: "Heads pending design", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("pending"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		missing := "missing-doc-" + core.NewTaskID()
+		ids := []string{confirmed, unconfirmed, archived, designID, pendingDesign, missing, confirmed}
+		got, err := st.ListDocumentHeads(ctx, ids)
+		requireOK(t, err)
+		for _, id := range ids {
+			var want store.DocumentHead
+			found := true
+			if requirement, err := st.GetRequirement(ctx, id); err == nil {
+				want = store.DocumentHead{ID: id, Tier: store.DocumentHeadRequirement, CurrentVersion: requirement.CurrentVersion, Archived: requirement.Archived}
+			} else if design, err := st.GetSystemDesign(ctx, id); err == nil {
+				want = store.DocumentHead{ID: id, Tier: store.DocumentHeadSystemDesign, CurrentVersion: design.CurrentVersion, Archived: design.Archived}
+			} else {
+				found = false
+			}
+			head, ok := got[id]
+			if ok != found || head != want {
+				t.Fatalf("document %s head=%+v/%t want %+v/%t", id, head, ok, want, found)
+			}
+		}
+		if !got[archived].Archived || got[unconfirmed].CurrentVersion != 0 || got[designID].Tier != store.DocumentHeadSystemDesign || got[designID].CurrentVersion != version.Version {
+			t.Fatalf("fixture did not exercise the heads: %+v", got)
+		}
+	})
+	t.Run("verification reviews equal the per-order reads", func(t *testing.T) {
+		reader, ok := st.(store.VerificationReviewReader)
+		batch, batched := st.(store.VerificationReviewBatchReader)
+		if !ok || !batched {
+			t.Fatalf("backend reads verification reviews=%t batched=%t", ok, batched)
+		}
+		now := time.Now().UTC().Truncate(time.Second)
+		order := func(task core.Task) string {
+			t.Helper()
+			id := task.ID + "-verify-1"
+			requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}))
+			requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageVerify, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
+			return id
+		}
+		first, second := newTask("reviews first", "conveyor", core.TaskRunning), newTask("reviews second", "conveyor", core.TaskRunning)
+		refs := []store.VerificationReviewRef{{TaskID: first.ID, OrderID: order(first)}, {TaskID: second.ID, OrderID: order(second)}}
+		got, err := batch.ReadVerificationReviews(ctx, refs)
+		requireOK(t, err)
+		for _, ref := range refs {
+			want, err := reader.ReadVerificationReview(ctx, ref.TaskID, ref.OrderID)
+			requireOK(t, err)
+			if !reflect.DeepEqual(got[ref.OrderID].Rows, want.Rows) || got[ref.OrderID].Order.ID != want.Order.ID || got[ref.OrderID].Order.TaskID != ref.TaskID {
+				t.Fatalf("order %s batch=%+v single=%+v", ref.OrderID, got[ref.OrderID], want)
+			}
+		}
+		empty, err := batch.ReadVerificationReviews(ctx, nil)
+		requireOK(t, err)
+		if len(empty) != 0 {
+			t.Fatalf("empty input=%+v", empty)
+		}
+		// An order of another task gets the per-order read's outcome: the
+		// durable backends refuse it, and the volatile read returns the order
+		// for the caller's own refusal.
+		crossed := store.VerificationReviewRef{TaskID: first.ID, OrderID: refs[1].OrderID}
+		single, singleErr := reader.ReadVerificationReview(ctx, crossed.TaskID, crossed.OrderID)
+		crossedBatch, batchErr := batch.ReadVerificationReviews(ctx, []store.VerificationReviewRef{crossed})
+		if (singleErr == nil) != (batchErr == nil) || errors.Is(singleErr, store.ErrVerificationAccess) != errors.Is(batchErr, store.ErrVerificationAccess) {
+			t.Fatalf("another task's order batch err=%v single err=%v", batchErr, singleErr)
+		}
+		if singleErr == nil && (crossedBatch[crossed.OrderID].Order.ID != single.Order.ID || !reflect.DeepEqual(crossedBatch[crossed.OrderID].Rows, single.Rows)) {
+			t.Fatalf("another task's order batch=%+v single=%+v", crossedBatch[crossed.OrderID], single)
+		}
+	})
+}
+
+// sameHistory compares two summaries field by field; the retry time
+// compares by the instant it decodes to, because each backend serializes
+// JSON its own way.
+func sameHistory(got, want store.NextActionHistory) bool {
+	g, w := got.MergeConflict, want.MergeConflict
+	if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+		g.Open != w.Open || g.Cleared != w.Cleared || g.Exhausted != w.Exhausted || g.Failures != w.Failures ||
+		(g.NextRetryAt == nil) != (w.NextRetryAt == nil) || !reflect.DeepEqual(g.DispatchedOrderIDs, w.DispatchedOrderIDs) {
+		return false
+	}
+	if g.NextRetryAt == nil {
+		return true
+	}
+	if len(g.NextRetryAt) > 37 {
+		return false
+	}
+	decode := func(raw json.RawMessage) (time.Time, bool) {
+		var payload struct {
+			NextRetryAt time.Time `json:"next_retry_at"`
+		}
+		err := json.Unmarshal(append(append(json.RawMessage(`{"next_retry_at":`), raw...), '}'), &payload)
+		return payload.NextRetryAt, err == nil
+	}
+	a, okA := decode(g.NextRetryAt)
+	b, okB := decode(w.NextRetryAt)
+	return okA && okB && a.Equal(b)
+}
+
+// previousMergeConflict is the merge-conflict fold the assembler applied to
+// the full history before the bounded summary: the latest merge.blocked
+// decides the episode, and MergeConflictDispatchState folds every event.
+func previousMergeConflict(events []core.Event, orders []core.WorkOrder) nextaction.MergeConflict {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind != "merge.blocked" {
+			continue
+		}
+		var heads struct {
+			ApprovedHead string `json:"approved_head"`
+			NewHead      string `json:"new_head"`
+		}
+		if json.Unmarshal(events[i].Payload, &heads) != nil {
+			return nextaction.MergeConflict{}
+		}
+		state := store.MergeConflictDispatchState(events, heads.ApprovedHead, heads.NewHead, orders)
+		return nextaction.MergeConflict{Open: true, Exhausted: state.Exhausted || state.Failures >= 3, NextRetryAt: state.NextRetryAt}
+	}
+	return nextaction.MergeConflict{}
+}
+
+// sameConflict compares merge-conflict results by instant, because each
+// decode of an offset time builds its own fixed zone.
+func sameConflict(a, b nextaction.MergeConflict) bool {
+	return a.Open == b.Open && a.Exhausted == b.Exhausted && a.NextRetryAt.Equal(b.NextRetryAt)
 }
