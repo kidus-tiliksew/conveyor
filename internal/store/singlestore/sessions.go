@@ -295,37 +295,87 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, name s
 	})
 	return r, translateBackendConflict(err)
 }
+
+// dashboardSessionRefreshInterval bounds how often verification writes a
+// session. A session used within it is verified by a read alone, so the
+// seven-day sliding expiry keeps at most this much slack
+// (component-identity-membership).
+const dashboardSessionRefreshInterval = 5 * time.Minute
+
+// dashboardSessionRead is one verification read of a live session.
+type dashboardSessionRead struct {
+	id, userID               string
+	establishedByLink, stale bool
+	now                      time.Time
+}
+
+// readDashboardSession reads a live session by its hash on the ordinary
+// handle, outside identityTx and its registry locks: unrevoked, unexpired by
+// the database clock, and owned by an active user. It returns the database
+// time and whether the last use, or creation for an unused session, is older
+// than the refresh interval.
+func (s *Store) readDashboardSession(ctx context.Context, hash []byte) (dashboardSessionRead, error) {
+	var r dashboardSessionRead
+	err := s.db.QueryRowContext(ctx, "SELECT s.id,s.user_id,s.established_by_link,COALESCE(s.last_used_at,s.created_at)<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND),CURRENT_TIMESTAMP(6) FROM dashboard_sessions s JOIN users u ON u.id=s.user_id WHERE s.session_hash=? AND s.revoked_at IS NULL AND s.expires_at>CURRENT_TIMESTAMP(6) AND u.status='active'",
+		dashboardSessionRefreshInterval.Microseconds(), hash).Scan(&r.id, &r.userID, &r.establishedByLink, &r.stale, &r.now)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dashboardSessionRead{}, core.ErrInvalidCredential
+	}
+	if err != nil {
+		return dashboardSessionRead{}, translateBackendConflict(err)
+	}
+	return r, nil
+}
+
+// VerifyDashboardSession reads before it writes and never enters identityTx.
+// A stale session gets one conditional UPDATE that repeats every validity
+// predicate; the call that changes the row returns the expiry it wrote, and a
+// call that changes nothing rereads the session and succeeds without refresh
+// output or fails as invalid (component-identity-membership).
 func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
 	hash := sha256.Sum256([]byte(candidate))
-	var c core.AuthenticatedCredential
-	err := s.identityTx(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, "SELECT s.id,s.user_id,s.established_by_link FROM dashboard_sessions s JOIN users u ON u.id=s.user_id WHERE s.session_hash=? AND s.revoked_at IS NULL AND s.expires_at>CURRENT_TIMESTAMP(6) AND u.status='active'", hash[:]).Scan(&c.ID, &c.OwnerUserID, &c.SessionEstablishedByLink)
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.ErrInvalidCredential
-		}
-		if err != nil {
-			return translateBackendConflict(err)
-		}
-		c.SessionExpiresAt = time.Now().UTC().Add(dashboardSessionLifetime).Truncate(time.Microsecond)
-		if _, err = tx.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=CURRENT_TIMESTAMP(6),expires_at=? WHERE id=?", c.SessionExpiresAt, c.ID); err != nil {
-			return translateBackendConflict(err)
-		}
-		var operator bool
-		if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=? AND role='operator')", c.OwnerUserID).Scan(&operator); err != nil {
-			return translateBackendConflict(err)
-		}
-		c.Kind = core.CredentialUser
-		c.Scope = core.CredentialScopeUser
-		c.Method = core.CredentialMethodSession
-		if operator {
-			c.Scope = core.CredentialScopeOperator
-		}
-		return nil
-	})
+	session, err := s.readDashboardSession(ctx, hash[:])
 	if err != nil {
+		return core.AuthenticatedCredential{}, err
+	}
+	if err = store.RunIdentityTestHook(ctx, store.IdentityHookSessionRead); err != nil {
+		return core.AuthenticatedCredential{}, err
+	}
+	var refreshed time.Time
+	if session.stale {
+		if err = store.RunIdentityTestHook(ctx, store.IdentityHookSessionRefreshing); err != nil {
+			return core.AuthenticatedCredential{}, err
+		}
+		expires := session.now.Add(dashboardSessionLifetime)
+		result, err := s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=?,expires_at=? WHERE id=? AND revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP(6) AND COALESCE(last_used_at,created_at)<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) AND user_id IN (SELECT id FROM users WHERE status='active')",
+			session.now, expires, session.id, dashboardSessionRefreshInterval.Microseconds())
+		if err != nil {
+			return core.AuthenticatedCredential{}, translateBackendConflict(err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return core.AuthenticatedCredential{}, translateBackendConflict(err)
+		}
+		if changed == 1 {
+			if err = store.RunIdentityTestHook(ctx, store.IdentityHookSessionRefreshed); err != nil {
+				return core.AuthenticatedCredential{}, err
+			}
+			refreshed = expires
+		} else if session, err = s.readDashboardSession(ctx, hash[:]); err != nil {
+			// A concurrent verification refreshed first, or the session lost
+			// its validity in between; the reread decides which.
+			return core.AuthenticatedCredential{}, err
+		}
+	}
+	var operator bool
+	if err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=? AND role='operator')", session.userID).Scan(&operator); err != nil {
 		return core.AuthenticatedCredential{}, translateBackendConflict(err)
 	}
-	return c, nil
+	scope := core.CredentialScopeUser
+	if operator {
+		scope = core.CredentialScopeOperator
+	}
+	return core.AuthenticatedCredential{ID: session.id, OwnerUserID: session.userID, Kind: core.CredentialUser, Scope: scope, Method: core.CredentialMethodSession, SessionExpiresAt: refreshed, SessionEstablishedByLink: session.establishedByLink}, nil
 }
 func (s *Store) RevokeDashboardSession(ctx context.Context, uid, id string) error {
 	return s.identityTx(ctx, func(tx *sql.Tx) error {

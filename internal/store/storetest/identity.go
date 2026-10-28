@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -186,6 +187,252 @@ func runInvitationSessions(t *testing.T, x Fixture) {
 	t.Run("ScopedResend", func(t *testing.T) { runScopedResend(t, x, ctx, owner) })
 	t.Run("RedemptionActor", func(t *testing.T) { runRedemptionActor(t, x, ctx, owner) })
 	t.Run("ResendSerialization", func(t *testing.T) { runResendSerialization(t, x, ctx) })
+	t.Run("SessionRefresh", func(t *testing.T) { runSessionRefresh(t, x, ctx) })
+}
+
+// sessionStages counts the dashboard-session identity hook stages reached
+// through contexts it hooks, so cases observe actual refresh attempts and
+// winning writes rather than inferring them from returned times.
+type sessionStages struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (s *sessionStages) hook(ctx context.Context) context.Context {
+	return store.WithIdentityTestHook(ctx, func(stage string) error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.counts == nil {
+			s.counts = map[string]int{}
+		}
+		s.counts[stage]++
+		return nil
+	})
+}
+
+func (s *sessionStages) count(stage string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[stage]
+}
+
+// runSessionRefresh proves the read-first dashboard-session verification:
+// no write inside the refresh interval, exactly one winning extension of a
+// stale session even under a concurrent burst, refusal of revoked, expired,
+// and deactivated sessions on the next use including between the read and
+// the refresh, and operator scope from live bindings on every call
+// (component-identity-membership). Interleavings use the identity test hook
+// and channels, never sleeps.
+func runSessionRefresh(t *testing.T, x Fixture, ctx context.Context) {
+	if x.SeedDashboardSessionTimes == nil || x.DashboardSessionTimes == nil {
+		t.Fatal("conformance fixture must provide SeedDashboardSessionTimes and DashboardSessionTimes for the session refresh cases")
+	}
+	st := x.Backend
+	signIn := func(t *testing.T, email string) (core.DashboardSession, core.IdentityUser) {
+		t.Helper()
+		_, err := st.GrantWorkspaceRole(ctx, email, x.Workspace, core.WorkspaceRoleExecutor)
+		requireOK(t, err)
+		link, err := st.IssueSignInLink(ctx, email)
+		requireOK(t, err)
+		session, user, err := st.RedeemSignInLink(ctx, link.Value)
+		requireOK(t, err)
+		return session, user
+	}
+	const stale, nearExpiry = 10 * time.Minute, time.Hour
+	requireRefusal := func(t *testing.T, err error, what string) {
+		t.Helper()
+		if !errors.Is(err, core.ErrInvalidCredential) {
+			t.Fatalf("%s: verification err=%v, want invalid credential", what, err)
+		}
+	}
+
+	t.Run("Fresh", func(t *testing.T) {
+		unused, _ := signIn(t, "session-fresh@example.test")
+		used, _ := signIn(t, "session-fresh-used@example.test")
+		x.SeedDashboardSessionTimes(t, ctx, used.ID, time.Minute, 6*24*time.Hour)
+		for _, session := range []core.DashboardSession{unused, used} {
+			stages := &sessionStages{}
+			lastUsed, expires := x.DashboardSessionTimes(t, ctx, session.ID)
+			for call := 1; call <= 2; call++ {
+				auth, err := st.VerifyDashboardSession(stages.hook(ctx), session.Value)
+				requireOK(t, err)
+				if auth.ID != session.ID || auth.Method != core.CredentialMethodSession || !auth.SessionExpiresAt.IsZero() {
+					t.Fatalf("fresh verification %d=%+v, want the session with zero refresh output", call, auth)
+				}
+			}
+			if stages.count(store.IdentityHookSessionRead) != 2 || stages.count(store.IdentityHookSessionRefreshing) != 0 || stages.count(store.IdentityHookSessionRefreshed) != 0 {
+				t.Fatalf("fresh verification stages=%v, want two reads and no refresh attempt", stages.counts)
+			}
+			if gotUsed, gotExpires := x.DashboardSessionTimes(t, ctx, session.ID); !gotUsed.Equal(lastUsed) || !gotExpires.Equal(expires) {
+				t.Fatalf("fresh verification moved stored times from (%s,%s) to (%s,%s)", lastUsed, expires, gotUsed, gotExpires)
+			}
+		}
+	})
+
+	t.Run("Stale", func(t *testing.T) {
+		session, _ := signIn(t, "session-stale@example.test")
+		x.SeedDashboardSessionTimes(t, ctx, session.ID, stale, nearExpiry)
+		seededUse, _ := x.DashboardSessionTimes(t, ctx, session.ID)
+		stages := &sessionStages{}
+		auth, err := st.VerifyDashboardSession(stages.hook(ctx), session.Value)
+		requireOK(t, err)
+		lastUsed, expires := x.DashboardSessionTimes(t, ctx, session.ID)
+		if stages.count(store.IdentityHookSessionRefreshed) != 1 || auth.SessionExpiresAt.IsZero() || !auth.SessionExpiresAt.Equal(expires) {
+			t.Fatalf("stale verification stages=%v output=%s stored=%s, want one refresh returning the stored expiry", stages.counts, auth.SessionExpiresAt, expires)
+		}
+		if time.Until(expires) < 6*24*time.Hour+23*time.Hour || !lastUsed.After(seededUse) {
+			t.Fatalf("stale verification stored (%s,%s), want a moved last use and a seven-day expiry", lastUsed, expires)
+		}
+		again, err := st.VerifyDashboardSession(stages.hook(ctx), session.Value)
+		requireOK(t, err)
+		if stages.count(store.IdentityHookSessionRefreshing) != 1 || stages.count(store.IdentityHookSessionRefreshed) != 1 || !again.SessionExpiresAt.IsZero() {
+			t.Fatalf("second verification stages=%v output=%s, want no further refresh", stages.counts, again.SessionExpiresAt)
+		}
+	})
+
+	t.Run("ConcurrentStale", func(t *testing.T) {
+		session, user := signIn(t, "session-burst@example.test")
+		x.SeedDashboardSessionTimes(t, ctx, session.ID, stale, nearExpiry)
+		const callers = 4
+		stages := &sessionStages{}
+		arrived, release := make(chan struct{}, callers), make(chan struct{})
+		held := store.WithIdentityTestHook(ctx, func(stage string) error {
+			stages.mu.Lock()
+			if stages.counts == nil {
+				stages.counts = map[string]int{}
+			}
+			stages.counts[stage]++
+			stages.mu.Unlock()
+			if stage == store.IdentityHookSessionRead {
+				arrived <- struct{}{}
+				<-release
+			}
+			return nil
+		})
+		type outcome struct {
+			auth core.AuthenticatedCredential
+			err  error
+		}
+		results := make(chan outcome, callers)
+		for range callers {
+			go func() {
+				auth, err := st.VerifyDashboardSession(held, session.Value)
+				results <- outcome{auth, err}
+			}()
+		}
+		for range callers {
+			<-arrived
+		}
+		close(release)
+		var winners []time.Time
+		for range callers {
+			result := <-results
+			requireOK(t, result.err)
+			if result.auth.OwnerUserID != user.ID {
+				t.Fatalf("burst verification owner=%q, want %q", result.auth.OwnerUserID, user.ID)
+			}
+			if !result.auth.SessionExpiresAt.IsZero() {
+				winners = append(winners, result.auth.SessionExpiresAt)
+			}
+		}
+		_, expires := x.DashboardSessionTimes(t, ctx, session.ID)
+		if stages.count(store.IdentityHookSessionRefreshed) != 1 || len(winners) != 1 || !winners[0].Equal(expires) {
+			t.Fatalf("burst stages=%v winners=%v stored=%s, want exactly one winning refresh returning the stored expiry", stages.counts, winners, expires)
+		}
+	})
+
+	t.Run("RefusedNextUse", func(t *testing.T) {
+		expired, _ := signIn(t, "session-expired@example.test")
+		x.SeedDashboardSessionTimes(t, ctx, expired.ID, time.Minute, -time.Minute)
+		_, err := st.VerifyDashboardSession(ctx, expired.Value)
+		requireRefusal(t, err, "expired session")
+
+		revoked, revokedUser := signIn(t, "session-revoked@example.test")
+		_, err = st.VerifyDashboardSession(ctx, revoked.Value)
+		requireOK(t, err)
+		requireOK(t, st.RevokeDashboardSession(ctx, revokedUser.ID, revoked.ID))
+		_, err = st.VerifyDashboardSession(ctx, revoked.Value)
+		requireRefusal(t, err, "revoked session")
+
+		deactivated, deactivatedUser := signIn(t, "session-deactivated@example.test")
+		_, err = st.VerifyDashboardSession(ctx, deactivated.Value)
+		requireOK(t, err)
+		deactivateUser(t, x, ctx, deactivatedUser.ID)
+		_, err = st.VerifyDashboardSession(ctx, deactivated.Value)
+		requireRefusal(t, err, "deactivated owner")
+	})
+
+	t.Run("RefusedDuringRefresh", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			change func(t *testing.T, session core.DashboardSession, user core.IdentityUser)
+		}{
+			{"Revoked", func(t *testing.T, session core.DashboardSession, user core.IdentityUser) {
+				requireOK(t, st.RevokeDashboardSession(ctx, user.ID, session.ID))
+			}},
+			{"Deactivated", func(t *testing.T, _ core.DashboardSession, user core.IdentityUser) {
+				deactivateUser(t, x, ctx, user.ID)
+			}},
+			{"Expired", func(t *testing.T, session core.DashboardSession, _ core.IdentityUser) {
+				x.SeedDashboardSessionTimes(t, ctx, session.ID, stale, -time.Minute)
+			}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				session, user := signIn(t, "session-race-"+strings.ToLower(test.name)+"@example.test")
+				x.SeedDashboardSessionTimes(t, ctx, session.ID, stale, nearExpiry)
+				stages := &sessionStages{}
+				reached, release := make(chan struct{}), make(chan struct{})
+				held := store.WithIdentityTestHook(ctx, func(stage string) error {
+					stages.mu.Lock()
+					if stages.counts == nil {
+						stages.counts = map[string]int{}
+					}
+					stages.counts[stage]++
+					stages.mu.Unlock()
+					if stage == store.IdentityHookSessionRead {
+						close(reached)
+						<-release
+					}
+					return nil
+				})
+				done := make(chan error, 1)
+				go func() {
+					_, err := st.VerifyDashboardSession(held, session.Value)
+					done <- err
+				}()
+				<-reached
+				test.change(t, session, user)
+				close(release)
+				requireRefusal(t, <-done, test.name+" between read and refresh")
+				if stages.count(store.IdentityHookSessionRefreshed) != 0 {
+					t.Fatalf("%s session was refreshed: stages=%v", test.name, stages.counts)
+				}
+			})
+		}
+	})
+
+	t.Run("OperatorScopeFollowsBindings", func(t *testing.T) {
+		session, user := signIn(t, "session-scope@example.test")
+		stages := &sessionStages{}
+		requireScope := func(t *testing.T, want core.CredentialScope) {
+			t.Helper()
+			auth, err := st.VerifyDashboardSession(stages.hook(ctx), session.Value)
+			requireOK(t, err)
+			if auth.Scope != want {
+				t.Fatalf("session scope=%q, want %q", auth.Scope, want)
+			}
+		}
+		requireScope(t, core.CredentialScopeUser)
+		_, err := st.GrantWorkspaceRole(ctx, user.Email, x.Workspace, core.WorkspaceRoleOperator)
+		requireOK(t, err)
+		requireScope(t, core.CredentialScopeOperator)
+		_, err = st.GrantWorkspaceRole(ctx, user.Email, x.Workspace, core.WorkspaceRoleExecutor)
+		requireOK(t, err)
+		requireScope(t, core.CredentialScopeUser)
+		if stages.count(store.IdentityHookSessionRefreshing) != 0 {
+			t.Fatalf("scope verifications left the refresh interval: stages=%v", stages.counts)
+		}
+	})
 }
 
 func runTokens(t *testing.T, x Fixture) {

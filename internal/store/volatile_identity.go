@@ -88,6 +88,12 @@ const (
 	// last-used timestamp moves at most once per interval, so a busy
 	// credential does not append a state event per request.
 	credentialUseGranularity = time.Minute
+	// dashboardSessionRefreshInterval bounds how often verification extends
+	// a dashboard session, separately from credentialUseGranularity: a
+	// session used within it is verified by a read alone, so the seven-day
+	// sliding expiry keeps at most this much slack
+	// (component-identity-membership).
+	dashboardSessionRefreshInterval = 5 * time.Minute
 )
 
 func normalizeIdentityEmail(value string) (string, error) {
@@ -795,34 +801,44 @@ func (m *volatileMemory) mintSessionLocked(userID string, establishedByLink bool
 	return core.DashboardSession{ID: id, UserID: userID, Value: value, ExpiresAt: expires}, nil
 }
 
-// VerifyDashboardSession implements InvitationSessionStore. The session
-// slides forward on use, at most once per interval.
-func (m *volatileMemory) VerifyDashboardSession(_ context.Context, candidate string) (core.AuthenticatedCredential, error) {
+// VerifyDashboardSession implements InvitationSessionStore. It reads under
+// the read lock; a stale session is rechecked against the current entry under
+// the write mutex, and only a call that still finds it stale extends it and
+// returns the new expiry (component-identity-membership).
+func (m *volatileMemory) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
 	hash := sha256.Sum256([]byte(candidate))
-	now := time.Now().UTC()
 	m.mu.RLock()
-	var session dashboardSession
-	found := false
-	for _, item := range m.sessions {
-		if subtle.ConstantTimeCompare(item.SessionHash, hash[:]) == 1 {
-			session, found = item, true
-			break
-		}
-	}
-	active := found && session.RevokedAt == nil && session.ExpiresAt.After(now) && m.userActive(session.UserID)
-	operator := active && m.hasOperatorBinding(session.UserID)
+	session, operator, active := m.liveSessionLocked(hash[:], time.Now().UTC())
 	m.mu.RUnlock()
 	if !active {
 		return core.AuthenticatedCredential{}, core.ErrInvalidCredential
 	}
-	if now.Sub(session.LastUsedAt) >= credentialUseGranularity {
-		m.lock()
-		if current, ok := m.sessions[session.ID]; ok && current.RevokedAt == nil {
-			current.LastUsedAt, current.ExpiresAt = now, now.Add(dashboardSessionLifetime)
-			m.sessions[session.ID] = current
-			session = current
+	if err := RunIdentityTestHook(ctx, IdentityHookSessionRead); err != nil {
+		return core.AuthenticatedCredential{}, err
+	}
+	var refreshed time.Time
+	if time.Now().UTC().Sub(session.LastUsedAt) >= dashboardSessionRefreshInterval {
+		if err := RunIdentityTestHook(ctx, IdentityHookSessionRefreshing); err != nil {
+			return core.AuthenticatedCredential{}, err
 		}
-		m.unlock()
+		m.mu.Lock()
+		now := time.Now().UTC()
+		session, operator, active = m.liveSessionLocked(hash[:], now)
+		won := active && now.Sub(session.LastUsedAt) >= dashboardSessionRefreshInterval
+		if won {
+			session.LastUsedAt, session.ExpiresAt = now, now.Add(dashboardSessionLifetime)
+			m.sessions[session.ID] = session
+			refreshed = session.ExpiresAt
+		}
+		m.mu.Unlock()
+		if !active {
+			return core.AuthenticatedCredential{}, core.ErrInvalidCredential
+		}
+		if won {
+			if err := RunIdentityTestHook(ctx, IdentityHookSessionRefreshed); err != nil {
+				return core.AuthenticatedCredential{}, err
+			}
+		}
 	}
 	scope := core.CredentialScopeUser
 	if operator {
@@ -830,8 +846,21 @@ func (m *volatileMemory) VerifyDashboardSession(_ context.Context, candidate str
 	}
 	return core.AuthenticatedCredential{
 		ID: session.ID, OwnerUserID: session.UserID, Kind: core.CredentialUser, Scope: scope, Method: core.CredentialMethodSession,
-		SessionExpiresAt: session.ExpiresAt, SessionEstablishedByLink: session.EstablishedByLink,
+		SessionExpiresAt: refreshed, SessionEstablishedByLink: session.EstablishedByLink,
 	}, nil
+}
+
+// liveSessionLocked finds the session with hash and reports whether it is
+// unrevoked, unexpired at now, and owned by an active user, with the owner's
+// live operator scope. The caller holds m.mu for reading or writing.
+func (m *volatileMemory) liveSessionLocked(hash []byte, now time.Time) (dashboardSession, bool, bool) {
+	for _, item := range m.sessions {
+		if subtle.ConstantTimeCompare(item.SessionHash, hash) == 1 {
+			active := item.RevokedAt == nil && item.ExpiresAt.After(now) && m.userActive(item.UserID)
+			return item, active && m.hasOperatorBinding(item.UserID), active
+		}
+	}
+	return dashboardSession{}, false, false
 }
 
 // RevokeDashboardSession implements InvitationSessionStore.

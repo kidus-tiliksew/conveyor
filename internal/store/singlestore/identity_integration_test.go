@@ -98,7 +98,9 @@ func TestIdentitySecurityIntegration(t *testing.T) {
 	if _, err = s.SetOwnDisplayName(ctx, "foreign", session.ID, "foreign"); !errors.Is(err, core.ErrInvalidCredential) {
 		t.Fatal("cross-owner session accepted")
 	}
-	if _, err = s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET expires_at=? WHERE id=?", time.Now().UTC().Add(time.Hour), session.ID); err != nil {
+	// Sliding needs a stale last use as well as a near expiry: a session used
+	// within the refresh interval is verified without a write.
+	if _, err = s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=?,expires_at=? WHERE id=?", time.Now().UTC().Add(-10*time.Minute), time.Now().UTC().Add(time.Hour), session.ID); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := s.VerifyDashboardSession(ctx, session.Value)
@@ -164,5 +166,113 @@ func TestSessionAndMembershipConcurrencyIntegration(t *testing.T) {
 	}
 	if success != 1 || guard != 1 {
 		t.Fatal("concurrent revocation lost last operator")
+	}
+}
+
+// TestDashboardSessionRefreshIntegration proves on stored rows that a
+// verification inside the refresh interval writes nothing and that a stale
+// one writes once and stores exactly the expiry it returns. Verification
+// never enters identityTx: it records no lock-row acquisition and completes
+// while another transaction holds both registry lock rows
+// (component-identity-membership).
+func TestDashboardSessionRefreshIntegration(t *testing.T) {
+	s, ctx, owner := ownedIdentityFixture(t)
+	link, err := s.IssueSignInLink(ctx, owner.Email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := s.RedeemSignInLink(ctx, link.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := func() (sql.NullTime, time.Time) {
+		t.Helper()
+		var lastUsed sql.NullTime
+		var expires time.Time
+		if err := s.db.QueryRowContext(ctx, "SELECT last_used_at,expires_at FROM dashboard_sessions WHERE id=?", session.ID).Scan(&lastUsed, &expires); err != nil {
+			t.Fatal(err)
+		}
+		return lastUsed, expires
+	}
+	attempts := 0
+	verify := func(t *testing.T) core.AuthenticatedCredential {
+		t.Helper()
+		hooked := store.WithIdentityTestHook(ctx, func(stage string) error {
+			if stage == store.IdentityHookSessionRefreshing {
+				attempts++
+			}
+			return nil
+		})
+		observedCtx, observed := observeLockReturn(hooked)
+		auth, err := s.VerifyDashboardSession(observedCtx, session.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !observed.at.IsZero() {
+			t.Fatal("session verification acquired a lock row")
+		}
+		return auth
+	}
+
+	// A never-used session counts from its creation, so it is fresh.
+	beforeUsed, beforeExpires := stored()
+	if beforeUsed.Valid {
+		t.Fatalf("minted session last_used_at=%s, want null", beforeUsed.Time)
+	}
+	for range 2 {
+		if auth := verify(t); !auth.SessionExpiresAt.IsZero() {
+			t.Fatalf("unused fresh session refreshed to %s", auth.SessionExpiresAt)
+		}
+	}
+	if afterUsed, afterExpires := stored(); afterUsed.Valid || !afterExpires.Equal(beforeExpires) || attempts != 0 {
+		t.Fatalf("unused fresh verification wrote: last_used=%v expires %s->%s attempts=%d", afterUsed, beforeExpires, afterExpires, attempts)
+	}
+
+	if _, err = s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL 1 MINUTE) WHERE id=?", session.ID); err != nil {
+		t.Fatal(err)
+	}
+	beforeUsed, beforeExpires = stored()
+	for range 2 {
+		if auth := verify(t); !auth.SessionExpiresAt.IsZero() {
+			t.Fatalf("fresh session refreshed to %s", auth.SessionExpiresAt)
+		}
+	}
+	if afterUsed, afterExpires := stored(); !afterUsed.Time.Equal(beforeUsed.Time) || !afterExpires.Equal(beforeExpires) || attempts != 0 {
+		t.Fatalf("fresh verification wrote: last_used %s->%s expires %s->%s attempts=%d", beforeUsed.Time, afterUsed.Time, beforeExpires, afterExpires, attempts)
+	}
+
+	if _, err = s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL 10 MINUTE),expires_at=DATE_ADD(CURRENT_TIMESTAMP(6),INTERVAL 1 HOUR) WHERE id=?", session.ID); err != nil {
+		t.Fatal(err)
+	}
+	beforeUsed, _ = stored()
+	auth := verify(t)
+	afterUsed, afterExpires := stored()
+	if attempts != 1 || !afterUsed.Time.After(beforeUsed.Time) || !auth.SessionExpiresAt.Equal(afterExpires) || time.Until(afterExpires) < 6*24*time.Hour+23*time.Hour {
+		t.Fatalf("stale verification: last_used %s->%s stored=%s output=%s attempts=%d", beforeUsed.Time, afterUsed.Time, afterExpires, auth.SessionExpiresAt, attempts)
+	}
+
+	// Another transaction holds both registry lock rows that identityTx
+	// takes; fresh and stale verifications still complete. The deadline is
+	// only a failure bound for a verification that would wait on them.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, key := range []string{"workspace-registry", "identity-registry"} {
+		if err = lockKey(ctx, tx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err = s.VerifyDashboardSession(bounded, session.Value); err != nil {
+		t.Fatalf("fresh verification under held registry locks: %v", err)
+	}
+	if _, err = s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL 10 MINUTE) WHERE id=?", session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed, err := s.VerifyDashboardSession(bounded, session.Value); err != nil || refreshed.SessionExpiresAt.IsZero() {
+		t.Fatalf("stale verification under held registry locks: output=%s err=%v", refreshed.SessionExpiresAt, err)
 	}
 }

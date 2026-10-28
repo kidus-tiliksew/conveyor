@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -268,5 +269,108 @@ func TestSendSignInMailRefusesPlainSMTP(t *testing.T) {
 	err = sendSignInMail(config.InvitationDelivery{Host: host, Port: port, From: "conveyor@example.test"}, "invitee@example.test", "https://example.test")
 	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
 		t.Fatalf("error=%v, want STARTTLS refusal", err)
+	}
+}
+
+// refreshOutputSessions delegates to a real session store and replaces the
+// refresh output of each successful verification, so the HTTP boundary's
+// cookie contract is driven by exactly the value a store would return.
+type refreshOutputSessions struct {
+	store.InvitationSessionStore
+	expires time.Time
+}
+
+func (s refreshOutputSessions) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	credential, err := s.InvitationSessionStore.VerifyDashboardSession(ctx, candidate)
+	if err == nil {
+		credential.SessionExpiresAt = s.expires
+	}
+	return credential, err
+}
+
+// volatileSessionServer signs the deployment owner in on a volatile backend
+// and returns the real server over it with the session cookie value.
+func volatileSessionServer(t *testing.T) (*Server, store.Backend, core.DashboardSession) {
+	t.Helper()
+	st := store.NewVolatileBackend()
+	t.Cleanup(st.Close)
+	ctx := store.WithActor(t.Context(), store.SystemActor())
+	if _, err := st.BootstrapIdentity(ctx, config.FirstOperatorIdentity{OrganizationName: "Cookie Org", Email: "cookie-owner@example.test", DisplayName: "Cookie Owner"}, "cookie-bootstrap"); err != nil {
+		t.Fatal(err)
+	}
+	link, err := st.IssueSignInLink(ctx, "cookie-owner@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _, err := st.RedeemSignInLink(ctx, link.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.InvitationDelivery.PublicURL = "https://conveyor.example"
+	return server, st, session
+}
+
+func getMeWithSession(server *Server, value string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	request.AddCookie(&http.Cookie{Name: dashboardSessionCookie, Value: value})
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+// TestDashboardSessionCookieRefreshContract proves that the authentication
+// boundary re-sets the session cookie only for nonzero refresh output, with
+// the existing attributes and the exact stored expiry, and never on refusal
+// (component-identity-membership).
+func TestDashboardSessionCookieRefreshContract(t *testing.T) {
+	t.Run("zero refresh output sends no cookie", func(t *testing.T) {
+		server, st, session := volatileSessionServer(t)
+		server.InvitationSessions = refreshOutputSessions{InvitationSessionStore: st}
+		response := getMeWithSession(server, session.Value)
+		if response.Code != http.StatusOK || response.Header().Values("Set-Cookie") != nil {
+			t.Fatalf("status=%d set-cookie=%v body=%s", response.Code, response.Header().Values("Set-Cookie"), response.Body.String())
+		}
+	})
+	t.Run("winning refresh sends the stored expiry", func(t *testing.T) {
+		server, st, session := volatileSessionServer(t)
+		expires := time.Now().UTC().Add(7 * 24 * time.Hour).Truncate(time.Second)
+		server.InvitationSessions = refreshOutputSessions{InvitationSessionStore: st, expires: expires}
+		response := getMeWithSession(server, session.Value)
+		cookies := response.Result().Cookies()
+		if response.Code != http.StatusOK || len(cookies) != 1 {
+			t.Fatalf("status=%d cookies=%+v body=%s", response.Code, cookies, response.Body.String())
+		}
+		cookie := cookies[0]
+		if cookie.Name != dashboardSessionCookie || cookie.Value != session.Value || cookie.Path != "/v1" || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || !cookie.Expires.Equal(expires) || cookie.MaxAge <= 0 {
+			t.Fatalf("refreshed cookie=%+v, want the existing attributes expiring at %s", cookie, expires)
+		}
+	})
+	t.Run("refusal sends no cookie", func(t *testing.T) {
+		server, st, session := volatileSessionServer(t)
+		server.InvitationSessions = refreshOutputSessions{InvitationSessionStore: st, expires: time.Now().UTC().Add(time.Hour)}
+		auth, err := st.VerifyDashboardSession(t.Context(), session.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = st.RevokeDashboardSession(store.WithActor(t.Context(), store.SystemActor()), auth.OwnerUserID, session.ID); err != nil {
+			t.Fatal(err)
+		}
+		response := getMeWithSession(server, session.Value)
+		if response.Code != http.StatusUnauthorized || response.Header().Values("Set-Cookie") != nil {
+			t.Fatalf("status=%d set-cookie=%v", response.Code, response.Header().Values("Set-Cookie"))
+		}
+	})
+}
+
+// TestDashboardSessionFreshVerificationSetsNoCookie proves through the real
+// volatile store that requests inside the refresh interval send no cookie.
+func TestDashboardSessionFreshVerificationSetsNoCookie(t *testing.T) {
+	server, _, session := volatileSessionServer(t)
+	for call := 1; call <= 2; call++ {
+		response := getMeWithSession(server, session.Value)
+		if response.Code != http.StatusOK || response.Header().Values("Set-Cookie") != nil {
+			t.Fatalf("request %d status=%d set-cookie=%v body=%s", call, response.Code, response.Header().Values("Set-Cookie"), response.Body.String())
+		}
 	}
 }
