@@ -50,13 +50,24 @@ func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spe
 
 // ReconcileGitHubLifecycles repairs the narrow approval-to-outbox gap after a
 // process restart. Remote side effects remain owned by the durable queue job.
+//
+// The store selects only the tasks the loop can act on. Its rule reads
+// terminal tasks where it needs them: a start-over retires its task, so every
+// superseded task stays a candidate for the pull-request close it queues, and
+// an approved plan without a lifecycle row is repaired whatever the task's
+// state. Every other task skipped the loop body before the store read
+// narrowed (component-runtime, Reconcile tick; component-persistence).
 func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
-	tasks, err := d.Store.ListTasks(ctx)
+	taskIDs, err := d.Store.ListGitHubLifecycleReconcileTaskIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
 	repaired := 0
-	for _, task := range tasks {
+	for _, taskID := range taskIDs {
+		task, err := d.Store.GetTask(ctx, taskID)
+		if err != nil {
+			return repaired, err
+		}
 		if task.SupersededBy != "" {
 			if err = d.queueStartedOverPR(ctx, task); err != nil {
 				return repaired, err

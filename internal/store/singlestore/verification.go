@@ -311,16 +311,17 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 	if _, err := store.VerificationReconciliationCommands(ctx, nil); err != nil {
 		return 0, err
 	}
-	tasks, err := s.ListTasks(ctx)
+	taskIDs, err := s.verificationClaimTaskIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, task := range tasks {
+	for _, taskID := range taskIDs {
+		observeVerificationClaimRead(documentWorkspace(ctx), taskID)
 		var rows []store.VerificationRow
 		err = s.withTx(ctx, func(tx *sql.Tx) error {
 			var e error
-			rows, e = verificationRowsTx(ctx, tx, documentWorkspace(ctx), task.ID)
+			rows, e = verificationRowsTx(ctx, tx, documentWorkspace(ctx), taskID)
 			return e
 		})
 		if err != nil {

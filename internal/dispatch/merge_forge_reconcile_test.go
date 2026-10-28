@@ -871,3 +871,38 @@ func TestReadMergeReadinessMergedTaskDoesNotRewriteDrift(t *testing.T) {
 		t.Fatalf("drift events=%d", count)
 	}
 }
+
+// The merge-readiness sweep selects only the states its two passes act on. A
+// workspace dominated by finished tasks with long histories yields the same
+// merge, and the sweep reads no terminal task row or history other than the
+// task it merged (component-runtime, Reconcile tick).
+func TestReconcileMergeReadinessSkipsTerminalHistory(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	terminal := storetest.SeedTerminalHistory(t, st, ctx, "test", "app", 40, 20)
+	parked := core.Task{ID: "parked-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/parked-task", State: core.TaskParked, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, parked); err != nil {
+		t.Fatal(err)
+	}
+	views, merges := 0, 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		if views == 1 {
+			return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "open", Mergeable: "MERGEABLE", BaseSHA: "base-sha", HeadSHA: "head-sha"}, nil
+		}
+		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: "closed", Merged: true, BaseSHA: "base-sha", HeadSHA: "head-sha"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
+	recorder := storetest.NewReadRecorder(st)
+	d.Store = recorder
+	reconciled, err := d.ReconcileMergeReadiness(ctx)
+	if err != nil || reconciled != 1 || merges != 1 {
+		t.Fatalf("reconciled=%d merges=%d err=%v", reconciled, merges, err)
+	}
+	if current, getErr := st.GetTask(ctx, task.ID); getErr != nil || current.State != core.TaskMerged {
+		t.Fatalf("task=%+v err=%v", current, getErr)
+	}
+	recorder.RequireNoTerminalReads(t, terminal, task.ID)
+	if _, read := recorder.TaskRowState(parked.ID); read {
+		t.Fatal("sweep read the parked task, which neither pass acts on")
+	}
+}

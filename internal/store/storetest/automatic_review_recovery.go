@@ -182,7 +182,19 @@ func decideAutomaticReview(t *testing.T, st store.Store, ctx context.Context, ta
 	requireOK(t, err)
 	policy := current.Document.Recovery
 	policy.Window = automaticRecoveryWindow(t, st, ctx)
-	return store.DecideAutomaticReviewAct(policy, task, orders, listEventsOK(t, st, ctx, taskID), time.Now().UTC().Add(time.Hour))
+	now := time.Now().UTC().Add(time.Hour)
+	decision := store.DecideAutomaticReviewAct(policy, task, orders, listEventsOK(t, st, ctx, taskID), now)
+	// The AR-5 sweep decides from the batched reads: the task's orders from
+	// ListWorkOrdersForTasks and only the folded event kinds. Every decision
+	// this suite checks must be the one the full reads give.
+	batchedOrders, err := st.ListWorkOrdersForTasks(ctx, []string{taskID})
+	requireOK(t, err)
+	batchedEvents, err := st.ListAutomaticReviewEvents(ctx, []string{taskID})
+	requireOK(t, err)
+	if batched := store.DecideAutomaticReviewAct(policy, task, batchedOrders, batchedEvents[taskID], now); batched != decision {
+		t.Fatalf("batched AR-5 decision=%+v, full-read decision=%+v", batched, decision)
+	}
+	return decision
 }
 
 type automaticRoundEvent struct {

@@ -2800,3 +2800,27 @@ func TestDocumentationInProcessContext(t *testing.T) {
 		})
 	}
 }
+
+// GitHub intake's per-issue lookup reads only tasks whose identifying text
+// contains the issue source, never the workspace's full task list, and still
+// matches the source exactly (component-runtime, GitHub intake).
+func TestSourceTaskExistsReadsOnlyMatchingTasks(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	terminal := storetest.SeedTerminalHistory(t, st, ctx, "test", "app", 40, 5)
+	taken := core.Task{ID: "taken-issue", Workspace: "test", Source: "github:acme/app#12", Repo: "app", BaseBranch: "main", Branch: "conveyor/taken-issue", State: core.TaskMerged, CreatedAt: time.Now()}
+	open := core.Task{ID: "open-issue", Workspace: "test", Source: "github:acme/app#123", Repo: "app", BaseBranch: "main", Branch: "conveyor/open-issue", State: core.TaskQueued, CreatedAt: time.Now()}
+	for _, task := range []core.Task{taken, open} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := storetest.NewReadRecorder(st)
+	d := New(recorder, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	for source, want := range map[string]bool{"github:acme/app#12": true, "github:acme/app#123": true, "github:acme/app#1": false, "github:acme/app#9": false} {
+		if got := d.sourceTaskExists(ctx, source); got != want {
+			t.Fatalf("sourceTaskExists(%s)=%t, want %t", source, got, want)
+		}
+	}
+	recorder.RequireNoTerminalReads(t, terminal, taken.ID)
+}

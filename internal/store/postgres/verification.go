@@ -272,13 +272,14 @@ func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
 	if _, err := store.VerificationReconciliationCommands(ctx, nil); err != nil {
 		return 0, err
 	}
-	tasks, err := s.ListTasks(ctx)
+	taskIDs, err := s.verificationClaimTaskIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, task := range tasks {
-		records, err := s.queries.ListVerificationRecords(ctx, workspace(ctx), task.ID)
+	for _, taskID := range taskIDs {
+		observeVerificationClaimRead(workspace(ctx), taskID)
+		records, err := s.queries.ListVerificationRecords(ctx, workspace(ctx), taskID)
 		if err != nil {
 			return count, err
 		}

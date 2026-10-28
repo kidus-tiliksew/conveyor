@@ -173,7 +173,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			return storetest.Fixture{VerificationClaimReads: verificationClaimReads(ws), DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
@@ -277,4 +277,49 @@ func conformanceWorkerExercise(st store.Store, cfg *config.Config) storetest.Wor
 		ListVisibleOrders: service.ListVisibleOrders,
 		ClaimForWorker:    service.ClaimForWorker,
 	}
+}
+
+// verificationClaimReadWorkspaces routes the backend's verification claim
+// read observer to the conformance fixture of each workspace, so parallel
+// fixtures never see each other's reads.
+var (
+	verificationClaimReadWorkspaces sync.Map
+	verificationClaimReadInstall    sync.Once
+)
+
+// verificationClaimReads is the fixture's VerificationClaimReads: it records
+// the tasks whose verification rows ReconcileVerificationClaims reads in the
+// workspace, through the backend's internal read boundary.
+func verificationClaimReads(workspaceID string) func(*testing.T) func() []string {
+	return func(t *testing.T) func() []string {
+		verificationClaimReadInstall.Do(func() {
+			observe := func(workspace, taskID string) {
+				if recorder, ok := verificationClaimReadWorkspaces.Load(workspace); ok {
+					recorder.(*verificationClaimReadRecorder).add(taskID)
+				}
+			}
+			verificationClaimReadObserver.Store(&observe)
+		})
+		recorder := &verificationClaimReadRecorder{}
+		verificationClaimReadWorkspaces.Store(workspaceID, recorder)
+		t.Cleanup(func() { verificationClaimReadWorkspaces.Delete(workspaceID) })
+		return recorder.ids
+	}
+}
+
+type verificationClaimReadRecorder struct {
+	mu   sync.Mutex
+	read []string
+}
+
+func (r *verificationClaimReadRecorder) add(taskID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.read = append(r.read, taskID)
+}
+
+func (r *verificationClaimReadRecorder) ids() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.read...)
 }
