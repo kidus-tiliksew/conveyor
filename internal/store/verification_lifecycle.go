@@ -146,6 +146,9 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		if c.Key == "" {
 			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "start_key", verificationRemedyList, "start_key is required.")
 		}
+		if !verificationIdentifier(c.Key) {
+			return verificationRefusal(ErrVerificationInvalid, VerificationCodeRequestShape, "start_key", verificationRemedyShape, "start_key must be at most 128 bytes of UTF-8 without NUL characters.")
+		}
 		if v.SafeInputs == nil {
 			return verificationRefusal(ErrVerificationInvalid, VerificationCodeFieldRequired, "safe_inputs", verificationRemedyList, "safe_inputs is required; send {} when the subject takes no input.")
 		}

@@ -241,3 +241,40 @@ func runVerificationRetryAndSeal(t *testing.T, v *verificationFixture) {
 		}
 	})
 }
+
+// runVerificationStartRefusals pins the correctable attempt-start refusals of
+// an authenticated claim on every backend: each names its code and field and
+// writes no attempt (component-verification-service "Correctable refusals").
+func runVerificationStartRefusals(t *testing.T, x Fixture) {
+	t.Run("VerificationStartRefusals", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		environment := core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}
+		stale := v.subject
+		stale.ContractDigest = strings.Repeat("0", 64)
+		kit := core.VerificationSubject{Kind: "kit", KitID: "absent", KitVersion: "1", ExerciseID: "check", ContentDigest: strings.Repeat("b", 64)}
+		before := len(v.snapshot(t).Attempts)
+		for _, tc := range []struct {
+			name, key, code, field string
+			class                  error
+			subject                core.VerificationSubject
+		}{
+			{"start key over 128 bytes", strings.Repeat("k", 129), store.VerificationCodeRequestShape, "start_key", store.ErrVerificationInvalid, v.subject},
+			{"start key with NUL", "start\x00key", store.VerificationCodeRequestShape, "start_key", store.ErrVerificationInvalid, v.subject},
+			{"stale contract digest", "stale-digest", store.VerificationCodeSubjectUnregistered, "subject", store.ErrVerificationState, stale},
+			{"unselected kit subject", "unselected-kit", store.VerificationCodeSubjectUnregistered, "subject", store.ErrVerificationState, kit},
+		} {
+			command := v.command(store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: tc.key, Attempt: &store.VerificationAttempt{Subject: tc.subject, SafeInputs: map[string]json.RawMessage{}, Environment: environment}})
+			_, err := x.Backend.ApplyVerification(v.ctx, command)
+			var refusal *store.VerificationRefusal
+			if !errors.As(err, &refusal) || refusal.Code != tc.code || refusal.Field != tc.field || !errors.Is(err, tc.class) {
+				t.Fatalf("%s: got %v, want %s at %s", tc.name, err, tc.code, tc.field)
+			}
+			if strings.Contains(refusal.Rule, tc.key) {
+				t.Fatalf("%s: rule echoed the start key: %q", tc.name, refusal.Rule)
+			}
+			if after := len(v.snapshot(t).Attempts); after != before {
+				t.Fatalf("%s: refused start wrote an attempt (%d -> %d)", tc.name, before, after)
+			}
+		}
+	})
+}

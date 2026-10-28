@@ -252,7 +252,13 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 	if strings.ContainsRune(actor, 0) {
 		return out, ErrVerificationInvalid
 	}
-	for _, id := range []string{c.Key, c.ContextID, c.RunID} {
+	// An attempt's start_key is checked after its context is authenticated as
+	// the claim's own, so the refusal can name it (component-verification-service).
+	key := c.Key
+	if c.Kind == VerificationStartAttempt {
+		key = ""
+	}
+	for _, id := range []string{key, c.ContextID, c.RunID} {
 		if id != "" && !verificationIdentifier(id) {
 			return out, ErrVerificationInvalid
 		}
