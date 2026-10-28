@@ -344,3 +344,49 @@ func TestSweepAutomaticReviewRecoveryExclusions(t *testing.T) {
 		}
 	})
 }
+
+// The AR-5 sweep reads only queued and running tasks and batches their order
+// and event reads. In a workspace dominated by finished tasks with long
+// histories it makes the same decisions as the full per-task reads and never
+// reads a terminal task's row or history (component-runtime, Reconcile tick).
+func TestSweepAutomaticReviewRecoverySkipsTerminalHistory(t *testing.T) {
+	h := newAutomaticReviewHarness(t)
+	terminal := storetest.SeedTerminalHistory(t, h.st, h.ctx, "demo", "app", 40, 30)
+	h.exhaustSeat(t)
+	now := time.Now().UTC()
+	all, err := h.st.ListTasks(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var due []string
+	for _, task := range all {
+		orders, listErr := h.st.ListTaskWorkOrders(h.ctx, task.ID)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		events, listErr := h.st.ListEvents(h.ctx, task.ID)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if store.DecideAutomaticReviewAct(h.cfg.Recovery, task, orders, events, now).Kind != store.AutomaticReviewNone {
+			due = append(due, task.ID)
+		}
+	}
+	if len(due) != 1 || due[0] != h.task.ID {
+		t.Fatalf("full-read decisions due=%v, want only %s", due, h.task.ID)
+	}
+	recorder := storetest.NewReadRecorder(h.st)
+	h.service.Store = recorder
+	if acted := h.sweep(t, now); acted != 1 {
+		t.Fatalf("sweep acted=%d, want the one full-read decision", acted)
+	}
+	recorder.RequireNoTerminalReads(t, terminal)
+	if retried := h.roundEvents(t, "review.round_retried"); len(retried) != 1 || !retried[0].Automatic {
+		t.Fatalf("automatic retries=%+v", retried)
+	}
+	recorder.Reset()
+	if acted := h.sweep(t, time.Now().UTC()); acted != 0 {
+		t.Fatalf("second sweep acted=%d", acted)
+	}
+	recorder.RequireNoTerminalReads(t, terminal)
+}

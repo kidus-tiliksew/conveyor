@@ -1068,12 +1068,20 @@ func (d *Dispatcher) hasRecoverableApprovedReview(ctx context.Context, task core
 	return false, nil
 }
 
+// mergeReadinessTaskStates are the states ReconcileMergeReadiness reads: the
+// gate-on pass's approved and awaiting tasks and the gate-off pass's live
+// tasks.
+var mergeReadinessTaskStates = []core.TaskState{core.TaskClaiming, core.TaskQueued, core.TaskRunning, core.TaskAwaiting, core.TaskApproved}
+
 // ReconcileMergeReadiness sweeps gate-on approved and merge-gate tasks for an
 // already-merged pull request, then recovers gate-off accepted reviews whose
 // approved-to-merge edge was interrupted. The gate-on pass never requests a
 // merge. Every candidate is revalidated under the task side-effect lock.
 func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
-	tasks, err := d.Store.ListTasks(ctx)
+	// Neither pass acts on a merged, closed, or parked task, so the store
+	// selects only the states either pass can act on (component-runtime,
+	// Reconcile tick).
+	tasks, err := d.Store.ListTasksFiltered(ctx, store.TaskFilter{States: mergeReadinessTaskStates})
 	if err != nil {
 		return 0, err
 	}

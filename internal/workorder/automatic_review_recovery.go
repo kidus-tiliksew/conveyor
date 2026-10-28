@@ -27,25 +27,41 @@ func (s *Service) SweepAutomaticReviewRecovery(ctx context.Context, now time.Tim
 	if cfg.Recovery.AutomaticRecoveries == 0 {
 		return 0, nil
 	}
-	tasks, err := s.Store.ListTasks(ctx)
+	// DecideAutomaticReviewAct acts only on queued and running tasks. The
+	// store selects those tasks, then reads their orders and only the event
+	// kinds the rule folds in one query each, instead of every task's full
+	// history (component-persistence).
+	tasks, err := s.Store.ListTasksFiltered(ctx, store.TaskFilter{States: []core.TaskState{core.TaskQueued, core.TaskRunning}})
+	if err != nil {
+		return 0, err
+	}
+	if len(tasks) == 0 {
+		return 0, nil
+	}
+	taskIDs := make([]string, len(tasks))
+	for i, task := range tasks {
+		taskIDs[i] = task.ID
+	}
+	allOrders, err := s.Store.ListWorkOrdersForTasks(ctx, taskIDs)
+	if err != nil {
+		return 0, err
+	}
+	ordersByTask := make(map[string][]core.WorkOrder, len(tasks))
+	for _, order := range allOrders {
+		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], order)
+	}
+	eventsByTask, err := s.Store.ListAutomaticReviewEvents(ctx, taskIDs)
 	if err != nil {
 		return 0, err
 	}
 	acted := 0
 	var failures []error
 	for _, task := range tasks {
-		if task.State != core.TaskQueued && task.State != core.TaskRunning {
-			continue
+		orders := ordersByTask[task.ID]
+		if orders == nil {
+			orders = []core.WorkOrder{}
 		}
-		orders, err := s.Store.ListTaskWorkOrders(ctx, task.ID)
-		if err != nil {
-			return acted, err
-		}
-		events, err := s.Store.ListEvents(ctx, task.ID)
-		if err != nil {
-			return acted, err
-		}
-		decision := store.DecideAutomaticReviewAct(cfg.Recovery, task, orders, events, now)
+		decision := store.DecideAutomaticReviewAct(cfg.Recovery, task, orders, eventsByTask[task.ID], now)
 		if decision.Kind == store.AutomaticReviewNone {
 			continue
 		}

@@ -1875,15 +1875,7 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 		}
 		for _, issue := range issues {
 			source := fmt.Sprintf("github:%s#%d", repo.GitHub, issue.Number)
-			tasks, _ := d.Store.ListTasks(ctx)
-			exists := false
-			for _, task := range tasks {
-				if task.Source == source {
-					exists = true
-					break
-				}
-			}
-			if exists {
+			if d.sourceTaskExists(ctx, source) {
 				continue
 			}
 			id := core.NewTaskID()
@@ -1898,6 +1890,21 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			d.Enqueue(ctx, id)
 		}
 	}
+}
+
+// sourceTaskExists reports whether a workspace task was taken in from source.
+// The filter's text match narrows the read to tasks whose identifying text
+// contains source, and the exact comparison decides. A finished task with the
+// source still blocks a second intake. A failed read reports false, as the
+// intake pass always has.
+func (d *Dispatcher) sourceTaskExists(ctx context.Context, source string) bool {
+	tasks, _ := d.Store.ListTasksFiltered(ctx, store.TaskFilter{Query: source})
+	for _, task := range tasks {
+		if task.Source == source {
+			return true
+		}
+	}
+	return false
 }
 
 // PollOnce runs one explicit-workspace GitHub intake pass.

@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -209,4 +210,42 @@ func TestReconcileGitHubLifecyclesRepairsApprovalOutboxGapOnce(t *testing.T) {
 	if repaired, reconcileErr := d.ReconcileGitHubLifecycles(ctx); reconcileErr != nil || repaired != 0 {
 		t.Fatalf("second reconcile repaired=%d err=%v", repaired, reconcileErr)
 	}
+}
+
+// The lifecycle reconcile reads only its candidates: superseded tasks and
+// approved plans without a lifecycle row. Finished tasks whose lifecycle is
+// queued are never read, and the repair matches the full-list sweep's
+// (component-runtime, Reconcile tick).
+func TestReconcileGitHubLifecyclesSkipsPublishedTerminalHistory(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	terminal := storetest.SeedTerminalHistory(t, st, ctx, "test", "app", 40, 20)
+	task := core.Task{ID: "reconcile-issue", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/reconcile-issue", State: core.TaskQueued, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+		t.Fatal(err)
+	}
+	recorder := storetest.NewReadRecorder(st)
+	d := New(recorder, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	if repaired, reconcileErr := d.ReconcileGitHubLifecycles(ctx); reconcileErr != nil || repaired != 1 {
+		t.Fatalf("first reconcile repaired=%d err=%v", repaired, reconcileErr)
+	}
+	if lifecycle, ok, getErr := st.GetGitHubLifecycle(ctx, task.ID); getErr != nil || !ok || lifecycle.SpecVersion != spec.Version {
+		t.Fatalf("lifecycle=%+v ok=%t err=%v", lifecycle, ok, getErr)
+	}
+	recorder.RequireNoTerminalReads(t, terminal)
+	recorder.Reset()
+	if repaired, reconcileErr := d.ReconcileGitHubLifecycles(ctx); reconcileErr != nil || repaired != 0 {
+		t.Fatalf("second reconcile repaired=%d err=%v", repaired, reconcileErr)
+	}
+	if _, read := recorder.TaskRowState(task.ID); read {
+		t.Fatal("second reconcile read the repaired task")
+	}
+	recorder.RequireNoTerminalReads(t, terminal)
 }

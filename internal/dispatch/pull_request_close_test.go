@@ -21,6 +21,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -701,4 +702,36 @@ func TestStartOverCloseUnavailableConfirmationEvidence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The close-ownership check reads only open tasks, parked ones included. The
+// finished history's recorded pull requests never block a close and are never
+// read (AC-3.5; component-git-delivery).
+func TestCheckCloseOwnershipReadsOnlyOpenTasks(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	terminal := storetest.SeedTerminalHistory(t, st, ctx, "test", "app", 40, 10)
+	retired := core.Task{ID: "retired-close", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "feature/retired", State: core.TaskClosed, CreatedAt: time.Now()}
+	parked := core.Task{ID: "parked-holder", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "feature/parked", State: core.TaskParked, CreatedAt: time.Now()}
+	for _, task := range []core.Task{retired, parked} {
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: parked.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 77})}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := storetest.NewReadRecorder(st)
+	worker := &pullRequestCloseWorker{dispatcher: New(recorder, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)}
+	// Seeded finished tasks recorded pull requests 1000 and up.
+	if err := worker.checkCloseOwnership(ctx, retired, core.PullRequestClose{Branch: retired.Branch, Number: 1000}, true); err != nil {
+		t.Fatalf("finished task's pull request blocked the close: %v", err)
+	}
+	if err := worker.checkCloseOwnership(ctx, retired, core.PullRequestClose{Branch: retired.Branch, Number: 77}, false); err == nil || !strings.Contains(err.Error(), "recorded by another open task") {
+		t.Fatalf("parked task's pull request err=%v", err)
+	}
+	if err := worker.checkCloseOwnership(ctx, retired, core.PullRequestClose{Branch: parked.Branch}, true); err == nil || !strings.Contains(err.Error(), "held by another open task") {
+		t.Fatalf("parked task's branch err=%v", err)
+	}
+	recorder.RequireNoTerminalReads(t, terminal)
 }

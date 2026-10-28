@@ -258,6 +258,7 @@ func RunAll(t *testing.T, factory Factory) {
 		run     func(*testing.T, Fixture)
 	}{
 		{"TaskOperationsPagination", true, runTaskPagination},
+		{"ReconcileReads", true, runReconcileReads},
 		{"TaskLifecycle", true, runTaskLifecycle},
 		{"TaskBranchUniqueness", true, runTaskBranchUniqueness},
 		{"TaskBranchConcurrentClaims", true, runTaskBranchConcurrentClaims},

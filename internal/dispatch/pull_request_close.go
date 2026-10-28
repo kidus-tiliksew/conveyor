@@ -297,10 +297,16 @@ func mutationUncertain(err error) bool {
 
 const closeUncertainMarker = "pull request close: mutation_uncertain"
 
+// closeOwnershipTaskStates are the open task states; parked tasks still hold
+// their branch and pull request.
+var closeOwnershipTaskStates = []core.TaskState{core.TaskClaiming, core.TaskQueued, core.TaskRunning, core.TaskAwaiting, core.TaskApproved, core.TaskParked}
+
 // AC-3.5 (component-git-delivery): neither branch reuse nor reuse of the
 // recorded PR number grants the retired task permission to close another PR.
 func (w *pullRequestCloseWorker) checkCloseOwnership(ctx context.Context, retired core.Task, p core.PullRequestClose, branchDerived bool) error {
-	tasks, err := w.dispatcher.Store.ListTasks(ctx)
+	// Only an open task can hold the branch or the pull request, so the store
+	// never returns merged or closed tasks.
+	tasks, err := w.dispatcher.Store.ListTasksFiltered(ctx, store.TaskFilter{States: closeOwnershipTaskStates})
 	if err != nil {
 		return err
 	}
