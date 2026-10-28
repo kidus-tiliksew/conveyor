@@ -633,8 +633,11 @@ an unknown one, and `type`, `pattern`, `enum`, `const`, `format`, `minimum`,
 `maximum`, `minItems`, `oneOf` or `anyOf` for a value. A field of `request`
 means the body as a whole failed, or that an unknown property's name was
 withheld. Compare the call with the schema from `tools/list`, correct that
-path and resubmit. An absent required property answers this code; a list
-sent as `null` or a blank text answers `verification_field_required`.
+path and resubmit. An absent required property, such as a missing
+`start_key` or `safe_inputs`, and a blank text the schema refuses, such as
+`environment.deployment`, answer this code. A value the schema admits but the
+store refuses answers `verification_field_required`: a list or `safe_inputs`
+sent as `null`, or a blank `start_key`.
 
 `conveyor kit verify` prints the server's refusal text after its own redactor
 removes the launcher credential and claim token, as
