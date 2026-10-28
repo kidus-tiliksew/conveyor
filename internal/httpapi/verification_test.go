@@ -996,11 +996,105 @@ func TestVerificationRequestShapeRefusals(t *testing.T) {
 			}
 		}
 	}
+	// Under the live claim, a malformed request naming an unknown context or
+	// another task's context keeps the generic refusal: request-shape detail
+	// follows context authentication, not claim authentication alone.
+	foreign := f.foreignContext()
+	unknown := "0123456789abcdef0123456789abcdef"
+	events, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generic := func(label, tool string, args map[string]any) {
+		t.Helper()
+		_, err, response := f.call(tool, args, true)
+		var refusal *store.VerificationRefusal
+		if err == nil || errors.As(err, &refusal) || strings.Contains(err.Error(), "verification_") {
+			t.Fatalf("%s MCP got detail: %v", label, err)
+		}
+		if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "verification_") || strings.Contains(response.Body.String(), "environment") || strings.Contains(response.Body.String(), "bogus") {
+			t.Fatalf("%s REST got detail: %d %s", label, response.Code, response.Body)
+		}
+	}
+	for _, named := range []struct{ name, id string }{{"unknown context", unknown}, {"foreign context", foreign}} {
+		for _, malformed := range cases[:3] {
+			args := map[string]any{}
+			for k, v := range malformed.input {
+				args[k] = v
+			}
+			args["context_id"] = named.id
+			generic(named.name+" "+malformed.name, "start_verification_attempt", args)
+		}
+		bogus := func(input any) map[string]any {
+			args := map[string]any{}
+			if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+				t.Fatal(err)
+			}
+			args["context_id"], args["bogus_argument"] = named.id, true
+			return args
+		}
+		for tool, input := range map[string]any{
+			"register_verification_obligation": workorder.VerificationObligationRequest{ObligationID: "other", Description: "x", Sources: []workorder.VerificationSource{{DocumentID: "approved_plan", Version: f.plan.Version, SectionID: "DC-1"}}, Contract: verification.Exercise{ID: "other", Kind: "script", Argv: []string{"x"}, TimeoutSeconds: 1, RequiredAssertions: []verification.Assertion{}}},
+			"report_verification_outcome":      workorder.VerificationOutcomeRequest{RunID: "run", State: "failed", Explanation: "x"},
+			"submit_verification":              workorder.VerificationSubmitRequest{Outcome: "feedback", Coverage: f.coverage(subject), Feedback: "x"},
+			"get_verification_context":         workorder.VerificationContextRequest{},
+		} {
+			generic(named.name+" "+tool, tool, bogus(input))
+		}
+	}
+	if after, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID); err != nil || !reflect.DeepEqual(events, after) {
+		t.Fatal("refused context-bearing requests wrote events")
+	}
+	if after := attempts(); after != before {
+		t.Fatalf("refused context-bearing requests wrote attempts: %d -> %d", before, after)
+	}
+	// The same tools naming the claim's own context keep the detail.
+	for tool, input := range map[string]any{
+		"submit_verification":      workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "feedback", Coverage: f.coverage(subject), Feedback: "x"},
+		"get_verification_context": workorder.VerificationContextRequest{ContextID: contextID},
+	} {
+		args := map[string]any{}
+		if err := json.Unmarshal(core.JSONPayload(input), &args); err != nil {
+			t.Fatal(err)
+		}
+		args["bogus_argument"] = true
+		f.t = t
+		f.refused(tool, args, store.VerificationCodeRequestShape, "bogus_argument", http.StatusBadRequest)
+	}
 	// get_evidence_schemas authenticates no claim, so its malformed call stays generic.
 	_, err = f.s.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(f.ctx), "get_evidence_schemas", map[string]any{"workspace_id": "demo", "bogus_argument": true})
 	if !errors.Is(err, store.ErrVerificationInvalid) || errors.As(err, &refusal) {
 		t.Fatalf("get_evidence_schemas malformed call: %v", err)
 	}
+}
+
+// foreignContext prepares a context of another task in the same workspace,
+// claimed by a different session (component-verification-service).
+func (f *noEligibleKitFixture) foreignContext() string {
+	f.t.Helper()
+	b := f.s.Store.(store.Backend)
+	admin := store.WithWorkspace(store.WithActor(f.t.Context(), store.SystemActor()), "demo")
+	task := core.Task{ID: "verification-foreign", Workspace: "demo", Repo: "repo", Title: "foreign", Branch: "conveyor/foreign", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: strings.Repeat("b", 40), CreatedAt: time.Now().UTC()}
+	task.SetupContract.VerifyStage = true
+	if err := b.CreateTask(admin, task); err != nil {
+		f.t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, CreatedAt: task.CreatedAt}
+	if _, err := storetest.CreateStageWorkOrder(admin, b, job, o); err != nil {
+		f.t.Fatal(err)
+	}
+	o, err := storetest.ClaimWorkOrder(admin, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "foreign-session", ClientToken: "foreign-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	access := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: "foreign-token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "foreign-session"}}
+	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: o.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": o.HeadSHA, "state": "no_manifest"})}}
+	created, err := f.s.Store.(store.VerificationStore).ApplyVerification(f.ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "foreign", Access: access, Context: &vc})
+	if err != nil {
+		f.t.Fatalf("foreign context: %v", err)
+	}
+	return created.ID
 }
 
 // reviewClaimFixture seals an empty context at the verify head, creates a
