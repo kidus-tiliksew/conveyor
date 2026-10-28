@@ -78,8 +78,8 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 40 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 40 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 35 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 35 distinct kinds: %v", humanTimelineEventKinds)
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))
@@ -89,6 +89,19 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 	// (feature-review-round-summary SU-6).
 	if slices.Contains(noteKinds, store.ReviewSummaryRecordedEvent) || slices.Contains(humanTimelineEventKinds, store.ReviewSummaryRecordedEvent) {
 		t.Fatalf("%s must stay out of noteEventKinds and the human timeline kinds", store.ReviewSummaryRecordedEvent)
+	}
+	// Plan versions and publication bookkeeping stay technical, while the
+	// publication alarms and the pull request record stay selected
+	// (component-http-api, Bounded detail view; task 261028-5c2ae2).
+	for _, kind := range []string{"spec.version_created", "github_issue.publication_queued", "github_issue.publication_published", "github_issue.associated", "review.publication_retry"} {
+		if slices.Contains(humanTimelineEventKinds, kind) || !slices.Contains(hiddenKinds, kind) {
+			t.Fatalf("%s must be hidden by the dashboard and outside the human selection", kind)
+		}
+	}
+	for _, kind := range []string{"github_issue.publication_retry", "github_issue.publication_failed", "review.publication_failed", "pull_request.opened"} {
+		if !slices.Contains(humanTimelineEventKinds, kind) {
+			t.Fatalf("%s must stay in the human selection", kind)
+		}
 	}
 }
 

@@ -70,6 +70,7 @@ import {
 } from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
+import { ImplementationEntry } from './implementation-entry'
 import { VerificationEntry } from './verification-entry'
 import {
   CheckpointProposalRecoveryCard,
@@ -823,6 +824,39 @@ function TimelineRow({
         }
       />
     )
+  // An implement job is the task's delivery: its own card carries the
+  // attempt, the agent's report, and the pull request and head it delivered.
+  if (entry.type === 'job' && entry.job.stage === 'implement' && entry.job.started_at)
+    return (
+      <ImplementationEntry
+        entry={entry}
+        dotSlot={(className) => <TimelineDot className={className} />}
+        meta={
+          <JobMeta
+            job={entry.job}
+            model={entry.model}
+            order={entry.order}
+            usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
+          />
+        }
+        summaryAudit={
+          entry.summaryEventId && (
+            // The server cut this text at 16,384 bytes; its event holds the rest.
+            <AuditDisclosure
+              taskId={item.task.id}
+              kind="event"
+              recordId={entry.summaryEventId}
+              label="Full text (shortened here)"
+            />
+          )
+        }
+        transcripts={
+          entry.order?.transcript_captures?.length ? (
+            <TranscriptCaptures captures={entry.order.transcript_captures} />
+          ) : undefined
+        }
+      />
+    )
   if (entry.type === 'job')
     return (
       <JobEntry
@@ -1377,6 +1411,9 @@ function JobEntry({
     />
   )
   if (job.state === 'done' && !warning && placeholderSummaries.has(summary)) {
+    // The plan section and the approval intervention tell a finished plan
+    // stage, so its placeholder row would only repeat them.
+    if (job.stage === 'spec') return null
     return (
       <li className="relative pl-7">
         {dot}
