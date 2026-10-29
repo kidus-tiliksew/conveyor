@@ -83,7 +83,9 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid SingleStore connection configuration")
 	}
-	db := sql.OpenDB(connector)
+	// The metered connector records request query counts and durations
+	// (component-persistence, Request database metrics and pool sizing).
+	db := sql.OpenDB(newMeteredConnector(connector, time.Now))
 	db.SetMaxOpenConns(16)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(5 * time.Minute)
