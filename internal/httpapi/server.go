@@ -161,7 +161,7 @@ func NewServer(s store.Store) *Server {
 
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, githubAppRequestLogger, middleware.Recoverer)
+	r.Use(middleware.RequestID, githubAppRequestLogger, s.serverTiming, middleware.Recoverer)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

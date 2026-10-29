@@ -122,6 +122,10 @@ func DatabaseForURL(raw string) Database {
 type Database struct {
 	Backend string `yaml:"backend"`
 	URL     string `yaml:"url"`
+	// MaxConns is the deployment's PostgreSQL pool size; nil when absent.
+	// The deployment loader validates it and applies the environment
+	// fallback (component-runtime, Durable backend selection).
+	MaxConns *int64 `yaml:"max_conns,omitempty"`
 }
 
 type ExecutionMode string

@@ -27,6 +27,7 @@ work_order_queue_timeout: 24h    # unclaimed orders go stale after this
 
 database:
   url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
+  # max_conns: 32                # PostgreSQL pool size; see Database selection
 
 execution_settings:
   control_plane:                 # in-process stages; the server configuring itself
@@ -104,6 +105,46 @@ connection strings retain PostgreSQL selection. `conveyor init` and
 `conveyor user issue-link` apply the same inference to `CONVEYOR_DATABASE_URL`.
 See [SingleStore operations](singlestore.md) before creating its database.
 
+#### PostgreSQL pool size
+
+`database.max_conns` sets the maximum number of connections in each
+`conveyord` process's PostgreSQL pool, and `CONVEYOR_DATABASE_MAX_CONNS` is
+its fallback. The pool serves API requests, the job queue, reconciliation,
+the monitor, and long-held side-effect and planning locks. The size resolves
+in this order:
+
+1. An explicit `pool_max_conns` parameter in the connection string, for
+   example `postgres://...?pool_max_conns=40`.
+2. `database.max_conns` in the deployment file.
+3. `CONVEYOR_DATABASE_MAX_CONNS`.
+4. The default, 32.
+
+Each value must be an integer from 1 to 2147483647. The file value and a
+present variable are validated when the deployment file loads, even when a
+higher-precedence value wins; an empty variable counts as unset. An
+out-of-range file value and any invalid variable value are refused with an
+error that names the setting, never its value. A file value that is not an
+integer at all fails YAML decoding like any other typed key, and that parser
+error quotes the offending scalar. Thirty-two is a starting point, not a measured
+optimum: keep the total across every `conveyord` replica within your
+database's connection limit. The setting changes nothing for SingleStore,
+whose pool stays at 16 open and 4 idle connections.
+
+Startup logs the effective size read from the opened pool
+(`database pool max_conns=<n> (effective)`). Every 30 seconds, and once just
+before shutdown closes the store, the daemon logs a pool snapshot:
+`database pool stats (periodic|final): acquired_conns=… idle_conns=…
+max_conns=… empty_acquire_count=… acquire_duration_ms=…`. The last two are
+cumulative since startup.
+
+Every `/v1` response from a store that measures it carries a
+`Server-Timing` header with that request's database time:
+`db;dur=<ms>` (summed query time), `db_queries;desc="<count>"`, and, on
+PostgreSQL, `db_acquire;dur=<ms>` (summed time spent acquiring pool
+connections). SingleStore omits `db_acquire`. The header holds only durations
+and counts, never SQL, identifiers, or workspace data. A streamed response
+reports the database activity before its first byte.
+
 ## Local execution config (executor machine)
 
 Read by `conveyor run`, `conveyor worker`, and `conveyor checkout`. Created
@@ -161,6 +202,7 @@ Server (read by `conveyord`):
 | Variable | Purpose |
 |---|---|
 | `CONVEYOR_DATABASE_URL` | PostgreSQL URL or SingleStore URL/DSN. Required unless `database.url` is set. |
+| `CONVEYOR_DATABASE_MAX_CONNS` | PostgreSQL pool size when `database.max_conns` is not set (default 32); an explicit `pool_max_conns` in the URL wins. See [PostgreSQL pool size](#postgresql-pool-size). |
 | `CONVEYOR_API_TOKEN` | Bound as the first operator's token at bootstrap. Required. |
 | `CONVEYOR_LLM_API_KEY` | Key for the in-process triage and planning stages. Required. |
 | `CONVEYOR_LLM_BASE_URL` | OpenAI-compatible endpoint override. |

@@ -83,3 +83,29 @@ func TestSingleStoreAdmission(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenWithPoolStatsRefusesOutOfRangeMaxConns(t *testing.T) {
+	ctx := store.WithActor(t.Context(), store.SystemActor())
+	for _, value := range []int64{0, -1, 2147483648} {
+		maxConns := value
+		// The URL is unroutable: the refusal must come before any connection.
+		st, stats, err := backend.OpenWithPoolStats(ctx, config.Database{Backend: "postgres", URL: "postgres://u:pa55word@192.0.2.1:5432/conveyor?connect_timeout=1", MaxConns: &maxConns})
+		if err == nil || st != nil || stats != nil {
+			t.Fatalf("MaxConns %d: backend %v stats %v err %v", value, st, stats != nil, err)
+		}
+		if err.Error() != "database.max_conns must be an integer from 1 to 2147483647" {
+			t.Fatalf("MaxConns %d: error = %v", value, err)
+		}
+	}
+}
+
+func TestOpenWithPoolStatsReturnsNoStatsForVolatile(t *testing.T) {
+	st, stats, err := backend.OpenWithPoolStats(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: "memory"}, backend.AllowVolatile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if stats != nil {
+		t.Fatal("the volatile backend reports no pool statistics")
+	}
+}
