@@ -36,6 +36,7 @@ import type {
   VersionedWorkspaceConfig,
   WorkerList,
   WorkOrder,
+  WorkOrderTranscriptCaptureContent,
   WorkspaceConfigDocument,
   WorkspaceConfigReceipt,
   WorkspaceInfo,
@@ -410,6 +411,22 @@ export async function fetchTaskAudit(
   const response = await fetch(`${path}?workspace_id=${encodeURIComponent(workspace)}`, { signal })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<TaskAuditResponse>
+}
+
+// One transcript capture's content, read only while its disclosure is open
+// (component-web-task-surfaces, Transcript disclosures). The workspace is
+// always explicit.
+export async function fetchTaskTranscriptCapture(
+  workspace: string,
+  taskId: string,
+  workOrderId: string,
+  attemptId: string,
+  signal: AbortSignal,
+) {
+  const path = `/v1/tasks/${encodeURIComponent(taskId)}/work-orders/${encodeURIComponent(workOrderId)}/transcript-captures/${encodeURIComponent(attemptId)}`
+  const response = await fetch(workspaceURL(path, workspace), { signal })
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+  return response.json() as Promise<WorkOrderTranscriptCaptureContent>
 }
 
 export function fetchWorkspace() {
