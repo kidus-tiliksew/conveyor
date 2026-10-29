@@ -245,7 +245,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	}
 	setupState = resumeURL.Query().Get("state")
 	got = call("GET", "/setup?installation_id=12&setup_action=install&state="+setupState, "session-a", "", false)
-	if got.Code != 302 || got.Header().Get("Location") != "https://conveyor.example/settings?workspace=alpha" {
+	if got.Code != 302 || got.Header().Get("Location") != "https://conveyor.example/w/alpha/settings" {
 		t.Fatalf("setup %d %s", got.Code, got.Body.String())
 	}
 	got = call("GET", "", "", "maintainer", false)

@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import type { FactoryAct, InboxItem, Task } from '../../lib/types'
+import { useWorkspaceSelection } from '../app-shell'
 import { ActsLog } from './acts-log'
 import { NextActionChoices } from './choice-button'
 import { useNextAction } from './use-next-actions'
@@ -20,12 +21,13 @@ export function AutomaticBand({ items, acts }: { items: InboxItem[]; acts: Facto
 }
 
 function AutomaticRow({ item, task }: { item: InboxItem; task: Task }) {
+  const { workspace } = useWorkspaceSelection()
   const { data: action } = useNextAction(task.id, Boolean(item.no_judgment_needed))
   return (
     <li data-inbox-item={task.id} className="min-w-0 space-y-1.5 px-4 py-3">
       <Link
-        to="/tasks/$taskId"
-        params={{ taskId: task.id }}
+        to="/w/$workspaceId/tasks/$taskId"
+        params={{ workspaceId: workspace, taskId: task.id }}
         className="break-words text-sm font-medium hover:underline"
       >
         {task.title}

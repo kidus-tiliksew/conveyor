@@ -192,7 +192,7 @@ async function mockWorkspace(page: Page, role: 'operator' | 'member' | 'viewer',
 }
 
 async function openMembers(page: Page, role: 'operator' | 'member' | 'viewer') {
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   if (role === 'operator') await page.getByRole('tab', { name: 'Members' }).click()
 }
 
@@ -357,11 +357,11 @@ test('a signed-in viewer sees the workspace and role but no mutation affordances
   await expect(page.getByRole('button', { name: /Remove Vi Viewer/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /Send sign-in link/ })).toHaveCount(0)
 
-  await page.goto('/tasks')
+  await page.goto('/w/demo/tasks')
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New task' })).toHaveCount(0)
-  await page.goto('/inbox')
+  await page.goto('/w/demo/inbox')
   await expect(page.getByRole('button', { name: 'Confirm' })).toHaveCount(0)
 })
 
@@ -448,7 +448,7 @@ test('a token secret is shown once, is never re-rendered, and the token can be r
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   const card = page.getByRole('form', { name: 'Create an access token' })
   await expect(page.getByText('Laptop CLI')).toBeVisible()
   await expect(page.getByText(/Last used/)).toBeVisible()

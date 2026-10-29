@@ -206,7 +206,9 @@ func (s *Server) workspaceGitHubAppSetup(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.appClient().Invalidate(workspace)
-	http.Redirect(w, r, strings.TrimRight(s.InvitationDelivery.PublicURL, "/")+"/settings?workspace="+url.QueryEscape(workspace), http.StatusFound)
+	// The return lands on the workspace's own Settings address
+	// (req-workspace-addresses AC-1.10).
+	http.Redirect(w, r, strings.TrimRight(s.InvitationDelivery.PublicURL, "/")+"/w/"+url.PathEscape(workspace)+"/settings", http.StatusFound)
 }
 func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	workspace, _ := store.WorkspaceFromContext(r.Context())

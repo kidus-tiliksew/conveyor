@@ -5,6 +5,7 @@ import { type CurrentExecutionState, dependencyRelationLabel } from '../../lib/a
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { WorkOrderActivitySnapshot } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Disclosure } from '../ui/disclosure'
 
 // The current order's execution state as the next-action card prints it
@@ -49,6 +50,7 @@ export function ExecutionFactRows({
   state: CurrentExecutionState
   routeVariant: TaskRouteVariant
 }) {
+  const { workspace } = useWorkspaceSelection()
   const { facts } = state
   const nextAction = facts.nextAction ? state.nextAction : undefined
   if (!facts.blocker && !facts.retry && !nextAction) return null
@@ -66,7 +68,7 @@ export function ExecutionFactRows({
                   <Link
                     key={dependency.id}
                     to={relatedRoute}
-                    params={{ taskId: dependency.id }}
+                    params={{ workspaceId: workspace, taskId: dependency.id }}
                     className="text-primary hover:underline"
                   >
                     {dependency.title || dependency.id} ·{' '}
@@ -139,13 +141,15 @@ export function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapsh
 }
 
 function DecisionBlockerText({ blocker, decisionID }: { blocker: string; decisionID?: string }) {
+  const { workspace } = useWorkspaceSelection()
   if (!decisionID) return blocker
   const [before, ...after] = blocker.split(decisionID)
   return (
     <>
       {before}
       <Link
-        to="/system-design"
+        to="/w/$workspaceId/system-design"
+        params={{ workspaceId: workspace }}
         hash={`decision-${decisionID.toLowerCase()}`}
         className="text-primary hover:underline"
         aria-label={`Open ${decisionID} in System Design`}

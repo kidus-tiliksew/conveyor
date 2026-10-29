@@ -393,7 +393,7 @@ for (const width of [1366, 390]) {
   test(`verification entry, folds and history at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     const { counts, release } = await fixture(page)
-    await page.goto('/tasks/verification-fixture/full')
+    await page.goto('/w/demo/tasks/verification-fixture/full')
     const entry = entries(page).filter({ hasText: 'Verification passed' })
     await expect(entry).toBeVisible()
     await expect(entry).toContainText('1 of 2 assertions passed')
@@ -462,7 +462,7 @@ for (const width of [1366, 390]) {
 
 test('task sheet shows a running verification and viewer has no observation action', async ({ page }) => {
   await fixture(page, { viewer: true, active: true })
-  await page.goto('/tasks/verification-fixture')
+  await page.goto('/w/demo/tasks/verification-fixture')
   const entry = entries(page).filter({ hasText: 'Running' })
   await expect(entry).toBeVisible()
   await expect(entry).toContainText('fixture-exercise running')
@@ -471,7 +471,7 @@ test('task sheet shows a running verification and viewer has no observation acti
 
 test('operator observation retries retain one key and exclude server provenance', async ({ page }) => {
   const { observations } = await fixture(page, { active: true })
-  await page.goto('/tasks/verification-fixture/full')
+  await page.goto('/w/demo/tasks/verification-fixture/full')
   const entry = entries(page).filter({ hasText: 'Running' })
   await entry.getByRole('button', { name: 'Record observation', exact: true }).click()
   await entry.getByLabel('Observed fact', { exact: true }).fill('The expected result is visible.')
@@ -487,7 +487,7 @@ test('operator observation retries retain one key and exclude server provenance'
 
 test('merge gate shows one verdict line and loads cited evidence independently', async ({ page }) => {
   const { counts } = await fixture(page, { review: true })
-  await page.goto('/tasks/verification-fixture/full')
+  await page.goto('/w/demo/tasks/verification-fixture/full')
   await expect(entries(page).filter({ hasText: 'Verification passed' })).toBeVisible()
   await expect(page.getByText('Verification passed', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'See the run' })).toBeVisible()

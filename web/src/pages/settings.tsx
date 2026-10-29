@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useLocation, useSearch } from '@tanstack/react-router'
+import { useLocation, useNavigate, useSearch } from '@tanstack/react-router'
 import { CheckCircle2, PlugZap, Terminal } from 'lucide-react'
 import { useEffect } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
@@ -14,15 +14,25 @@ import { fetchWorkspaces } from '../lib/api'
 import { mcpConnectionConfig, mcpEndpoint } from '../lib/mcp'
 
 export function SettingsPage() {
-  const { workspace, setWorkspace } = useWorkspaceSelection()
+  const { workspace } = useWorkspaceSelection()
+  const navigate = useNavigate()
   const searchStr = useLocation({ select: (location) => location.searchStr })
   const returnedWorkspace = new URLSearchParams(searchStr).get('workspace')
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: fetchWorkspaces })
   const returnWorkspaceKnown = workspaces.data?.some((item) => item.id === returnedWorkspace)
+  const { welcome } = useSearch({ from: '/w/$workspaceId/settings' })
+  // A GitHub App return from before workspace addresses names its workspace
+  // in `?workspace=`; open that workspace's Settings in place of this one.
   useEffect(() => {
-    if (returnedWorkspace && returnWorkspaceKnown && returnedWorkspace !== workspace) setWorkspace(returnedWorkspace)
-  }, [returnedWorkspace, returnWorkspaceKnown, workspace, setWorkspace])
-  const { welcome } = useSearch({ from: '/settings' })
+    if (returnedWorkspace && returnWorkspaceKnown && returnedWorkspace !== workspace) {
+      void navigate({
+        to: '/w/$workspaceId/settings',
+        params: { workspaceId: returnedWorkspace },
+        search: { welcome },
+        replace: true,
+      })
+    }
+  }, [returnedWorkspace, returnWorkspaceKnown, workspace, navigate, welcome])
   const cliCommand = 'export CONVEYOR_API_TOKEN="<paste-your-token>"'
   const endpoint = mcpEndpoint(window.location.origin)
   const mcpConfig = mcpConnectionConfig(endpoint).replace('<CONVEYOR_API_TOKEN>', '<paste-your-token>')

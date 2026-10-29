@@ -37,7 +37,8 @@ export function InboxReviewDetail({
       )}
     >
       <Link
-        to="/inbox"
+        to="/w/$workspaceId/inbox"
+        params={{ workspaceId: workspace }}
         search={{ ...search, selected: undefined }}
         resetScroll={false}
         data-inbox-back

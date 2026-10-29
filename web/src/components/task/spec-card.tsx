@@ -5,6 +5,7 @@ import { taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { MarkdownProse } from '../ui/markdown-prose'
@@ -39,6 +40,7 @@ export function SpecCard({
   // count (feature-review-seat-minimum RS-3, RS-7).
   minimumSeatCount?: number
 }) {
+  const { workspace } = useWorkspaceSelection()
   const [collapsed, setCollapsed] = useState(false)
   const [contentExpanded, setContentExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
@@ -154,6 +156,7 @@ export function SpecCard({
                             <Link
                               to={relatedRoute}
                               params={{
+                                workspaceId: workspace,
                                 taskId: spec.materialized_children!.find((child) => child.origin_sub_id === item.id)!
                                   .id,
                               }}

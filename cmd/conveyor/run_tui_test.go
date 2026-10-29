@@ -636,3 +636,19 @@ func TestRunTUIMergeConfirmationDroppedWhenHeadOrReadinessChanges(t *testing.T) 
 		t.Fatalf("Enter after the gate change did not open a fresh No-default merge confirmation: %q", model.View())
 	}
 }
+
+// The task link `conveyor run` prints names the task's workspace
+// (req-workspace-addresses AC-1.10).
+func TestRunTaskDashboardURLNamesWorkspace(t *testing.T) {
+	task := core.Task{ID: "261029-f51d83", Workspace: "demo"}
+	for _, base := range []string{"https://conveyor.example", "https://conveyor.example/"} {
+		if got, want := runTaskDashboardURL(base, task), "https://conveyor.example/w/demo/tasks/261029-f51d83"; got != want {
+			t.Fatalf("runTaskDashboardURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+	model := newRunTUIModel(runTUIStage{task: core.Task{ID: "target", Title: "Ship target", Workspace: "demo"}}, nil, nil, nil)
+	model.taskURL = runTaskDashboardURL("https://conveyor.example", model.stage.task)
+	if header := model.header(); !strings.Contains(header, "\x1b]8;;https://conveyor.example/w/demo/tasks/target\x07") {
+		t.Fatalf("header %q does not link the workspace task address", header)
+	}
+}

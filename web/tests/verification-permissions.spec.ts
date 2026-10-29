@@ -270,7 +270,7 @@ async function fixture(page: Page, options: Options = {}) {
 const entry = (page: Page) => page.getByRole('article', { name: 'Verification', exact: true })
 
 async function openPermissions(page: Page) {
-  await page.goto('/tasks/grant-fixture/full')
+  await page.goto('/w/demo/tasks/grant-fixture/full')
   const toggle = entry(page).getByRole('button', { name: 'Permissions' })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   await toggle.click()
@@ -342,7 +342,7 @@ test('subject without actions grants an explicit empty list', async ({ page }) =
 
 test('viewer sees no permissions disclosure', async ({ page }) => {
   const { gets } = await fixture(page, { role: 'viewer' })
-  await page.goto('/tasks/grant-fixture/full')
+  await page.goto('/w/demo/tasks/grant-fixture/full')
   await expect(entry(page)).toBeVisible()
   await expect(entry(page).getByRole('button', { name: 'Permissions' })).toHaveCount(0)
   expect(gets).toHaveLength(0)
@@ -430,7 +430,7 @@ test('workspace change clears the open disclosure and selection', async ({ page 
   await expect(page.getByRole('region', { name: 'Verification permissions' })).toHaveCount(0)
   await rail.getByRole('button', { name: 'Switch to Demo' }).click()
   await expect.poll(() => page.evaluate(() => localStorage.getItem('conveyor-workspace'))).toBe('demo')
-  await page.goto('/tasks/grant-fixture/full')
+  await page.goto('/w/demo/tasks/grant-fixture/full')
   const toggle = entry(page).getByRole('button', { name: 'Permissions' })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   await toggle.click()

@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { downloadArtifact, fetchArtifactObjectURL } from '../../lib/api'
 import type { Artifact } from '../../lib/types'
 import { absoluteTime, cn, formatBytes } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { Dialog } from '../ui/dialog'
@@ -19,6 +20,7 @@ function isVideo(contentType: string) {
 // Fetch object URLs for media attachments so they can preview inline. The URLs
 // are revoked on unmount.
 function useMediaPreviews(attachments: Artifact[]) {
+  const { workspace } = useWorkspaceSelection()
   const signature = attachments.map((attachment) => attachment.id).join(',')
   const [urls, setUrls] = useState<Record<string, string>>({})
   const [failed, setFailed] = useState<Record<string, boolean>>({})
@@ -31,7 +33,7 @@ function useMediaPreviews(attachments: Artifact[]) {
     for (const attachment of attachments.filter(
       (entry) => isImage(entry.content_type) || isVideo(entry.content_type),
     )) {
-      void fetchArtifactObjectURL(attachment)
+      void fetchArtifactObjectURL(workspace, attachment)
         .then((url) => {
           if (!active) {
             URL.revokeObjectURL(url)
@@ -211,6 +213,7 @@ function AttachmentDialog({
   previewFailed?: boolean
   onClose: () => void
 }) {
+  const { workspace } = useWorkspaceSelection()
   const image = isImage(attachment.content_type)
   const video = isVideo(attachment.content_type)
   const showImage = image && !!previewURL
@@ -226,7 +229,11 @@ function AttachmentDialog({
             {absoluteTime(attachment.created_at)}
           </p>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => void downloadArtifact(attachment).catch(() => {})}>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void downloadArtifact(workspace, attachment).catch(() => {})}
+        >
           <Download />
           Download
         </Button>

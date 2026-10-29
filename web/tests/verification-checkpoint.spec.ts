@@ -310,7 +310,7 @@ const verifyEntry = (page: Page) => page.getByRole('article', { name: 'Verificat
 
 test('pre-execution missing-grant checkpoint names grounds and recovers to verify', async ({ page }) => {
   const { recoveries } = await fixture(page, { refuseFirst: true })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(page.locator('#current-execution-title')).toHaveText(
     'Verification checkpoint — operator action required',
   )
@@ -345,7 +345,7 @@ test('pre-execution missing-grant checkpoint names grounds and recovers to verif
 
 test('blocked and waiting checkpoints link their attempts and evidence', async ({ page }) => {
   await fixture(page, { grounds: blockedAndWaiting, attempts: blockedAndWaitingAttempts })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const entry = verifyEntry(page)
   const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
   await expect(grounds).toContainText('Blocked attempt: kit sample/login — attempt run-b')
@@ -378,7 +378,7 @@ test('a historical checkpoint context links grounds from its own records', async
     attempts: blockedAndWaitingAttempts,
     referenceContext: 'cp-newer',
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const entry = verifyEntry(page)
   const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
   await expect(grounds).toContainText('Blocked attempt: kit sample/login — attempt run-b')
@@ -404,7 +404,7 @@ test('a historical checkpoint keeps a retried attempt out of its grounds', async
     attemptPageSize: 1,
     referenceContext: 'cp-newer',
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const entry = verifyEntry(page)
   const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
   await expect(grounds).toContainText('Waiting attempt: kit sample/approve — attempt run-w')
@@ -450,7 +450,7 @@ test('paginated checkpoint ground links resolve to loaded attempt rows', async (
     attempts: [{ id: 'run-other', exercise_id: 'logout', outcome: 'succeeded' }, ...blockedAndWaitingAttempts],
     attemptPageSize: 1,
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const entry = verifyEntry(page)
   const grounds = entry.getByRole('list', { name: 'Checkpoint grounds' })
   await grounds.getByRole('link', { name: 'Attempt run-w' }).click()
@@ -475,7 +475,7 @@ test('unresolved operations require a typed disposition instead of direction', a
     ],
     operations: ['op-7'],
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const card = page.getByRole('region', { name: 'Verification checkpoint', exact: true })
   await expect(card).toContainText('Typed disposition required')
   await expect(card).toContainText('op-7')
@@ -485,7 +485,7 @@ test('unresolved operations require a typed disposition instead of direction', a
 
 test('viewer sees the verification checkpoint but no recovery', async ({ page }) => {
   await fixture(page, { role: 'viewer' })
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(page.locator('#current-execution-title')).toHaveText(
     'Verification checkpoint — operator action required',
   )
@@ -496,7 +496,7 @@ test('viewer sees the verification checkpoint but no recovery', async ({ page })
 
 test('a running verify order is labelled Verification', async ({ page }) => {
   await fixture(page, { claimed: true })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   // The running state's title repeats the summary, so the stage reads on the
   // next-action box's status line instead (component-web-task-surfaces,
   // Next-action card).
@@ -525,7 +525,7 @@ test('recovery refreshes task detail after success (verification checkpoint)', a
     recovered = true
     return route.fallback()
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect.poll(() => calls).toEqual(['detail:demo'])
   await page
     .getByRole('region', { name: 'Verification checkpoint', exact: true })

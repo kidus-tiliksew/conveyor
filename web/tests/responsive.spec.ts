@@ -413,7 +413,7 @@ test.describe('phone', () => {
 
   test('the document tree opens as a drawer above the canvas', async ({ page }) => {
     await mockShell(page)
-    await page.goto('/system-design')
+    await page.goto('/w/demo/system-design')
 
     await expect(page.getByRole('heading', { name: 'System Design' })).toBeVisible()
     await expect(page.getByRole('navigation', { name: 'Document tree' })).toBeHidden()
@@ -435,7 +435,7 @@ test.describe('phone', () => {
     const lineageReads = await mockRecordDetail(page)
 
     // The Board sheet carries the most controls.
-    await page.goto('/tasks/task-layout')
+    await page.goto('/w/demo/tasks/task-layout')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
@@ -462,7 +462,7 @@ test.describe('phone', () => {
 
     // The task is outside the shell's Board window, so the header carries the
     // window-edge note as well as every control.
-    await page.goto('/tasks/task-layout')
+    await page.goto('/w/demo/tasks/task-layout')
     const sheet = page.getByRole('dialog', { name: 'Task detail' })
     const header = sheet.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
@@ -484,7 +484,7 @@ test.describe('phone', () => {
     await mockShell(page)
     await mockRecordDetail(page)
 
-    await page.goto('/tasks/task-layout-draft/full')
+    await page.goto('/w/demo/tasks/task-layout-draft/full')
     const header = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
     // The full route's header is a breadcrumb; the title reads in the page.
     const title = header.getByRole('navigation', { name: 'Breadcrumb' })
@@ -505,8 +505,8 @@ test.describe('phone', () => {
     await mockRecordDetail(page)
 
     for (const [path, heading] of [
-      ['/requirements?requirement=req-layout', 'Narrow layouts keep every record header usable on a phone'],
-      ['/system-design?document=design-dispatch', 'Dispatch ownership'],
+      ['/w/demo/requirements?requirement=req-layout', 'Narrow layouts keep every record header usable on a phone'],
+      ['/w/demo/system-design?document=design-dispatch', 'Dispatch ownership'],
     ]) {
       await page.goto(path)
       await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible()
@@ -521,7 +521,7 @@ test.describe('tablet', () => {
   test('portrait folds navigation; landscape keeps the desktop columns', async ({ browser }) => {
     const portrait = await browser.newPage({ viewport: tabletPortrait, isMobile: true, hasTouch: true })
     await mockShell(portrait)
-    await portrait.goto('/system-design')
+    await portrait.goto('/w/demo/system-design')
     await expect(portrait.getByRole('button', { name: 'Open navigation' })).toBeVisible()
     await expect(portrait.getByRole('button', { name: 'Documents' })).toBeVisible()
     await expectNoHorizontalOverflow(portrait)
@@ -530,7 +530,7 @@ test.describe('tablet', () => {
 
     const landscape = await browser.newPage({ viewport: tabletLandscape, isMobile: true, hasTouch: true })
     await mockShell(landscape)
-    await landscape.goto('/system-design')
+    await landscape.goto('/w/demo/system-design')
     await expect(landscape.getByRole('button', { name: 'Open navigation' })).toBeHidden()
     await expect(landscape.getByRole('navigation', { name: 'Primary' })).toBeVisible()
     await expect(landscape.getByRole('navigation', { name: 'Document tree' })).toBeVisible()
@@ -548,7 +548,7 @@ test.describe('tablet', () => {
       await mockShell(page)
       await mockRecordDetail(page)
 
-      await page.goto('/tasks/task-layout')
+      await page.goto('/w/demo/tasks/task-layout')
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
       const header = sheet.locator('header').first()
       const title = header.getByText(layoutTitle, { exact: true })
@@ -611,7 +611,7 @@ for (const [name, viewport] of [
       await mockShell(page)
       await mockRecordDetail(page)
 
-      await page.goto('/tasks/task-layout')
+      await page.goto('/w/demo/tasks/task-layout')
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
       const header = sheet.locator('header').first()
       const title = header.getByText(layoutTitle, { exact: true })
@@ -673,7 +673,7 @@ test.describe('desktop', () => {
     await mockShell(page)
     const lineageReads = await mockRecordDetail(page)
 
-    await page.goto('/tasks/task-layout')
+    await page.goto('/w/demo/tasks/task-layout')
     const panel = page.getByRole('dialog', { name: 'Task detail' })
     const header = panel.locator('header').first()
     const title = header.getByText(layoutTitle, { exact: true })
@@ -688,7 +688,7 @@ test.describe('desktop', () => {
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: 'test-results/shots/responsive-desktop-task-panel.png', animations: 'disabled' })
 
-    await page.goto('/tasks/task-layout/full')
+    await page.goto('/w/demo/tasks/task-layout/full')
     const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
     await expect(
       fullHeader.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),
@@ -699,7 +699,10 @@ test.describe('desktop', () => {
     await expectPlanHeaderUnbroken(page)
     await page.screenshot({ path: 'test-results/shots/responsive-desktop-task-full.png', animations: 'disabled' })
 
-    for (const path of ['/requirements?requirement=req-layout', '/system-design?document=design-dispatch']) {
+    for (const path of [
+      '/w/demo/requirements?requirement=req-layout',
+      '/w/demo/system-design?document=design-dispatch',
+    ]) {
       await page.goto(path)
       await expect(
         page.getByRole('button', { name: 'Knowledge explorer' }).getByText('Knowledge explorer'),

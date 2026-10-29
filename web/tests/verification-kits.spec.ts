@@ -171,7 +171,7 @@ async function mockAPIs(page: Page, role = 'operator', body: unknown = registry)
 }
 
 async function openVerification(page: Page) {
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await page.getByRole('tab', { name: 'Verification' }).click()
   await expect(page.getByRole('heading', { name: 'reporting' })).toBeVisible()
 }
@@ -181,7 +181,7 @@ async function openVerification(page: Page) {
 // exactly the fields the server returned.
 test('manager tab orders tabs, has no evidence switch and saves verify_stage', async ({ page }) => {
   const api = await mockAPIs(page)
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await expect(page.getByRole('tab')).toHaveText([/^General/, /^Policy/, /^Verification/, /^Workers/, /^Members/])
   await expect(page.getByLabel('Require verification evidence')).toHaveCount(0)
 
@@ -221,7 +221,7 @@ test('repository sections render every state, reason and status chip', async ({ 
   await expect(page.getByRole('region', { name: 'future' })).toContainText('Kit future-kit')
   const noApp = page.getByRole('region', { name: 'blocked-no_app' })
   await expect(noApp).toContainText("Couldn't read the kit manifest")
-  await expect(noApp.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings')
+  await expect(noApp.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/w/demo/settings')
   await expect(page.getByRole('region', { name: 'blocked-permission' })).toContainText('cannot read this repository')
   await expect(page.getByRole('region', { name: 'blocked-unknown_revision' })).toContainText(
     'base branch was not found',
@@ -240,11 +240,11 @@ test('kit, exercise and run details expand without exposing hidden run fields', 
   await expect(kitButton).toHaveAttribute('aria-expanded', 'true')
   await expect(reporting.getByRole('link', { name: 'req-reporting' }).first()).toHaveAttribute(
     'href',
-    '/requirements?requirement=req-reporting',
+    '/w/demo/requirements?requirement=req-reporting',
   )
   await expect(reporting.getByRole('link', { name: 'component-reporting' })).toHaveAttribute(
     'href',
-    '/system-design?document=component-reporting',
+    '/w/demo/system-design?document=component-reporting',
   )
   const exerciseButton = reporting.getByRole('button', { name: /create-and-read/ }).first()
   await exerciseButton.click()
@@ -286,7 +286,7 @@ test('descriptions render literally and schema-1 assertions show IDs alone', asy
 
 test('members see the kit list without verification switches', async ({ page }) => {
   await mockAPIs(page, 'viewer')
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await expect(page.getByRole('heading', { name: 'reporting' })).toBeVisible()
   await expect(page.getByRole('tab')).toHaveCount(0)
   await expect(page.getByLabel('Verify before review')).toHaveCount(0)
@@ -331,7 +331,7 @@ test('null manifest fields render without crashing the page', async ({ page }) =
 test('member view screenshot', async ({ page }) => {
   await mockAPIs(page, 'viewer')
   await page.setViewportSize({ width: 1280, height: 900 })
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await expect(page.getByRole('heading', { name: 'reporting' })).toBeVisible()
   await page.waitForTimeout(400)
   await page.screenshot({ path: 'test-results/shots/verification-member.png', fullPage: true })

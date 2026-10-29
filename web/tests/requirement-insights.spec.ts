@@ -900,9 +900,9 @@ test('design activation opens its document and decisions expand in place', async
   await expect(details).toHaveCount(0)
 
   const design = panel(page).locator('[data-design="component-alpha-forms"]')
-  await expect(design).toHaveAttribute('href', '/system-design?document=component-alpha-forms')
+  await expect(design).toHaveAttribute('href', '/w/demo/system-design?document=component-alpha-forms')
   await design.click()
-  await expect(page).toHaveURL(/\/system-design\?document=component-alpha-forms/)
+  await expect(page).toHaveURL(/\/w\/demo\/system-design\?document=component-alpha-forms/)
 })
 
 test('task and document hover emphasize their named tasks and clear on leave', async ({ page }) => {

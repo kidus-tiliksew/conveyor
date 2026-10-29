@@ -94,7 +94,7 @@ test('monitor page renders health, deduplication, task links, and drift age', as
     }),
   )
 
-  await page.goto('/monitor')
+  await page.goto('/w/demo/monitor')
   await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
   await expect(page.getByText('Enabled', { exact: true })).toBeVisible()
   await expect(page.getByText('1', { exact: true }).first()).toBeVisible()
@@ -107,7 +107,7 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   // substring search for "Task".
   await expect(page.getByRole('main').getByRole('link', { name: 'Task' }).first()).toHaveAttribute(
     'href',
-    '/tasks/drift-task',
+    '/w/demo/tasks/drift-task',
   )
   const refusal = page.getByText('revert:saturated').locator('..')
   await expect(refusal).toContainText('Task monitor-task already has 5 unresolved drift signals.')
@@ -155,7 +155,7 @@ test('monitor page renders Never for zero timestamps and omits backoff line', as
     }),
   )
 
-  await page.goto('/monitor')
+  await page.goto('/w/demo/monitor')
   await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
   // "Never" also renders while the status query is still pending, so wait for
   // response-dependent content (the error card) before asserting the metric.
@@ -195,7 +195,7 @@ test('monitor page renders a real timestamp for last_successful_observation', as
     }),
   )
 
-  await page.goto('/monitor')
+  await page.goto('/w/demo/monitor')
   await expect(page.getByRole('heading', { name: 'Repository monitor' })).toBeVisible()
   // Wait for the response to be applied before judging the timestamp metric.
   await expect(page.getByText('rate limited')).toBeVisible()

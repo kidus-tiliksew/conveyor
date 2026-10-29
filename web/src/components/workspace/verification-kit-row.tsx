@@ -9,6 +9,7 @@ import type {
   VerificationKitStatus,
 } from '../../lib/types'
 import { cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 
 // One kit in the workspace verification list (component-web-dashboard). Manifest
@@ -104,13 +105,24 @@ function pinSummary(pin: VerificationKitPin) {
 }
 
 function PinLink({ pin }: { pin: VerificationKitPin }) {
+  const { workspace } = useWorkspaceSelection()
   const className = 'font-mono text-xs text-primary hover:underline break-all'
   return pin.kind === 'requirement' ? (
-    <Link to="/requirements" search={{ requirement: pin.document_id }} className={className}>
+    <Link
+      to="/w/$workspaceId/requirements"
+      params={{ workspaceId: workspace }}
+      search={{ requirement: pin.document_id }}
+      className={className}
+    >
       {pin.document_id}
     </Link>
   ) : (
-    <Link to="/system-design" search={{ document: pin.document_id }} className={className}>
+    <Link
+      to="/w/$workspaceId/system-design"
+      params={{ workspaceId: workspace }}
+      search={{ document: pin.document_id }}
+      className={className}
+    >
       {pin.document_id}
     </Link>
   )
@@ -140,6 +152,7 @@ function RunDetails({ exercise }: { exercise: VerificationKitExercise }) {
 }
 
 function Exercise({ exercise }: { exercise: VerificationKitExercise }) {
+  const { workspace } = useWorkspaceSelection()
   return (
     <Expandable
       className="rounded-md border border-border bg-background"
@@ -177,7 +190,8 @@ function Exercise({ exercise }: { exercise: VerificationKitExercise }) {
               {exercise.supports.map((support) => (
                 <Link
                   key={`${support.document_id}-${support.acceptance_criterion_id}`}
-                  to="/requirements"
+                  to="/w/$workspaceId/requirements"
+                  params={{ workspaceId: workspace }}
                   search={{ requirement: support.document_id }}
                   className="font-mono text-xs text-primary hover:underline"
                   title={`${support.document_id} v${support.version}`}

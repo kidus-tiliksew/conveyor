@@ -152,8 +152,16 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
   const content = useRef<HTMLDivElement>(null)
   const page =
     proposal.kind === 'requirement'
-      ? ({ to: '/requirements', search: { requirement: proposal.target_id } } as const)
-      : ({ to: '/system-design', search: { document: proposal.target_id } } as const)
+      ? ({
+          to: '/w/$workspaceId/requirements',
+          params: { workspaceId: workspace },
+          search: { requirement: proposal.target_id },
+        } as const)
+      : ({
+          to: '/w/$workspaceId/system-design',
+          params: { workspaceId: workspace },
+          search: { document: proposal.target_id },
+        } as const)
   return (
     <>
       <header className="shrink-0 space-y-2 border-b border-border px-4 pb-3 pt-3.5">

@@ -51,7 +51,7 @@ async function mockAPIs(page: Page, role: string, served: Record<string, unknown
 
 test('the General switch reads off for an absent setting and saves it with the read version', async ({ page }) => {
   const submitted = await mockAPIs(page, 'operator')
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await page.getByRole('tab', { name: 'General' }).click()
 
   const publish = page.getByRole('switch', { name: 'Publish GitHub issues for approved plans' })
@@ -75,7 +75,7 @@ test('a member without manage_workspace sees the setting read-only', async ({ pa
     ...document,
     issue_publication: { enabled: true, enabled_at: '2026-10-29T09:00:00Z' },
   })
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
 
   await expect(page.getByText('GitHub issue publication for approved plans:')).toBeVisible()
   await expect(page.getByText('GitHub issue publication for approved plans: on')).toBeVisible()

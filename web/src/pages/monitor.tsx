@@ -12,13 +12,13 @@ export function MonitorPage() {
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
   const { data: status, error } = useQuery({
     queryKey: ['monitor', workspace],
-    queryFn: fetchMonitorStatus,
+    queryFn: () => fetchMonitorStatus(workspace),
     enabled: Boolean(workspace),
     refetchInterval: 15_000,
   })
   const { data: requirements = [], isPending: requirementsPending } = useQuery({
     queryKey: ['requirements', workspace, 'monitor-resolution'],
-    queryFn: fetchRequirements,
+    queryFn: () => fetchRequirements(workspace),
     enabled: Boolean(workspace && (status?.drift_count ?? 0) > 0),
   })
   const confirmedRequirements = requirements.filter((item) => item.current_version?.confirmed)
@@ -108,8 +108,8 @@ export function MonitorPage() {
                 </div>
                 <div className="flex gap-2">
                   <Link
-                    to="/tasks/$taskId"
-                    params={{ taskId: item.task_id }}
+                    to="/w/$workspaceId/tasks/$taskId"
+                    params={{ workspaceId: workspace, taskId: item.task_id }}
                     className="text-xs text-primary hover:underline"
                   >
                     Task
@@ -154,8 +154,8 @@ export function MonitorPage() {
                   )}
                   {item.task_id && (
                     <Link
-                      to="/tasks/$taskId"
-                      params={{ taskId: item.task_id }}
+                      to="/w/$workspaceId/tasks/$taskId"
+                      params={{ workspaceId: workspace, taskId: item.task_id }}
                       className="text-xs text-primary hover:underline"
                     >
                       Task

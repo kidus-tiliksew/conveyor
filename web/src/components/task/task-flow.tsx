@@ -3,6 +3,7 @@ import { Check } from 'lucide-react'
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
 import type { TaskFlow, TaskFlowSideName, TaskFlowStage, TaskFlowStageId, TaskFlowStatus } from '../../lib/types'
 import { cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Card, CardContent } from '../ui/card'
 import { Skeleton } from '../ui/skeleton'
 import { TaskFlowStageSheet } from './task-flow-stage-sheet'
@@ -385,14 +386,15 @@ function sideStates(flow: TaskFlow) {
 }
 
 function Blockers({ blockers }: { blockers: TaskFlow['side']['blocked_by'] }) {
+  const { workspace } = useWorkspaceSelection()
   if (blockers.length === 0) return null
   return (
     <ul className="mt-0.5 space-y-0.5 text-[11px] leading-4 font-normal">
       {blockers.map((blocker) => (
         <li key={blocker.task_id} className="min-w-0">
           <Link
-            to="/tasks/$taskId"
-            params={{ taskId: blocker.task_id }}
+            to="/w/$workspaceId/tasks/$taskId"
+            params={{ workspaceId: workspace, taskId: blocker.task_id }}
             data-flow-blocker={blocker.task_id}
             className="block break-words text-foreground underline-offset-2 hover:underline"
           >

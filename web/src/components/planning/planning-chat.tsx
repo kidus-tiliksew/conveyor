@@ -13,7 +13,7 @@ import {
 import { sessionGoalLabel } from '../../lib/contracts'
 import { errorMessage } from '../../lib/errors'
 import type { Artifact, PlanningMessage, PlanningMessagePart, PlanningSession } from '../../lib/types'
-import { useWorkspaceCapability } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Attachment, Bubble, Marker, Message, MessageScroller } from '../ui/chat'
@@ -53,16 +53,16 @@ export function PlanningChat({
   const gutter = sidebar ? 'px-4' : 'px-5'
   const { data: session = summary } = useQuery({
     queryKey: ['planning-session', workspace, summary.id],
-    queryFn: () => fetchPlanningSession(summary.id),
+    queryFn: () => fetchPlanningSession(workspace, summary.id),
     initialData: summary,
   })
   const { data: messages } = useQuery({
     queryKey: ['planning-messages', workspace, session.id],
-    queryFn: () => fetchPlanningMessages(session.id),
+    queryFn: () => fetchPlanningMessages(workspace, session.id),
   })
   const { data: allArtifacts = [] } = useQuery({
     queryKey: ['artifacts', workspace],
-    queryFn: fetchArtifacts,
+    queryFn: () => fetchArtifacts(workspace),
   })
   const sessionArtifacts = (Array.isArray(allArtifacts) ? allArtifacts : [])
     .filter(
@@ -78,6 +78,7 @@ export function PlanningChat({
       controller.current = new AbortController()
       setStreamed([])
       await streamPlanningMessage(
+        workspace,
         session.id,
         content,
         (part) => {
@@ -110,11 +111,11 @@ export function PlanningChat({
     },
   })
   const upload = useMutation({
-    mutationFn: (file: File) => uploadArtifact(file, undefined, undefined, undefined, session.id),
+    mutationFn: (file: File) => uploadArtifact(workspace, file, undefined, undefined, undefined, session.id),
     onSuccess: (artifact) => setAttachments((current) => [...current, artifact]),
   })
   const abandon = useMutation({
-    mutationFn: () => abandonPlanningSession(session.id, abandonReason),
+    mutationFn: () => abandonPlanningSession(workspace, session.id, abandonReason),
     onSuccess: () => {
       setShowAbandon(false)
       void client.invalidateQueries({
@@ -637,6 +638,7 @@ function FinalizedHandoff({
   gutter: string
   sidebar: boolean
 }) {
+  const { workspace } = useWorkspaceSelection()
   return (
     <div className={`shrink-0 border-t border-border bg-positive-soft ${gutter} py-4`}>
       <div className={`flex flex-wrap items-center gap-3 ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>
@@ -649,7 +651,8 @@ function FinalizedHandoff({
         </div>
         {session.produced_requirement_id && (
           <Link
-            to="/requirements"
+            to="/w/$workspaceId/requirements"
+            params={{ workspaceId: workspace }}
             search={{ requirement: session.produced_requirement_id }}
             className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
           >
@@ -658,8 +661,8 @@ function FinalizedHandoff({
         )}
         {session.produced_task_id && (
           <Link
-            to="/tasks/$taskId"
-            params={{ taskId: session.produced_task_id }}
+            to="/w/$workspaceId/tasks/$taskId"
+            params={{ workspaceId: workspace, taskId: session.produced_task_id }}
             className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
           >
             Open plan gate <ArrowRight className="size-4" />

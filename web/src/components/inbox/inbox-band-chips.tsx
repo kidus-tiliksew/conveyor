@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { InboxBand } from '../../lib/types'
 import { cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import type { InboxSearch } from './inbox-search'
 
 const chips: { band?: InboxBand; label: string }[] = [
@@ -14,6 +15,7 @@ const chips: { band?: InboxBand; label: string }[] = [
 // Each count comes from that read, and the selected chip is the `band` search
 // parameter, so a band link and the counts never disagree.
 export function InboxBandChips({ search, counts }: { search: InboxSearch; counts: Record<InboxBand, number> }) {
+  const { workspace } = useWorkspaceSelection()
   return (
     <nav aria-label="Inbox bands" className="mt-5 flex flex-wrap items-center gap-2">
       {chips.map((chip) => {
@@ -21,7 +23,8 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
         return (
           <Link
             key={chip.label}
-            to="/inbox"
+            to="/w/$workspaceId/inbox"
+            params={{ workspaceId: workspace }}
             search={{ ...search, band: chip.band }}
             aria-current={selected ? 'page' : undefined}
             data-band-chip={chip.band ?? 'all'}
