@@ -472,8 +472,14 @@ unresolved prior operations (`component-verification-service`).
 
 Repeating a CLI invocation with the original start key retries retained spool
 uploads under the live claim but refuses to relaunch an existing attempt.
-After replay admission, use an explicit new `--retry-key`; pass
-`--replay-authorization` when operator recovery requires it. Safe replay needs
+After replay admission, use an explicit new `--retry-key`. When the latest
+attempt's retry policy is `operator_action_required`, the start is refused with
+`verification_retry_authorization_required` until an operator issues a one-use
+authorization: `conveyor order recover <order-id> --disposition
+applied|not_applied` with the binding's context, run, input digest, and a
+reason, or the order's disposition card. The command prints the authorization
+ID `recovery:<request_id>`; pass it as `--replay-authorization` on the next
+start. A verifier never issues the authorization itself. Safe replay needs
 the declared safety basis. A relayed upload failure in a passing exercise is
 one such case: when the child's own assertions passed but an attempt ended
 `failed` because a relay was refused, and the contract's retry policy is
