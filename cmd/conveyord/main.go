@@ -111,7 +111,7 @@ func main() {
 	httpBaseCtx, cancelHTTP := context.WithCancel(context.Background())
 	defer cancelHTTP()
 
-	st, err := backend.Open(ctx, deployment.Database)
+	st, poolStats, err := backend.OpenWithPoolStats(ctx, deployment.Database)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
@@ -119,6 +119,10 @@ func main() {
 		log.Printf("using durable SingleStore store with the event log")
 	} else {
 		log.Printf("using durable PostgreSQL store with the event log")
+	}
+	if poolStats != nil {
+		// Read from the opened pool, so a pool_max_conns override shows.
+		log.Printf("database pool max_conns=%d (effective)", poolStats().MaxConns)
 	}
 	if gitHubAppKey != nil {
 		st.ConfigureGitHubAppKeyEncryptionKey(gitHubAppKey)
@@ -147,7 +151,9 @@ func main() {
 	}
 	closeStore := st.Close
 	closeStore = sync.OnceFunc(closeStore)
-	defer closeStore()
+	// Call the latest callback: startup wraps it once the pool statistics
+	// worker runs.
+	defer func() { closeStore() }()
 	agent := &inprocess.OpenAI{APIKey: llmEnvironment.APIKey, BaseURL: llmEnvironment.BaseURL}
 	agent.RedactionSecrets = st
 	d := dispatch.New(st, cfg, agent)
@@ -492,6 +498,14 @@ func main() {
 				}
 			}
 		}()
+	}
+
+	if poolStats != nil {
+		// The wrapped close stops and joins the worker, then logs the final
+		// snapshot immediately before the store closes (component-runtime).
+		ticker := time.NewTicker(poolStatsInterval)
+		poolLogger := startPoolStatsLogger(ctx, poolStats, ticker.C, ticker.Stop, log.Printf)
+		closeStore = sync.OnceFunc(poolLogger.closeWith(closeStore))
 	}
 
 	httpSrv := &http.Server{

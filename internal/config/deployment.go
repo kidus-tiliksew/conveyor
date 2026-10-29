@@ -257,6 +257,9 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 	if err := normalizeDeploymentScalars(c, path); err != nil {
 		return nil, err
 	}
+	if err := resolveDeploymentDatabaseMaxConns(&c.Database, os.LookupEnv); err != nil {
+		return nil, err
+	}
 	c.Harnesses, c.Setups, c.DefaultSetup = nil, nil, ""
 	triage.Model = strings.TrimSpace(triage.Model)
 	triage.Effort = strings.TrimSpace(triage.Effort)

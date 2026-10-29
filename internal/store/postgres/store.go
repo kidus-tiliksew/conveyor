@@ -64,8 +64,23 @@ func validatePostgresVersion(version int) error {
 	return nil
 }
 
-func Open(ctx context.Context, databaseURL string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+// Open builds the pool from databaseURL, admits the server version, and runs
+// migrations. Without options the pool holds DefaultMaxConns connections
+// unless the connection string names pool_max_conns (component-persistence).
+func Open(ctx context.Context, databaseURL string, options ...OpenOption) (*Store, error) {
+	resolved, err := resolveOpenOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	return openWithOptions(ctx, databaseURL, resolved)
+}
+
+func openWithOptions(ctx context.Context, databaseURL string, options openOptions) (*Store, error) {
+	poolCfg, err := poolConfig(databaseURL, options)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("configure Postgres pool: %w", err)
 	}
