@@ -65,7 +65,7 @@ test.use({ colorScheme: 'dark', viewport: { width: 1440, height: 1000 } })
 
 test('capture workspace policy screenshots', async ({ page }) => {
   await mockAPIs(page)
-  await page.goto('/workspace')
+  await page.goto('/w/conveyor/workspace')
   await page.getByText('Pipeline policy').waitFor()
   await page.screenshot({ path: 'test-results/shots/1-policy.png' })
 

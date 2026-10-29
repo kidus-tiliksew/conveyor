@@ -42,7 +42,7 @@ export function TaskContextCard({
   } | null>(null)
   const removal = useMutation({
     mutationFn: (document: NonNullable<typeof selected>) =>
-      updateTaskContext(taskId, { add: {}, remove: { [document.kind]: [document.id] } }),
+      updateTaskContext(workspace, taskId, { add: {}, remove: { [document.kind]: [document.id] } }),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['task', workspace, taskId] }),
@@ -92,7 +92,8 @@ export function TaskContextCard({
                 action={removeControl(item, 'requirement_ids')}
               >
                 <Link
-                  to="/requirements"
+                  to="/w/$workspaceId/requirements"
+                  params={{ workspaceId: workspace }}
                   search={{ requirement: item.id }}
                   aria-label={`${item.title} (${item.id})`}
                   className="truncate text-foreground hover:text-primary hover:underline focus-visible:text-primary"
@@ -118,7 +119,8 @@ export function TaskContextCard({
                 action={removeControl(item, 'system_design_ids')}
               >
                 <Link
-                  to="/system-design"
+                  to="/w/$workspaceId/system-design"
+                  params={{ workspaceId: workspace }}
                   search={{ document: item.id }}
                   aria-label={`${item.title} (${item.id})`}
                   className="truncate text-foreground hover:text-primary hover:underline focus-visible:text-primary"
@@ -173,6 +175,7 @@ export function TaskContextCard({
 // next-action card's server choices are the one place each suggestion is
 // attached or dismissed (component-web-task-surfaces, Next-action card).
 function SuggestedContextCard({ proposals }: { proposals: TaskContextProposal[] }) {
+  const { workspace } = useWorkspaceSelection()
   return (
     <section aria-label="Suggested context" className="rounded-lg border border-border bg-card">
       <div className="border-b border-border px-4 py-3">
@@ -195,14 +198,27 @@ function SuggestedContextCard({ proposals }: { proposals: TaskContextProposal[] 
                 className={requirement ? 'mt-0.5 size-3.5 text-primary' : 'mt-0.5 size-3.5 text-faint'}
               />
               <div className="min-w-0">
-                <Link
-                  to={requirement ? '/requirements' : '/system-design'}
-                  search={requirement ? { requirement: proposal.target_id } : { document: proposal.target_id }}
-                  aria-label={`${proposal.target_title} (${proposal.target_id})`}
-                  className="font-medium text-foreground [overflow-wrap:anywhere] hover:text-primary hover:underline"
-                >
-                  {proposal.target_title}
-                </Link>
+                {requirement ? (
+                  <Link
+                    to="/w/$workspaceId/requirements"
+                    params={{ workspaceId: workspace }}
+                    search={{ requirement: proposal.target_id }}
+                    aria-label={`${proposal.target_title} (${proposal.target_id})`}
+                    className="font-medium text-foreground [overflow-wrap:anywhere] hover:text-primary hover:underline"
+                  >
+                    {proposal.target_title}
+                  </Link>
+                ) : (
+                  <Link
+                    to="/w/$workspaceId/system-design"
+                    params={{ workspaceId: workspace }}
+                    search={{ document: proposal.target_id }}
+                    aria-label={`${proposal.target_title} (${proposal.target_id})`}
+                    className="font-medium text-foreground [overflow-wrap:anywhere] hover:text-primary hover:underline"
+                  >
+                    {proposal.target_title}
+                  </Link>
+                )}
                 <p className="mt-0.5 flex flex-wrap gap-x-1.5">
                   <KindLabel>{requirement ? 'Outcome' : 'Guidance'}</KindLabel>
                   <KindLabel>· From {sourceLabel(proposal.source)}</KindLabel>

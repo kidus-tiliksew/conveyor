@@ -4,6 +4,7 @@ import { parseProvenance } from '../../lib/activity'
 import { childRollup, childStateLabel, deliveryLabel, deliveryTone } from '../../lib/blueprint'
 import type { ActivityItem, BlueprintChild, BlueprintView } from '../../lib/types'
 import { absoluteTime } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { AttachmentsCard } from '../task/attachments-card'
 import { SpecCard } from '../task/spec-card'
 import { Timeline } from '../task/timeline'
@@ -42,6 +43,7 @@ export function BlueprintDetail({ view, item }: { view: BlueprintView; item: Act
 }
 
 function BlueprintHeader({ view }: { view: BlueprintView }) {
+  const { workspace } = useWorkspaceSelection()
   const provenance = parseProvenance(view.task.source)
   const specVersion = view.governing_version || view.spec?.version
 
@@ -72,7 +74,8 @@ function BlueprintHeader({ view }: { view: BlueprintView }) {
                 {view.serves.map((requirement) => (
                   <Link
                     key={requirement.id}
-                    to="/requirements"
+                    to="/w/$workspaceId/requirements"
+                    params={{ workspaceId: workspace }}
                     search={{ requirement: requirement.id }}
                     className="text-primary hover:underline"
                   >
@@ -135,6 +138,7 @@ function BlueprintSpec({ view }: { view: BlueprintView }) {
 // waits on. Every state renders through taskStateLabels — never a raw state.
 // A child *is* work, so its link stays on the ordinary task route.
 function BlueprintChildren({ view }: { view: BlueprintView }) {
+  const { workspace } = useWorkspaceSelection()
   return (
     <Card>
       <CardHeader>
@@ -148,8 +152,8 @@ function BlueprintChildren({ view }: { view: BlueprintView }) {
             <li key={child.id} className="flex items-center gap-2 text-xs">
               {child.origin_sub_id && <Badge variant="mono">{child.origin_sub_id}</Badge>}
               <Link
-                to="/tasks/$taskId/full"
-                params={{ taskId: child.id }}
+                to="/w/$workspaceId/tasks/$taskId/full"
+                params={{ workspaceId: workspace, taskId: child.id }}
                 className="min-w-0 flex-1 truncate text-primary hover:underline"
               >
                 {child.title || child.summary || child.id}

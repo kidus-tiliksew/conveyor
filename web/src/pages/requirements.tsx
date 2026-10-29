@@ -137,20 +137,20 @@ export function RequirementsPage() {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const client = useQueryClient()
-  const search = useSearch({ from: '/requirements' })
+  const search = useSearch({ from: '/w/$workspaceId/requirements' })
   const {
     data: requirements,
     isLoading,
     error,
   } = useQuery({
     queryKey: ['requirements', workspace, { includeArchived: true }],
-    queryFn: () => fetchRequirements({ includeArchived: true }),
+    queryFn: () => fetchRequirements(workspace, { includeArchived: true }),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
   const { data: overviews = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
-    queryFn: fetchReferenceDocuments,
+    queryFn: () => fetchReferenceDocuments(workspace),
     enabled: Boolean(workspace),
   })
   const selectedId = search.requirement ?? ''
@@ -194,7 +194,8 @@ export function RequirementsPage() {
     if (requirements.some((item) => item.requirement.id === selectedId)) return
     const fallback = requirements.find((item) => !item.requirement.archived) ?? requirements[0]
     void navigate({
-      to: '/requirements',
+      to: '/w/$workspaceId/requirements',
+      params: { workspaceId: workspace },
       search: { requirement: fallback.requirement.id },
       replace: true,
     })
@@ -204,15 +205,20 @@ export function RequirementsPage() {
 
   const selectRequirement = (requirement: string) => {
     setOpenOverview(undefined)
-    void navigate({ to: '/requirements', search: { requirement }, replace: true })
+    void navigate({
+      to: '/w/$workspaceId/requirements',
+      params: { workspaceId: workspace },
+      search: { requirement },
+      replace: true,
+    })
   }
 
   const upload = useMutation({
-    mutationFn: ({ file, id }: { file: File; id?: string }) => uploadReferenceDocument(file, id),
+    mutationFn: ({ file, id }: { file: File; id?: string }) => uploadReferenceDocument(workspace, file, id),
     onSuccess: () => client.invalidateQueries({ queryKey: ['reference-documents', workspace] }),
   })
   const remove = useMutation({
-    mutationFn: (id: string) => deleteReferenceDocument(id),
+    mutationFn: (id: string) => deleteReferenceDocument(workspace, id),
     onSuccess: () => {
       setOpenOverview(undefined)
       return client.invalidateQueries({ queryKey: ['reference-documents', workspace] })
@@ -422,7 +428,7 @@ function OverviewCanvas({
     error,
   } = useQuery({
     queryKey: ['reference-document-versions', workspace, document.id, document.current_version],
-    queryFn: () => fetchReferenceDocumentVersions(document.id),
+    queryFn: () => fetchReferenceDocumentVersions(workspace, document.id),
   })
   const selected = versions.find((version) => version.version === selectedVersion) ?? versions.at(-1)
   const prior = selected?.supersedes_version
@@ -528,7 +534,7 @@ function OverviewDiff({ prior, current }: { prior: ReferenceDocumentVersion; cur
 
 function RequirementCanvas({ summary }: { summary: RequirementSummary }) {
   const { workspace } = useWorkspaceSelection()
-  const reviewSearch = useSearch({ from: '/requirements' })
+  const reviewSearch = useSearch({ from: '/w/$workspaceId/requirements' })
   const {
     data: item,
     error,
@@ -577,7 +583,8 @@ function RequirementDetailCanvas({
   const navigate = useNavigate()
   const onReviewChange = (next: ReviewSearch) =>
     navigate({
-      to: '/requirements',
+      to: '/w/$workspaceId/requirements',
+      params: { workspaceId: workspace },
       search: { ...search, ...next, base: next.base, target: next.target },
       hash: window.location.hash.slice(1),
     })
@@ -592,18 +599,18 @@ function RequirementDetailCanvas({
   const displayed = selectedReviewVersion(reviewVersions, item.current_version, search)
   const { data: referenceDocuments = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
-    queryFn: fetchReferenceDocuments,
+    queryFn: () => fetchReferenceDocuments(workspace),
     enabled: Boolean(workspace),
   })
   const { data: systemDesigns = [] } = useQuery({
     queryKey: ['system-designs', workspace],
-    queryFn: fetchSystemDesigns,
+    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
   const { data: successorRequirements = [] } = useQuery({
     queryKey: ['requirements', workspace, { includeArchived: false }],
-    queryFn: () => fetchRequirements(),
+    queryFn: () => fetchRequirements(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
@@ -638,7 +645,7 @@ function RequirementDetailCanvas({
   const [reviseTarget, setReviseTarget] = useState<RequirementVersion | null>(null)
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const confirm = useMutation({
-    mutationFn: (version: number) => confirmRequirementVersion(item.requirement.id, version, currentVersion),
+    mutationFn: (version: number) => confirmRequirementVersion(workspace, item.requirement.id, version, currentVersion),
     onSuccess: ({ version }) => setAttachmentOffer(version.version),
     onSettled: async () => {
       await Promise.all([
@@ -653,7 +660,7 @@ function RequirementDetailCanvas({
   })
   const dismiss = useMutation({
     mutationFn: ({ version, note }: { version: number; note: string }) =>
-      dismissRequirementVersion(item.requirement.id, version, note),
+      dismissRequirementVersion(workspace, item.requirement.id, version, note),
     onSuccess: () => setDismissTarget(null),
     onSettled: async () => {
       await Promise.all([
@@ -669,8 +676,8 @@ function RequirementDetailCanvas({
   const archive = useMutation({
     mutationFn: (supersededBy: string[] = []) =>
       item.requirement.archived
-        ? restoreRequirement(item.requirement.id)
-        : archiveRequirement(item.requirement.id, supersededBy),
+        ? restoreRequirement(workspace, item.requirement.id)
+        : archiveRequirement(workspace, item.requirement.id, supersededBy),
     onSuccess: () => setArchiveDialogOpen(false),
     onSettled: async () => {
       await Promise.all([
@@ -681,7 +688,7 @@ function RequirementDetailCanvas({
     },
   })
   const upload = useMutation({
-    mutationFn: (file: File) => uploadArtifact(file, undefined, item.requirement.id),
+    mutationFn: (file: File) => uploadArtifact(workspace, file, undefined, item.requirement.id),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['requirements', workspace] })
       void client.invalidateQueries({ queryKey: ['requirement', workspace, item.requirement.id] })
@@ -696,11 +703,11 @@ function RequirementDetailCanvas({
     ])
   }
   const acknowledgeStaleness = useMutation({
-    mutationFn: (signalID: string) => acknowledgeRequirementStaleness(item.requirement.id, signalID),
+    mutationFn: (signalID: string) => acknowledgeRequirementStaleness(workspace, item.requirement.id, signalID),
     onSettled: refreshRequirement,
   })
   const fileStalenessFollowUp = useMutation({
-    mutationFn: (signalID: string) => createRequirementStalenessFollowUp(item.requirement.id, signalID),
+    mutationFn: (signalID: string) => createRequirementStalenessFollowUp(workspace, item.requirement.id, signalID),
     onSettled: refreshRequirement,
   })
 
@@ -735,8 +742,8 @@ function RequirementDetailCanvas({
       action: (
         <>
           <Link
-            to="/tasks/$taskId"
-            params={{ taskId: delivery.task_id }}
+            to="/w/$workspaceId/tasks/$taskId"
+            params={{ workspaceId: workspace, taskId: delivery.task_id }}
             className="text-xs font-medium text-primary hover:underline"
           >
             Inspect task
@@ -809,7 +816,8 @@ function RequirementDetailCanvas({
               <span className="mr-1">
                 Subject:{' '}
                 <Link
-                  to="/system-design"
+                  to="/w/$workspaceId/system-design"
+                  params={{ workspaceId: workspace }}
                   search={{ document: entry.system_design_id }}
                   className="font-medium text-primary hover:underline"
                 >
@@ -1110,8 +1118,8 @@ function RequirementDetailCanvas({
                   {servingTasks.map((task) => (
                     <Link
                       key={task.id}
-                      to="/tasks/$taskId/full"
-                      params={{ taskId: task.id }}
+                      to="/w/$workspaceId/tasks/$taskId/full"
+                      params={{ workspaceId: workspace, taskId: task.id }}
                       className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:border-edge hover:bg-surface"
                     >
                       <span className="min-w-0 flex-1">
@@ -1141,8 +1149,8 @@ function RequirementDetailCanvas({
                     {item.serving_blueprints.map(({ task, spec }) => (
                       <Link
                         key={task.id}
-                        to="/blueprints/$taskId"
-                        params={{ taskId: task.id }}
+                        to="/w/$workspaceId/blueprints/$taskId"
+                        params={{ workspaceId: workspace, taskId: task.id }}
                         className="flex items-center gap-3 rounded-lg border border-border p-3 transition-colors hover:border-edge hover:bg-surface"
                       >
                         <span className="min-w-0 flex-1">
@@ -1223,7 +1231,7 @@ function RequirementDetailCanvas({
                       <button
                         type="button"
                         key={`${artifact.id}-${artifact.role}`}
-                        onClick={() => void downloadArtifact(artifact)}
+                        onClick={() => void downloadArtifact(workspace, artifact)}
                         className="flex w-full items-center gap-2 rounded-md border border-border p-2 text-left transition-colors hover:border-edge hover:bg-surface"
                       >
                         <Download className="size-3.5 shrink-0 text-primary" />
@@ -1273,8 +1281,8 @@ function RequirementDetailCanvas({
                               <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-edge" />
                               <span className="min-w-0 flex-1">
                                 <Link
-                                  to="/tasks/$taskId"
-                                  params={{ taskId: delivery.task_id }}
+                                  to="/w/$workspaceId/tasks/$taskId"
+                                  params={{ workspaceId: workspace, taskId: delivery.task_id }}
                                   className="font-medium hover:underline"
                                 >
                                   {delivery.label}
@@ -1284,8 +1292,8 @@ function RequirementDetailCanvas({
                                 </span>
                                 {delivery.follow_up && (
                                   <Link
-                                    to="/tasks/$taskId"
-                                    params={{ taskId: delivery.follow_up.task_id }}
+                                    to="/w/$workspaceId/tasks/$taskId"
+                                    params={{ workspaceId: workspace, taskId: delivery.follow_up.task_id }}
                                     className="block text-[10px] font-medium text-primary hover:underline"
                                   >
                                     Follow-up: {delivery.follow_up.title}
@@ -1352,7 +1360,7 @@ function CheckpointContextOffer({
   const [selected, setSelected] = useState<string[]>([])
   const candidates = useQuery({
     queryKey: ['checkpoint-context-candidates', workspace, requirementId],
-    queryFn: () => fetchCheckpointContextCandidates(requirementId),
+    queryFn: () => fetchCheckpointContextCandidates(workspace, requirementId),
   })
   useEffect(() => {
     if (candidates.data)
@@ -1361,7 +1369,9 @@ function CheckpointContextOffer({
   const attach = useMutation({
     mutationFn: async () => {
       const results = await Promise.allSettled(
-        selected.map((taskId) => updateTaskContext(taskId, { add: { requirement_ids: [requirementId] }, remove: {} })),
+        selected.map((taskId) =>
+          updateTaskContext(workspace, taskId, { add: { requirement_ids: [requirementId] }, remove: {} }),
+        ),
       )
       const failed = results.filter((result) => result.status === 'rejected')
       if (failed.length > 0) throw new Error(`Could not attach context to ${failed.length} selected task(s).`)

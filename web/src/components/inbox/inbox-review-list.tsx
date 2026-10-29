@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import type { InboxItem } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
 import type { InboxSearch } from './inbox-search'
@@ -63,6 +64,7 @@ function InboxRow({
   selected: boolean
   search: InboxSearch
 }) {
+  const { workspace } = useWorkspaceSelection()
   const row = describeRow(item)
   const pullRequest = item.kind === 'document_proposal' ? undefined : item.pull_request
   return (
@@ -74,7 +76,8 @@ function InboxRow({
       )}
     >
       <Link
-        to="/inbox"
+        to="/w/$workspaceId/inbox"
+        params={{ workspaceId: workspace }}
         search={{ ...search, selected: rowKey }}
         resetScroll={false}
         data-inbox-row={rowKey}

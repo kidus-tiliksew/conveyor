@@ -341,7 +341,7 @@ test('the blueprints surface is parked out of navigation and reads as history', 
   // The retired noun no longer names a place where work happens.
   await expect(nav.getByRole('link', { name: 'Blueprints', exact: true })).toHaveCount(0)
 
-  await page.goto('/blueprints')
+  await page.goto('/w/demo/blueprints')
   await expect(page).toHaveURL(/\/blueprints$/)
   await expect(page.getByText('Read-only records of legacy blueprints')).toBeVisible()
   await page.getByRole('main').getByRole('link', { name: 'the Board', exact: true }).click()
@@ -354,11 +354,11 @@ test('the blueprints list reports delivery, governing version, and served requir
   await initShell(page)
   await routeAPI(page)
 
-  await page.goto('/blueprints')
+  await page.goto('/w/demo/blueprints')
   await expect(page.getByRole('heading', { name: 'Blueprint history' })).toBeVisible()
   const entry = page.getByRole('link', { name: /Deliver the planning flow/ })
   await expect(entry).toBeVisible()
-  await expect(entry).toHaveAttribute('href', `/blueprints/${anchorId}`)
+  await expect(entry).toHaveAttribute('href', `/w/demo/blueprints/${anchorId}`)
   await expect(entry.getByText('In delivery — 1 of 4')).toBeVisible()
   await expect(entry.getByText('Blueprint v3')).toBeVisible()
   await expect(entry.getByText('1 merged · 1 closed without merging · 2 in progress')).toBeVisible()
@@ -378,9 +378,9 @@ test('the blueprints list opens the canonical detail route with the spec first',
   await initShell(page)
   await routeAPI(page)
 
-  await page.goto('/blueprints')
+  await page.goto('/w/demo/blueprints')
   await page.getByRole('link', { name: /Deliver the planning flow/ }).click()
-  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page).toHaveURL(new RegExp(`/w/demo/blueprints/${anchorId}$`))
 
   await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
   await expect(page.getByText('In delivery — 1 of 4')).toBeVisible()
@@ -402,7 +402,7 @@ test('the blueprints list opens the canonical detail route with the spec first',
   await expect(childLinks.nth(0)).toContainText(childTitles['child-sub-1'])
   await expect(childLinks.nth(1)).toContainText(childTitles['child-sub-2'])
   await expect(childLinks.nth(2)).toContainText(childTitles['child-sub-3'])
-  await expect(childLinks.nth(2)).toHaveAttribute('href', '/tasks/child-sub-3/full')
+  await expect(childLinks.nth(2)).toHaveAttribute('href', '/w/demo/tasks/child-sub-3/full')
   await expect(deliveryList.getByText('Merged', { exact: true })).toBeVisible()
   await expect(deliveryList.getByText('Running', { exact: true })).toBeVisible()
   await expect(deliveryList.getByText('Closed', { exact: true })).toBeVisible()
@@ -427,7 +427,7 @@ test('the canonical blueprint detail suppresses execution affordances and demote
   await initShell(page)
   await routeAPI(page)
 
-  await page.goto(`/blueprints/${anchorId}`)
+  await page.goto(`/w/demo/blueprints/${anchorId}`)
   await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
 
   // All mutation and execution affordances are suppressed.
@@ -466,16 +466,16 @@ test('task routes for a blueprint anchor redirect to the canonical blueprint rou
   await initShell(page)
   await routeAPI(page)
 
-  await page.goto(`/tasks/${anchorId}/full`)
-  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await page.goto(`/w/demo/tasks/${anchorId}/full`)
+  await expect(page).toHaveURL(new RegExp(`/w/demo/blueprints/${anchorId}$`))
   await expect(page.getByRole('heading', { name: 'Deliver the planning flow' })).toBeVisible()
   // The task costume never renders on the way through.
   await expect(page.getByText('Branch', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Agent prompt' })).toHaveCount(0)
   await expect(page.getByText('Work on this locally')).toHaveCount(0)
 
-  await page.goto(`/tasks/${anchorId}`)
-  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await page.goto(`/w/demo/tasks/${anchorId}`)
+  await expect(page).toHaveURL(new RegExp(`/w/demo/blueprints/${anchorId}$`))
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toHaveCount(0)
   await expect(page.getByText('In delivery — 1 of 4')).toBeVisible()
 })
@@ -487,7 +487,7 @@ test('child task routes stay usable and link back to the canonical blueprint', a
   await routeAPI(page)
 
   // Full page: the child renders as an ordinary task, chrome and all.
-  await page.goto('/tasks/child-sub-2/full')
+  await page.goto('/w/demo/tasks/child-sub-2/full')
   await expect(page).toHaveURL(/\/tasks\/child-sub-2\/full$/)
   await expect(page.getByRole('heading', { name: childTitles['child-sub-2'] })).toBeVisible()
   // The affordances suppressed on the blueprint are exactly the ones a child
@@ -495,9 +495,9 @@ test('child task routes stay usable and link back to the canonical blueprint', a
   await expect(page.getByText('Branch', { exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Agent prompt' })).toBeVisible()
   const parentLinkFull = page.getByRole('link', { name: /Deliver the planning flow/ })
-  await expect(parentLinkFull).toHaveAttribute('href', `/blueprints/${anchorId}`)
+  await expect(parentLinkFull).toHaveAttribute('href', `/w/demo/blueprints/${anchorId}`)
   await parentLinkFull.click()
-  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page).toHaveURL(new RegExp(`/w/demo/blueprints/${anchorId}$`))
 
   // Parent to child, and back again from the sheet route.
   await page
@@ -506,12 +506,12 @@ test('child task routes stay usable and link back to the canonical blueprint', a
     .click()
   await expect(page).toHaveURL(/\/tasks\/child-sub-3\/full$/)
 
-  await page.goto('/tasks/child-sub-2')
+  await page.goto('/w/demo/tasks/child-sub-2')
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   await expect(sheet).toBeVisible()
   await expect(sheet.getByRole('link', { name: /Deliver the planning flow/ })).toHaveAttribute(
     'href',
-    `/blueprints/${anchorId}`,
+    `/w/demo/blueprints/${anchorId}`,
   )
 })
 
@@ -527,7 +527,7 @@ test('a completed blueprint reads as completed, and a missing serves link is a n
   completed.serves = []
   await routeAPI(page, { blueprints: [completed] })
 
-  await page.goto('/blueprints')
+  await page.goto('/w/demo/blueprints')
   const entry = page.getByRole('link', { name: /Deliver the planning flow/ })
   await expect(entry.getByText('Completed')).toBeVisible()
   await expect(entry.getByText('3 merged · 1 closed without merging')).toBeVisible()
@@ -536,7 +536,7 @@ test('a completed blueprint reads as completed, and a missing serves link is a n
   // The detail renders the same honest rollup and says plainly that nothing
   // is linked yet.
   await entry.click()
-  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page).toHaveURL(new RegExp(`/w/demo/blueprints/${anchorId}$`))
   await expect(page.getByText('3 merged · 1 closed without merging').first()).toBeVisible()
   await expect(page.getByText('No historical requirement link')).toBeVisible()
 })
@@ -547,9 +547,12 @@ test('the blueprint route explains itself for a task that is not a blueprint', a
   await initShell(page)
   await routeAPI(page)
 
-  await page.goto('/blueprints/child-sub-2')
+  await page.goto('/w/demo/blueprints/child-sub-2')
   await expect(page.getByText('This task is not a blueprint')).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Open the task' })).toHaveAttribute('href', '/tasks/child-sub-2/full')
+  await expect(page.getByRole('link', { name: 'Open the task' })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/child-sub-2/full',
+  )
 })
 
 test('the blueprint detail route renders a projection fetch failure', async ({ page }) => {
@@ -566,7 +569,7 @@ test('the blueprint detail route renders a projection fetch failure', async ({ p
     return route.fulfill({ json: [] })
   })
 
-  await page.goto(`/blueprints/${anchorTask().id}`)
+  await page.goto(`/w/demo/blueprints/${anchorTask().id}`)
   await expect(page.getByText('Blueprint projection is unavailable.')).toBeVisible()
   await expect(page.getByText('Loading this blueprint…')).toHaveCount(0)
 })

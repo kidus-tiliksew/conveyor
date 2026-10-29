@@ -119,11 +119,23 @@ async function expectTouchTarget(trigger: Locator) {
 
 const surfaces = [
   { name: 'assignee detail', route: '/', trigger: 'Viewer User', index: 0, detail: 'usr-viewer' },
-  { name: 'archived outcome', route: '/tasks/touch-task/full', trigger: 'Archived', index: 0, detail: 'req-new' },
-  { name: 'archived guidance', route: '/tasks/touch-task/full', trigger: 'Archived', index: 1, detail: 'design-new' },
+  {
+    name: 'archived outcome',
+    route: '/w/demo/tasks/touch-task/full',
+    trigger: 'Archived',
+    index: 0,
+    detail: 'req-new',
+  },
+  {
+    name: 'archived guidance',
+    route: '/w/demo/tasks/touch-task/full',
+    trigger: 'Archived',
+    index: 1,
+    detail: 'design-new',
+  },
   {
     name: 'stalled status',
-    route: '/tasks/touch-task/full',
+    route: '/w/demo/tasks/touch-task/full',
     trigger: 'Task status: Stalled',
     index: 0,
     detail: reason,
@@ -179,7 +191,7 @@ test.describe('touch disclosures', () => {
 
   test('successor links remain actionable by tap', async ({ page }) => {
     await mockAPI(page)
-    await page.goto('/tasks/touch-task/full')
+    await page.goto('/w/demo/tasks/touch-task/full')
     await page.getByRole('button', { name: 'Archived', exact: true }).first().tap()
     await page.getByRole('link', { name: 'req-new', exact: true }).tap()
     await expect(page).toHaveURL(/requirements\?requirement=req-new/)
@@ -187,7 +199,7 @@ test.describe('touch disclosures', () => {
 
   test('Escape dismisses the disclosure before its task sheet', async ({ page }) => {
     await mockAPI(page)
-    await page.goto('/tasks/touch-task')
+    await page.goto('/w/demo/tasks/touch-task')
     const sheet = page.getByRole('dialog', { name: 'Task detail' })
     const trigger = sheet.getByRole('button', { name: 'Task status: Stalled' })
     const content = await contentFor(page, trigger)
@@ -204,7 +216,7 @@ test.describe('touch disclosures', () => {
 
   test('document icon reveals successors without closing the drawer', async ({ page }) => {
     await mockAPI(page)
-    await page.goto('/system-design?document=design-old')
+    await page.goto('/w/demo/system-design?document=design-old')
     await page.getByRole('button', { name: 'Documents', exact: true }).tap()
     const drawer = page.getByRole('dialog', { name: 'Document tree' })
     await drawer.locator('summary').filter({ hasText: 'Archived' }).tap()

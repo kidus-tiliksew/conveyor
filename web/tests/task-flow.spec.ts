@@ -255,8 +255,8 @@ async function mockAPI(
 }
 
 const surfaces = [
-  { name: 'Board sheet', url: (id: string) => `/tasks/${id}` },
-  { name: 'full task route', url: (id: string) => `/tasks/${id}/full` },
+  { name: 'Board sheet', url: (id: string) => `/w/demo/tasks/${id}` },
+  { name: 'full task route', url: (id: string) => `/w/demo/tasks/${id}/full` },
 ] as const
 
 const tab = (page: Page, name: 'Timeline' | 'Flow') => page.getByRole('tab', { name, exact: true })
@@ -314,17 +314,17 @@ for (const surface of surfaces) {
 
 test('the tab choice persists per browser across reloads and surfaces', async ({ page }) => {
   const api = await mockAPI(page, { flows: { [taskId]: baseFlow() } })
-  await openFlow(page, `/tasks/${taskId}`)
+  await openFlow(page, `/w/demo/tasks/${taskId}`)
   expect(await page.evaluate(() => localStorage.getItem('conveyor-task-activity-view'))).toBe('flow')
   await page.reload()
   await expect(tab(page, 'Flow')).toHaveAttribute('aria-selected', 'true')
   await expect(chart(page)).toBeVisible()
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(tab(page, 'Flow')).toHaveAttribute('aria-selected', 'true')
   await expect(chart(page)).toBeVisible()
   await tab(page, 'Timeline').click()
   const shown = api.flowCalls.length
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(tab(page, 'Timeline')).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
   expect(api.flowCalls).toHaveLength(shown)
@@ -333,7 +333,7 @@ test('the tab choice persists per browser across reloads and surfaces', async ({
 test('malformed and inaccessible storage fall back to Timeline', async ({ page }) => {
   const api = await mockAPI(page, { flows: {} })
   await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', '{"view":"flow"}'))
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(tab(page, 'Timeline')).toHaveAttribute('aria-selected', 'true')
 
   const blocked = await page.context().newPage()
@@ -350,7 +350,7 @@ test('malformed and inaccessible storage fall back to Timeline', async ({ page }
       return setItem.call(this, key, value)
     }
   })
-  await blocked.goto(`/tasks/${taskId}/full`)
+  await blocked.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(tab(blocked, 'Timeline')).toHaveAttribute('aria-selected', 'true')
   // A refused write keeps the choice for the page.
   await tab(blocked, 'Flow').click()
@@ -360,7 +360,7 @@ test('malformed and inaccessible storage fall back to Timeline', async ({ page }
 
 test('the tabs follow the keyboard', async ({ page }) => {
   await mockAPI(page, { flows: {} })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await tab(page, 'Timeline').focus()
   await page.keyboard.press('ArrowRight')
   await expect(tab(page, 'Flow')).toBeFocused()
@@ -383,7 +383,7 @@ test('the chart draws the served path, statuses, gate marks, legend, and loops',
   flow.stages[5] = stage('merge', 'waiting', { ...gate('needs_operator'), traversed: false })
   flow.stages[3] = stage('verify', 'off', { traversed: true })
   await mockAPI(page, { flows: { [taskId]: flow } })
-  await openFlow(page, `/tasks/${taskId}/full`)
+  await openFlow(page, `/w/demo/tasks/${taskId}/full`)
   const legend = page.getByRole('list', { name: 'Legend' })
   await expect(legend.getByRole('listitem')).toHaveText([
     'Server legend done',
@@ -460,7 +460,7 @@ for (const gateCase of gateCases) {
       flows: { [taskId]: flow },
       action: nextAction({ actor: 'operator', kind: gateCase.kind, label: `Server ${gateCase.name}` }),
     })
-    await openFlow(page, `/tasks/${taskId}`)
+    await openFlow(page, `/w/demo/tasks/${taskId}`)
     await expect(node(page, 'spec')).toHaveAttribute('data-status', 'needs_operator')
     await expect(gateNode(page, 'spec')).toHaveAttribute('data-status', gateCase.plan)
     await expect(gateNode(page, 'merge')).toHaveAttribute('data-status', gateCase.merge)
@@ -472,7 +472,7 @@ test('a plan-off task draws the bypass and skipped plan nodes', async ({ page })
   flow.stages[1] = stage('spec', 'off', { gate: null, ...gate('off', true), traversed: true })
   flow.loops = []
   await mockAPI(page, { flows: { [taskId]: flow } })
-  await openFlow(page, `/tasks/${taskId}/full`)
+  await openFlow(page, `/w/demo/tasks/${taskId}/full`)
   const bypass = page.locator('[data-flow-bypass]')
   await expect(bypass).toContainText('Server bypass')
   await expect(node(page, 'spec')).toContainText('server skipped')
@@ -539,7 +539,7 @@ for (const sideCase of sideCases) {
     const flow = baseFlow()
     sideCase.patch(flow)
     await mockAPI(page, { flows: { [taskId]: flow } })
-    await openFlow(page, `/tasks/${taskId}`)
+    await openFlow(page, `/w/demo/tasks/${taskId}`)
     await expect(chart(page)).toHaveAttribute('data-flow-layout', 'column')
     for (const other of sideCases) {
       const state = sideNode(page, other.name)
@@ -553,7 +553,7 @@ for (const sideCase of sideCases) {
     if (sideCase.name === 'blocked_by') {
       const blocker = page.locator('[data-flow-blocker="task-prereq"]')
       await expect(blocker).toHaveText('Prerequisite slice')
-      await expect(blocker).toHaveAttribute('href', '/tasks/task-prereq')
+      await expect(blocker).toHaveAttribute('href', '/w/demo/tasks/task-prereq')
       await expect(page.locator('[data-flow-blocker="task-second"]')).toBeVisible()
     }
   })
@@ -575,7 +575,7 @@ test('combined side states and retry limits print the served labels', async ({ p
     },
   }
   await mockAPI(page, { flows: { [taskId]: flow } })
-  await openFlow(page, `/tasks/${taskId}`)
+  await openFlow(page, `/w/demo/tasks/${taskId}`)
   await expect(chart(page)).toHaveAttribute('data-flow-layout', 'column')
   await expect(sideNode(page, 'retrying')).toHaveText('Server auto-retrying · 4')
   await expect(sideNode(page, 'retrying')).not.toContainText(' of ')
@@ -625,7 +625,7 @@ test('the stage panel states the current attempt and its history, and Escape clo
 }, testInfo) => {
   await page.setViewportSize({ width: 1280, height: 900 })
   await mockAPI(page, { flows: { [taskId]: baseFlow() } })
-  await openFlow(page, `/tasks/${taskId}`)
+  await openFlow(page, `/w/demo/tasks/${taskId}`)
   const taskSheet = page.getByRole('dialog', { name: 'Task detail' })
   await node(page, 'implement').click()
   const panel = page.getByRole('dialog', { name: 'Server implement stage' })
@@ -679,7 +679,7 @@ test('the stage panel states the current attempt and its history, and Escape clo
 test('a task switch drops the late flow of the previous task', async ({ page }) => {
   const flows = { [taskId]: baseFlow('First'), [otherId]: baseFlow('Second') }
   const api = await mockAPI(page, { flows })
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText('Draw the task flow')
   api.hold(taskId)
   await tab(page, 'Flow').click()
@@ -695,7 +695,7 @@ test('a task switch drops the late flow of the previous task', async ({ page }) 
 
 test('a workspace switch leaves no flow read for the previous workspace', async ({ page }) => {
   const api = await mockAPI(page, { flows: { [taskId]: baseFlow() } })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   api.hold(taskId)
   await tab(page, 'Flow').click()
   await expect.poll(() => api.flowCalls).toContain(`${taskId}@demo`)

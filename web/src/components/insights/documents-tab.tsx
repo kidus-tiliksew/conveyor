@@ -4,11 +4,13 @@
 // evidence that associates it. A criterion is only ever "cited by a task",
 // never satisfied (AC-4.3).
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { ArrowUpRight, ChevronDown, FileCode2, Scale } from 'lucide-react'
 import { useId, useState } from 'react'
 import { fetchRequirementInsightDocuments } from '../../lib/api'
 import type { RequirementInsightDecision, RequirementInsightDesign } from '../../lib/types'
 import { cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Skeleton } from '../ui/skeleton'
 import {
   hoverProps,
@@ -132,9 +134,12 @@ export function DocumentsTab({
 }
 
 function DesignRow({ design, onHover }: { design: RequirementInsightDesign; onHover: RowHover }) {
+  const { workspace } = useWorkspaceSelection()
   return (
-    <a
-      href={`/system-design?document=${encodeURIComponent(design.id)}`}
+    <Link
+      to="/w/$workspaceId/system-design"
+      params={{ workspaceId: workspace }}
+      search={{ document: design.id }}
       data-design={design.id}
       {...hoverProps(onHover, design.attached_task_ids)}
       className="group flex gap-2.5 rounded-lg p-2 hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
@@ -155,7 +160,7 @@ function DesignRow({ design, onHover }: { design: RequirementInsightDesign; onHo
         </span>
       </span>
       <ArrowUpRight aria-hidden className="size-3.5 shrink-0 self-center text-faint group-hover:text-foreground" />
-    </a>
+    </Link>
   )
 }
 

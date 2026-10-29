@@ -4,7 +4,7 @@ import { buildTimeline, type TimelineEntry } from '../../lib/activity'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, SpecVersion } from '../../lib/types'
 import { absoluteTime, relativeTime } from '../../lib/utils'
-import { usePendingProposals } from '../app-shell'
+import { usePendingProposals, useWorkspaceSelection } from '../app-shell'
 import { SpecCard } from '../task/spec-card'
 import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
 import { useTaskDetail } from '../task/use-task-detail'
@@ -187,6 +187,7 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
 // document's content and issues no document read: a checklist row's title
 // opens the document page. The section is read-only (NA-6; AC-2.3).
 function ProposedContext({ item }: { item: ActivityItem }) {
+  const { workspace } = useWorkspaceSelection()
   const body = item.task.body?.trim() ?? ''
   if (!body) return <p className="text-sm text-muted">The task has no description.</p>
   return (
@@ -202,8 +203,8 @@ function ProposedContext({ item }: { item: ActivityItem }) {
       </summary>
       <MarkdownProse className="mt-2 text-sm">{body}</MarkdownProse>
       <Link
-        to="/tasks/$taskId/full"
-        params={{ taskId: item.task.id }}
+        to="/w/$workspaceId/tasks/$taskId/full"
+        params={{ workspaceId: workspace, taskId: item.task.id }}
         className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
       >
         Full task →

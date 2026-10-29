@@ -244,33 +244,28 @@ test('a filter change in one workspace keeps the previous page while the new rea
 })
 
 test('a Board map whose workspace changes under it shows no previous-workspace task', async ({ page }) => {
-  await installQueryClientProbe(page)
   const server = await mockServer(page, 'alpha')
-  await page.goto('/?view=map')
+  await page.goto('/w/alpha/?view=map')
   await expect(page.getByTestId('rf__node-alpha-1')).toBeVisible()
 
-  // A membership refresh that leaves one workspace selects it in place, with
-  // the map still mounted (component-web-dashboard, Shell and workspace
-  // scoping).
+  // The address names the page's workspace, so a history navigation to
+  // another workspace's map changes the workspace in place, without a reload
+  // or the rail (req-workspace-addresses AC-1.6; component-web-dashboard,
+  // Shell and workspace scoping).
   const bravoMap = new Barrier()
   server.holdMap = (workspace) => (workspace === 'bravo' ? bravoMap : undefined)
-  server.memberships = [bravo]
   const bravoRequest = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === '/v1/task-map' &&
       new URL(request.url()).searchParams.get('workspace_id') === 'bravo',
   )
-  await withQueryClient(
-    page,
-    (client) =>
-      (client as unknown as { refetchQueries(filter: { queryKey: unknown[] }): Promise<void> }).refetchQueries({
-        queryKey: ['workspaces'],
-      }),
-    undefined,
-  )
+  await page.evaluate(() => {
+    window.history.pushState(window.history.state, '', '/w/bravo/?view=map')
+    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
+  })
   await bravoRequest
 
-  await expect(page).toHaveURL(/view=map/)
+  await expect(page).toHaveURL(/\/w\/bravo\/\?view=map/)
   await expect(page.getByTestId('rf__node-alpha-1')).toHaveCount(0)
   await expect(page.getByTestId('rf__node-bravo-1')).toHaveCount(0)
 

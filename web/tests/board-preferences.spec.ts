@@ -102,7 +102,7 @@ test('the stage progress switch is off by default and persists across reloads wi
   page,
 }) => {
   const writes = await mockAPI(page)
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
   await expect(toggle(page)).toHaveAttribute('aria-checked', 'false')
   await toggle(page).click()
@@ -118,7 +118,7 @@ test('the stage progress switch is off by default and persists across reloads wi
 
 test('a malformed stored value reads as off', async ({ page }) => {
   await mockAPI(page, { stored: '1' })
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(toggle(page)).toHaveAttribute('aria-checked', 'false')
 })
 
@@ -134,7 +134,7 @@ test('the preference holds across workspaces', async ({ page }) => {
 
 test('turning the switch on updates the open Board in the same page', async ({ page }) => {
   await mockAPI(page)
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await toggle(page).click()
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Board' }).click()
   await expect(page.getByRole('link', { name: /^Card in demo/ }).locator('[data-stage]')).toHaveCount(6)
@@ -150,7 +150,7 @@ test('a change in another tab reaches an open Board', async ({ context }) => {
 
   const settings = await context.newPage()
   await mockAPI(settings)
-  await settings.goto('/settings')
+  await settings.goto('/w/demo/settings')
   await toggle(settings).click()
   await expect(card.locator('[data-stage]')).toHaveCount(6)
   await toggle(settings).click()

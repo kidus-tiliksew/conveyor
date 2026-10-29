@@ -64,16 +64,21 @@ export function ProposalDetail({
   const resolve = useMutation({
     onMutate: (): MutationWorkspace => ({ workspace }),
     mutationFn: async ({ action, note }: { action: 'confirm' | 'dismiss'; note?: string }) => {
-      if (proposal.tier === 'decision') return resolveDecision(proposal.id, action)
+      if (proposal.tier === 'decision') return resolveDecision(workspace, proposal.id, action)
       if (proposal.version == null) throw new Error('The proposal did not include a version.')
       if (proposal.tier === 'requirement') {
-        if (action === 'dismiss') return dismissRequirementVersion(proposal.id, proposal.version, note)
-        const view = await fetchRequirement(proposal.id)
-        return confirmRequirementVersion(proposal.id, proposal.version, view.requirement.current_version ?? 0)
+        if (action === 'dismiss') return dismissRequirementVersion(workspace, proposal.id, proposal.version, note)
+        const view = await fetchRequirement(proposal.id, workspace)
+        return confirmRequirementVersion(
+          workspace,
+          proposal.id,
+          proposal.version,
+          view.requirement.current_version ?? 0,
+        )
       }
-      if (action === 'dismiss') return dismissSystemDesignVersion(proposal.id, proposal.version, note)
-      const view = await fetchSystemDesign(proposal.id)
-      return confirmSystemDesignVersion(proposal.id, proposal.version, view.document.current_version ?? 0)
+      if (action === 'dismiss') return dismissSystemDesignVersion(workspace, proposal.id, proposal.version, note)
+      const view = await fetchSystemDesign(proposal.id, workspace)
+      return confirmSystemDesignVersion(workspace, proposal.id, proposal.version, view.document.current_version ?? 0)
     },
     onSuccess: (_, variables) => {
       if (variables.action === 'dismiss') setDismissing(false)
@@ -144,8 +149,8 @@ export function ProposalDetail({
           {proposal.title}
         </h2>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-          <span>Origin: {originLink(proposal)}</span>
-          {known && contextLink(proposal)}
+          <span>Origin: {originLink(proposal, workspace)}</span>
+          {known && contextLink(proposal, workspace)}
         </div>
         {item.question && <p className="text-sm leading-6">{item.question}</p>}
         {known && (
@@ -252,12 +257,13 @@ export function proposalAge(proposal: Pick<PendingProposal, 'proposed_at' | 'age
   }
 }
 
-function contextLink(proposal: PendingProposal) {
+function contextLink(proposal: PendingProposal, workspace: string) {
   const className = 'font-medium text-primary hover:underline'
   if (proposal.tier === 'requirement')
     return (
       <Link
-        to="/requirements"
+        to="/w/$workspaceId/requirements"
+        params={{ workspaceId: workspace }}
         search={{ requirement: proposal.id, tab: 'changes', target: proposal.version }}
         className={className}
       >
@@ -267,7 +273,8 @@ function contextLink(proposal: PendingProposal) {
   if (proposal.tier === 'system_design')
     return (
       <Link
-        to="/system-design"
+        to="/w/$workspaceId/system-design"
+        params={{ workspaceId: workspace }}
         search={{ document: proposal.id, tab: 'changes', target: proposal.version }}
         className={className}
       >
@@ -275,7 +282,12 @@ function contextLink(proposal: PendingProposal) {
       </Link>
     )
   return (
-    <Link to="/system-design" hash={`decision-${proposal.id.toLowerCase()}`} className={className}>
+    <Link
+      to="/w/$workspaceId/system-design"
+      params={{ workspaceId: workspace }}
+      hash={`decision-${proposal.id.toLowerCase()}`}
+      className={className}
+    >
       View decision →
     </Link>
   )
@@ -290,18 +302,27 @@ export function originWord(proposal: Pick<PendingProposal, 'origin_type' | 'orig
 }
 
 // The origin in plain words; its identifier stays in the IDs disclosure.
-function originLink(proposal: PendingProposal) {
+function originLink(proposal: PendingProposal, workspace: string) {
   if (proposal.origin_type === 'task' && proposal.origin_id)
     return (
-      <Link to="/tasks/$taskId/full" params={{ taskId: proposal.origin_id }} className="text-primary hover:underline">
+      <Link
+        to="/w/$workspaceId/tasks/$taskId/full"
+        params={{ workspaceId: workspace, taskId: proposal.origin_id }}
+        className="text-primary hover:underline"
+      >
         Task
       </Link>
     )
   if (proposal.origin_type === 'session' && proposal.origin_id)
     return (
-      <a href={`/planning?session=${encodeURIComponent(proposal.origin_id)}`} className="text-primary hover:underline">
+      <Link
+        to="/w/$workspaceId/planning"
+        params={{ workspaceId: workspace }}
+        search={{ session: proposal.origin_id }}
+        className="text-primary hover:underline"
+      >
         Planning session
-      </a>
+      </Link>
     )
   if (proposal.origin_type === 'drift') return <>Change signal</>
   return <>Operator</>

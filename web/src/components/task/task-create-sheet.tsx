@@ -11,7 +11,7 @@ import {
   TaskIntakeError,
 } from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
-import { useWorkspace } from '../app-shell'
+import { useWorkspace, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input, Select } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
@@ -31,29 +31,30 @@ export function TaskCreateSheet() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { data: workspace } = useWorkspace()
+  const { workspace: workspaceId } = useWorkspaceSelection()
   const repos = workspace?.repos ?? []
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const workerHealth = useQuery({
-    queryKey: ['workers', workspace?.workspace],
-    queryFn: () => fetchWorkers(),
-    enabled: Boolean(workspace?.workspace),
+    queryKey: ['workers', workspaceId],
+    queryFn: () => fetchWorkers(workspaceId),
+    enabled: Boolean(workspaceId),
     refetchInterval: 5000,
   })
   const tasks = useQuery({
-    queryKey: ['tasks', workspace?.workspace, 'dependency-candidates'],
-    queryFn: fetchOpenTasks,
-    enabled: advancedOpen && Boolean(workspace?.workspace),
+    queryKey: ['tasks', workspaceId, 'dependency-candidates'],
+    queryFn: () => fetchOpenTasks(workspaceId),
+    enabled: advancedOpen && Boolean(workspaceId),
   })
   const requirements = useQuery({
-    queryKey: ['requirements', workspace?.workspace],
-    queryFn: fetchRequirements,
-    enabled: Boolean(workspace?.workspace),
+    queryKey: ['requirements', workspaceId],
+    queryFn: () => fetchRequirements(workspaceId),
+    enabled: Boolean(workspaceId),
     staleTime: 60_000,
   })
   const designs = useQuery({
-    queryKey: ['system-designs', workspace?.workspace],
-    queryFn: fetchSystemDesigns,
-    enabled: Boolean(workspace?.workspace),
+    queryKey: ['system-designs', workspaceId],
+    queryFn: () => fetchSystemDesigns(workspaceId),
+    enabled: Boolean(workspaceId),
     staleTime: 60_000,
   })
 
@@ -74,11 +75,13 @@ export function TaskCreateSheet() {
   const workerAvailable = workerHealth.data?.worker_available === true
   // Intake is the Board's `create` parameter, so closing drops it and leaves
   // whichever view the Board was showing.
-  const close = () => void navigate({ to: '/', search: ({ create: _create, ...prev }) => prev })
+  const close = () =>
+    void navigate({ to: '/w/$workspaceId/', params: { workspaceId }, search: ({ create: _create, ...prev }) => prev })
 
   const mutation = useMutation({
     mutationFn: async () => {
       const task = await createTask(
+        workspaceId,
         {
           body: body.trim(),
           repo: repoName,
@@ -98,8 +101,8 @@ export function TaskCreateSheet() {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
       // The new task opens in the Board's sheet over the view intake came from.
       void navigate({
-        to: '/tasks/$taskId',
-        params: { taskId: task.id },
+        to: '/w/$workspaceId/tasks/$taskId',
+        params: { workspaceId, taskId: task.id },
         search: ({ create: _create, ...prev }) => prev,
       })
     },

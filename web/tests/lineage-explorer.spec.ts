@@ -347,7 +347,7 @@ test('the task Knowledge explorer makes one canonical bounded read on demand', a
   const reads: Options['reads'] = []
   await routeAPI(page, { reads })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   // On-demand: nothing is read until the affordance is used (REQ-3).
   await expect(page.getByRole('heading', { name: 'Bound the retry loop' })).toBeVisible()
   expect(reads).toHaveLength(0)
@@ -367,7 +367,7 @@ test('the task Knowledge explorer makes one canonical bounded read on demand', a
   await expect(panel.getByText('This is a bounded view.')).toBeVisible()
   await expect(panel.getByText('3 further records and 4 further links were not read.')).toBeVisible()
   // Opening the panel is not navigation.
-  expect(new URL(page.url()).pathname).toBe(`/tasks/${taskId}/full`)
+  expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${taskId}/full`)
   await panel.getByRole('button', { name: 'Close Knowledge explorer' }).click()
   await expect(panel).toHaveCount(0)
 })
@@ -380,7 +380,7 @@ test('lineage renders work documents delivery and evidence', async ({ page }) =>
   const downloads: Options['downloads'] = []
   await routeAPI(page, { downloads })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByRole('heading', { level: 3 })).toHaveText([/Work/, /Documents/, /Delivery/, /Evidence/])
@@ -392,52 +392,55 @@ test('lineage renders work documents delivery and evidence', async ({ page }) =>
   // Peers of the origin's own kind are listed too.
   await expect(work.getByRole('link', { name: /Serve the retry limit/ })).toHaveAttribute(
     'href',
-    '/tasks/task-neighbour/full',
+    '/w/demo/tasks/task-neighbour/full',
   )
-  await expect(work.getByRole('link', { name: /Retry blueprint/ })).toHaveAttribute('href', '/blueprints/task-anchor')
+  await expect(work.getByRole('link', { name: /Retry blueprint/ })).toHaveAttribute(
+    'href',
+    '/w/demo/blueprints/task-anchor',
+  )
   await expect(work.getByRole('link', { name: /Retry planning/ })).toHaveAttribute(
     'href',
-    '/planning?session=session-retries',
+    '/w/demo/planning?session=session-retries',
   )
   // The bundle resolves to its producing session through the returned link.
   await expect(work.getByRole('link', { name: /Retry bundle/ })).toHaveAttribute(
     'href',
-    '/planning?session=session-retries',
+    '/w/demo/planning?session=session-retries',
   )
   // Work orders resolve to the task named by the returned dispatches link.
   await expect(work.getByRole('link', { name: /implement work order for task-explorer/ })).toHaveAttribute(
     'href',
-    `/tasks/${taskId}/full`,
+    `/w/demo/tasks/${taskId}/full`,
   )
 
   const documents = panel.getByRole('region', { name: 'Documents' })
   await expect(documents.getByRole('link', { name: /Retry behavior/ })).toHaveAttribute(
     'href',
-    '/requirements?requirement=req-retries',
+    '/w/demo/requirements?requirement=req-retries',
   )
   await expect(documents.getByRole('link', { name: /Dispatch ownership/ })).toHaveAttribute(
     'href',
-    '/system-design?document=design-dispatch',
+    '/w/demo/system-design?document=design-dispatch',
   )
   await expect(documents.getByRole('link', { name: /Retry overview/ })).toHaveAttribute(
     'href',
-    '/requirements#reference-overview-retries-v4',
+    '/w/demo/requirements#reference-overview-retries-v4',
   )
   await expect(documents.getByRole('link', { name: /Usage telemetry is observational/ })).toHaveAttribute(
     'href',
-    '/system-design#decision-dec-1',
+    '/w/demo/system-design#decision-dec-1',
   )
   // The governed path opens the governing design version the walk returned.
   await expect(documents.getByRole('link', { name: /internal\/dispatch/ })).toHaveAttribute(
     'href',
-    '/system-design?document=design-dispatch&target=3',
+    '/w/demo/system-design?document=design-dispatch&target=3',
   )
   // Record and version nodes fold into one entry per document, and each
   // returned version is its own row under that entry.
   await expect(documents.getByRole('link')).toHaveCount(8)
   await expect(documents.getByRole('list', { name: 'Versions of Retry behavior' }).getByRole('link')).toHaveAttribute(
     'href',
-    '/requirements?requirement=req-retries&target=2',
+    '/w/demo/requirements?requirement=req-retries&target=2',
   )
   // A reference document is labelled as one, not as a product overview.
   await expect(documents.getByRole('link', { name: /Retry overview/ })).toContainText('Reference document')
@@ -452,7 +455,10 @@ test('lineage renders work documents delivery and evidence', async ({ page }) =>
     'href',
     'https://github.com/kidus-tiliksew/conveyor/compare/abc1234...def5678',
   )
-  await expect(delivery.getByRole('link', { name: /Review verdict/ })).toHaveAttribute('href', `/tasks/${taskId}/full`)
+  await expect(delivery.getByRole('link', { name: /Review verdict/ })).toHaveAttribute(
+    'href',
+    `/w/demo/tasks/${taskId}/full`,
+  )
 
   const evidence = panel.getByRole('region', { name: 'Evidence' })
   const download = page.waitForEvent('download')
@@ -463,8 +469,8 @@ test('lineage renders work documents delivery and evidence', async ({ page }) =>
 })
 
 for (const origin of [
-  { kind: 'requirement', path: '/requirements', heading: 'Retry behavior', group: 'Documents' },
-  { kind: 'system_design', path: '/system-design', heading: 'Dispatch ownership', group: 'Documents' },
+  { kind: 'requirement', path: '/w/demo/requirements', heading: 'Retry behavior', group: 'Documents' },
+  { kind: 'system_design', path: '/w/demo/system-design', heading: 'Dispatch ownership', group: 'Documents' },
 ]) {
   test(`lineage renders work documents delivery and evidence from the ${origin.kind} canvas`, async ({ page }) => {
     await initShell(page)
@@ -482,10 +488,10 @@ for (const origin of [
     // From a document, tasks are ordinary links to their full detail.
     await expect(
       panel.getByRole('region', { name: 'Work' }).getByRole('link', { name: /Bound the retry loop/ }),
-    ).toHaveAttribute('href', `/tasks/${taskId}/full`)
+    ).toHaveAttribute('href', `/w/demo/tasks/${taskId}/full`)
     await expect(
       panel.getByRole('region', { name: 'Work' }).getByRole('link', { name: /Serve the retry limit/ }),
-    ).toHaveAttribute('href', '/tasks/task-neighbour/full')
+    ).toHaveAttribute('href', '/w/demo/tasks/task-neighbour/full')
     const rootId = origin.kind === 'requirement' ? 'req-retries' : 'design-dispatch'
     await expect.poll(() => reads.map((read) => read.path)).toEqual([`/v1/lineage/${origin.kind}/${rootId}`])
   })
@@ -520,7 +526,7 @@ test('lineage links only returned ownership', async ({ page }) => {
     }),
   })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByRole('heading', { level: 3 })).toHaveText([/Work/, /Documents/, /Delivery/])
@@ -569,7 +575,7 @@ test('lineage preserves versions peers and bounded notices', async ({ page }) =>
     }),
   })
 
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   await expect(page.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
@@ -585,16 +591,16 @@ test('lineage preserves versions peers and bounded notices', async ({ page }) =>
   ])
 
   const peer = documents.getByRole('link', { name: /Budget limits/ })
-  await expect(peer).toHaveAttribute('href', '/requirements?requirement=req-budget&target=5')
+  await expect(peer).toHaveAttribute('href', '/w/demo/requirements?requirement=req-budget&target=5')
   await expect(peer).toContainText('Opens v5')
   // A version without a label falls back to its record ID.
   await expect(documents.getByRole('link', { name: /design-only-version/ })).toHaveAttribute(
     'href',
-    '/system-design?document=design-only-version&target=7',
+    '/w/demo/system-design?document=design-only-version&target=7',
   )
   await expect(
     panel.getByRole('region', { name: 'Work' }).getByRole('link', { name: /task-unlabelled/ }),
-  ).toHaveAttribute('href', '/tasks/task-unlabelled/full')
+  ).toHaveAttribute('href', '/w/demo/tasks/task-unlabelled/full')
   // Truncated without omitted counts still says the view is bounded.
   await expect(panel.getByText('This is a bounded view.')).toBeVisible()
 })
@@ -670,7 +676,7 @@ test('lineage groups entries relative to the root and names the task they come t
     }),
   })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   const delivery = panel.getByRole('region', { name: 'Delivery', exact: true })
@@ -681,7 +687,7 @@ test('lineage groups entries relative to the root and names the task they come t
   const ownVerdictEntry = delivery.getByRole('link', { name: /^Review verdict Approved/ })
   await expect(ownVerdictEntry).toContainText('Review round 2, seat 1')
   await expect(ownVerdictEntry).not.toContainText('via')
-  await expect(ownVerdictEntry).toHaveAttribute('href', `/tasks/${taskId}/full`)
+  await expect(ownVerdictEntry).toHaveAttribute('href', `/w/demo/tasks/${taskId}/full`)
   await expect(delivery.getByText(`Review verdict ${taskId}-review-1`)).toHaveCount(0)
   await expect(deliveryThrough.getByRole('link', { name: /conveyor#284/ })).toHaveCount(0)
 
@@ -689,7 +695,7 @@ test('lineage groups entries relative to the root and names the task they come t
   const siblingVerdictEntry = deliveryThrough.getByRole('link', { name: /Changes requested/ })
   await expect(siblingVerdictEntry).toContainText('Review round 1, seat 2')
   await expect(siblingVerdictEntry).toContainText('via Serve the retry limit')
-  await expect(siblingVerdictEntry).toHaveAttribute('href', '/tasks/task-neighbour/full')
+  await expect(siblingVerdictEntry).toHaveAttribute('href', '/w/demo/tasks/task-neighbour/full')
   await expect(deliveryThrough.getByRole('link', { name: /conveyor#300/ })).toContainText('via Serve the retry limit')
 
   // The sibling task itself is reached through the requirement, not through
@@ -697,7 +703,7 @@ test('lineage groups entries relative to the root and names the task they come t
   const work = panel.getByRole('region', { name: 'Work', exact: true })
   await expect(work.getByRole('link', { name: /Serve the retry limit/ }).first()).toHaveAttribute(
     'href',
-    '/tasks/task-neighbour/full',
+    '/w/demo/tasks/task-neighbour/full',
   )
   await expect(
     panel.getByRole('region', { name: 'Work through other tasks' }).getByRole('link', {
@@ -773,7 +779,7 @@ test('lineage lists each version with its status and served tasks and offers the
     },
   })
 
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   await expect(page.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
@@ -787,11 +793,14 @@ test('lineage lists each version with its status and served tasks and offers the
   await expect(rows.nth(2)).toContainText('v1 superseded')
   await expect(rows.nth(2).getByRole('link', { name: /v1/ })).toHaveAttribute(
     'href',
-    '/requirements?requirement=req-retries&target=1',
+    '/w/demo/requirements?requirement=req-retries&target=1',
   )
   // Each version names the tasks it serves, with their returned state.
   const onV1 = versions.getByRole('list', { name: 'Tasks on v1' })
-  await expect(onV1.getByRole('link', { name: 'Old retry task' })).toHaveAttribute('href', '/tasks/task-old/full')
+  await expect(onV1.getByRole('link', { name: 'Old retry task' })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/task-old/full',
+  )
   await expect(onV1).toContainText('Merged')
   await expect(versions.getByRole('list', { name: 'Tasks on v2' })).toContainText('Running')
   await expect(versions.getByRole('list', { name: 'Tasks on v3' })).toHaveCount(0)
@@ -805,7 +814,10 @@ test('lineage lists each version with its status and served tasks and offers the
   expect(impactReads).toHaveLength(0)
   await documents.getByRole('button', { name: 'Show work merged on an older version' }).click()
   const impact = documents.getByRole('region', { name: 'Merged on an older version' })
-  await expect(impact.getByRole('link', { name: 'Old retry task' })).toHaveAttribute('href', '/tasks/task-old/full')
+  await expect(impact.getByRole('link', { name: 'Old retry task' })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/task-old/full',
+  )
   await expect(impact).toContainText('v1 superseded · Merged')
   await expect(impact).toContainText('Showing 1 of 3.')
   await expect(impact).toContainText('The impact read was bounded by the task limit.')
@@ -818,7 +830,7 @@ test('lineage lists each version with its status and served tasks and offers the
 test('task detail does not offer the impact view', async ({ page }) => {
   await initShell(page)
   await routeAPI(page)
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByRole('region', { name: 'Work', exact: true })).toBeVisible()
@@ -849,7 +861,7 @@ test('a truncated walk names its exhausted limits and budget-omitted destination
     }),
   })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByText('This is a bounded view.')).toBeVisible()
@@ -923,27 +935,27 @@ test('a version-only blueprint links its record without promising the returned v
     ],
   })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   const entry = panel.getByRole('region', { name: 'Work' }).getByRole('link', { name: /Retry blueprint/ })
   // The record route, with no version selection.
-  await expect(entry).toHaveAttribute('href', `/blueprints/${anchorId}`)
+  await expect(entry).toHaveAttribute('href', `/w/demo/blueprints/${anchorId}`)
   await expect(entry).toContainText('Returned v2; opens the blueprint record without selecting a version')
   await expect(entry).not.toContainText('Opens v2')
 
   // The record shows its governing version, which differs from the returned one.
   await entry.click()
-  await expect(page).toHaveURL(new RegExp(`/blueprints/${anchorId}$`))
+  await expect(page).toHaveURL(new RegExp(`/w/demo/blueprints/${anchorId}$`))
   await expect(page.getByText('Blueprint v3', { exact: true })).toBeVisible()
   await expect(page.getByText('Blueprint v2', { exact: true })).toHaveCount(0)
 })
 
 // A record with no related entries says so while retaining its current anchor.
 const detailSurfaces = [
-  { kind: 'task detail', path: `/tasks/${taskId}/full` },
-  { kind: 'requirement detail', path: '/requirements' },
-  { kind: 'System Design detail', path: '/system-design' },
+  { kind: 'task detail', path: `/w/demo/tasks/${taskId}/full` },
+  { kind: 'requirement detail', path: '/w/demo/requirements' },
+  { kind: 'System Design detail', path: '/w/demo/system-design' },
 ]
 
 for (const surface of detailSurfaces) {
@@ -969,7 +981,7 @@ test('the explorer opens from the task detail panel without closing it', async (
   const reads: Options['reads'] = []
   await routeAPI(page, { reads })
 
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   const taskPanel = page.getByRole('dialog', { name: 'Task detail' })
   await expect(taskPanel).toBeVisible()
 
@@ -988,7 +1000,7 @@ test('the Knowledge explorer exposes loading and error states with updated acces
   await initShell(page)
   await routeAPI(page, { lineageDelayMs: 200, lineageFailure: true })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByRole('status', { name: 'Loading Knowledge explorer' })).toBeVisible()
@@ -1003,7 +1015,7 @@ test('the Knowledge explorer error state retries the same read', async ({ page }
   const options: Options = { reads, lineageFailure: true }
   await routeAPI(page, options)
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
   const panel = page.getByRole('dialog', { name: 'Knowledge explorer' })
   await expect(panel.getByText('Lineage temporarily unavailable.')).toBeVisible()
@@ -1028,7 +1040,7 @@ test('the Knowledge explorer reads the context workspace explicitly', async ({ p
   const reads: Options['reads'] = []
   await routeAPI(page, { reads })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(page.getByRole('heading', { name: 'Bound the retry loop' })).toBeVisible()
   await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'elsewhere'))
   await page.getByRole('button', { name: 'Knowledge explorer' }).click()
@@ -1065,21 +1077,21 @@ test('the parked routes stay reachable by deep link and from blueprint-era task 
   await initShell(page)
   await routeAPI(page, { parentTaskId: 'blueprint-anchor' })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByRole('button', { name: 'New session' })).toBeVisible()
 
-  await page.goto('/blueprints')
+  await page.goto('/w/demo/blueprints')
   await expect(page.getByRole('heading', { name: 'Blueprint history' })).toBeVisible()
 
-  await page.goto('/blueprints/blueprint-anchor')
+  await page.goto('/w/demo/blueprints/blueprint-anchor')
   await expect(page.getByRole('link', { name: 'Back to blueprints' })).toBeVisible()
 
   // A task materialized from a blueprint keeps both its anchor and the history
   // that the sidebar no longer offers.
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(page.getByRole('link', { name: /blueprint-anchor/ })).toHaveAttribute(
     'href',
-    '/blueprints/blueprint-anchor',
+    '/w/demo/blueprints/blueprint-anchor',
   )
   await page.getByRole('link', { name: 'Blueprint history' }).click()
   await expect(page).toHaveURL(/\/blueprints$/)

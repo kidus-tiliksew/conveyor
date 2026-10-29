@@ -7,6 +7,7 @@ import type {
   VerificationKitStatus,
   VerificationKitUnavailableReason,
 } from '../../lib/types'
+import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { VerificationDiagnostics, VerificationKitRow } from './verification-kit-row'
@@ -35,12 +36,17 @@ function headerCount(repo: VerificationKitRepository) {
 }
 
 function UnavailableReason({ reason }: { reason?: VerificationKitUnavailableReason }) {
+  const { workspace } = useWorkspaceSelection()
   switch (reason) {
     case 'no_app':
       return (
         <>
           Connect the workspace GitHub App in{' '}
-          <Link to="/settings" className="text-primary hover:underline">
+          <Link
+            to="/w/$workspaceId/settings"
+            params={{ workspaceId: workspace }}
+            className="text-primary hover:underline"
+          >
             Settings
           </Link>{' '}
           so Conveyor can read the manifest.

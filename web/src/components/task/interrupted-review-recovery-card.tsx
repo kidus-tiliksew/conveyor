@@ -17,7 +17,7 @@ export function InterruptedReviewRecoveryCard({ item }: { item: ActivityItem }) 
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const mutation = useMutation({
-    mutationFn: () => recoverInterruptedReviewRound(item.task.id, requestId.current),
+    mutationFn: () => recoverInterruptedReviewRound(workspace, item.task.id, requestId.current),
     onMutate: (): MutationWorkspace => ({ workspace }),
     onSuccess: (_data, _variables, started) => {
       if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })

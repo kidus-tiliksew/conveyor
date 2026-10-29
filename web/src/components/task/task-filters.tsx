@@ -655,13 +655,13 @@ export function TaskFilters({
   const repos = useMemo(() => (workspaceInfo?.repos ?? []).map((entry) => entry.name).sort(), [workspaceInfo])
   const requirements = useQuery({
     queryKey: ['requirements', workspace],
-    queryFn: fetchRequirements,
+    queryFn: () => fetchRequirements(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
   const designs = useQuery({
     queryKey: ['system-designs', workspace],
-    queryFn: fetchSystemDesigns,
+    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })

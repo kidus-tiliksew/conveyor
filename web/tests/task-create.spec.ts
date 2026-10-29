@@ -234,11 +234,11 @@ for (const [role, allowed] of [
     await mockTaskCreateAPIs(page, { role })
     const count = allowed ? 1 : 0
 
-    await page.goto('/tasks')
+    await page.goto('/w/demo/tasks')
     await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'New task' })).toHaveCount(count)
 
-    await page.goto('/tasks?create=true')
+    await page.goto('/w/demo/tasks?create=true')
     await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
     await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(count)
 
@@ -254,7 +254,7 @@ for (const [role, allowed] of [
 
 test('new task removes title input and submits description for AI title generation', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
 
   await expect(page.getByPlaceholder('What should change?')).toHaveCount(0)
   await expect(page.getByText('AI generates the task title from this context')).toBeVisible()
@@ -276,7 +276,7 @@ test('new task removes title input and submits description for AI title generati
 
 test('intake attaches confirmed product and design context with authenticated reads', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
   await page.locator('textarea').fill('Implement the attached desired state')
 
   // One Context control now, not a checkbox list per document tier.
@@ -298,7 +298,7 @@ test('intake attaches confirmed product and design context with authenticated re
 
 test('context dropdown searches, keeps selections visible, and removes them', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
   await page.locator('textarea').fill('Attach several documents')
 
   const search = page.getByRole('combobox', { name: 'Search context' })
@@ -344,7 +344,7 @@ test('context dropdown searches, keeps selections visible, and removes them', as
 
 test('context dropdown never offers unconfirmed documents', async ({ page }) => {
   await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
   await page.getByRole('combobox', { name: 'Search context' }).click()
   const list = page.getByRole('listbox', { name: 'Context' })
   await expect(list.getByRole('option', { name: /Confirmed product outcome/ })).toBeVisible()
@@ -355,7 +355,7 @@ test('context dropdown never offers unconfirmed documents', async ({ page }) => 
 
 test('intake offers no hold control and keeps the advisory worker warning', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
 
   // A task carries no hold or other worker reservation (DEC-74(3)): no
   // control, and the worker warning depends on worker liveness only.
@@ -373,7 +373,7 @@ test('intake offers no hold control and keeps the advisory worker warning', asyn
 
 test('pull-only intake stays quiet when no enrolled worker is expected', async ({ page }) => {
   await mockTaskCreateAPIs(page, { pullOnly: true })
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
 
   await expect(page.getByText(/Worker unavailable/)).toHaveCount(0)
   await expect(page.getByText(/claim it manually/)).toHaveCount(0)
@@ -384,7 +384,7 @@ test('dependency candidates load lazily and selected cross-repository chips surv
   page,
 }) => {
   const { submitted, taskListRequests, taskListQuery } = await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
   expect(taskListRequests()).toBe(0)
   await page.locator('textarea').fill('Implement the dependent task')
   await page.getByText('Advanced options').click()
@@ -420,7 +420,7 @@ test('dependency candidates distinguish loading, request failure, empty results,
   page,
 }) => {
   const delayed = await mockTaskCreateAPIs(page, { taskList: 'delayed' })
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
   await page.getByText('Advanced options').click()
   await expect(page.getByText('Loading dependency candidates…')).toBeVisible()
   delayed.releaseTaskList()
@@ -459,7 +459,7 @@ test('dependency candidates distinguish loading, request failure, empty results,
 
 test('structured dependency validation opens Advanced options and renders the error once', async ({ page }) => {
   await mockTaskCreateAPIs(page, { createDependencyError: true })
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
   await page.locator('textarea').fill('Create a cyclic dependency')
   await page.getByText('Advanced options').click()
   await page.getByText('Finish persistence first').click()
@@ -472,7 +472,7 @@ test('structured dependency validation opens Advanced options and renders the er
 
 test('intake markdown editor formats, toggles, previews, and restores selection', async ({ page }) => {
   await mockTaskCreateAPIs(page)
-  await page.goto('/new')
+  await page.goto('/w/demo/new')
 
   const editor = page.locator('textarea')
   const toolbar = page.getByRole('toolbar', { name: 'Markdown formatting' })

@@ -28,7 +28,7 @@ export function BlueprintsPage() {
             <p className="mt-1 max-w-2xl text-sm text-muted">
               Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed
               through planning bundles and managed in{' '}
-              <Link to="/" className="text-primary hover:underline">
+              <Link to="/w/$workspaceId/" params={{ workspaceId: workspace }} className="text-primary hover:underline">
                 the Board
               </Link>
               .
@@ -69,11 +69,12 @@ export function BlueprintsPage() {
 }
 
 function BlueprintListEntry({ view }: { view: BlueprintView }) {
+  const { workspace } = useWorkspaceSelection()
   const specVersion = view.governing_version || view.spec?.version
   return (
     <Link
-      to="/blueprints/$taskId"
-      params={{ taskId: view.task.id }}
+      to="/w/$workspaceId/blueprints/$taskId"
+      params={{ workspaceId: workspace, taskId: view.task.id }}
       className="flex items-start gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-edge hover:bg-surface"
     >
       <Blocks className="mt-0.5 size-4 shrink-0 text-primary" />

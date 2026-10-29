@@ -95,7 +95,7 @@ for (const organization of ['', 'demo-org']) {
       }
       await route.fulfill({ contentType: 'text/html', body: '<h1>GitHub app registration</h1>' })
     })
-    await page.goto('/settings')
+    await page.goto('/w/demo/settings')
     await expect(page.getByText('Workspace GitHub App', { exact: true })).toBeVisible()
     await expect(page.getByLabel('GitHub token', { exact: true })).toHaveCount(0)
     await expect(page.getByLabel('Workspace GitHub token', { exact: true })).toHaveCount(0)
@@ -123,7 +123,7 @@ for (const organization of ['', 'demo-org']) {
 test('connected status shows mixed coverage and disconnect requires confirmation and refetches', async ({ page }) => {
   const state = await mockApp(page)
   state.status = { ...connected }
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(page.getByText('conveyor-demo', { exact: true })).toBeVisible()
   await expect(page.getByText('Installed on demo-org')).toBeVisible()
   const repositories = page.getByRole('list', { name: 'Repository coverage' })
@@ -156,10 +156,10 @@ test('setup return selects the returned workspace and refreshes status, includin
   page,
 }) => {
   const state = await mockApp(page)
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toBeVisible()
   state.status = { ...connected, app_slug: 'conveyor-second' }
-  await page.goto('/settings?workspace=second')
+  await page.goto('/w/demo/settings?workspace=second')
   await expect(page.getByText('conveyor-second', { exact: true })).toBeVisible()
   expect(state.gets.at(-1)).toBe('/v1/workspaces/second/github-app')
   state.status = { ...disconnected }
@@ -172,7 +172,7 @@ test('setup return selects the returned workspace and refreshes status, includin
 test('an app without an installation offers the server installation remedy', async ({ page }) => {
   const state = await mockApp(page)
   state.status = { ...connected, installation_account: '', repositories: [] }
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(page.getByText('Not installed yet.')).toBeVisible()
   await expect(page.getByText('No repositories registered.')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Manage on GitHub' })).toHaveAttribute(
@@ -187,7 +187,7 @@ for (const method of ['GET', 'POST', 'DELETE']) {
     state.failMethod = method
     state.error = 'Connect the GitHub App in workspace settings for repository backend.'
     if (method === 'DELETE') state.status = { ...connected }
-    await page.goto('/settings')
+    await page.goto('/w/demo/settings')
     if (method === 'POST') await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click()
     if (method === 'DELETE') {
       await page.getByRole('button', { name: 'Disconnect', exact: true }).click()
@@ -203,7 +203,7 @@ for (const method of ['GET', 'POST', 'DELETE']) {
 
 test('members cannot see or fetch the workspace GitHub App card', async ({ page }) => {
   const state = await mockApp(page, 'contributor')
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('Ada')
   await expect(page.getByText('Workspace GitHub App', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toHaveCount(0)
@@ -213,7 +213,7 @@ test('members cannot see or fetch the workspace GitHub App card', async ({ page 
 test('machine-only status errors show readable failure copy', async ({ page }) => {
   const state = await mockApp(page)
   state.failMethod = 'GET'
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   await expect(page.getByRole('alert')).toHaveText('Could not load the GitHub connection.')
   await expect(page.locator('body')).not.toContainText('github_app_permission')
 })
@@ -227,7 +227,7 @@ test('missing public URL refuses connection without navigating to GitHub', async
     githubRequests++
     await route.abort()
   })
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   const settingsURL = page.url()
   await page.getByRole('button', { name: 'Connect GitHub', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText(state.error)

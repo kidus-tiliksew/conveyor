@@ -21,7 +21,7 @@ export function FailedTriageCard({ item }: { item: ActivityItem }) {
     mutationFn: async () => {
       if (!failure || !canOperate || failure.repairRequired) return
       if (acceptedJob.current !== failure.jobId) {
-        await reviewTask(item.task.id, {
+        await reviewTask(workspace, item.task.id, {
           action: 'redirect',
           reasonCode: 'changes-requested',
           comment:
@@ -112,7 +112,7 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const mutation = useMutation({
-    mutationFn: () => redispatchTask(item.task.id),
+    mutationFn: () => redispatchTask(workspace, item.task.id),
     onMutate: (): MutationWorkspace => ({ workspace }),
     onSuccess: (_data, _variables, started) => {
       if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })

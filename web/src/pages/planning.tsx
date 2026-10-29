@@ -30,18 +30,18 @@ export function PlanningPage() {
     error: sessionsError,
   } = useQuery({
     queryKey: ['planning-sessions', workspace],
-    queryFn: fetchPlanningSessions,
+    queryFn: () => fetchPlanningSessions(workspace),
     enabled: Boolean(workspace),
   })
   const { data: bundles } = useQuery({
     queryKey: ['planning-bundles', workspace],
-    queryFn: fetchPlanningBundles,
+    queryFn: () => fetchPlanningBundles(workspace),
     enabled: Boolean(workspace),
   })
 
   // A `session` deep link (the lineage explorer's destination) wins over the
   // session restored for this workspace.
-  const { session: linkedSession } = useSearch({ from: '/planning' })
+  const { session: linkedSession } = useSearch({ from: '/w/$workspaceId/planning' })
   useEffect(() => {
     if (!workspace) return
     restoredWorkspace.current = workspace
@@ -60,7 +60,7 @@ export function PlanningPage() {
   const create = useMutation({
     // No title is sent: the server names the session from its goal, and the
     // artifact it produces renames it.
-    mutationFn: () => createPlanningSession({ goal }),
+    mutationFn: () => createPlanningSession(workspace, { goal }),
     onSuccess: (session) => {
       setSelectedId(session.id)
       void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
@@ -69,7 +69,7 @@ export function PlanningPage() {
   const selected = sessions?.find((session) => session.id === selectedId)
   const selectedBundle = bundles?.find((bundle) => bundle.id === selected?.produced_bundle_id)
   const decideBundle = useMutation({
-    mutationFn: (decision: 'approve' | 'reject') => decidePlanningBundle(selectedBundle!.id, decision),
+    mutationFn: (decision: 'approve' | 'reject') => decidePlanningBundle(workspace, selectedBundle!.id, decision),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
       void client.invalidateQueries({ queryKey: ['tasks', workspace] })

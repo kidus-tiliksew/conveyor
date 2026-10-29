@@ -24,7 +24,7 @@ export function useDocumentEvents(
       pages: [{ events: item.lineage, total, limit: 50, offset: 0, snapshot_id: snapshot }],
       pageParams: [0],
     },
-    queryFn: ({ pageParam }) => fetchDocumentEvents(kind, id, pageParam, snapshot),
+    queryFn: ({ pageParam }) => fetchDocumentEvents(workspace, kind, id, pageParam, snapshot),
     getNextPageParam: (page) =>
       page.offset + page.events.length < page.total ? page.offset + page.events.length : undefined,
     staleTime: Number.POSITIVE_INFINITY,

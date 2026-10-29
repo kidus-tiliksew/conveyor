@@ -1,5 +1,6 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
+import { useWorkspaceSelection } from '../components/app-shell'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { AttachmentsCard } from '../components/task/attachments-card'
@@ -20,7 +21,8 @@ import { cn } from '../lib/utils'
 // an inspector; below lg it is one column in DOM order
 // (component-web-task-surfaces, Task detail composition).
 export function TaskFullPage() {
-  const { taskId } = useParams({ from: '/tasks/$taskId/full' })
+  const { workspace } = useWorkspaceSelection()
+  const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
   // A blueprint anchor has one home, and it is not this page.
@@ -29,7 +31,12 @@ export function TaskFullPage() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
-        <Link to="/tasks/$taskId" params={{ taskId }} aria-label="Back to board" className="shrink-0">
+        <Link
+          to="/w/$workspaceId/tasks/$taskId"
+          params={{ workspaceId: workspace, taskId }}
+          aria-label="Back to board"
+          className="shrink-0"
+        >
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <ArrowLeft />
           </Button>
@@ -74,6 +81,7 @@ export function TaskFullPage() {
 }
 
 function FullNavButton({ targetId, label, icon }: { targetId?: string; label: string; icon: React.ReactNode }) {
+  const { workspace } = useWorkspaceSelection()
   if (!targetId) {
     return (
       <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
@@ -82,7 +90,12 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
     )
   }
   return (
-    <Link to="/tasks/$taskId/full" params={{ taskId: targetId }} aria-label={label} className="shrink-0">
+    <Link
+      to="/w/$workspaceId/tasks/$taskId/full"
+      params={{ workspaceId: workspace, taskId: targetId }}
+      aria-label={label}
+      className="shrink-0"
+    >
       <Button variant="ghost" size="icon" tabIndex={-1}>
         {icon}
       </Button>

@@ -153,8 +153,8 @@ async function mockAPI(page: Page, item: object, action: NextAction) {
 }
 
 const surfaces = [
-  { name: 'Board sheet', url: `/tasks/${taskId}` },
-  { name: 'full task route', url: `/tasks/${taskId}/full` },
+  { name: 'Board sheet', url: `/w/demo/tasks/${taskId}` },
+  { name: 'full task route', url: `/w/demo/tasks/${taskId}/full` },
 ] as const
 
 for (const surface of surfaces) {
@@ -191,9 +191,9 @@ for (const surface of surfaces) {
 // waits for its entry, so the absence check never runs against an unloaded
 // timeline.
 const detailSurfaces = [
-  { name: 'Board sheet', url: `/tasks/${taskId}` },
-  { name: 'Tasks panel', url: `/tasks?task=${taskId}` },
-  { name: 'full route', url: `/tasks/${taskId}/full` },
+  { name: 'Board sheet', url: `/w/demo/tasks/${taskId}` },
+  { name: 'Tasks panel', url: `/w/demo/tasks?task=${taskId}` },
+  { name: 'full route', url: `/w/demo/tasks/${taskId}/full` },
 ] as const
 
 const elapsed = /^\d+(h \d{2}m|m \d{2}s|s)$/
@@ -356,7 +356,7 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
     current_order: undefined,
     attempt: undefined,
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('Waiting on another task')).toBeVisible()
   await expect(timeline.getByText('task-prereq')).toBeVisible()
@@ -398,7 +398,7 @@ test('task-context decisions render no timeline note', async ({ page }) => {
     ],
   })
   await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('Waiting on another task')).toBeVisible()
   await expect(timeline).not.toContainText('Context confirmed')
@@ -699,7 +699,7 @@ test('narrated, failed, and rejected plan jobs keep their entries and other stag
     },
   })
   await mockAPI(page, item, { ...nextAction(`${taskId}-implement-1`), current_order: undefined, attempt: undefined })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('Plan v1 splits the card from the history change.')).toBeVisible()
   await expect(timeline.getByText('The planner exited before submitting.')).toBeVisible()
@@ -1001,7 +1001,7 @@ for (const scenario of implementationCases) {
       },
     })
     await mockAPI(page, item, { ...nextAction(id), current_order: undefined, attempt: undefined })
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page
       .getByRole('region', { name: 'Execution event timeline' })
       .getByRole('article', { name: 'Implementation', exact: true })
@@ -1166,7 +1166,7 @@ for (const placement of transcriptPlacements) {
         json: { ...transcriptCapture(placement.attemptId), content: `transcript body ${placement.name}` },
       })
     })
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const timeline = page.getByRole('region', { name: 'Execution event timeline' })
     const summary = timeline.locator('summary', { hasText: `Attempt ${placement.attemptId} transcript` })
     await expect(summary).toHaveCount(1)
@@ -1367,7 +1367,7 @@ test('round summaries attach only to their matching review panels', () => {
 
 test('review panel shows its current round summary above unchanged seat feedback', async ({ page }, testInfo) => {
   await mockAPI(page, summarizedPanels(), nextAction(`${taskId}-implement-2`))
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const summary = page.getByRole('region', { name: 'Round 1 summary' })
   await expect(timeline.getByRole('region', { name: 'Round 1 summary' })).toBeVisible()
@@ -1427,7 +1427,7 @@ test('a single-version summary with no findings shows no version counter or find
     },
   })
   await mockAPI(page, item, nextAction(`${taskId}-implement-2`))
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const summary = page.getByRole('region', { name: 'Round 2 summary' })
   await expect(summary).toBeVisible()
   await expect(summary.locator('p').first()).toHaveText('Approved.\n\nNo findings this round.', { useInnerText: false })
@@ -1442,7 +1442,7 @@ test.describe('round summary at 390 px', () => {
 
   test('the summarized review panel has no horizontal scroll', async ({ page }, testInfo) => {
     await mockAPI(page, summarizedPanels(), nextAction(`${taskId}-implement-2`))
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const summary = page.getByRole('region', { name: 'Round 1 summary' })
     await expect(summary).toBeVisible()
     const panel = page.locator('li article').filter({ has: summary })

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"reflect"
@@ -155,7 +156,7 @@ func runTaskWithPresentationAndSetup(ctx context.Context, c *client, taskID, con
 			} else {
 				tuiInput = reader
 			}
-			app = startRunTUI(ctx, tuiInput, output, runTUIStage{task: task}, nil, strings.TrimRight(c.base, "/")+"/tasks/"+task.ID)
+			app = startRunTUI(ctx, tuiInput, output, runTUIStage{task: task}, nil, runTaskDashboardURL(c.base, task))
 		}
 		return app
 	}
@@ -1231,4 +1232,11 @@ func taskRunGateMergeSummary(gate workerservice.TaskRunGate) string {
 		}
 	}
 	return fmt.Sprintf("Merge reviewed head %s, %s.", head, pull)
+}
+
+// runTaskDashboardURL is the task's dashboard address under the workspace
+// that holds it, so the printed link opens the same task whatever workspace
+// the reader's browser last selected (req-workspace-addresses AC-1.10).
+func runTaskDashboardURL(base string, task core.Task) string {
+	return strings.TrimRight(base, "/") + "/w/" + url.PathEscape(task.Workspace) + "/tasks/" + url.PathEscape(task.ID)
 }

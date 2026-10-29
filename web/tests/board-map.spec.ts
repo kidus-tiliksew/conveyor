@@ -951,7 +951,7 @@ test('the view switch offers only Kanban and Graph, and list addresses open the 
   await expect(views.getByRole('button', { name: 'Graph', exact: true })).toHaveAttribute('aria-pressed', 'false')
   await expect(views.getByRole('button', { name: 'List', exact: true })).toHaveCount(0)
 
-  for (const path of ['/?view=list', '/tasks']) {
+  for (const path of ['/?view=list', '/w/demo/tasks']) {
     await page.goto(path)
     await expect(kanban, path).toBeVisible()
     await expect(page, path).not.toHaveURL(/view=/)
@@ -961,7 +961,7 @@ test('the view switch offers only Kanban and Graph, and list addresses open the 
   // A former Tasks filter link lands on kanban, and the kanban filter adopts
   // what it names before reading, then leaves the address.
   activityReads.length = 0
-  await page.goto('/tasks?view=list&q=alpha&state=running&repository=web')
+  await page.goto('/w/demo/tasks?view=list&q=alpha&state=running&repository=web')
   await expect(kanban).toBeVisible()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('searchbox', { name: 'Search tasks' })).toHaveValue('alpha')
@@ -973,7 +973,7 @@ test('the view switch offers only Kanban and Graph, and list addresses open the 
   }
 
   // A legacy panel permalink opens that task's sheet over the kanban view.
-  await page.goto('/tasks?task=a1')
+  await page.goto('/w/demo/tasks?task=a1')
   await expect(page).toHaveURL(/\/tasks\/a1$/)
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
   await expect(kanban).toBeVisible()
@@ -1181,7 +1181,7 @@ test('Open document is an in-app link that encodes the requirement', async ({ pa
   const link = page.getByRole('link', { name: 'Open document' })
   const href = await link.getAttribute('href')
   const target = new URL(href ?? '', 'http://conveyor.test')
-  expect(target.pathname).toBe('/requirements')
+  expect(target.pathname).toBe('/w/demo/requirements')
   expect(target.searchParams.get('requirement')).toBe(id)
   expect([...target.searchParams.keys()]).toEqual(['requirement'])
   expect(target.hash).toBe('')
@@ -1191,7 +1191,9 @@ test('Open document is an in-app link that encodes the requirement', async ({ pa
     ;(window as unknown as { mapDocument: boolean }).mapDocument = true
   })
   await link.click()
-  await expect(page).toHaveURL((url) => url.pathname === '/requirements' && url.searchParams.get('requirement') === id)
+  await expect(page).toHaveURL(
+    (url) => url.pathname === '/w/demo/requirements' && url.searchParams.get('requirement') === id,
+  )
   expect(await page.evaluate(() => (window as unknown as { mapDocument?: boolean }).mapDocument)).toBe(true)
 })
 

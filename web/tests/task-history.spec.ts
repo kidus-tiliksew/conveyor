@@ -94,9 +94,9 @@ type Surface = 'board sheet' | 'tasks permalink' | 'full route'
 const surfaces: Surface[] = ['board sheet', 'tasks permalink', 'full route']
 
 function surfaceURL(surface: Surface, taskId: string) {
-  if (surface === 'board sheet') return `/tasks/${taskId}`
-  if (surface === 'tasks permalink') return `/tasks?task=${taskId}`
-  return `/tasks/${taskId}/full`
+  if (surface === 'board sheet') return `/w/demo/tasks/${taskId}`
+  if (surface === 'tasks permalink') return `/w/demo/tasks?task=${taskId}`
+  return `/w/demo/tasks/${taskId}/full`
 }
 
 function feedItem(item: CompleteActivity, workspace = 'demo') {

@@ -43,7 +43,7 @@ import type {
   WorkspaceRecord,
 } from './types'
 
-function workspaceURL(path: string, workspace = localStorage.getItem('conveyor-workspace') ?? '') {
+function workspaceURL(path: string, workspace: string) {
   if (!workspace) return path
   const separator = path.includes('?') ? '&' : '?'
   return `${path}${separator}workspace_id=${encodeURIComponent(workspace)}`
@@ -212,7 +212,7 @@ export async function sendVerificationPermissionRequest(
 async function fetchActivityPage(
   path: string,
   input: {
-    workspace?: string
+    workspace: string
     signal?: AbortSignal
     limit: number
     offset: number
@@ -264,7 +264,7 @@ function mergeActivity(current: ActivitySummary[], incoming: ActivitySummary[]):
 }
 
 export function fetchActivity(input: {
-  workspace?: string
+  workspace: string
   signal?: AbortSignal
   limit: number
   offset: number
@@ -276,12 +276,13 @@ export function fetchActivity(input: {
   return fetchActivityPage('/v1/activity', input)
 }
 
+// The caller's attention list spans their memberships, so it names no workspace.
 export function fetchCallerAttentionTasks(input: { limit: number; offset: number }) {
-  return fetchActivityPage('/v1/attention/tasks', input)
+  return fetchActivityPage('/v1/attention/tasks', { ...input, workspace: '' })
 }
 
-export function fetchPendingProposals() {
-  return getJSON<PendingProposalsResponse>(workspaceURL('/v1/pending-proposals'))
+export function fetchPendingProposals(workspace: string) {
+  return getJSON<PendingProposalsResponse>(workspaceURL('/v1/pending-proposals', workspace))
 }
 
 // The full next action for one task (DEC-61), read in the query's workspace.
@@ -429,8 +430,8 @@ export async function fetchTaskTranscriptCapture(
   return response.json() as Promise<WorkOrderTranscriptCaptureContent>
 }
 
-export function fetchWorkspace() {
-  return getJSON<WorkspaceInfo>(workspaceURL('/v1/workspace'))
+export function fetchWorkspace(workspace: string) {
+  return getJSON<WorkspaceInfo>(workspaceURL('/v1/workspace', workspace))
 }
 
 /**
@@ -445,6 +446,18 @@ export class WorkspacesError extends Error {
   ) {
     super(message)
   }
+}
+
+/**
+ * Whether a task answers in one workspace: true for 200, false for 404, and a
+ * thrown error for any other answer. The legacy task-address redirect probes
+ * only the caller's memberships with it (req-workspace-addresses AC-1.8).
+ */
+export async function probeTaskWorkspace(workspace: string, taskId: string, signal?: AbortSignal) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}`, workspace), { signal })
+  if (response.ok) return true
+  if (response.status === 404) return false
+  throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
 export async function fetchWorkspaces() {
@@ -874,20 +887,19 @@ export async function disconnectWorkspaceGitHubApp(workspace: string) {
   if (!response.ok) throw new Error(githubAppErrorMessage(await response.text(), 'Could not disconnect GitHub.'))
 }
 
-export function fetchBlueprints() {
-  return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints'))
+export function fetchBlueprints(workspace: string) {
+  return getJSON<BlueprintView[]>(workspaceURL('/v1/blueprints', workspace))
 }
-export function fetchRequirements(): Promise<import('./types').RequirementSummary[]>
-export function fetchRequirements(options: {
-  includeArchived?: boolean
-}): Promise<import('./types').RequirementSummary[]>
-export function fetchRequirements(options: { includeArchived?: boolean } = {}) {
+export function fetchRequirements(
+  workspace: string,
+  options: { includeArchived?: boolean } = {},
+): Promise<import('./types').RequirementSummary[]> {
   const path = options.includeArchived ? '/v1/requirements?include_archived=true' : '/v1/requirements'
-  return getJSON<import('./types').RequirementSummary[]>(workspaceURL(path))
+  return getJSON<import('./types').RequirementSummary[]>(workspaceURL(path, workspace))
 }
 export function fetchRequirement(
   requirementId: string,
-  workspace?: string,
+  workspace: string,
   signal?: AbortSignal,
 ): Promise<RequirementView> {
   return getJSON<RequirementView>(
@@ -895,27 +907,27 @@ export function fetchRequirement(
     signal,
   )
 }
-export function fetchRequirementVersions(requirementId: string, workspace?: string, signal?: AbortSignal) {
+export function fetchRequirementVersions(requirementId: string, workspace: string, signal?: AbortSignal) {
   return getJSON<RequirementVersion[]>(
     workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions`, workspace),
     signal,
   )
 }
-export function fetchCheckpointContextCandidates(requirementId: string) {
+export function fetchCheckpointContextCandidates(workspace: string, requirementId: string) {
   return getJSON<import('./types').CheckpointContextCandidate[]>(
-    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/checkpoint-context-candidates`),
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/checkpoint-context-candidates`, workspace),
   )
 }
-export async function proposeRequirementVersion(id: string, content: string) {
-  return proposeDocumentVersion<RequirementVersion>('requirements', id, content)
+export async function proposeRequirementVersion(workspace: string, id: string, content: string) {
+  return proposeDocumentVersion<RequirementVersion>(workspace, 'requirements', id, content)
 }
 
-export async function proposeSystemDesignVersion(id: string, content: string) {
-  return proposeDocumentVersion<import('./types').SystemDesignVersion>('system-designs', id, content)
+export async function proposeSystemDesignVersion(workspace: string, id: string, content: string) {
+  return proposeDocumentVersion<import('./types').SystemDesignVersion>(workspace, 'system-designs', id, content)
 }
 
-async function proposeDocumentVersion<T>(tier: string, id: string, content: string): Promise<T> {
-  const response = await fetch(workspaceURL(`/v1/${tier}/${encodeURIComponent(id)}/versions`), {
+async function proposeDocumentVersion<T>(workspace: string, tier: string, id: string, content: string): Promise<T> {
+  const response = await fetch(workspaceURL(`/v1/${tier}/${encodeURIComponent(id)}/versions`, workspace), {
     method: 'POST',
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, origin: 'operator' }),
@@ -940,13 +952,14 @@ function operatorNoteBody(note?: string) {
 }
 
 export async function confirmRequirementVersion(
+  workspace: string,
   requirementId: string,
   version: number,
   expectedVersion: number,
   note?: string,
 ) {
   const response = await fetch(
-    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`),
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/confirm`, workspace),
     {
       method: 'POST',
       headers: { ...mutationHeaders(), 'If-Match': `"${expectedVersion}"` },
@@ -976,43 +989,54 @@ export async function confirmRequirementVersion(
 }
 
 async function setRequirementArchived(
+  workspace: string,
   requirementId: string,
   action: 'archive' | 'restore',
   supersededBy: string[] = [],
 ) {
-  const response = await fetch(workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/${action}`), {
-    method: 'POST',
-    headers: mutationHeaders(),
-    body: action === 'archive' ? JSON.stringify({ superseded_by: supersededBy }) : undefined,
-  })
+  const response = await fetch(
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/${action}`, workspace),
+    {
+      method: 'POST',
+      headers: mutationHeaders(),
+      body: action === 'archive' ? JSON.stringify({ superseded_by: supersededBy }) : undefined,
+    },
+  )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').Requirement>
 }
 
 export function archiveRequirement(
+  workspace: string,
   requirementId: string,
   supersededBy: string[] = [],
 ): Promise<import('./types').Requirement> {
-  return setRequirementArchived(requirementId, 'archive', supersededBy)
+  return setRequirementArchived(workspace, requirementId, 'archive', supersededBy)
 }
 
-export function restoreRequirement(requirementId: string): Promise<import('./types').Requirement> {
-  return setRequirementArchived(requirementId, 'restore')
+export function restoreRequirement(workspace: string, requirementId: string): Promise<import('./types').Requirement> {
+  return setRequirementArchived(workspace, requirementId, 'restore')
 }
 
-export async function dismissRequirementVersion(requirementId: string, version: number, note?: string) {
+export async function dismissRequirementVersion(
+  workspace: string,
+  requirementId: string,
+  version: number,
+  note?: string,
+) {
   const response = await fetch(
-    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/dismiss`),
+    workspaceURL(`/v1/requirements/${encodeURIComponent(requirementId)}/versions/${version}/dismiss`, workspace),
     { method: 'POST', headers: mutationHeaders(), body: operatorNoteBody(note) },
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ requirement: RequirementView['requirement']; version: RequirementVersion }>
 }
 
-export async function acknowledgeRequirementStaleness(requirementId: string, signalId: string) {
+export async function acknowledgeRequirementStaleness(workspace: string, requirementId: string, signalId: string) {
   const response = await fetch(
     workspaceURL(
       `/v1/requirements/${encodeURIComponent(requirementId)}/staleness/${encodeURIComponent(signalId)}/acknowledge`,
+      workspace,
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
@@ -1020,43 +1044,49 @@ export async function acknowledgeRequirementStaleness(requirementId: string, sig
   return response.json()
 }
 
-export async function createRequirementStalenessFollowUp(requirementId: string, signalId: string) {
+export async function createRequirementStalenessFollowUp(workspace: string, requirementId: string, signalId: string) {
   const response = await fetch(
     workspaceURL(
       `/v1/requirements/${encodeURIComponent(requirementId)}/staleness/${encodeURIComponent(signalId)}/follow-up`,
+      workspace,
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ task: Task; created: boolean }>
 }
-export function fetchPlanningSessions() {
-  return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions'))
+export function fetchPlanningSessions(workspace: string) {
+  return getJSON<PlanningSession[]>(workspaceURL('/v1/planning-sessions', workspace))
 }
-export function fetchPlanningBundles() {
-  return getJSON<PlanningBundle[]>(workspaceURL('/v1/planning-bundles'))
+export function fetchPlanningBundles(workspace: string) {
+  return getJSON<PlanningBundle[]>(workspaceURL('/v1/planning-bundles', workspace))
 }
-export async function decidePlanningBundle(id: string, decision: 'approve' | 'reject') {
-  const response = await fetch(workspaceURL(`/v1/planning-bundles/${encodeURIComponent(id)}/${decision}`), {
+export async function decidePlanningBundle(workspace: string, id: string, decision: 'approve' | 'reject') {
+  const response = await fetch(workspaceURL(`/v1/planning-bundles/${encodeURIComponent(id)}/${decision}`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
   })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<PlanningBundle>
 }
-export function fetchPlanningSession(sessionId: string) {
-  return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`))
+export function fetchPlanningSession(workspace: string, sessionId: string) {
+  return getJSON<PlanningSession>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}`, workspace))
 }
-export function fetchPlanningMessages(sessionId: string) {
-  return getJSON<PlanningMessage[]>(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`))
+export function fetchPlanningMessages(workspace: string, sessionId: string) {
+  return getJSON<PlanningMessage[]>(
+    workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`, workspace),
+  )
 }
-export async function createPlanningSession(input: {
-  requirement_context_id?: string
-  system_design_context_id?: string
-  goal?: PlanningSessionGoal
-  promotion?: RequirementDerivation
-}) {
-  const response = await fetch(workspaceURL('/v1/planning-sessions'), {
+export async function createPlanningSession(
+  workspace: string,
+  input: {
+    requirement_context_id?: string
+    system_design_context_id?: string
+    goal?: PlanningSessionGoal
+    promotion?: RequirementDerivation
+  },
+) {
+  const response = await fetch(workspaceURL('/v1/planning-sessions', workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify(input),
@@ -1064,42 +1094,49 @@ export async function createPlanningSession(input: {
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<PlanningSession>
 }
-export async function abandonPlanningSession(sessionId: string, reason?: string) {
-  const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/abandon`), {
-    method: 'POST',
-    headers: mutationHeaders(),
-    body: JSON.stringify({ reason: reason?.trim() || undefined }),
-  })
+export async function abandonPlanningSession(workspace: string, sessionId: string, reason?: string) {
+  const response = await fetch(
+    workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/abandon`, workspace),
+    {
+      method: 'POST',
+      headers: mutationHeaders(),
+      body: JSON.stringify({ reason: reason?.trim() || undefined }),
+    },
+  )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<PlanningSession>
 }
 export async function streamPlanningMessage(
+  workspace: string,
   sessionId: string,
   content: string,
   onPart: (part: PlanningMessagePart) => void,
   options: { signal?: AbortSignal; attachments?: Artifact[] } = {},
 ) {
-  const response = await fetch(workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`), {
-    method: 'POST',
-    headers: mutationHeaders(),
-    signal: options.signal,
-    body: JSON.stringify({
-      message: {
-        role: 'user',
-        content,
-        parts: [
-          { type: 'text', text: content },
-          ...(options.attachments ?? []).map((artifact) => ({
-            type: 'file',
-            artifactId: artifact.id,
-            filename: artifact.name,
-            mediaType: artifact.content_type,
-            size: artifact.size_bytes,
-          })),
-        ],
-      },
-    }),
-  })
+  const response = await fetch(
+    workspaceURL(`/v1/planning-sessions/${encodeURIComponent(sessionId)}/messages`, workspace),
+    {
+      method: 'POST',
+      headers: mutationHeaders(),
+      signal: options.signal,
+      body: JSON.stringify({
+        message: {
+          role: 'user',
+          content,
+          parts: [
+            { type: 'text', text: content },
+            ...(options.attachments ?? []).map((artifact) => ({
+              type: 'file',
+              artifactId: artifact.id,
+              filename: artifact.name,
+              mediaType: artifact.content_type,
+              size: artifact.size_bytes,
+            })),
+          ],
+        },
+      }),
+    },
+  )
   if (!response.ok) {
     const message = (await response.text()).trim()
     if (response.status === 409) throw new Error('A reply is already in progress for this session.')
@@ -1146,8 +1183,8 @@ export async function streamPlanningMessage(
     }
   }
 }
-export function fetchLifecycleDiagram() {
-  return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram'))
+export function fetchLifecycleDiagram(workspace: string) {
+  return getJSON<{ mermaid: string }>(workspaceURL('/v1/lifecycle-diagram', workspace))
 }
 // The canonical bounded lineage walk. It is the only source the
 // related-records panel reads (AC-3.2): the panel groups what this returns and
@@ -1181,11 +1218,16 @@ export function fetchLineageImpact(
     signal,
   )
 }
-export function fetchMonitorStatus() {
-  return getJSON<MonitorStatus>(workspaceURL('/v1/monitor'))
+export function fetchMonitorStatus(workspace: string) {
+  return getJSON<MonitorStatus>(workspaceURL('/v1/monitor', workspace))
 }
-export async function resolveMonitorDrift(driftId: string, outcome: MonitorDriftOutcome, requirementId?: string) {
-  const response = await fetch(workspaceURL(`/v1/monitor/drift/${encodeURIComponent(driftId)}/resolve`), {
+export async function resolveMonitorDrift(
+  workspace: string,
+  driftId: string,
+  outcome: MonitorDriftOutcome,
+  requirementId?: string,
+) {
+  const response = await fetch(workspaceURL(`/v1/monitor/drift/${encodeURIComponent(driftId)}/resolve`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ outcome, ...(requirementId ? { requirement_id: requirementId } : {}) }),
@@ -1205,20 +1247,21 @@ const openTaskStates = [
 // Dependency pickers offer open tasks only. GET /v1/tasks serves one bounded
 // page, so they read the 200 newest open tasks in one request rather than the
 // workspace's whole history (component-http-api, Task list read).
-export function fetchOpenTasks() {
+export function fetchOpenTasks(workspace: string) {
   const params = new URLSearchParams()
   for (const state of openTaskStates) params.append('state', state)
   params.set('limit', '200')
-  return getJSON<Task[]>(workspaceURL(`/v1/tasks?${params.toString()}`))
+  return getJSON<Task[]>(workspaceURL(`/v1/tasks?${params.toString()}`, workspace))
 }
 export async function updateTaskContext(
+  workspace: string,
   taskId: string,
   change: {
     add: { requirement_ids?: string[]; system_design_ids?: string[] }
     remove: { requirement_ids?: string[]; system_design_ids?: string[] }
   },
 ) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/context`), {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/context`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify(change),
@@ -1227,6 +1270,7 @@ export async function updateTaskContext(
   return response.json() as Promise<import('./types').TaskContext>
 }
 export async function resolveTaskContextProposal(
+  workspace: string,
   taskId: string,
   targetKind: 'requirement' | 'system_design',
   targetId: string,
@@ -1235,6 +1279,7 @@ export async function resolveTaskContextProposal(
   const response = await fetch(
     workspaceURL(
       `/v1/tasks/${encodeURIComponent(taskId)}/context/proposals/${encodeURIComponent(targetKind)}/${encodeURIComponent(targetId)}/${action}`,
+      workspace,
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
@@ -1334,12 +1379,13 @@ export async function fetchRequirementInsightDocuments(workspace: string, requir
     await fetch(requirementInsightURL(workspace, requirementId, 'documents'), { signal }),
   )
 }
-export async function fetchArtifacts() {
-  const response = await fetch(workspaceURL('/v1/artifacts'))
+export async function fetchArtifacts(workspace: string) {
+  const response = await fetch(workspaceURL('/v1/artifacts', workspace))
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<Artifact[]>
 }
 export async function uploadArtifact(
+  workspace: string,
   file: File,
   taskId?: string,
   requirementId?: string,
@@ -1352,7 +1398,7 @@ export async function uploadArtifact(
   if (requirementId) body.set('requirement_id', requirementId)
   if (planningSessionId) body.set('planning_session_id', planningSessionId)
   if (role) body.set('role', role)
-  const response = await fetch(workspaceURL('/v1/artifacts'), {
+  const response = await fetch(workspaceURL('/v1/artifacts', workspace), {
     method: 'POST',
     headers: mutationAuthHeaders(),
     body,
@@ -1361,20 +1407,19 @@ export async function uploadArtifact(
   return response.json() as Promise<Artifact>
 }
 
-export function fetchReferenceDocuments() {
-  return getJSON<import('./types').ReferenceDocument[]>(workspaceURL('/v1/reference-documents'))
+export function fetchReferenceDocuments(workspace: string) {
+  return getJSON<import('./types').ReferenceDocument[]>(workspaceURL('/v1/reference-documents', workspace))
 }
-export function fetchSystemDesigns(): Promise<import('./types').SystemDesignSummary[]>
-export function fetchSystemDesigns(options: {
-  includeArchived?: boolean
-}): Promise<import('./types').SystemDesignSummary[]>
-export function fetchSystemDesigns(options: { includeArchived?: boolean } = {}) {
+export function fetchSystemDesigns(
+  workspace: string,
+  options: { includeArchived?: boolean } = {},
+): Promise<import('./types').SystemDesignSummary[]> {
   const path = options.includeArchived ? '/v1/system-designs?include_archived=true' : '/v1/system-designs'
-  return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL(path))
+  return getJSON<import('./types').SystemDesignSummary[]>(workspaceURL(path, workspace))
 }
 export function fetchSystemDesign(
   id: string,
-  workspace?: string,
+  workspace: string,
   signal?: AbortSignal,
 ): Promise<import('./types').SystemDesignView> {
   return getJSON<import('./types').SystemDesignView>(
@@ -1382,14 +1427,20 @@ export function fetchSystemDesign(
     signal,
   )
 }
-export function fetchSystemDesignVersions(id: string) {
+export function fetchSystemDesignVersions(workspace: string, id: string) {
   return getJSON<import('./types').SystemDesignVersion[]>(
-    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions`),
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions`, workspace),
   )
 }
-export async function confirmSystemDesignVersion(id: string, version: number, expected: number, note?: string) {
+export async function confirmSystemDesignVersion(
+  workspace: string,
+  id: string,
+  version: number,
+  expected: number,
+  note?: string,
+) {
   const response = await fetch(
-    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/confirm`),
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/confirm`, workspace),
     { method: 'POST', headers: { ...mutationHeaders(), 'If-Match': `"${expected}"` }, body: operatorNoteBody(note) },
   )
   if (!response.ok) {
@@ -1416,8 +1467,13 @@ export async function confirmSystemDesignVersion(id: string, version: number, ex
   return response.json()
 }
 
-async function setSystemDesignArchived(id: string, action: 'archive' | 'restore', supersededBy: string[] = []) {
-  const response = await fetch(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/${action}`), {
+async function setSystemDesignArchived(
+  workspace: string,
+  id: string,
+  action: 'archive' | 'restore',
+  supersededBy: string[] = [],
+) {
+  const response = await fetch(workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/${action}`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: action === 'archive' ? JSON.stringify({ superseded_by: supersededBy }) : undefined,
@@ -1426,17 +1482,21 @@ async function setSystemDesignArchived(id: string, action: 'archive' | 'restore'
   return response.json() as Promise<import('./types').SystemDesign>
 }
 
-export function archiveSystemDesign(id: string, supersededBy: string[] = []): Promise<import('./types').SystemDesign> {
-  return setSystemDesignArchived(id, 'archive', supersededBy)
+export function archiveSystemDesign(
+  workspace: string,
+  id: string,
+  supersededBy: string[] = [],
+): Promise<import('./types').SystemDesign> {
+  return setSystemDesignArchived(workspace, id, 'archive', supersededBy)
 }
 
-export function restoreSystemDesign(id: string): Promise<import('./types').SystemDesign> {
-  return setSystemDesignArchived(id, 'restore')
+export function restoreSystemDesign(workspace: string, id: string): Promise<import('./types').SystemDesign> {
+  return setSystemDesignArchived(workspace, id, 'restore')
 }
 
-export async function dismissSystemDesignVersion(id: string, version: number, note?: string) {
+export async function dismissSystemDesignVersion(workspace: string, id: string, version: number, note?: string) {
   const response = await fetch(
-    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/dismiss`),
+    workspaceURL(`/v1/system-designs/${encodeURIComponent(id)}/versions/${version}/dismiss`, workspace),
     { method: 'POST', headers: mutationHeaders(), body: operatorNoteBody(note) },
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
@@ -1446,12 +1506,12 @@ export async function dismissSystemDesignVersion(id: string, version: number, no
   }>
 }
 export class SystemDesignConflictError extends Error {}
-export function fetchDecisions() {
-  return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions'))
+export function fetchDecisions(workspace: string) {
+  return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions', workspace))
 }
 // One decision with its statement, context and rejected alternatives, for
 // the Inbox's decision-proposal detail (req-operator-next-action AC-2.9).
-export function fetchDecision(id: string, workspace?: string, signal?: AbortSignal) {
+export function fetchDecision(id: string, workspace: string, signal?: AbortSignal) {
   return getJSON<import('./types').Decision>(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}`, workspace), signal)
 }
 // Every live document whose current confirmed version cites each decision,
@@ -1460,8 +1520,8 @@ export function fetchDecision(id: string, workspace?: string, signal?: AbortSign
 export function fetchDecisionCitations(workspace: string, signal?: AbortSignal) {
   return getJSON<import('./types').DecisionCitationList>(workspaceURL('/v1/decision-citations', workspace), signal)
 }
-export async function resolveDecision(id: string, action: 'confirm' | 'dismiss') {
-  const response = await fetch(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}/${action}`), {
+export async function resolveDecision(workspace: string, id: string, action: 'confirm' | 'dismiss') {
+  const response = await fetch(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}/${action}`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
   })
@@ -1473,32 +1533,38 @@ export async function resolveDecision(id: string, action: 'confirm' | 'dismiss')
   return response.json() as Promise<import('./types').Decision>
 }
 export class DecisionConflictError extends Error {}
-export async function dismissDecisionSupersessionSweep(decisionId: string, documentTier: string, documentId: string) {
+export async function dismissDecisionSupersessionSweep(
+  workspace: string,
+  decisionId: string,
+  documentTier: string,
+  documentId: string,
+) {
   const response = await fetch(
     workspaceURL(
       `/v1/decisions/${encodeURIComponent(decisionId)}/sweep/${encodeURIComponent(documentTier)}/${encodeURIComponent(documentId)}/dismiss`,
+      workspace,
     ),
     { method: 'POST', headers: mutationHeaders() },
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').DecisionSupersessionSweepEntry>
 }
-export function fetchReferenceDocumentVersions(id: string) {
+export function fetchReferenceDocumentVersions(workspace: string, id: string) {
   return getJSON<import('./types').ReferenceDocumentVersion[]>(
-    workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`),
+    workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}/versions`, workspace),
   )
 }
-export async function uploadReferenceDocument(file: File, id?: string) {
+export async function uploadReferenceDocument(workspace: string, file: File, id?: string) {
   const body = new FormData()
   body.set('file', file)
   if (!id) body.set('name', file.name.replace(/\.(md|markdown)$/i, ''))
   const path = id ? `/v1/reference-documents/${encodeURIComponent(id)}/versions` : '/v1/reference-documents'
-  const response = await fetch(workspaceURL(path), { method: 'POST', headers: mutationHeaders(), body })
+  const response = await fetch(workspaceURL(path, workspace), { method: 'POST', headers: mutationHeaders(), body })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json()
 }
-export async function deleteReferenceDocument(id: string) {
-  const response = await fetch(workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}`), {
+export async function deleteReferenceDocument(workspace: string, id: string) {
+  const response = await fetch(workspaceURL(`/v1/reference-documents/${encodeURIComponent(id)}`, workspace), {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
@@ -1506,16 +1572,16 @@ export async function deleteReferenceDocument(id: string) {
 }
 // Fetch an attachment's bytes as an object URL for inline preview. The caller
 // revokes the returned URL when the preview unmounts.
-export async function fetchArtifactObjectURL(artifact: Artifact) {
+export async function fetchArtifactObjectURL(workspace: string, artifact: Artifact) {
   const response = await fetch(
-    workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
+    workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`, workspace),
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return URL.createObjectURL(await response.blob())
 }
-export async function downloadArtifact(artifact: Artifact) {
+export async function downloadArtifact(workspace: string, artifact: Artifact) {
   const response = await fetch(
-    workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`),
+    workspaceURL(artifact.download_url ?? `/v1/artifacts/${encodeURIComponent(artifact.id)}`, workspace),
   )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const blob = await response.blob()
@@ -1542,33 +1608,35 @@ export async function downloadLineageEvidence(workspace: string, artifactId: str
   URL.revokeObjectURL(url)
 }
 
-export function fetchWorkspaceConfig() {
-  return fetch(workspaceURL('/v1/workspace/config'), { headers: mutationHeaders() }).then(async (response) => {
-    if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-    const result = (await response.json()) as VersionedWorkspaceConfig
-    return {
-      ...result,
-      document: {
-        ...result.document,
-        repos: result.document.repos ?? [],
-        monitor: result.document.monitor ?? {
-          enabled: false,
-          repositories: [],
-          poll_interval: '1m',
-          startup_window: '24h',
+export function fetchWorkspaceConfig(workspace: string) {
+  return fetch(workspaceURL('/v1/workspace/config', workspace), { headers: mutationHeaders() }).then(
+    async (response) => {
+      if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
+      const result = (await response.json()) as VersionedWorkspaceConfig
+      return {
+        ...result,
+        document: {
+          ...result.document,
+          repos: result.document.repos ?? [],
+          monitor: result.document.monitor ?? {
+            enabled: false,
+            repositories: [],
+            poll_interval: '1m',
+            startup_window: '24h',
+          },
+          review: {
+            seats: result.document.review?.seats ?? [{}],
+            fail_fast: result.document.review?.fail_fast ?? false,
+          },
+          stage_timeouts: {
+            spec: result.document.stage_timeouts?.spec ?? '30m',
+            implement: result.document.stage_timeouts?.implement ?? '4h',
+            review: result.document.stage_timeouts?.review ?? '1h',
+          },
         },
-        review: {
-          seats: result.document.review?.seats ?? [{}],
-          fail_fast: result.document.review?.fail_fast ?? false,
-        },
-        stage_timeouts: {
-          spec: result.document.stage_timeouts?.spec ?? '30m',
-          implement: result.document.stage_timeouts?.implement ?? '4h',
-          review: result.document.stage_timeouts?.review ?? '1h',
-        },
-      },
-    }
-  })
+      }
+    },
+  )
 }
 
 export class ConfigValidationError extends Error {
@@ -1580,8 +1648,8 @@ export class ConfigValidationError extends Error {
   }
 }
 
-export async function updateWorkspaceConfig(document: WorkspaceConfigDocument, version: number) {
-  const response = await fetch(workspaceURL('/v1/workspace/config'), {
+export async function updateWorkspaceConfig(workspace: string, document: WorkspaceConfigDocument, version: number) {
+  const response = await fetch(workspaceURL('/v1/workspace/config', workspace), {
     method: 'PUT',
     headers: { ...mutationHeaders(), 'If-Match': String(version) },
     body: JSON.stringify({ document }),
@@ -1627,14 +1695,14 @@ export class TaskIntakeError extends Error {
   }
 }
 
-export async function fetchWorkers() {
-  const response = await fetch(workspaceURL('/v1/workers'), { headers: mutationHeaders() })
+export async function fetchWorkers(workspace: string) {
+  const response = await fetch(workspaceURL('/v1/workers', workspace), { headers: mutationHeaders() })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   const result = (await response.json()) as WorkerList
   return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) }
 }
-export async function issueWorkerPairing() {
-  const response = await fetch(workspaceURL('/v1/workers/pairings'), {
+export async function issueWorkerPairing(workspace: string) {
+  const response = await fetch(workspaceURL('/v1/workers/pairings', workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ ttl_seconds: 600 }),
@@ -1642,20 +1710,25 @@ export async function issueWorkerPairing() {
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<{ pairing_token: string; expires_at: string }>
 }
-export async function revokeWorker(id: string) {
-  const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`), {
+export async function revokeWorker(workspace: string, id: string) {
+  const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`, workspace), {
     method: 'DELETE',
     headers: mutationHeaders(),
   })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
 }
 
-export async function createTask(input: CreateTaskInput, attachments: File[] = [], idempotencyKey = '') {
+export async function createTask(
+  workspace: string,
+  input: CreateTaskInput,
+  attachments: File[] = [],
+  idempotencyKey = '',
+) {
   const body = new FormData()
   body.set('task', JSON.stringify({ ...input, source: 'dashboard' }))
   if (idempotencyKey) body.set('idempotency_key', idempotencyKey)
   for (const file of attachments) body.append('attachments', file)
-  const response = await fetch(workspaceURL('/v1/tasks'), {
+  const response = await fetch(workspaceURL('/v1/tasks', workspace), {
     method: 'POST',
     headers: mutationAuthHeaders(),
     body,
@@ -1669,9 +1742,15 @@ export async function createTask(input: CreateTaskInput, attachments: File[] = [
   return response.json() as Promise<Task>
 }
 
-export async function removeTaskDependency(taskId: string, dependencyId: string, reason: string, requestId: string) {
+export async function removeTaskDependency(
+  workspace: string,
+  taskId: string,
+  dependencyId: string,
+  reason: string,
+  requestId: string,
+) {
   const response = await fetch(
-    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies/${encodeURIComponent(dependencyId)}`),
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies/${encodeURIComponent(dependencyId)}`, workspace),
     {
       method: 'DELETE',
       headers: mutationHeaders(),
@@ -1682,8 +1761,14 @@ export async function removeTaskDependency(taskId: string, dependencyId: string,
   return response.json() as Promise<{ task: Task; request_id: string; removed: boolean }>
 }
 
-export async function addTaskDependency(taskId: string, dependencyId: string, reason: string, requestId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies`), {
+export async function addTaskDependency(
+  workspace: string,
+  taskId: string,
+  dependencyId: string,
+  reason: string,
+  requestId: string,
+) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/dependencies`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ depends_on_task_id: dependencyId, reason, request_id: requestId }),
@@ -1692,8 +1777,8 @@ export async function addTaskDependency(taskId: string, dependencyId: string, re
   return response.json() as Promise<{ task: Task; request_id: string; added: boolean }>
 }
 
-export async function redispatchTask(taskId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/redispatch`), {
+export async function redispatchTask(workspace: string, taskId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/redispatch`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
   })
@@ -1701,8 +1786,8 @@ export async function redispatchTask(taskId: string) {
   return response.json() as Promise<Task>
 }
 
-export async function cancelTask(taskId: string, reason: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/close`), {
+export async function cancelTask(workspace: string, taskId: string, reason: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/close`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ reason }),
@@ -1711,8 +1796,8 @@ export async function cancelTask(taskId: string, reason: string) {
   return response.json() as Promise<Task>
 }
 
-export async function setTaskAssignee(taskId: string, assigneeUserId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/assignee`), {
+export async function setTaskAssignee(workspace: string, taskId: string, assigneeUserId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/assignee`, workspace), {
     method: 'PUT',
     headers: mutationHeaders(),
     body: JSON.stringify({ assignee_user_id: assigneeUserId }),
@@ -1721,8 +1806,8 @@ export async function setTaskAssignee(taskId: string, assigneeUserId: string) {
   return response.json() as Promise<Task>
 }
 
-export async function recoverWorkOrder(workOrderId: string, requestId: string, direction?: string) {
-  const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`), {
+export async function recoverWorkOrder(workspace: string, workOrderId: string, requestId: string, direction?: string) {
+  const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/recover`, workspace), {
     method: 'POST',
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ request_id: requestId, direction }),
@@ -1731,8 +1816,8 @@ export async function recoverWorkOrder(workOrderId: string, requestId: string, d
   return response.json() as Promise<WorkOrder>
 }
 
-export async function preemptWorkOrder(workOrderId: string, reason: string, requestId: string) {
-  const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/preempt`), {
+export async function preemptWorkOrder(workspace: string, workOrderId: string, reason: string, requestId: string) {
+  const response = await fetch(workspaceURL(`/v1/work-orders/${encodeURIComponent(workOrderId)}/preempt`, workspace), {
     method: 'POST',
     headers: { ...mutationHeaders(), 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ reason, request_id: requestId }),
@@ -1748,8 +1833,8 @@ export async function preemptWorkOrder(workOrderId: string, reason: string, requ
   }>
 }
 
-export async function retryReviewRound(taskId: string, requestId: string, reason: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/retry`), {
+export async function retryReviewRound(workspace: string, taskId: string, requestId: string, reason: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/retry`, workspace), {
     method: 'POST',
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
     body: JSON.stringify({ request_id: requestId, reason }),
@@ -1794,12 +1879,15 @@ export async function addReviewSeats(
   return response.json() as Promise<import('./types').ReviewSeatAdditionResult>
 }
 
-export async function recoverInterruptedReviewRound(taskId: string, requestId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/recover`), {
-    method: 'POST',
-    headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
-    body: JSON.stringify({ request_id: requestId }),
-  })
+export async function recoverInterruptedReviewRound(workspace: string, taskId: string, requestId: string) {
+  const response = await fetch(
+    workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review-round/recover`, workspace),
+    {
+      method: 'POST',
+      headers: { ...mutationHeaders(), 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
+      body: JSON.stringify({ request_id: requestId }),
+    },
+  )
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<import('./types').InterruptedReviewRecoveryResult>
 }
@@ -1810,8 +1898,8 @@ export interface ReviewInput {
   comment: string
 }
 
-export async function reviewTask(taskId: string, input: ReviewInput) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review`), {
+export async function reviewTask(workspace: string, taskId: string, input: ReviewInput) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/review`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ action: input.action, reason_code: input.reasonCode, comment: input.comment }),
@@ -1825,8 +1913,8 @@ export async function reviewTask(taskId: string, input: ReviewInput) {
   }>
 }
 
-export async function requestTaskChanges(taskId: string, feedback: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/request-changes`), {
+export async function requestTaskChanges(workspace: string, taskId: string, feedback: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/request-changes`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
     body: JSON.stringify({ feedback }),
@@ -1835,8 +1923,8 @@ export async function requestTaskChanges(taskId: string, feedback: string) {
   return response.json() as Promise<{ task: Task; feedback: string }>
 }
 
-export async function mergeTask(taskId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge`), {
+export async function mergeTask(workspace: string, taskId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
   })
@@ -1844,8 +1932,8 @@ export async function mergeTask(taskId: string) {
   return response.json() as Promise<Task>
 }
 
-export async function fixMergeConflict(taskId: string) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge-conflict-fix`), {
+export async function fixMergeConflict(workspace: string, taskId: string) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/merge-conflict-fix`, workspace), {
     method: 'POST',
     headers: mutationHeaders(),
   })
@@ -1854,6 +1942,7 @@ export async function fixMergeConflict(taskId: string) {
 }
 
 export function fetchDocumentEvents(
+  workspace: string,
   kind: 'requirement' | 'system_design',
   id: string,
   offset: number,
@@ -1863,13 +1952,14 @@ export function fetchDocumentEvents(
   return getJSON<import('./types').DocumentEventPage>(
     workspaceURL(
       `/v1/${collection}/${encodeURIComponent(id)}/events?limit=50&offset=${offset}&snapshot_id=${snapshot}`,
+      workspace,
     ),
   )
 }
 
 // One key covers a submission and its network retries (AC-7.5).
-export async function restartTask(taskId: string, input: TaskRestartInput) {
-  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/restart`), {
+export async function restartTask(workspace: string, taskId: string, input: TaskRestartInput) {
+  const response = await fetch(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/restart`, workspace), {
     method: 'POST',
     headers: { ...mutationHeaders(), 'X-Idempotency-Key': input.request_id },
     body: JSON.stringify(input),

@@ -155,7 +155,7 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
 test('Tasks MCP action stays usable at a narrow viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await routeDashboard(page)
-  await page.goto('/tasks')
+  await page.goto('/w/demo/tasks')
 
   const trigger = page.getByRole('button', { name: 'MCP', exact: true })
   await expect(trigger).toBeVisible()
@@ -178,7 +178,7 @@ test('Tasks MCP action stays usable at a narrow viewport', async ({ page }) => {
   await expect(dialog.getByRole('button', { name: 'Copy Codex setup' })).toBeVisible()
 
   await dialog.getByRole('button', { name: 'Completed' }).click()
-  await page.goto('/settings')
+  await page.goto('/w/demo/settings')
   const settings = page.getByText('MCP work-order server').locator('..').locator('..')
   await expect(settings).toContainText(endpoint)
   await expect(settings).toContainText('Bearer <CONVEYOR_API_TOKEN>')

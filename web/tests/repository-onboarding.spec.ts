@@ -66,7 +66,7 @@ async function mockRepositories(page: Page, initial: WorkspaceConfigRepo[] = [],
 }
 
 async function openGeneral(page: Page) {
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await page.getByRole('tab', { name: 'General' }).click()
 }
 
@@ -110,7 +110,10 @@ test('new row defaults on, derives slug while typing and consumes the saved proj
   await row.getByLabel('URL', { exact: true }).fill('git@github.com:Owner/Repo.git')
   await expect(row.getByText('GitHub slug: owner/repo')).toBeVisible()
   await page.getByRole('button', { name: 'Save changes' }).click()
-  await expect(row.getByRole('link', { name: installTask.id })).toHaveAttribute('href', `/tasks/${installTask.id}`)
+  await expect(row.getByRole('link', { name: installTask.id })).toHaveAttribute(
+    'href',
+    `/w/demo/tasks/${installTask.id}`,
+  )
   expect(api.submitted()?.repos[0]).toMatchObject({ install_conveyor: true })
   expect(api.submitted()?.repos[0].github).toBeUndefined()
   await expect(row.getByText('queued', { exact: true })).toBeVisible()
@@ -184,7 +187,7 @@ test('registration clears board and sheet notices through the shared cache witho
 
 test('task list creation sheet links to repository registration', async ({ page }) => {
   await mockRepositories(page)
-  await page.goto('/tasks?create=true')
+  await page.goto('/w/demo/tasks?create=true')
   const sheet = page.getByRole('dialog', { name: 'New task' })
   await expect(sheet.getByText(notice, { exact: false })).toBeVisible()
   await sheet.getByRole('textbox', { name: 'Task description' }).fill('Fix a typo')

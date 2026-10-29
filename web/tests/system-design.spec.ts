@@ -189,7 +189,7 @@ test('System Design renders a category tree, one attention surface, and authenti
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design')
+  await page.goto('/w/demo/system-design')
   await expect(page.getByRole('heading', { name: 'System Design' })).toBeVisible()
   // AC-2.1: the tree groups documents by their operator-named category and the
   // selected document is the canvas beside it.
@@ -325,7 +325,7 @@ test('System Design search and deterministic sorting preserve categories and the
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design?document=design-alpha-a')
+  await page.goto('/w/demo/system-design?document=design-alpha-a')
   const tree = page.getByRole('navigation', { name: 'Document tree' })
   const architecture = tree.getByRole('heading', { name: 'Architecture' }).locator('..')
   const rowOrder = () =>
@@ -385,7 +385,7 @@ test('an oversized System Design paragraph falls back to complete content in its
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design')
+  await page.goto('/w/demo/system-design')
   await page.getByRole('button', { name: 'Review changes · v2', exact: true }).click()
   const diff = page.getByRole('region', { name: 'Version comparison', exact: true })
   // Input size and block count are within bounds, so only the oversized paragraph loses highlighting.
@@ -415,7 +415,7 @@ test('a System Design with nothing outstanding says so in one quiet line', async
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design')
+  await page.goto('/w/demo/system-design')
   // AC-1.3: no alarm card for a document with nothing to act on.
   const quiet = page.getByRole('region', { name: 'Needs your attention' })
   await expect(quiet).toContainText('Nothing needs your attention on this document.')
@@ -497,7 +497,7 @@ test('System Design links decision supersession and dismisses an unclean sweep s
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design?document=design-dispatch#decision-dec-2')
+  await page.goto('/w/demo/system-design?document=design-dispatch#decision-dec-2')
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   const register = page.getByRole('region', { name: 'Settled decisions' })
   await expect(register.getByRole('link', { name: 'DEC-2' })).toHaveAttribute('href', '#decision-dec-2')
@@ -506,11 +506,11 @@ test('System Design links decision supersession and dismisses an unclean sweep s
   const checklist = register.getByRole('list', { name: 'Documents still citing DEC-1' })
   await expect(checklist.getByRole('link', { name: 'req-stale' })).toHaveAttribute(
     'href',
-    '/requirements?requirement=req-stale',
+    '/w/demo/requirements?requirement=req-stale',
   )
   await expect(checklist.getByRole('link', { name: 'product-overview' })).toHaveAttribute(
     'href',
-    '/requirements#reference-product-overview-v0',
+    '/w/demo/requirements#reference-product-overview-v0',
   )
   await expect(checklist).toContainText('Requirement')
   await expect(checklist).toContainText('open')
@@ -534,7 +534,7 @@ test('System Design keeps the document visible when the decision register fails'
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design?document=design-dispatch')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText(
@@ -576,7 +576,7 @@ test('System Design resolves drift inline, restricts outcomes, and shows the con
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design?document=design-dispatch')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   const form = attention.getByRole('form', { name: 'Resolve drift design-drift-1' })
   const outcomes = form.getByLabel('Resolution outcome for design-drift-1')
@@ -611,7 +611,7 @@ test('the System Design surface never starts a planning session on its own', asy
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design')
+  await page.goto('/w/demo/system-design')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
   // The assistant presentation and its
   // guided-action entry points are withdrawn, so this surface neither renders
@@ -649,7 +649,7 @@ test('stale System Design confirmation refreshes the list and explains the retry
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design')
+  await page.goto('/w/demo/system-design')
   await page.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect(page.getByText(/latest versions are loading; review them and try again/i)).toBeVisible()
   await expect.poll(() => designReads).toBeGreaterThanOrEqual(2)
@@ -726,7 +726,7 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design#decision-dec-2')
+  await page.goto('/w/demo/system-design#decision-dec-2')
   await expect(page.locator('#decision-dec-2')).toBeVisible()
   await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
   await expect(page.locator('#decision-dec-1')).toContainText('Confirmed by user:operator-test')
@@ -830,7 +830,7 @@ test('System Design archives with successors, shows inline rejection, and restor
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/system-design?document=design-dispatch')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
   await page.getByRole('button', { name: 'Archive' }).click()
   const archiveDialog = page.getByRole('dialog', { name: 'Archive Dispatch ownership' })
   await archiveDialog.getByLabel(/Replacement requirement/).check()
@@ -889,7 +889,7 @@ test('System Design archive controls are absent without document confirmation ca
     if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
-  await page.goto('/system-design?document=design-dispatch')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
   await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
   archived = true
@@ -945,7 +945,7 @@ test('System Design pages older delivery activity and loads its explorer on open
     }
     return route.fulfill({ json: [] })
   })
-  await page.goto('/system-design?document=design-dispatch')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('51 activity events')).toBeVisible()
   expect(eventReads).toBe(0)
@@ -998,7 +998,7 @@ test('System Design pending attention revises through the shared dialog and refr
     }
     return route.fulfill({ json: [] })
   })
-  await page.goto('/system-design?document=design-dispatch')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
   await page.getByRole('button', { name: 'Revise', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByLabel('Proposal content')).toHaveValue(pending.content)
@@ -1033,7 +1033,7 @@ for (const access of ['confirm-only', 'propose-only'] as const) {
       if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
       return route.fulfill({ json: [] })
     })
-    await page.goto('/system-design?document=design-dispatch')
+    await page.goto('/w/demo/system-design?document=design-dispatch')
     await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText('Version 2')
     await expect(page.getByRole('button', { name: 'Revise', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(access === 'confirm-only' ? 1 : 0)
@@ -1071,7 +1071,7 @@ for (const note of ['', '  Correct the ownership.  ']) {
       }
       return route.fulfill({ json: [] })
     })
-    await page.goto('/system-design')
+    await page.goto('/w/demo/system-design')
     await page.getByRole('button', { name: 'Dismiss', exact: true }).click()
     await page.getByLabel('Why are you dismissing this?').fill(note)
     await page.getByRole('button', { name: 'Dismiss version 2' }).click()
@@ -1147,7 +1147,7 @@ for (const state of [
       if (path === '/v1/system-designs/design-dispatch/versions') return route.fulfill({ json: view.versions })
       return route.fulfill({ json: [] })
     })
-    await page.goto('/system-design?document=design-dispatch')
+    await page.goto('/w/demo/system-design?document=design-dispatch')
     const header = page.getByRole('heading', { name: 'Dispatch ownership', exact: true }).locator('..')
     const tree = page.getByRole('navigation', { name: 'Document tree' })
     const attention = page.getByRole('region', { name: 'Needs your attention', exact: true })
