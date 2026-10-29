@@ -1895,15 +1895,24 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	return result, nil
 }
 
+// memoryWorkOrderNotFound keeps the memory backend's existing message while
+// classifying it as ErrNotFound, as the PostgreSQL and SingleStore readers do,
+// so callers can tell a missing order from a failed read.
+type memoryWorkOrderNotFound string
+
+func (id memoryWorkOrderNotFound) Error() string { return "work order " + string(id) + " not found" }
+
+func (memoryWorkOrderNotFound) Is(target error) bool { return target == ErrNotFound }
+
 func (m *memory) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	order, ok := m.workOrders[id]
 	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		return core.WorkOrder{}, memoryWorkOrderNotFound(id)
 	}
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && m.tasks[order.TaskID].Workspace != selected {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		return core.WorkOrder{}, memoryWorkOrderNotFound(id)
 	}
 	order.Assignee = m.tasks[order.TaskID].Assignee
 	return ProjectWorkOrderAt(order, time.Now().UTC()), nil
