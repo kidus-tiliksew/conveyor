@@ -35,6 +35,7 @@ import {
   signOutDashboardSession,
   WorkspacesError,
 } from '../lib/api'
+import { sameWorkspacePlaceholder } from '../lib/query-keys'
 import type { ActivityPage, WorkspaceCapability, WorkspaceRole } from '../lib/types'
 import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
 import { cn } from '../lib/utils'
@@ -164,7 +165,9 @@ type ActivityFilter = Record<string, string | string[] | undefined>
 // TanStack keeps each server representation independently addressable, while
 // this queue keeps simultaneous consumers from issuing overlapping activity
 // reads. WorkspaceProvider owns the only refresh clock below; queries merely
-// describe the page they need (component-web-dashboard).
+// describe the page they need (component-web-dashboard). Each read carries its
+// query's abort signal, so a cancelled read, such as one a workspace switch
+// cancels, aborts its request and releases the queue for the next workspace.
 const activityRequestTails = new WeakMap<QueryClient, Promise<void>>()
 
 function enqueueActivityRequest<T>(queryClient: QueryClient, request: () => Promise<T>): Promise<T> {
@@ -205,10 +208,12 @@ export function useActivity(filter?: ActivityFilter, enabled = true, offset = 0,
   const queryKey = ['activity', workspace, { filter: normalizedFilter, limit, offset }] as const
   return useQuery({
     queryKey,
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       const previous = queryClient.getQueryData<import('../lib/types').ActivityPage>(queryKey)
       return enqueueActivityRequest(queryClient, () =>
         fetchActivity({
+          workspace,
+          signal,
           limit,
           offset,
           filter: normalizedFilter,
@@ -223,7 +228,9 @@ export function useActivity(filter?: ActivityFilter, enabled = true, offset = 0,
       )
     },
     enabled: enabled && !!workspace,
-    placeholderData: (previous) => previous,
+    // A filter or page change keeps the previous page on screen; a workspace
+    // switch shows the first-load state instead.
+    placeholderData: sameWorkspacePlaceholder(workspace),
     refetchInterval: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
