@@ -378,6 +378,23 @@ func (s *Server) listDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, items)
 }
+
+// listDecisionCitations serves GET /v1/decision-citations: the live documents
+// whose current confirmed version names each workspace decision, from one
+// store read (component-document-corpus, Decision citations;
+// req-document-operating-surfaces AC-7.1, AC-8.5).
+func (s *Server) listDecisionCitations(w http.ResponseWriter, r *http.Request) {
+	items, err := s.Store.ListDecisionCitations(r.Context())
+	if err != nil {
+		log.Printf("handle decision citation request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if items == nil {
+		items = []core.DecisionCitation{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
 func (s *Server) getDecision(w http.ResponseWriter, r *http.Request) {
 	item, err := s.Store.GetDecision(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {

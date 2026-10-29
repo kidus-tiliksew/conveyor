@@ -1,16 +1,19 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 func runDecisions(t *testing.T, x Fixture) {
+	t.Run("decision citations", func(t *testing.T) { runDecisionCitations(t, x) })
 	st, ctx := x.Backend, x.Context
 	if x.WorkspaceEvents == nil {
 		t.Fatal("factory must provide WorkspaceEvents for decision sweep conformance")
@@ -118,6 +121,124 @@ func runDecisions(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if len(decisions) != 3 {
 		t.Fatal("decision history was lost")
+	}
+}
+
+// runDecisionCitations proves that ListDecisionCitations derives citations
+// from each live document's current confirmed version with the whole-token
+// rule, keeps only the workspace's own decisions in any state, and orders the
+// items by decision number, tier, and title on every backend
+// (component-document-corpus, Decision citations;
+// req-document-operating-surfaces AC-8.5).
+func runDecisionCitations(t *testing.T, x Fixture) {
+	st := x.Backend
+	suffix := core.NewTaskID()[:6]
+	bind := func(name string) context.Context {
+		workspace := x.Workspace + "-" + name + "-" + suffix
+		ctx := store.WithWorkspace(x.Context, workspace)
+		_, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: x.Config.Repos})
+		requireOK(t, err)
+		return ctx
+	}
+	ctx, foreign := bind("citations"), bind("citations-foreign")
+	decide := func(ctx context.Context, id, supersedes string, confirm bool) {
+		t.Helper()
+		_, err := st.ProposeDecision(ctx, core.Decision{ID: id, Statement: "Fixture " + id + ".", Context: "Citation fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator, Supersedes: supersedes})
+		requireOK(t, err)
+		if confirm {
+			_, err = st.ConfirmDecision(ctx, id)
+			requireOK(t, err)
+		}
+	}
+	requirement := func(ctx context.Context, id, title, body string, confirm bool) {
+		t.Helper()
+		_, version, err := st.CreateRequirement(ctx, core.Requirement{ID: id, Title: title}, core.RequirementVersion{Content: "# " + title + "\n\n" + body, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Cite decisions."}}, Origin: core.RequirementOriginOperator})
+		requireOK(t, err)
+		if confirm {
+			_, _, err = st.ConfirmRequirementVersion(ctx, id, version.Version)
+			requireOK(t, err)
+		}
+	}
+	designText := func(title, body string) string {
+		return "# " + title + "\n\n" + body + "\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/store/**\n```"
+	}
+	design := func(ctx context.Context, id, title, body string) {
+		t.Helper()
+		_, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: title, Category: "Component design"}, core.SystemDesignVersion{Content: designText(title, body), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(ctx, id, version.Version)
+		requireOK(t, err)
+	}
+	read := func(ctx context.Context) []core.DecisionCitation {
+		t.Helper()
+		items, err := st.ListDecisionCitations(ctx)
+		requireOK(t, err)
+		if items == nil {
+			t.Fatal("ListDecisionCitations returned nil, want a non-nil list")
+		}
+		return items
+	}
+
+	if items := read(ctx); len(items) != 0 {
+		t.Fatalf("empty workspace citations = %+v", items)
+	}
+	// DEC-4 and DEC-40 coexist, so a substring match would cross them. DEC-7
+	// is superseded by DEC-8, DEC-9 is dismissed, and DEC-40 stays proposed:
+	// a decision of any state is citable. DEC-5 exists only in the foreign
+	// workspace.
+	decide(ctx, "DEC-4", "", true)
+	decide(ctx, "DEC-40", "", false)
+	decide(ctx, "DEC-7", "", true)
+	decide(ctx, "DEC-8", "DEC-7", true)
+	decide(ctx, "DEC-9", "", false)
+	_, err := st.DismissDecision(ctx, "DEC-9")
+	requireOK(t, err)
+	decide(foreign, "DEC-5", "", true)
+	decide(foreign, "DEC-4", "", true)
+
+	requirement(ctx, "req-cite-four", "Alpha", "Follows DEC-4 and the superseded DEC-7.", true)
+	requirement(ctx, "req-cite-forty", "Beta", "Follows DEC-40, the dismissed DEC-9, DEC-5 of another workspace, and the unknown DEC-99; DEC-400x and xDEC-4 are not tokens.", true)
+	requirement(ctx, "req-pending-only", "Pending", "Follows DEC-4 before any confirmation.", false)
+	design(ctx, "design-cite", "Gamma", "Follows DEC-4 and DEC-40.")
+	design(ctx, "design-archived", "Archived", "Follows DEC-4.")
+	requireOK(t, st.ArchiveSystemDesign(ctx, "design-archived", "operator", nil))
+	_, _, err = st.CreateReferenceDocument(ctx, core.ReferenceDocument{ID: "ref-cite", Name: "Citing reference"}, core.ReferenceDocumentVersion{Filename: "cite.md", ContentType: "text/markdown", Content: "# Notes\n\nFollows DEC-4."})
+	requireOK(t, err)
+	// A pending version that adds a token changes nothing until confirmed.
+	_, err = st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: "req-cite-four", Content: "# Alpha\n\nFollows DEC-4, DEC-7, and DEC-40.", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Cite decisions."}}, Origin: core.RequirementOriginOperator})
+	requireOK(t, err)
+	requirement(foreign, "req-cite-four", "Alpha", "Follows DEC-4 and DEC-5.", true)
+
+	req, sd := core.DecisionSweepTierRequirement, core.DecisionSweepTierSystemDesign
+	want := []core.DecisionCitation{
+		{DecisionID: "DEC-4", Tier: req, DocumentID: "req-cite-four", Title: "Alpha", Version: 1},
+		{DecisionID: "DEC-4", Tier: sd, DocumentID: "design-cite", Title: "Gamma", Version: 1},
+		{DecisionID: "DEC-7", Tier: req, DocumentID: "req-cite-four", Title: "Alpha", Version: 1},
+		{DecisionID: "DEC-9", Tier: req, DocumentID: "req-cite-forty", Title: "Beta", Version: 1},
+		{DecisionID: "DEC-40", Tier: req, DocumentID: "req-cite-forty", Title: "Beta", Version: 1},
+		{DecisionID: "DEC-40", Tier: sd, DocumentID: "design-cite", Title: "Gamma", Version: 1},
+	}
+	if got := read(ctx); !reflect.DeepEqual(got, want) {
+		t.Fatalf("citations = %+v\nwant %+v", got, want)
+	}
+
+	// A confirmed revision that drops a token clears that citation on the next
+	// read and reports the new current version.
+	version, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: "design-cite", Content: designText("Gamma", "Follows DEC-4 only."), Origin: core.SystemDesignOriginOperator})
+	requireOK(t, err)
+	_, _, err = st.ConfirmSystemDesignVersion(ctx, "design-cite", version.Version)
+	requireOK(t, err)
+	want = []core.DecisionCitation{want[0], {DecisionID: "DEC-4", Tier: sd, DocumentID: "design-cite", Title: "Gamma", Version: 2}, want[2], want[3], want[4]}
+	if got := read(ctx); !reflect.DeepEqual(got, want) {
+		t.Fatalf("citations after revision = %+v\nwant %+v", got, want)
+	}
+
+	foreignWant := []core.DecisionCitation{
+		{DecisionID: "DEC-4", Tier: req, DocumentID: "req-cite-four", Title: "Alpha", Version: 1},
+		{DecisionID: "DEC-5", Tier: req, DocumentID: "req-cite-four", Title: "Alpha", Version: 1},
+	}
+	if got := read(foreign); !reflect.DeepEqual(got, foreignWant) {
+		t.Fatalf("foreign citations = %+v\nwant %+v", got, foreignWant)
 	}
 }
 
