@@ -146,10 +146,12 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if repo.GitHub != "" {
 		if spec, exists, specErr := s.Store.GetLatestSpecVersion(ctx, task.ID); specErr != nil {
 			return nil, specErr
-		} else if exists && spec.Approved {
-			if task.GitHub == nil {
-				return nil, fmt.Errorf("approved task %s has no durable GitHub issue association yet; retry after reconciliation", task.ID)
-			}
+		} else if exists && spec.Approved && cfg.IssuePublication.Enabled && task.GitHub != nil && task.GitHub.State != core.GitHubPublicationSkipped {
+			// The association is awaited only while issue publication is on
+			// and the task has an open or published lifecycle row; a task
+			// without one, a skipped row, or a workspace with the setting off
+			// is admitted without an association (req-delivery-and-forge
+			// AC-8.2, AC-8.4; component-submission-merge).
 			if task.GitHub.Repository != repo.GitHub {
 				return nil, fmt.Errorf("task GitHub association repository %q does not match configured repository %q", task.GitHub.Repository, repo.GitHub)
 			}

@@ -644,9 +644,9 @@ func (c *taskDetailCountingStore) ListFactoryActs(a0 context.Context, a1 time.Ti
 	return c.Store.ListFactoryActs(a0, a1, a2)
 }
 
-func (c *taskDetailCountingStore) ListGitHubLifecycleReconcileTaskIDs(a0 context.Context) ([]string, error) {
+func (c *taskDetailCountingStore) ListGitHubLifecycleReconcileTaskIDs(a0 context.Context, a1 *time.Time) ([]string, error) {
 	c.count("ListGitHubLifecycleReconcileTaskIDs")
-	return c.Store.ListGitHubLifecycleReconcileTaskIDs(a0)
+	return c.Store.ListGitHubLifecycleReconcileTaskIDs(a0, a1)
 }
 
 func (c *taskDetailCountingStore) ListGovernanceDesigns(a0 context.Context, a1 string) ([]core.GovernanceDesignContext, error) {

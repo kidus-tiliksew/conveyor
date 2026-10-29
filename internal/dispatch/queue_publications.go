@@ -28,8 +28,34 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:github-issue-publication:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, args.TaskID)
-	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished {
+	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished || lifecycle.State == core.GitHubPublicationSkipped {
 		return err
+	}
+	// The setting is re-read before any forge call. An open publication ends
+	// skipped with no create or edit, counting no attempt, while the setting
+	// is off or when its plan was approved before the setting was last turned
+	// on, so a row queued before a turn-off never publishes after a later
+	// turn-on; an issue already published returned above unchanged
+	// (req-delivery-and-forge AC-8.3, AC-8.4; component-git-delivery).
+	cfg, configErr := w.dispatcher.currentConfig(ctx)
+	skip := false
+	if configErr == nil {
+		since, on := cfg.IssuePublication.ApprovedSince()
+		skip = !on
+		if on {
+			approved, exists, specErr := w.dispatcher.Store.GetLatestSpecVersion(ctx, lifecycle.TaskID)
+			if specErr != nil {
+				return specErr
+			}
+			skip = exists && approved.Approved && approved.Version == lifecycle.SpecVersion && approved.ApprovedAt.Before(since)
+		}
+	}
+	if skip {
+		lifecycle.State = core.GitHubPublicationSkipped
+		lifecycle.Outcome = "skipped"
+		lifecycle.ForgeErrorCategory = ""
+		lifecycle.LastError = ""
+		return w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle)
 	}
 	lifecycle.Attempts++
 	lifecycle.State = core.GitHubPublicationRetrying
@@ -57,7 +83,6 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 		return err
 	}
 	var result github.IssuePublicationResult
-	cfg, configErr := w.dispatcher.currentConfig(ctx)
 	publishErr := configErr
 	if publishErr == nil {
 		configuredRepo, repoExists := cfg.Repo(task.Repo)

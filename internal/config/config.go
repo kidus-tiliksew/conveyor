@@ -858,6 +858,7 @@ type WorkspaceDocument struct {
 	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
 	Repos                     []Repo                       `yaml:"repos" json:"repos"`
 	Monitor                   MonitorConfig                `yaml:"monitor" json:"monitor"`
+	IssuePublication          IssuePublication             `yaml:"issue_publication,omitempty" json:"issue_publication"`
 	PlanningModels            []string                     `yaml:"planning_models,omitempty" json:"planning_models"`
 	// StageTimeouts is pipeline policy. Execution details are client-local;
 	// legacy fields above remain decode-only upgrade inputs and are stripped
@@ -887,7 +888,8 @@ func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
 		Execution                 ExecutionPolicy   `json:"execution"`
 		Repos                     []Repo            `json:"repos"`
 		Monitor                   MonitorConfig     `json:"monitor"`
-	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor})
+		IssuePublication          IssuePublication  `json:"issue_publication"`
+	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor, d.IssuePublication})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -932,6 +934,7 @@ type Config struct {
 	Execution         ExecutionPolicy              `yaml:"execution"`
 	Repos             []Repo                       `yaml:"repos"`
 	Monitor           MonitorConfig                `yaml:"monitor"`
+	IssuePublication  IssuePublication             `yaml:"issue_publication,omitempty"`
 	PlanningModels    []string                     `yaml:"planning_models,omitempty"`
 }
 
@@ -992,6 +995,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Execution = document.Execution
 	next.Repos = document.Repos
 	next.Monitor = document.Monitor
+	next.IssuePublication = document.IssuePublication
 	next.PlanningModels = document.PlanningModels
 	if policyOnly {
 		return normalizePolicy(&next, document)
@@ -2012,6 +2016,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 		Monitor:                   c.Monitor,
+		IssuePublication:          c.IssuePublication,
 		PlanningModels:            append([]string(nil), c.PlanningModels...),
 	}
 	document.StageTimeouts = make(map[string]string, 3)

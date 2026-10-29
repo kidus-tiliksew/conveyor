@@ -263,8 +263,15 @@ func TransitionJob(from JobState, command string) (JobState, error) {
 	return JobState(to), err
 }
 
+// GitHubPublicationSkipCommand ends an open issue publication as skipped.
+const GitHubPublicationSkipCommand = "publication.skip"
+
 func TransitionGitHubPublication(from GitHubPublicationState, command string) (GitHubPublicationState, error) {
 	table := publicationLifecycleTable(string(GitHubPublicationQueued), string(GitHubPublicationRetrying), string(GitHubPublicationPublished), string(GitHubPublicationFailed))
+	// Only an issue publication can end skipped, from any unpublished state.
+	for _, open := range []GitHubPublicationState{GitHubPublicationQueued, GitHubPublicationRetrying, GitHubPublicationFailed} {
+		table[string(open)][GitHubPublicationSkipCommand] = string(GitHubPublicationSkipped)
+	}
 	to, err := transition(GitHubPublicationLifecycle, table, string(from), command)
 	return GitHubPublicationState(to), err
 }

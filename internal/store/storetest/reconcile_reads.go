@@ -3,11 +3,13 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -79,7 +81,8 @@ func runReconcileReads(t *testing.T, x Fixture) {
 	})
 
 	t.Run("GitHubLifecycleReconcileTaskIDsSelectCandidatesInTaskOrder", func(t *testing.T) {
-		before, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx)
+		epoch := time.Unix(0, 0).UTC()
+		before, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx, &epoch)
 		requireOK(t, err)
 		noPlan := newTask(core.TaskQueued)
 		draft := newTask(core.TaskQueued)
@@ -100,7 +103,7 @@ func runReconcileReads(t *testing.T, x Fixture) {
 		if restarted.Task.State != core.TaskClosed || restarted.Task.SupersededBy == "" {
 			t.Fatalf("start-over result=%+v", restarted)
 		}
-		got, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx)
+		got, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx, &epoch)
 		requireOK(t, err)
 		got = slices.DeleteFunc(got, func(id string) bool { return slices.Contains(before, id) })
 		// ListTasks order: newest first. The closed retired task is a
@@ -120,6 +123,98 @@ func runReconcileReads(t *testing.T, x Fixture) {
 		}
 		if !slices.Equal(order, want) {
 			t.Fatalf("candidate order %v differs from ListTasks order %v", want, order)
+		}
+	})
+	t.Run("GitHubLifecycleReconcileTaskIDsHonorPublicationCutoff", func(t *testing.T) {
+		// A nil cutoff means issue publication is off: only supersession
+		// candidates remain. A cutoff omits a plan approved before it
+		// (req-delivery-and-forge AC-8.3; component-git-delivery).
+		epoch := time.Unix(0, 0).UTC()
+		before, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx, &epoch)
+		requireOK(t, err)
+		earlier := newTask(core.TaskMerged)
+		plan(earlier.ID, true)
+		earlierSpec, ok, err := st.GetLatestSpecVersion(ctx, earlier.ID)
+		requireOK(t, err)
+		if !ok || earlierSpec.ApprovedAt.IsZero() {
+			t.Fatalf("earlier approval=%+v ok=%t", earlierSpec, ok)
+		}
+		cutoff := earlierSpec.ApprovedAt.Add(time.Microsecond)
+		// Both durable backends stamp approval with the host clock at
+		// microsecond precision; wait until that clock has passed the cutoff.
+		for !time.Now().After(cutoff.Add(time.Millisecond)) {
+			runtime.Gosched()
+		}
+		later := newTask(core.TaskQueued)
+		plan(later.ID, true)
+		laterSpec, _, err := st.GetLatestSpecVersion(ctx, later.ID)
+		requireOK(t, err)
+		if laterSpec.ApprovedAt.Before(cutoff) {
+			t.Fatalf("later approval %s precedes cutoff %s", laterSpec.ApprovedAt, cutoff)
+		}
+		retired := newTask(core.TaskRunning)
+		_, err = taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: retired.ID, RequestID: "restart-" + retired.ID, Reason: "replace"})
+		requireOK(t, err)
+		fresh := func(got []string) []string {
+			return slices.DeleteFunc(got, func(id string) bool { return slices.Contains(before, id) })
+		}
+		off, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx, nil)
+		requireOK(t, err)
+		if got := fresh(off); !slices.Equal(got, []string{retired.ID}) {
+			t.Fatalf("nil cutoff candidates=%v, want only the superseded %s (earlier %s, later %s)", got, retired.ID, earlier.ID, later.ID)
+		}
+		on, err := st.ListGitHubLifecycleReconcileTaskIDs(ctx, &cutoff)
+		requireOK(t, err)
+		if got := fresh(on); !slices.Equal(got, []string{retired.ID, later.ID}) {
+			t.Fatalf("cutoff candidates=%v, want %v without the earlier approval %s", got, []string{retired.ID, later.ID}, earlier.ID)
+		}
+	})
+
+	t.Run("IssuePublicationTurnOnIsStamped", func(t *testing.T) {
+		// Every backend stamps the turn-on time from the stored document and
+		// never keeps a client-sent time (component-persistence; AC-8.3).
+		update := func(enabled bool, clientTime time.Time) config.UpdateReceipt {
+			t.Helper()
+			current, err := st.WorkspaceConfig(ctx)
+			requireOK(t, err)
+			next, err := st.RuntimeConfig(ctx, x.Config)
+			requireOK(t, err)
+			next.IssuePublication = config.IssuePublication{Enabled: enabled, EnabledAt: clientTime}
+			receipt, err := st.UpdateWorkspaceConfig(ctx, current.Version, next)
+			requireOK(t, err)
+			return receipt
+		}
+		stored := func() config.IssuePublication {
+			t.Helper()
+			saved, err := st.WorkspaceConfig(ctx)
+			requireOK(t, err)
+			composed, err := st.RuntimeConfig(ctx, x.Config)
+			requireOK(t, err)
+			if saved.Document.IssuePublication.Enabled != composed.IssuePublication.Enabled || !saved.Document.IssuePublication.EnabledAt.Equal(composed.IssuePublication.EnabledAt) {
+				t.Fatalf("stored %+v differs from runtime %+v", saved.Document.IssuePublication, composed.IssuePublication)
+			}
+			return saved.Document.IssuePublication
+		}
+		if initial := stored(); initial.Enabled {
+			t.Fatalf("fresh workspace issue publication=%+v, want off", initial)
+		}
+		forged := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+		start := time.Now().UTC().Truncate(time.Microsecond)
+		receipt := update(true, forged)
+		turnedOn := stored()
+		if !turnedOn.Enabled || turnedOn.EnabledAt.Before(start) || turnedOn.EnabledAt.After(time.Now().UTC()) {
+			t.Fatalf("turn-on stamped %+v, want a write time at or after %s", turnedOn, start)
+		}
+		if !slices.Contains(receipt.Sections, "issue_publication") || !receipt.Document.IssuePublication.EnabledAt.Equal(turnedOn.EnabledAt) {
+			t.Fatalf("turn-on receipt sections=%v document=%+v", receipt.Sections, receipt.Document.IssuePublication)
+		}
+		update(true, forged.Add(time.Hour))
+		if kept := stored(); !kept.Enabled || !kept.EnabledAt.Equal(turnedOn.EnabledAt) {
+			t.Fatalf("write keeping the setting on stored %+v, want turn-on time %s", kept, turnedOn.EnabledAt)
+		}
+		update(false, forged)
+		if off := stored(); off.Enabled || !off.EnabledAt.Equal(turnedOn.EnabledAt) {
+			t.Fatalf("turn-off stored %+v, want off with last turn-on time %s", off, turnedOn.EnabledAt)
 		}
 	})
 }

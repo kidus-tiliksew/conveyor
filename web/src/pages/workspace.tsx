@@ -43,7 +43,12 @@ const TABS: Array<{ id: TabId; label: string }> = [
 // The verify_stage switch lives in execution but belongs to the Verification
 // tab, so the policy slice compares execution without it.
 const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
-  general: (document) => [document.work_order_queue_timeout, document.repos, document.monitor],
+  general: (document) => [
+    document.work_order_queue_timeout,
+    document.repos,
+    document.monitor,
+    document.issue_publication?.enabled ?? false,
+  ],
   policy: (document) => {
     const { verify_stage: _verify, ...execution } = document.execution
     return [document.max_bounces, document.stage_timeouts, document.review, execution]
@@ -52,7 +57,7 @@ const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: Works
 }
 
 function tabForField(field: string): TabId {
-  if (/^(work_order_queue_timeout|repos|monitor)/.test(field)) return 'general'
+  if (/^(work_order_queue_timeout|repos|monitor|issue_publication)/.test(field)) return 'general'
   if (/^execution\.verify_stage/.test(field)) return 'verification'
   return 'policy'
 }
@@ -282,7 +287,7 @@ export function WorkspacePage() {
           // gets the read-only summary. The member list belongs beside it: every
           // member may see who else is here, without the management controls.
           <>
-            <ReadOnly snapshot={snapshot} />
+            <ReadOnly snapshot={snapshot} configuration={query.data?.document} />
             {workspace && (
               <div className="mt-4">
                 <VerificationKits key={workspace} workspace={workspace} />
@@ -523,6 +528,22 @@ function GeneralTab({
           </div>
         </CardContent>
       </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Issue publication</CardTitle>
+          <Switch
+            aria-label="Publish GitHub issues for approved plans"
+            checked={draft.issue_publication?.enabled ?? false}
+            onChange={(enabled) => update({ issue_publication: { ...draft.issue_publication, enabled } })}
+          />
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs leading-5 text-muted">
+            Publish GitHub issues for approved plans. Only plans approved after this is turned on get an issue. Turning
+            it off creates no further issues and leaves published ones unchanged.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   )
 }
@@ -751,7 +772,13 @@ function WorkersTab({
   )
 }
 
-function ReadOnly({ snapshot }: { snapshot: NonNullable<ReturnType<typeof useWorkspace>['data']> }) {
+function ReadOnly({
+  snapshot,
+  configuration,
+}: {
+  snapshot: NonNullable<ReturnType<typeof useWorkspace>['data']>
+  configuration?: WorkspaceConfigDocument
+}) {
   return (
     <div className="mt-6 space-y-4">
       <Card>
@@ -767,6 +794,16 @@ function ReadOnly({ snapshot }: { snapshot: NonNullable<ReturnType<typeof useWor
               : `${snapshot.recovery?.automatic_recoveries ?? 2} automatic recoveries`}{' '}
             / {snapshot.recovery?.window ?? '24h'}
           </p>
+          {/* view_workspace serves the configuration, so every member sees the
+              setting it governs (req-delivery-and-forge AC-8.5). */}
+          {configuration && (
+            <p className="mt-2 text-sm text-muted">
+              GitHub issue publication for approved plans:{' '}
+              <span className="font-medium text-foreground">
+                {configuration.issue_publication?.enabled ? 'on' : 'off'}
+              </span>
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

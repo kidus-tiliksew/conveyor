@@ -5,6 +5,18 @@ GitHub the source of truth (component-git-delivery).
 
 ## Issue on spec approval
 
+Issue publication is a workspace setting, `issue_publication.enabled`, that is
+off until an operator turns it on in the workspace settings General tab
+(req-delivery-and-forge REQ-8; DEC-91). While it is off, an approval queues no
+publication and Conveyor neither creates nor edits an issue for the task,
+including a source issue; submission for review then waits for no issue
+association. Turning it on publishes only for plans approved afterward, never
+for a task approved earlier, including through restart reconciliation.
+Turning it off ends a queued publication that has no issue as `skipped`, with a
+`github_issue.publication_skipped` event and no GitHub write, and leaves
+published issues unchanged. The rest of this section describes publication
+while the setting is on.
+
 Approving a spec transactionally records the approved version before Conveyor
 queues one workspace-scoped GitHub publication intent. The issue contains the
 exact approved specification, including its intent and acceptance criteria,

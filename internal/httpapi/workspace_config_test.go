@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -215,5 +216,61 @@ func TestWorkspaceConfigAPIRecoveryRoundTripAndRefusal(t *testing.T) {
 	h.ServeHTTP(putResult, put)
 	if putResult.Code != http.StatusOK || backend.record.Document.Recovery.AutomaticRecoveries != 0 || backend.record.Document.Recovery.WindowText != "1h" {
 		t.Fatalf("PUT status=%d recovery=%+v body=%s", putResult.Code, backend.record.Document.Recovery, putResult.Body)
+	}
+}
+
+// Every member who can view the configuration reads the issue publication
+// setting, and only a manage_workspace caller changes it
+// (req-delivery-and-forge AC-8.5).
+func TestWorkspaceConfigIssuePublicationRequiresManageWorkspace(t *testing.T) {
+	document := contextualWorkspaceDocument()
+	document.Workspace = "alpha"
+	backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: document, Version: 3}}
+	fixture := &membershipFixture{
+		workspaces: []core.Workspace{{ID: "alpha"}},
+		roles: map[string]map[string]core.WorkspaceRole{
+			"viewer": {"alpha": core.WorkspaceRoleViewer}, "contributor": {"alpha": core.WorkspaceRoleContributor},
+			"maintainer": {"alpha": core.WorkspaceRoleMaintainer}, "operator": {"alpha": core.WorkspaceRoleOperator},
+		},
+	}
+	server := NewServer(store.NewMemory())
+	server.Workspaces, server.Memberships = fixture, fixture
+	server.Credentials = staticCredentialVerifier{}
+	for user := range fixture.roles {
+		server.Credentials.(staticCredentialVerifier)[user+"-token"] = core.AuthenticatedCredential{ID: "pat_" + user, OwnerUserID: user, Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	}
+	server.Deployment = &config.Config{Workspace: "alpha", Database: config.Database{Backend: "memory"}}
+	server.ConfigStore = backend
+	handler := server.Handler()
+	call := func(user, method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, "/v1/workspace/config?workspace_id=alpha", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+user+"-token")
+		request.Header.Set("If-Match", fmt.Sprintf("%d", backend.record.Version))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	turnOn := document
+	turnOn.IssuePublication = config.IssuePublication{Enabled: true}
+	body, err := json.Marshal(map[string]any{"document": turnOn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []string{"viewer", "contributor", "maintainer"} {
+		read := call(user, http.MethodGet, "")
+		if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"issue_publication":{"enabled":false}`) {
+			t.Fatalf("%s read status=%d body=%s", user, read.Code, read.Body)
+		}
+		write := call(user, http.MethodPut, string(body))
+		if write.Code != http.StatusNotFound || write.Body.String() != canonicalWorkspaceNotFoundBody() || backend.updates != 0 {
+			t.Fatalf("%s write status=%d updates=%d body=%q", user, write.Code, backend.updates, write.Body.String())
+		}
+	}
+	if write := call("operator", http.MethodPut, string(body)); write.Code != http.StatusOK || backend.updates != 1 || !backend.record.Document.IssuePublication.Enabled {
+		t.Fatalf("operator write status=%d updates=%d document=%+v body=%s", write.Code, backend.updates, backend.record.Document.IssuePublication, write.Body)
+	}
+	if read := call("viewer", http.MethodGet, ""); read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"issue_publication":{"enabled":true}`) {
+		t.Fatalf("viewer read after turn-on status=%d body=%s", read.Code, read.Body)
 	}
 }

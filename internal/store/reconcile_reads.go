@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -30,9 +31,12 @@ type ReconcileReadStore interface {
 	ListAutomaticReviewEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	// ListGitHubLifecycleReconcileTaskIDs returns, in ListTasks order, the
 	// workspace tasks the GitHub lifecycle reconcile can act on: every task
-	// superseded by a start-over, and every task whose latest plan version is
-	// approved and that has no GitHub lifecycle row.
-	ListGitHubLifecycleReconcileTaskIDs(ctx context.Context) ([]string, error)
+	// superseded by a start-over and, only when approvedSince is not nil,
+	// every task whose latest plan version was approved at or after
+	// approvedSince and that has no GitHub lifecycle row. The reconcile passes
+	// the time issue publication was last turned on, or nil while it is off
+	// (req-delivery-and-forge AC-8.3; component-git-delivery).
+	ListGitHubLifecycleReconcileTaskIDs(ctx context.Context, approvedSince *time.Time) ([]string, error)
 }
 
 func (m *memory) ListAutomaticReviewEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
@@ -54,7 +58,7 @@ func (m *memory) ListAutomaticReviewEvents(ctx context.Context, taskIDs []string
 	return out, nil
 }
 
-func (m *memory) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context) ([]string, error) {
+func (m *memory) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context, approvedSince *time.Time) ([]string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	workspace, scoped := WorkspaceFromContext(ctx)
@@ -65,7 +69,8 @@ func (m *memory) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context) ([]str
 		}
 		versions := m.specs[task.ID]
 		_, hasLifecycle := m.github[task.ID]
-		approved := len(versions) > 0 && versions[len(versions)-1].Approved
+		approved := approvedSince != nil && len(versions) > 0 && versions[len(versions)-1].Approved &&
+			!versions[len(versions)-1].ApprovedAt.Before(*approvedSince)
 		if task.SupersededBy != "" || approved && !hasLifecycle {
 			candidates = append(candidates, task)
 		}
