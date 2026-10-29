@@ -1800,6 +1800,34 @@ test('navigation is exactly the accepted surfaces and the Inbox badge is the ope
   await expect(primary.getByRole('link', { name: /Inbox/ }).getByText('5', { exact: true })).toBeVisible()
 })
 
+// A pending requirement proposal is one of the Inbox decisions, so no other
+// entry repeats it as a badge (req-operator-next-action AC-2.7;
+// req-document-operating-surfaces AC-1.2).
+test('Inbox is the only primary navigation entry with a badge while requirement proposals are pending', async ({
+  page,
+}) => {
+  await serve(page, {
+    ...decisionsFixture(),
+    operatorDecisions: 2,
+    proposals: [
+      { id: 'req-attention', tier: 'requirement', version: 3, title: 'Operator attention' },
+      { id: 'req-other', tier: 'requirement', version: 1, title: 'Other requirement' },
+      { id: 'component-web-dashboard', tier: 'system_design', version: 42, title: 'Web dashboard' },
+    ],
+  })
+  await page.goto('/inbox')
+  const primary = page.getByRole('navigation', { name: 'Primary' })
+  const inbox = primary.getByRole('link', { name: /Inbox/ })
+  await expect(inbox.getByText('2', { exact: true })).toBeVisible()
+  await expect(inbox).toHaveText('Inbox2')
+  for (const label of ['Board', 'Workspace', 'Requirements', 'System Design', 'Monitor', 'Settings']) {
+    const link = primary.getByRole('link', { name: label, exact: true })
+    await expect(link).toHaveText(label)
+    // The label is the entry's only span; a badge would add a second.
+    await expect(link.locator('span')).toHaveCount(1)
+  }
+})
+
 test('the inbox fits a 390px viewport without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await serve(page, decisionsFixture())

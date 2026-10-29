@@ -327,6 +327,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/system-designs/{id}/archive", s.archiveSystemDesign)
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/system-designs/{id}/restore", s.restoreSystemDesign)
 			r.Get("/decisions", s.listDecisions)
+			r.Get("/decision-citations", s.listDecisionCitations)
 			r.With(s.requireMutationCapability(core.CapabilityProposeDocuments)).Post("/decisions", s.proposeDecision)
 			r.Get("/decisions/{id}", s.getDecision)
 			r.With(s.requireMutationCapability(core.CapabilityConfirmDocuments)).Post("/decisions/{id}/confirm", s.confirmDecision)
