@@ -115,7 +115,7 @@ const (
 	verificationRemedyConflict  = "Resubmit the original request unchanged, or read the sealed context with get_verification_context."
 	verificationRemedyAction    = "Request only actions the grant and the local kit_permissions both cover, or ask an operator to grant the missing action."
 	verificationRemedyOperation = "Reconcile each unresolved operation with reconcile_verification_operation, or submit operator_action_required."
-	verificationRemedyRetry     = "The latest attempt's retry policy is operator_action_required: submit operator_action_required, and the operator recovers the order with a verification disposition."
+	verificationRemedyRetry     = "The latest attempt's retry policy is operator_action_required: submit operator_action_required. The operator issues a one-use authorization with conveyor order recover <order-id> --disposition applied|not_applied (or the order's disposition card), and the next verifier passes --replay-authorization recovery:<request_id>."
 	verificationRemedyShape     = "Compare the call with the tool's input schema from tools/list: send every required property, use the listed JSON types and values, and omit properties the schema does not define."
 )
 

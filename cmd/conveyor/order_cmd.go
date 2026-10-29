@@ -29,20 +29,71 @@ func orderCmd() *cobra.Command {
 
 func orderRecoverCmd() *cobra.Command {
 	var direction, requestID string
+	var verification orderRecoverVerification
 	asJSON := false
 	cmd := &cobra.Command{
 		Use:   "recover <order-id>",
-		Short: "Recover a work order, optionally with operator direction",
-		Long:  "Posts {request_id, direction} to POST /v1/work-orders/{id}/recover. The request ID is generated when omitted and is also sent as X-Request-Id and X-Idempotency-Key.",
-		Args:  cobra.ExactArgs(1),
+		Short: "Recover a work order, optionally with operator direction or a verification disposition",
+		Long: "Posts {request_id, direction} to POST /v1/work-orders/{id}/recover. The request ID is generated when omitted and is also sent as X-Request-Id and X-Idempotency-Key.\n\n" +
+			"--disposition adds the verification object of a verify order's recovery: --context-id, --run-id, --input-digest, and --reason are required with it, and each --operation-id names one unresolved operation (none sends []). " +
+			"Copy the binding from the order's next action (details.disposition). The server issues the one-use authorization recovery:<request_id>, which the next verifier passes as conveyor kit verify --replay-authorization.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOrderRecover(newClient(), cmd.OutOrStdout(), args[0], direction, requestID, asJSON)
+			flags := cmd.Flags()
+			set := flags.Changed("disposition") || flags.Changed("context-id") || flags.Changed("run-id") || flags.Changed("operation-id") || flags.Changed("input-digest") || flags.Changed("reason")
+			var disposition *orderRecoverVerification
+			if set {
+				disposition = &verification
+			}
+			return runOrderRecover(newClient(), cmd.OutOrStdout(), args[0], direction, requestID, disposition, asJSON)
 		},
 	}
 	cmd.Flags().StringVar(&direction, "direction", "", "operator direction for the recovered order")
 	cmd.Flags().StringVar(&requestID, "request-id", "", "idempotency key (generated when omitted)")
+	cmd.Flags().StringVar(&verification.Disposition, "disposition", "", "verification disposition: applied, not_applied, or unknown")
+	cmd.Flags().StringVar(&verification.ContextID, "context-id", "", "verification context of the disposed run (required with --disposition)")
+	cmd.Flags().StringVar(&verification.RunID, "run-id", "", "verification run the disposition binds (required with --disposition)")
+	cmd.Flags().StringArrayVar(&verification.OperationIDs, "operation-id", nil, "unresolved operation the disposition covers (repeatable; none sends [])")
+	cmd.Flags().StringVar(&verification.InputDigest, "input-digest", "", "safe-input digest of the run (required with --disposition)")
+	cmd.Flags().StringVar(&verification.Reason, "reason", "", "operator reason for the disposition (required with --disposition)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the server body verbatim")
 	return cmd
+}
+
+// orderRecoverVerification is the verification object of a verify order's
+// recovery request (component-verification-service, Operator checkpoint and
+// recovery). The server checks every field; the CLI refuses an incomplete
+// object before sending and encodes no operations as [], never null.
+type orderRecoverVerification struct {
+	ContextID    string   `json:"context_id"`
+	RunID        string   `json:"run_id"`
+	OperationIDs []string `json:"operation_ids"`
+	InputDigest  string   `json:"input_digest"`
+	Disposition  string   `json:"disposition"`
+	Reason       string   `json:"reason"`
+}
+
+func (v *orderRecoverVerification) validate() error {
+	switch strings.TrimSpace(v.Disposition) {
+	case "":
+		return fmt.Errorf("--context-id, --run-id, --operation-id, --input-digest, and --reason require --disposition")
+	case "applied", "not_applied", "unknown":
+	default:
+		return fmt.Errorf("--disposition must be applied, not_applied, or unknown, not %q", v.Disposition)
+	}
+	var missing []string
+	for _, field := range []struct{ flag, value string }{{"--context-id", v.ContextID}, {"--run-id", v.RunID}, {"--input-digest", v.InputDigest}, {"--reason", v.Reason}} {
+		if strings.TrimSpace(field.value) == "" {
+			missing = append(missing, field.flag)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("--disposition requires %s", strings.Join(missing, ", "))
+	}
+	if v.OperationIDs == nil {
+		v.OperationIDs = []string{}
+	}
+	return nil
 }
 
 func orderRedispatchCmd() *cobra.Command {
@@ -104,24 +155,38 @@ func orderPost(c *client, path, requestID string, payload any) (json.RawMessage,
 	return response, nil
 }
 
-func runOrderRecover(c *client, w io.Writer, orderID, direction, requestID string, asJSON bool) error {
+// runOrderRecover posts the recovery. A non-nil verification adds the
+// disposition object; on success the human output names the one-use
+// authorization the server issued and how a verifier passes it.
+func runOrderRecover(c *client, w io.Writer, orderID, direction, requestID string, verification *orderRecoverVerification, asJSON bool) error {
 	orderID = strings.TrimSpace(orderID)
 	if orderID == "" {
 		return fmt.Errorf("order ID is required")
+	}
+	if verification != nil {
+		if err := verification.validate(); err != nil {
+			return err
+		}
 	}
 	requestID, err := orderRequestID(requestID)
 	if err != nil {
 		return err
 	}
 	payload := struct {
-		RequestID string `json:"request_id"`
-		Direction string `json:"direction,omitempty"`
-	}{requestID, direction}
+		Verification *orderRecoverVerification `json:"verification,omitempty"`
+		RequestID    string                    `json:"request_id"`
+		Direction    string                    `json:"direction,omitempty"`
+	}{verification, requestID, direction}
 	response, err := orderPost(c, "/v1/work-orders/"+url.PathEscape(orderID)+"/recover", requestID, payload)
 	if err != nil {
 		return err
 	}
-	return writeOrderResult(w, response, asJSON, fmt.Sprintf("recovered work order %s (request %s)", orderID, requestID))
+	human := fmt.Sprintf("recovered work order %s (request %s)", orderID, requestID)
+	if verification != nil {
+		authorization := "recovery:" + requestID
+		human += fmt.Sprintf("\nverification authorization %s (%s, run %s)\nnext verifier: conveyor kit verify --replay-authorization %s ...", authorization, verification.Disposition, verification.RunID, authorization)
+	}
+	return writeOrderResult(w, response, asJSON, human)
 }
 
 // resolvedWorkOrder is the part of a work order the order commands read.
