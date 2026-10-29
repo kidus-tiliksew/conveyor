@@ -483,3 +483,53 @@ func TestIssuePublicationTurnOffSkipsQueuedPublication(t *testing.T) {
 		t.Fatalf("skipped publication reopened: %+v", again)
 	}
 }
+
+// A turn-on that commits after the approval but before the approval path
+// reads the configuration queues nothing for that approval: the persisted
+// approval time precedes the turn-on (req-delivery-and-forge AC-8.2, AC-8.3).
+func TestIssuePublicationTurnOnAfterApprovalCommitQueuesNothing(t *testing.T) {
+	ctx, st, d, set := issuePublicationWorkspace(t)
+	refuseForgeCalls(t, d)
+	const taskID = "approved-before-turn-on"
+	read := d.ConfigProvider
+	turnedOn := false
+	d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
+		// The first configuration read after the approval commits turns the
+		// setting on, exactly between the approval and queueApprovedIssue.
+		if spec, ok, err := st.GetLatestSpecVersion(ctx, taskID); err == nil && ok && spec.Approved && !turnedOn {
+			turnedOn = true
+			waitPastApproval(t, ctx, st, taskID)
+			set(true)
+		}
+		return read(ctx)
+	}
+	task := approveThroughGate(t, ctx, st, d, taskID)
+	if !turnedOn {
+		t.Fatal("the setting was not turned on between approval and the configuration read")
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, _, err := st.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IssuePublication.Enabled || !spec.ApprovedAt.Before(cfg.IssuePublication.EnabledAt) {
+		t.Fatalf("setting=%+v approved_at=%s, want a turn-on after the approval", cfg.IssuePublication, spec.ApprovedAt)
+	}
+	if _, ok, getErr := st.GetGitHubLifecycle(ctx, task.ID); getErr != nil || ok {
+		t.Fatalf("approval before the turn-on queued a lifecycle ok=%t err=%v", ok, getErr)
+	}
+	if repaired, reconcileErr := d.ReconcileGitHubLifecycles(ctx); reconcileErr != nil || repaired != 0 {
+		t.Fatalf("reconcile repaired=%d err=%v", repaired, reconcileErr)
+	}
+	if _, ok, _ := st.GetGitHubLifecycle(ctx, task.ID); ok {
+		t.Fatal("reconcile queued the approval made before the turn-on")
+	}
+	// A plan approved after the turn-on still publishes through the same path.
+	later := approveThroughGate(t, ctx, st, d, "approved-after-turn-on")
+	if lifecycle, ok, getErr := st.GetGitHubLifecycle(ctx, later.ID); getErr != nil || !ok || lifecycle.State != core.GitHubPublicationQueued {
+		t.Fatalf("later approval lifecycle=%+v ok=%t err=%v", lifecycle, ok, getErr)
+	}
+}

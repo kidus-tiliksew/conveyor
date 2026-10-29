@@ -31,15 +31,26 @@ func PRBody(task core.Task, evidence ...core.Artifact) string {
 }
 
 // queueApprovedIssue queues the approved plan's issue publication only while
-// workspace issue publication is on, so an approval with the setting off
-// creates and edits no issue, including the task's source issue
-// (req-delivery-and-forge AC-8.2; DEC-91).
+// workspace issue publication is on and only for a plan approved at or after
+// the last turn-on, so an approval with the setting off creates and edits no
+// issue, including the task's source issue, even when the setting turns on
+// between the approval commit and this read (req-delivery-and-forge AC-8.2,
+// AC-8.3; DEC-91). Callers pass the pre-approval plan value, so the approval
+// time is read from the persisted version.
 func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spec core.SpecVersion) error {
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
 	}
-	if !cfg.IssuePublication.Enabled {
+	since, on := cfg.IssuePublication.ApprovedSince()
+	if !on {
+		return nil
+	}
+	approved, exists, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	if !exists || !approved.Approved || approved.Version != spec.Version || approved.ApprovedAt.Before(since) {
 		return nil
 	}
 	repo, ok := cfg.Repo(task.Repo)
