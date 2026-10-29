@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import stat
@@ -60,6 +61,88 @@ def _pid_alive(pid):
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
     except OSError:
         return True
+
+
+def _sealed_launch(observation):
+    """Return whether an observed runner has a fully sealed gate launch.
+
+    The manifest says running before start_process registers the gate's
+    process group as pending, and the child leads its own group before the
+    runner seals that entry and sends the go byte (component-validation-tooling,
+    "Sealing before workload"). A crash-after-launch fixture may kill the
+    runner only once every registered resource is sealed and the sealed gate
+    identity names the observed child group.
+    """
+    record, group, resources = observation["record"], observation["group"], observation["resources"]
+    if not record or record["state"] != "running" or group is None or not resources:
+        return False
+    if any(entry["state"] != "sealed" for entry in resources):
+        return False
+    gates = [entry for entry in resources if entry["kind"] == "process-group" and entry.get("role") == "gate"]
+    return (len(gates) == 1 and gates[0]["identity"].get("pgid") == group
+            and gates[0]["identity"].get("leader") == group)
+
+
+def _observe_launch(output, runner_pid):
+    """Read the runner's manifest, child group, and inventory afresh; return (ready, observation)."""
+    observation = {"record": None, "record_error": None, "children": None, "group": None, "resources": None,
+                   "inventory_error": None}
+    if (output / "manifest.json").is_file():
+        # The runner creates the key and first manifest exclusively and then
+        # writes them, so a poll can read either one partially written; that
+        # record is not observed yet.
+        try:
+            observation["record"] = evidence.read_record(output / "manifest.json", (output / "key").read_bytes())
+        except ValueError as exc:  # evidence.Refused is a ValueError
+            observation["record_error"] = repr(exc)
+    record = observation["record"]
+    if record and record["state"] == "running":
+        observation["children"], children = _child_pids(runner_pid)
+        if children:
+            candidate = children[0]
+            try:
+                if os.getpgid(candidate) == candidate:
+                    observation["group"] = candidate
+            except ProcessLookupError:
+                pass
+        try:
+            observation["resources"] = validation_resources.load_inventory(Path(record["invocation"]))["resources"]
+        except validation_resources.Refusal as exc:
+            observation["inventory_error"] = str(exc)
+    return _sealed_launch(observation), observation
+
+
+def _resource_states(observation):
+    """Summarize the last observed inventory for readiness diagnostics."""
+    if observation["resources"] is None:
+        return observation["inventory_error"]
+    return [(entry["id"], entry["kind"], entry.get("role"), entry["state"],
+             {name: entry["identity"].get(name) for name in ("pgid", "leader", "path") if name in entry["identity"]})
+            for entry in observation["resources"]]
+
+
+# Runs the real evidence runner with the existing process-before-seal seam
+# replaced by a pipe handshake: it reports the boundary, then blocks until the
+# parent releases it (or closes the pipe). No production hook is added.
+HELD_LAUNCH_RUNNER = "\n".join([
+    "import os, sys",
+    "sys.path.insert(0, sys.argv[1])",
+    "reached, release = int(sys.argv[2]), int(sys.argv[3])",
+    "import validation_resources, validation_evidence",
+    "crash_point = validation_resources._crash_point",
+    "held = []",
+    "def hold(name):",
+    "    if name == 'process-before-seal' and not held:",
+    "        held.append(name)",
+    "        os.write(reached, b'1')",
+    "        os.close(reached)",
+    "        os.read(release, 1)",
+    "        os.close(release)",
+    "    crash_point(name)",
+    "validation_resources._crash_point = hold",
+    "sys.argv = ['validation_evidence.py', *sys.argv[4:]]",
+    "sys.exit(validation_evidence.main())",
+])
 
 
 class EvidenceTests(unittest.TestCase):
@@ -593,6 +676,42 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(record["fixture"]["teardown_outcome"], "failure")
         self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "teardown-failure-after-success")
 
+    def stop_runner_on_cleanup(self, process):
+        """Kill and reap a runner left running by a failed readiness poll or assertion."""
+        def stop():
+            if process.returncode is None:
+                process.kill()
+                process.communicate(timeout=5)
+        self.addCleanup(stop)
+
+    def stop_group_on_cleanup(self, group):
+        """Stop an observed test-owned child group once, however the test ends."""
+        groups = self.__dict__.setdefault("cleanup_groups", set())
+        if group not in groups:
+            groups.add(group)
+            self.addCleanup(lambda: _pid_alive(group) and os.killpg(group, signal.SIGKILL))
+
+    def wait_for_sealed_launch(self, process):
+        """Poll (bounded, five seconds) until the runner's gate launch is sealed; return the observation."""
+        deadline = time.time() + 5
+        ready, observation = False, None
+        while time.time() < deadline:
+            ready, observation = _observe_launch(self.output, process.pid)
+            if observation["group"] is not None:
+                self.stop_group_on_cleanup(observation["group"])
+            if ready:
+                return observation
+            time.sleep(0.02)
+        process.kill()
+        stdout, stderr = process.communicate(timeout=5)
+        self.fail("runner did not launch a ready, sealed child process group within 5 seconds; "
+                  f"record={observation and observation['record']!r}, "
+                  f"record_error={observation and observation['record_error']!r}, "
+                  f"children={observation and observation['children']!r}, "
+                  f"group={observation and observation['group']!r}, "
+                  f"resources={observation and _resource_states(observation)!r}, "
+                  f"stdout={stdout!r}, stderr={stderr!r}, returncode={process.returncode}")
+
     def test_inspect_reports_crash_left_incomplete_without_replay(self):
         (self.root / "Makefile").write_text("check:\n\t@sleep 30\n")
         policy = self.write_policy()
@@ -600,31 +719,11 @@ class EvidenceTests(unittest.TestCase):
                    "--policy", str(policy), "--output", str(self.output)]
         process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        deadline = time.time() + 5
-        child_group = None
-        last_record = None
-        last_children = None
-        while time.time() < deadline:
-            if (self.output / "manifest.json").is_file():
-                key = (self.output / "key").read_bytes()
-                last_record = evidence.read_record(self.output / "manifest.json", key)
-            if last_record and last_record["state"] == "running":
-                last_children, children = _child_pids(process.pid)
-                if children:
-                    candidate = children[0]
-                    try:
-                        if os.getpgid(candidate) == candidate:
-                            child_group = candidate
-                            break
-                    except ProcessLookupError:
-                        pass
-            time.sleep(0.02)
-        if child_group is None:
-            process.kill()
-            stdout, stderr = process.communicate(timeout=5)
-            self.fail("runner did not launch a ready child process group within 5 seconds; "
-                      f"record={last_record!r}, children={last_children!r}, "
-                      f"stdout={stdout!r}, stderr={stderr!r}, returncode={process.returncode}")
+        self.stop_runner_on_cleanup(process)
+        # A running manifest and a child leading its own group can precede the
+        # sealed gate record; kill only after every resource is sealed.
+        observation = self.wait_for_sealed_launch(process)
+        child_group, last_record = observation["group"], observation["record"]
         process.kill()
         process.communicate(timeout=5)
         inspected = evidence.inspect_record(self.root, self.output)
@@ -633,8 +732,8 @@ class EvidenceTests(unittest.TestCase):
         self.refused("abandoned/incomplete")
         # SIGKILL cannot run the runner's group teardown. Explicit recovery of
         # the named invocation stops the orphaned group and leaves the
-        # evidence incomplete and nonreusable.
-        self.addCleanup(lambda: _pid_alive(child_group) and os.killpg(child_group, signal.SIGKILL))
+        # evidence incomplete and nonreusable. The observed group's cleanup is
+        # already registered.
         invocation = Path(last_record["invocation"])
         self.assertEqual({r["classification"] for r in validation_resources.inspect_invocation(invocation)["resources"]},
                          {"abandoned"})
@@ -647,6 +746,84 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(evidence.inspect_record(self.root, self.output)["classification"], "abandoned-or-incomplete")
         self.assertTrue((self.output / "command.log").is_file())
         self.refused("abandoned/incomplete")
+
+    def test_launch_readiness_refuses_a_gate_held_between_register_and_seal(self):
+        (self.root / "Makefile").write_text("check:\n\t@sleep 30\n")
+        policy = self.write_policy()
+        reached_read, reached_write = os.pipe()
+        release_read, release_write = os.pipe()
+        held_fds = {reached_read, reached_write, release_read, release_write}
+
+        def close_held(*descriptors):
+            for descriptor in descriptors:
+                if descriptor in held_fds:
+                    held_fds.discard(descriptor)
+                    os.close(descriptor)
+        # Registered first so it runs last: the runner and group stop before
+        # closing the release pipe could let a held launch proceed.
+        self.addCleanup(lambda: close_held(*list(held_fds)))
+        command = [sys.executable, "-c", HELD_LAUNCH_RUNNER, str(REPO / "scripts"), str(reached_write),
+                   str(release_read), "run", "--policy", str(policy), "--output", str(self.output)]
+        process = subprocess.Popen(command, cwd=self.root, env=dict(os.environ), pass_fds=(reached_write, release_read),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.stop_runner_on_cleanup(process)
+        close_held(reached_write, release_read)
+        # Bounded wait for the runner to reach the register-to-seal boundary.
+        readable, _, _ = select.select([reached_read], [], [], 5)
+        if not readable:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+            self.fail(f"runner did not reach process-before-seal within 5 seconds; stdout={stdout!r}, stderr={stderr!r}")
+        self.assertEqual(os.read(reached_read, 1), b"1")
+        close_held(reached_read)
+
+        # Held: the manifest is running and the child leads its own group, but
+        # the gate entry is still pending, so the barrier must refuse.
+        ready, held = _observe_launch(self.output, process.pid)
+        self.assertIsNotNone(held["group"], held)
+        self.stop_group_on_cleanup(held["group"])
+        self.assertEqual(held["record"]["state"], "running")
+        self.assertEqual(os.getpgid(held["group"]), held["group"])
+        gates = [entry for entry in held["resources"] if entry["kind"] == "process-group" and entry["role"] == "gate"]
+        self.assertEqual([entry["state"] for entry in gates], ["pending"], _resource_states(held))
+        self.assertFalse(ready, _resource_states(held))
+        # Still held on a fresh read: nothing advances without the release.
+        self.assertFalse(_observe_launch(self.output, process.pid)[0])
+
+        os.write(release_write, b"1")
+        close_held(release_write)
+        sealed = self.wait_for_sealed_launch(process)
+        self.assertEqual(sealed["group"], held["group"])
+        self.assertTrue(_sealed_launch(sealed))
+
+        # Every registered resource counts, not only the gate entry; and an
+        # empty inventory or an unrelated sealed group never satisfies it.
+        others = [index for index, entry in enumerate(sealed["resources"]) if entry["role"] != "gate"]
+        self.assertTrue(others, _resource_states(sealed))
+        mixed = copy.deepcopy(sealed)
+        mixed["resources"][others[0]]["state"] = "pending"
+        self.assertEqual([entry["state"] for entry in mixed["resources"] if entry["role"] == "gate"], ["sealed"])
+        self.assertFalse(_sealed_launch(mixed))
+        self.assertFalse(_sealed_launch(dict(sealed, resources=[])))
+        unrelated = copy.deepcopy(sealed)
+        for entry in unrelated["resources"]:
+            if entry["role"] == "gate":
+                entry["identity"].update(pgid=sealed["group"] + 1, leader=sealed["group"] + 1)
+        self.assertFalse(_sealed_launch(unrelated))
+
+        # Owned cleanup: kill the ready runner, then recover the named
+        # invocation, which stops the orphaned gate group.
+        process.kill()
+        process.communicate(timeout=5)
+        invocation = Path(sealed["record"]["invocation"])
+        self.assertEqual({r["classification"] for r in validation_resources.inspect_invocation(invocation)["resources"]},
+                         {"abandoned"})
+        complete, actions = validation_resources.recover(invocation, [str(self.output)], grace=0.3)
+        self.assertTrue(complete, actions)
+        deadline = time.time() + 2
+        while time.time() < deadline and _pid_alive(sealed["group"]):
+            time.sleep(0.02)
+        self.assertFalse(_pid_alive(sealed["group"]), "recovery did not stop the orphaned gate")
 
     def joined_owner(self):
         """An owner with a custom disk temporary root and a runner bound to it."""
