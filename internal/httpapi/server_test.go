@@ -3068,6 +3068,76 @@ func TestActivityConditionalAnswersBeforeProjection(t *testing.T) {
 	}
 }
 
+// TestActivityConditionalCursorCompatibility sends one Board tag with each
+// kind of cursor. A full read and the tag's own returned frontier ask for a
+// body the tag certifies; any other valid frontier gets the ordinary 200
+// (component-http-api, Activity conditional admission).
+func TestActivityConditionalCursorCompatibility(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("cursor-a", core.TaskQueued)
+	f.task("cursor-b", core.TaskQueued)
+	if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "cursor-b", Kind: "task.updated", At: f.now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	full := f.read("/v1/activity", "")
+	etag, cursor := full.Header().Get("ETag"), full.Header().Get("X-Conveyor-Cursor")
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Split(strings.TrimPrefix(string(raw), "v2:"), ":")
+	micros, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || micros <= 0 || id <= 0 {
+		t.Fatalf("returned cursor %q decodes to %s", cursor, raw)
+	}
+	v2 := func(micros, id int64) string {
+		return base64.RawURLEncoding.EncodeToString([]byte("v2:" + strconv.FormatInt(micros, 10) + ":" + strconv.FormatInt(id, 10)))
+	}
+	for _, test := range []struct {
+		name, since string
+		admitted    bool
+	}{
+		{name: "empty since", since: "", admitted: true},
+		{name: "zero v2 frontier", since: v2(0, 0), admitted: true},
+		{name: "legacy v1 cursor", since: base64.RawURLEncoding.EncodeToString([]byte("v1:" + strconv.FormatInt(id, 10))), admitted: true},
+		{name: "returned frontier", since: cursor, admitted: true},
+		{name: "older time", since: v2(micros-1, id)},
+		{name: "same time lower id", since: v2(micros, id-1)},
+		{name: "same time higher id", since: v2(micros, id+1)},
+		{name: "future frontier", since: v2(micros+time.Hour.Microseconds(), id)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := "/v1/activity"
+			if test.since != "" {
+				path += "?since=" + test.since
+			}
+			f.counted.reset()
+			response := f.read(path, etag)
+			calls := f.counted.reset()
+			if test.admitted {
+				if response.Code != http.StatusNotModified || response.Body.Len() != 0 || len(projectionReadCount(calls)) != 0 {
+					t.Fatalf("status=%d body=%q projection reads=%v", response.Code, response.Body.String(), projectionReadCount(calls))
+				}
+				return
+			}
+			// The incompatible cursor gets the same body as an unconditional
+			// request with that cursor.
+			ordinary := f.read(path, "")
+			if response.Code != http.StatusOK || calls["ReadActivityInputs"] != 1 || response.Body.String() != ordinary.Body.String() ||
+				response.Header().Get("X-Conveyor-Cursor") != ordinary.Header().Get("X-Conveyor-Cursor") {
+				t.Fatalf("status=%d inputs=%d body=%s want %s", response.Code, calls["ReadActivityInputs"], response.Body.String(), ordinary.Body.String())
+			}
+			if again := f.read("/v1/activity?since="+cursor, etag); again.Code != http.StatusNotModified {
+				t.Fatalf("returned frontier after an incompatible cursor status=%d", again.Code)
+			}
+		})
+	}
+}
+
 func TestActivityConditionalInvalidation(t *testing.T) {
 	for _, test := range []struct {
 		name string

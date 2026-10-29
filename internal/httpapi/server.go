@@ -1840,8 +1840,9 @@ func (c *activityConditional) etag(validUntil time.Time, cursor string) string {
 }
 
 // admits reports whether If-None-Match carries this request's Board tag: the
-// form parses, the request instant is before its valid_until, and the
-// validator recomputed from the current state matches.
+// form parses, the request instant is before its valid_until, the request
+// cursor is compatible with the tag, and the validator recomputed from the
+// current state matches.
 func (c *activityConditional) admits(header string) (activityTag, bool) {
 	inner, ok := strings.CutPrefix(header, `"`)
 	if !ok {
@@ -1859,10 +1860,20 @@ func (c *activityConditional) admits(header string) (activityTag, bool) {
 		return activityTag{}, false
 	}
 	tag := activityTag{raw: header, validUntil: time.UnixMicro(micros).UTC(), cursor: fields[2], validator: fields[3]}
-	if !c.now.Before(tag.validUntil) || c.validator(tag.validUntil, tag.cursor) != tag.validator {
+	if !c.cursorCompatible(tag.cursor) || !c.now.Before(tag.validUntil) || c.validator(tag.validUntil, tag.cursor) != tag.validator {
 		return activityTag{}, false
 	}
 	return tag, true
+}
+
+// cursorCompatible reports whether the request's decoded cursor asks for a
+// body the tag certifies while the state is unchanged: a full read (an empty
+// since, a zero v2 frontier, or a legacy v1 cursor), or a delta from exactly
+// the frontier the tag's response returned. Any other valid frontier, older,
+// newer, or in the future, takes the ordinary 200 path (component-http-api,
+// Activity conditional admission).
+func (c *activityConditional) cursorCompatible(tagCursor string) bool {
+	return !c.since.delta || encodeActivityCursor(c.since.frontier) == tagCursor
 }
 
 // validUntil is the earliest of the next UTC minute boundary, the review
@@ -1956,11 +1967,21 @@ func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue a
 		return
 	}
 	sum := sha256.Sum256(etagBody)
-	writeJSONWithETag(w, r, v, fmt.Sprintf("\"%x\"", sum))
+	etag := fmt.Sprintf("\"%x\"", sum)
+	if r.Header.Get("If-None-Match") == etag {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSONWithETag(w, r, v, etag)
 }
 
-// writeJSONWithETag writes v with a precomputed strong ETag, answering a
-// matching If-None-Match with 304 and negotiating gzip.
+// writeJSONWithETag writes v with a precomputed strong ETag and negotiates
+// gzip. It never answers 304: the Board's conditional admission is its only
+// 304, so a refused tag always receives the body (component-http-api,
+// Activity conditional admission).
 func writeJSONWithETag(w http.ResponseWriter, r *http.Request, v any, etag string) {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -1971,10 +1992,6 @@ func writeJSONWithETag(w http.ResponseWriter, r *http.Request, v any, etag strin
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Vary", "Accept-Encoding")
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
 	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.WriteHeader(http.StatusOK)
