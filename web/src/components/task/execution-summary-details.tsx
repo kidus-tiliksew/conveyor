@@ -148,11 +148,10 @@ function DecisionBlockerText({ blocker, decisionID }: { blocker: string; decisio
     <>
       {before}
       <Link
-        to="/w/$workspaceId/system-design"
-        params={{ workspaceId: workspace }}
-        hash={`decision-${decisionID.toLowerCase()}`}
+        to="/w/$workspaceId/decisions/$decisionId"
+        params={{ workspaceId: workspace, decisionId: decisionID }}
         className="text-primary hover:underline"
-        aria-label={`Open ${decisionID} in System Design`}
+        aria-label={`Open ${decisionID}`}
       >
         {decisionID}
       </Link>

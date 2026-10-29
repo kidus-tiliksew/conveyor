@@ -1747,7 +1747,11 @@ test('proposal details use the decision layout with server copy and a safe age',
   await expect(decision.locator('[data-decision-label]')).toHaveText('Decision proposal')
   await expect(decision.locator('[data-proposal-version]')).toHaveCount(0)
   await expect(decision.getByText('Confirm or dismiss this proposed decision?')).toBeVisible()
-  await expect(decision.getByRole('link', { name: 'View decision →' })).toBeVisible()
+  // The context link opens the decision's own page (req-document-operating-surfaces AC-8.9).
+  await expect(decision.getByRole('link', { name: 'View decision →' })).toHaveAttribute(
+    'href',
+    '/w/demo/decisions/DEC-16',
+  )
   await expect(decision.getByRole('button', { name: 'Revise' })).toHaveCount(0)
   await expect(decision.locator('[data-detail-title]')).toHaveText(longDecision)
   await page.goto('/w/demo/inbox')
@@ -1802,7 +1806,16 @@ test('navigation is exactly the accepted surfaces and the Inbox badge is the ope
   const labels = await primary
     .locator('a')
     .evaluateAll((links) => links.map((link) => link.textContent?.replace(/\d+$/, '').trim()))
-  expect(labels).toEqual(['Board', 'Inbox', 'Workspace', 'Requirements', 'System Design', 'Monitor', 'Settings'])
+  expect(labels).toEqual([
+    'Board',
+    'Inbox',
+    'Workspace',
+    'Requirements',
+    'System Design',
+    'Decisions',
+    'Monitor',
+    'Settings',
+  ])
   await expect(primary.getByRole('link', { name: /Inbox/ }).getByText('5', { exact: true })).toBeVisible()
 })
 
@@ -1826,7 +1839,7 @@ test('Inbox is the only primary navigation entry with a badge while requirement 
   const inbox = primary.getByRole('link', { name: /Inbox/ })
   await expect(inbox.getByText('2', { exact: true })).toBeVisible()
   await expect(inbox).toHaveText('Inbox2')
-  for (const label of ['Board', 'Workspace', 'Requirements', 'System Design', 'Monitor', 'Settings']) {
+  for (const label of ['Board', 'Workspace', 'Requirements', 'System Design', 'Decisions', 'Monitor', 'Settings']) {
     const link = primary.getByRole('link', { name: label, exact: true })
     await expect(link).toHaveText(label)
     // The label is the entry's only span; a badge would add a second.

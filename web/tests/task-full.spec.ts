@@ -6084,13 +6084,13 @@ test('dependency links follow the detail route variant and spec claiming stays a
   await expect(orderEntry(timeline, 'Implementation', 'Waiting for an agent')).toHaveCount(0)
 })
 
-test('a pending decision blocker links directly to its System Design decision card', async ({ page }) => {
+test('a pending decision blocker links directly to its decision page', async ({ page }) => {
   await page.goto('/w/demo/tasks/decision-blocker/full')
   const blocker = nextActionBox(page)
-  const decision = blocker.getByRole('link', { name: 'Open DEC-2 in System Design' })
-  await expect(decision).toHaveAttribute('href', '/w/demo/system-design#decision-dec-2')
+  const decision = blocker.getByRole('link', { name: 'Open DEC-2' })
+  await expect(decision).toHaveAttribute('href', '/w/demo/decisions/DEC-2')
   await decision.click()
-  await expect(page).toHaveURL(/\/system-design#decision-dec-2$/)
+  await expect(page).toHaveURL(/\/w\/demo\/decisions\/DEC-2$/)
 })
 
 test('recovery-needing work stays primary when dependencies are also unresolved', async ({ page }) => {

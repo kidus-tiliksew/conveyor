@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter, Outlet, redirect, useParams
 import { AppShell } from './components/app-shell'
 import { Board } from './components/board/board'
 import { validateBoardSearch } from './components/board/board-search'
+import { validateDecisionsSearch } from './components/decisions/decision-model'
 import { type ReviewSearch, validateReviewSearch } from './components/documents/document-review'
 import { validateInboxSearch } from './components/inbox/inbox-search'
 import { TaskSheet } from './components/task/task-sheet'
@@ -9,6 +10,7 @@ import { CreateWorkspaceDialog } from './components/workspace/create-workspace-d
 import { LegacyAddress, PageNotFound, WorkspaceLayout } from './components/workspace/workspace-address'
 import { BlueprintDetailPage } from './pages/blueprint-detail'
 import { BlueprintsPage } from './pages/blueprints'
+import { DecisionPage, DecisionsPage } from './pages/decisions'
 import { InboxPage } from './pages/inbox'
 import { MonitorPage } from './pages/monitor'
 import { OnboardingPage } from './pages/onboarding'
@@ -170,12 +172,37 @@ const requirementsRoute = createRoute({
 const systemDesignRoute = createRoute({
   getParentRoute: () => workspaceLayoutRoute,
   path: '/system-design',
+  // The earlier decision address `/system-design#decision-<dec-n>` replaces
+  // itself with that decision's page (req-document-operating-surfaces AC-8.9).
+  beforeLoad: ({ params, location }) => {
+    const decision = /^#?decision-(.+)$/i.exec(location.hash)?.[1]
+    if (decision) {
+      throw redirect({
+        to: '/w/$workspaceId/decisions/$decisionId',
+        params: { workspaceId: params.workspaceId, decisionId: decision.toUpperCase() },
+        replace: true,
+      })
+    }
+  },
   validateSearch: (search: Record<string, unknown>): { document?: string; session?: string } & ReviewSearch => ({
     ...validateReviewSearch(search),
     document: typeof search.document === 'string' ? search.document : undefined,
     session: typeof search.session === 'string' ? search.session : undefined,
   }),
   component: SystemDesignPage,
+})
+// The Decisions surface and each decision's page
+// (req-document-operating-surfaces REQ-7, REQ-8).
+const decisionsRoute = createRoute({
+  getParentRoute: () => workspaceLayoutRoute,
+  path: '/decisions',
+  validateSearch: validateDecisionsSearch,
+  component: DecisionsPage,
+})
+const decisionDetailRoute = createRoute({
+  getParentRoute: () => workspaceLayoutRoute,
+  path: '/decisions/$decisionId',
+  component: DecisionPage,
 })
 // The operator inbox (feature-operator-next-action NA-6).
 const inboxRoute = createRoute({
@@ -239,6 +266,8 @@ const routeTree = rootRoute.addChildren([
     workspaceRoute,
     requirementsRoute,
     systemDesignRoute,
+    decisionsRoute,
+    decisionDetailRoute,
     inboxRoute,
     pendingProposalsRoute,
     blueprintsRoute,

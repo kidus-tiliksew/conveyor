@@ -148,6 +148,7 @@ test('every sidebar entry and Board card link names the page workspace (AC-1.1, 
     '/w/bravo/workspace',
     '/w/bravo/requirements',
     '/w/bravo/system-design',
+    '/w/bravo/decisions',
     '/w/bravo/monitor',
     '/w/bravo/settings',
   ])

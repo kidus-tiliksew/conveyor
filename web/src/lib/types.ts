@@ -1951,6 +1951,8 @@ export interface Decision {
   alternatives_rejected: string
   status: 'proposed' | 'confirmed' | 'dismissed' | 'superseded'
   origin: 'planning_session' | 'implementation_deliberation' | 'operator'
+  origin_task_id?: string
+  origin_session_id?: string
   supersedes?: string
   confirmed_by?: string
   confirmed_at?: string

@@ -20,7 +20,7 @@ import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
 
 /**
- * A corner affordance on task, requirement, and System Design detail opens the
+ * A corner affordance on task, requirement, System Design, and decision detail opens the
  * records related to the current one, grouped as work, documents, delivery,
  * and evidence (`req-document-operating-surfaces` AC-3.1).
  *
@@ -533,9 +533,8 @@ function EntryLink({
     case 'decision':
       return (
         <Link
-          to="/w/$workspaceId/system-design"
-          params={{ workspaceId: workspace }}
-          hash={destination.hash}
+          to="/w/$workspaceId/decisions/$decisionId"
+          params={{ workspaceId: workspace, decisionId: destination.id }}
           className={className}
         >
           {body}
@@ -673,7 +672,7 @@ type Destination =
   | { type: 'requirement'; id: string; target?: number }
   | { type: 'design'; id: string; target?: number }
   | { type: 'reference'; hash: string }
-  | { type: 'decision'; hash: string }
+  | { type: 'decision'; id: string }
   | { type: 'external'; href: string }
   | { type: 'evidence'; artifactId: string }
   | { type: 'unavailable'; reason: string }
@@ -911,7 +910,7 @@ function entryDestination(entry: LineageEntry, graph: LineageGraph): Destination
             'the versions of this reference document',
           )
     case 'decision':
-      return { type: 'decision', hash: `decision-${entry.id.toLowerCase()}` }
+      return { type: 'decision', id: entry.id }
     case 'repository_path': {
       const governing = returnedSource(links, 'system_design_version', 'repository_path', entry.id, 'governs')
       const design = governing ? entryIdentity({ type: 'system_design_version', id: governing }) : undefined
