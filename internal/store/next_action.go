@@ -59,6 +59,24 @@ func ReadNextAction(ctx context.Context, st Store, taskID string, opts NextActio
 	return projected[task.ID], nil
 }
 
+// ReadNextActionForTask projects one task the caller already read, with that
+// task's orders as ListWorkOrdersForTasks returns them, so it adds no
+// GetTask and no order read; an empty slice is a loaded empty selection.
+// For the same stored state and options it returns what ReadNextAction
+// returns for the task's ID (component-work-orders, Next action).
+func ReadNextActionForTask(ctx context.Context, st Store, task core.Task, orders []core.WorkOrder, opts NextActionOptions) (nextaction.NextAction, error) {
+	if orders == nil {
+		orders = []core.WorkOrder{}
+	}
+	opts.OrdersLoaded = true
+	opts.Orders = orders
+	projected, err := ReadNextActions(ctx, st, []core.Task{task}, opts)
+	if err != nil {
+		return nextaction.NextAction{}, err
+	}
+	return projected[task.ID], nil
+}
+
 // ReadNextActions projects each task from one batch of orders, markers, and proposals.
 func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts NextActionOptions) (map[string]nextaction.NextAction, error) {
 	if opts.Now.IsZero() {

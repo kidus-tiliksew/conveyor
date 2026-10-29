@@ -2398,10 +2398,44 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		bounded = true
 	}
 	id := chi.URLParam(r, "id")
+	// The task, its events, and its orders are read once per request and
+	// every fold takes these copies (component-http-api, Request-scoped
+	// detail reads).
+	readStart := s.taskRunReadiness.now()
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
+	}
+	var mergeReadiness *dispatch.MergeReadiness
+	// Readiness resolves before any other read, so every later read observes
+	// whatever the hook wrote. A merge_approval gate carries the
+	// side-effect-free peek, which offers the one-act merge only at MERGEABLE
+	// (DEC-64(3); DEC-61).
+	approved := task.State == core.TaskApproved
+	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+	if (approved || gateMerge) && s.OnMergeReadiness != nil {
+		readiness, fresh, readinessErr := s.taskRunReadiness.readObserved(r.Context(), task, s.OnMergeReadiness, readStart)
+		switch {
+		case readinessErr != nil && approved:
+			// The merge action must never render without a successful
+			// readiness read (component-http-api).
+			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
+			return
+		case readinessErr != nil:
+			// A failed gate peek omits merge_readiness; the projection then
+			// offers no merge choice (component-http-api).
+			log.Printf("task detail merge readiness for %s: %v", id, readinessErr)
+		default:
+			mergeReadiness = &readiness
+			// A hook call that finished after the task read may have written
+			// task state (component-submission-merge), so read it once more.
+			if fresh {
+				if refreshed, refreshErr := s.Store.GetTask(r.Context(), id); refreshErr == nil {
+					task = refreshed
+				}
+			}
+		}
 	}
 	jobs, err := s.Store.ListJobs(r.Context(), id)
 	if err != nil {
@@ -2415,13 +2449,8 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	task.Context, err = store.TaskContextFromEvents(r.Context(), s.Store, events)
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	task.Context.Proposals, err = s.Store.ListTaskContextProposals(r.Context(), id, core.TaskContextProposalProposed)
+	contextRequirements, contextDesigns := store.ActiveTaskContextReferences(events)
+	contextProposals, err := s.Store.ListTaskContextProposals(r.Context(), id, core.TaskContextProposalProposed)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2453,34 +2482,46 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	if workOrders == nil {
 		workOrders = []core.WorkOrder{}
 	}
-	_, pendingPlanRevision, planErr := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
-	if errors.Is(planErr, store.ErrPlanRevisionGateUnreadable) {
-		pendingPlanRevision = true
-		planErr = nil
-	}
-	if planErr != nil {
-		log.Printf("handle API request: %v", planErr)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	for index := range workOrders {
-		captures, captureErr := s.Store.ListWorkOrderTranscriptCaptures(r.Context(), workOrders[index].ID)
-		if captureErr != nil {
-			log.Printf("load work-order transcript captures: %v", captureErr)
+	projectionOrders := nextActionOrders(workOrders)
+	pendingPlanRevision := false
+	if task.State == core.TaskAwaiting {
+		_, pending, planErr := store.PlanRevisionGateState(task, events)
+		if errors.Is(planErr, store.ErrPlanRevisionGateUnreadable) {
+			pending, planErr = true, nil
+		}
+		if planErr != nil {
+			log.Printf("handle API request: %v", planErr)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		if len(captures) > 0 {
-			workOrders[index].TranscriptCaptures = captures
+		pendingPlanRevision = pending
+	}
+	captures, err := s.Store.ListTaskTranscriptCaptures(r.Context(), id)
+	if err != nil {
+		log.Printf("load work-order transcript captures: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	var running []string
+	for _, order := range workOrders {
+		if order.State == core.WorkOrderClaimed && order.AttemptID != "" {
+			running = append(running, order.ID)
+		}
+	}
+	snapshots := map[string]core.WorkOrderActivitySnapshot{}
+	if len(running) > 0 {
+		if snapshots, err = s.Store.ListTaskActivitySnapshots(r.Context(), id, running); err != nil {
+			log.Printf("load work-order activity snapshot: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+	for index := range workOrders {
+		if orderCaptures := captures[workOrders[index].ID]; len(orderCaptures) > 0 {
+			workOrders[index].TranscriptCaptures = orderCaptures
 		}
 		if workOrders[index].State == core.WorkOrderClaimed && workOrders[index].AttemptID != "" {
-			snapshot, exists, snapshotErr := s.Store.GetWorkOrderActivitySnapshot(r.Context(), workOrders[index].ID)
-			if snapshotErr != nil {
-				log.Printf("load work-order activity snapshot: %v", snapshotErr)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			if exists && snapshot.AttemptID == workOrders[index].AttemptID {
+			if snapshot, exists := snapshots[workOrders[index].ID]; exists && snapshot.AttemptID == workOrders[index].AttemptID {
 				workOrders[index].ActivitySnapshot = &snapshot
 			}
 		}
@@ -2500,48 +2541,30 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	decorateWorkOrderAgentActivity(workOrders, events)
 	checkoutCommand, checkoutAvailable, checkoutGuidance := checkoutStateFromHistory(id, events)
+	// One metadata read serves both the task context and the checkpoint
+	// citations, keyed by tier so a shared ID keeps both rows.
+	metadata := store.NewDocumentMetadataSet()
+	if documentIDs := taskDetailDocumentIDs(contextRequirements, contextDesigns, workOrders); len(documentIDs) > 0 {
+		if metadata, err = s.Store.ListDocumentMetadata(r.Context(), documentIDs); err != nil {
+			log.Printf("handle API request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+	task.Context = taskDetailContext(contextRequirements, contextDesigns, metadata)
+	task.Context.Proposals = contextProposals
 	// Attachments are the operator-supplied task_context artifacts uploaded at
 	// intake; the task detail view previews them below the execution plan.
 	// Conveyor-generated audit transcripts are deliberately excluded — they are
-	// evidence, not attachments.
-	attachments, err := s.taskAttachments(r.Context(), id)
+	// evidence, not attachments. One task-node read serves both lists.
+	artifacts, err := s.Store.ListArtifactsForLineage(r.Context(), []core.LineageNode{{Type: core.LineageTask, ID: id}})
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	verificationEvidence, err := s.taskVerificationEvidence(r.Context(), id)
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
+	attachments, verificationEvidence := taskDetailArtifacts(id, artifacts)
 	var workerStatus *workerservice.TaskWorkerStatus
-	var mergeReadiness *dispatch.MergeReadiness
-	// A merge_approval gate carries the side-effect-free peek so surfaces offer
-	// the one-act merge only at MERGEABLE (DEC-64(3); DEC-61).
-	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
-	if (task.State == core.TaskApproved || gateMerge) && s.OnMergeReadiness != nil {
-		var readiness dispatch.MergeReadiness
-		var readinessErr error
-		if gateMerge {
-			// The gate peek is cached so the next-action projection can offer
-			// the server merge choice without its own forge call (DEC-64(3)).
-			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, s.OnMergeReadiness)
-		} else {
-			readiness, readinessErr = s.OnMergeReadiness(r.Context(), task)
-		}
-		if readinessErr != nil {
-			// The merge action must never render without a successful gate-facing
-			// readiness read (component-http-api).
-			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
-			return
-		}
-		mergeReadiness = &readiness
-		if refreshed, refreshErr := s.Store.GetTask(r.Context(), id); refreshErr == nil {
-			task = refreshed
-		}
-	}
 	// Worker status is advisory serviceability for every non-terminal task; a
 	// stored historical hold never suppresses it (component-work-orders;
 	// DEC-74(3)).
@@ -2560,7 +2583,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	workOrderViews, err := s.checkpointWorkOrderViews(r.Context(), workOrders, proposals)
+	workOrderViews, err := checkpointViewsFromMetadata(workOrders, proposals, metadata)
 	if err != nil {
 		log.Printf("enrich checkpoint recovery: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2568,27 +2591,33 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	// req-260810-23b69f AC-5.2: refresh observational notes in the authorized
 	// workspace context and suppress them after terminal task cleanup.
-	operatorNotes, err := store.OperatorNotesForTask(r.Context(), s.Store, id)
-	if err != nil {
-		log.Printf("load task operator notes: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+	var operatorNotes []core.OperatorNote
+	if !core.TaskTerminal(task.State) {
+		if operatorNotes, err = s.Store.ListDocumentOperatorNotesForTask(r.Context(), id); err != nil {
+			log.Printf("load task operator notes: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
-	claimWaiting, err := s.proposalClaimWaitingByTask(r.Context(), workOrders)
+	claimSelection, err := store.ClaimWaitingProposals(r.Context(), s.Store, workOrders)
 	if err != nil {
 		log.Printf("project proposal claim wait: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	waitingProposals := claimWaiting[id]
-	opts, err := s.nextActionOptions(r)
+	var waitingProposals []waitingProposal
+	for _, item := range claimSelection[id] {
+		waitingProposals = append(waitingProposals, waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
+	}
+	opts, err := s.detailNextActionOptions(r.Context())
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	action, err := store.ReadNextAction(r.Context(), s.Store, id, opts)
+	opts.ClaimWaitingLoaded, opts.ClaimWaiting = true, claimSelection
+	action, err := store.ReadNextActionForTask(r.Context(), s.Store, task, projectionOrders, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2638,22 +2667,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	item.Events = nil
 	w.Header().Set("X-Conveyor-Detail-View", "bounded")
 	writeJSON(w, http.StatusOK, boundedTaskDetailProjection{reviewItem: item, events: pageEvents, eventPage: eventPage, summaries: summaries})
-}
-
-func (s *Server) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {
-	all, err := s.Store.ListArtifacts(ctx)
-	if err != nil {
-		return nil, err
-	}
-	evidence := make([]core.Artifact, 0)
-	for _, artifact := range all {
-		if artifact.TaskID != taskID || !artifact.EligibleVerificationEvidence() {
-			continue
-		}
-		artifact.DownloadURL = "/v1/artifacts/" + artifact.ID
-		evidence = append(evidence, artifact)
-	}
-	return evidence, nil
 }
 
 func decorateWorkOrderAgentActivity(orders []core.WorkOrder, events []core.Event) {
@@ -2719,22 +2732,6 @@ func agentActivityLabel(event core.Event) string {
 // taskAttachments lists the operator-supplied attachments linked to a task,
 // each with a download URL the dashboard can preview. Only task_context
 // artifacts are surfaced; generated audit transcripts stay out of the view.
-func (s *Server) taskAttachments(ctx context.Context, taskID string) ([]core.Artifact, error) {
-	all, err := s.Store.ListArtifacts(ctx)
-	if err != nil {
-		return nil, err
-	}
-	attachments := make([]core.Artifact, 0)
-	for _, artifact := range all {
-		if artifact.TaskID != taskID || artifact.Role != core.ArtifactRoleTaskContext {
-			continue
-		}
-		artifact.DownloadURL = "/v1/artifacts/" + artifact.ID
-		attachments = append(attachments, artifact)
-	}
-	return attachments, nil
-}
-
 func (s *Server) checkoutState(taskID string) (string, bool, string) {
 	command, available, guidance := checkoutStateFromHistory(taskID, nil)
 	return command, available, guidance
